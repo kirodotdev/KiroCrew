@@ -477,11 +477,11 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
     expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
   })
 
-  const openMenu = (item: MenuItem) => {
+  const openMenu = (item: MenuItem, anchorRect?: Partial<DOMRect>, anchorElement?: HTMLElement) => {
     const close = vi.fn()
     const context: MenuContext = {
-      anchorElement: document.createElement('div'),
-      anchorRect: document.createElement('div').getBoundingClientRect(),
+      anchorElement: anchorElement ?? document.createElement('div'),
+      anchorRect: { ...document.createElement('div').getBoundingClientRect(), ...anchorRect } as DOMRect,
       close,
       restoreFocus: vi.fn(),
     }
@@ -518,6 +518,79 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
     // And the focused item actually activates on Enter.
     fireEvent.keyDown(menuitem, { key: 'Enter' })
     expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
+  })
+
+  it('portals the menu to document.body, outside the clipping tree root (#10100)', async () => {
+    // Pierre's default slot placement hangs the menu in a width-0 slot at the
+    // row's trailing edge INSIDE the tree root, whose `overflow: hidden` plus
+    // this app's zero inline padding clipped it to a sliver flush against the
+    // panel's right border at every panel width -- an unreachable "..." menu.
+    // The portal (marked with the library's documented
+    // `data-file-tree-context-menu-root` attribute so outside-click and Escape
+    // still treat it as inside) is what escapes that clipping boundary.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const menu = screen.getByRole('menu')
+    expect(menu.parentElement).toBe(document.body)
+    expect(menu).toHaveAttribute('data-file-tree-context-menu-root', 'true')
+    // Fixed positioning is what places it from the open context's anchorRect
+    // instead of the slot's in-flow (clipped) position.
+    expect(menu.className).toContain('fixed')
+  })
+
+  it("dismisses on a scroll inside the tree's own root, not on an outside scroll", async () => {
+    // The portaled menu is position: fixed, so if the virtualized tree scrolls
+    // under it the menu would hover an unrelated row while still acting on the
+    // original node. The tree renders in a SHADOW ROOT and scroll is a
+    // non-composed event, so the dismiss listener sits capture-phase on the
+    // anchor's own root: it sees every scroll container inside the tree and
+    // nothing outside it -- a chat transcript auto-scrolling beside the rail
+    // must NOT snatch a just-opened menu.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    try {
+      const shadow = host.attachShadow({ mode: 'open' })
+      const scroller = document.createElement('div')
+      const anchor = document.createElement('div')
+      scroller.appendChild(anchor)
+      shadow.appendChild(scroller)
+
+      const { close } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' }, undefined, anchor)
+      fireEvent.scroll(document.body) // outside the tree: keep the menu
+      expect(close).not.toHaveBeenCalled()
+      fireEvent.scroll(scroller) // the tree's own scroller: rows moved, dismiss
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally {
+      host.remove()
+    }
+  })
+
+  it('clamps into the viewport and flips above when the bottom would overflow', async () => {
+    // jsdom rects are zeros by default, so stub the menu measurement and hand
+    // the open context a bottom-right anchor: the horizontal clamp and the
+    // vertical flip are exactly the branches the clipped-slot defect was about.
+    const rect = { width: 176, height: 200, top: 0, bottom: 200, left: 0, right: 176, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect)
+    try {
+      const onAddToContext = vi.fn()
+      renderTree({ onAddToContext })
+      await waitForTree()
+
+      // window.innerWidth = 1024, innerHeight = 768 in jsdom.
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' }, { width: 18, height: 28, left: 998, right: 1016, top: 700, bottom: 728 })
+      const menu = screen.getByRole('menu')
+      await waitFor(() => expect(menu.style.left).toBe('840px')) // 1016 - 176, at the 1024-176-8 clamp
+      expect(menu.style.top).toBe('498px') // flipped above: 700 - 200 - 2
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('reports a directory as a dir add', async () => {

@@ -10,6 +10,7 @@
  * a lazy boundary (see `./tree.tsx`) so the eager bundle stays clean.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import type { GitStatus, GitStatusEntry } from '@pierre/trees'
 // The package root re-exports the tree's context-menu types under shorter
@@ -33,12 +34,15 @@ import { TreeSkeleton } from './tree'
  *  Pierre's `'directory' | 'file'`, so map at the boundary. */
 type TreeEntryKind = 'file' | 'dir'
 
-/** Row-level right-click menu projected into Pierre's `context-menu` slot.
- *  Pierre owns the anchor, the outside-click wash, and open/close; this renders
- *  only the item list: the built-in "Add to chat" action, plus any row an installed
- *  app contributes for the `tree-context` surface (row click already opens a file, so
- *  the menu deliberately carries no Open duplicate). Every action closes the menu
- *  itself so focus returns to the row. */
+/** Row-level right-click menu for Pierre's `context-menu` slot -- rendered via a
+ *  `document.body` PORTAL rather than into the slot itself. Pierre owns the
+ *  anchor, the outside-click wash, and open/close (the portal root's
+ *  `data-file-tree-context-menu-root` marker is the library's documented way to
+ *  keep a portaled surface counting as "inside"); this renders only the item
+ *  list: the built-in "Add to chat" action, plus any row an installed app
+ *  contributes for the `tree-context` surface (row click already opens a file,
+ *  so the menu deliberately carries no Open duplicate). Every action closes the
+ *  menu itself so focus returns to the row. */
 function TreeContextMenu({ item, context, root, onAddToContext, contribItems, onError }: {
   item: FileTreeContextMenuItem
   context: FileTreeContextMenuOpenContext
@@ -114,15 +118,90 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   // content); letting the hook also focus would be a redundant second move.
   const menuRef = useRef<HTMLDivElement>(null)
   useMenuKeyboard({ enabled: true, containerRef: menuRef, focusFirstOnOpen: false })
+  // PORTALED to document.body, positioned from the open context's anchorRect
+  // (#10100). Pierre's default slot placement puts the menu in a width-0 slot
+  // hung at the row's trailing edge, inside the tree root -- and that root is
+  // `overflow: hidden`, so with this app's `--trees-padding-inline-override:
+  // 0px` the slot sits ~7px from the panel's right edge and the menu clips to
+  // a sliver flush against the border at EVERY panel width (it reads as a
+  // truncated, unclickable "..." control; the same in-slot growth is what shifted
+  // the trigger vertically while open). The library documents the escape
+  // hatch: a portaled menu marked `data-file-tree-context-menu-root="true"`
+  // still counts as inside for Pierre's outside-click wash and Escape close.
+  //
+  // Placement: below the anchor, right edges aligned for the "..." button (its
+  // rect has width; a right-click anchor is a zero-width point and aligns
+  // left), clamped into the viewport and flipped above when the bottom would
+  // overflow -- measured in a layout effect so the first painted frame is
+  // already at its final position (hidden until measured).
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    if (!menu) return
+    const a = context.anchorRect
+    const m = menu.getBoundingClientRect()
+    const margin = 8
+    let left = a.width > 0 ? a.right - m.width : a.left
+    left = Math.min(left, window.innerWidth - m.width - margin)
+    left = Math.max(margin, left)
+    let top = a.bottom + 2
+    if (top + m.height > window.innerHeight - margin) {
+      top = Math.max(margin, a.top - m.height - 2)
+    }
+    setPos({ top, left })
+    // `rows.length` is a dep because a contributed-row refetch while the menu
+    // is open changes the menu's height, and a stale measurement would let the
+    // grown menu run past the bottom clamp.
+  }, [context, rows.length])
+  // DISMISS when the row can move out from under the fixed-position menu.
+  // The tree renders inside a SHADOW ROOT and `scroll` is a non-composed
+  // event, so a window listener never sees the virtualized tree's own
+  // scroller (the drift source that matters) while it DOES fire for
+  // unrelated light-DOM scrolls -- a streaming reply auto-scrolling the chat
+  // transcript would snatch a just-opened menu with no action taken. So the
+  // scroll listener goes capture-phase on the ANCHOR'S OWN root node (the
+  // tree's shadow root), which sees every scroll container inside the tree
+  // and nothing outside it. Row movement without a scroll -- the rail or
+  // panel being drag-resized -- is covered by a ResizeObserver on the shadow
+  // host (skipping its mandatory initial delivery), and window resize stays
+  // as the cheap catch-all. Close rather than re-track: it is the native
+  // context-menu convention, and a right-click anchor is a pointer POINT
+  // that no element rect can re-derive after the rows have moved.
+  useEffect(() => {
+    const onDismiss = () => context.close()
+    const root = context.anchorElement.getRootNode()
+    root.addEventListener('scroll', onDismiss, true)
+    let ro: ResizeObserver | null = null
+    const host = root instanceof ShadowRoot ? root.host : null
+    if (host && typeof ResizeObserver !== 'undefined') {
+      let initialDelivery = true
+      ro = new ResizeObserver(() => {
+        if (initialDelivery) {
+          initialDelivery = false
+          return
+        }
+        context.close()
+      })
+      ro.observe(host)
+    }
+    window.addEventListener('resize', onDismiss)
+    return () => {
+      root.removeEventListener('scroll', onDismiss, true)
+      ro?.disconnect()
+      window.removeEventListener('resize', onDismiss)
+    }
+  }, [context])
   // Render nothing rather than an empty bordered popup: with no host row AND no
   // app row that its `when` admits for this node, there is nothing to show and
   // no menuitem for the focus effect to land on.
   if (!onAddToContext && rows.length === 0) return null
-  return (
+  return createPortal(
     <div
       ref={menuRef}
       role="menu"
-      className="min-w-[176px] max-w-[min(420px,calc(100vw-2rem))] rounded-lg border border-border bg-bg-elevated p-1 shadow-lg"
+      data-file-tree-context-menu-root="true"
+      style={pos ? { top: pos.top, left: pos.left } : { top: context.anchorRect.bottom + 2, left: context.anchorRect.left, visibility: 'hidden' }}
+      className="fixed z-50 min-w-[176px] max-w-[min(420px,calc(100vw-2rem))] rounded-lg border border-border bg-bg-elevated p-1 shadow-lg"
     >
       {onAddToContext && (
         <div
@@ -169,7 +248,8 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
           </div>
         )
       })}
-    </div>
+    </div>,
+    document.body,
   )
 }
 
