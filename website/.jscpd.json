@@ -28,7 +28,7 @@
     "**/src/apps/crew-companion/PackEditor.tsx",
     "**/src/apps/crew-companion/SaveDialog.tsx",
     "**/src/apps/crew-companion/SpriteImporter.tsx",
-    "**/src/apps/crew-companion/SpriteRenderer.tsx",
+    "**/src/components/appearancePacks/SpriteRenderer.tsx",
     "**/src/apps/crew-companion/animationResolver.ts",
     "**/src/lib/appearancePacks/types.ts",
     "**/src/apps/crew-companion/bubbleLayout.ts",

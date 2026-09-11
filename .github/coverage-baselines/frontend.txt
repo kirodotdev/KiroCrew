@@ -19,8 +19,6 @@ src/apps/auto-improvement/AutoImprovementPage.tsx 58.0   # 47/81
 src/apps/auto-improvement/FindingDetail.tsx 8.3   # 2/24
 src/apps/auto-improvement/SetupPanel.tsx 53.7   # 36/67
 src/apps/code-review-sage/api.ts 12.7   # 9/71
-src/apps/crew-companion/LottieRenderer.tsx 9.5   # 2/21
-src/apps/crew-companion/SpriteRenderer.tsx 39.6   # 19/48
 src/apps/crew-companion/ToggleRow.tsx 66.7   # 2/3
 src/apps/crew-companion/api.ts 0.0   # 0/24
 src/apps/crew-companion/petdexImport.ts 10.4   # 5/48

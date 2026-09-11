@@ -3063,14 +3063,28 @@ export const api = {
   /**
    * The crew appearance library — the packs a crew can wear.
    *
-   * Owner-gated, same-origin cookie auth. There is deliberately no `detail`
-   * wrapper: that route inlines every file in the pack, so drawing a grid of
-   * thumbnails through it would load N whole packs to show N frames. The picker
-   * reads the per-slot route through an `<img>` instead (`packSlotUrl`), and
-   * `detail` lands here with its first real caller.
+   * Owner-gated, same-origin cookie auth.
    */
   appearances: {
     list: () => fetch('/api/appearances').then(j) as Promise<{ packs?: unknown }>,
+    /**
+     * The whole pack, inlined. Read it through `hooks/usePackDetail` (a React
+     * Query entry, `staleTime: Infinity`) rather than directly: this route
+     * carries every file in the pack, so one read per pack per session is the
+     * budget, and a grid or roster calling it per avatar would load N whole packs
+     * to draw N frames. The crew avatar pays that one read per WORN pack to learn
+     * each slot's format (the per-slot route cannot say it before the request);
+     * `packDetailFrom` then keeps the bytes only for a Lottie slot, so the cache
+     * never pins an svg or a base64 sheet no renderer reads from here. The three
+     * shipped sample bundles are 1-4 KB; a content-free detail variant is the
+     * follow-up if real packs prove otherwise.
+     *
+     * A renderer needs it because the FORMAT lives per slot — the player has to
+     * be chosen before any bytes are requested, which the per-slot route
+     * (`packSlotUrl`) cannot answer.
+     */
+    detail: (id: string) =>
+      fetch('/api/appearances/' + encodeURIComponent(id)).then(j) as Promise<unknown>,
     /** Install an exported pack. The JSON envelope, not multipart: the bundle is
      *  already parsed client-side to reject an obviously wrong pick, so posting
      *  it back as a file would only re-serialize what we hold. */

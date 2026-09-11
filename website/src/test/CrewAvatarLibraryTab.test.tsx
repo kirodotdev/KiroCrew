@@ -2,14 +2,15 @@
  * The avatar builder's Library pane — list, select, import, delete.
  *
  * Four things here are the pane's whole reason to exist, and each is a mistake
- * it must not make: listing a pack the user cannot wear as if they could, losing
- * a just-imported pack because the grid was not re-read, deleting a pack a crew
- * is wearing without saying which crews, and reporting the client's own guess
- * where the server named the real problem.
+ * it must not make: showing a pack's art as a broken-image glyph because its
+ * format is not an image, losing a just-imported pack because the grid was not
+ * re-read, deleting a pack a crew is wearing without saying which crews, and
+ * reporting the client's own guess where the server named the real problem.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
+const mockInvalidate = vi.hoisted(() => vi.fn())
 const mockApi = vi.hoisted(() => ({
   appearances: {
     list: vi.fn(),
@@ -19,6 +20,28 @@ const mockApi = vi.hoisted(() => ({
   },
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
+
+/** The pack renderer, stubbed. It reads `appearances.detail` and drives lottie-web
+ *  or a canvas; what this pane is responsible for is WHICH cards route through it. */
+vi.mock('../components/appearancePacks/PackAvatar', () => ({
+  default: ({ id, size, onError }: { id: string; size: number; onError?: () => void }) => (
+    <button
+      type="button"
+      aria-label={`pack avatar stub ${id}`}
+      data-testid={`pack-avatar-stub-${id}`}
+      data-size={String(size)}
+      onClick={() => onError?.()}
+    />
+  ),
+}))
+
+/** The query the tab invalidates. Stubbed whole: the real hook needs a
+ *  QueryClient and reaches the detail route, which this pane's own fixtures do not
+ *  serve. */
+vi.mock('../hooks/usePackDetail', () => ({
+  useInvalidatePackDetail: () => (...args: unknown[]) => mockInvalidate(...args),
+  usePackDetail: () => ({ data: undefined, isError: false }),
+}))
 
 import CrewAvatarLibraryTab from '../components/CrewAvatarLibraryTab'
 import { BUILTIN_PACK_ID } from '../lib/appearancePacks/library'
@@ -40,6 +63,7 @@ const AURORA = {
   format: 'svg',
 }
 const NEBULA = { ...AURORA, id: 'nebula', name: 'Nebula', format: 'lottie' }
+const SPRITE = { ...AURORA, id: 'sprite-pack', name: 'Pixels', format: 'sprite' }
 /** What the library holds AFTER an import — the fresh listing the import path
  *  re-reads to learn the installed pack's format. */
 const IMPORTED_SVG = { ...AURORA, id: 'imported', name: 'Imported' }
@@ -118,47 +142,65 @@ describe('library pane — listing', () => {
     expect(screen.getByTestId(`avatar-pack-select-${BUILTIN_PACK_ID}`)).toHaveAttribute('aria-selected', 'false')
   })
 
-  it('asks for no art for a pack a crew cannot wear', async () => {
+  it('draws a non-image pack through the pack renderer, and an svg one as one request', async () => {
     // The slot route serves a lottie pack as `application/json` and a sprite pack
-    // as a whole PNG sheet, so an <img> pointed at either draws the browser's
-    // broken-image glyph — which reads as a damaged pack rather than an
-    // unsupported one.
+    // as a whole PNG sheet, so an <img> pointed at either drew the browser's
+    // broken-image glyph or a strip of every frame. An svg card stays a single
+    // per-slot request and reads no pack — the detail route inlines every file.
     mount()
     await screen.findByTestId('avatar-pack-card-nebula')
-    expect(screen.getByTestId('avatar-pack-noart-nebula')).toBeInTheDocument()
+    expect(screen.getByTestId('pack-avatar-stub-nebula').getAttribute('data-size')).toBe('72')
     expect(screen.queryByTestId('avatar-pack-thumb-nebula')).toBeNull()
-    // The wearable one still fetches its real frame.
     expect(screen.getByTestId('avatar-pack-thumb-aurora').getAttribute('src')).toBe(
       '/api/appearances/aurora/slot/idle',
     )
+    expect(screen.queryByTestId('pack-avatar-stub-aurora')).toBeNull()
   })
 
-  it('greys a non-SVG pack and refuses to select it', async () => {
-    // A crew's face is an <img>: it cannot play Lottie, and core ships no
-    // player. Listing the pack anyway is what stops the import reading as a
-    // failure.
+  it('shows the placeholder, not a blank, when a pack renderer fails', async () => {
+    // A renderer that cannot draw the pack reports through onError; a blank card
+    // read as a layout bug, and the card must stay selectable so the crew editor's
+    // own warning can name the broken pack.
     const { onSelect } = mount()
-    const card = await screen.findByTestId('avatar-pack-select-nebula')
-    expect(card).toBeDisabled()
-    expect(screen.getByTestId('avatar-pack-unsupported-nebula')).toHaveTextContent(
-      'Not supported for crews yet',
-    )
-    fireEvent.click(card)
-    expect(onSelect).not.toHaveBeenCalled()
+    const stub = await screen.findByTestId('pack-avatar-stub-nebula')
+    fireEvent.click(stub)
+    expect(await screen.findByTestId('avatar-pack-noart-nebula')).toBeInTheDocument()
+    expect(screen.queryByTestId('pack-avatar-stub-nebula')).toBeNull()
+    // The failure surface is an ErrorNotice (a render that FAILED, not a hint),
+    // naming the control that recovers it in that control's own words.
+    const notice = screen.getByTestId('avatar-pack-noart-notice-nebula')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent('Art won’t draw. Use “Import pack”.'.replace('’', "'"))
+    expect(screen.getByTestId('avatar-pack-import')).toHaveTextContent('Import pack')
+    fireEvent.click(screen.getByTestId('avatar-pack-select-nebula'))
+    expect(onSelect).toHaveBeenCalledWith('nebula')
   })
 
-  it('dims the inert half of an unwearable card but not its Delete', async () => {
-    // Delete is the ONE action an unwearable pack still offers, and an
-    // unwearable pack is exactly the one a user wants gone. Dimming the whole
-    // card took the live control with it and read as disabled.
+  it('gives a broken pack a fresh chance after it is re-imported', async () => {
     mockApi.appearances.list.mockResolvedValue({ packs: [BUILTIN, AURORA, NEBULA] })
+    mockApi.appearances.importBundle.mockResolvedValue({ ok: true, id: 'nebula' })
     mount()
-    const card = await screen.findByTestId('avatar-pack-card-nebula')
-    expect(screen.getByTestId('avatar-pack-select-nebula').className).toContain('opacity-50')
-    expect(card.className).not.toContain('opacity-50')
-    const del = screen.getByTestId('avatar-pack-delete-nebula')
-    expect(del.closest('.opacity-50')).toBeNull()
-    expect(del).not.toBeDisabled()
+    fireEvent.click(await screen.findByTestId('pack-avatar-stub-nebula'))
+    await screen.findByTestId('avatar-pack-noart-nebula')
+
+    pick(bundleFile(VALID_BUNDLE))
+
+    // The re-import replaced the art, so the renderer is tried again.
+    expect(await screen.findByTestId('pack-avatar-stub-nebula')).toBeInTheDocument()
+    expect(screen.queryByTestId('avatar-pack-noart-nebula')).toBeNull()
+  })
+
+  it('lets a crew wear a lottie or sprite pack', async () => {
+    // Core now ships both players, so the format gates nothing: every pack the
+    // library holds is selectable.
+    mockApi.appearances.list.mockResolvedValue({ packs: [BUILTIN, AURORA, NEBULA, SPRITE] })
+    const { onSelect } = mount()
+    for (const id of ['nebula', 'sprite-pack']) {
+      const card = await screen.findByTestId(`avatar-pack-select-${id}`)
+      expect(card).not.toBeDisabled()
+      fireEvent.click(card)
+      expect(onSelect).toHaveBeenCalledWith(id)
+    }
   })
 
   it('shows the empty state when the library holds nothing', async () => {
@@ -229,10 +271,9 @@ describe('library pane — import', () => {
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('imported'))
   })
 
-  it('installs a non-SVG pack but refuses to wear it, and says so', async () => {
-    // The server accepts a Lottie bundle, so the import SUCCEEDS — but a crew's
-    // face is an <img>. Auto-selecting it enabled Apply on a face that cannot
-    // render, so the format is re-read from the fresh listing before selecting.
+  it('selects an imported lottie pack, and drops its cached art first', async () => {
+    // The import may REPLACE a pack under an id already on screen, so a cached
+    // read of the old art must not survive it.
     mockApi.appearances.list
       .mockResolvedValueOnce({ packs: [BUILTIN, AURORA, NEBULA] })
       .mockResolvedValueOnce({ packs: [BUILTIN, AURORA, NEBULA, IMPORTED_LOTTIE] })
@@ -241,15 +282,8 @@ describe('library pane — import', () => {
 
     pick(bundleFile(VALID_BUNDLE))
 
-    await waitFor(() => expect(mockApi.appearances.list).toHaveBeenCalledTimes(2))
-    // Shown after a SUCCESSFUL import, which is the sharpest case for it not
-    // being an error: the server did what it was asked.
-    expect(await screen.findByTestId('avatar-pack-pick-hint')).toHaveTextContent(
-      'That pack is installed, but a crew can only wear an SVG pack.',
-    )
-    expect(screen.queryByTestId('avatar-pack-error')).toBeNull()
-    expect(onSelect).not.toHaveBeenCalled()
-    // It still LISTS — the import worked, and hiding it would say otherwise.
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('imported'))
+    expect(mockInvalidate).toHaveBeenCalledWith('imported')
     expect(screen.getByTestId('avatar-pack-card-imported')).toBeInTheDocument()
   })
 
@@ -431,6 +465,23 @@ describe('library pane — delete', () => {
     expect(screen.queryByTestId(`avatar-pack-selected-${BUILTIN_PACK_ID}`)).toBeNull()
   })
 
+  it('gives every unchosen card an empty ring, so "Selected" has visible siblings', async () => {
+    // A lone mark on one card still read as a label, not a choice: the reader
+    // rated clicking a guess a second time. One filled and the rest empty is the
+    // shape of a radio group — which this grid is — and it is visible at rest.
+    const { onSelect } = mount('aurora')
+    await screen.findByTestId('avatar-pack-card-aurora')
+    expect(screen.getByTestId(`avatar-pack-unselected-${BUILTIN_PACK_ID}`)).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.queryByTestId('avatar-pack-unselected-aurora')).toBeNull()
+    // The chosen card carries the SAME ring, filled — one radio group, not a chip
+    // beside unexplained circles (the reader could not name the empty ring alone).
+    expect(screen.getByTestId('avatar-pack-ring-aurora').className).toContain('bg-current')
+    expect(screen.queryByTestId(`avatar-pack-ring-${BUILTIN_PACK_ID}`)).toBeNull()
+    // The ring is on the option itself, so clicking it is choosing.
+    fireEvent.click(screen.getByTestId(`avatar-pack-select-${BUILTIN_PACK_ID}`))
+    expect(onSelect).toHaveBeenLastCalledWith(BUILTIN_PACK_ID)
+  })
+
   it('states what deleting costs, next to the button that does it', async () => {
     // The reader refused to click because nothing said whether a delete could be
     // undone. It cannot — but the bundle is re-importable, which is the half that
@@ -455,17 +506,16 @@ describe('library pane — delete', () => {
     ).toBeNull()
   })
 
-  it('gives a selectable card a pointer and a hover ring, and an unwearable one neither', async () => {
+  it('gives every card a pointer and a hover ring', async () => {
     // The first-run reader rated clicking a card a guess, and selecting a pack is
     // this pane's main path.
     mockApi.appearances.list.mockResolvedValue({ packs: [BUILTIN, AURORA, NEBULA] })
     mount()
-    const selectable = await screen.findByTestId('avatar-pack-select-aurora')
-    expect(selectable.className).toContain('cursor-pointer')
-    expect(selectable.className).toContain('hover:ring-2')
-    const inert = screen.getByTestId('avatar-pack-select-nebula')
-    expect(inert.className).not.toContain('cursor-pointer')
-    expect(inert.className).not.toContain('hover:ring-2')
+    for (const id of ['aurora', 'nebula']) {
+      const card = await screen.findByTestId(`avatar-pack-select-${id}`)
+      expect(card.className).toContain('cursor-pointer')
+      expect(card.className).toContain('hover:ring-2')
+    }
   })
 
   it('disarms on the second thought', async () => {

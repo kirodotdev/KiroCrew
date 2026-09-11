@@ -10,7 +10,7 @@
 import React from 'react'
 import { render, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { SpriteRenderer } from '../apps/shared/SpriteRenderer'
+import { SpriteRenderer } from '../components/appearancePacks/SpriteRenderer'
 
 /** Deterministic clock shared by rAF, setTimeout, and performance.now. */
 let now = 0
@@ -57,6 +57,11 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
     () => drawCtx as unknown as CanvasRenderingContext2D,
   )
+  // A decoded sheet always reports its size, and the renderer refuses a row
+  // that falls outside it; the stub below never decodes, so give it the size
+  // these strips claim (4 frames of 64x64).
+  Object.defineProperty(Image.prototype, 'naturalWidth', { value: 64 * 4, configurable: true })
+  Object.defineProperty(Image.prototype, 'naturalHeight', { value: 64, configurable: true })
   // Sprite strips load through an Image(); fire `load` synchronously so the
   // effect body runs inside the test's fake-timer scope.
   vi.spyOn(Image.prototype, 'addEventListener').mockImplementation(
@@ -73,7 +78,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('SpriteRenderer wakeup pacing', () => {
+describe('crew-companion SpriteRenderer wakeup pacing', () => {
   it('wakes at the sprite fps, not once per display frame', () => {
     render(
       <SpriteRenderer src="strip.png" frameWidth={64} frameHeight={64} fps={8} totalFrames={4} />,

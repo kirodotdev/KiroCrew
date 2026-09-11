@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const mockApi = vi.hoisted(() => ({
   appearances: {
@@ -72,8 +73,13 @@ const BUILTIN = {
 function mount(value: CrewAvatarOverride | null = null) {
   const onSave = vi.fn()
   const onCancel = vi.fn()
+  // The Library pane's invalidation hook reads the QueryClient; the seam under
+  // test is the builder's, so the client carries only a retry-free default.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
-    <CrewAvatarBuilder open name="oncall" value={value} onCancel={onCancel} onSave={onSave} />,
+    <QueryClientProvider client={qc}>
+      <CrewAvatarBuilder open name="oncall" value={value} onCancel={onCancel} onSave={onSave} />
+    </QueryClientProvider>,
   )
   return { ...utils, onSave, onCancel }
 }

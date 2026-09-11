@@ -48,7 +48,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../apps/crew-companion/petBridge', () => ({ galleryApi: mocks.api }))
 
-vi.mock('../apps/shared/SpriteRenderer', () => ({
+vi.mock('../components/appearancePacks/SpriteRenderer', () => ({
   SpriteRenderer: ({ src, frameWidth, frameHeight, fps, displaySize }: {
     src: string
     frameWidth: number

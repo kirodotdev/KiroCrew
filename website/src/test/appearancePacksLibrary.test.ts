@@ -1,11 +1,9 @@
 /**
  * `lib/appearancePacks/library` — the pack library's pure half.
  *
- * These four functions are what the picker and the renderer AGREE on: where a
- * slot's art is, which packs a crew can wear, what a listing row means, and
- * whether a picked file is a bundle at all. A drift between the picker and the
- * face it picks shows up here first, which is why they are pure and tested apart
- * from any component.
+ * These functions are what the picker and the renderer AGREE on: where a slot's
+ * art is, what a listing row means, and whether a picked file is a bundle at all. A drift between the picker and the face it picks shows up
+ * here first, which is why they are pure and tested apart from any component.
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -15,7 +13,6 @@ import {
   MAX_BUNDLE_BYTES,
   PACK_BUNDLE_KIND,
   bundleFromText,
-  isWearableFormat,
   packSlotUrl,
   packSummariesFrom,
 } from '../lib/appearancePacks/library'
@@ -33,15 +30,6 @@ describe('packSlotUrl', () => {
       '/api/appearances/..%2F..%2Fetc%2Fpasswd/slot/idle',
     )
     expect(packSlotUrl('aurora', 'a/b')).toBe('/api/appearances/aurora/slot/a%2Fb')
-  })
-})
-
-describe('isWearableFormat', () => {
-  it('accepts SVG only — the face is an <img> and core ships no player', () => {
-    expect(isWearableFormat('svg')).toBe(true)
-    expect(isWearableFormat('lottie')).toBe(false)
-    expect(isWearableFormat('sprite')).toBe(false)
-    expect(isWearableFormat('')).toBe(false)
   })
 })
 

@@ -8,7 +8,7 @@
 import React from 'react'
 import { render, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { SpriteRenderer } from '../apps/shared/SpriteRenderer'
+import { SpriteRenderer } from '../components/appearancePacks/SpriteRenderer'
 
 const FRAME = 64
 const BYTES_PER_FRAME = FRAME * FRAME * 4
@@ -122,15 +122,20 @@ describe('SpriteRenderer frame auto-detection (no totalFrames prop)', () => {
     expect(animatedSx).toEqual(new Set([0, FRAME, 2 * FRAME, 3 * FRAME]))
   })
 
-  it('renders a sub-frame-width strip as a single static frame without probing', () => {
-    stripFrames = 0 // naturalWidth 0: nothing to probe, clamps to one frame
-    render(<SpriteRenderer src="tiny.png" frameWidth={FRAME} frameHeight={FRAME} fps={8} />)
+  it('refuses a strip narrower than one frame, reporting it, without probing or drawing', () => {
+    // A frame wider than the whole sheet is geometry the sheet cannot satisfy:
+    // `drawImage` would sample off-image and paint a transparent tile that the
+    // caller believes is a face. It is reported like a missing file instead, so
+    // a crew wearing this sheet gets its fallback rather than a blank.
+    stripFrames = 0 // naturalWidth 0: no frame fits
+    const onError = vi.fn()
+    render(<SpriteRenderer src="tiny.png" frameWidth={FRAME} frameHeight={FRAME} fps={8} onError={onError} />)
 
+    expect(onError).toHaveBeenCalledTimes(1)
     expect(probeCtx.getImageData).not.toHaveBeenCalled()
-    expect(displayCtx.drawImage).toHaveBeenCalledTimes(1)
+    expect(displayCtx.drawImage).not.toHaveBeenCalled()
     const scheduled = rafQueue.size
     for (let i = 0; i < 120; i++) tickFrame(1000 / 120)
     expect(rafQueue.size).toBe(scheduled)
-    expect(displayCtx.drawImage).toHaveBeenCalledTimes(1)
   })
 })

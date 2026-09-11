@@ -13,6 +13,7 @@ import {
 } from '../lib/fabric'
 import { Card, PageHeader, StatCard, IconButton, EmptyState as UIEmptyState } from '../../../../components/ui'
 import { i18nT } from '../../../../i18n/t'
+import { useReducedMotion } from '../../../../hooks/useReducedMotion'
 import { fmtUnit } from '../../../../i18n/format'
 
 // The lane label for a work item: a localized "pull request" / "issue" prefix
@@ -155,20 +156,6 @@ function captionText(phase: string): string {
 function exitTokenText(token: string, phase: string): string {
   const key = EXIT_TOKEN_KEY[token as keyof typeof EXIT_TOKEN_KEY]
   return key ? i18nT(key) : phase
-}
-
-function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches,
-  )
-  useEffect(() => {
-    if (typeof matchMedia !== 'function') return
-    const mq = matchMedia('(prefers-reduced-motion: reduce)')
-    const onChange = (e: MediaQueryListEvent) => setReduced(e.matches)
-    mq.addEventListener?.('change', onChange)
-    return () => mq.removeEventListener?.('change', onChange)
-  }, [])
-  return reduced
 }
 
 /** Measure a track column's rendered width in CSS pixels, live. Returns [ref, w]:

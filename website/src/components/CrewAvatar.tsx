@@ -11,11 +11,12 @@
  * ever leaves the machine (DiceBear's HTTP API is deliberately not used).
  *
  * A crew may instead wear an APPEARANCE PACK (`avatar: {kind:'pack', id}`),
- * whose art is drawn by somebody else and served per state from
- * `GET /api/appearances/{id}/slot/{slot}`. That art is an `<img>` like an
- * uploaded picture, so v1 renders SVG packs only — nothing here can play a
- * Lottie document or step a sprite sheet, and the picker greys those out. The
- * built-in `kiro-ghost` pack is the seeded ghost itself and is composed locally.
+ * whose art is drawn by somebody else and served from the crew appearance
+ * library. Any format the library holds renders: `PackAvatar` reads the pack,
+ * picks a player per slot — an `<img>` for SVG, `LottieRenderer` for a Lottie
+ * document, `SpriteRenderer` for a row of a sprite sheet — and bounds animation
+ * to the avatars the viewport actually shows. The built-in `kiro-ghost` pack is
+ * the seeded ghost itself and is composed locally.
  *
  * On top of that identity sits an optional REACTION layer: `state` picks one of
  * `working` / `done` / `error`, and the record's `expressions` map may give
@@ -55,7 +56,8 @@ import {
   type AvatarFaceState,
   type AvatarSounds,
 } from '../lib/crewAvatarState'
-import { BUILTIN_PACK_ID, packSlotUrl } from '../lib/appearancePacks/library'
+import { BUILTIN_PACK_ID } from '../lib/appearancePacks/library'
+import PackAvatar from './appearancePacks/PackAvatar'
 
 /** Kiro's own ghost, built on the shipped mark. See `lib/kiroGhostAvatar.ts`. */
 const STYLE = kiroGhost
@@ -285,9 +287,10 @@ export interface CrewAvatarProps {
    *  `state: 'working'`, and alongside `state` it only chooses the intensity
    *  of the working animation. */
   working?: WorkingIntensity
-  /** Fired when an uploaded picture fails to load (before the seeded-ghost
-   *  fallback renders). Surfaces the failure where a bare fallback would
-   *  read as "saved fine" — the editor shows an inline warning through it. */
+  /** Fired when served art fails to load — an uploaded picture, or a pack that
+   *  cannot be read or draws nothing — before the seeded-ghost fallback renders.
+   *  Surfaces the failure where a bare fallback would read as "saved fine": the
+   *  editor shows an inline warning through it, naming which tier failed. */
   onImageError?: () => void
   className?: string
 }
@@ -308,18 +311,18 @@ export default function CrewAvatar({
   const shownState: AvatarFaceState = state ?? (working ? 'working' : 'idle')
   // The built-in pack IS the name-derived ghost, and its art ships in this
   // bundle rather than being served — so it takes the ghost path below and
-  // fetches nothing. Every other pack is art this build cannot compose, drawn
-  // by the slot route; the server resolves the fallback chain, so a pack that
-  // draws only `idle` still answers every state.
-  const packSrc = pack && pack.id !== BUILTIN_PACK_ID ? packSlotUrl(pack.id, shownState) : null
+  // fetches nothing. Every other pack is art this build cannot compose, drawn by
+  // `PackAvatar`, which resolves the same fallback chain the slot route does, so
+  // a pack that draws only `idle` still answers every state.
+  const packId = pack && pack.id !== BUILTIN_PACK_ID ? pack.id : null
   // Neither a picture nor a pack's art has a face to change, so expressions are
   // read only where this component composes the face itself. Sounds are the
   // other half of the reaction layer and are deliberately NOT this component's
   // business: they belong to the state hook, which is why a picture and a pack
   // can still have them.
   const expressions = useMemo(
-    () => (image || packSrc ? null : expressionsFrom(avatar)),
-    [avatar, image, packSrc],
+    () => (image || packId ? null : expressionsFrom(avatar)),
+    [avatar, image, packId],
   )
   // Memo-stable: `expressions` is itself memoized, so indexing it yields the
   // same object across renders and cannot churn the src memo below.
@@ -362,33 +365,7 @@ export default function CrewAvatar({
     ? (image.pendingData ??
       `/api/agents/${encodeURIComponent(seed)}/avatar${image.v ? `?v=${image.v}` : ''}`)
     : null
-  // A picture and a pack are one rendering: art this component did not compose,
-  // fetched from the authenticated API, falling back to the seeded ghost when it
-  // does not load. Only one can be set — the two tiers are exclusive — and a
-  // record carrying neither leaves this null and takes the ghost path.
-  const servedSrc = imageSrc ?? packSrc
-
-  if (servedSrc && failedSrc !== servedSrc) {
-    return (
-      <img
-        src={servedSrc}
-        alt=""
-        aria-hidden="true"
-        width={size}
-        height={size}
-        style={{ width: size, height: size }}
-        onError={() => {
-          setFailedSrc(servedSrc)
-          onImageError?.()
-        }}
-        // object-cover: the client crops square before upload, but an old or
-        // hand-placed file may not be — cover keeps the tile's rhythm either way.
-        className={`shrink-0 rounded-md border border-border bg-bg-elevated object-cover ${className}`}
-      />
-    )
-  }
-
-  return (
+  const ghost = (
     <img
       src={src}
       // Decorative: the crew name is always rendered as text next to it, so
@@ -401,6 +378,53 @@ export default function CrewAvatar({
       className={`shrink-0 rounded-md border border-border bg-bg-elevated ${className}`}
     />
   )
+
+  // The pack tier. NOT latched the way the picture tier is: `PackAvatar` owns
+  // the read, and a read that failed (a gateway blip) is refetched on the next
+  // focus, reconnect or Library invalidation — but only while the component
+  // that asked is still mounted to receive the answer. So the ghost goes IN as
+  // the fallback and `PackAvatar` draws it in place; unmounting it here would
+  // make every blip a ghost until the record names a different pack. A renderer
+  // failure is reset inside `PackAvatar` when the id or the art changes, which
+  // is the same fresh chance the picture tier's src key gives.
+  if (packId) {
+    return (
+      <PackAvatar
+        id={packId}
+        state={shownState}
+        size={size}
+        className={className}
+        onError={onImageError}
+        fallback={ghost}
+      />
+    )
+  }
+
+  // A picture is art this component did not compose either, fetched from the
+  // authenticated API and falling back to the seeded ghost when it does not
+  // load. The two served tiers are exclusive, and a record carrying neither
+  // leaves both null and takes the ghost path.
+  if (imageSrc && failedSrc !== imageSrc) {
+    return (
+      <img
+        src={imageSrc}
+        alt=""
+        aria-hidden="true"
+        width={size}
+        height={size}
+        style={{ width: size, height: size }}
+        onError={() => {
+          setFailedSrc(imageSrc)
+          onImageError?.()
+        }}
+        // object-cover: the client crops square before upload, but an old or
+        // hand-placed file may not be — cover keeps the tile's rhythm either way.
+        className={`shrink-0 rounded-md border border-border bg-bg-elevated object-cover ${className}`}
+      />
+    )
+  }
+
+  return ghost
 }
 
 /** The name-derived traits for a seed — the builder's pre-fill, its "reset to

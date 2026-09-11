@@ -78,6 +78,14 @@ const mockApi = vi.hoisted(() => ({
   setDefaultAgent: vi.fn(),
   createChatSlot: vi.fn(),
   models: vi.fn(),
+  // The pack tier reads the whole pack to learn each slot's format before it can
+  // choose a player. `aurora-fox` is an svg pack, which is what this suite's
+  // fixture crew wears.
+  appearances: {
+    detail: vi.fn(async () => ({
+      animations: { idle: { content: '<svg/>', format: 'svg' } },
+    })),
+  },
 }))
 
 vi.mock('../api/client', () => ({ api: mockApi }))
@@ -1068,8 +1076,14 @@ describe('crew editor — appearance pack round-trip', () => {
   it('draws the pack art in the editor rather than the name-derived face', async () => {
     await renderRoster()
     const sheet = await openEditor('aurora')
-    const face = within(sheet).getByTestId('header-avatar-button').querySelector('img')!
-    expect(face.getAttribute('src')).toBe('/api/appearances/aurora-fox/slot/idle')
+    const header = within(sheet).getByTestId('header-avatar-button')
+    // The pack is READ first — the format lives per slot, so the player cannot be
+    // chosen before the pack answers — and then its art replaces the placeholder.
+    await waitFor(() =>
+      expect(header.querySelector('img')?.getAttribute('src')).toBe(
+        '/api/appearances/aurora-fox/slot/idle',
+      ),
+    )
   })
 
   it('reports a pack crew as customized, so the editor offers the reset', async () => {

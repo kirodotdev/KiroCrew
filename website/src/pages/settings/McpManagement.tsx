@@ -23,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../../components/ui/dialog'
-import { splitOnPlaceholder } from '../../apps/crew-companion/splitOnPlaceholder'
+import { splitOnPlaceholder } from '../../lib/splitOnPlaceholder'
 import { i18nT } from '../../i18n/t'
 
 /**

@@ -32,16 +32,6 @@ export interface AppearancePackSummary {
   format: AnimationFormat
 }
 
-/**
- * Can a crew wear art in this format?
- *
- * Only SVG, and that is a rendering fact rather than a policy: a crew's face is
- * an `<img>`, which cannot play a Lottie document or step a sprite sheet, and
- * core ships no player for either. A pack in another format still lists — greyed
- * and unselectable — because hiding it would read as the import having failed.
- */
-export const isWearableFormat = (format: string): boolean => format === 'svg'
-
 /** Where ONE slot's art is served. `slot` is resolved server-side (working →
  *  loading → thinking → idle, done → idle, error → idle), so a pack that draws
  *  only `idle` still answers every state. */
