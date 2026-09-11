@@ -617,6 +617,11 @@ export interface RepoSettings {
   /** Watch this repo in the background and push a KiroCrew notification when a
    * new issue is opened. Opt-in (default false). */
   notify_on_new_issue: boolean
+  /** Local absolute path to this repo's working copy. Empty string means "use
+   * the default cwd". Local-only, never written back to the source host. The
+   * Investigate action opens its chat session with this as the working
+   * directory so the agent sees the repo's real source. */
+  workspace_path: string
   /** Monotonic counter bumped by every write. A PUT replaces the whole document,
    * so it must echo the revision it read — the server refuses (409) a write built
    * on a snapshot that has since moved, which is what stops one tab from erasing
@@ -631,6 +636,7 @@ export const DEFAULT_REPO_SETTINGS: RepoSettings = {
   unlabeled_is_untriaged: true,
   good_first_issue_labels: [],
   notify_on_new_issue: false,
+  workspace_path: '',
   revision: 0,
 }
 

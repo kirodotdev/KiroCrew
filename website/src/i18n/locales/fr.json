@@ -2555,6 +2555,14 @@
             "agent_language_follow": "Comme le tableau de bord ({{language}})"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "Parcourir le dossier de l'espace de travail",
+            "browse": "Parcourir",
+            "workspace": "Espace de travail",
+            "local_workspace_path": "Chemin local de l'espace de travail",
+            "where_this_repo_is_checked_out_investigate_cwd": "Emplacement où ce dépôt est extrait sur la machine qui exécute la passerelle. Investiguer ouvre sa session de chat dans ce répertoire afin que l'agent voie le vrai code source du dépôt. Local uniquement — jamais envoyé à l'hôte source.",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "Les nouvelles sessions d'investigation s'exécuteront dans",
+            "leave_empty_to_use_the_default_working_directory": "Laissez vide pour utiliser le répertoire de travail par défaut.",
             "ai_label_recommendations": "Recommandations d’étiquettes par IA",
             "also_treat_issues_with": "Traiter aussi les tickets portant",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "et ne peut pas être modifiée ici — pour ajouter ou retirer un membre ou\n              un collaborateur, gérez les accès sur",

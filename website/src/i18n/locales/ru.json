@@ -2555,6 +2555,14 @@
             "agent_language_follow": "Как в панели ({{language}})"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "Выбрать папку рабочей области",
+            "browse": "Обзор",
+            "workspace": "Рабочая область",
+            "local_workspace_path": "Локальный путь рабочей области",
+            "where_this_repo_is_checked_out_investigate_cwd": "Где этот репозиторий извлечён на машине, где работает шлюз. Investigate открывает сеанс чата в этом каталоге, чтобы агент видел настоящий исходный код репозитория. Только локально — никогда не отправляется на исходный хост.",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "Новые сеансы Investigate будут выполняться в",
+            "leave_empty_to_use_the_default_working_directory": "Оставьте пустым, чтобы использовать рабочий каталог по умолчанию.",
             "ai_label_recommendations": "Рекомендации меток от ИИ",
             "also_treat_issues_with": "Также считать задачи с",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "и здесь его изменить нельзя — чтобы добавить или удалить участника или\n              соавтора, управляйте доступом на",

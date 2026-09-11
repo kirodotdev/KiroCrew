@@ -42,7 +42,7 @@ export function useInvestigate(): UseInvestigate {
   // Read the live selection, not the stored one: a browser that refuses the
   // persistence write (private mode, quota) still has to honour the language
   // the user just picked, and the prompt is built at click time.
-  const { aiLanguage } = useIssueRadar()
+  const { aiLanguage, repoSettings } = useIssueRadar()
 
   const investigate = useCallback(
     (
@@ -60,8 +60,11 @@ export function useInvestigate(): UseInvestigate {
         ),
         existing,
         force,
+        // The active repo's configured local working copy. Empty -> undefined,
+        // so the session opens on the default cwd (pre-workspace behavior).
+        workspacePath: repoSettings.workspace_path || undefined,
       }),
-    [openSession, aiLanguage],
+    [openSession, aiLanguage, repoSettings.workspace_path],
   )
 
   return { investigate, busy, error, concludedFor, openOlderSessions }

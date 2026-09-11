@@ -82,6 +82,11 @@ export interface OpenSessionArgs {
   prompt: string
   /** The item's existing record, when it has one (drives resume). */
   existing: InvestigationRecord | null
+  /** Local working-directory path for the chat session, from the repo's
+   * `workspace_path` setting. Empty/undefined leaves the session on the default
+   * cwd. Applied only on a FRESH session; a resumed slot keeps the cwd it was
+   * born with. */
+  workspacePath?: string
   /** Open a replacement session even though the item's work already CONCLUDED.
    *
    * Off by default, and that default is the point: a concluded record whose
@@ -141,7 +146,7 @@ export function useAgentSession(): UseAgentSession {
   const [concludedFor, setConcludedFor] = useState<string | null>(null)
 
   const openSession = useCallback(
-    async ({ repoRef, number, kind = 'issue', title, prompt, existing, force = false }: OpenSessionArgs): Promise<InvestigationRecord | null> => {
+    async ({ repoRef, number, kind = 'issue', title, prompt, existing, force = false, workspacePath }: OpenSessionArgs): Promise<InvestigationRecord | null> => {
       setBusy(true)
       // Set once a slot exists but is not yet linked to an investigation record;
       // cleared on success. See the rollback in the catch below.
@@ -267,12 +272,21 @@ export function useAgentSession(): UseAgentSession {
         const folderId = await resolveFolderId(repoRef.repo)
         // App-owned workstreams choose their memory contract explicitly; a
         // general chat preference must not silently alter their behavior.
+        //
+        // Open the session in the repo's configured working copy so the
+        // investigation sees its real source. Empty setting -> `null`, which
+        // leaves the slot on the gateway's default cwd (pre-workspace behavior).
+        // `createSlot` applies the project via chatSlotProject after create and,
+        // if the gateway REJECTS it (the path does not exist on the gateway host,
+        // or is sensitive), deletes the just-made slot and throws. That throw
+        // reaches the `catch` below and surfaces in this hook's `error` state —
+        // the SAME contract the chat sidebar uses (it shows "Not a directory").
+        // A bad path must NOT silently fall back to the default cwd: that would
+        // pin the whole investigation thread (a resumed slot keeps its birth cwd)
+        // in the wrong directory with no signal, recreating the exact wrong-cwd
+        // failure this feature exists to remove.
         const slot = await dispatch(
-          createSlot({
-            folder_id: folderId,
-            title,
-            memory_mode: 'persistent',
-          }),
+          createSlot({ folder_id: folderId, title, memory_mode: 'persistent', project: workspacePath || null }),
         ).unwrap()
         // The slot is persisted but not yet linked to an investigation record, so
         // a failure before the seed leaves an EMPTY session behind — and the next
