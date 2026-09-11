@@ -221,7 +221,9 @@ def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
 _CRON_FIELD_JSON_TYPES = {
     "every": "a number of seconds",
     "agent_sequence": "an array of agent names",
+    "command": "a string command",
     "env": "an object of string keys to string values",
+    "script": "a string script path",
     "timezone": "a string IANA zone name",
     "skip_dates": "an array of YYYY-MM-DD strings",
 }
@@ -386,8 +388,8 @@ class CronEntry:
             cron_expr=_str_or_empty(data.get("cron_expr")),
             agent=_str_or_empty(data.get("agent")),
             message=_str_or_empty(data.get("message")),
-            command=_str_or_empty(data.get("command")),
-            script=_str_or_empty(data.get("script")),
+            command=_str_or_flagged("command", data.get("command")),
+            script=_str_or_flagged("script", data.get("script")),
             agent_sequence=[
                 str(a) for a in _list_or_empty("agent_sequence", data.get("agent_sequence"))
             ],
