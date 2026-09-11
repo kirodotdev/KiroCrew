@@ -4637,3 +4637,181 @@ class TestOpenLockFile:
             "lock files opened truncating before the acquire (GH-9248); "
             "use platform_compat.open_lock_file: " + ", ".join(offenders)
         )
+
+
+class TestOwnerOnlyDaclIsIdempotent:
+    """The lockdown must probe before writing, and must fail TOWARD writing.
+
+    Applying an owner-only DACL to a DIRECTORY carries inheritable ACEs, which
+    Windows propagates to every descendant, so the write is O(descendants) --
+    measured 0.238 ms per object, i.e. 2.94 s on a 12358-object data home, paid on
+    every gateway boot because ``vector_memory.init()`` locks down the whole home.
+    Reading this object's own descriptor is O(1), so an unchanged DACL should cost
+    a constant check.
+
+    These run on the POSIX matrix (the seam is the ``windows_acl`` call, which is
+    what the suite can observe off Windows), and they pin BOTH directions: the skip
+    must happen when it is safe, and must NOT happen when anything differs.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch, *, matches, sid="S-1-5-21-1-2-3-1000"):
+        """Force the Windows branch; record probe questions and DACL writes."""
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_TOKEN_SID_CACHE", [])
+        monkeypatch.setattr(pc, "current_user_sid", lambda: sid)
+        probed: list[dict] = []
+        written: list[dict] = []
+
+        def fake_probe(path, *, inherit, sids, **_kw):
+            probed.append({"path": os.fspath(path), "inherit": inherit, "sids": tuple(sids)})
+            if isinstance(matches, Exception):
+                raise matches
+            return matches
+
+        def fake_apply(path, *, inherit, sids, **_kw):
+            written.append({"path": os.fspath(path), "inherit": inherit, "sids": tuple(sids)})
+
+        monkeypatch.setattr(pc.windows_acl, "owner_only_dacl_matches", fake_probe)
+        monkeypatch.setattr(pc.windows_acl, "apply_owner_only", fake_apply)
+        return probed, written
+
+    def test_an_already_correct_dacl_is_not_rewritten(self, tmp_path, monkeypatch):
+        # The whole point: the O(descendants) propagation must not run when the
+        # descriptor already says what we would write.
+        probed, written = self._capture(monkeypatch, matches=True)
+        d = tmp_path / "home"
+        d.mkdir()
+        pc.restrict_dir_to_owner(d)
+        assert len(probed) == 1, probed
+        assert written == [], "an unchanged DACL must not be re-applied"
+
+    def test_a_mismatched_dacl_is_still_written(self, tmp_path, monkeypatch):
+        # Guards the failure mode that would make this change a security bug:
+        # the skip must never swallow a write that is actually needed.
+        probed, written = self._capture(monkeypatch, matches=False)
+        d = tmp_path / "home"
+        d.mkdir()
+        pc.restrict_dir_to_owner(d)
+        assert len(probed) == 1, probed
+        assert len(written) == 1, written
+        assert written[0]["inherit"] is True
+
+    def test_a_probe_that_raises_is_treated_as_a_mismatch(self, tmp_path, monkeypatch):
+        # Fail-safe direction: an unanswerable probe costs a redundant write,
+        # never a skipped lockdown.
+        probed, written = self._capture(monkeypatch, matches=OSError("descriptor unreadable"))
+        d = tmp_path / "home"
+        d.mkdir()
+        pc.restrict_dir_to_owner(d)
+        assert len(probed) == 1, probed
+        assert len(written) == 1, "a probe failure must fall back to writing"
+
+    def test_the_probe_is_asked_about_exactly_what_would_be_written(self, tmp_path, monkeypatch):
+        # If the probe were asked a different question than the write answers, a
+        # match could authorise skipping a DACL that does not exist yet.
+        probed, written = self._capture(monkeypatch, matches=False)
+        f = tmp_path / "secret.key"
+        f.write_bytes(b"s" * 32)
+        pc.restrict_to_owner(f)
+        assert len(probed) == 1 and len(written) == 1
+        assert probed[0] == written[0], (probed[0], written[0])
+        # File shape, so the grants must NOT be inheritable.
+        assert probed[0]["inherit"] is False
+        assert probed[0]["sids"] == ("S-1-3-4", "S-1-5-21-1-2-3-1000")
+
+
+class TestOwnerOnlyDaclMatchesIsConservative:
+    """``windows_acl.owner_only_dacl_matches`` must never answer True on doubt."""
+
+    # (ace_type, ace_flags, mask, sid) as the ctypes half parses them.
+    _PROTECTED = 0x1000
+    _ALLOWED = 0
+    _OI_CI = 0x01 | 0x02
+    _ALL = 0x001F01FF
+    _SIDS = ("S-1-3-4", "S-1-5-21-1-2-3-1000")
+
+    def _dir_aces(self):
+        return [(self._ALLOWED, self._OI_CI, self._ALL, s) for s in self._SIDS]
+
+    def _matches(self, **over):
+        kw = {
+            "control": self._PROTECTED,
+            "aces": self._dir_aces(),
+            "inherit": True,
+            "sids": self._SIDS,
+        }
+        kw.update(over)
+        return pc.windows_acl.owner_only_dacl_matches_parsed(**kw)
+
+    def test_the_exact_shipped_shape_matches(self):
+        # The positive case. Without this, every rule below could pass by always
+        # answering False and the probe would be a no-op that never skips.
+        assert self._matches() is True
+
+    def test_order_does_not_matter(self):
+        # The kernel may normalise ACE order; the grant SET is the policy.
+        assert self._matches(aces=list(reversed(self._dir_aces()))) is True
+
+    def test_an_unprotected_dacl_never_matches(self):
+        # Inheritance not stripped: applying PROTECTED would still change it.
+        assert self._matches(control=0) is False
+
+    def test_a_missing_grant_never_matches(self):
+        assert self._matches(aces=self._dir_aces()[:1]) is False
+
+    def test_an_extra_grant_never_matches(self):
+        extra = self._dir_aces() + [(self._ALLOWED, self._OI_CI, self._ALL, "S-1-1-0")]
+        assert self._matches(aces=extra) is False
+
+    def test_a_different_principal_never_matches(self):
+        aces = self._dir_aces()
+        aces[1] = (self._ALLOWED, self._OI_CI, self._ALL, "S-1-1-0")
+        assert self._matches(aces=aces) is False
+
+    def test_a_deny_ace_never_matches(self):
+        aces = self._dir_aces()
+        aces[0] = (1, self._OI_CI, self._ALL, self._SIDS[0])  # ACCESS_DENIED
+        assert self._matches(aces=aces) is False
+
+    def test_a_narrower_mask_never_matches(self):
+        aces = self._dir_aces()
+        aces[0] = (self._ALLOWED, self._OI_CI, 0x120089, self._SIDS[0])  # read-ish
+        assert self._matches(aces=aces) is False
+
+    def test_directory_shape_rejects_non_inheritable_grants(self):
+        # inherit=True wants (OI)(CI); a file-shaped ACE would leave children
+        # uncovered, so it must not read as already correct.
+        assert self._matches(aces=[(self._ALLOWED, 0, self._ALL, s) for s in self._SIDS]) is False
+
+    def test_file_shape_rejects_inheritable_grants(self):
+        # The mirror: inherit=False wants no inheritance flags.
+        assert self._matches(inherit=False) is False
+
+    def test_file_shape_matches_its_own_flags(self):
+        assert (
+            self._matches(
+                inherit=False, aces=[(self._ALLOWED, 0, self._ALL, s) for s in self._SIDS]
+            )
+            is True
+        )
+
+    def test_an_unresolvable_sid_never_matches(self):
+        aces = self._dir_aces()
+        aces[0] = (self._ALLOWED, self._OI_CI, self._ALL, "")
+        assert self._matches(aces=aces) is False
+
+    def test_no_grants_never_matches(self, tmp_path):
+        # apply_owner_only refuses an empty grant set, so "matches" is meaningless
+        # here; answering True would skip a lockdown that never happened.
+        assert self._matches(aces=[], sids=()) is False
+        assert pc.windows_acl.owner_only_dacl_matches(tmp_path, inherit=True, sids=()) is False
+
+    def test_an_unavailable_platform_api_never_matches(self, tmp_path):
+        # Off Windows there is no descriptor to compare. This is the case the whole
+        # POSIX matrix exercises, and it must read as "write", not "already correct".
+        assert (
+            pc.windows_acl.owner_only_dacl_matches(tmp_path, inherit=True, sids=("S-1-3-4",))
+            is False
+        )

@@ -4840,6 +4840,20 @@ def restrict_dir_to_owner(path: str | os.PathLike) -> None:
 
     Fail-loud like :func:`restrict_to_owner`: any failure raises ``OSError`` so
     callers reach their warn-and-continue handlers.
+
+    On Windows the DACL is applied only when the directory's own descriptor does
+    not already match, because that write is an O(descendants) propagation (see
+    :func:`_apply_owner_only_dacl`). RECORDED DECISION: two states leave the
+    directory itself correct while a descendant does not, and neither is
+    detectable without the walk this avoids -- a propagation interrupted part way
+    through, and a child moved in on the same NTFS volume, since a move preserves
+    the child's ACL rather than inheriting the destination's. Measured on a local
+    NTFS volume, the propagation DOES rewrite such a child's INHERITED entries, so
+    skipping the write also stops healing a moved-in child whose foreign grant was
+    inherited at its source; a grant written EXPLICITLY on the child survives the
+    propagation and was never healed by it. Repairing either is a non-goal here:
+    it would cost the propagation on every launch, and a repair path that can
+    afford it belongs with the caller that needs one.
     """
     if IS_POSIX:
         # Semgrep's insecure-file-permissions rule reads 0o700 as "widely
@@ -4872,6 +4886,14 @@ def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
     mandatory, and a caller on the loop does not park the gateway for a third of
     a second per secret written.
 
+    That 0.24 ms is PER OBJECT, and with ``inherit=True`` the write reaches more
+    than one: Windows propagates an inheritable ACE to every descendant, so on a
+    directory the call is O(descendants). Measured on a local NTFS volume: 86 ms
+    on a 337-object tree and **2.94 s on a 12358-object one**, linear at 0.238 ms
+    per object. Quote the per-object figure as the cost of a directory call and it
+    understates that by four orders of magnitude, which is what the probe below
+    exists to bound.
+
     Resolve the invoking user's SID BEFORE writing anything, and resolve it
     WITHOUT the possibility of a spawn: :func:`current_user_sid` reads the
     process's own access token and nothing else. There is deliberately no
@@ -4901,6 +4923,42 @@ def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
         )
     sids = (_OWNER_RIGHTS_SID,) if user_sid == _OWNER_RIGHTS_SID else (_OWNER_RIGHTS_SID, user_sid)
     try:
+        # Probe before writing. On a DIRECTORY the write carries inheritable ACEs,
+        # which makes Windows propagate them to every descendant, so the cost is
+        # O(descendants) -- measured 0.238 ms per object, i.e. 2.94 s on a
+        # 12358-object data home. Reading this object's own descriptor is O(1), so
+        # an unchanged DACL costs a constant check instead of a full re-propagation
+        # on every boot. `vector_memory.init()` applies this to the whole data home
+        # on every gateway start, so that saving is paid on every launch.
+        #
+        # TWO STATES THE PROBE CANNOT SEE, both of which leave the parent matching
+        # while a descendant does not:
+        #   1. A propagation interrupted part way (the process dies inside
+        #      SetNamedSecurityInfoW). The parent is committed, some children are
+        #      not, and the parent alone reads as correct from then on.
+        #   2. A child MOVED in on the same NTFS volume. A move preserves the
+        #      child's own ACL rather than inheriting the destination's. Measured:
+        #      the propagation DOES rewrite that child's INHERITED entries, so
+        #      skipping it also stops healing a moved-in child whose foreign grant
+        #      was inherited at its source (Everyone:(I)(R) -> replaced by the
+        #      parent's grants). A grant written EXPLICITLY on the child
+        #      (Everyone:(R)) survives the propagation and was never healed by it.
+        # RECORDED DECISION: neither is repaired here. Detecting either one needs
+        # the descendant walk this removes, and the alternative is an
+        # O(descendants) write on every launch. A caller that must repair a drifted
+        # subtree needs a maintenance path of its own; this is the boot path.
+        #
+        # The probe answers False on any doubt (read failure, NULL or unprotected
+        # DACL, unexpected ACE shape), so a wrong answer costs a redundant write
+        # rather than a skipped lockdown. It is wrapped anyway: the fallback must be
+        # "write", and a probe that somehow raises must not be able to turn a
+        # lockdown into an exception on a path that would otherwise be fixed.
+        try:
+            already_locked = windows_acl.owner_only_dacl_matches(path, inherit=inherit, sids=sids)
+        except Exception:
+            already_locked = False
+        if already_locked:
+            return
         windows_acl.apply_owner_only(path, inherit=inherit, sids=sids)
     except (windows_acl.AclWriteFailed, windows_acl.AclUnavailable) as exc:
         # Translated to OSError so both platforms raise the same type: every
