@@ -447,6 +447,36 @@ class TestMeetingLifecycleRoutes:
                 assert (await resp.json())["status"] == state
 
     @pytest.mark.asyncio
+    async def test_pausing_closes_ingress_and_resuming_reopens_it(self, app, fake_sessions):
+        """Pause closes the server-side dispatch gate, not just the dashboard mic.
+
+        A paused meeting refuses fan-out from every ingress (a second tab, the
+        broadcast bar, a direct API call), so the holder's admission flag has to
+        follow the status rather than being enforced only by the client. The
+        ``active`` transition is the unpause path and reopens the gate.
+        """
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/status", json={"status": k.STATUS_PAUSED}
+            )
+            assert resp.status == 200
+            live = (await (await client.get(f"{BASE}/meetings/standup")).json())["live"]
+            assert live["accepting_dispatches"] is False
+            assert live["buffering_dispatches"] is False
+
+            resp = await client.post(f"{BASE}/meetings/standup/dispatch", json={"text": "held"})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "no_active_meeting"
+
+            resp = await client.post(
+                f"{BASE}/meetings/standup/status", json={"status": k.STATUS_ACTIVE}
+            )
+            assert resp.status == 200
+            live = (await (await client.get(f"{BASE}/meetings/standup")).json())["live"]
+            assert live["accepting_dispatches"] is True
+
+    @pytest.mark.asyncio
     async def test_status_rejects_an_unknown_state(self, app, fake_sessions):
         async with client_for(app) as client:
             await _start(client)

@@ -2860,7 +2860,10 @@
       },
       "broadcastBar": {
         "heard": "聞き取り:{{text}}",
+        "pausedPlaceholder": "エージェントは一時停止中 — 送信するには再開してください",
+        "pausingPlaceholder": "一時停止中 — 送信できません",
         "placeholder": "すべてのリッスンしているエージェントに何かを言う…",
+        "resumingPlaceholder": "再開中 — まもなく送信できます",
         "send": "送信"
       },
       "list": {
@@ -2910,6 +2913,7 @@
         "back": "戻る",
         "endAndReview": "終了して確認",
         "ended": "終了",
+        "endingReview": "終了処理中 — レビューを準備しています…",
         "live": "ライブ",
         "loadFailed": "この会議を開くことができませんでした",
         "moreActions": "その他の操作",
@@ -2917,8 +2921,10 @@
         "noAgentsHint": "上部のバーで1つを有効にするか、プリセットを選択してください。",
         "pause": "一時停止",
         "paused": "一時停止中",
+        "pausing": "一時停止中…",
         "refresh": "更新",
         "restart": "もう一度開始",
+        "resuming": "再開中…",
         "retryAgents": "再試行",
         "start": "開始",
         "toggleTasks": "アクションアイテム",
@@ -3047,6 +3053,7 @@
       "transcript": {
         "empty": "文字起こしはまだありません",
         "emptyHintLive": "会議が進むと、確定した発言がここに表示されます。",
+        "emptyHintPaused": "一時停止中 — 再開後に発話がここに表示されます。",
         "emptyHintRecorded": "この会議では文字起こしが記録されませんでした。",
         "full": "文字起こしが上限に達しました。新しい音声や一斉送信は記録されず、エージェントにも送信されません。",
         "jumpToLatest": "最新に移動",

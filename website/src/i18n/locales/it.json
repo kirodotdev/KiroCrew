@@ -2921,7 +2921,10 @@
       },
       "broadcastBar": {
         "heard": "Sentito: {{text}}",
+        "pausedPlaceholder": "Agenti in pausa — riprendi per inviare",
+        "pausingPlaceholder": "Messa in pausa — invio non disponibile",
         "placeholder": "Dì qualcosa a tutti gli agenti in ascolto…",
+        "resumingPlaceholder": "Ripresa in corso — l'invio sarà presto disponibile",
         "send": "Invia"
       },
       "list": {
@@ -2973,6 +2976,7 @@
         "back": "Indietro",
         "endAndReview": "Termina e passa in revisione",
         "ended": "Terminata",
+        "endingReview": "Chiusura — preparazione della revisione…",
         "live": "In corso",
         "loadFailed": "Non è stato possibile aprire questa riunione",
         "moreActions": "Altre azioni",
@@ -2980,8 +2984,10 @@
         "noAgentsHint": "Attivane uno nella barra qui sopra, oppure scegli un preset.",
         "pause": "Metti in pausa",
         "paused": "In pausa",
+        "pausing": "Messa in pausa…",
         "refresh": "Aggiorna",
         "restart": "Riavvia",
+        "resuming": "Ripresa in corso…",
         "retryAgents": "Riprova",
         "start": "Avvia",
         "toggleTasks": "Azioni da fare",
@@ -3116,6 +3122,7 @@
       "transcript": {
         "empty": "Nessuna trascrizione per ora",
         "emptyHintLive": "Il parlato definitivo apparirà qui durante la riunione.",
+        "emptyHintPaused": "In pausa — il parlato apparirà qui dopo la ripresa.",
         "emptyHintRecorded": "Non è stata registrata alcuna trascrizione per questa riunione.",
         "full": "La trascrizione è piena. Nuovi interventi e messaggi non verranno più registrati né inviati agli agenti.",
         "jumpToLatest": "Vai al contenuto più recente",

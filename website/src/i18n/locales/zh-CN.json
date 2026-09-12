@@ -2809,7 +2809,10 @@
       },
       "broadcastBar": {
         "heard": "听到：{{text}}",
+        "pausedPlaceholder": "助手已暂停 — 继续后才能发送",
+        "pausingPlaceholder": "正在暂停 — 暂时无法发送",
         "placeholder": "对所有正在聆听的代理说点什么……",
+        "resumingPlaceholder": "正在继续 — 马上就能发送",
         "send": "发送"
       },
       "list": {
@@ -2859,6 +2862,7 @@
         "back": "返回",
         "endAndReview": "结束并复核",
         "ended": "已结束",
+        "endingReview": "正在结束 — 准备审阅…",
         "live": "进行中",
         "loadFailed": "无法打开这场会议",
         "moreActions": "更多操作",
@@ -2866,8 +2870,10 @@
         "noAgentsHint": "在上方栏中启用一个，或选择一个预设。",
         "pause": "暂停",
         "paused": "已暂停",
+        "pausing": "正在暂停…",
         "refresh": "刷新",
         "restart": "重新开始",
+        "resuming": "正在继续…",
         "retryAgents": "重试",
         "start": "开始",
         "toggleTasks": "行动项",
@@ -2996,6 +3002,7 @@
       "transcript": {
         "empty": "暂无转录",
         "emptyHintLive": "随着会议进行，最终确认的语音内容会显示在这里。",
+        "emptyHintPaused": "已暂停 — 继续后语音将显示在这里。",
         "emptyHintRecorded": "这场会议没有记录转录。",
         "full": "转录已满。新的语音和广播将不再被记录或发送给代理。",
         "jumpToLatest": "跳到最新内容",

@@ -2860,7 +2860,10 @@
       },
       "broadcastBar": {
         "heard": "인식된 내용: {{text}}",
+        "pausedPlaceholder": "에이전트 일시 중지됨 — 보내려면 재개하세요",
+        "pausingPlaceholder": "일시 중지 중 — 보낼 수 없음",
         "placeholder": "듣고 있는 모든 에이전트에게 말하기…",
+        "resumingPlaceholder": "재개 중 — 곧 보내기가 가능해집니다",
         "send": "보내기"
       },
       "list": {
@@ -2910,6 +2913,7 @@
         "back": "뒤로",
         "endAndReview": "종료하고 검토",
         "ended": "종료됨",
+        "endingReview": "종료 중 — 검토를 준비하고 있습니다…",
         "live": "진행 중",
         "loadFailed": "이 회의를 열 수 없습니다",
         "moreActions": "추가 작업",
@@ -2917,8 +2921,10 @@
         "noAgentsHint": "위쪽 바에서 하나를 켜거나 프리셋을 선택하세요.",
         "pause": "일시 중지",
         "paused": "일시 중지됨",
+        "pausing": "일시 중지 중…",
         "refresh": "새로 고침",
         "restart": "다시 시작",
+        "resuming": "재개 중…",
         "retryAgents": "재시도",
         "start": "시작",
         "toggleTasks": "액션 아이템",
@@ -3047,6 +3053,7 @@
       "transcript": {
         "empty": "아직 기록이 없습니다",
         "emptyHintLive": "회의가 진행되면 확정된 음성이 여기에 표시됩니다.",
+        "emptyHintPaused": "일시 중지됨 — 재개하면 음성이 여기에 표시됩니다.",
         "emptyHintRecorded": "이 회의에는 기록된 내용이 없습니다.",
         "full": "기록 용량이 가득 찼습니다. 새로운 음성과 브로드캐스트는 더 이상 기록되거나 에이전트에게 전송되지 않습니다.",
         "jumpToLatest": "최신 내용으로 이동",

@@ -2916,7 +2916,10 @@
       },
       "broadcastBar": {
         "heard": "Gehört: {{text}}",
+        "pausedPlaceholder": "Agenten pausiert — zum Senden fortsetzen",
+        "pausingPlaceholder": "Wird pausiert — Senden nicht möglich",
         "placeholder": "Etwas an alle zuhörenden Agenten sagen…",
+        "resumingPlaceholder": "Wird fortgesetzt — Senden ist gleich wieder möglich",
         "send": "Senden"
       },
       "list": {
@@ -2967,6 +2970,7 @@
         "back": "Zurück",
         "endAndReview": "Beenden und prüfen",
         "ended": "Beendet",
+        "endingReview": "Wird beendet — Rückblick wird vorbereitet…",
         "live": "Live",
         "loadFailed": "Diese Besprechung konnte nicht geöffnet werden",
         "moreActions": "Weitere Aktionen",
@@ -2974,8 +2978,10 @@
         "noAgentsHint": "Aktiviere oben einen Agenten oder wähle eine Voreinstellung.",
         "pause": "Pausieren",
         "paused": "Pausiert",
+        "pausing": "Wird pausiert…",
         "refresh": "Aktualisieren",
         "restart": "Neu starten",
+        "resuming": "Wird fortgesetzt…",
         "retryAgents": "Erneut versuchen",
         "start": "Starten",
         "toggleTasks": "Aufgaben",
@@ -3107,6 +3113,7 @@
       "transcript": {
         "empty": "Noch kein Transkript",
         "emptyHintLive": "Final erkannte Sprache erscheint hier im Verlauf der Besprechung.",
+        "emptyHintPaused": "Pausiert — Sprache erscheint hier nach dem Fortsetzen.",
         "emptyHintRecorded": "Für diese Besprechung wurde kein Transkript aufgezeichnet.",
         "full": "Das Transkript ist voll. Neue Sprache und Mitteilungen werden nicht mehr aufgezeichnet oder an Agenten gesendet.",
         "jumpToLatest": "Zum neuesten Eintrag",
