@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import frontend
+from kiro_crew import frontend, platform_compat
 
 _DIR_ENV = "KIROCREW_EDITION_DIR"
 _OPT_IN_ENV = "KIROCREW_ALLOW_EDITION"
@@ -455,6 +455,72 @@ def test_stage_dist_replaces_the_served_bundle_on_success(tmp_path):
     # The .dist.staging.lock file is the persistent flock target; what must
     # not survive is a staging DIRECTORY.
     assert not [q for q in served.parent.glob(".dist.staging.*") if q.is_dir()]
+
+
+def test_discard_path_detaches_a_live_dist_link_without_deleting_its_target(tmp_path):
+    """`_discard_path` must remove a LINK at `static/dist`, whatever its shape.
+
+    This module publishes that path itself, via
+    `platform_compat.symlink_or_junction` — which falls back to a directory
+    JUNCTION on Windows, because a directory symlink there needs
+    SeCreateSymbolicLinkPrivilege. `is_symlink()` reports False for a junction,
+    so the entry reached the `is_dir()` branch instead, and `shutil.rmtree`
+    refuses a junction exactly as the docstring says it refuses a symlink. With
+    `ignore_errors=True` that refusal is SILENT: the `.dist.previous.*` entry is
+    simply never reclaimed.
+
+    Asserted through the product's own link helper, so the test exercises
+    whichever shape the running platform actually produces.
+    """
+    target = tmp_path / "linked-dist"
+    target.mkdir()
+    (target / "keep-me.html").write_text("<html>theirs", encoding="utf-8")
+    link = tmp_path / ".dist.previous.4242"
+    platform_compat.symlink_or_junction(str(target), str(link))
+    assert platform_compat.is_link_or_junction(link)
+
+    frontend._discard_path(link)
+
+    assert not platform_compat.is_link_or_junction(link)
+    assert not link.exists()
+    # Detached, not deleted through: the target and its contents survive.
+    assert (target / "keep-me.html").read_text(encoding="utf-8") == "<html>theirs"
+
+
+def test_discard_path_removes_a_dangling_dist_link(tmp_path):
+    """A dangling junction answers False to is_symlink(), is_file() AND is_dir().
+
+    So it fell through every branch and the entry was left on disk — which is
+    exactly what breaks the caller: `_stage_dist` calls `_discard_path(backup)`
+    to clear `.dist.previous.<pid>` before `os.replace`s the served bundle onto
+    it, and a surviving directory entry makes that replace fail.
+    """
+    gone = tmp_path / "removed-dist"
+    gone.mkdir()
+    link = tmp_path / ".dist.previous.4243"
+    platform_compat.symlink_or_junction(str(gone), str(link))
+    gone.rmdir()
+    assert platform_compat.is_link_or_junction(link)
+    assert not link.is_dir()
+
+    frontend._discard_path(link)
+
+    assert not platform_compat.is_link_or_junction(link)
+
+
+def test_discard_path_still_removes_a_real_tree_and_a_plain_file(tmp_path):
+    """Negative control: the two non-link shapes keep their existing handling."""
+    tree = tmp_path / "a-real-tree"
+    (tree / "nested").mkdir(parents=True)
+    (tree / "nested" / "x.txt").write_text("x", encoding="utf-8")
+    plain = tmp_path / "a-plain-file"
+    plain.write_text("y", encoding="utf-8")
+
+    frontend._discard_path(tree)
+    frontend._discard_path(plain)
+
+    assert not tree.exists()
+    assert not plain.exists()
 
 
 def test_edition_configured_tracks_the_env_var(monkeypatch):

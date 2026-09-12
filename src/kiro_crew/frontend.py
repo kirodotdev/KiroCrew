@@ -485,12 +485,24 @@ def _write_build_source_fingerprint(root: Path, git_bin: str, log: Callable[[str
 def _discard_path(path: Path) -> None:
     """Best-effort remove a file, symlink or directory.
 
-    A staged-aside entry can be any of the three — ``static/dist`` is a symlink
+    A staged-aside entry can be any of the three — ``static/dist`` is a link
     on a source install and a real tree once staged — and ``shutil.rmtree``
-    refuses a symlink even though ``is_dir()`` follows it and returns True.
+    refuses a link even though ``is_dir()`` follows it and returns True.
+
+    The link half must be ``is_link_or_junction``, not ``is_symlink``: this
+    module publishes ``static/dist`` itself via
+    :func:`platform_compat.symlink_or_junction`, which falls back to a directory
+    JUNCTION on Windows, and ``is_symlink`` reports False for one. A live
+    junction would then reach the ``rmtree`` branch, whose refusal
+    ``ignore_errors=True`` swallows — leaving the entry behind for good; a
+    DANGLING junction answers False to all three and was never removed at all.
+    ``unlink_link_or_junction`` detaches either shape without touching what it
+    points at.
     """
     try:
-        if path.is_symlink() or path.is_file():
+        if platform_compat.is_link_or_junction(path):
+            platform_compat.unlink_link_or_junction(path)
+        elif path.is_file():
             path.unlink(missing_ok=True)
         elif path.is_dir():
             shutil.rmtree(path, ignore_errors=True)

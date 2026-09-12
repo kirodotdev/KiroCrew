@@ -1835,6 +1835,81 @@ class TestProvisionBuildPaths:
         # website/dist staged into the served static/dist.
         assert (co / "src" / "kiro_crew" / "static" / "dist" / "index.html").is_file()
 
+    def test_build_dist_restages_over_a_dangling_dist_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A DANGLING link at `static/dist` must be replaced, not tripped over.
+
+        `static/dist` is a link on a source install, and Kiro Crew makes
+        it itself: `frontend._ensure_tree_dist` publishes exactly this path via
+        `platform_compat.symlink_or_junction`, which falls back to a directory
+        JUNCTION on Windows because a directory symlink there needs
+        SeCreateSymbolicLinkPrivilege. So on an ordinary unelevated box the link
+        is a junction.
+
+        The staging block already handles a dangling link — that is what
+        `dst.is_symlink()` is doing ahead of `is_dir()`, mirroring the same
+        ordering in `frontend._stage_dist`. It handles the dangling SYMLINK. A
+        dangling JUNCTION answers False to `is_symlink()`, `is_file()` AND
+        `is_dir()` (measured), so every branch is skipped and
+        `shutil.copytree` lands on a directory entry that still exists:
+        `FileExistsError [WinError 183]`, with no handler up the provisioning
+        chain.
+
+        The link is created with the product's own `symlink_or_junction` rather
+        than a bare `os.symlink`, so this exercises whichever shape the running
+        platform actually produces.
+        """
+        co = tmp_path / "wt"
+        (co / "website").mkdir(parents=True)
+        served = co / "src" / "kiro_crew" / "static"
+        served.mkdir(parents=True)
+        gone = tmp_path / "removed-dist"
+        gone.mkdir()
+        platform_compat.symlink_or_junction(str(gone), str(served / "dist"))
+        gone.rmdir()
+
+        # Guard the guard, through oracles OUTSIDE the module under test: the
+        # entry must still BE a link, and must no longer resolve — otherwise
+        # `has_dist` short-circuits and nothing below is under test.
+        dangling = served / "dist"
+        assert platform_compat.is_link_or_junction(dangling)
+        assert not dangling.is_dir()
+        assert prov.has_dist(co) is False
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            (co / "website" / "dist").mkdir(parents=True, exist_ok=True)
+            (co / "website" / "dist" / "index.html").write_text("<html>new")
+            return 0
+
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.build_dist(co) is True
+        assert (served / "dist" / "index.html").is_file()
+
+    def test_build_dist_still_short_circuits_on_a_LIVE_dist_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Negative control: a link that still RESOLVES is the common path.
+
+        `has_dist` follows the link, so `build_dist` returns True before it
+        reaches the staging block at all. The junction arm added below must not
+        change that — a provision on a working source install still does no
+        work and touches nothing.
+        """
+        co = tmp_path / "wt"
+        served = co / "src" / "kiro_crew" / "static"
+        served.mkdir(parents=True)
+        target = tmp_path / "linked-dist"
+        target.mkdir()
+        (target / "keep-me.html").write_text("<html>theirs", encoding="utf-8")
+        platform_compat.symlink_or_junction(str(target), str(served / "dist"))
+        assert platform_compat.is_link_or_junction(served / "dist")
+
+        monkeypatch.setattr(prov, "_run", lambda cmd, cwd, env=None: pytest.fail("must not build"))
+        assert prov.build_dist(co) is True
+        assert platform_compat.is_link_or_junction(served / "dist")
+        assert (target / "keep-me.html").read_text(encoding="utf-8") == "<html>theirs"
+
     def test_build_dist_no_website_dir(self, tmp_path: Path) -> None:
         co = tmp_path / "wt"
         co.mkdir()
