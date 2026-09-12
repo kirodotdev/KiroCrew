@@ -8289,7 +8289,7 @@
       "restart_monitor": "मॉनिटर फिर शुरू करें",
       "review_ready": "समीक्षा के लिए तैयार",
       "save_changes": "बदलाव सहेजें",
-      "set_up_bounded_monitor": "सीमित मॉनिटर सेट करें",
+      "set_up_bounded_monitor": "इसके बजाय पुल अनुरोध मॉनिटर करें",
       "sidebar_status": "मॉनिटर · {{status}}",
       "start_monitor": "मॉनिटर शुरू करें",
       "statuses": {
@@ -8308,8 +8308,7 @@
       "title": "सीमित पुल अनुरोध मॉनिटर",
       "tokens": "टोकन: {{count}}",
       "unknown": "अज्ञात",
-      "back_to_bounded_monitor": "सीमित मॉनिटर पर वापस जाएँ",
-      "legacy_notice": "यह पुराना लूप हर चक्र में एजेंट को चलाता है और बिना सीमा के चल सकता है।",
+      "legacy_notice": "यह लक्ष्य लूप हर चक्र में एजेंट को चलाता है और बिना सीमा के चल सकता है।",
       "use_legacy_costly": "पुराना लक्ष्य लूप इस्तेमाल करें (महँगा)",
       "wake_instructions": "एजेंट के जागने पर उसके लिए निर्देश",
       "wake_instructions_too_long": "अधिकतम {{max}} वर्ण दर्ज करें।",

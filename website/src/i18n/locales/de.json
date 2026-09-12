@@ -8289,7 +8289,7 @@
       "restart_monitor": "Monitor neu starten",
       "review_ready": "Review-bereit",
       "save_changes": "Änderungen speichern",
-      "set_up_bounded_monitor": "Begrenzten Monitor einrichten",
+      "set_up_bounded_monitor": "Stattdessen einen Pull Request beobachten",
       "sidebar_status": "Monitor · {{status}}",
       "start_monitor": "Monitor starten",
       "statuses": {
@@ -8308,8 +8308,7 @@
       "title": "Begrenzter Pull-Request-Monitor",
       "tokens": "Tokens: {{count}}",
       "unknown": "Unbekannt",
-      "back_to_bounded_monitor": "Zurück zum begrenzten Monitor",
-      "legacy_notice": "Diese alte Schleife ruft den Agenten in jedem Zyklus auf und kann unbegrenzt laufen.",
+      "legacy_notice": "Diese Zielschleife ruft den Agenten in jedem Zyklus auf und kann unbegrenzt laufen.",
       "use_legacy_costly": "Alte Zielschleife verwenden (teuer)",
       "wake_instructions": "Anweisungen für den Agenten beim Aufwachen",
       "wake_instructions_too_long": "Gib höchstens {{max}} Zeichen ein.",

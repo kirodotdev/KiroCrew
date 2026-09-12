@@ -8403,7 +8403,7 @@
       "restart_monitor": "Reiniciar monitor",
       "review_ready": "Pronta para revisão",
       "save_changes": "Salvar alterações",
-      "set_up_bounded_monitor": "Configurar um monitor limitado",
+      "set_up_bounded_monitor": "Monitorar uma solicitação de pull em vez disso",
       "sidebar_status": "Monitor · {{status}}",
       "start_monitor": "Iniciar monitor",
       "statuses": {
@@ -8422,8 +8422,7 @@
       "title": "Monitor limitado de solicitação de pull",
       "tokens": "Tokens: {{count}}",
       "unknown": "Desconhecido",
-      "back_to_bounded_monitor": "Voltar ao monitor limitado",
-      "legacy_notice": "Este ciclo antigo invoca o agente a cada ciclo e pode ser executado sem limite.",
+      "legacy_notice": "Este ciclo de meta invoca o agente a cada ciclo e pode ser executado sem limite.",
       "use_legacy_costly": "Usar o ciclo de objetivo antigo (caro)",
       "wake_instructions": "Instruções para o agente quando ele for ativado",
       "wake_instructions_too_long": "Insira no máximo {{max}} caracteres.",

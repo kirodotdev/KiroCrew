@@ -8403,7 +8403,7 @@
       "restart_monitor": "Riavvia monitor",
       "review_ready": "Pronta per la revisione",
       "save_changes": "Salva modifiche",
-      "set_up_bounded_monitor": "Configura un monitor limitato",
+      "set_up_bounded_monitor": "Monitora invece una richiesta pull",
       "sidebar_status": "Monitor · {{status}}",
       "start_monitor": "Avvia monitor",
       "statuses": {
@@ -8422,8 +8422,7 @@
       "title": "Monitor limitato della richiesta pull",
       "tokens": "Token: {{count}}",
       "unknown": "Sconosciuto",
-      "back_to_bounded_monitor": "Torna al monitor limitato",
-      "legacy_notice": "Questo ciclo precedente richiama l’agente a ogni ciclo e può essere eseguito senza limiti.",
+      "legacy_notice": "Questo ciclo di obiettivo richiama l’agente a ogni ciclo e può essere eseguito senza limiti.",
       "use_legacy_costly": "Usa il vecchio ciclo obiettivo (costoso)",
       "wake_instructions": "Istruzioni per l’agente quando si attiva",
       "wake_instructions_too_long": "Inserisci non più di {{max}} caratteri.",

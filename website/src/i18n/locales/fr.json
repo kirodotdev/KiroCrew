@@ -8403,7 +8403,7 @@
       "restart_monitor": "Redémarrer le moniteur",
       "review_ready": "Prête pour la revue",
       "save_changes": "Enregistrer les modifications",
-      "set_up_bounded_monitor": "Configurer un moniteur limité",
+      "set_up_bounded_monitor": "Surveiller plutôt une demande d’extraction",
       "sidebar_status": "Moniteur · {{status}}",
       "start_monitor": "Démarrer le moniteur",
       "statuses": {
@@ -8422,8 +8422,7 @@
       "title": "Moniteur limité de demande d’extraction",
       "tokens": "Jetons : {{count}}",
       "unknown": "Inconnu",
-      "back_to_bounded_monitor": "Retour au moniteur limité",
-      "legacy_notice": "Cette ancienne boucle invoque l’agent à chaque cycle et peut s’exécuter sans limite.",
+      "legacy_notice": "Cette boucle d’objectif invoque l’agent à chaque cycle et peut s’exécuter sans limite.",
       "use_legacy_costly": "Utiliser l’ancienne boucle d’objectif (coûteuse)",
       "wake_instructions": "Instructions pour l’agent à son réveil",
       "wake_instructions_too_long": "Saisissez au maximum {{max}} caractères.",

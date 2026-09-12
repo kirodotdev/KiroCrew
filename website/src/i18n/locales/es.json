@@ -8403,7 +8403,7 @@
       "restart_monitor": "Reiniciar monitor",
       "review_ready": "Lista para revisión",
       "save_changes": "Guardar cambios",
-      "set_up_bounded_monitor": "Configurar un monitor limitado",
+      "set_up_bounded_monitor": "Supervisar una solicitud de extracción en su lugar",
       "sidebar_status": "Monitor · {{status}}",
       "start_monitor": "Iniciar monitor",
       "statuses": {
@@ -8422,8 +8422,7 @@
       "title": "Monitor limitado de solicitudes de extracción",
       "tokens": "Tokens: {{count}}",
       "unknown": "Desconocido",
-      "back_to_bounded_monitor": "Volver al monitor limitado",
-      "legacy_notice": "Este ciclo anterior invoca al agente en cada ciclo y puede ejecutarse sin límite.",
+      "legacy_notice": "Este ciclo de objetivo invoca al agente en cada ciclo y puede ejecutarse sin límite.",
       "use_legacy_costly": "Usar el ciclo de objetivos anterior (costoso)",
       "wake_instructions": "Instrucciones para el agente cuando se active",
       "wake_instructions_too_long": "Introduce como máximo {{max}} caracteres.",

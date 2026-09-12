@@ -256,9 +256,9 @@ async function load({ legacy = null, structured = null }) {
 async function openPopover(page) {
   // Addressed by accessible name, which differs by what is armed: an armed
   // monitor reads "Monitor status: <status>", an active legacy loop reads "Goal
-  // active (cycle N)", and nothing armed reads "Set up a bounded monitor".
+  // active (cycle N)", and nothing armed reads "Set a goal".
   const chip = page
-    .getByRole('button', { name: /^(Monitor status: |Set up a bounded monitor|Goal active \(cycle |Goal loop armed \(cycle )/ })
+    .getByRole('button', { name: /^(Monitor status: |Set a goal|Goal active \(cycle |Goal loop armed \(cycle )/ })
     .first()
   await chip.waitFor({ state: 'visible', timeout: 15000 })
   await chip.click()
