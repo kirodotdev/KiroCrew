@@ -1023,8 +1023,10 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Thread titles and the conversation history seeded into a newly linked "
         "thread. Titles go through redact_and_truncate (redaction BEFORE "
         "truncation, so a truncation boundary cannot split and hide a "
-        "credential); history is delegated to the shared Slack render pipeline "
-        "above with redact_via_context injected as its redactor.",
+        "credential); history rows are handed to SlackRenderer.post_history_row "
+        "(slack/renderer.py), which renders each through the shared Slack render "
+        "pipeline above -- render_for_slack with its default context-aware "
+        "redactor -- and uploads the row's local images after the text.",
     ),
     (
         "Configured-channel session mirror",

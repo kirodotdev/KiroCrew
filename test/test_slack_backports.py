@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config.loader import ACTIVATION_ALWAYS, KiroCrewConfig, MessagingConfig
+from kiro_crew.messaging.attachments import IngestResult
 from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile, Rejection
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.slack import events as ev
@@ -606,7 +607,7 @@ async def _route_voice(
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([], []),
+                    return_value=IngestResult(),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock

@@ -42,7 +42,8 @@ import os
 import time
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.constants import strip_control_comments
+from kiro_crew.messaging.display_safety import mirror_echo_text, redact_for_display
 from kiro_crew.messaging.outbound_files import (
     OutboundFile,
     Rejection,
@@ -53,10 +54,16 @@ from kiro_crew.messaging.outbound_files import (
 from kiro_crew.messaging.renderer import Renderer, chunk_text
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
-from kiro_crew.slack.format import SLACK_MSG_LIMIT, extract_options, strip_thinking_tags
+from kiro_crew.slack.format import (
+    SLACK_MSG_LIMIT,
+    extract_options,
+    render_for_slack,
+    strip_thinking_tags,
+)
 from kiro_crew.slack.handler import (
     _APPROVAL_TIMEOUT,
     _CURSOR,
@@ -72,6 +79,7 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
+from kiro_crew.uploads import upload_dir
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +92,15 @@ TOOL_TRUST_ACTION_PREFIX = "mc_tool_trust_"
 
 #: Thread-status text shown while the turn is in flight (mirrors handler).
 _STATUS_WORKING = "is working on your request"
+
+#: The dashboard-ingress echo: the words a person typed into the dashboard,
+#: repeated into the linked thread so the conversation there reads as question
+#: then answer. Italic, behind a speech balloon, so it cannot be mistaken for
+#: something the agent said.
+USER_ECHO_PREFIX = "💬"
+#: History rows seeded into a freshly linked thread, one icon per role.
+HISTORY_USER_ICON = "\U0001f9d1"
+HISTORY_AGENT_ICON = "\U0001f916"
 
 #: Characters held back below ``max_message_chars`` when splitting. The shared
 #: splitter may exceed its limit by the fence scaffolding of a whole-line
@@ -134,6 +151,19 @@ def _display_safe(text: str) -> str:
     costs nothing and keeps the guarantee at the sink instead of at the caller.
     """
     return redact_for_display(text, _redact_all)[0]
+
+
+def _approved_roots(cwd: str) -> tuple[str, ...]:
+    """The upload roots a session with resolved cwd *cwd* may read from.
+
+    The cwd itself plus the dashboard's uploads directory. An invalid (relative
+    or empty) cwd yields NO roots -- not "the uploads dir alone" -- so the
+    pre-existing rule that an unauthorized session ships no bytes is unchanged;
+    the uploads directory only ever widens a root that was already valid.
+    """
+    if not os.path.isabs(cwd):
+        return ()
+    return (cwd, str(upload_dir()))
 
 
 #: Slack channel capabilities live in ``slack/transport.py`` (imported above).
@@ -280,9 +310,15 @@ class SlackApprovalDecider:
 class SlackRenderer(Renderer):
     """Renders abstract output events onto a Slack thread.
 
-    Holds (and exposes) the underlying ``SlackClientOps`` so the inline
-    dashboard->Slack mirror keeps working unchanged (guardrail G2). The
-    streaming message is lazily opened on the first text/tool event.
+    The ONE Slack output path for a session with a Slack attachment, whichever
+    surface a turn arrived from (RFC session-address-model §5.3): the Slack
+    transport dispatcher drives it through ``TurnDriver`` for a Slack-born turn,
+    and the dashboard turn loop calls the same ``on_*`` methods from its own
+    event sites for a dashboard-born turn on a linked session. The two entry
+    points a Slack-born turn never needs -- the user echo and the history seed --
+    sit at the bottom of the class. Holds (and exposes) the underlying
+    ``SlackClientOps``. The streaming message is lazily opened on the first
+    text/tool event.
     """
 
     channel_type = "slack"
@@ -302,11 +338,17 @@ class SlackRenderer(Renderer):
         user_id: str = "",
         uploads_allowed: bool = True,
         upload_root: str = "",
+        session_key: str = "",
     ) -> None:
         super().__init__(capabilities or SLACK_CAPABILITIES)
         self.slack = slack
         self.channel = channel
         self.thread_ts = thread_ts
+        # The conversation this renderer serves, for the SEL audit line on an
+        # upload decision. A Slack-born turn carries it on the decider; a
+        # dashboard-ingress turn has no decider (the dashboard owns approval) and
+        # names its session here instead, so both ingress kinds audit alike.
+        self._session_key = session_key
         # The sending user. Two consumers:
         #   * DashboardContributor.decorate_reply on the final outbound text, so a
         #     composed edition can refresh its auth window / append an expiry
@@ -369,11 +411,12 @@ class SlackRenderer(Renderer):
         self._finalized = False  # guards close() from double-finalizing
         self._t0 = 0.0
         self._started = False  # guards on_turn_start against double-fire
-        # Outbound-upload gates. The root is the provider's resolved cwd, so it
-        # is UNSET until the dispatcher authorizes one (``authorize_upload_root``)
-        # and uploads stay off until then: extraction reads files the model named,
-        # and "anywhere" is not an approved root.
-        self._upload_root = upload_root if os.path.isabs(upload_root) else ""
+        # Outbound-upload gates. The roots are the provider's resolved cwd plus
+        # the dashboard's uploads directory (see ``authorize_upload_root``), so
+        # they are UNSET until the dispatcher authorizes the cwd and uploads stay
+        # off until then: extraction reads files the model named, and "anywhere"
+        # is not an approved root.
+        self._upload_roots: tuple[str, ...] = _approved_roots(upload_root)
         self._uploads_allowed = uploads_allowed
         # Visible text withheld from the append-only stream because a local image
         # reference is in play; released (markup removed) at the seal.
@@ -537,15 +580,25 @@ class SlackRenderer(Renderer):
 
     # -- outbound local-image uploads ---------------------------------------
     def authorize_upload_root(self, root: str) -> None:
-        """Authorize the provider's resolved cwd; an invalid root disables uploads."""
-        self._upload_root = root if os.path.isabs(root) else ""
+        """Authorize the provider's resolved cwd; an invalid root disables uploads.
+
+        The dashboard's uploads directory is admitted ALONGSIDE the cwd, never
+        instead of it: a picture pasted into the dashboard composer, or drawn by
+        the agent there, is written under ``<data_home>/uploads/`` and the
+        transcript row names that path, so a linked thread can only receive it if
+        that tree is an approved root too. The same renderer serves a Slack-born
+        turn and a dashboard-born one (RFC session-address-model §5.3), so both
+        get both roots; a session with no valid cwd gets neither, exactly as
+        before.
+        """
+        self._upload_roots = _approved_roots(root)
 
     def _uploads_enabled(self) -> bool:
         """Require the transport capability, an unrestricted session, and a root."""
         return (
             bool(self.capabilities.files_outbound)
             and self._uploads_allowed
-            and bool(self._upload_root)
+            and bool(self._upload_roots)
         )
 
     #: How much text immediately BEFORE an image span is held back with it.
@@ -622,7 +675,7 @@ class SlackRenderer(Renderer):
         """
         try:
             result = await extract_local_refs_off_loop(
-                text, within_root=self._upload_root, limits=UPLOAD_LIMITS
+                text, within_root=self._upload_roots, limits=UPLOAD_LIMITS
             )
         except Exception:
             logger.warning("slack: outbound file extraction failed", exc_info=True)
@@ -694,7 +747,7 @@ class SlackRenderer(Renderer):
 
     def _audit_caller(self) -> str:
         """Identity for the SEL audit line: the session, else the conversation."""
-        session_key = self.decider.session_key if self.decider else ""
+        session_key = self.decider.session_key if self.decider else self._session_key
         return session_key or self.channel or "slack"
 
     # -- length splitting ---------------------------------------------------
@@ -810,7 +863,7 @@ class SlackRenderer(Renderer):
         self._tool_timer_task = None
 
     async def close(self) -> None:
-        """Idempotent teardown for the transport dispatcher's ``finally``.
+        """Idempotent teardown for the dispatcher's ``finally``.
 
         Cancels the 30s ``_tool_elapsed_updater`` timer and finalizes the
         reaction controller. Without this, a ``TurnDriver.run()`` exception
@@ -819,14 +872,109 @@ class SlackRenderer(Renderer):
         loop shuts down. Safe to call after ``on_done`` (no-op) and multiple
         times: the ``_finalized`` guard prevents flipping a already-successful
         turn's reaction to the error state.
+
+        A turn that never reached ``on_done`` also leaves its Slack SURFACE open:
+        a task card stuck at ``in_progress`` and a streaming message spinning
+        forever. Both are closed here on every exit path -- the card marked
+        complete, the stream stopped, the thread status cleared -- so a cancelled
+        or crashed turn reads as ended rather than as still running. Each call is
+        best-effort; teardown must never mask the exception that got us here.
         """
         self._cancel_tool_timer()
-        if not self._finalized and self._controller is not None:
-            try:
-                self._controller.finalize(error=True)
-            except Exception:
-                pass  # non-critical teardown; never raise from close()
+        if not self._finalized:
+            if self._stream_ts and self._use_slack_stream:
+                if self._active_task_id:
+                    await self._append_task(
+                        self._active_task_id, self._active_task_title, "complete"
+                    )
+                    self._active_task_id = ""
+                try:
+                    await self.slack.stop_stream(self.channel, self._stream_ts)
+                except Exception:
+                    logger.warning("Slack stop_stream failed at teardown", exc_info=True)
+                self._stream_ts = None
+            if self._started:
+                try:
+                    await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
+                except Exception:
+                    logger.warning("Slack set_thread_status failed at teardown", exc_info=True)
+            if self._controller is not None:
+                try:
+                    self._controller.finalize(error=True)
+                except Exception:
+                    pass  # non-critical teardown; never raise from close()
         self._finalized = True
+
+    # -- entry points a Slack-born turn never needed ---------------------------
+    #
+    # A turn that ARRIVED from Slack already has its question in the thread and
+    # its history behind it. A dashboard-born turn on a linked session does not:
+    # the person typed into the dashboard, so the thread has to be told what they
+    # said, and a thread linked mid-conversation has to be seeded with what came
+    # before. Both live on the renderer because the renderer is the one thing
+    # that knows how to put this session's words AND pictures into this thread;
+    # a text-only copy beside the turn loop is how a pasted picture reaches Slack
+    # as a filesystem path.
+
+    async def _extract_for_post(self, text: str) -> tuple[str, list[OutboundFile]]:
+        """Pull local images out of *text* for a plain (non-streamed) post.
+
+        Runs BEFORE any redaction or length split, always: extraction has to see
+        each ``![alt](path)`` whole and in its original fence context, and a cut
+        or a truncation upstream of it is how a reference gets bisected and its
+        picture lost. Refusal notes are folded into the returned text so a missing
+        picture is explained in the same message that would have shown it.
+        """
+        if not text or not self._uploads_enabled():
+            return text, []
+        body, files, _notes = await self._extract_uploads(text)
+        return body, files
+
+    async def echo_user_message(self, text: str) -> None:
+        """Repeat what the person typed in the dashboard into the linked thread.
+
+        The ``💬 _..._`` echo with the redact-then-truncate contract of every
+        mirror echo (:func:`mirror_echo_text`), and the pictures the message
+        carried uploaded after it so the thread shows the same attachment the
+        dashboard does. Never raises: an echo is context for the reader, not the
+        answer, and a Slack refusal here must not cost the turn.
+        """
+        body, files = await self._extract_for_post(text or "")
+        safe = mirror_echo_text(body, redact_via_context)
+        if safe:
+            try:
+                await self.slack.post_message(
+                    self.channel, f"{USER_ECHO_PREFIX} _{safe}_", self.thread_ts
+                )
+            except Exception:
+                logger.debug("slack: user echo failed", exc_info=True)
+        if files:
+            await self._upload_files(files)
+
+    async def post_history_row(self, role: str, content: str) -> bool:
+        """Seed one transcript row into the thread, pictures included.
+
+        The backfill a freshly linked thread receives: ``🧑`` for the person,
+        ``🤖`` for the agent, rendered through the shared Slack render pipeline
+        (:func:`render_for_slack`, which owns the redact/convert/split ordering
+        and charges the icon against the message limit). Images are extracted
+        first and uploaded after the text, in the same order the dashboard shows
+        them. Returns ``False`` when a text part could not be posted, so a caller
+        seeding a whole history can stop rather than leave a gap mid-thread.
+        """
+        icon = HISTORY_USER_ICON if role == "user" else HISTORY_AGENT_ICON
+        body, files = await self._extract_for_post(strip_control_comments(content or ""))
+        for part in render_for_slack(body, prefix=f"{icon} "):
+            try:
+                await self.slack.post_message(self.channel, part, self.thread_ts)
+            except Exception:
+                # Never bare-pass: a silent swallow here is what made a partial
+                # seed invisible. The caller decides whether to keep going.
+                logger.debug("slack: history row post failed", exc_info=True)
+                return False
+        if files:
+            await self._upload_files(files)
+        return True
 
     @property
     def delivered_text(self) -> str:
@@ -1045,6 +1193,15 @@ class SlackRenderer(Renderer):
         tool_purpose: str = "",
         tool_input: str = "",
     ) -> None:
+        # No decider, no card. The driver already skips this dispatch when
+        # nothing awaits the click, and the renderer holds the same line at its
+        # own boundary: a card no decider resolves is a dead control, and on a
+        # dashboard-ingress turn the dashboard owns the approval and posts its
+        # own linked prompt -- a second card here would offer the same decision
+        # twice, one of them answerable by nobody.
+        if self.decider is None:
+            logger.debug("slack: prompt_choice with no decider -- no approval card posted")
+            return
         # The tool THIS request asks about. The options are the ANSWERS ("Allow",
         # "Reject"), so falling back to the first one's label puts a verb where the
         # card promises a tool name; it stays only as the last resort for a
@@ -1055,7 +1212,7 @@ class SlackRenderer(Renderer):
         # Namespace the approval buttons by this turn's session so a click can
         # only resolve THIS session's pending tool (kiro-cli rids restart at 1
         # per session — a bare id would collide across concurrent threads).
-        session_key = self.decider.session_key if self.decider else ""
+        session_key = self.decider.session_key
         await self.slack.post_blocks(
             self.channel,
             build_approval_blocks(title, request_id, session_key),

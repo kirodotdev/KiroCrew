@@ -91,7 +91,7 @@ from kiro_crew.messaging.commands import (
     task_command_reply,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
-from kiro_crew.messaging.link import canonical_key
+from kiro_crew.messaging.link import SLACK_NAMESPACE, canonical_key
 from kiro_crew.messaging.renderer import credential_redaction_notice
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
@@ -2809,6 +2809,9 @@ async def maybe_route_linked_thread(
                 _linked_slot,
                 text,
                 _directive_user_origin=True,
+                # This message is already IN the thread, files and all: the
+                # dashboard turn's Slack mirror must not echo it back there.
+                _ingress=SLACK_NAMESPACE,
             )
         )
         _linked_slot.task = _chat_task
@@ -2825,6 +2828,7 @@ async def maybe_route_linked_thread(
             text,
             meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
             directive_user_origin=True,
+            ingress=SLACK_NAMESPACE,
         )
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(

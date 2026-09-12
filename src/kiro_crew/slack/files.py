@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING
 from kiro_crew.messaging.attachments import (
     Attachment,
     IngestLimits,
+    IngestResult,
     ingest_attachments,
     safe_suffix,
 )
@@ -283,15 +284,27 @@ def _to_attachment(f: dict) -> Attachment:
 async def process_slack_files(
     orch: GatewayOrchestrator,
     files: list[dict],
-) -> tuple[list[str], list[str]]:
+    *,
+    persist_images: bool = True,
+) -> IngestResult:
     """Process non-audio file attachments from a Slack message.
 
-    Returns:
-        (attachment_paths, text_blocks) — local paths for images and opaque
-        files (caller must clean up), plus prompt-ready text and metadata.
+    Returns the full :class:`IngestResult`: images (promoted into the dashboard's
+    uploads directory, where the transcript row points and the dashboard renders
+    from -- see :attr:`IngestResult.persisted_paths`), opaque file paths (temp,
+    the caller cleans them via :attr:`IngestResult.temp_paths`), prompt-ready
+    text blocks, and rejection notes. Render the lot with
+    :func:`kiro_crew.messaging.attachments.append_attachment_context`.
+
+    ``persist_images=False`` keeps every image a temp file the caller deletes
+    after the turn. The event handler passes it for a thread whose conversation
+    is temporary or incognito (its own ``!incognito`` / ``!temporary``, or a
+    linked dashboard session in a restricted mode): such a conversation persists
+    nothing, and a picture that outlived it in the uploads directory would break
+    that promise.
     """
     if not orch.slack:
-        return [], []
+        return IngestResult()
 
     client = orch.slack
 
@@ -300,16 +313,16 @@ async def process_slack_files(
         # that, which is why the fetch stays channel-owned.
         await client.download_file(url, dest)
 
-    result = await ingest_attachments(
+    return await ingest_attachments(
         [_to_attachment(f) for f in files],
         download=_download,
         source="slack",
         limits=_LIMITS,
         handle_audio=False,  # transcribed upstream
         audio_mimetypes=SLACK_AUDIO_MIMETYPES,
+        # A picture posted in a linked thread has to render in the dashboard
+        # after the turn, so it is promoted out of the temp tree into the same
+        # directory the composer writes to. Only images: an opaque file is for
+        # the agent's tools during this turn, not for the transcript.
+        persist_images=persist_images,
     )
-
-    # Rejection notes ride along as prompt text, matching the previous behaviour
-    # of inlining size and validation failures for the model to see.
-    paths = [*result.image_paths, *result.file_paths]
-    return paths, [*result.text_blocks, *result.rejections]
