@@ -135,7 +135,7 @@ describe('InstancesViewport', () => {
     expect((frame.parentElement as HTMLElement).style.display).toBe('none')
   })
 
-  it('delegates microphone, fullscreen and clipboard-write to the cross-origin pane', async () => {
+  it('delegates microphone, fullscreen, clipboard-write and display-capture to the cross-origin pane', async () => {
     // The pane is a cross-origin iframe (same host, different port), where
     // these features are denied unless the parent delegates them. Dropping
     // any of them regresses a user-visible capability: mic -> getUserMedia
@@ -144,7 +144,11 @@ describe('InstancesViewport', () => {
     // clipboard-write -> navigator.clipboard.writeText() rejects in the pane,
     // so every copy affordance fails (CliPanel's selection copy surfaces
     // "Copy failed"; TerminalKeyBar and WebAppArtifactCard hit the same
-    // rejection).
+    // rejection); display-capture -> getDisplayMedia() rejects in the pane,
+    // so the snip affordances render (the presence gate,
+    // isScreenSnipSupported, only checks the function EXISTS -- true inside
+    // iframes) but every click dies with NotAllowedError (ChatPage's snip
+    // flow, WebPreviewPanel's crop-to-chat, MochiSnipHost).
     const store = createTestStore({
       instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
@@ -154,10 +158,15 @@ describe('InstancesViewport', () => {
       if (!f) throw new Error('no iframe yet')
       return f as HTMLIFrameElement
     })
-    expect(frame.getAttribute('allow')).toBe('microphone; fullscreen; clipboard-write')
+    expect(frame.getAttribute('allow')).toBe('microphone; fullscreen; clipboard-write; display-capture')
     // Contract pin: whatever shape the delegation list takes in the future,
     // clipboard-write must survive it -- the pane's copy paths depend on it.
     expect(frame.getAttribute('allow')).toContain('clipboard-write')
+    // Contract pin: display-capture must survive future list reshapes too --
+    // the pane's snip paths depend on it, and unlike clipboard-read the
+    // capability cannot act silently: capture always runs through the
+    // browser's own source picker on a user gesture.
+    expect(frame.getAttribute('allow')).toContain('display-capture')
     // Scope discipline: clipboard-read stays undelegated. Read is the more
     // sensitive grant class and exceeds this fix's clipboard-write scope, so
     // the pane's Paste key (TerminalKeyBar's readText) still fails inside

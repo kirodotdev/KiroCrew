@@ -998,7 +998,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // the same rejection). Local (top-level) use is unaffected.
           // Loopback-only, and the pane already runs our own token-authed SPA,
           // so delegating these grants nothing a same-origin top-level load
-          // wouldn't already. clipboard-read is deliberately NOT delegated:
+          // wouldn't already. display-capture follows the same rule: without
+          // it, getDisplayMedia() rejects in the pane while the snip
+          // affordances still RENDER, because the presence gate
+          // (isScreenSnipSupported) only checks the function exists -- true
+          // inside iframes -- so ChatPage's snip flow, WebPreviewPanel's
+          // crop-to-chat and MochiSnipHost all die on click with
+          // NotAllowedError. Unlike clipboard-read, display-capture cannot
+          // act silently: every capture runs the browser's own source picker
+          // on a user gesture, so delegation only lets the pane ASK.
+          // clipboard-read is deliberately NOT delegated:
           // read is the more sensitive grant class and exceeds this fix's
           // clipboard-write scope. The pane's Paste key (TerminalKeyBar's
           // readText) therefore still fails inside embedded panes, visibly,
@@ -1006,7 +1015,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // left as a maintainer decision.
           // allowFullScreen mirrors the legacy attribute some engines still
           // require alongside the Permissions-Policy delegation.
-          allow="microphone; fullscreen; clipboard-write"
+          allow="microphone; fullscreen; clipboard-write; display-capture"
           allowFullScreen
           onLoad={e => {
             // Fires for the initial about:blank too, which is why a load event is
