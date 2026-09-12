@@ -272,6 +272,7 @@ import SessionGridView from '../components/SessionGridView'
 import SessionTabStrip from '../components/SessionTabStrip'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
+import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { displayModel, pinIsWithheld } from '../lib/model'
 import FollowUpCard from '../components/FollowUpCard'
@@ -535,6 +536,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const unresumableResume = useAppSelector(s => s.chat.unresumableResume)
   const undeletableHistory = useAppSelector(s => s.chat.undeletableHistory)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // The store this page is rendered under (not the module singleton): the
+  // opener reads live state after an await, and it must be the same store
+  // its dispatches went to. Also read by the MCP-app openers below, so it is
+  // declared ahead of the auto-open effect.
+  const boundStore = useAppStore()
   // Reveal eligible completed replies while recovery is offered, including an
   // older reply the user chose to read aloud. Slot identity prevents bleed-over.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
@@ -580,9 +586,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // a tab the user had deliberately closed.
       if (!claimAppAutoOpen(activeSlot, id)) continue
       dispatch(openActivityPanel())
-      tabsCtlRef.current?.openApp(id, i18nT('pages.chatPage.mcp_app_tab_title'), activeSlot)
+      // Chip title comes from the render payload already in the store -- the
+      // payload IS what created this id (appToolCallIds keys off chat.mcpApps).
+      // Read at effect time from the Provider-bound store (never the module
+      // singleton, which a test harness does not mount) so unrelated chat
+      // updates do not re-run the effect.
+      const payload = boundStore.getState().chat.mcpApps?.[mcpAppKey(activeSlot, id)]
+      tabsCtlRef.current?.openApp(id, mcpAppTabTitle(payload, i18nT('pages.chatPage.mcp_app_tab_title')), activeSlot)
     }
-  }, [mcpAppPanel, activeSlot, appToolCallIds, dispatch])
+  }, [mcpAppPanel, activeSlot, appToolCallIds, dispatch, boundStore])
 
   const messages = useAppSelector(s => s.chat.messages)
     const probeServerTotal = useAppSelector(s => (activeSlot ? (s.chat.slotServerTotal?.[activeSlot] ?? -1) : -1))
@@ -3012,12 +3024,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const revealAppInPanel = useCallback((toolCallId: string) => {
     search.close()
     dispatch(openActivityPanel())
-    tabsCtlRef.current?.openApp(toolCallId, i18nT('pages.chatPage.mcp_app_tab_title'), activeSlot ?? null)
+    // Same title derivation as the auto-open effect: an event-time read from
+    // the Provider-bound store keeps the payload out of this callback's deps.
+    const payload = activeSlot ? boundStore.getState().chat.mcpApps?.[mcpAppKey(activeSlot, toolCallId)] : undefined
+    tabsCtlRef.current?.openApp(toolCallId, mcpAppTabTitle(payload, i18nT('pages.chatPage.mcp_app_tab_title')), activeSlot ?? null)
     // As at handleFileOpen: the rule asks for the whole `search` object only because
     // `close` is INVOKED and a called member is attributed to its receiver, not
     // because this body reads `search` itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch, so the listed member already pins everything this body calls; naming the enclosing object would make this a new function every render and churn renderMessage below
-  }, [dispatch, activeSlot, search.close])
+  }, [dispatch, activeSlot, boundStore, search.close])
 
   // "Add to context" from the file-browser rail's row context menu: insert the
   // SAME `@`-mention the file picker does, so a right-click is just a second
@@ -3909,10 +3924,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // useChatPageSessionController, keeps its ref the same way).
   const connectedRef = useRef(connected)
   connectedRef.current = connected
-  // The store this page is rendered under (not the module singleton): the
-  // opener reads live state after an await, and it must be the same store
-  // its dispatches went to.
-  const boundStore = useAppStore()
   const openSideChatForPane = useCallback((slot: string): boolean | Promise<boolean> => {
     if (slot === activeSlot) {
       dispatch(openActivityToTab('side'))
