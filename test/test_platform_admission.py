@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 
 import pytest
 
@@ -161,6 +162,51 @@ class TestManifestParsing:
             {"mode": "enforce", "capability_ceiling": {"egress": "*.amazon.com"}}
         )
         assert p.capability_ceiling["egress"] == ["*.amazon.com"]
+
+
+class TestSignatureFlagStrictness:
+    """The plugin ``require_signature`` flag rejects non-boolean JSON.
+
+    ``bool()`` on a raw JSON value reads the string ``"false"`` as ``True`` and
+    reads ``0`` / ``null`` as silently OFF.  A present-but-not-boolean value
+    must be warned about and read fail-closed as ``True`` (require the
+    signature), matching the ``boot`` gate flags in ``governance.py``.
+    ``require_policy_signature`` keeps the raw read on purpose: its fail-open
+    direction is a documented trust-root decision (a hand-edit typo must not
+    make the host unbootable), and the governance loader consumes the raw
+    value through its own path.
+    """
+
+    _FLAGS = ("require_signature",)
+
+    @pytest.mark.parametrize("flag", _FLAGS)
+    @pytest.mark.parametrize("junk", ["false", "true", None, 0, 1])
+    def test_non_boolean_reads_fail_closed_on(self, flag, junk):
+        policy = AdmissionPolicy.from_dict({"mode": "enforce", flag: junk})
+        assert getattr(policy, flag) is True
+
+    @pytest.mark.parametrize("flag", _FLAGS)
+    @pytest.mark.parametrize("real", [True, False])
+    def test_real_boolean_is_honoured(self, flag, real):
+        policy = AdmissionPolicy.from_dict({"mode": "enforce", flag: real})
+        assert getattr(policy, flag) is real
+
+    @pytest.mark.parametrize("flag", _FLAGS)
+    def test_absent_key_defaults_off(self, flag):
+        policy = AdmissionPolicy.from_dict({"mode": "enforce"})
+        assert getattr(policy, flag) is False
+
+    def test_non_boolean_is_warned_about(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.platform.admission"):
+            AdmissionPolicy.from_dict({"mode": "enforce", "require_signature": "false"})
+        matching = [
+            rec.message
+            for rec in caplog.records
+            if "require_signature" in rec.message and "fail-closed" in rec.message
+        ]
+        assert matching
+        # Secret hygiene: the junk VALUE must not reach the persistent log.
+        assert not any("false" in m for m in matching)
 
 
 class TestAllowlist:

@@ -323,7 +323,14 @@ Policy shape (`admission_policy.json`):
 `identity.issuer` in the same `trust_keys` map — one key store, not two. It is a
 **separate** flag from `require_signature` on purpose: a fleet that signs its
 plugins has not thereby promised to sign its governance ceiling, and conflating
-them would break managed fleets on upgrade. The flag lives here rather than inside
+them would break managed fleets on upgrade. The plugin `require_signature`
+flag is read strictly by `_coerce_signature_flag`: only a real JSON boolean is
+honoured, an absent key stays `false`, and any other present value (`"false"`,
+`0`, `null`) is warned about and read fail-closed as `true` — the same rule the
+`boot` flags follow in `governance.md`. `require_policy_signature` keeps the
+raw read on purpose: its fail-open direction is a documented trust-root
+decision, and the governance loader reads the raw value through its own path.
+The flag lives here rather than inside
 the security policy because a document cannot be the authority on whether it must
 be authentic. `canonical_signing_bytes` / `hmac_signature` are shared by both
 checks so the two trust roots cannot drift apart. The governance loader reads

@@ -118,6 +118,35 @@ def _coerce_str_list(value: object) -> List[str]:
     return []
 
 
+def _coerce_signature_flag(d: dict, key: str) -> bool:
+    """Read the plugin ``require_signature`` flag strictly.
+
+    A real boolean is honoured; an absent key keeps the default (``False`` —
+    verification is advisory unless a fleet opts in).  Any other present value
+    — ``"false"``, ``"true"``, ``0``, ``1``, explicit ``null`` — is NOT
+    interpreted: ``bool()`` on a raw JSON value reads the string ``"false"``
+    as ``True`` and reads ``0`` or ``null`` as silently OFF.  Such a value is
+    warned about and read fail-closed as ``True`` (the signature IS
+    required), matching the ``boot`` gate flags in ``governance.py``.
+    ``require_policy_signature`` is deliberately excluded — see the inline
+    note at its read site in ``from_dict``.
+    """
+    if key not in d:
+        return False
+    value = d.get(key)
+    if isinstance(value, bool):
+        return value
+    # Log the TYPE, never the value: a mis-typed flag can carry a secret
+    # (a credential pasted into the policy), and this warning lands in the
+    # persistent gateway log.
+    logger.warning(
+        "admission policy %s must be a boolean, got %s; reading it fail-closed as True",
+        key,
+        type(value).__name__,
+    )
+    return True
+
+
 def canonical_signing_bytes(body: Mapping[str, object]) -> bytes:
     """The ONE canonicalization every KiroCrew trust-root signature is taken over.
 
@@ -276,7 +305,12 @@ class AdmissionPolicy:
         approved = d.get("approved", None)
         return AdmissionPolicy(
             mode=str(d.get("mode", MODE_OPEN)),
-            require_signature=bool(d.get("require_signature", False)),
+            require_signature=_coerce_signature_flag(d, "require_signature"),
+            # Deliberately NOT the strict coercer: this flag gates the security
+            # policy's own authenticity, where a hand-edit typo reading as
+            # "require it" would make the host unbootable — the trust-root
+            # docstrings at _policy_trust_settings() own that decision, and the
+            # governance loader reads the raw value through its own path anyway.
             require_policy_signature=bool(d.get("require_policy_signature", False)),
             trust_keys=_coerce_trust_keys(d.get("trust_keys")),
             approved=(_coerce_str_list(approved) if approved is not None else None),
