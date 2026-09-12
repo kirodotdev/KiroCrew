@@ -299,7 +299,7 @@ jobs:
       # other reviewer lanes. github.actor is set by GitHub and cannot be spoofed
       # by PR content. Also skip when a human override is recorded, so an OIDC
       # failure can never keep the override from clearing the lane.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (

@@ -199,7 +199,7 @@ jobs:
       # secrets / OIDC, so the AWS role assumption can never succeed. Skip the
       # credential + review steps and let the gate pass; dependency bumps stay
       # covered by Semgrep, CodeQL, the nightly/release Dependency Audit and the build/tests.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
@@ -341,7 +341,7 @@ jobs:
       # spent session. Each stage now starts on a fresh session, leaving the
       # 90-minute job timeout as the only wall. Keep in sync with
       # codex-review.yml.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
