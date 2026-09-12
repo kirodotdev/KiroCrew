@@ -18,6 +18,7 @@ import { useArmedDelete } from '../hooks/useArmedDelete'
 import SortableHeader from '../components/SortableHeader'
 
 import { i18nT } from '../i18n/t'
+import { EVENTS as WIRE_EVENTS, matcherCannotMatchAnyTagId } from './hookEventWireValues'
 interface Hook {
   id: string; name: string; event: string; matcher: string
   matcher_mode: string; command: string; skills: string[]
@@ -34,7 +35,8 @@ interface HookTestResult {
   stderr?: string
 }
 
-const EVENTS = ['AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']
+const EVENTS = WIRE_EVENTS
+const LANE_NEVER_FIRES_ID = 'lane-matcher-never-fires-note'
 const MATCHER_MODES = ['glob', 'regex', 'contains']
 
 const EVENT_STYLE: Record<string, string> = {
@@ -43,11 +45,13 @@ const EVENT_STYLE: Record<string, string> = {
   PreToolUse: 'bg-aim-subtle text-aim border-aim/30',
   PostToolUse: 'bg-aim-subtle text-aim border-aim/30',
   Stop: 'bg-warn-subtle text-warn border-warn/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   AgentSpawn: 'ok', UserPromptSubmit: 'ok',
   PreToolUse: 'aim', PostToolUse: 'aim', Stop: 'warn',
+  SessionLaneChanged: 'ok',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
@@ -65,6 +69,9 @@ function HookForm({ hook, onSave, onCancel }: {
   const [name, setName] = useState(hook?.name || '')
   const [event, setEvent] = useState(hook?.event || 'UserPromptSubmit')
   const [matcher, setMatcher] = useState(hook?.matcher || '')
+  // Focus decides how loudly the never-fires note speaks, not whether it exists: an author
+  // mid-keystroke gets it politely, one who has moved on gets an assertive alert.
+  const [matcherFocused, setMatcherFocused] = useState(false)
   const [matcherMode, setMatcherMode] = useState(hook?.matcher_mode || 'glob')
   const [command, setCommand] = useState(hook?.command || '')
   const [skills, setSkills] = useState<string[]>(hook?.skills || [])
@@ -83,13 +90,28 @@ function HookForm({ hook, onSave, onCancel }: {
   const inertSkills = !isSkillsCapable && skills.length > 0
 
   // Dynamic placeholder text per matcher mode
+  const isLaneHook = event === 'SessionLaneChanged'
+  // `*added:Done;*` wears the right shape and matches nothing, so a prefix-only check
+  // would wave it through -- reassuring the author into a hook that never fires.
+  // Glob ONLY: the check models whole-string fnmatch, which is the sole mode where a bare
+  // `done` truly cannot match. Under contains/regex it does match, so warning there is false.
+  // Held until the field is LEFT: this is an assertive alert, so evaluating it per keystroke
+  // shouts on the first character of every matcher anyone types.
+  const laneMatcherNeverFires =
+    isLaneHook &&
+    matcherMode === 'glob' &&
+    matcherCannotMatchAnyTagId(matcher)
   const matcherPlaceholder = isToolHook
     ? i18nT('pages.hooksPage.matcher_tool_filter_e_g_fs_write_git')
-    : matcherMode === 'regex'
-      ? i18nT('pages.hooksPage.matcher_placeholder_regex')
-      : matcherMode === 'contains'
-        ? i18nT('pages.hooksPage.matcher_placeholder_contains')
-        : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')
+    : isLaneHook
+      // The backend matches tag IDs, not column names, so the generic "e.g. *deploy*"
+      // invites a spelling that saves and then fires on nothing.
+      ? i18nT('pages.hooksPage.matcher_placeholder_lane_empty')
+      : matcherMode === 'regex'
+        ? i18nT('pages.hooksPage.matcher_placeholder_regex')
+        : matcherMode === 'contains'
+          ? i18nT('pages.hooksPage.matcher_placeholder_contains')
+          : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')
 
   return (
     <Card>
@@ -99,6 +121,13 @@ function HookForm({ hook, onSave, onCancel }: {
           <Input placeholder={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
           <SimpleSelect
             options={EVENTS}
+            // The wire value cannot change, so the gloss rides on the LABEL, at the
+            // point where the choice is made.
+            optionLabels={EVENTS.map(e =>
+              e === 'SessionLaneChanged'
+                ? `${e} — ${i18nT('pages.hooksPage.matcher_lane_pill_gloss')}`
+                : e,
+            )}
             value={event}
             onChange={setEvent}
             // A hook stored with an event this picker no longer offers (legacy
@@ -123,7 +152,9 @@ function HookForm({ hook, onSave, onCancel }: {
               breaking, so a sibling that does not fit wraps instead: 231px worst
               case, never below 120px. Same idiom as the tokens row in
               WebhooksPage, which had the identical defect. */}
-          <Input className="basis-full sm:basis-auto" placeholder={matcherPlaceholder} value={matcher} onChange={e => setMatcher(e.target.value)} />
+          {/* aria-describedby: the never-fires warning appears mid-typing, so without it a
+              screen reader never reaches the warning at all. */}
+          <Input className="basis-full sm:basis-auto" placeholder={matcherPlaceholder} value={matcher} onChange={e => setMatcher(e.target.value)} onFocus={() => setMatcherFocused(true)} onBlur={() => setMatcherFocused(false)} aria-describedby={laneMatcherNeverFires ? LANE_NEVER_FIRES_ID : undefined} />
           {!isToolHook && (
             <SimpleSelect
               options={MATCHER_MODES}
@@ -138,6 +169,40 @@ function HookForm({ hook, onSave, onCancel }: {
             <span>{i18nT('pages.hooksPage.s')}</span>
           </div>
         </div>
+        {isLaneHook && (
+          <div className="flex flex-col gap-0.5">
+            {/* Neutral: empty is the RECOMMENDED state, so styling it as a problem trains
+                the reader to ignore the case that really is broken. */}
+            <p className="text-[12px] text-muted" data-testid="lane-matcher-hint">
+              {i18nT('pages.hooksPage.matcher_lane_hint')}
+            </p>
+            {/* Its own line, and not muted: this is the one fact that decides whether a
+                close-out hook is safe to bind, and it was last in a four-sentence paragraph. */}
+            <p className="text-[12px] text-text/80" data-testid="lane-matcher-scope">
+              {i18nT('pages.hooksPage.matcher_lane_scope')}
+            </p>
+            {/* Unmuted and on its own line for the same reason as the scope above: which columns
+                cannot fire the hook decides whether binding one is worth doing at all. */}
+            <p className="text-[12px] text-text/80" data-testid="lane-matcher-automatic">
+              {i18nT('pages.hooksPage.matcher_lane_automatic')}
+            </p>
+            {laneMatcherNeverFires && (
+              <p
+                className="text-[12px] text-warn bg-warn-subtle ring-1 ring-inset ring-warn/30 rounded-md px-2 py-1"
+                data-testid="lane-matcher-never-fires"
+                id={LANE_NEVER_FIRES_ID}
+                // Assertive only once the author has left the field. Mid-keystroke an alert
+                // would interrupt on every character on the way to a valid value.
+                role={matcherFocused ? undefined : 'alert'}
+                aria-live={matcherFocused ? 'polite' : undefined}
+              >
+                {i18nT('pages.hooksPage.matcher_lane_never_fires_typed', {
+                  shape: '*added:done;*',
+                })}
+              </p>
+            )}
+          </div>
+        )}
         {isSkillsCapable && (
           <div>
             <SkillsMultiSelect selected={skills} onChange={setSkills} />
@@ -152,7 +217,11 @@ function HookForm({ hook, onSave, onCancel }: {
           </div>
         )}
         <div className="flex gap-2 items-center">
-          <SendBtn onClick={() => onSave({ name, event, matcher, matcher_mode: matcherMode, command, skills, timeout })}>{i18nT('pages.hooksPage.save')}</SendBtn>
+          <SendBtn
+            onClick={() => {
+              onSave({ name, event, matcher, matcher_mode: matcherMode, command, skills, timeout })
+            }}
+          >{i18nT('pages.hooksPage.save')}</SendBtn>
           <Btn onClick={onCancel} className="h-9 px-4 text-sm font-semibold rounded-lg">{i18nT('pages.hooksPage.cancel')}</Btn>
         </div>
       </div>
@@ -393,7 +462,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                         </button>
                       </td>
                       <td className="px-2.5 py-2 border-b border-border text-sm font-medium text-text">{esc(h.name)}</td>
-                      <td className="px-2.5 py-2 border-b border-border text-sm"><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span></td>
+                      <td className="px-2.5 py-2 border-b border-border text-sm"><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span>{h.event === 'SessionLaneChanged' && <span className="ml-1.5 text-[11px] text-text/80" data-testid="lane-pill-gloss">{i18nT('pages.hooksPage.matcher_lane_pill_gloss')}</span>}</td>
                       <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-text/80 truncate max-w-[300px]" title={h.command}>{esc(h.command)}</td>
                       <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{h.matcher ? esc(h.matcher) : <span className="italic">—</span>}</td>
                       <td className="px-2.5 py-2 border-b border-border text-sm font-mono">{h.run_count}</td>
@@ -516,6 +585,13 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                     its fields are unsaved. Otherwise the test ran against a saved
                     hook and nothing is lost. */}
                 <ErrorNotice variant="inline" message={testResult.data.error} askAgent={handoffSafe} className="mb-1" />
+                {/* The denial names what happened, not what to change. Governance is the one
+                    outcome whose repair is a setting rather than the command, so say where. */}
+                {/governance/i.test(testResult.data.error || '') && (
+                  <p data-testid="hook-test-governance-repair" className="text-[12px] text-text/80 mb-1">
+                    {i18nT('pages.hooksPage.hook_test_governance_repair')}
+                  </p>
+                )}
                 {testResult.data.stdout && <pre className="whitespace-pre-wrap text-[12px] font-mono text-text/80 bg-bg border border-border rounded-md p-3 max-h-[200px] overflow-auto">{testResult.data.stdout}</pre>}
                 {testResult.data.stderr && <pre className="whitespace-pre-wrap text-[12px] font-mono text-warn bg-bg border border-border rounded-md p-3 max-h-[100px] overflow-auto mt-2">{testResult.data.stderr}</pre>}
               </div>

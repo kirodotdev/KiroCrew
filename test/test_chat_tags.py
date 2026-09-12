@@ -573,9 +573,7 @@ class TestSlotTags:
 
             state.push_slots_update = MagicMock()
             with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", _refuse):
-                resp = await client.put(
-                    "/api/chat/slots/s1/tags", json={"tags": [tag["id"]]}
-                )
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": [tag["id"]]})
 
             assert resp.status == 409
             assert slot.tags == ["existing"]
@@ -1220,7 +1218,15 @@ class TestLoadTagsSafety:
         )
         (tmp_path / "tag_boards.json").write_text(
             _json.dumps(
-                [{"id": "c1", "name": "L", "tag_ids": ["live1", "ghost"], "mode": "any", "order": 0}]
+                [
+                    {
+                        "id": "c1",
+                        "name": "L",
+                        "tag_ids": ["live1", "ghost"],
+                        "mode": "any",
+                        "order": 0,
+                    }
+                ]
             ),
             encoding="utf-8",
         )
@@ -1554,3 +1560,165 @@ class TestNonObjectBodiesAcrossConvertedHandlers:
                     resp = await getattr(client, method)(path, json=payload)
                 assert resp.status == 400, (path, payload, resp.status)
                 assert (await resp.json())["code"] == "body_not_object", path
+
+
+class TestTheReaderMatchesTheSurfacesStatusRule:
+    """A `status` the tag manager paints as a status tag must be a lane tag here too.
+
+    The manager's lightning toggle reads the field truthily (`!!t.status`), so a stricter
+    compare here would show a hand-edited spelling as a status tag on screen while the drop
+    path treated it as an ordinary label — the surface and the backend disagreeing about the
+    same tag. Matching the surface is the invariant; the loader stores the field verbatim.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_truthy_spelling_schedules_a_dispatch(self, monkeypatch, tmp_path):
+        from kiro_crew.dashboard import chat_tags as CT
+
+        scheduled: list[tuple] = []
+
+        async def _allowed(*_a, **_k):
+            return True
+
+        monkeypatch.setattr(CT, "_lane_dispatch_allowed", _allowed, raising=False)
+
+        async def _bulk(*a, **k):
+            scheduled.append((a, k))
+
+        monkeypatch.setattr(CT, "dispatch_session_lane_changed_bulk", _bulk, raising=False)
+
+        state = _make_state(tmp_path)
+        state._tags = [
+            {"id": "stringy", "name": "Stringy", "status": "false"},
+            {"id": "real", "name": "Real", "status": True},
+            {"id": "plain", "name": "Plain"},
+        ]
+
+        # The tag manager paints this as a status tag, so the hook must read the same lane the
+        # surface shows. Refusing it here would hide a lane the user can see.
+        await CT._dispatch_lane_changed(state, "slot-1", [], ["stringy"], request=object())
+        assert scheduled, (
+            "a tag the surface paints as a status tag fired nothing, so the lane moved while "
+            "the screen said it was a column"
+        )
+
+        # Positive control: a REAL True is a lane too, so the reader is not merely permissive.
+        await CT._dispatch_lane_changed(state, "slot-1", [], ["real"], request=object())
+        assert len(scheduled) >= 2, "a real status=True tag fired nothing: %r" % (scheduled,)
+
+        # Negative control: a tag with NO status flag is not a lane, so it must add nothing.
+        before = len(scheduled)
+        await CT._dispatch_lane_changed(state, "slot-1", [], ["plain"], request=object())
+        assert len(scheduled) == before, (
+            "a plain label scheduled a lane event, so this test cannot tell a lane tag from a "
+            "label: %r" % (scheduled,)
+        )
+
+
+class TestLaneDispatchIsOwnerOnly:
+    """Only the OWNER's dashboard identity may cause a lane hook to run.
+
+    `app == ""` is set for every confirmed dashboard token, and Slack hands such a token to an
+    allow-listed user as well as to the owner -- so the claim alone admitted a non-owner who could
+    then trigger a command under the dashboard profile. Narrowing to the owner has to keep the
+    owner's own grant intact, which is why each case below asserts its own direction.
+    """
+
+    @staticmethod
+    def _request(*, app, user, owner_id):
+        state = type("S", (), {"owner_id": owner_id})()
+        store = {"state": state}
+        req = type(
+            "R",
+            (),
+            {
+                "app": store,
+                "get": lambda self, k, d=None: {"app": app, "user": user}.get(k, d),
+                "__contains__": lambda self, k: k in {"app": app, "user": user},
+                "__getitem__": lambda self, k: {"app": app, "user": user}[k],
+            },
+        )()
+        return req
+
+    @pytest.mark.asyncio
+    async def test_the_owner_is_still_permitted(self, monkeypatch):
+        """The intended grant. If this breaks, the refusals below prove nothing."""
+        from kiro_crew.dashboard import chat_tags as CT
+
+        req = self._request(app="", user="owner-1", owner_id="owner-1")
+        assert await CT._lane_dispatch_is_permitted(req) is True, (
+            "the owner's own dashboard identity was refused, so the fix closed the intended "
+            "grant along with the hole"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_non_owner_dashboard_token_is_refused(self, monkeypatch):
+        """The hole: an allow-listed user holding a real dashboard token, but not the owner."""
+        from kiro_crew.dashboard import chat_tags as CT
+
+        audited: list = []
+        monkeypatch.setattr(CT, "audit_off_loop", _capture_audit(audited), raising=False)
+
+        req = self._request(app="", user="someone-else", owner_id="owner-1")
+        assert (
+            await CT._lane_dispatch_is_permitted(req) is False
+        ), "a non-owner dashboard token could still cause a hook command to run"
+        assert audited, "the refusal was not audited, so it is invisible to the trail"
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_is_still_refused(self, monkeypatch):
+        """The pre-existing case must not regress while narrowing the owner check."""
+        from kiro_crew.dashboard import chat_tags as CT
+
+        audited: list = []
+        monkeypatch.setattr(CT, "audit_off_loop", _capture_audit(audited), raising=False)
+
+        req = self._request(app="some-app", user="some-app", owner_id="owner-1")
+        assert await CT._lane_dispatch_is_permitted(req) is False
+        assert audited, "an app-token refusal was not audited"
+
+
+def _capture_audit(sink):
+    async def _off_loop(write, what):
+        sink.append(what)
+
+    return _off_loop
+
+
+class TestAnUnhashableTagIdDoesNotCrashTheDispatch:
+    """A hand-edited `{"id": ["x"]}` must not 500 the request after the write committed.
+
+    `load_tags` keeps any entry whose `id` is truthy, so a list or dict id survives into
+    `state._tags`. Keying an index on that raises TypeError -- and the dispatch runs AFTER the tag
+    write is applied, persisted and broadcast, so the write succeeds while the response fails, and
+    every later PUT fails the same way.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_list_id_is_skipped_rather_than_raising(self, monkeypatch, tmp_path):
+        from kiro_crew.dashboard import chat_tags as CT
+
+        async def _allowed(*_a, **_k):
+            return True
+
+        scheduled: list = []
+
+        async def _bulk(*a, **k):
+            scheduled.append((a, k))
+
+        monkeypatch.setattr(CT, "_lane_dispatch_allowed", _allowed, raising=False)
+        monkeypatch.setattr(CT, "dispatch_session_lane_changed_bulk", _bulk, raising=False)
+
+        state = _make_state(tmp_path)
+        state._tags = [
+            {"id": ["x"], "status": True},
+            {"id": "real", "name": "Real", "status": True},
+        ]
+
+        # Must not raise. Before the fix this was TypeError: unhashable type: 'list'.
+        await CT._dispatch_lane_changed(state, "slot-1", [], ["real"], request=object())
+
+        assert scheduled, (
+            "the unhashable entry stopped a legitimate lane change from dispatching, so the "
+            "guard skipped too much"
+        )

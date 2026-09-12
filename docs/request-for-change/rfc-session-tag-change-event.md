@@ -1,12 +1,13 @@
 ---
 title: Session Tag-Change Event as a server-side signal on lane transitions
-status: draft
+status: in-review
 author: (issue #7663 author)
 created: 2026-09-02
 last-audited: 2026-09-02
 audited-at: 6581a04ee
 doc-pr: null
-implementation-prs: []
+implementation-prs: [7669]
+implementation-scope: partial — 7669 ships the delta-only payload and defers re-entrancy
 tracking-issues: [7663]
 supersedes: []
 superseded-by: []
@@ -22,6 +23,12 @@ session enters **Done**. It argues for reusing the existing script-hook engine
 rather than adding a subsystem, and settles the four design questions the issue
 flagged as expensive to reverse once anything subscribes. It is a design of
 record only: nothing here is on main.
+
+> **Event name.** This document proposes the event as `SessionTagsChanged`; the
+> implementation ships it as **`SessionLaneChanged`**, because the event fires on a
+> change to a session's **status** tags — a board-lane transition — and not on a
+> change to its tags generally. The name below is the proposal as written; read
+> every `SessionTagsChanged` in this document as `SessionLaneChanged`.
 
 ## Summary
 
@@ -273,8 +280,8 @@ write `slot.tags` at HEAD `6581a04ee`:
 |---|---|---|---|
 | `api_chat_slot_tags` | `chat_tags.py:507` → `slot.tags` at `:562` | user set-tags API | **yes** |
 | `api_chat_slot_drop` | `chat_tags.py:902` → `slot.tags` at `:983` | user drag-to-lane API | **yes** |
-| folder inheritance | `chat_handlers.py:2259-2260` (`slot.tags.append`), ids from `validate_folder_tag_ids` (`chat_tags.py:60`) | a new slot inherits a folder's tags | **yes** |
-| channel first-file / restore | `channel_slots.py:372-373` and `:392-393` (`slot.tags.append`) | channel slot filing | **yes** |
+| folder inheritance | `_read_folder_tags` (`slot.tags.append`), ids from `validate_folder_tag_ids` (`chat_tags.py:60`) | a new slot inherits a folder's tags | **yes** |
+| channel first-file / restore | both `slot.tags.append` sites in `surface_channel_session` | channel slot filing | **yes** |
 | slot restore (bulk) | `chat_handlers.py:6394` / `:6402` (`slot.tags = ...`) | reconstruct from stored value | **no** (load-time) |
 | fork | `chat_fork.py:699` (`new_slot.tags = list(slot.tags)`) | fork inherits parent tags | see below |
 | persistence load/prune | `chat_persistence.py:990` / `:1002` and `:1470` / `:1482` | load-time reconstruction | **no** (load-time) |
@@ -285,7 +292,7 @@ The folder-inherited path is the one the issue's two-handler framing misses:
 (must be a list of strings) and **vocabulary** (intersected with the live
 `state._tags` when authoritative) but **not** `status: true`. So an inherited
 folder status tag can put a session into a lane through
-`chat_handlers.py:2259-2260` **without either named handler running**. Any design
+`_read_folder_tags` **without either named handler running**. Any design
 that emits only from the two handlers would miss lane entries. This site must
 emit.
 
@@ -312,6 +319,43 @@ docstring warns about for its consolidation. Per-site emits are rejected: they a
 the shape that let review miss call sites twice during #7366 (as the
 mcp-lifecycle RFC records) and would re-open that finding here.
 
+**Amendment — what actually shipped, and how it differs from the above.** The
+recommendation stands as the target shape, but the first PR does **not** implement
+it. Emits come per-writer rather than through a single choke point: the two
+`chat_tags.py` writers, plus closing-order step 1, the folder inheritance in
+`_read_folder_tags` reached from `api_chat_slot_create` (`chat_handlers.py`), which
+emits because the create handler already runs under a dashboard request. Two
+`slot.tags.append` sites therefore still write status tags without emitting, both in
+`surface_channel_session` (`channel_slots.py`) — verified by grep at the shipped
+head, against a positive control showing `chat_tags.py` carries the dispatch six times.
+
+The blocker is authorization, not scheduling. The dispatch helper itself needs no
+request — `_lane_dispatch_queue()` takes its loop from `asyncio.get_running_loop()`
+and `dispatch_session_lane_changed_bulk` has no request parameter — so those three
+callers could reach it as they stand. What needs a request is the PERMIT GATE,
+`_lane_dispatch_is_permitted`, which is what confines dispatch to the dashboard
+user. Routing folder filing, channel-slot filing and app-token moves through the
+dispatch means deciding what authorizes a fire on a path with no dashboard caller
+to check, and that decision belongs with the choke point rather than ahead of it. Until then a session can still enter a lane without the event firing — by
+channel slot filing — which is the exact
+failure mode this section was written to prevent. It is a narrowed gap, not a solved
+one, and the choke point remains the shape to build.
+
+**Closing order.** Each writer gains emission when its own authorization question has an answer, so
+the order below is set by that dependency rather than by convenience:
+
+1. **Folder inheritance** (`_read_folder_tags`, reached from `api_chat_slot_create`) goes first,
+   because it already runs under a dashboard request: `_lane_dispatch_is_permitted` applies to it
+   unchanged, so it needs no new authorization rule and closes the folder-inherit gap on its own.
+   It ships in this PR.
+2. **Channel first-filing** (both `slot.tags.append` sites in `surface_channel_session`) goes
+   second, because it has no
+   dashboard caller. It needs a stated rule for what authorizes a fire on a channel surface, and
+   settling that is the prerequisite the choke point then inherits.
+3. **The choke point** goes last. Once both callers have an authorization answer the emit moves
+   under `tags_write_lock`, and the two per-writer emits in `chat_tags.py` are deleted rather than
+   joined — so the per-writer shape is a step on the way to the target, never a rival to it.
+
 ## Migration plan
 
 Design of record; nothing on main. Phases are independently shippable.
@@ -321,8 +365,8 @@ Design of record; nothing on main. Phases are independently shippable.
 Add `SessionTagsChanged` to `HOOK_EVENTS` (`hooks.py:93-99`) and
 `ALLOWED_HOOK_EVENTS` (`validation.py:92-94`), and add one status-tag-delta emit
 helper that the two `chat_tags.py` handlers, the folder-inheritance path
-(`chat_handlers.py:2259-2260`), and the channel filing path
-(`channel_slots.py:372-373` / `:392-393`) call. Fire-and-forget through
+(`_read_folder_tags`), and the channel filing path
+(`surface_channel_session`) call. Fire-and-forget through
 `run_script_hook`; load-time sites stay silent.
 
 **Exit criteria:** a hook registered for `SessionTagsChanged` fires with a

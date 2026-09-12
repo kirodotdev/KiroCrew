@@ -11059,7 +11059,13 @@
       "filter_hooks": "Фильтр хуков…",
       "hook_name": "Название хука",
       "hooks": "Хуки",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Хуки выполняют shell-команды по событиям чата: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Хуки инструментов поддерживают шаблоны условий для фильтрации по имени инструмента.",
+      "matcher_lane_pill_gloss": "столбец доски",
+      "hook_test_governance_repair": "Профиль governance запрещает script-хуки. Чтобы этот хук мог работать, включите capabilities.script_hooks в активном профиле.",
+      "matcher_lane_never_fires_typed": "Это поле сравнивает ID тегов, поэтому так сохранённый хук никогда не сработает. Чтобы узнать ID, запустите хук один раз с пустым сопоставлением и посмотрите KIROCREW_HOOK_CONTEXT. ({{shape}})",
+      "matcher_lane_scope": "Запускает его только перемещение, сделанное вами в панели, но не сделанное приложением или автоматизацией.",
+      "matcher_lane_hint": "Оставьте пустым, чтобы срабатывало при любом изменении столбца доски: каждый запуск получает добавленные и удалённые столбцы в KIROCREW_HOOK_CONTEXT, так что скрипт может решить сам.",
+      "matcher_placeholder_lane_empty": "Условие (необязательно)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Хуки выполняют команды оболочки при событиях чата: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Хуки инструментов поддерживают шаблоны для фильтрации по имени инструмента; SessionLaneChanged срабатывает, когда меняется столбец сеанса на доске.",
       "last_run": "Последний запуск",
       "loading": "Загрузка…",
       "matcher": "Условие",
@@ -11095,7 +11101,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Повторить",
       "show_last_error": "Показать последнюю ошибку для {{name}}",
-      "test_failed_for": "Тест для {{name}} не пройден"
+      "test_failed_for": "Тест для {{name}} не пройден",
+      "matcher_lane_automatic": "Автоматические колонки (В работе, Простой, Нужно подтверждение, Ждёт вас) никогда его не запускают."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Уникальный идентификатор этой рабочей области. Агенты ссылаются на рабочие области по имени.",

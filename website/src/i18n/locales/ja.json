@@ -10591,7 +10591,13 @@
       "filter_hooks": "フックをフィルタ…",
       "hook_name": "フック名",
       "hooks": "フック",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "フックはチャットイベント（AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop）でシェルコマンドを実行します。ツールフックはマッチャーパターンでツール名でフィルタリングできます。",
+      "matcher_lane_pill_gloss": "ボードの列",
+      "hook_test_governance_repair": "ガバナンスプロファイルがスクリプトフックを禁止しています。このフックを実行できるようにするには、有効なプロファイルで capabilities.script_hooks を有効にしてください。",
+      "matcher_lane_never_fires_typed": "この項目はタグ ID を照合するため、そのまま保存したフックは決して発火しません。ID を知るには、マッチャーを空のまま一度実行して KIROCREW_HOOK_CONTEXT を見てください。({{shape}})",
+      "matcher_lane_scope": "発火するのはあなたがダッシュボードで行った移動だけで、アプリや自動処理による移動では発火しません。",
+      "matcher_lane_hint": "空にするとボードの列が変わるたびに発火します。各実行には追加・削除された列が KIROCREW_HOOK_CONTEXT で渡るので、スクリプト側で分岐できます。",
+      "matcher_placeholder_lane_empty": "マッチャー（オプション）",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "フックはチャットイベントでシェルコマンドを実行します：AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged。ツールフックはツール名で絞るマッチャーパターンに対応します。SessionLaneChanged はセッションのボードの列が変わったときに発火します。",
       "last_run": "最後の実行",
       "loading": "読み込み中…",
       "matcher": "マッチャー",
@@ -10627,7 +10633,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "再試行",
       "show_last_error": "{{name}} の最新のエラーを表示",
-      "test_failed_for": "{{name}} のテストに失敗しました"
+      "test_failed_for": "{{name}} のテストに失敗しました",
+      "matcher_lane_automatic": "自動の列（実行中、待機中、承認が必要、応答待ち）では発火しません。"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "このワークスペースの一意な識別子。エージェントは名前でワークスペースを参照します。",

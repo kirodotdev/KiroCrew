@@ -25,9 +25,15 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState, mint_tags_revision
+from kiro_crew.hooks import (
+    HOOK_EVENT_SESSION_LANE_CHANGED,
+    SessionLaneDelta,
+    dispatch_session_lane_changed_bulk,
+    get_global_hook_store,
+)
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel
+from kiro_crew.sel import audit_off_loop, sel
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +48,114 @@ _VALID_MODES = {"any", "all", "none"}
 # between state lanes on its own and no tag is ever written for it.
 _VALID_SOURCES = {"tags", "state"}
 
+
+def _is_status_tag(tag: object) -> bool:
+    """One definition of "status tag", shared with every base reader.
+
+    Truthiness, because the tag manager's own lightning toggle reads this field truthily
+    (`!!t.status`): a stricter compare here would paint a hand-edited spelling as a status
+    tag on screen while the drop path treated it as an ordinary label, so what the user
+    sees and what the backend does would disagree. Matching the surface is the invariant.
+
+    A hand-edited ``"status": "false"`` is therefore a status tag to screen and backend
+    alike. Repairing that at load would change which tags are columns for every board
+    reader, which is a board change and not this event's scope.
+    """
+    return bool(isinstance(tag, dict) and tag.get("status"))
+
+
 # The lane vocabulary. Kept server-side so an unknown key cannot reach the board
 # and render an eternally-empty column: the lanes are exhaustive and mutually
 # exclusive by construction, and a card that matched nothing would vanish.
 _VALID_STATE_KEYS = {"needs_approval", "waiting", "working", "idle"}
 
 _T = TypeVar("_T")
+
+
+def _any_lane_hook_registered() -> bool:
+    """Whether an enabled ``SessionLaneChanged`` hook exists to dispatch to.
+
+    Reads the store's in-memory list and NOTHING else. It deliberately does not
+    consult ``capabilities.script_hooks``: resolving that walks ``profiles/``, which
+    must never happen on a tag write. So this answers "is there a subscriber", not
+    "may it run" -- the capability is still resolved later, off the request path.
+
+    Not the withdrawn enqueue-time freeze: no hook SET is captured and none is
+    carried to the worker, which still resolves the registry when it dispatches. A
+    hook registered after this returns False simply sees the next lane change, the
+    same as one registered a moment later would.
+    """
+    store = get_global_hook_store()
+    if store is None:
+        return False
+    return any(
+        h.enabled is True and h.event == HOOK_EVENT_SESSION_LANE_CHANGED for h in store.list_all()
+    )
+
+
+async def _lane_dispatch_is_permitted(request: web.Request, *, resources: str = "") -> bool:
+    """Whether a lane-change hook may be dispatched for *request*'s caller.
+
+    TRUE only for the OWNER's dashboard identity. ``app == ""`` alone is not enough: the
+    middleware sets it for every confirmed dashboard token, and Slack's dashboard link
+    hands such a token to an allow-listed user as well as to the owner -- so the claim
+    by itself let a non-owner cause a hook command to run under the dashboard profile.
+
+    The app string IS readable here, and ``api_hook_test`` does thread one into
+    ``governance_permits(app=...)`` -- so skipping an app caller is a deliberate
+    authorization decision, not an inability. Admitting one would run an operator's
+    shell command on a path whose caller was never granted that, and the event exists
+    to react to a HUMAN moving a card. A refusal is audited here; a permitted dispatch
+    is audited per hook run in ``run_script_hook``. Skipping does not fail the tag
+    write, which is authorized and applied.
+
+    FAIL-CLOSED like the deny-by-default gate in ``chat_handlers``: an ABSENT key
+    means the caller is not a confirmed dashboard caller -- the middleware may not
+    have run, or it ran and left the claim absent for a person -- and the
+    comparison is ``== ""`` rather
+    than truthiness so ``None`` cannot read as the dashboard user (CWE-269, named
+    where ``token_auth`` sets this key).
+    """
+    # Imported here, not at module scope: this module is imported by the handlers package
+    # and a top-level import would close a cycle the import-hoist test fails on.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    claim = request.get("app")
+    # Fail CLOSED on any error from the predicate: it reads request.app["state"], and this
+    # function must never turn an authorized tag write into a 500 by raising.
+    is_owner = False
+    if claim == "":
+        try:
+            is_owner = is_owner_dashboard_request(request)
+        except Exception:
+            logger.warning("owner check failed; refusing the lane dispatch", exc_info=True)
+    if is_owner:
+        # DENIALS ONLY. A permitted dispatch is audited where the privileged thing
+        # happens -- once per hook that actually runs, in ``run_script_hook``.
+        return True
+
+    # The two denial reasons differ, and a failed audit must not fail an
+    # already-authorized tag write.
+    def _audit_denied() -> None:
+        sel().log_api_access(
+            caller=claim if isinstance(claim, str) and claim else "unknown",
+            operation="hooks.session_lane_changed",
+            outcome="denied",
+            source="dashboard",
+            resources=resources,
+            error=(
+                "app caller: lane-hook dispatch is dashboard-only"
+                if isinstance(claim, str) and claim
+                else (
+                    "non-owner dashboard caller: lane-hook dispatch is owner-only"
+                    if claim == ""
+                    else "no app claim on the request: caller not confirmed as the dashboard"
+                )
+            ),
+        )
+
+    await audit_off_loop(_audit_denied, "lane dispatch denial")
+    return False
 
 
 # Per-state tag-write lock. Serializes ALL mutations to state._tags + disk
@@ -416,6 +524,16 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
         # ── Best-effort cleanup: strip the (now nonexistent) id ──────────
         # Failures here are tolerable: a dangling id on disk is pruned on
         # the next load; mark the slot dirty so the periodic flush retries.
+        #
+        # Resolved BEFORE the loop: ``removed_tag`` is the vocabulary entry as it
+        # was, and only a STATUS tag's removal is a lane transition worth firing
+        # SessionLaneChanged for (a plain label carries no lane meaning).
+        deleted_status = _is_status_tag(removed_tag)
+        # Accumulates one payload per holder, all enqueued after the loop. The
+        # queue absorbs the fan-out up to its global bound; past that an
+        # entry is dropped and SEL-audited, so this is "not shed at a
+        # concurrency cap", NOT "never shed".
+        stripped_holders: list[SessionLaneDelta] = []
         for slot in state._slots.values():
             if tid in slot.tags:
                 # Pin the write to the transcript this iteration's membership
@@ -457,6 +575,58 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                             "periodic-flush retry",
                             getattr(slot, "key", "?"),
                         )
+                # Deleting a status tag IS a lane transition -- every session
+                # holding it just left that lane -- so it fires the event too.
+                # Without this a hook bound to ``*removed:done*`` for cleanup
+                # automation silently misses lane deletion, which is the polling
+                # gap the event exists to close.
+                #
+                # COLLECTED rather than dispatched inside the loop: the writer
+                # awaits a save per holder, and enqueuing as we go would
+                # interleave hook dispatch with those awaits. The whole set is
+                # handed to the queue below, which absorbs the fan-out.
+                #
+                # Fires on BOTH branches above, unlike the drop endpoint: there a
+                # refusal ROLLS BACK, whereas here the in-memory strip stands
+                # either way (the id is already gone from the vocabulary), so the
+                # transition is real regardless of whether the persist landed.
+                # PINNED with the drop endpoint's ownership test: a save can refuse
+                # because the slot was REBOUND, and the delta keys on the slot key.
+                if deleted_status:
+                    slot_key = getattr(slot, "key", "")
+                    if (
+                        state._slots.get(slot_key) is slot
+                        and slot_history_key(slot) == authorized_history_key
+                    ):
+                        stripped_holders.append(
+                            SessionLaneDelta(
+                                slot_key=slot_key,
+                                added=[],
+                                removed=[tid],
+                                is_current=_slot_identity_check(
+                                    state, slot_key, slot, authorized_history_key
+                                ),
+                            )
+                        )
+                    else:
+                        logger.warning(
+                            "tag delete: skipping lane dispatch for %s "
+                            "(session deleted or rebound; the delta would target "
+                            "whatever session now routes there)",
+                            slot_key or "?",
+                        )
+
+        # One enqueue per holder, absorbed up to the global queue bound; an
+        # overflow past it is dropped and audited rather than silently lost.
+        # Gated on the CALLER, not the write: an app token that may delete a tag
+        # must not have a script hook run for it under the dashboard profile.
+        # Guarded rather than an early return: the folder cleanup below must still
+        # run for an app-token caller whose tag delete is allowed but whose hooks are not.
+        if stripped_holders and await _lane_dispatch_allowed(request, resources=tid):
+            await dispatch_session_lane_changed_bulk(
+                get_global_hook_store(),
+                items=stripped_holders,
+            )
 
         # ── Best-effort cleanup: strip the deleted id from folders ───────
         # A folder can carry tags (copied onto new chats filed into it); the
@@ -513,6 +683,135 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
 
 
 # ── Slot tag assignment ────────────────────────────────────────────────────
+
+
+async def _lane_dispatch_allowed(request: web.Request, *, resources: str = "") -> bool:
+    """The writer-side precondition for a lane dispatch, in ONE spelling.
+
+    Two questions, always in this order: is there a subscriber at all, and is this
+    caller permitted. Ordered that way because the permit gate EMITS a denial, so
+    asking it first made a lane change with no registered hook audit a refusal it
+    could never have fired.
+
+    Every writer calls THIS, not the two underlying helpers -- a writer that
+    remembers only one of them would dispatch either to nobody or for a caller the
+    gate would have refused, and the pair being spelled once is what stops the next
+    writer copying half of it.
+    """
+    return _any_lane_hook_registered() and await _lane_dispatch_is_permitted(
+        request, resources=resources
+    )
+
+
+def _slot_identity_check(
+    state: DashboardState,
+    slot_key: str,
+    slot: Any | None = None,
+    history_key: str | None = None,
+) -> Callable[[], bool]:
+    """Pin a slot INSTANCE, not its key, for re-checking when the event fires.
+
+    A delete/recreate under the same channel-derived key rebinds the key while the
+    delta is queued, so the key alone cannot say whether the session that changed
+    lane is still there. Captures the instance and its transcript identity now and
+    compares both later, which is the test the enqueue guards already apply.
+    """
+    pinned = slot if slot is not None else state._slots.get(slot_key)
+    pinned_history = (
+        history_key
+        if history_key is not None
+        else (slot_history_key(pinned) if pinned is not None else None)
+    )
+
+    def _still_current() -> bool:
+        if pinned is None:
+            return False
+        live = state._slots.get(slot_key)
+        if live is not pinned:
+            return False
+        return slot_history_key(live) == pinned_history
+
+    return _still_current
+
+
+async def _dispatch_lane_changed(
+    state: DashboardState,
+    slot_name: str,
+    before: list[str],
+    after: list[str],
+    *,
+    request: web.Request,
+) -> None:
+    """Schedule a SessionLaneChanged hook dispatch if the STATUS tags changed.
+
+    ``request`` is REQUIRED and keyword-only so a caller cannot reach the dispatch
+    without supplying the identity the app-governance gate reads. It is used only
+    by ``_lane_dispatch_is_permitted``; see there for why an app caller is skipped.
+
+    Fires only on a status-tag change. ``chat_auto_tag.maybe_auto_tag`` writes
+    NON-status tags routinely (and deliberately never writes status ones), so
+    firing on every tag would make the event chatty for the board-lane case
+    that motivates it while adding nothing. A hook wanting the wider set can
+    still narrow with its own matcher once that is offered.
+
+    Dispatch is off the request path on purpose: the write has already been
+    applied in memory (persistence is best-effort and may still be pending), so
+    a slow or broken hook must not delay the response or fail it.
+    """
+    # `load_tags` keeps any entry with a TRUTHY id, so a hand-edited `{"id": ["x"]}` survives
+    # it; keying on that raises TypeError after the write has already committed.
+    tag_index = {i: t for t in state._tags if isinstance(i := t.get("id"), str)}
+
+    def _status_only(ids: list[str]) -> set[str]:
+        return {t for t in ids if _is_status_tag(tag_index.get(t))}
+
+    status_before = _status_only(before)
+    status_after = _status_only(after)
+    if status_before == status_after:
+        return
+
+    # Below the comparison deliberately: this gate EMITS a denial, so consulting
+    # it first made a label-only edit audit a refusal that could never fire.
+    if not await _lane_dispatch_allowed(request, resources=slot_name):
+        return
+
+    # Derived from the STATUS-FILTERED sets, not the full ones. The comparison above
+    # only decides WHETHER a status transition happened; deriving the delta from `before`
+    # and `after` wholesale then let a bundled edit -- one that changes a lane and a
+    # plain label in the same request -- emit `added:<label>` tokens, so a hook could
+    # match a non-status tag. That contradicts the status-only contract this event
+    # declares, and a matcher is the surface where it is observable.
+    #
+    # This cannot silently empty the delta: we are past the gate only when the two
+    # status-only sets DIFFER, so their symmetric difference holds at least one id
+    # and at least one of the two lists below is non-empty. That matters beyond the
+    # obvious -- ``fire`` consults a matcher only when the context is non-empty, so
+    # an empty delta would skip filtering and run EVERY hook for the event rather
+    # than none. A test pins both halves.
+    added = [t for t in after if t in status_after - status_before]
+    removed = [t for t in before if t in status_before - status_after]
+
+    # The token grammar and the dispatch bound both live in ``hooks.py`` beside
+    # ``HOOK_EVENT_SESSION_LANE_CHANGED``: they are the EVENT's contract, not this
+    # writer's, and a caller-local copy would be a second spelling to drift. What
+    # stays here is the only part that is genuinely dashboard state -- the
+    # status-tag delta, derived by reading ``status`` over ``state._tags``.
+    #
+    # The dispatch is capped and may be REFUSED (cap reached, or no running loop).
+    # That is not an error for this writer: the tag write is already applied and
+    # the event is informational, so the return value is deliberately not checked
+    # here -- ``hooks`` audits a capped drop itself.
+    await dispatch_session_lane_changed_bulk(
+        get_global_hook_store(),
+        items=[
+            SessionLaneDelta(
+                slot_key=slot_name,
+                added=added,
+                removed=removed,
+                is_current=_slot_identity_check(state, slot_name),
+            )
+        ],
+    )
 
 
 async def api_chat_slot_tags(request: web.Request) -> web.Response:
@@ -663,6 +962,13 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
             )
 
     state.push_slots_update()
+    # ``prior_tags`` is the pre-mutation snapshot bound inside the lock above, and
+    # is the same value a separate capture would hold: nothing awaits between the
+    # two points, and the mutation REBINDS ``slot.tags`` rather than mutating the
+    # list, so the old list object this still references is unchanged. The drop
+    # handler dispatches from the same binding for the same reason, and one snapshot per
+    # handler is all the dispatch needs.
+    await _dispatch_lane_changed(state, name, prior_tags, new_tags, request=request)
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_tags",
@@ -1041,7 +1347,7 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             # rather than silently reassigning tags the lane does not filter by.
             return _rejected("column is a derived state lane")
         col_tags = [tag_index[t] for t in column.get("tag_ids") or [] if t in tag_index]
-        status_tags = [t for t in col_tags if t.get("status")]
+        status_tags = [t for t in col_tags if _is_status_tag(t)]
         if len(status_tags) != 1:
             # Column doesn't carry exactly one LIVE status tag — there's no
             # unambiguous status to assign on drop, so this is a visual no-op
@@ -1057,7 +1363,7 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
         # covered by the save's pin.
         if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
             return _rejected("session was deleted or rebound")
-        kept = [t for t in slot.tags if t in tag_index and not tag_index[t].get("status")]
+        kept = [t for t in slot.tags if t in tag_index and not _is_status_tag(tag_index[t])]
         prior_tags = slot.tags
         written_tags = kept + [target_id]
         slot.tags = written_tags
@@ -1085,6 +1391,12 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             state.push_slots_update()
             return _rejected("session was deleted or rebound")
     state.push_slots_update()
+    # prior_tags is upstream's pre-mutation snapshot, bound inside the lock above.
+    # The PUT handler dispatches from its own ``prior_tags`` for the same reason, one
+    # snapshot per handler being all the dispatch needs. Reached
+    # only on the applied path: every refusal returns before here, so a rolled-back
+    # write never fires the hook.
+    await _dispatch_lane_changed(state, name, prior_tags, slot.tags, request=request)
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_drop",

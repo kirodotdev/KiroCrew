@@ -10591,7 +10591,13 @@
       "filter_hooks": "훅 필터…",
       "hook_name": "훅 이름",
       "hooks": "훅",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "훅은 채팅 이벤트(AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop)에서 셸 명령을 실행합니다. 도구 훅은 매처 패턴으로 도구 이름을 필터링할 수 있습니다.",
+      "matcher_lane_pill_gloss": "보드 열",
+      "hook_test_governance_repair": "거버넌스 프로필이 스크립트 훅을 금지합니다. 이 훅이 실행되도록 현재 프로필에서 capabilities.script_hooks 를 허용하십시오.",
+      "matcher_lane_never_fires_typed": "이 칸은 태그 ID를 대조하므로, 그대로 저장한 훅은 절대 실행되지 않습니다. ID를 알려면 매칭을 빈 상태로 한 번 실행한 다음 KIROCREW_HOOK_CONTEXT 를 확인하십시오. ({{shape}})",
+      "matcher_lane_scope": "대시보드에서 직접 이동한 경우만 이를 실행하며, 앱이나 자동화가 이동한 경우는 실행하지 않습니다.",
+      "matcher_lane_hint": "보드 열이 바뀔 때마다 실행하려면 비워두십시오. 실행마다 추가·제거된 열이 KIROCREW_HOOK_CONTEXT 에 전달되므로 스크립트가 직접 분기할 수 있습니다.",
+      "matcher_placeholder_lane_empty": "매처(선택 사항)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "훅은 대화 이벤트에서 셸 명령을 실행합니다: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. 도구 훅은 도구 이름으로 필터링하는 매칭 패턴을 지원합니다. SessionLaneChanged는 세션의 보드 열이 바뀌면 실행됩니다.",
       "last_run": "마지막 실행",
       "loading": "불러오는 중…",
       "matcher": "매처",
@@ -10627,7 +10633,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "다시 시도",
       "show_last_error": "{{name}}의 마지막 오류 표시",
-      "test_failed_for": "{{name}} 테스트 실패"
+      "test_failed_for": "{{name}} 테스트 실패",
+      "matcher_lane_automatic": "자동 열(작업 중, 대기, 승인 필요, 응답 대기)은 이를 실행하지 않습니다."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "이 워크스페이스의 고유 식별자입니다. 에이전트는 이름으로 워크스페이스를 참조합니다.",

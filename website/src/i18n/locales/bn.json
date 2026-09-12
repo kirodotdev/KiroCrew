@@ -10747,7 +10747,13 @@
       "filter_hooks": "হুক ফিল্টার করুন…",
       "hook_name": "হুকের নাম",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "হুক চ্যাট ইভেন্টে শেল কমান্ড চালায়: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop। টুল হুক টুলের নাম দিয়ে ফিল্টার করার জন্য ম্যাচার প্যাটার্ন সমর্থন করে।",
+      "matcher_lane_pill_gloss": "বোর্ড কলাম",
+      "hook_test_governance_repair": "একটি গবর্নেন্স প্রোফাইল স্ক্রিপ্ট হুক আটকায়। এই হুক চালাতে সক্রিয় প্রোফাইলে capabilities.script_hooks চালু করুন।",
+      "matcher_lane_never_fires_typed": "এই ঘর ট্যাগ ID মিলায়, তাই এইভাবে সংরক্ষণ করা হুক কখনই চলবে না। আইডি পেতে খালি ম্যাচার দিয়ে হুকটি একবার চালান ও KIROCREW_HOOK_CONTEXT দেখুন। ({{shape}})",
+      "matcher_lane_scope": "আপনি ড্যাশবোর্ডে নিজে যে সরান, কেবল সেটিই এটি চালায় — কোনো অ্যাপ বা অটোমেশনের সরানো নয়।",
+      "matcher_lane_hint": "প্রতিটি বোর্ড কলাম পরিবর্তনে চালাতে খালি রাখুন: প্রতিবার KIROCREW_HOOK_CONTEXT এ যোগ ও বাদ দেওয়া কলাম পাওয়া যায়, তাই স্ক্রিপ্ট নিজেই যাচাই করতে পারে।",
+      "matcher_placeholder_lane_empty": "ম্যাচার (ঐচ্ছিক)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "হুক চ্যাট ইভেন্টে শেল কমান্ড চালায়: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged। টুল হুক টুলের নাম দিয়ে ফিল্টার করার জন্য ম্যাচার প্যাটার্ন সমর্থন করে; SessionLaneChanged সেশনের বোর্ড কলাম বদলালে চালু হয়।",
       "last_run": "সর্বশেষ রান",
       "loading": "লোড হচ্ছে…",
       "matcher": "ম্যাচার",
@@ -10783,7 +10789,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "আবার চেষ্টা করুন",
       "show_last_error": "{{name}}-এর সর্বশেষ ত্রুটি দেখান",
-      "test_failed_for": "{{name}}-এর পরীক্ষা ব্যর্থ"
+      "test_failed_for": "{{name}}-এর পরীক্ষা ব্যর্থ",
+      "matcher_lane_automatic": "স্বয়ংক্রিয় কলাম — কাজ চলছে, নিষ্ক্রিয়, অনুমোদন দরকার, আপনার অপেক্ষায় — এটি কখনই চালায় না।"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "এই ওয়ার্কস্পেসের জন্য একটি অনন্য শনাক্তকারী। এজেন্ট নাম দিয়ে ওয়ার্কস্পেস উল্লেখ করে।",

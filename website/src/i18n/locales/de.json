@@ -10747,7 +10747,13 @@
       "filter_hooks": "Hooks filtern…",
       "hook_name": "Hook-Name",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks führen Shell-Befehle bei Chat-Ereignissen aus: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool-Hooks unterstützen Abgleichmuster, um nach Tool-Namen zu filtern.",
+      "matcher_lane_pill_gloss": "Board-Spalte",
+      "hook_test_governance_repair": "Ein Governance-Profil verbietet Script-Hooks. Aktiviere capabilities.script_hooks im aktiven Profil, damit dieser Hook laufen kann.",
+      "matcher_lane_never_fires_typed": "Dieses Feld vergleicht Tag-IDs, ein so gespeicherter Hook löst also nie aus. Um die ID zu bekommen, den Hook einmal mit leerem Matcher laufen lassen und KIROCREW_HOOK_CONTEXT lesen. ({{shape}})",
+      "matcher_lane_scope": "Nur ein Wechsel, den du selbst im Dashboard machst, löst es aus — keiner von einer App oder Automatisierung.",
+      "matcher_lane_hint": "Leer lassen, um bei jeder Spalte auszulösen, die du selbst angelegt hast: jeder Lauf erhält die hinzugefügten und entfernten Spalten in KIROCREW_HOOK_CONTEXT, das Skript kann also selbst verzweigen.",
+      "matcher_placeholder_lane_empty": "Abgleichmuster (optional)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks führen Shell-Befehle bei Chat-Ereignissen aus: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Tool-Hooks unterstützen Abgleichmuster, um nach Tool-Namen zu filtern; SessionLaneChanged wird ausgelöst, wenn sich die Board-Spalte einer Sitzung ändert.",
       "last_run": "Letzte Ausführung",
       "loading": "Wird geladen…",
       "matcher": "Abgleichmuster",
@@ -10783,7 +10789,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Wiederholen",
       "show_last_error": "Letzten Fehler für {{name}} anzeigen",
-      "test_failed_for": "Test für {{name}} fehlgeschlagen"
+      "test_failed_for": "Test für {{name}} fehlgeschlagen",
+      "matcher_lane_automatic": "Die automatischen Spalten — Arbeitet, Untätig, Genehmigung nötig, Wartet auf dich — lösen es nie aus."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Eine eindeutige Kennung für diesen Workspace. Agenten verweisen über den Namen auf Workspaces.",
