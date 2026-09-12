@@ -1200,9 +1200,15 @@ the list, the filters, the selected item — is untouched.
   check is answered from POSIX ownership (`st_uid` + the group/other write bits)
   or, on Windows, from the object's ACL — see
   `github_runner.check_provider_path_component_windows` and
-  `kiro_crew.windows_acl`. An **elevated** Windows gateway is refused for the same
-  reason a root POSIX one is: its children would be elevated too, which makes the
-  ownership walk vacuous.
+  `kiro_crew.windows_acl`. A **root** POSIX gateway is refused: the sandbox
+  masks the credential homes from the agent's children but leaves the filesystem
+  writable, and a provider child runs unsandboxed with those credentials, so a
+  root agent could overwrite a root-owned `gh` that the ownership walk cannot
+  tell from the operator's install. An **elevated** Windows gateway (the
+  built-in `Administrator` account is always elevated) is not refused: Windows
+  has no OS sandbox here, so the agent's shell already holds the gateway's full
+  token and the refusal would remove the feature without removing any exposure.
+  The ACL walk runs unchanged for it, keyed on the gateway user's SID.
 - **Azure DevOps is POSIX only (macOS/Linux).** `azure_client._az_bin` refuses
   `win32` before it resolves anything, and raises `ProviderCliError` rather than
   `ProviderSetupError` so the connect dialog does not offer an install that would

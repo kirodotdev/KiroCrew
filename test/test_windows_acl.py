@@ -946,15 +946,6 @@ class TestDescribeAgainstRealAcls:
     def test_the_current_user_sid_is_a_well_formed_sid(self) -> None:
         assert platform_compat.current_user_sid().startswith("S-1-")
 
-    def test_elevation_is_reported_as_a_tri_state(self) -> None:
-        """``None`` (token unreadable) is distinct from ``False`` (not elevated).
-
-        Lives in ``platform_compat`` rather than here: it already owns reading
-        this process's own token, and a second copy of the OpenProcessToken /
-        GetTokenInformation prototype pair is plumbing that drifts.
-        """
-        assert platform_compat.is_token_elevated() in (True, False, None)
-
 
 class TestLoadRefusesOffWindows:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX behaviour")
