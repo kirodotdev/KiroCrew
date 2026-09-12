@@ -93,6 +93,101 @@ class TestLoginLogPermissions:
         assert "chmod 600" in cmd  # belt-and-suspenders on the FIFO
 
 
+class TestDeviceLoginIdentityCenter:
+    """The IAM Identity Center path drives kiro-cli under a pseudo-tty and feeds
+    newlines to submit the pre-filled prompts (the prompt widget reads the tty,
+    not stdin, and the flags supply each prompt's default)."""
+
+    def test_builder_id_path_unchanged(self):
+        # No identity provider -> plain device flow, no pty, stdin from
+        # /dev/null, no enterprise flags.
+        cmd = login._device_login_command(replace_existing=True)
+        assert "login --use-device-flow >" in cmd
+        assert "</dev/null &" in cmd
+        assert "script -qec" not in cmd
+        assert "--identity-provider" not in cmd
+
+    def test_identity_center_uses_pty_and_feeds_newlines(self):
+        cmd = login._device_login_command(
+            replace_existing=True,
+            identity_provider="https://my-org.awsapps.com/start/",
+            license_="pro",
+            idp_region="eu-central-1",
+        )
+        # Flags pre-fill the prompt defaults…
+        assert "--identity-provider https://my-org.awsapps.com/start/" in cmd
+        assert "--license pro" in cmd
+        assert "--region eu-central-1" in cmd
+        # …and the login runs under a pty (script -qec) with newlines fed in to
+        # submit each pre-filled prompt.
+        assert "script -qec" in cmd
+        assert "printf" in cmd and r"\n\n\n" in cmd
+        # It must NOT rely on plain stdin redirection of the answers.
+        assert ".answers" not in cmd
+        # KIRO is exported so the script/sh -c subshell can resolve the binary.
+        assert "export KIRO" in cmd
+
+    def test_identity_center_values_are_shell_quoted(self):
+        evil = "https://x/$(touch /tmp/pwned)`id`; rm -rf ~ #"
+        cmd = login._device_login_command(
+            replace_existing=True,
+            identity_provider=evil,
+            license_="pro",
+            idp_region="eu-central-1",
+        )
+        # The hostile value only ever appears inside a shlex-quoted token.
+        assert shlex.quote(evil) in cmd
+        # And nowhere as a bare, shell-interpretable substring.
+        residue = cmd.replace(shlex.quote(evil), "")
+        assert "$(touch" not in residue
+        assert "`id`" not in residue
+
+    def test_resume_command_threads_identity_center(self):
+        r = login._resume_login_command(
+            identity_provider="https://my-org.awsapps.com/start/",
+            license_="pro",
+            idp_region="eu-central-1",
+        )
+        assert "--identity-provider https://my-org.awsapps.com/start/" in r
+        assert "script -qec" in r
+        rd = login._resume_login_command()
+        assert "--identity-provider" not in rd
+        assert "script -qec" not in rd
+
+
+class TestStartDeviceLoginFallback:
+    """The Identity Center path must not fall through to the social/callback
+    flow — it reports an honest device-code timeout instead."""
+
+    def test_identity_center_timeout_does_not_use_callback(self, monkeypatch):
+        monkeypatch.setattr(login, "is_logged_in", lambda *a, **k: False)
+        # A device-login attempt that yields no URL (capture timed out).
+        monkeypatch.setattr(
+            ssm,
+            "run_command",
+            lambda *a, **k: ssm.CommandResult("Success", "polling for authorization...", "", 0),
+        )
+        called = {"callback": False}
+
+        def _fail_callback(*a, **k):
+            called["callback"] = True
+            return login.LoginPrompt(ports=[12345])
+
+        monkeypatch.setattr(login, "_start_callback_login", _fail_callback)
+        prompt = login.start_device_login(
+            "i-0abc",
+            "dev",
+            "eu-central-1",
+            open_browser=False,
+            identity_provider="https://my-org.awsapps.com/start/",
+            license_="pro",
+            idp_region="eu-central-1",
+        )
+        assert called["callback"] is False, "must NOT chase a social callback port"
+        assert "Identity Center" in prompt.error
+        assert not prompt.url
+
+
 class TestIsLoggedIn:
     def test_true(self, monkeypatch):
         monkeypatch.setattr(
@@ -476,16 +571,23 @@ class TestIdentityProviderFlags:
         assert f"--identity-provider {evil}" not in cmd
         assert f"--license {quoted}" not in cmd
         assert f"--region {spaced}" not in cmd
-        # The shell-quoted forms must appear instead.
-        assert f"--identity-provider {shlex.quote(evil)}" in cmd
-        assert f"--license {shlex.quote(quoted)}" in cmd
-        assert f"--region {shlex.quote(spaced)}" in cmd
         # Each value round-trips through shell tokenization as ONE token equal
-        # to the original string, on every launch branch.
+        # to the original string. The enterprise (Identity Center) path runs
+        # the login under a pty via `script -qec <cmd> /dev/null`, so the login
+        # invocation is one shell-quoted argument to `script`: recover it by
+        # splitting the launch line, then splitting that argument again. The
+        # non-enterprise path has the login invocation inline (one split).
         login_lines = [ln for ln in cmd.splitlines() if "login --use-device-flow" in ln]
         assert login_lines
         for line in login_lines:
-            tokens = shlex.split(line.strip().rstrip("&").strip())
+            outer = shlex.split(line.strip().rstrip("&").strip())
+            if "script" in outer:
+                # `script -qec <inner-cmd> /dev/null` — the inner command is the
+                # argument right after -qec; tokenize it to recover the flags.
+                inner_cmd = outer[outer.index("-qec") + 1]
+                tokens = shlex.split(inner_cmd)
+            else:
+                tokens = outer
             for flag, value in (
                 ("--identity-provider", evil),
                 ("--license", quoted),
@@ -500,7 +602,13 @@ class TestIdentityProviderFlags:
         evil = "$(id)"
         cmd = login._resume_login_command(identity_provider=evil)
         assert f"--identity-provider {evil}" not in cmd
-        assert f"--identity-provider {shlex.quote(evil)}" in cmd
+        # Recover the value as one token through the pty nesting (see
+        # test_device_login_command_shell_quotes_flag_values).
+        line = [ln for ln in cmd.splitlines() if "login --use-device-flow" in ln][0]
+        outer = shlex.split(line.strip().rstrip("&").strip())
+        inner = outer[outer.index("-qec") + 1] if "script" in outer else line
+        tokens = shlex.split(inner)
+        assert tokens[tokens.index("--identity-provider") + 1] == evil
 
     def test_resume_login_command_forwards_flags(self):
         cmd = login._resume_login_command(
@@ -508,9 +616,17 @@ class TestIdentityProviderFlags:
             license_="free",
             idp_region="eu-west-1",
         )
-        assert "--identity-provider https://d-1234567890.awsapps.com/start" in cmd
-        assert "--license free" in cmd
-        assert "--region eu-west-1" in cmd
+        line = [ln for ln in cmd.splitlines() if "login --use-device-flow" in ln][0]
+        outer = shlex.split(line.strip().rstrip("&").strip())
+        inner = outer[outer.index("-qec") + 1] if "script" in outer else line
+        tokens = shlex.split(inner)
+
+        def value_of(flag: str) -> str:
+            return tokens[tokens.index(flag) + 1]
+
+        assert value_of("--identity-provider") == "https://d-1234567890.awsapps.com/start"
+        assert value_of("--license") == "free"
+        assert value_of("--region") == "eu-west-1"
 
     def test_start_device_login_passes_flags_to_command(self, monkeypatch):
         monkeypatch.setattr(login, "is_logged_in", lambda *a, **k: False)

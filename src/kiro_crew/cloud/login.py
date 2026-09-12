@@ -239,6 +239,21 @@ def start_device_login(
             prompt.browser_opened = _open_browser(prompt.url)
         return prompt
 
+    # On the IAM Identity Center path there is NO social / callback-port flow —
+    # kiro-cli only ever prints a device-code URL. Falling through to
+    # _start_callback_login here surfaces a misleading "Google/GitHub sign-in
+    # needs a forwarded callback port" message for what is really an Identity
+    # Center device-code timeout. Report that honestly instead.
+    if identity_provider:
+        idc_region = idp_region or region
+        prompt.error = (
+            "IAM Identity Center sign-in did not produce a device code in time. "
+            "Retry `kirocrew cloud login`, or sign in on the instance with: "
+            f"kiro-cli login --use-device-flow --license {license_ or 'pro'} "
+            f"--identity-provider {identity_provider} --region {idc_region}"
+        )
+        return prompt
+
     callback_prompt = _start_callback_login(instance_id, profile, region, open_browser=open_browser)
     if callback_prompt.raw and prompt.raw:
         callback_prompt.raw = f"{prompt.raw}\n{callback_prompt.raw}".strip()
@@ -381,9 +396,56 @@ fi
         extra_flags += f" --license {shlex.quote(license_)}"
     if idp_region:
         extra_flags += f" --region {shlex.quote(idp_region)}"
+
+    # Some kiro-cli builds ignore --identity-provider / --region and show
+    # interactive prompts "Enter Start URL" / "Enter Region" (only --license is
+    # honored non-interactively). Those prompts are a TUI widget that reads the
+    # CONTROLLING TTY, not stdin, so a background SSM login with no tty and
+    # `</dev/null` gets no submission: no device-code URL prints, the capture
+    # loop times out, and the caller falls back to the social/callback-port
+    # path — the wrong path for Identity Center.
+    #
+    # The flags pre-fill each prompt's default; the widget needs a tty and an
+    # Enter to accept each field. So when a start URL is given, run the login
+    # under a pseudo-tty via util-linux `script` and feed newlines into that
+    # pty to submit the pre-filled values. The kiro-cli command's own
+    # stdout/stderr goes to the log; `script`'s typescript goes to /dev/null so
+    # the log holds the device-code URL rather than the pty transcript (whose
+    # header + echoed "Enter Start URL · https://…" line would otherwise be the
+    # first https:// the capture loop greps, so it would return the Start URL
+    # rather than the device code). A build that honors the flags renders no
+    # prompt, the newlines are consumed with no effect, and the device URL still
+    # reaches the log via the same redirect. The non-enterprise path uses no pty
+    # and stdin `</dev/null`.
+    if identity_provider:
+        inner = f'"$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1'
+        # Three newlines: Start URL, Region, and a spare for any confirm step.
+        # `nohup` guards `script` (the surviving process that holds the pty and
+        # whose child keeps polling for browser approval), not `printf` — the
+        # SSM document's controlling terminal hangs up when run_command returns,
+        # so an unguarded `script` would take SIGHUP, tear down the pty, and kill
+        # the poller before the user approves. Backgrounded directly in this
+        # bash script (no `sh -c` wrapper) so the shlex-quoted flags in `inner`
+        # stay singly quoted and readable.
+        launch_login = (
+            f"printf '\\n\\n\\n' | nohup script -qec {shlex.quote(inner)} /dev/null "
+            ">/dev/null 2>&1 &"
+        )
+    else:
+        # Builder ID / default path — unchanged: no pty, stdin from /dev/null.
+        launch_login = (
+            "if command -v stdbuf >/dev/null 2>&1; then\n"
+            f'  nohup stdbuf -oL -eL "$KIRO" login --use-device-flow{extra_flags} '
+            f'>"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &\n'
+            "else\n"
+            f'  nohup "$KIRO" login --use-device-flow{extra_flags} '
+            f'>"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &\n'
+            "fi"
+        )
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
+export KIRO  # so the pty/subshell on the enterprise path can resolve the binary
 {replace}
 rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
 # Restrict the login log/pid to the owner: it captures the device-code
@@ -391,11 +453,7 @@ rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
 # from world-readable /tmp (default umask 0022 -> 0644). umask 077 makes the
 # files below 0600.
 umask 077
-if command -v stdbuf >/dev/null 2>&1; then
-  nohup stdbuf -oL -eL "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
-else
-  nohup "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
-fi
+{launch_login}
 echo $! > "{_LOGIN_PID_PATH}"
 for _ in $(seq 1 {_DEVICE_LOGIN_CAPTURE_ATTEMPTS}); do
   if [ -s "{_LOGIN_LOG_PATH}" ] && grep -Eiq "https://|verification code|user_code=|already .*logged in|already .*signed in" "{_LOGIN_LOG_PATH}"; then
