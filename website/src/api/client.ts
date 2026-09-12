@@ -325,6 +325,14 @@ export interface BrowserInstallData {
   browser_ok: boolean
   installing: boolean
   last_error: string | null
+  /** An advisory the install produced while SUCCEEDING -- currently a browser
+   *  whose shared libraries may not resolve on this host. Separate from
+   *  `last_error` so a working install is not rendered as a failure. */
+  last_notice?: string | null
+  /** The package-manager command from that advisory, carried apart from the prose
+   *  so the panel can render it in a `<pre>` with a copy button — it has to be
+   *  transcribed exactly. */
+  last_notice_command?: string | null
   token: boolean
   /** Per-engine download state, keyed by engine name (chromium/firefox/webkit).
    *  Optional so an older gateway that predates it degrades to "unknown" rather

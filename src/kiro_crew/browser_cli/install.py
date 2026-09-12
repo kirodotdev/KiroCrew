@@ -1161,6 +1161,115 @@ def _step(
     }
 
 
+def _engine_cache_dirs(engine: str) -> list[Path]:
+    """Cache directories holding builds for *engine*.
+
+    Prefix-matched rather than composed from a revision, so the CHROMIUM entry
+    also picks up ``chromium_headless_shell-<rev>``. That is not a bonus: headless
+    is the default launch mode, so the headless shell is the binary a browse
+    actually starts, and a library check that looked only at ``chromium-<rev>``
+    would clear the build that is not the one being run.
+
+    A symlinked child is REFUSED, not followed. The returned path becomes the
+    anchor of a recursive walk, and this cache is writable, so a prefix-named
+    symlink would point that walk at a tree of the planter's choosing during a
+    privileged install. Playwright's own downloads are real directories, so
+    refusing links costs nothing a supported install needs.
+    """
+    cache = _browsers_cache_dir()
+    if cache is None:
+        return []
+    try:
+        return [
+            child
+            for child in cache.iterdir()
+            if child.name.startswith(engine) and not child.is_symlink() and child.is_dir()
+        ]
+    except OSError:
+        return []
+
+
+def _verify_browser_libraries(engine: str) -> dict[str, Any] | None:
+    """Advisory step reporting libraries *engine*'s build may not resolve.
+
+    ``None`` when there is nothing to report -- no missing library, or the probe
+    could not run (see :func:`os_deps.missing_shared_libraries`).
+
+    ADVISORY, and that is a load-bearing decision rather than caution. The probe
+    answers "will the loader find these" by RE-IMPLEMENTING the loader's search:
+    base-name matching against the loader's default directories and the ones
+    ``/etc/ld.so.conf`` names. That emulation cannot be complete -- musl reads its
+    own path file, glibc has hwcaps subdirectories, the loader cache can name a
+    directory no config file mentions, and ``LD_LIBRARY_PATH`` is deliberately not
+    consulted -- so on some host it WILL name a library the real loader resolves. A heuristic that reproduces a platform component must not
+    be able to fail an install, so this reports and the install proceeds.
+
+    That is also what right-sizes the probe's own attack surface. It reads a
+    directory an agent can write to, so a planted tree can influence what it
+    reports; when the report is advisory, the worst that buys is a misleading
+    warning. Nothing is executed, nothing is written, and no install outcome turns
+    on it.
+
+    Reported as a passing step for that reason. :func:`_download_browser` appends
+    this verdict LAST and :func:`install` stops at the first failed step, so an
+    ``ok: False`` here would both fail the install and skip ``install-skills`` --
+    a diagnostic costing more than the problem it describes.
+    """
+    missing = os_deps.missing_shared_libraries(_engine_cache_dirs(engine))
+    if not missing:
+        return None
+    listed = ", ".join(sorted(missing))
+    # Composed here rather than borrowed from `os_deps.missing_deps_hint()`, which
+    # is written for a FAILED step: it asserts the browser "needs OS libraries" and
+    # says to "retry the install", which contradicts both this step's hedge and the
+    # panel's own green result sitting above it. Only the command is shared.
+    command = os_deps.manual_deps_command() or ""
+    # Agrees with the `librar{y|ies}` branch below: "Install them" alongside a
+    # single soname reads as a copy bug to the operator it is addressed to.
+    them = "it" if len(missing) == 1 else "them"
+    # Names no affordance. The panel has none to name: this notice renders only
+    # AFTER a successful install, where there is no install button for an engine
+    # already downloaded, and a confirm loop of its own is more surface than a
+    # diagnostic earns. The operator's own next install re-runs the probe.
+    closing = (
+        f"Install {them} with the command below."
+        if command
+        else f"Install {them} with your system's package manager."
+    )
+    prose = (
+        f"{engine.capitalize()} downloaded, but {len(missing)} shared "
+        f"librar{'y' if len(missing) == 1 else 'ies'} it needs may be missing from "
+        # One hedge, not two: "may be missing ... may not launch" reads as a guess
+        # about a guess. The uncertainty is whether they are there; the consequence
+        # if they are not is certain.
+        f"this host, and it will not launch without {them}: {listed}. {closing}"
+    )
+    return {
+        "name": f"verify-browser-libraries-{engine}",
+        # Nothing failed: the download succeeded and this step only read what it
+        # produced. Reporting it as a failure is what made a heuristic fatal.
+        "ok": True,
+        "advisory": True,
+        "returncode": 0,
+        # Two strings, both carrying DATA: the sentence naming the sonames, and the
+        # command, which the panel renders in a `<pre>` with a copy button because
+        # it must be transcribed exactly (the treatment `standalone_install` gets).
+        #
+        # The card's fixed heading is NOT one of them -- it is one literal with one
+        # consumer, so it belongs in the panel rather than travelling through a step
+        # field, dashboard state, the API payload and a TS type to arrive unchanged.
+        #
+        # Composed here in English rather than assembled from translated fragments:
+        # the sonames and the package list are data with no translation, so the card
+        # stays in one language, as `last_error` already does. Translating it means
+        # the gateway emitting structured data and the panel composing the sentence
+        # -- which needs a pluralised catalog key in every language, since the
+        # wording agrees with the count.
+        "advisory_prose": prose,
+        "advisory_command": command,
+    }
+
+
 def _download_browser(command: list[str], engine: str | None = None) -> list[dict[str, Any]]:
     """Download a browser build, adapting to what this host's OS allows.
 
@@ -1177,7 +1286,10 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     tried instead of only the last verdict.
 
     Every attempt is judged on its output as well as its exit code: a build whose
-    libraries are missing downloads "successfully" and cannot launch.
+    libraries are missing downloads "successfully" and cannot launch. That check
+    is not sufficient by itself either -- Playwright's validation false-negatives
+    on linux-arm64 -- so a successful download is FOLLOWED by a real library
+    probe (:func:`_verify_browser_libraries`).
     """
     selected_engine = engine or _DEFAULT_BROWSER_ENGINE
     base = [*command, "install-browser", selected_engine]
@@ -1195,13 +1307,20 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
             failure_signal=os_deps.host_deps_unsatisfied,
         )
 
+    def with_library_check(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Append the library verdict when the download succeeded."""
+        if not steps[-1]["ok"]:
+            return steps
+        verdict = _verify_browser_libraries(selected_engine)
+        return steps if verdict is None else [*steps, verdict]
+
     if not os_deps.with_deps_supported():
-        return [attempt(f"install-browser{suffix}", base, True)]
+        return with_library_check([attempt(f"install-browser{suffix}", base, True)])
 
     first = attempt(f"install-browser{suffix}", base + ["--with-deps"], False)
     if first["ok"]:
-        return [first]
-    return [first, attempt(f"install-browser{suffix}-no-deps", base, True)]
+        return with_library_check([first])
+    return with_library_check([first, attempt(f"install-browser{suffix}-no-deps", base, True)])
 
 
 def install() -> dict[str, Any]:

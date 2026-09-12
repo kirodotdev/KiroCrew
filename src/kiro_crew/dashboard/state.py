@@ -5521,6 +5521,12 @@ class DashboardState:
         self._browser_snapshot_pruner: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_install_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_install_error: str | None = None
+        # An advisory the install produced while SUCCEEDING -- a downloaded browser
+        # whose shared libraries may not resolve. Separate from the error so a working
+        # install is not rendered as a failure, and split from its command so the panel
+        # can put that in a `<pre>` with a copy button.
+        self._browser_install_notice: str | None = None
+        self._browser_install_notice_command: str | None = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.

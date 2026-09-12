@@ -3501,6 +3501,49 @@ async def api_browser_command_result(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _browser_install_notice(result: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The advisory an install produced as ``(prose, command)``.
+
+    An advisory step reports something the operator should act on while the
+    install itself SUCCEEDED -- currently a downloaded browser whose shared
+    libraries may not resolve (``browser_cli.install._verify_browser_libraries``).
+    It carries ``ok: True``, so the failure path above cannot surface it: that one
+    reads a step only when the install failed, and only the decisive last one.
+    Without this, the probe's whole value -- naming the libraries to install
+    before the operator meets a cryptic launch failure -- is computed and dropped.
+
+    Returned as two values because each is rendered differently: the prose is
+    muted, and the command goes in a `<pre>` with a copy button because it must be
+    transcribed EXACTLY -- the treatment this panel already gives
+    ``standalone_install``. The card's fixed heading is the panel's own string; it
+    carries no data, so routing it through here would ship a constant.
+
+    Keyed on the ``advisory`` flag rather than the step's name, so a second
+    advisory does not need this function edited to be seen.
+    """
+    if not result.get("ok"):
+        return (None, None)
+    for step in result.get("steps") or []:
+        if step.get("advisory"):
+            # The step's own name is deliberately NOT prefixed. Unlike
+            # `last_error`, which names the failing step because an operator needs
+            # to know which command broke, this text is a sentence about their
+            # machine -- prefixing it spends the first words on an internal
+            # identifier. Redacted and capped like `last_error`: it is rendered
+            # verbatim in Settings, and a command composed from a package
+            # manager's own output is exactly the kind of string that carries a
+            # proxy URL.
+            prose = step.get("advisory_prose")
+            if not prose:
+                continue
+            command = step.get("advisory_command") or ""
+            return (
+                _redact(str(prose).strip())[:2000],
+                _redact(str(command).strip())[:2000] or None,
+            )
+    return (None, None)
+
+
 async def api_browser_install_get(request: web.Request) -> web.Response:
     """GET /api/browser/install -- whether browsing is available, and why not.
 
@@ -3514,6 +3557,12 @@ async def api_browser_install_get(request: web.Request) -> web.Response:
     payload["installing"] = bool(task and not task.done())
     payload["token"] = browser_cli_token.has_token()
     payload["last_error"] = getattr(state, "_browser_install_error", None)
+    # Separate from `last_error` on purpose: the install SUCCEEDED, so rendering
+    # this as a failure would tell the operator to retry a download that worked.
+    payload["last_notice"] = getattr(state, "_browser_install_notice", None)
+    # The command lives in its own field so the panel can render it in a `<pre>`
+    # with a copy button; it must be transcribed exactly.
+    payload["last_notice_command"] = getattr(state, "_browser_install_notice_command", None)
     return web.json_response(payload)
 
 
@@ -3536,6 +3585,8 @@ async def api_browser_install_start(request: web.Request) -> web.Response:
 
         async def _run() -> None:
             state._browser_install_error = None
+            state._browser_install_notice = None
+            state._browser_install_notice_command = None
             try:
                 result = await asyncio.to_thread(browser_cli_install.install)
                 # The LAST step, not the first failed one. Two reasons, both of
@@ -3573,6 +3624,10 @@ async def api_browser_install_start(request: web.Request) -> web.Response:
                     state._browser_install_error = _redact(
                         f"{first.get('name', 'install')}: {str(detail).strip()}"
                     )[:2000]
+                (
+                    state._browser_install_notice,
+                    state._browser_install_notice_command,
+                ) = _browser_install_notice(result)
             except Exception as exc:  # noqa: BLE001 - surfaced to the operator
                 state._browser_install_error = _redact(str(exc))[:2000]
 
@@ -3625,6 +3680,8 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
 
     async def _run() -> None:
         state._browser_install_error = None
+        state._browser_install_notice = None
+        state._browser_install_notice_command = None
         try:
             result = await asyncio.to_thread(browser_cli_install.install_browser, engine)
             # The decisive step, not the first failed one: see the CLI install
@@ -3638,6 +3695,10 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
                     f"{first.get('name', 'install-browser')}: "
                     f"{first.get('stderr') or first.get('error') or 'failed'}"
                 )[:2000]
+            (
+                state._browser_install_notice,
+                state._browser_install_notice_command,
+            ) = _browser_install_notice(result)
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
             state._browser_install_error = _redact(str(exc))[:2000]
 
