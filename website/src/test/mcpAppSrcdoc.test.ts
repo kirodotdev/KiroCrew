@@ -4,6 +4,7 @@ import {
   buildMcpAppSrcdoc,
   buildAllowAttribute,
   sanitizeCspDomain,
+  mcpAppTabTitle,
   type McpAppRenderPayload,
 } from '../lib/mcpAppSrcdoc'
 
@@ -190,5 +191,34 @@ describe('buildMcpAppSrcdoc', () => {
   it('carries per-app resource domains into the injected policy', () => {
     const out = buildMcpAppSrcdoc(payload({ csp: { resourceDomains: ['https://esm.sh'] } }))
     expect(out).toContain('https://esm.sh')
+  })
+})
+
+describe('mcpAppTabTitle', () => {
+  const FALLBACK = 'MCP App'
+
+  it('returns server/tool when both are present', () => {
+    expect(mcpAppTabTitle({ server: 'show-tasks', tool: 'open_tasks' }, FALLBACK)).toBe('show-tasks/open_tasks')
+  })
+
+  it('returns server alone when tool is absent or empty', () => {
+    expect(mcpAppTabTitle({ server: 'excalidraw', tool: '' }, FALLBACK)).toBe('excalidraw')
+    expect(mcpAppTabTitle({ server: 'excalidraw', tool: '   ' }, FALLBACK)).toBe('excalidraw')
+  })
+
+  it('falls back when neither is present, treating empty/whitespace strings as absent', () => {
+    expect(mcpAppTabTitle(undefined, FALLBACK)).toBe(FALLBACK)
+    expect(mcpAppTabTitle({ server: '', tool: '' }, FALLBACK)).toBe(FALLBACK)
+    expect(mcpAppTabTitle({ server: '  ', tool: 'open_tasks' }, FALLBACK)).toBe(FALLBACK)
+  })
+
+  it('trims surrounding whitespace from both parts', () => {
+    expect(mcpAppTabTitle({ server: ' a ', tool: ' b ' }, FALLBACK)).toBe('a/b')
+  })
+
+  it('caps very long titles for the tooltip, ending with an ellipsis', () => {
+    const long = mcpAppTabTitle({ server: 'x'.repeat(100), tool: 'y'.repeat(100) }, FALLBACK)
+    expect(long.length).toBe(80)
+    expect(long.endsWith('\u2026')).toBe(true)
   })
 })

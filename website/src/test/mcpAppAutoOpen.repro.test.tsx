@@ -81,8 +81,8 @@ function renderChat(store: ReturnType<typeof createTestStore>) {
   )
 }
 
-const renderPayload = (session_key: string, tool_call_id: string) => ({
-  session_key, tool_call_id, server: 'aws-mcp', tool: 'visualize',
+const renderPayload = (session_key: string, tool_call_id: string, server = 'aws-mcp', tool = 'visualize') => ({
+  session_key, tool_call_id, server, tool,
   html: '<!doctype html><html><body>app</body></html>', csp: null, permissions: null,
   spool_id: 'spool-1',
 })
@@ -120,5 +120,57 @@ describe('#2118 — MCP app side panel auto-opens on first render', () => {
       expect(strip.result.current.tabs.some(t => t.id === 'app:call-1')).toBe(true)
     })
     expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  // #9868 — the chip title must identify the app, not read the constant label.
+  it('titles the app tab server/tool from the render payload', async () => {
+    const store = createTestStore()
+    renderChat(store)
+    const strip = renderHook(() => usePanelTabs('slot-a'))
+    act(() => { store.dispatch(switchSlot.pending('r1', 'slot-a')) })
+    await waitFor(() => expect(dashboardConfig).toHaveBeenCalled())
+    await act(async () => { await Promise.resolve() })
+
+    act(() => { store.dispatch(sseMcpAppRender(renderPayload('slot-a', 'call-1', 'show-tasks', 'open_tasks'))) })
+
+    await waitFor(() => {
+      expect(strip.result.current.tabs.find(t => t.id === 'app:call-1')?.title).toBe('show-tasks/open_tasks')
+    })
+  })
+
+  it('gives two apps from different servers different chip titles', async () => {
+    const store = createTestStore()
+    renderChat(store)
+    const strip = renderHook(() => usePanelTabs('slot-a'))
+    act(() => { store.dispatch(switchSlot.pending('r1', 'slot-a')) })
+    await waitFor(() => expect(dashboardConfig).toHaveBeenCalled())
+    await act(async () => { await Promise.resolve() })
+
+    act(() => { store.dispatch(sseMcpAppRender(renderPayload('slot-a', 'call-1', 'show-tasks', 'open_tasks'))) })
+    act(() => { store.dispatch(sseMcpAppRender(renderPayload('slot-a', 'call-2', 'excalidraw', 'create_view'))) })
+
+    await waitFor(() => {
+      const titles = strip.result.current.tabs.filter(t => t.kind === 'app').map(t => t.title)
+      expect(titles).toContain('show-tasks/open_tasks')
+      expect(titles).toContain('excalidraw/create_view')
+    })
+  })
+
+  it('falls back to the i18n label when the payload lacks server/tool', async () => {
+    const store = createTestStore()
+    renderChat(store)
+    const strip = renderHook(() => usePanelTabs('slot-a'))
+    act(() => { store.dispatch(switchSlot.pending('r1', 'slot-a')) })
+    await waitFor(() => expect(dashboardConfig).toHaveBeenCalled())
+    await act(async () => { await Promise.resolve() })
+
+    act(() => { store.dispatch(sseMcpAppRender(renderPayload('slot-a', 'call-1', '', ''))) })
+
+    await waitFor(() => {
+      const tab = strip.result.current.tabs.find(t => t.id === 'app:call-1')
+      expect(tab).toBeDefined()
+      // The i18n test harness resolves keys to their English catalog value.
+      expect(tab!.title).toBe('MCP App')
+    })
   })
 })

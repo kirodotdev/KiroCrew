@@ -72,6 +72,32 @@ export interface McpAppRenderPayload {
   result_content?: unknown
 }
 
+/** Longest chip title we emit. The chip itself truncates via CSS; this cap
+ * bounds the tab's `title`/`aria-label` text when a server advertises a very
+ * long name. */
+const MAX_APP_TAB_TITLE = 80
+
+/**
+ * Human-distinguishable title for an MCP App's side-panel tab chip, derived
+ * from the render payload already in the store: `server/tool` when both are
+ * present, `server` alone when only it is, otherwise the caller's fallback
+ * (the i18n "MCP App" label). The identity is a server-provided identifier,
+ * not translatable prose, so no i18n key is involved beyond the fallback.
+ */
+export function mcpAppTabTitle(
+  payload: Pick<McpAppRenderPayload, 'server' | 'tool'> | undefined,
+  fallback: string,
+): string {
+  const server = typeof payload?.server === 'string' ? payload.server.trim() : ''
+  const tool = typeof payload?.tool === 'string' ? payload.tool.trim() : ''
+  const title = server && tool ? `${server}/${tool}` : server
+  if (!title) return fallback
+  if (title.length <= MAX_APP_TAB_TITLE) return title
+  // Cut by code POINT, not UTF-16 unit, so an emoji or astral CJK char at the
+  // boundary is dropped whole instead of leaving a lone surrogate (U+FFFD).
+  return `${[...title].slice(0, MAX_APP_TAB_TITLE - 1).join('')}…`
+}
+
 // A CSP source token we accept: https:// only, an optional single `*.`
 // wildcard-subdomain prefix, a DNS host (labels of [a-z0-9-], not starting or
 // ending with a hyphen), and an optional :port. No path, no query, no scheme
