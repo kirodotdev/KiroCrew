@@ -2073,11 +2073,16 @@ def _column0_activation_declared(text: str) -> bool:
             return True
         if key != "always":
             continue
-        # Strip whitespace AFTER removing the quotes as well as before. The loader
-        # unquotes with ``str.strip("\"'")`` and its consumers then compare
-        # ``.strip().lower() == "true"``, so ``always: " true "`` activates a skill --
-        # while stripping only on the outside leaves ``" true "`` -> `` true ``, which
-        # matches no truthy word here and let that spelling through the screen.
+        # Strip whitespace AFTER removing the quotes as well as before: the
+        # loader's consumers compare ``.strip().lower() == "true"``, so
+        # ``always: " true "`` activates a skill -- while stripping only on the
+        # outside leaves ``" true "`` -> `` true ``, which matches no truthy
+        # word here and let that spelling through the screen. This run-strip is
+        # deliberately WIDER than the loader's unquote (one matched wrapping
+        # level; see ``frontmatter.FrontmatterDialect.strip_quotes``): every
+        # spelling the loader reads as truthy is run-strip truthy too, so the
+        # divergence only ever detects MORE spellings as activating -- the
+        # fail-closed direction this gate must err on.
         value = raw.strip().strip("\"'").strip().casefold()
         if value in {"1", "true", "yes"} or parse_block_scalar_header(value) is not None:
             return True

@@ -378,10 +378,10 @@ describe('structured editor preserves unmodelled frontmatter', () => {
   })
 
   it('writes managed values in a form the backend reader decodes', () => {
-    /* The backend reads frontmatter with its own line parser that strips quote
-       characters and does NOT unescape, so the writer must not emit a form that
-       needs unescaping. Verified against the real reader; a tab is emitted raw
-       and a colon/hash/padded value is quoted but escape-free, so all round-trip.
+    /* The backend reads frontmatter with its own line parser that unwraps one
+       matched level of quotes and does NOT unescape, so the writer must not emit a
+       form that needs unescaping. Verified against the real reader; a tab is emitted
+       raw and a colon/hash/padded value is quoted but escape-free, so all round-trip.
        See the review thread for the measured table. */
     const cases = ['a\tb', 'ratio: 3', 'a # b', '  padded', 'padded  ', 'one\ntwo', 'a\\b']
     for (const value of cases) {
@@ -601,11 +601,13 @@ describe('structured editor preserves unmodelled frontmatter', () => {
     expect(commentIsTheOnlyObstacle(raw)).toBe(false)
   })
 
-  it('never emits a scalar the reader would strip a boundary quote from', () => {
-    /* GPT round 16, measured against the real SKILL_LOADER: it unquotes with
-       `value.strip("\"'")`, which cannot tell a wrapping quote from one that belongs
-       to the text. Each value must survive a round-trip through the reader, which
-       means the writer has to reach for the block literal. */
+  it('still emits a block literal for a typed value with a boundary quote', () => {
+    /* GPT round 16 introduced this route when the reader was a run-strip that ate
+       boundary quotes. The reader now unwraps only a matched level, so an inline
+       spelling would survive too -- but the block literal stays, exactly as the
+       explicit-indicator refusal does: it is the one representation with no quoting
+       subtleties on either side, and relaxing it is a capability change, not a
+       correctness one. Each value must still survive a reader round-trip. */
     for (const value of ['Runs "build"', '"build" runs', '"build"', "it's a mess'", "'quoted'"]) {
       const out = assembleSkillContent({
         name: 's', category: '', description: value,
@@ -750,15 +752,15 @@ describe('structured editor preserves unmodelled frontmatter', () => {
     expect(assembleSkillContent(parseSkillContent(raw, 's'))).toBe(raw)
   })
 
-  it('declines an existing plain scalar whose boundary quote the backend eats', () => {
-    /* Read side. The file already says `Runs "build"`; the backend reads
-       `Runs "build`. The two dialects disagree about what this file currently means,
-       so the form must not adopt one reading and save it. Distinct from the WRITE-side
-       rule above: a value with boundary quotes TYPED into the form is emitted as a
-       block literal, because there the user's intent is unambiguous. */
+  it('keeps a plain scalar with a boundary quote editable', () => {
+    /* Read side, flipped by #7063: the run-strip reader ate the trailing quote of
+       `description: Runs "build"`, so the two dialects disagreed about what the file
+       meant and the form had to refuse. The reader now keeps a content quote
+       byte-identical -- both sides read `Runs "build"` -- so refusing this would be
+       over-reach, the same as an interior quote. */
     const raw = ['---', 'name: s', 'description: Runs "build"', 'repo_scope: x', '---', '', '# Body'].join('\n')
-    expect(canEditStructured(raw)).toBe(false)
-    expect(assembleSkillContent(parseSkillContent(raw, 's'))).toBe(raw)
+    expect(canEditStructured(raw)).toBe(true)
+    expect(parseSkillContent(raw, 's').description).toBe('Runs "build"')
   })
 
   it('keeps a scalar with interior quotes editable', () => {
