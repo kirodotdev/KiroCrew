@@ -851,6 +851,60 @@ soft-cancel success) gates the one-shot re-injection.
 5. User returns → new session with history re-injected
 6. After 10+ messages → background consolidation → structured memory updated
 
+## Inline Image Attachments (`chat_attachments.py`)
+
+A message's inline images are session-scoped content and are stored with its
+transcript. `![alt](/abs/path.png)` is resolved off disk by the dashboard at VIEW
+time (`/api/file-raw`), and the path an agent writes normally points into its own
+per-process scratch directory (`agent_scratch.py`), which is reclaimed when the
+agent process dies — so the reference outlives the bytes and the transcript
+renders a missing-file chip.
+
+At each write boundary the referenced image is copied into
+`<sessions dir>/<transcript stem>.attachments/<sha256[:16]>-<basename>` and the
+**persisted** destination is rewritten to point there. Two boundaries share the
+one helper, `persist_inline_images`:
+
+| Boundary | Covers |
+|---|---|
+| `ConversationLog.append` / `append_if_absent` | agent, channel, cron and workflow rows |
+| `chat_persistence._build_message_entry` | the dashboard slot save's window re-serialization |
+
+Contract:
+
+- **Copy, never move.** The original file stays where the agent put it, and the
+  in-memory row keeps naming it — only the persisted text changes.
+- **Content-addressed**, so one image referenced by many messages is stored once.
+- **Idempotent**: a destination already inside the attachments directory is left
+  alone, which lets the two boundaries compose and lets the slot save
+  re-serialize its window on every flush without re-copying.
+- **`role != "user"`**, the same gate the redaction boundary uses: an inline image
+  is agent output, and a path the user typed names a file of their own.
+- **Fail-open per image**, at debug level. Skipped: remote and `data:`
+  destinations, relative paths, non-image extensions, anything over 25 MiB,
+  sensitive paths, and non-regular files — **symlinks are refused, never
+  followed**, because the copy lands where the dashboard serves it.
+- `delete_session` removes the attachments directory alongside the transcript and
+  its sidecars, so a deleted conversation leaves no orphaned images.
+
+Reads go through `hooks.safe_read_file_bytes_nolink`, the house chokepoint: it
+opens the final component as itself on every platform and validates the
+descriptor it opened (regular, not hardlinked, not sensitive), so no
+check-to-use window remains.
+
+**Reclamation is delete-only, by decision.** Rotation moves old rows to
+`archive/`, and those rows still name their attachments — so rotation orphans
+nothing and must not sweep; sweeping against the live transcript alone would
+break the references the archive keeps. An attachment becomes genuinely
+unreferenced only when archive retention expires its last row, and the residue
+until session delete is bounded by content-addressing plus the per-image
+ceiling. A reachability sweep over a session's whole transcript-plus-archive
+chain is out of scope for the write boundary.
+
+`sessions/` is write-protected but deliberately not read-sensitive
+(`security/paths.py`), so `/api/file-raw` serves an attachment under the existing
+sensitive-path policy.
+
 ## Source Provenance
 
 Messages include `source_thread` and `source_user` fields:

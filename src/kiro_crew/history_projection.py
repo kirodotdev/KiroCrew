@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
+from kiro_crew.chat_attachments import remove_attachments
 from kiro_crew.history_cache import _FileChangeCacheEntry
 from kiro_crew.jsonl_util import bounded_raw_records
 
@@ -1217,6 +1218,22 @@ class SessionMetadataProjection:
                         "delete_session: search index present but unreadable, so a "
                         "copy of this session's text may remain; not deleting "
                         "key=%s (remove the index to proceed)",
+                        key,
+                    )
+                    return False
+                # The images this session's messages showed are its content --
+                # served by ``/api/file-raw`` the way the transcript's text is
+                # served by the session view -- so they are in the same class as
+                # the search index above and take the same treatment: removed
+                # BEFORE the transcript, and a failure ABORTS the delete rather
+                # than reporting one it did not complete. Nothing is destroyed yet
+                # at this point, so the delete can simply be retried. Ordering it
+                # after the unlink instead would report success while leaving
+                # served images behind and no transcript left to find them from.
+                if not remove_attachments(path.parent, path.stem):
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: attachments remain for key=%s, not deleting "
+                        "(the images this session showed would outlive it)",
                         key,
                     )
                     return False
