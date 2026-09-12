@@ -99,7 +99,7 @@ class TestApiCronToChat:
                 # may have edited since. Pinning it here keeps a later
                 # refactor from silently pairing the two again.
                 mock_inject.assert_called_once_with(
-                    state, job, "Hello world", history=ANY, include_prompt=False
+                    state, job, "Hello world", history=ANY, dismissed=ANY, include_prompt=False
                 )
 
     @pytest.mark.asyncio
@@ -117,6 +117,64 @@ class TestApiCronToChat:
             slot = state.get_or_create_slot(name="cron-deleted123")
             assert slot.linked_session_key == "cron:deleted123"
             assert len(slot.messages) == 2
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_with_history_restores_dismissals(self):
+        # The deleted-job history branch hydrates messages; it must ALSO restore
+        # the transcript's dismissed source-link set, or a re-surfaced one-shot
+        # session shows a chip the user unlinked and its next save erases the
+        # tombstone. Readable metadata -> the set is restored.
+        history = [{"role": "assistant", "content": "world"}]
+        state = _make_state(history_messages=history)
+        key = "phor5::pull::11"
+        state.conversation_log.get_metadata_status.return_value = (
+            {"_type": "metadata", "dismissed_source_links": [key]},
+            True,
+        )
+        slot_holder = {}
+        _orig_goc = state.get_or_create_slot
+
+        def _get_or_create(name=None, agent="", origin=""):
+            s = _orig_goc(name=name, agent=agent, origin=origin)
+            if "s" not in slot_holder:
+                s._dismissed_source_links = set()
+                slot_holder["s"] = s
+            return s
+
+        with patch(
+            "kiro_crew.dashboard.handlers.source_providers.is_valid_source_identity_key",
+            return_value=True,
+        ):
+            state.get_or_create_slot = _get_or_create
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/crons/deleted123/to-chat")
+                assert resp.status == 200
+        assert slot_holder["s"]._dismissed_source_links == {key}  # restored, not empty
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_defers_dismissed_when_metadata_unreadable(self):
+        # The deleted-job branch marks the slot _dismissed_hydrated=False BEFORE
+        # the off-loop read, so a periodic flush during the await carries the
+        # on-disk line forward instead of erasing it. An unreadable read leaves it
+        # deferred (never restored to True).
+        history = [{"role": "assistant", "content": "world"}]
+        state = _make_state(history_messages=history)
+        state.conversation_log.get_metadata_status.return_value = ({}, False)  # unreadable
+        slot_holder = {}
+        _orig_goc = state.get_or_create_slot
+
+        def _get_or_create(name=None, agent="", origin=""):
+            s = _orig_goc(name=name, agent=agent, origin=origin)
+            if "s" not in slot_holder:
+                s._dismissed_source_links = set()
+                slot_holder["s"] = s
+            return s
+
+        state.get_or_create_slot = _get_or_create
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        assert slot_holder["s"]._dismissed_hydrated is False  # write deferred, not erased
 
     @pytest.mark.asyncio
     async def test_deleted_job_no_history_uses_notification(self):

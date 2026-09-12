@@ -10395,7 +10395,10 @@
       "board_update_failed": "Échec de la mise à jour du tableau",
       "open_crew_members": "Membres de l’équipe",
       "open_crew_members_desc": "Ouvre la page Membres de l’équipe : chaque membre est un agent permanent avec son propre fil.",
-      "open_crew_members_gated_desc": "Ouvre d’abord les Réglages pour activer cet aperçu : la page n’est pas disponible avant cela."
+      "open_crew_members_gated_desc": "Ouvre d’abord les Réglages pour activer cet aperçu : la page n’est pas disponible avant cela.",
+      "source_link_actions": "Source link actions",
+      "unlink_source_link": "Dissocier de cette session",
+      "unlink_source_link_failed": "Échec de la dissociation. Réessayez."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

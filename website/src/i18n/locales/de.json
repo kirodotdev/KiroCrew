@@ -10241,7 +10241,10 @@
       "board_update_failed": "Board-Aktualisierung fehlgeschlagen",
       "open_crew_members": "Crew-Mitglieder",
       "open_crew_members_desc": "Öffnet die Seite Crew-Mitglieder – jedes Mitglied ist ein dauerhafter Agent mit eigenem Thread.",
-      "open_crew_members_gated_desc": "Öffnet zuerst die Einstellungen, um diese Vorschau einzuschalten – vorher ist die Seite nicht verfügbar."
+      "open_crew_members_gated_desc": "Öffnet zuerst die Einstellungen, um diese Vorschau einzuschalten – vorher ist die Seite nicht verfügbar.",
+      "source_link_actions": "Source link actions",
+      "unlink_source_link": "Von dieser Sitzung trennen",
+      "unlink_source_link_failed": "Trennen fehlgeschlagen. Erneut versuchen."
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

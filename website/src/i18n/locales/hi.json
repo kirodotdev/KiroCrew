@@ -10241,7 +10241,10 @@
       "board_update_failed": "बोर्ड अपडेट विफल",
       "open_crew_members": "क्रू सदस्य",
       "open_crew_members_desc": "क्रू सदस्य पेज खोलता है — हर सदस्य एक स्थायी एजेंट है, जिसका अपना थ्रेड है।",
-      "open_crew_members_gated_desc": "पहले सेटिंग्स खोलता है, ताकि तुम इस प्रीव्यू को चालू कर सको — चालू करने तक यह पेज उपलब्ध नहीं है।"
+      "open_crew_members_gated_desc": "पहले सेटिंग्स खोलता है, ताकि तुम इस प्रीव्यू को चालू कर सको — चालू करने तक यह पेज उपलब्ध नहीं है।",
+      "source_link_actions": "सोर्स लिंक क्रियाएँ",
+      "unlink_source_link": "इस सत्र से अनलिंक करें",
+      "unlink_source_link_failed": "अनलिंक नहीं हो सका। पुनः प्रयास करें।"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

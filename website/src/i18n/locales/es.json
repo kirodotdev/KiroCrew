@@ -10395,7 +10395,10 @@
       "board_update_failed": "Fallo al actualizar el tablero",
       "open_crew_members": "Miembros del equipo",
       "open_crew_members_desc": "Abre la página Miembros del equipo: cada miembro es un agente permanente con su propio hilo.",
-      "open_crew_members_gated_desc": "Abre primero Ajustes para activar esta vista previa: la página no está disponible hasta que lo hagas."
+      "open_crew_members_gated_desc": "Abre primero Ajustes para activar esta vista previa: la página no está disponible hasta que lo hagas.",
+      "source_link_actions": "Source link actions",
+      "unlink_source_link": "Desvincular de esta sesión",
+      "unlink_source_link_failed": "No se pudo desvincular. Inténtalo de nuevo."
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

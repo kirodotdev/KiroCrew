@@ -10087,7 +10087,10 @@
       "board_update_failed": "看板更新失败",
       "open_crew_members": "团队成员",
       "open_crew_members_desc": "打开团队成员页面——每个成员都是一个常驻代理，各有自己的话题。",
-      "open_crew_members_gated_desc": "会先打开设置以开启此预览——开启之前该页面不可用。"
+      "open_crew_members_gated_desc": "会先打开设置以开启此预览——开启之前该页面不可用。",
+      "source_link_actions": "源链接操作",
+      "unlink_source_link": "从此会话取消关联",
+      "unlink_source_link_failed": "无法取消关联，请重试。"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

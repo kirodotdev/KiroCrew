@@ -10087,7 +10087,10 @@
       "board_update_failed": "보드 업데이트 실패",
       "open_crew_members": "크루 멤버",
       "open_crew_members_desc": "크루 멤버 페이지를 엽니다. 각 멤버는 자기 스레드를 가진 상주 에이전트입니다.",
-      "open_crew_members_gated_desc": "먼저 설정을 열어 이 미리보기를 켭니다. 켜기 전까지 페이지를 사용할 수 없습니다."
+      "open_crew_members_gated_desc": "먼저 설정을 열어 이 미리보기를 켭니다. 켜기 전까지 페이지를 사용할 수 없습니다.",
+      "source_link_actions": "소스 링크 작업",
+      "unlink_source_link": "이 세션에서 링크 해제",
+      "unlink_source_link_failed": "링크를 해제하지 못했습니다. 다시 시도하세요."
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

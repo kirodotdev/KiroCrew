@@ -712,6 +712,11 @@ interface Slot {
     // What the link points at. OPTIONAL on the wire — absent means 'change', so
     // older payloads and existing fixtures keep rendering as PR/MR chips.
     kind?: 'change' | 'issue'
+    // Opaque serialized `SourceRef.identity`, passed straight back to the
+    // unlink DELETE endpoint. OPTIONAL on the wire so a bundle newer than its
+    // gateway still renders chips (they just cannot be unlinked until the
+    // gateway sends it — the affordance hides when it is absent).
+    identity?: string
   }>
   source_links_total?: number
 }
@@ -856,6 +861,49 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
   onActivateSlot: () => void
 }) {
   const [wantsExpanded, setWantsExpanded] = useState(false)
+  const queryClient = useQueryClient()
+  // Identities the user just unlinked, hidden OPTIMISTICALLY so the chip goes at
+  // the click rather than waiting for the server's slots push to echo back. The
+  // authoritative removal still arrives via that push (and the expand refetch),
+  // so this only covers the gap; a failed unlink removes the identity here again
+  // and surfaces the error next to the strip.
+  const [optimisticallyUnlinked, setOptimisticallyUnlinked] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const [unlinkError, setUnlinkError] = useState<{ message: string; raw: string } | null>(null)
+
+  const unlink = useMutation({
+    mutationFn: (identity: string) => api.unlinkSourceLink(slotKey, identity),
+    onMutate: (identity: string) => {
+      setUnlinkError(null)
+      setOptimisticallyUnlinked(prev => new Set(prev).add(identity))
+    },
+    onError: (err, identity) => {
+      // Revert: the object is still linked, so re-show its chip and say so.
+      setOptimisticallyUnlinked(prev => {
+        const next = new Set(prev)
+        next.delete(identity)
+        return next
+      })
+      // Display string is ALWAYS the localized catalog string — never the raw
+      // Error message (a rebind/gone 409, a 404, or a transport "Failed to
+      // fetch" surfaced raw would leak server/browser text and leave the
+      // 12-locale `unlink_source_link_failed` key dead on the common paths). But
+      // KEEP the raw message as the structured-report lookup key: ErrorNotice's
+      // `report` recovers the full diagnostic context (code, journal) from it, so
+      // the failure is not flattened to a bare sentence — the display stays
+      // friendly while the structured error survives.
+      setUnlinkError({
+        message: i18nT('pages.chatSidebar.unlink_source_link_failed'),
+        raw: err instanceof Error ? err.message : String(err),
+      })
+    },
+    onSuccess: () => {
+      // The expanded list is a separate cached read; drop it so a re-expand
+      // re-fetches without the unlinked chip rather than serving the stale set.
+      void queryClient.invalidateQueries({ queryKey: ['session-source-links', slotKey] })
+    },
+  })
 
   /** What the slots payload currently says this row's links are.
    *
@@ -902,6 +950,11 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
   const pendingFocus = useRef<'expand' | 'collapse' | null>(null)
   const expandRef = useRef<HTMLButtonElement>(null)
   const collapseRef = useRef<HTMLButtonElement>(null)
+  // Anchors the portaled unlink-failure notice: the strip lives inside an
+  // overflow-hidden, fixed-height row, so the notice is portaled to the body and
+  // positioned from this rect rather than floating in-flow (which would clip or
+  // grow the row).
+  const stripRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const want = pendingFocus.current
     if (!want) return
@@ -909,10 +962,20 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
     ;(want === 'collapse' ? collapseRef : expandRef).current?.focus()
   }, [isExpanded])
 
-  const shown = isExpanded && fetchedLinks ? fetchedLinks : links
-  // Derived from what is actually on screen, so it lands on 0 once expanded and
-  // self-corrects if a payload ever reports a total below the links it carries.
-  const hidden = typeof total === 'number' ? Math.max(0, total - shown.length) : 0
+  const shownAll = isExpanded && fetchedLinks ? fetchedLinks : links
+  // Hide anything the user just unlinked until the authoritative slots push
+  // (or expand refetch) reflects it. Keyed on the same opaque identity the
+  // DELETE endpoint takes.
+  const shown = optimisticallyUnlinked.size
+    ? shownAll.filter(link => !(link.identity && optimisticallyUnlinked.has(link.identity)))
+    : shownAll
+  // Derived from the UNFILTERED set, so the optimistic-unlink filter only
+  // removes visible chips and never inflates the overflow count: computing this
+  // against `shown` would subtract an already-hidden chip from the stale server
+  // `total` and render a phantom "+1 more" for the round-trip window until the
+  // slots push refreshes `total`. Lands on 0 once expanded and self-corrects if
+  // a payload ever reports a total below the links it carries.
+  const hidden = typeof total === 'number' ? Math.max(0, total - shownAll.length) : 0
   const changeLinks = shown.filter(link => (link.kind ?? 'change') !== 'issue')
   const issueLinks = shown.filter(link => (link.kind ?? 'change') === 'issue')
 
@@ -968,8 +1031,55 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
     e.preventDefault()
   }
 
+  /** The unlink affordance rendered inside each chip: a small X that removes the
+   *  chip from THIS session. Hidden when the gateway did not send an identity
+   *  (an older backend) — there is nothing to name to the DELETE endpoint then.
+   *  Never a native anchor drag target, and it stops propagation so the click
+   *  neither navigates the chip's link nor reaches the row's switch handler. */
+  // Per-chip overflow menu holding the unlink action. This is the
+  // `max-two-buttons-per-row` overflow pattern (a DropdownMenu trigger counts as
+  // ONE control however many items it holds, and per-item menus are the rule's
+  // named remedy — see SessionActionsMenu): the chip is a link + a single menu
+  // trigger, never a link + a resting destructive button, so N chips never stack
+  // 2N action controls. Unlike a bare ✕, the trigger is a NEUTRAL affordance, so
+  // it can stay visible on a COARSE (touch) pointer — which has no hover/focus —
+  // giving touch an unlink entry point, while a fine pointer keeps the calm
+  // resting state (revealed on the chip's hover / focus-within). The menu content
+  // is portaled by the primitive, so the failure/confirmation UI it anchors is
+  // never clipped by the row's overflow-hidden column.
+  const unlinkMenu = (link: SidebarSourceLink) =>
+    link.identity ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <IconButton
+            data-testid={`session-source-unlink-${link.number}`}
+            draggable={false}
+            disabled={!connected || unlink.isPending}
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+            className="shrink-0 -mr-0.5 ml-0.5 opacity-0 pointer-events-none group-hover/chip:opacity-100 group-hover/chip:pointer-events-auto group-focus-within/chip:opacity-100 group-focus-within/chip:pointer-events-auto focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100 [@media(pointer:coarse)]:pointer-events-auto transition-opacity"
+            title={i18nT('pages.chatSidebar.source_link_actions')}
+            aria-label={i18nT('pages.chatSidebar.source_link_actions')}>
+            <MoreVertical className="lucide-inline shrink-0" aria-hidden="true" />
+          </IconButton>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" onClick={e => e.stopPropagation()}>
+          <DropdownMenuItem
+            className="text-danger focus:text-danger"
+            data-testid={`session-source-unlink-item-${link.number}`}
+            onSelect={() => unlink.mutate(link.identity as string)}>
+            <X className="lucide-inline shrink-0" aria-hidden="true" />
+            {i18nT('pages.chatSidebar.unlink_source_link')}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : null
+
   return (
-    <div className="flex flex-wrap gap-1.5 mt-1">
+    <div ref={stripRef} className="relative flex flex-wrap gap-1.5 mt-1">
       {changeLinks.map(link => (
         // `link.url` is always an `https://` URL on an allowlisted host
         // (state.py scans for the literal "https://" then validates via
@@ -979,10 +1089,30 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
         // disables its own native HTML5 drag — that would otherwise put the URL
         // on the dataTransfer instead of the slot key in the board/flat scopes
         // that use native drag.
-        <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
+        //
+        // Wrapper span rather than a button nested in the anchor (invalid HTML):
+        // the chip stays a real link and the unlink X sits beside it.
+        //
+        // NAMED group (`group/chip` + the X's `group-hover/chip:opacity-100` /
+        // `group-focus-within/chip:opacity-100`) reveals the destructive control
+        // only when the user is on THIS chip. A bare `group-hover` would bind to
+        // the ENCLOSING session-row group (the row is itself a `group` for its
+        // own hover-revealed controls), so hovering anywhere on the row would
+        // reveal EVERY chip's X at once — the per-chip name scopes it.
+        // `focus-within` keeps the X reachable by keyboard (it fades in the
+        // moment the chip's link takes focus via Tab). Revealing only the chip
+        // the user is on is also what keeps the strip within
+        // `max-two-buttons-per-row`: at most one chip's link + its X are the
+        // visible controls at a time, never 2N for N chips. Touch (coarse
+        // pointer, no hover) does NOT expose the X — tapping the chip activates
+        // its link — so unlink on touch is a known follow-up, not offered here.
+        // While hidden the X is
+        // `pointer-events-none` so a stray click cannot hit an invisible target.
+        <span key={link.url} className="group/chip inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60 hover:text-text hover:border-accent">
+        <a href={link.url} target="_blank" rel="noopener noreferrer"
           draggable={false}
           onClick={revealInPanel(link)}
-          className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
+          className="inline-flex items-center gap-1 no-underline text-inherit"
           title={chipTitle(link)}>
           <SourceLinkIcon provider={link.provider} />
           {chipLabel(link)}
@@ -1029,6 +1159,8 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
             }
           })()}
         </a>
+        {unlinkMenu(link)}
+        </span>
       ))}
       {issueLinks.map(link => (
         // Issue chip: the same anchor discipline (reveal in panel, no native
@@ -1039,16 +1171,22 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
         // (`source_ref_label`), so nothing here branches on provider except the
         // issue dot, which Jira does not get: its label is already a whole
         // identifier (PROJ-123) rather than a bare number needing a marker.
-        <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
+        //
+        // `group/chip` (matching the change-chip wrapper) so this chip's unlink
+        // X reveals only on ITS hover/focus, not on the enclosing session row.
+        <span key={link.url} className="group/chip inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60 hover:text-text hover:border-accent">
+        <a href={link.url} target="_blank" rel="noopener noreferrer"
           data-testid={`session-issue-chip-${link.number}`}
           draggable={false}
           onClick={revealInPanel(link)}
-          className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
+          className="inline-flex items-center gap-1 no-underline text-inherit"
           title={chipTitle(link)}>
           <SourceLinkIcon provider={link.provider} />
           {link.provider !== 'jira' && <CircleDot className="lucide-inline shrink-0" aria-hidden="true" />}
           {chipLabel(link)}
         </a>
+        {unlinkMenu(link)}
+        </span>
       ))}
       {hidden > 0 && (
         // Gated on `hidden`, NOT on the expand intent: a row whose payload moved
@@ -1097,6 +1235,42 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
           aria-label={i18nT('pages.chatSidebar.collapse_source_links')}>
           <ChevronUp className="lucide-inline shrink-0" aria-hidden="true" />
         </button>
+      )}
+      {unlinkError && (
+        // Surfaced next to the chips rather than as a toast (a useNotify toast
+        // cannot host the agent hand-off the errors-use-error-notice contract
+        // wants). ErrorNotice gives the failure the shared structured-error
+        // treatment; `message` is ALWAYS the localized catalog string, while
+        // `report` recovers the STRUCTURED diagnostic context from the raw error
+        // (findReport keyed on the raw message) so the failure is not flattened.
+        // askAgent is ON: an action failure with no unsaved draft offers the
+        // hand-off.
+        //
+        // PORTALED to document.body and FIXED-positioned from the strip's rect
+        // rather than floated in-flow: the chip strip lives inside a fixed-height
+        // row whose column is `overflow-hidden`, so an in-flow notice would grow
+        // the row and an `absolute` one would be CLIPPED by that column. The
+        // portal escapes both — the row geometry is untouched and the reason is
+        // never clipped.
+        stripRef.current &&
+          createPortal(
+            <div
+              className="fixed z-50 w-max max-w-[calc(100vw-2rem)]"
+              style={{
+                top: stripRef.current.getBoundingClientRect().bottom + 4,
+                left: stripRef.current.getBoundingClientRect().left,
+              }}>
+              <ErrorNotice
+                variant="inline"
+                askAgent
+                message={unlinkError.message}
+                report={findReport(unlinkError.raw)}
+                onDismiss={() => setUnlinkError(null)}
+                testId="session-source-unlink-error"
+              />
+            </div>,
+            document.body,
+          )
       )}
     </div>
   )

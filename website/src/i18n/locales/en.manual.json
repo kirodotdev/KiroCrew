@@ -4026,7 +4026,10 @@
       "board_update_failed": "Board update failed",
       "open_crew_members": "Crew Members",
       "open_crew_members_desc": "Opens the Crew Members page — each member is a standing agent with its own thread.",
-      "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do."
+      "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do.",
+      "source_link_actions": "Source link actions",
+      "unlink_source_link": "Unlink from this session",
+      "unlink_source_link_failed": "Could not unlink. Try again."
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

@@ -37,9 +37,11 @@ from kiro_crew.cron_script import (
     resolve_script_path,
     validate_secret_env_grant,
 )
+from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
+    prefetch_cron_dismissed,
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
@@ -1694,7 +1696,12 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
         # that produced it is not recoverable from live config -- see
         # inject_cron_result_to_dashboard's ``include_prompt``.
         inject_cron_result_to_dashboard(
-            state, job, job.last_result or "", history=history, include_prompt=False
+            state,
+            job,
+            job.last_result or "",
+            history=history,
+            dismissed=await prefetch_cron_dismissed(state, job.id),
+            include_prompt=False,
         )
     else:
         # Job deleted (one-shot with delete_after_run). Create slot from history or notification.
@@ -1709,6 +1716,25 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             if not slot.linked_session_key:
                 slot.linked_session_key = session_key
                 hydrate_slot_from_history(slot, history)
+                # Mark dismissed-UNHYDRATED before the off-loop read: the slot is
+                # now bound + dirty with an empty in-memory set, and a periodic
+                # flush during the await would otherwise serialize [] over the
+                # transcript's real dismissals. With the flag False any such flush
+                # carries the on-disk line forward instead. A readable restore
+                # below then hydrates it; an unreadable read leaves it deferred.
+                # (get_or_create_slot cleared the set on the bind, so without the
+                # restore a re-surfaced deleted-job session would show a chip the
+                # user unlinked.)
+                slot._dismissed_hydrated = False
+                if state.conversation_log is not None:
+                    try:
+                        _meta, _readable = await asyncio.to_thread(
+                            state.conversation_log.get_metadata_status, session_key
+                        )
+                    except Exception:
+                        _meta, _readable = {}, False
+                    if _readable:
+                        _restore_dismissed_source_links(slot, _meta.get("dismissed_source_links"))
         else:
             # No session log — fall back to notification body.
             notif = next(

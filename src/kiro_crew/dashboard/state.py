@@ -3409,6 +3409,9 @@ class _ChatSlot:
         "_queue_repository",
         "_source_links_cache",
         "_source_links_revision",
+        "_dismissed_source_links",
+        "_dismissed_hydrated",
+        "_dismissed_txn_depth",
         "key",
         "title",
         "agent",
@@ -3656,7 +3659,33 @@ class _ChatSlot:
         )
         # (content revision, links) cache for the sidebar PR chips scan.
         self._source_links_revision = 0
-        self._source_links_cache: tuple[tuple[int, int], list[dict]] | None = None
+        self._source_links_cache: tuple[tuple[int, int, int], list[dict]] | None = None
+        # Serialized ``SourceRef.identity`` keys the user has explicitly unlinked
+        # from this session. The derivation in ``SlotProjection.source_links``
+        # filters against this, so a dismissed change stays gone across the
+        # transcript re-scan that every revision bump triggers. Persisted in the
+        # slot's durable metadata (``dismissed_source_links``) so a gateway
+        # restart does not resurrect a chip the user removed.
+        self._dismissed_source_links: set[str] = set()
+        # False marks a slot bound to a transcript whose dismissed set could NOT
+        # be read (a transient metadata-read failure at bind). The binding is
+        # kept for routing/continuity, but the slot's full save must then CARRY
+        # FORWARD the on-disk dismissed line rather than serialize its (empty)
+        # in-memory set, or it would erase the transcript's real tombstones. A
+        # readable restore (``_restore_dismissed_source_links``) sets it True.
+        self._dismissed_hydrated: bool = True
+        # >0 while one OR MORE unlink transactions hold an uncommitted, tentative
+        # dismissal in ``_dismissed_source_links`` (between the in-memory mutate
+        # and the guarded persist/rollback). It is a DEPTH COUNTER, not a bool,
+        # because concurrent unlink requests can touch the SAME slot object under
+        # DIFFERENT ``_source_link_txn_lock`` keys (a dirty slot rebound onto
+        # another transcript mid-flight): each transaction increments on entry and
+        # decrements on its own exit, so the slot stays in-flight while ANY
+        # transaction still holds it and one request's rollback can never clear
+        # another's guard. A periodic full-save flush that fires while this is >0
+        # carries the on-disk dismissed line forward instead of serializing the
+        # tentative set — the guarded write may still fail and roll it back.
+        self._dismissed_txn_depth: int = 0
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self._task: asyncio.Task[Any] | None = None
         # Monotonic publication history for turn ownership. ``task`` returns to
@@ -5040,6 +5069,23 @@ class _ChatSlot:
     def invalidate_source_links(self) -> None:
         """Mark cached sidebar PR/MR/issue links stale after message-content mutation."""
         self._source_links_revision += 1
+
+    def dismiss_source_link(self, identity_key: str) -> bool:
+        """Suppress one source-link identity from this session's derived chips.
+
+        Records the serialized identity into the per-slot dismissed set and
+        invalidates the cache so the next derivation re-scans without it. The
+        transcript is never touched -- the link is DERIVED, so removing it would
+        be undone by the next re-scan; suppression is the only stable removal.
+        No remote provider mutation happens: this hides a chip, it does not close
+        a pull request. Returns ``True`` when the key was newly added, ``False``
+        when it was already dismissed (an idempotent repeat).
+        """
+        if identity_key in self._dismissed_source_links:
+            return False
+        self._dismissed_source_links.add(identity_key)
+        self.invalidate_source_links()
+        return True
 
     def _pr_source_links(self) -> list[dict]:
         """Return cached source links ordered by their most recent mention."""

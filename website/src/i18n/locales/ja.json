@@ -10087,7 +10087,10 @@
       "board_update_failed": "ボードの更新に失敗しました",
       "open_crew_members": "クルーメンバー",
       "open_crew_members_desc": "クルーメンバーのページを開きます。各メンバーは常駐エージェントで、自分のスレッドを持ちます。",
-      "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。"
+      "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。",
+      "source_link_actions": "ソースリンクの操作",
+      "unlink_source_link": "このセッションからリンク解除",
+      "unlink_source_link_failed": "リンク解除できませんでした。もう一度お試しください。"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

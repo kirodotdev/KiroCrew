@@ -10395,7 +10395,10 @@
       "board_update_failed": "Aggiornamento della board non riuscito",
       "open_crew_members": "Membri della crew",
       "open_crew_members_desc": "Apre la pagina Membri della crew: ogni membro è un agente permanente con il proprio thread.",
-      "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai."
+      "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai.",
+      "source_link_actions": "Source link actions",
+      "unlink_source_link": "Scollega da questa sessione",
+      "unlink_source_link_failed": "Impossibile scollegare. Riprova."
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
