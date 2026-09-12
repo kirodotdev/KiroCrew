@@ -2,6 +2,9 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Colle l’URL du token ou le token brut…",
+      "proxy_session_expired_reload": "La session de ton proxy d'accès a expiré. Recharge cet onglet du navigateur pour te reconnecter.",
+      "proxy_refused_no_sign_in": "Cette requête a été refusée et aucune page de connexion n'a été proposée : cela ressemble à un blocage plutôt qu'à une session expirée. La cause probable est un proxy ou un pare-feu devant ce tableau de bord ; vérifie-le ou réessaie plus tard.",
+      "proxy_session_expired_framed": "La session de ton proxy d'accès a expiré. Ouvre {{origin}} dans un nouvel onglet pour te reconnecter : la connexion ne fonctionne pas dans ce panneau.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Débit limité par la bordure du tunnel (HTTP 429) — trop de requêtes d’un coup. Le tableau de bord réessaie automatiquement ; si cela persiste, attends quelques secondes et recharge la page.",
       "session_expired": "Session expirée.",
       "session_expired_sign_in_again": "Session expirée. Exécutez kirocrew token dans un terminal, puis collez l'URL dans la bannière en haut de cette page pour vous reconnecter.",

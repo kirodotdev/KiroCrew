@@ -34,6 +34,7 @@ import {
   installStaleOwnerHandler,
   noteStaleOwnerResponse,
 } from './staleOwnerSignal'
+import { noteEdgeAuthChallenge } from './edgeAuthChallenge'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { withDeadline } from '../lib/withDeadline'
 import { createVoiceRequestId } from '../lib/voicePlayback'
@@ -1557,11 +1558,31 @@ const apiFailure = (r: Response, errText: string): ApiError => {
   // the BODY, which checkSessionExpired (a pre-body Response hook) cannot read;
   // the prompt itself is idempotent, so the factory raising it cannot spam.
   const staleOwnerSession = noteStaleOwnerResponse(r.status, errText)
+  // A third denial neither of the above can see: a proxy in front of the gateway
+  // answered with its own sign-in page, so the signals are status + type + body.
+  const edgeOutcome = noteEdgeAuthChallenge(
+    r.status, r.headers.get('content-type'), errText,
+  )
+  // A block page is not a lapse, so it must not stop retries the way one does.
+  const edgeAuthExpired = edgeOutcome !== null && edgeOutcome !== 'no-signin'
   const message = staleOwnerSession
     ? i18nT('api.client.stale_owner_session_sign_in_again')
     : authRequired
       ? i18nT('api.client.session_expired_sign_in_again')
-      : friendlyErrText(r.status, errText) || `HTTP ${r.status}`
+      // A block page, not a lapse: name the refusal without diagnosing one.
+      : edgeOutcome === 'no-signin'
+        ? i18nT('api.client.proxy_refused_no_sign_in')
+        // Reloading a FRAME's host re-requests it as a nested navigation, where the
+        // proxy's own sign-in typically cannot complete. So: a new tab.
+        : edgeOutcome === 'framed'
+          ? i18nT('api.client.proxy_session_expired_framed', {
+            // Origin only, and the pane's own: its address bar holds the OUTER
+            // dashboard's URL, and an iframe src can carry query parameters.
+            origin: typeof window === 'undefined' ? '' : window.location.origin,
+          })
+          : edgeOutcome !== null
+            ? i18nT('api.client.proxy_session_expired_reload')
+            : friendlyErrText(r.status, errText) || `HTTP ${r.status}`
   recordError({
     source: 'api',
     message,
@@ -1572,7 +1593,7 @@ const apiFailure = (r: Response, errText: string): ApiError => {
   })
   // A stale-owner denial is authRequired in the sense call sites care about:
   // no retry can succeed until the user signs in again.
-  return new ApiError(r.status, message, errText, authRequired || staleOwnerSession)
+  return new ApiError(r.status, message, errText, authRequired || staleOwnerSession || edgeAuthExpired)
 }
 
 /**

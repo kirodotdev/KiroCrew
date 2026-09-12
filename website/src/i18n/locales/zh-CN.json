@@ -2,6 +2,9 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "粘贴令牌 URL 或原始令牌…",
+      "proxy_session_expired_reload": "访问代理会话已过期。请重新加载此浏览器标签页以重新登录。",
+      "proxy_refused_no_sign_in": "此请求被拒绝，也没有提供登录页面，因此更像是拦截而非会话过期。可能原因是此仪表板前方的代理或防火墙；请检查，或稍后重试。",
+      "proxy_session_expired_framed": "访问代理会话已过期。请在新标签页中打开 {{origin}} 重新登录；在此面板内无法完成登录。",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
       "session_expired": "会话已过期。",
       "session_expired_sign_in_again": "会话已过期。请在终端运行 kirocrew token，然后将 URL 粘贴到本页顶部的横幅中重新登录。",
