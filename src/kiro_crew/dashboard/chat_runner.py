@@ -142,6 +142,7 @@ from kiro_crew.dashboard.state import (
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
+    DENY_CAUSE_SPAWN_CEILING_ERROR,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
     HOOK_HALTED_RECOVERY_PREFIX,
     MONITOR_WAKE_PREFIX,
@@ -279,6 +280,7 @@ from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.subagent import _vet_spawn_governance
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
     approval_command,
@@ -946,6 +948,80 @@ async def _reject_invalid_tool(
     refusal_reasons.append((title, _reason))
 
 
+async def _reject_spawn_ceiling(
+    client: Any,
+    slot: Any,
+    event: Any,
+    *,
+    session_key: str,
+    reason: str,
+    refusal_reasons: list[tuple[str, str]],
+    refusal_notices: list[str] | None,
+    state: Any = None,
+    metadata: dict | None = None,
+) -> None:
+    """Deny a backend-attested spawn the governance ceiling forbids.
+
+    Same chokepoint shape as :func:`_reject_invalid_tool` -- reject, blocked row,
+    audit, in-band notice, fallback entry -- so a permission path added later
+    cannot deny by omission.
+
+    ``reason`` names the operator's own policy rather than model output, and is
+    redacted anyway: an ``agents`` scope entry echoes the target the model asked
+    for, and this string reaches both the transcript row broadcast to the
+    dashboard and the persisted ConversationLog.
+
+    The audit code matches the CLI's ``_SPAWN_CEILING_CODE`` so one query covers
+    both surfaces; a ceiling denial that reads as ``hook_deny`` on one of them is
+    indistinguishable from the security gate's own verdict.
+    """
+    title = _redact_display_text(event.title)
+    _reason, _ = redact_exfiltration_urls(reason)
+    _reason, _ = redact_credentials(_reason)
+    # Audit FIRST, before any wire I/O for this decision (see
+    # _reject_hook_blocked): a stalled ACP reader cancels this coroutine at the
+    # turn deadline, and an SEL write sequenced after the awaits never runs.
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="denied",
+        request_id=event.request_id,
+        error="spawn_not_permitted",
+        metadata=metadata,
+    )
+    # BEFORE reject_tool: the unanswered permission request is what proves the
+    # turn is still in flight, so the steer is queued rather than dropped.
+    if refusal_notices is not None:
+        await _steer_policy_notice(
+            client,
+            title,
+            _reason,
+            refusal_notices,
+            slot,
+            state,
+            cause=DENY_CAUSE_POLICY,
+        )
+    await client.reject_tool(event.request_id)
+    slot.append("tool", f"\U0001f6ab {title} -- {_reason}", "msg msg-tool", meta=_tool_meta(event))
+    if state is not None:
+        # Mirrors the hook-deny branch: a block the activity feed never shows
+        # reads as a silent stall to the person watching it.
+        state.broadcast_ws(
+            "activity_event",
+            {
+                "slot": slot.key,
+                "kind": "permission",
+                "text": f"Blocked by the spawn ceiling: {title} -- {_reason}",
+            },
+        )
+    # The fallback's input, for a harness with no steer or a steer never folded
+    # in -- without it this deny has no channel to the model at all.
+    refusal_reasons.append((title, _reason))
+
+
 async def _reject_hook_error(
     client: Any,
     slot: Any,
@@ -1002,6 +1078,84 @@ async def _reject_hook_error(
         )
     await client.reject_tool(event.request_id)
     slot.append("tool", f"🚫 {title} (hook error)", "msg msg-tool")
+    # See _reject_invalid_tool: the fallback needs an entry or this deny reaches
+    # the model through no channel at all when the steer could not be delivered.
+    refusal_reasons.append((title, _safe_error))
+
+
+async def _reject_spawn_ceiling_error(
+    client: Any,
+    slot: Any,
+    event: Any,
+    *,
+    session_key: str,
+    error: str,
+    refusal_reasons: list[tuple[str, str]],
+    refusal_notices: list[str] | None,
+    state: Any = None,
+    metadata: dict | None = None,
+) -> None:
+    """Deny a spawn whose ceiling evaluation itself raised, fail-closed.
+
+    Same chokepoint shape as :func:`_reject_spawn_ceiling` -- audit, blocked row,
+    activity feed, in-band notice, fallback entry. The distinction is attribution.
+    This guard is HOISTED to run before the hooks gate (``state.context_builder``
+    downstream), so when the ceiling's OWN evaluation faults, no PreToolUse hook
+    has run: :func:`_reject_hook_error` would stamp ``outcome="hook_error"`` and
+    tell the model a hook raised, naming a subsystem that was never involved.
+
+    So this attributes the denial to the ceiling: ``outcome="denied"`` (the spawn
+    was refused, fail-closed -- the same outcome as :func:`_reject_spawn_ceiling`
+    and :func:`_reject_invalid_tool`), and ``DENY_CAUSE_SPAWN_CEILING_ERROR`` tells
+    the model the ceiling could not be evaluated, which is what actually happened.
+
+    *error* carries the stable ``gate_failed:`` token (a test greps the audit for
+    it, and it mirrors the CLI's ``gate_failed`` code) and the exception text,
+    which is fired with model-influenced identities (``spawn_target``), so it is
+    redacted before it reaches the audit AND the model.
+    """
+    title = _redact_display_text(event.title)
+    _safe_error = _redact_display_text(error)
+    # Audit FIRST, before any wire I/O for this decision (see
+    # _reject_hook_blocked): a stalled ACP reader cancels this coroutine at the
+    # turn deadline, and an SEL write sequenced after the awaits never runs.
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="denied",
+        request_id=event.request_id,
+        error=_safe_error,
+        metadata=metadata,
+    )
+    # BEFORE reject_tool, for the same in-flight-turn reason as the sibling paths.
+    if refusal_notices is not None:
+        await _steer_policy_notice(
+            client,
+            title,
+            _safe_error,
+            refusal_notices,
+            slot,
+            state,
+            cause=DENY_CAUSE_SPAWN_CEILING_ERROR,
+        )
+    await client.reject_tool(event.request_id)
+    slot.append(
+        "tool", f"\U0001f6ab {title} (spawn ceiling error)", "msg msg-tool", meta=_tool_meta(event)
+    )
+    if state is not None:
+        # Mirrors the sibling spawn deny: a block the activity feed never shows
+        # reads as a silent stall to the person watching it.
+        state.broadcast_ws(
+            "activity_event",
+            {
+                "slot": slot.key,
+                "kind": "permission",
+                "text": f"Spawn ceiling could not be evaluated; refused: {title}",
+            },
+        )
     # See _reject_invalid_tool: the fallback needs an entry or this deny reaches
     # the model through no channel at all when the steer could not be delivered.
     refusal_reasons.append((title, _safe_error))
@@ -9195,6 +9349,78 @@ async def _run_chat(
                     if _child_low_fidelity
                     else ""
                 )
+                # A ceiling that disables spawning is invisible to the hooks
+                # gate: that gate classifies a builtin by TITLE, and
+                # `classify_tool_title` emits only `commands`/`tools` scopes,
+                # never `capabilities.spawn`. So the spawn is checked here, on the
+                # backend's own attestation rather than the title.
+                #
+                # Placed ahead of the hooks gate, not after it, and that position
+                # is load-bearing rather than stylistic. Porting the CLI's
+                # after-the-gate placement here was WRONG: `cli_chat` treats the
+                # gate's verdict as a deny ceiling ("TOOL_AUTO_APPROVE still
+                # asks"), but this surface EXECUTES `TOOL_AUTO_APPROVE` -- it
+                # approves and `continue`s. And a spawn arrives frameless, so
+                # `tool_kind` is "" and `HookManager` falls through to
+                # `_is_read_only_tool(title)` against the MODEL-AUTHORED title: a
+                # spawn the model titles "Search the repo ..." auto-approves with
+                # no operator config at all. Every approve path on this surface
+                # must therefore be downstream of this check, which
+                # `TestDashboardSpawnCeiling` pins by enumerating them.
+                #
+                # Outside `if state.context_builder:` for the same reason
+                # `_child_lf_warning` is: a host with no context builder still has
+                # a ceiling.
+                if event.spawn_attested:
+                    try:
+                        # Every identity by KEYWORD. The vet's third positional is
+                        # `app`, so a positional caller agent here would bind to
+                        # the app slot: it type-checks, it runs, and it enforces
+                        # nothing. `app` is passed because this surface HAS one --
+                        # the hooks gate below reads the same `slot._app` -- and an
+                        # app-scoped ceiling is unenforceable without it.
+                        _spawn_refusal = await asyncio.to_thread(
+                            _vet_spawn_governance,
+                            session_key,
+                            event.spawn_target,
+                            app=slot._app or "",
+                            caller_agent=slot.agent or "",
+                        )
+                    except Exception as _spawn_exc:
+                        logger.warning(
+                            "Spawn ceiling check failed; refusing the spawn", exc_info=True
+                        )
+                        # This guard is hoisted ABOVE the hooks gate, so a fault
+                        # here means no hook ran: attribute the deny to the ceiling
+                        # itself (outcome="denied"), not to a hook.
+                        await _reject_spawn_ceiling_error(
+                            client,
+                            slot,
+                            event,
+                            session_key=session_key,
+                            # Stable leading token so one query finds every
+                            # fail-closed ceiling evaluation, mirroring
+                            # `_reject_invalid_tool`'s `validation_failed:` shape.
+                            # Free text alone is unqueryable, and the CLI's
+                            # equivalent uses the stable `gate_failed`.
+                            error=f"gate_failed: spawn ceiling evaluation: {_spawn_exc}",
+                            refusal_reasons=_refusal_reasons,
+                            refusal_notices=_refusal_notices,
+                            state=state,
+                        )
+                        continue
+                    if _spawn_refusal:
+                        await _reject_spawn_ceiling(
+                            client,
+                            slot,
+                            event,
+                            session_key=session_key,
+                            reason=_spawn_refusal,
+                            refusal_reasons=_refusal_reasons,
+                            refusal_notices=_refusal_notices,
+                            state=state,
+                        )
+                        continue
                 if state.context_builder:
                     # Pass the raw shell command (not just the display title)
                     # so the security gate evaluates what actually executes.

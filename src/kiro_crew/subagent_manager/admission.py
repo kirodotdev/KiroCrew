@@ -13,6 +13,8 @@ if TYPE_CHECKING:
         Stats,
         SubagentInfo,
         _context_groups_field,
+        _resolve_spawn_target,
+        _session_agent,
         _validate_agent,
         _vet_spawn_governance,
         asyncio,
@@ -298,7 +300,20 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
         # the PARENT surface so a per-app/per-surface profile contains what it
         # can spawn — even if the kiro side would allow it.
-        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app)
+        # Vet the agent that will RUN, not the empty request. "" stays reserved
+        # for the backend-attested path, where the target is genuinely unknown and
+        # refusing it under an allow-list is the point.
+        target_agent = _resolve_spawn_target(self._manager._sessions, parent_session_key, agent)
+        # The caller is the parent's own agent, and it does NOT share the target's
+        # ``kirocrew`` fallback: an unreadable parent means the caller identity is
+        # unknown, and inventing one resolves somebody else's task profile -- worse
+        # than resolving none and falling back to the surface bind.
+        gov_spawn_err = _vet_spawn_governance(
+            parent_session_key,
+            target_agent,
+            app=app,
+            caller_agent=_session_agent(self._manager._sessions, parent_session_key),
+        )
         if gov_spawn_err:
             logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
             sel().log_tool_invocation(

@@ -695,6 +695,11 @@ class AcpSessionHandle:
         # KAS sub-agent roster keyed by agentSubtaskId. Each entry is shaped for
         # EVENT_SUBAGENT_LIST consumption by _native_subagent_sync in chat_runner.
         self._kas_subagent_roster: dict[str, dict[str, Any]] = {}
+        # Sub-agent ids already SEL-audited as spawned. Persists across turns
+        # (the roster above is cleared per turn and rebuilt) so a long-running
+        # sub-agent re-listed next turn is not re-audited, while a genuinely new
+        # spawn — a new subtask id — is. See _audit_kas_spawns.
+        self._audited_kas_spawn_sids: set[str] = set()
 
     @property
     def session_id(self) -> str:
@@ -3531,6 +3536,107 @@ class AcpSessionHandle:
             return [AcpEvent(kind=steer_kind, text=text)]
         return []
 
+    def _audit_kas_spawns(self) -> None:
+        """SEL-record each newly-rostered KAS sub-agent spawn, once.
+
+        The motivating gap: a KAS spawn the spec auto-approves is answered by the
+        backend with no permission request, so the CLI/dashboard invocation audit
+        never runs for it. This routed PARENT roster path is the one per-spawn
+        lifecycle signal that provably belongs to THIS session (unlike the
+        ``subagent_list`` fanout notification, which the runtime broadcasts to
+        every co-tenant with no ownership), so it is where each spawn is recorded.
+
+        The record is an OBSERVATION and is approval-route-NEUTRAL: the roster
+        frame does not reveal whether the spawn was auto-approved or sent through
+        a permission prompt by a constraining ceiling, so it must not assert
+        either. Claiming "auto-approved" on a spawn a human actually approved
+        would file a false audit record (the failure this wording avoids).
+
+        Deduped by ``sessionId`` via ``_audited_kas_spawn_sids`` (persists across
+        turns, while the roster itself is cleared and rebuilt per turn) so a spawn
+        is audited once, not re-audited when a later turn re-lists it. The sid is
+        reserved when it is SELECTED, on the event loop, because the whole roster
+        is rescanned on every frame and the sink write is offloaded: reserving
+        after the write would let a frame arriving mid-write re-select the sid and
+        record the spawn twice. A failed write releases the reservation, so the
+        next roster frame retries it rather than dropping the record permanently.
+        Fail-open regardless: an audit-sink error must never break roster event
+        emission.
+        """
+        # Decide WHAT to audit on the event loop (cheap dict work), but do the
+        # sel() I/O OFF it. ``sel()`` opens the audit log on first use, and this
+        # runs inside the async dispatch, so an inline call would stall the loop.
+        records: list[tuple[str, str]] = []
+        for entry in self._kas_subagent_roster.values():
+            sid = str(entry.get("sessionId") or "")
+            if not sid or sid in self._audited_kas_spawn_sids:
+                continue
+            # A pipeline announces its stages up front; a ``pending`` stage has
+            # NOT spawned yet (and may be cancelled before it ever does), so
+            # recording it as observed-spawned would be a false audit record.
+            # Skip it — the roster is re-emitted when it transitions, and the sid
+            # stays unmarked until then, so it is audited exactly once, when it
+            # actually starts.
+            status = entry.get("status")
+            if isinstance(status, dict) and str(status.get("type") or "") == "pending":
+                continue
+            role = str(
+                entry.get("role") or entry.get("agentName") or entry.get("sessionName") or "?"
+            )
+            records.append((sid, role))
+            # RESERVE the sid here, on the event loop, as it is selected — not
+            # after the sink write inside _emit. The whole roster is rescanned on
+            # every frame, so a frame arriving while a previous emit is still
+            # parked in log_api_access would otherwise re-select this sid; two
+            # worker threads then both clear the check and the spawn is recorded
+            # twice. Reserving under the loop's single thread makes selection
+            # atomic against later frames. _emit discards the reservation if the
+            # write actually fails, which preserves the retry-on-error contract.
+            self._audited_kas_spawn_sids.add(sid)
+        if not records:
+            return
+
+        def _emit() -> None:
+            for sid, role in records:
+                try:
+                    sel().log_api_access(
+                        caller="system",
+                        operation="spawn_invocation_observed",
+                        outcome="ok",
+                        source="kas_subagent_roster",
+                        resources=(
+                            f"sub-agent {sid} (role {role}) observed on the KAS "
+                            "sub-agent roster for session " + (self._session_id or "?") +
+                            "; recorded once per spawn because the roster is the "
+                            "only per-sub-agent lifecycle signal. This is an "
+                            "observation record and does NOT assert how the spawn "
+                            "was approved -- a spawn the ceiling constrained may "
+                            "have been prompted"
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — audit must not break emission
+                    # The write failed, so RELEASE the reservation taken at
+                    # selection time: the next roster frame then retries this sid
+                    # rather than dropping its record permanently. Fail-open --
+                    # the audit must never break roster event emission.
+                    self._audited_kas_spawn_sids.discard(sid)
+                    logger.debug(
+                        "SEL audit unavailable for KAS sub-agent roster", exc_info=True
+                    )
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (sync caller / tests): run inline. There is no loop
+            # to stall, and callers relying on the record expect it synchronously.
+            _emit()
+            return
+        # On the loop: offload the blocking sel() I/O to a worker thread and track
+        # the task so it is not garbage-collected mid-flight (mirrors _audit()).
+        task = asyncio.ensure_future(asyncio.to_thread(_emit))
+        self._audit_tasks.add(task)
+        task.add_done_callback(self._audit_tasks.discard)
+
     def _handle_kas_subagent(self, update: dict) -> list[AcpEvent] | None:
         """Route KAS PARENT sub-agent frames to EVENT_SUBAGENT_LIST.
 
@@ -3565,9 +3671,14 @@ class AcpSessionHandle:
                         "sessionId": s_id,
                         "sessionName": s_name,
                         "agentName": s_name,
+                        # The stage's own role, preserved distinctly from its
+                        # display name so the spawn audit records the role and
+                        # not the stage name (they differ for a pipeline stage).
+                        "role": str(stage.get("role") or s_name),
                         "initialQuery": s_name,
                         "status": {"type": s_status, "message": ""},
                     }
+            self._audit_kas_spawns()
             return [AcpEvent(
                 kind=EVENT_SUBAGENT_LIST,
                 subagents=list(self._kas_subagent_roster.values()),
@@ -3588,6 +3699,7 @@ class AcpSessionHandle:
                 "initialQuery": title,
                 "status": {"type": status, "message": ""},
             }
+            self._audit_kas_spawns()
             return [AcpEvent(
                 kind=EVENT_SUBAGENT_LIST,
                 subagents=list(self._kas_subagent_roster.values()),

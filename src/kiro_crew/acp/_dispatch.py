@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import mcp_apps_render, session_directive
+from kiro_crew.acp.kas_permissions import SUBAGENT_CAPABILITY
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -1070,7 +1071,8 @@ def build_permission_event(
             _resolved_raw_params = _inline
 
     # Trusted MCP server + tool identity recovered from the preceding tool_call
-    # (the permission payload carries no _meta). .get() (not .pop()) mirrors the
+    # (the permission payload's own _meta carries no tool identity, only the
+    # consent block read below). .get() (not .pop()) mirrors the
     # is_shell cache: a later tool_call_update for the same id re-reads it; the
     # per-turn dispatch .clear() handles cleanup. Empty on a miss (fail-closed
     # for the app-own-server auto-approve). The tool name lets the app-own-server
@@ -1107,6 +1109,18 @@ def build_permission_event(
     _diff_path = (
         (diff_path_cache.get(_ck) or "") if (diff_path_cache is not None and tool_call_id) else ""
     )
+    # KAS states the capability it is asking about on the request itself. Read
+    # straight off the payload rather than from a cache: it needs no preceding
+    # tool_call, which is exactly the case the caches cannot cover — a sub-agent
+    # spawn arrives with no tool_call frame at all, so every cache above misses
+    # and this is the only classification available. Compared here rather than
+    # forwarded as a string so KAS's capability vocabulary stays in this layer;
+    # a non-string or absent consent block simply does not equal it.
+    _spawn_attested = _kiro_consent_capability(params) == SUBAGENT_CAPABILITY
+    # Only read for a spawn: on any other consent frame the same field names
+    # something else entirely (a path, a server), and this one is typed as the
+    # spawn's target agent.
+    _spawn_target = _kiro_consent_resource(params) if _spawn_attested else ""
 
     event = AcpEvent(
         kind=EVENT_PERMISSION_REQUEST,
@@ -1125,6 +1139,8 @@ def build_permission_event(
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
         diff_path=_diff_path,
+        spawn_attested=_spawn_attested,
+        spawn_target=_spawn_target,
     )
     return event, recorded
 
@@ -1731,6 +1747,48 @@ def _kiro_mcp_server_name(update: dict[str, Any]) -> str:
         return ""
     name = kiro.get("mcpServerName")
     return name if isinstance(name, str) else ""
+
+
+def _kiro_consent(params: dict[str, Any]) -> dict[str, Any]:
+    """The ``_meta.kiro.consent`` block, or ``{}`` when the frame carries none.
+
+    Every field under it is backend-stated rather than model-authored, which is
+    what makes the two readers below usable in a gate. A missing or oddly-shaped
+    block reads as empty, so callers get "" and fail closed.
+    """
+    meta = params.get("_meta")
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    consent = kiro.get("consent") if isinstance(kiro, dict) else None
+    return consent if isinstance(consent, dict) else {}
+
+
+def _kiro_consent_capability(params: dict[str, Any]) -> str:
+    """The KAS capability from ``_meta.kiro.consent.capability``, or "" when absent.
+
+    KAS states on a permission request which capability it is asking about
+    (``subagent``, ``mcp``, ``shell``, …). That is the backend's own
+    classification, not the model's, so it is usable where ``title`` is not: a
+    request that carries no preceding ``tool_call`` frame — and so no cached
+    ``kind`` — still says here what it is.
+    """
+    capability = _kiro_consent(params).get("capability")
+    return capability if isinstance(capability, str) else ""
+
+
+def _kiro_consent_resource(params: dict[str, Any]) -> str:
+    """The consent target from ``_meta.kiro.consent``, or "" when absent.
+
+    ``triggeringResource`` wins over ``resource``: that is the precedence
+    kiro-cli's own permission UI applies to the same block. For a sub-agent
+    spawn this names the agent, which is the one part of the spawn policy the
+    title cannot stand in for.
+    """
+    consent = _kiro_consent(params)
+    for key in ("triggeringResource", "resource"):
+        value = consent.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _todo_payload(raw_output: Any) -> dict[str, Any] | None:

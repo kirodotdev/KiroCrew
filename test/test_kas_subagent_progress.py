@@ -319,3 +319,322 @@ def test_pipeline_stage_status_transition() -> None:
         "_meta": {"kiro": {"pipeline": {"groupId": "g1", "stages": [stage_done]}}},
     })
     assert _status_of(events, "st1") == "completed"
+
+
+# ── Per-spawn SEL audit on the KAS roster path (GPT 5.6 F1) ──────────────────
+# A KAS-auto-approved use_subagent spawn is answered by the backend and raises
+# no permission request, so the CLI/dashboard invocation audit never runs. This
+# routed PARENT roster path is the one per-spawn lifecycle signal that provably
+# belongs to THIS session, so AcpSessionHandle records each new spawn here, once.
+
+def _capture_sel():
+    """A fake sel() whose log_api_access appends kwargs to the returned list."""
+    import types as _t
+
+    events: list = []
+    return events, (lambda: _t.SimpleNamespace(log_api_access=lambda **kw: events.append(kw)))
+
+
+def test_each_kas_spawn_is_audited_once() -> None:
+    from unittest.mock import patch
+
+    handle = _handle(ACP_BACKEND_KAS)
+    events, fake_sel = _capture_sel()
+    with patch("kiro_crew.acp.session_handle.sel", fake_sel):
+        # Spawn sa-1, then a same-id status update (re-emits the roster).
+        _update(handle, {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc1",
+            "title": "Sub-agent: researcher",
+            "status": "in_progress",
+            "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-1"}},
+        })
+        _update(handle, {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc1",
+            "title": "Sub-agent: researcher",
+            "status": "completed",
+            "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-1"}},
+        })
+        # A genuinely new spawn, sa-2.
+        _update(handle, {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc2",
+            "title": "Sub-agent: coder",
+            "status": "in_progress",
+            "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-2"}},
+        })
+
+    spawn = [e for e in events if e["operation"] == "spawn_invocation_observed"]
+    # sa-1 audited once despite two frames; sa-2 audited once → 2 total.
+    assert len(spawn) == 2
+    audited = " ".join(e["resources"] for e in spawn)
+    assert "sa-1" in audited and "sa-2" in audited
+    assert all(e["source"] == "kas_subagent_roster" for e in spawn)
+    # The roster frame does NOT reveal how the spawn was approved: a ceiling can
+    # send a KAS spawn through a manual permission prompt. The record must not
+    # assert an approval route it does not know, or a manual approval is filed as
+    # auto-approved (audit-integrity bug).
+    assert all("auto-approve" not in e["resources"].lower() for e in spawn)
+
+
+def test_pipeline_stages_each_audited_once() -> None:
+    from unittest.mock import patch
+
+    handle = _handle(ACP_BACKEND_KAS)
+    frame = {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "tc-pipe",
+        "title": "Pipeline",
+        "_meta": {"kiro": {"pipeline": {
+            "groupId": "g1",
+            "stages": [
+                {"name": "research", "role": "researcher", "status": "in_progress",
+                 "agentSubtaskId": "ps-1"},
+                {"name": "code", "role": "coder", "status": "in_progress",
+                 "agentSubtaskId": "ps-2"},
+            ],
+        }}},
+    }
+    events, fake_sel = _capture_sel()
+    with patch("kiro_crew.acp.session_handle.sel", fake_sel):
+        _update(handle, frame)
+        _update(handle, frame)  # identical re-send: no new audits
+
+    spawn = [e for e in events if e["operation"] == "spawn_invocation_observed"]
+    assert len(spawn) == 2
+    assert {"ps-1", "ps-2"} <= set(" ".join(e["resources"] for e in spawn).split())
+
+
+def test_a_failed_audit_is_retried_on_the_next_roster_frame() -> None:
+    # A sink error must not permanently mark the spawn audited: the sid is added
+    # to the dedup set only after log_api_access succeeds, so the next roster
+    # frame retries it. (A failed audit that marked the sid done would drop the
+    # record forever.)
+    import types as _t
+    from unittest.mock import patch
+
+    events: list = []
+    calls = {"n": 0}
+
+    def _log(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("sink down")
+        events.append(kw)
+
+    fake_sel = lambda: _t.SimpleNamespace(log_api_access=_log)  # noqa: E731
+
+    handle = _handle(ACP_BACKEND_KAS)
+    frame = {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "tc1",
+        "title": "Sub-agent: researcher",
+        "status": "in_progress",
+        "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-1"}},
+    }
+    with patch("kiro_crew.acp.session_handle.sel", fake_sel):
+        _update(handle, frame)  # first attempt raises (swallowed), sid NOT marked
+        _update(handle, frame)  # retry: succeeds this time
+
+    spawn = [e for e in events if e["operation"] == "spawn_invocation_observed"]
+    assert len(spawn) == 1 and "sa-1" in spawn[0]["resources"]
+
+
+def test_pipeline_audit_records_the_stage_role_not_its_name() -> None:
+    # A pipeline stage carries a distinct name and role; the audit must record
+    # the ROLE, not the stage name (audit-accuracy).
+    from unittest.mock import patch
+
+    handle = _handle(ACP_BACKEND_KAS)
+    events, fake_sel = _capture_sel()
+    with patch("kiro_crew.acp.session_handle.sel", fake_sel):
+        _update(handle, {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-pipe",
+            "title": "Pipeline",
+            "_meta": {"kiro": {"pipeline": {
+                "groupId": "g1",
+                "stages": [
+                    {"name": "stage-alpha", "role": "researcher",
+                     "status": "in_progress", "agentSubtaskId": "ps-1"},
+                ],
+            }}},
+        })
+    spawn = [e for e in events if e["operation"] == "spawn_invocation_observed"]
+    assert len(spawn) == 1
+    res = spawn[0]["resources"]
+    assert "researcher" in res, f"stage role must be audited, got: {res}"
+    assert "role stage-alpha" not in res, "stage NAME must not be recorded as the role"
+
+
+def test_kas_spawn_audit_runs_off_the_event_loop() -> None:
+    # sel() does blocking filesystem work on first use (SEL init); doing it
+    # inline on the ACP event loop stalls the loop. When a loop is running the
+    # audit must be offloaded (asyncio.to_thread), i.e. run on a DIFFERENT thread
+    # than the loop.
+    import asyncio
+    import threading
+    import types as _t
+    from unittest.mock import patch
+
+    seen: dict = {}
+
+    def _log(**kw):
+        seen["thread"] = threading.get_ident()
+
+    async def _run():
+        loop_thread = threading.get_ident()
+        handle = _handle(ACP_BACKEND_KAS)
+        with patch("kiro_crew.acp.session_handle.sel",
+                   lambda: _t.SimpleNamespace(log_api_access=_log)):
+            _update(handle, {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc1",
+                "title": "Sub-agent: researcher",
+                "status": "in_progress",
+                "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-1"}},
+            })
+            # Drain the offloaded audit task(s) before asserting.
+            if handle._audit_tasks:
+                await asyncio.gather(*list(handle._audit_tasks))
+        return seen.get("thread"), loop_thread
+
+    audit_thread, loop_thread = asyncio.run(_run())
+    assert audit_thread is not None, "audit never ran"
+    assert audit_thread != loop_thread, "audit ran ON the event-loop thread (must offload)"
+
+
+def test_pending_pipeline_stage_is_not_audited_until_it_starts() -> None:
+    # A pipeline announces stages before they run. A `pending` stage has not
+    # spawned yet (it may never — it can be cancelled), so auditing it as
+    # observed-spawned is a false record. Audit only once it leaves `pending`.
+    from unittest.mock import patch
+
+    handle = _handle(ACP_BACKEND_KAS)
+
+    def _pipe(ps2_status):
+        return {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-pipe",
+            "title": "Pipeline",
+            "_meta": {"kiro": {"pipeline": {"groupId": "g1", "stages": [
+                {"name": "research", "role": "researcher", "status": "in_progress",
+                 "agentSubtaskId": "ps-1"},
+                {"name": "code", "role": "coder", "status": ps2_status,
+                 "agentSubtaskId": "ps-2"},
+            ]}}},
+        }
+
+    events, fake_sel = _capture_sel()
+    with patch("kiro_crew.acp.session_handle.sel", fake_sel):
+        _update(handle, _pipe("pending"))   # ps-2 pending → only ps-1 audited
+        first = [e for e in events if e["operation"] == "spawn_invocation_observed"]
+        assert len(first) == 1 and "ps-1" in first[0]["resources"]
+        assert "ps-2" not in " ".join(e["resources"] for e in first)
+        _update(handle, _pipe("in_progress"))  # ps-2 now started → audited
+        after = [e for e in events if e["operation"] == "spawn_invocation_observed"]
+    assert len(after) == 2
+    assert "ps-2" in " ".join(e["resources"] for e in after)
+
+
+def test_audit_sink_failure_does_not_break_roster_emission() -> None:
+    from unittest.mock import patch
+
+    def _broken():
+        raise RuntimeError("no sink")
+
+    handle = _handle(ACP_BACKEND_KAS)
+    with patch("kiro_crew.acp.session_handle.sel", _broken):
+        events = _update(handle, {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc1",
+            "title": "Sub-agent: researcher",
+            "status": "in_progress",
+            "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-1"}},
+        })
+    # The roster event the UI depends on is still emitted despite the sink error.
+    assert len(events) == 1 and events[0].kind == EVENT_SUBAGENT_LIST
+
+
+def test_kiro_backend_spawn_is_not_audited() -> None:
+    # On the kiro (non-KAS) backend the KAS interception does not run, so no
+    # spawn audit is emitted — the audit is specific to the KAS roster path.
+    from unittest.mock import patch
+
+    handle = _handle(ACP_BACKEND_KIRO)
+    events, fake_sel = _capture_sel()
+    with patch("kiro_crew.acp.session_handle.sel", fake_sel):
+        _update(handle, {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc1",
+            "title": "Sub-agent: researcher",
+            "status": "in_progress",
+            "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-1"}},
+        })
+    assert [e for e in events if e["operation"] == "spawn_invocation_observed"] == []
+
+
+def test_kas_spawn_audit_records_each_spawn_once_under_concurrent_frames() -> None:
+    # The audit is deduped by sessionId, but the whole roster is rescanned on
+    # EVERY frame. If the sid is only marked audited after log_api_access
+    # returns, a second frame arriving while the first emit is still inside that
+    # (slow, offloaded) sink call re-selects the same sid, and two worker threads
+    # both clear the dedup check -> the same spawn is recorded twice, breaking
+    # the "audited once per spawn" invariant. Reserve the sid on the event loop
+    # so the second frame cannot re-select it.
+    import asyncio
+    import threading
+    import types as _t
+    from unittest.mock import patch
+
+    in_sink = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    lock = threading.Lock()
+
+    def _log(**kw):
+        with lock:
+            calls.append(str(kw.get("resources") or ""))
+        # Park inside the sink so the reservation can be observed mid-flight.
+        in_sink.set()
+        release.wait(5)
+
+    def _frame(tc: str):
+        return {
+            "sessionUpdate": "tool_call",
+            "toolCallId": tc,
+            "title": "Sub-agent: researcher",
+            "status": "in_progress",
+            "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "sa-race"}},
+        }
+
+    async def _run():
+        handle = _handle(ACP_BACKEND_KAS)
+        with patch(
+            "kiro_crew.acp.session_handle.sel",
+            lambda: _t.SimpleNamespace(log_api_access=_log),
+        ):
+            _update(handle, _frame("tc1"))
+            # Park the offloaded emit inside the sink, then observe the dedup set
+            # WHILE it is in flight. Deterministic: no dependence on which worker
+            # thread wins. Marking only after the sink returns leaves the sid
+            # unreserved here, so the next frame re-selects it and double-records.
+            await asyncio.to_thread(in_sink.wait, 5)
+            reserved_mid_flight = "sa-race" in handle._audited_kas_spawn_sids
+            # Second roster frame for the SAME spawn, still in flight.
+            _update(handle, _frame("tc2"))
+            release.set()
+            if handle._audit_tasks:
+                await asyncio.gather(*list(handle._audit_tasks))
+        return reserved_mid_flight, calls
+
+    reserved_mid_flight, got = asyncio.run(_run())
+    assert reserved_mid_flight, (
+        "sid was not reserved on the event loop before the sink returned, so a "
+        "concurrent frame can re-select it and record the spawn twice"
+    )
+    spawn_rows = [r for r in got if "sa-race" in r]
+    assert len(spawn_rows) == 1, (
+        f"spawn recorded {len(spawn_rows)}x, must be exactly once: {spawn_rows}"
+    )

@@ -54,7 +54,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+from kiro_crew.acp.kas_permissions import (
+    CAPABILITY_BY_TOOL,
+    SUBAGENT_CAPABILITY,
+    allowed_tools_to_permissions,
+)
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
@@ -318,6 +322,35 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
             )
         except Exception:  # noqa: BLE001 — audit must not break projection
             logger.debug("SEL audit unavailable for KAS projection withhold", exc_info=True)
+    # A GRANTED spawn is the one grant Crew never sees again. Every other tool that
+    # survives projection still reaches a permission request the approval gate
+    # records; KAS answers a spawn itself, so no permission event is raised and
+    # neither the deny-list nor the SEL trail runs. And on an ungoverned host
+    # nothing withholds it — `capabilities.spawn` is not in `_FLOOR_GATE_SCOPES`,
+    # and `may_skip_gate` returns True with no ceiling — so this is the last moment
+    # Crew can record that spawning became auto-approved for this agent.
+    #
+    # This records the GRANT, not each spawn: per-spawn auditing needs a KAS event
+    # that does not exist yet. It is deliberately narrower than "audit every grant",
+    # which would make the ordinary projection noisy for tools whose calls are
+    # already audited downstream.
+    granted_spawn = sorted(e for e in permitted if CAPABILITY_BY_TOOL.get(e) == SUBAGENT_CAPABILITY)
+    if granted_spawn:
+        spawn_names = ", ".join(granted_spawn)
+        try:
+            sel().log_api_access(
+                caller="system",
+                operation="spawn_auto_approve_granted",
+                outcome="ok",
+                source="kas_agent_projection",
+                resources=(
+                    f"{spawn_names} projected WITH auto-approve for agent "
+                    f"{agent_id or '?'}; the backend answers the spawn itself, so "
+                    "no per-spawn approval event follows"
+                ),
+            )
+        except Exception:  # noqa: BLE001 — audit must not break projection
+            logger.debug("SEL audit unavailable for KAS spawn grant", exc_info=True)
     return permitted
 
 

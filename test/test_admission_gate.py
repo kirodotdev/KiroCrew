@@ -276,6 +276,49 @@ class TestSpawnAdmissionGate:
         assert call_kwargs["outcome"] == "refused_memory_critical"
         assert call_kwargs["metadata"]["posture"] == rs.POSTURE_CRITICAL
 
+    def test_an_unnamed_crew_spawn_is_vetted_as_the_agent_it_will_run_as(self) -> None:
+        """The regression the design and first-principles lanes both flagged.
+
+        ``spawn(agent="")`` means "the default", which resolves to the parent
+        session's own agent. Vetting "" judged a name nothing runs under, so an
+        ``agents`` allow-list refused a spawn of an agent it explicitly names.
+        """
+        from kiro_crew.subagent import SubagentManager
+
+        sessions = MagicMock()
+        sessions._get_session_agent = lambda key: "planner"
+        mgr = SubagentManager(
+            sessions=sessions,
+            ctx_builder=MagicMock(),
+            on_done=MagicMock(),
+            max_concurrent=3,
+        )
+        seen: list[str] = []
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
+        ), patch(
+            "kiro_crew.subagent._vet_spawn_governance",
+            side_effect=lambda key, agent, app="", caller_agent="": (
+                seen.append((agent, caller_agent)) or "denied by policy"
+            ),
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cwd_allowed_roots = []
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        # Target AND caller. They resolve from the same parent session here, but
+        # differ in fallback: an unreadable parent gives the target `kirocrew`
+        # (what will run) and the caller "" (unknown -- inventing one would
+        # resolve somebody else's task profile).
+        assert seen == [("planner", "planner")], "the resolved agent and the caller must both travel"
+        assert info is not None and info.done is True
+
     def test_spawn_proceeds_past_gate_when_admitted(self) -> None:
         """An admitted decision falls through to the next guard (cwd here)."""
         mgr = self._mgr()

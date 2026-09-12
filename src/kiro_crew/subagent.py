@@ -325,7 +325,85 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, st
     )
 
 
-def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") -> str | None:
+# A spawn whose target cannot be named, refused by a scope that constrains which
+# agents may be spawned. Deliberately mode-neutral: an allow-list "names" its
+# permitted agents, a deny-list does not, and both reach this denial.
+_UNNAMED_TARGET_DENIAL = (
+    "spawn policy constrains which agents may be spawned; this spawn states no agent"
+)
+
+# The FOLDED accessor first, then the unfolded one. Order is the whole point:
+# ``get_agent`` resolves the session key through ``_fold_key`` (exact ->
+# canonical -> legacy-bare alias) and is what ``subagent_manager/run.py``
+# computes the run agent with, so it is the identity execution actually uses.
+# ``_get_session_agent`` is an exact-key read kept as the fallback because
+# injected session doubles carry only that accessor.
+_SESSION_AGENT_READERS = ("get_agent", "_get_session_agent")
+
+
+def _session_agent(sessions: object, session_key: str) -> str:
+    """The agent bound to a session, or "" when it cannot be read.
+
+    Reads through the FOLDED accessor first. ``subagent_manager/run.py`` resolves
+    the agent every spawn shape runs as with ``sessions.get_agent``
+    (``run.py:700``), which folds the key; an exact-key read misses on a
+    canonical or legacy-bare alias, which vets the ``kirocrew`` fallback while
+    execution runs the real parent agent. The folded read
+    DOMINATES the unfolded one -- ``_fold_key`` returns the key unchanged when it
+    is already live, so whenever the exact read finds a session the folded read
+    finds the same one -- which is why preferring it can only turn a miss into
+    the true name and never one name into a different name.
+
+    Guarded because ``sessions`` is injected: this runs BEFORE
+    ``_vet_spawn_governance``'s own fail-closed wrapper, so a missing accessor, a
+    non-string or a raise must fall back rather than escape it or interpolate
+    junk into a policy item. The raise guard is load-bearing for the folded read
+    specifically: ``get_agent`` goes through ``_fold_key`` -> injected key
+    derivers, a failure surface the exact-key read never had.
+    """
+    for name in _SESSION_AGENT_READERS:
+        getter = getattr(sessions, name, None)
+        if not callable(getter):
+            continue
+        try:
+            value = getter(session_key)
+        except Exception:
+            logger.debug(
+                "session agent read via %s failed for %r", name, session_key, exc_info=True
+            )
+            continue
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _resolve_spawn_target(sessions: object, parent_session_key: str, agent: str) -> str:
+    """The agent this spawn will actually run as.
+
+    An empty request means "the default", which ``subagent_manager/run.py:700``
+    resolves to the parent session's own agent (via the folded
+    ``sessions.get_agent``) and only then -- for a parent it cannot read at all
+    -- to ``kirocrew``, matching ``session_allocation``'s own
+    ``... or "kirocrew"`` tail. Vetting "" instead judged a name nothing runs
+    under, so an ``agents`` allow-list refused a spawn of an agent it names.
+    """
+    if agent:
+        return agent
+    return _session_agent(sessions, parent_session_key) or "kirocrew"
+
+
+def _vet_spawn_governance(
+    parent_session_key: str,
+    agent: str,
+    # ``app`` and ``caller_agent`` are keyword-only: a caller riding the ``app``
+    # positional slot with a caller-agent name (or vice versa) type-checks, runs,
+    # and silently enforces the WRONG scope -- an identity in the wrong slot binds
+    # the wrong profile. Keyword-only makes that shape unrepresentable rather than
+    # merely unreviewed.
+    *,
+    app: str = "",
+    caller_agent: str = "",
+) -> str | None:
     """Return a denial reason if governance forbids spawning, else None.
 
     ``app`` binds the calling app's OWN profile (precedence #1 in
@@ -334,9 +412,17 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
     the app identity is not threaded here — the Level-2 (PROFILE) half of the
     check would then never run and only the policy ceiling would apply.
 
+    ``caller_agent`` is WHO spawns, not what is spawned. ``resolve_active_scope``
+    consults an agent-name task profile only when it is passed, falling back to the
+    surface bind otherwise -- so omitting it skips a ceiling written for that agent.
+    Defaults empty, leaving the SpawnSDK path exactly as it was.
+
     Two checks against the parent surface's ceiling ∩ profile:
     1. ``capabilities.spawn`` must be enabled.
-    2. if enabled with an ``agents`` scope, the target *agent* must be permitted.
+    2. if enabled with an ``agents`` scope, the target *agent* must be permitted
+       -- and an empty ``agent`` is a target the scope has to judge, not one it
+       skips, so a scope that constrains agents at all denies it (see
+       ``_UNNAMED_TARGET_DENIAL``).
 
     Best-effort beyond the always-on guards: a ``PlatformCompositionError``
     propagates (fail-closed CPP); any other error returns a denial reason
@@ -345,22 +431,63 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
     from kiro_crew.platform.context import PlatformCompositionError
 
     try:
-        from kiro_crew.platform.governance_profiles import governance_permits
+        from kiro_crew.platform.governance_profiles import (
+            governance_permits,
+            governance_scope_constrained,
+        )
 
         # Gate enabled?  (item ignored when no inner scope — checks ``enabled``.)
-        gate = governance_permits("capabilities.spawn", "", session_key=parent_session_key, app=app)
+        # fail_closed: a governance EVALUATION error must DENY the spawn, not
+        # degrade to permit — this is an authorization chokepoint, so an
+        # unreadable/erroring policy has to read as "not permitted" (parity with
+        # governance_scope_constrained below, which already fails closed).
+        gate = governance_permits(
+            "capabilities.spawn",
+            "",
+            session_key=parent_session_key,
+            agent=caller_agent,
+            app=app,
+            fail_closed=True,
+        )
         if not getattr(gate, "permitted", True):
             return getattr(gate, "reason", "spawn capability disabled")
-        # Agent-scope check (capabilities.spawn.scopes.agents).
-        if agent:
-            scoped = governance_permits(
-                "capabilities.spawn",
-                f"agents:{agent}",
-                session_key=parent_session_key,
-                app=app,
-            )
-            if not getattr(scoped, "permitted", True):
-                return f"agent {agent!r} not permitted by spawn policy"
+        # Agent-scope check (capabilities.spawn.scopes.agents). Run even for an
+        # unnamed agent: skipping it let a caller that cannot state a target --
+        # a spawn the ACP backend performs -- walk past a ceiling narrowed to
+        # named agents. With no ``agents`` scope this still permits, so a policy
+        # with no opinion on agents is unaffected either way.
+        scoped = governance_permits(
+            "capabilities.spawn",
+            f"agents:{agent}",
+            session_key=parent_session_key,
+            agent=caller_agent,
+            app=app,
+            fail_closed=True,
+        )
+        if not getattr(scoped, "permitted", True):
+            if not agent:
+                return _UNNAMED_TARGET_DENIAL
+            return f"agent {agent!r} not permitted by spawn policy"
+        # Item matching CANNOT judge an unnamed target, so a permit above does not
+        # mean the scope approved this spawn. ``agents:`` carries the empty value,
+        # and a DENY-mode ruleset permits whatever it does not explicitly deny --
+        # no pattern matches "", so a deny-list narrowed to named agents let a
+        # target it could not name straight through. Only the allow-mode half was
+        # closed before.
+        #
+        # Asked structurally rather than read off the Decision: ``resolve``
+        # collapses the inner rule into ``rule="rule2-intersect"`` on a permit, so
+        # "deny-mode permitted the empty item" and "there is no agents scope at
+        # all" return an identical permit -- and the second MUST keep permitting,
+        # since a policy with no opinion on agents is not narrowing anything.
+        if not agent and governance_scope_constrained(
+            "spawn",
+            "agents",
+            session_key=parent_session_key,
+            agent=caller_agent,
+            app=app,
+        ):
+            return _UNNAMED_TARGET_DENIAL
         return None
     except PlatformCompositionError:
         raise

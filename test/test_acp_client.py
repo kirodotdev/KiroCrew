@@ -12713,3 +12713,179 @@ class TestCompactionFailureIsTransient:
         }
         assert compaction_failure_detail(frame) == "High traffic — try another model."
         assert compaction_failure_is_transient(frame) is True
+
+
+class TestPermissionEventCarriesTheBackendStatedSpawnAttestation:
+    """``_meta.kiro.consent.capability`` off a ``session/request_permission``.
+
+    This is the one classification available for a request that had no preceding
+    ``tool_call`` frame, which is how KAS sends a sub-agent spawn: every
+    toolCallId-keyed cache misses, ``kind`` is empty and ``title`` is prose, so
+    without reading the consent block the CLI has nothing to go on. It comes from
+    the backend, not the model, so it is the same class of signal as the
+    ``_meta.kiro`` MCP identity already trusted here.
+
+    The event carries the comparison's RESULT, not the capability string: KAS's
+    vocabulary stays in this layer, and every other capability reads as no
+    attestation, which is the direction that relaxes nothing.
+    """
+
+    @staticmethod
+    def _msg(meta=None, tool_call_id="invoke_subagent_toolu_1"):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        params = {
+            "toolCall": {
+                "toolCallId": tool_call_id,
+                "status": "pending",
+                "title": "Sub-agent: research",
+            },
+            "options": [{"optionId": "allow_once", "name": "Allow once"}],
+        }
+        if meta is not None:
+            params["_meta"] = meta
+        return JsonRpcMessage(id=7, method="session/request_permission", params=params)
+
+    def test_a_spawn_is_attested_off_the_request(self, tmp_path):
+        """The real KAS sub-agent frame, with no tool_call ever seen."""
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(work_dir=tmp_path)
+        event = client._build_permission_event(
+            self._msg(
+                {
+                    "kiro": {
+                        "toolId": "invoke_sub_agent",
+                        "consent": {
+                            "capability": "subagent",
+                            "resource": "research",
+                            "askType": "implicit",
+                        },
+                    }
+                }
+            )
+        )
+        assert event.spawn_attested is True
+        # The point of reading it: nothing else on this frame classifies it.
+        assert event.shell_classified is False
+        assert event.is_shell is False
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            None,
+            {},
+            {"kiro": None},
+            {"kiro": {}},
+            {"kiro": {"consent": None}},
+            {"kiro": {"consent": {}}},
+            {"kiro": {"consent": {"capability": None}}},
+            {"kiro": {"consent": {"capability": {"name": "subagent"}}}},
+            {"kiro": "subagent"},
+        ],
+        ids=[
+            "no-meta",
+            "empty-meta",
+            "null-kiro",
+            "no-consent",
+            "null-consent",
+            "no-capability",
+            "null-capability",
+            "capability-not-a-string",
+            "kiro-not-a-dict",
+        ],
+    )
+    def test_a_missing_or_malformed_block_reads_as_absent(self, tmp_path, meta):
+        """False is the fail-closed direction: an absent block relaxes nothing."""
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(work_dir=tmp_path)
+        assert client._build_permission_event(self._msg(meta)).spawn_attested is False
+
+    def test_the_target_agent_comes_off_the_same_block(self, tmp_path):
+        """``resource`` names the agent -- the one field ``title`` cannot stand in for."""
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(work_dir=tmp_path)
+        event = client._build_permission_event(
+            self._msg({"kiro": {"consent": {"capability": "subagent", "resource": "research"}}})
+        )
+        assert event.spawn_target == "research"
+
+    def test_the_triggering_resource_wins(self, tmp_path):
+        """kiro-cli's own permission UI resolves the pair this way round."""
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(work_dir=tmp_path)
+        event = client._build_permission_event(
+            self._msg(
+                {
+                    "kiro": {
+                        "consent": {
+                            "capability": "subagent",
+                            "resource": "research",
+                            "triggeringResource": "deployer",
+                        }
+                    }
+                }
+            )
+        )
+        assert event.spawn_target == "deployer"
+
+    @pytest.mark.parametrize(
+        "consent",
+        [
+            {"capability": "subagent"},
+            {"capability": "subagent", "resource": None},
+            {"capability": "subagent", "resource": ""},
+            {"capability": "subagent", "resource": {"name": "research"}},
+            {"capability": "subagent", "triggeringResource": 7, "resource": ""},
+        ],
+        ids=["absent", "null", "empty", "not-a-string", "unusable-pair"],
+    )
+    def test_an_unusable_target_reads_as_unnamed(self, tmp_path, consent):
+        """An empty target is one the spawn ceiling judges, never a raise."""
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(work_dir=tmp_path)
+        event = client._build_permission_event(self._msg({"kiro": {"consent": consent}}))
+        assert event.spawn_attested is True
+        assert event.spawn_target == ""
+
+    def test_a_non_spawn_frame_carries_no_target(self, tmp_path):
+        """On a shell or MCP consent frame the same field names something else."""
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(work_dir=tmp_path)
+        event = client._build_permission_event(
+            self._msg({"kiro": {"consent": {"capability": "shell", "resource": "/etc/hosts"}}})
+        )
+        assert event.spawn_attested is False
+        assert event.spawn_target == ""
+
+    def test_it_does_not_disturb_the_cached_tool_identity(self, tmp_path):
+        """Read straight off the payload, so the existing caches still decide the rest."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client = AcpClient(work_dir=tmp_path)
+        client._extract_tool_event(
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-9",
+                        "title": "Doing app work",
+                        "kind": "execute",
+                        "rawInput": {"command": "echo hi"},
+                    }
+                },
+            )
+        )
+        event = client._build_permission_event(
+            self._msg({"kiro": {"consent": {"capability": "shell"}}}, tool_call_id="tc-9")
+        )
+        assert event.spawn_attested is False
+        assert event.is_shell is True
+        assert event.shell_classified is True

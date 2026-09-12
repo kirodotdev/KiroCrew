@@ -3925,6 +3925,14 @@ BUILTIN_TOOL_SCOPES: Dict[str, Tuple[str, ...]] = {
     "fs_write": ("filesystem.write",),
     "glob": ("filesystem.read",),
     "grep": ("filesystem.read",),
+    # Both spellings of the sub-agent tool: `use_subagent` is Crew's own name for
+    # it, `invoke_sub_agent` is the KAS toolId a spec written against KAS's
+    # vocabulary carries. A blanket auto-approve for either is a spawn nobody is
+    # asked about, so a `capabilities.spawn` ceiling has to be able to withhold it.
+    # Absent that mapping the spawn chokepoint in `subagent.py` was the only place
+    # the ceiling applied, and it does not see a spawn the backend performs itself.
+    "use_subagent": ("capabilities.spawn",),
+    "invoke_sub_agent": ("capabilities.spawn",),
     "web_fetch": ("network.egress",),
     "web_search": ("network.egress",),
 }

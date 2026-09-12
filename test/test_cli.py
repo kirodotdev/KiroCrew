@@ -6549,6 +6549,8 @@ class TestChatPermissionRequest:
         tool_kind=None,
         shell_classified=True,
         raw_params=None,
+        spawn_attested=False,
+        spawn_target="",
     ):
         """A permission request in the shape the wire delivers.
 
@@ -6582,6 +6584,12 @@ class TestChatPermissionRequest:
             tool_name=tool_name,
             raw_tool_params=raw_params,
             mcp_server_name=mcp_server_name,
+            # False by default: the backend need not attest anything, and the gate
+            # must behave as it did before the field existed when it does not.
+            spawn_attested=spawn_attested,
+            # Empty by default: a frame that states no target is the case the
+            # spawn ceiling has to judge rather than skip.
+            spawn_target=spawn_target,
             # Advertised by a real backend; the CLI must NOT read these -- option
             # ids are backend-specific and the ACP layer owns the mapping.
             options=[{"id": "allow", "label": "Allow Once"}],
@@ -7989,6 +7997,58 @@ class TestChatPermissionRequest:
         assert "\x1b" not in line
         assert line == "MCP tool: fs [2Kspoof server / unnamed tool"
 
+    @pytest.mark.asyncio
+    async def test_the_spawn_target_is_disclosed_not_just_the_title(self, monkeypatch, capsys):
+        # A spawn shows no command and no path, so before this the human saw ONLY
+        # the model-authored title: a benign "Sub-agent: research" could win
+        # consent for a spawn of `deployer`. The agent the BACKEND named is what
+        # the person is actually approving, so it has to reach the prompt.
+        event = self._event(
+            title="Sub-agent: research",
+            tool_kind="",
+            spawn_attested=True,
+            spawn_target="deployer",
+        )
+        await self._drive(monkeypatch, event=event)
+        assert "Sub-agent: deployer" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_an_unnamed_spawn_target_says_so(self, monkeypatch, capsys):
+        # Silence would read as "nothing was withheld". A frame that states no
+        # agent is disclosed as such, so a human can refuse what the policy
+        # permitted -- the same reason a nameless MCP tool prints "unnamed tool".
+        event = self._event(title="Sub-agent: research", tool_kind="", spawn_attested=True)
+        await self._drive(monkeypatch, event=event)
+        assert "Sub-agent: unnamed agent" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_the_spawn_target_is_neutralised_on_the_consent_surface(
+        self, monkeypatch, capsys
+    ):
+        # Backend-supplied text on the consent surface gets the same one-line
+        # control-stripping as the title, command and MCP identity: an escape
+        # sequence here could rewrite the question the human is answering.
+        event = self._event(
+            title="Sub-agent: research",
+            tool_kind="",
+            spawn_attested=True,
+            spawn_target="scout\x1b[2Kdeployer\nagent",
+        )
+        await self._drive(monkeypatch, event=event)
+        line = next(
+            ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("Sub-agent:")
+        )
+        assert "\x1b" not in line
+        assert line == "Sub-agent: scout [2Kdeployer agent"
+
+    @pytest.mark.asyncio
+    async def test_an_unattested_request_discloses_no_spawn_target(self, monkeypatch, capsys):
+        # The negative control: the line belongs to an attested spawn, so an
+        # ordinary tool call must not grow a field the backend never stated.
+        event = self._event(title="Tidy up", tool_name="fs_write")
+        await self._drive(monkeypatch, event=event)
+        assert "Sub-agent:" not in capsys.readouterr().out
+
     # ── Canonical MCP identity reaches the shared gate ───────────────────
 
     @pytest.mark.asyncio
@@ -8098,6 +8158,241 @@ class TestChatPermissionRequest:
 
         event = self._event(title="Read a file", tool_kind="read")
         assert cli_chat._unverifiable_shell(event) is False
+
+    def test_an_attested_spawn_rescues_an_unclassified_request(self):
+        # A KAS sub-agent spawn arrives with NO preceding tool_call frame, so every
+        # provenance cache misses and the branch above would refuse it -- a refusal
+        # no human could override, because it is decided before the prompt. The
+        # attestation comes off the request's consent block rather than the model,
+        # and reading it turns the dead end into a prompt.
+        import kiro_crew.cli_chat as cli_chat
+
+        event = self._event(
+            title="Sub-agent: research",
+            tool_kind="",
+            shell_classified=False,
+            spawn_attested=True,
+        )
+        assert cli_chat._unverifiable_shell(event) is False
+
+    def test_an_unattested_frameless_request_keeps_the_refusal(self):
+        # The waiver covers the one frameless case the backend attests, not every
+        # request that happens to miss the cache. Whether the consent block was
+        # absent, malformed or named some other capability, it arrives here as no
+        # attestation and the refusal stands.
+        import kiro_crew.cli_chat as cli_chat
+
+        event = self._event(title="Sub-agent: research", tool_kind="", shell_classified=False)
+        assert cli_chat._unverifiable_shell(event) is True
+
+    def test_an_attested_spawn_does_not_waive_a_shell_shaped_kind(self):
+        # The attestation can only rescue the CACHE-MISS branch. A resolved request
+        # whose kind is ``execute`` is still refused, so a backend that mislabels a
+        # command as a sub-agent gains nothing.
+        import kiro_crew.cli_chat as cli_chat
+
+        event = self._event(
+            title="Sub-agent: research",
+            tool_kind="execute",
+            spawn_attested=True,
+        )
+        assert cli_chat._unverifiable_shell(event) is True
+
+    # ── The spawn ceiling on an attested spawn ───────────────────────────
+
+    class _PlainProvider:
+        """Records the answer without the turn machinery ``_GatedProvider`` drives."""
+
+        def __init__(self):
+            self.calls: list = []
+
+        async def approve_tool(self, request_id, *, always: bool = False):
+            self.calls.append(("approve", request_id))
+
+        async def reject_tool(self, request_id):
+            self.calls.append(("reject", request_id))
+
+    async def _answer(self, monkeypatch, event, *, answer="a"):
+        """Drive ``_answer_permission`` alone. Returns (provider, sel records, reads)."""
+        import kiro_crew.cli_chat as cli_chat
+
+        trace: list = []
+        provider = self._PlainProvider()
+        reads = self._patch_env(monkeypatch, tty=True, trace=trace, answer=answer)
+        await asyncio.wait_for(
+            cli_chat._answer_permission(provider, event, interactive=True, gate=self._gate()),
+            timeout=self._TIMEOUT,
+        )
+        return provider, [t[1] for t in trace if t[0] == "sel"], reads
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_that_forbids_spawning_refuses_an_attested_spawn(
+        self, monkeypatch, capsys
+    ):
+        # THE VECTOR the hooks gate cannot cover. It classifies a builtin by
+        # title, and a spawn's title maps to `commands`/`tools`, never to
+        # `capabilities.spawn` -- so an administrator who disabled spawning
+        # outright had nothing on this path enforcing it: the KAS spawn does not
+        # go through `subagent.py`, which is where the ceiling was checked.
+        import kiro_crew.cli_chat as cli_chat
+
+        monkeypatch.setattr(
+            cli_chat,
+            "_vet_spawn_governance",
+            lambda key, agent, app="", caller_agent="": (
+                "subagent spawn denied: governance forbids spawning"
+            ),
+        )
+        provider, sels, reads = await self._answer(
+            monkeypatch,
+            self._event(title="Sub-agent: research", tool_kind="", spawn_attested=True),
+        )
+        assert provider.calls == [("reject", 7)]
+        assert reads["n"] == 0, "an administrator's ceiling is not the user's to approve away"
+        assert [s["error"] for s in sels] == ["spawn_not_permitted"]
+        assert "Blocked by the spawn ceiling" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_a_permitting_ceiling_still_asks_the_human(self, monkeypatch):
+        # The check withholds, it does not grant: a ceiling with no objection
+        # leaves the request exactly where it was, at the prompt.
+        import kiro_crew.cli_chat as cli_chat
+
+        monkeypatch.setattr(
+            cli_chat,
+            "_vet_spawn_governance",
+            lambda key, agent, app="", caller_agent="": None,
+        )
+        provider, sels, reads = await self._answer(
+            monkeypatch,
+            self._event(title="Sub-agent: research", tool_kind="", spawn_attested=True),
+        )
+        assert provider.calls == [("approve", 7)]
+        assert reads["n"] == 1
+        assert [s["outcome"] for s in sels] == ["allowed"]
+
+    @pytest.mark.asyncio
+    async def test_an_unattested_request_does_not_pay_for_the_check(self, monkeypatch):
+        # Every ordinary permission request would otherwise resolve a governance
+        # profile it has no use for. The attestation is what selects this path.
+        import kiro_crew.cli_chat as cli_chat
+
+        called: list = []
+        monkeypatch.setattr(
+            cli_chat,
+            "_vet_spawn_governance",
+            lambda key, agent, app="", caller_agent="": called.append(key),
+        )
+        provider, _, reads = await self._answer(
+            monkeypatch, self._event(title="Tidy up", tool_name="fs_write")
+        )
+        assert called == []
+        assert provider.calls == [("approve", 7)]
+
+    @pytest.mark.asyncio
+    async def test_a_governance_error_refuses_rather_than_prompting(self, monkeypatch, capsys):
+        # `_vet_spawn_governance` already fails closed on a bad profile, but a
+        # composition error propagates out of it. Reaching the human on an
+        # unevaluable ceiling would ask them to stand in for a policy nobody
+        # could read.
+        import kiro_crew.cli_chat as cli_chat
+
+        def boom(key, agent, app="", caller_agent=""):
+            raise RuntimeError("profile composition failed")
+
+        monkeypatch.setattr(cli_chat, "_vet_spawn_governance", boom)
+        provider, sels, reads = await self._answer(
+            monkeypatch,
+            self._event(title="Sub-agent: research", tool_kind="", spawn_attested=True),
+        )
+        assert provider.calls == [("reject", 7)]
+        assert reads["n"] == 0
+        assert [s["error"] for s in sels] == ["gate_failed"]
+        assert "could not be evaluated" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_the_ceiling_is_consulted_off_the_event_loop(self, monkeypatch):
+        # It resolves the governance profile, which stats and reads ``profiles/``.
+        # This coroutine shares its loop with the ACP reader and drain tasks, so a
+        # synchronous walk on slow storage would stall the whole session.
+        import threading
+
+        import kiro_crew.cli_chat as cli_chat
+
+        threads: list = []
+        monkeypatch.setattr(
+            cli_chat,
+            "_vet_spawn_governance",
+            lambda key, agent, app="", caller_agent="": (
+                threads.append(threading.current_thread()) or None
+            ),
+        )
+        await self._answer(
+            monkeypatch,
+            self._event(title="Sub-agent: research", tool_kind="", spawn_attested=True),
+        )
+        assert threads, "the ceiling was never consulted"
+        assert threads[0] is not threading.main_thread()
+
+    @pytest.mark.asyncio
+    async def test_the_caller_agent_cannot_land_in_the_app_slot(self, monkeypatch):
+        # There is no local wrapper any more: `_answer_permission` calls the spawn
+        # manager's vetting directly, which is one rule rather than two copies. The
+        # hazard that swap creates is positional -- the vet's third positional is
+        # `app`, so a positionally-passed caller would bind there, type-check, run,
+        # and enforce nothing. Pinned by asserting `app` stays untouched.
+        import kiro_crew.cli_chat as cli_chat
+
+        seen: list = []
+        monkeypatch.setattr(
+            cli_chat,
+            "_vet_spawn_governance",
+            lambda key, agent, app="", caller_agent="": (
+                seen.append({"key": key, "agent": agent, "app": app, "caller": caller_agent})
+                or None
+            ),
+        )
+        await self._answer(
+            monkeypatch,
+            self._event(
+                title="Sub-agent: research",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="deployer",
+            ),
+        )
+        assert seen == [
+            {"key": "cli_chat", "agent": "deployer", "app": "", "caller": "cli-tester"}
+        ], "the caller agent must arrive as caller_agent, never in the app slot"
+
+    @pytest.mark.asyncio
+    async def test_the_attested_target_is_what_reaches_the_policy(self, monkeypatch):
+        # The whole point of carrying it: a ceiling narrowed to named agents can
+        # only bite if the agent KAS named -- never the LLM-authored title --
+        # arrives at the check.
+        import kiro_crew.cli_chat as cli_chat
+
+        seen: list = []
+        monkeypatch.setattr(
+            cli_chat,
+            "_vet_spawn_governance",
+            lambda key, agent, app="", caller_agent="": (
+                seen.append((agent, caller_agent)) or None
+            ),
+        )
+        await self._answer(
+            monkeypatch,
+            self._event(
+                title="Sub-agent: research",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="deployer",
+            ),
+        )
+        # `_gate()` binds agent="cli-tester": the surface's own agent has to reach
+        # the check, or a spawn ceiling written for THAT agent is enforced nowhere
+        # -- the hooks gate cannot see a spawn at all.
+        assert seen == [("deployer", "cli-tester")], "the attested target and the caller agent"
 
     def test_audit_scrubs_a_credential_out_of_the_tool_identity(self, monkeypatch):
         # The audited identity comes from the backend, and SEL does not redact for

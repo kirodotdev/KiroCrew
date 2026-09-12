@@ -54,17 +54,30 @@ _MCP_PREFIX = "@"
 #: KAS's capability for any MCP-served tool.
 _MCP_CAPABILITY = "mcp"
 
+#: KAS's capability for a sub-agent spawn. Named because two places need to agree
+#: on it: the translation below, and ``_dispatch``'s read of the consent block on a
+#: permission request (the one KAS request that arrives with no ``tool_call`` frame).
+SUBAGENT_CAPABILITY = "subagent"
+
 #: Tool name -> KAS capability, mirroring KAS's own tool classification for the
 #: built-in tools Crew's specs actually name. Deliberately NOT exhaustive over
 #: KAS's table: an entry here is a promise that auto-approving the Crew tool and
 #: allowing the KAS capability mean the same thing. Anything absent is treated as
 #: unclassifiable and left to prompt (see the module docstring).
+#:
+#: The keys must be the names an ``allowedTools`` list actually carries, which are
+#: CREW tool names. KAS's own internal toolIds are accepted alongside them because
+#: a spec hand-written against KAS's vocabulary means the same thing, but they are
+#: not what Crew's specs are written in: the sub-agent tool is ``use_subagent``
+#: everywhere else in this codebase, and a table keyed only on ``invoke_sub_agent``
+#: leaves every real spec's sub-agent grant unclassified.
 CAPABILITY_BY_TOOL: dict[str, str] = {
     # Network.
     "web_fetch": "web_fetch",
     "web_search": "web_search",
-    # Sub-agents and skills.
-    "invoke_sub_agent": "subagent",
+    # Sub-agents and skills. Crew's spelling first, then KAS's own toolId.
+    "use_subagent": SUBAGENT_CAPABILITY,
+    "invoke_sub_agent": SUBAGENT_CAPABILITY,
     "disclose_context": "skill",
 }
 

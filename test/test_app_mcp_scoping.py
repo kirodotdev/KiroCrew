@@ -626,6 +626,42 @@ class TestAnEmptyAllowlistIsTheStrictestCeiling:
         assert may_skip_gate("fs_read", ceiling) is False
 
 
+class TestASpawnCeilingWithholdsTheSubAgentToolFromAutoApprove:
+    """`capabilities.spawn` has to reach the projection, not just `subagent.py`.
+
+    Auto-approving the sub-agent tool means KAS answers the spawn itself and emits
+    no permission request, so the gate never runs and the chokepoint in
+    `subagent.py` is not on the path either. Without a scope mapping the ceiling
+    said nothing about the tool: an administrator could set
+    `capabilities.spawn.enabled=false` and still have the agent spawn unattended.
+    """
+
+    def _ceiling(self, scope: str, ruleset: Any) -> Any:
+        return type("C", (), {"get": lambda _self, s: ruleset if s == scope else None})()
+
+    @pytest.mark.parametrize("tool", ["use_subagent", "invoke_sub_agent"])
+    def test_a_spawn_opinion_withholds_either_spelling(self, tool: str) -> None:
+        from kiro_crew.platform.governance import ScopedRuleset, may_skip_gate
+
+        rules = ScopedRuleset(mode="deny", allow=(), deny=("agents:research",))
+        assert may_skip_gate(tool, self._ceiling("capabilities.spawn", rules)) is False
+
+    @pytest.mark.parametrize("tool", ["use_subagent", "invoke_sub_agent"])
+    def test_an_ungoverned_host_is_unaffected(self, tool: str) -> None:
+        """No ceiling, no change: spawning is not a gate-floor scope, so the tool
+        keeps the auto-approve it had before the mapping existed."""
+        from kiro_crew.platform.governance import may_skip_gate
+
+        assert may_skip_gate(tool, None) is True
+
+    @pytest.mark.parametrize("tool", ["use_subagent", "invoke_sub_agent"])
+    def test_a_ceiling_about_something_else_leaves_it_alone(self, tool: str) -> None:
+        from kiro_crew.platform.governance import ScopedRuleset, may_skip_gate
+
+        rules = ScopedRuleset(mode="deny", allow=(), deny=("evil.example",))
+        assert may_skip_gate(tool, self._ceiling("network.egress", rules)) is True
+
+
 class TestManifestAutoApproveCannotSelfGrantAnExemption:
     """`autoApprove` is a second, more direct route to the same bypass.
 

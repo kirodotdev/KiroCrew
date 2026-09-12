@@ -182,6 +182,52 @@ class TestSpawnGateConsultsTheAppProfile:
         assert subagent._vet_spawn_governance("sk", "probe-bg", app="other") is None
 
 
+class TestSpawnGateConsultsTheCallerAgentProfile:
+    """The other half of the same question the app class above asks.
+
+    ``resolve_active_scope`` looks up an agent-name task profile only when
+    ``agent=`` is supplied, else it falls to the surface bind. So a profile
+    narrowing ``capabilities.spawn`` for one agent bound nothing here until the
+    caller's own name was threaded in -- and the hooks gate cannot cover a spawn,
+    which left that ceiling enforced on no path at all.
+    """
+
+    def test_the_gate_receives_the_caller_agent(self, monkeypatch):
+        from kiro_crew import subagent
+
+        seen: list[dict] = []
+
+        def _fake_permits(scope, item, *, session_key="", agent="", app="", **kw):
+            seen.append({"item": item, "agent": agent})
+            return types.SimpleNamespace(permitted=True, reason="")
+
+        import kiro_crew.platform.governance_profiles as gp
+
+        monkeypatch.setattr(gp, "governance_permits", _fake_permits)
+        err = subagent._vet_spawn_governance("sk", "scout", caller_agent="planner")
+        assert err is None
+        # Both checks carry the caller; the target rides the item, not the kwarg.
+        assert seen and all(c["agent"] == "planner" for c in seen)
+        assert "agents:scout" in [c["item"] for c in seen]
+
+    def test_a_caller_agent_profile_denial_refuses_the_spawn(self, monkeypatch):
+        from kiro_crew import subagent
+
+        def _deny(scope, item, *, session_key="", agent="", app="", **kw):
+            if agent == "researcher":
+                return types.SimpleNamespace(permitted=False, reason="spawn off for researcher")
+            return types.SimpleNamespace(permitted=True, reason="")
+
+        import kiro_crew.platform.governance_profiles as gp
+
+        monkeypatch.setattr(gp, "governance_permits", _deny)
+        assert subagent._vet_spawn_governance("sk", "scout", caller_agent="researcher") is not None
+        # Another caller is unaffected, and so is an omitted one -- which is what
+        # keeps the SpawnSDK path behaving exactly as it did.
+        assert subagent._vet_spawn_governance("sk", "scout", caller_agent="planner") is None
+        assert subagent._vet_spawn_governance("sk", "scout") is None
+
+
 class TestSpawnRejectsAnUnknownAgent:
     """A misspelled agent must fail, not silently run the host default.
 

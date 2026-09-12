@@ -293,6 +293,95 @@ class TestTheCeilingIsReAskedAtProjectionTime:
         assert "permissions" not in out
 
 
+class TestAGrantedSpawnIsAudited:
+    """A spawn that survives projection is answered by KAS, so Crew never sees it.
+
+    Every other tool in the projection still reaches a permission request the
+    approval gate can record. A spawn does not: KAS answers it itself, so no
+    permission event is raised and neither the deny-list nor the SEL trail runs
+    (``kas_agents`` docstring at the auto-approve note). On an UNGOVERNED host
+    nothing withholds it either -- ``capabilities.spawn`` is not in
+    ``_FLOOR_GATE_SCOPES``, and ``may_skip_gate`` returns True with no ceiling --
+    so the grant is exactly the last moment Crew can record that spawning became
+    auto-approved for this agent.
+
+    This audits the GRANT, not each spawn. Per-spawn auditing needs a KAS event
+    that does not exist; recording the grant is what is available, and it is
+    strictly better than the silence it replaces.
+
+    Scoped to the spawn capability deliberately. Auditing every granted tool would
+    make the common projection noisy and would contradict
+    ``test_nothing_withheld_emits_no_event``.
+    """
+
+    def _events(self, monkeypatch):
+        events: list[dict] = []
+        monkeypatch.setattr(
+            kas_agents,
+            "sel",
+            lambda: types.SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+        )
+        return events
+
+    def test_a_granted_spawn_is_recorded(self, monkeypatch):
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        events = self._events(monkeypatch)
+
+        to_client_custom_agent("kirocrew", _spec(allowedTools=["use_subagent"]), "p")
+
+        assert len(events) == 1
+        assert events[0]["operation"] == "spawn_auto_approve_granted"
+        assert events[0]["source"] == "kas_agent_projection"
+        assert "use_subagent" in events[0]["resources"]
+        assert "kirocrew" in events[0]["resources"]
+
+    def test_the_kas_spelling_is_audited_too(self, monkeypatch):
+        # Both keys map to the same capability, so both produce the same grant.
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        events = self._events(monkeypatch)
+
+        to_client_custom_agent("a", _spec(allowedTools=["invoke_sub_agent"]), "p")
+
+        assert [e["operation"] for e in events] == ["spawn_auto_approve_granted"]
+
+    def test_a_granted_non_spawn_tool_is_not_audited(self, monkeypatch):
+        # The narrow scope, pinned: this is what keeps the ordinary projection
+        # silent and keeps test_nothing_withheld_emits_no_event true.
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        events = self._events(monkeypatch)
+
+        to_client_custom_agent("a", _spec(allowedTools=["web_fetch", "@some-srv"]), "p")
+
+        assert events == []
+
+    def test_a_withheld_spawn_records_the_withhold_and_not_a_grant(self, monkeypatch):
+        # A withheld spawn keeps prompting, so it IS audited by the approval gate
+        # later. Recording a grant here too would claim an auto-approve that never
+        # happened.
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+        events = self._events(monkeypatch)
+
+        to_client_custom_agent("a", _spec(allowedTools=["use_subagent"]), "p")
+
+        assert [e["operation"] for e in events] == ["mcp_auto_approve_withheld"]
+
+    def test_an_audit_failure_does_not_undo_the_grant(self, monkeypatch):
+        """Same direction as the withhold path: never fail projection on audit.
+
+        The grant is what the spec asked for; losing a log line must not cost the
+        user a session that cannot start.
+        """
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+
+        def _broken():
+            raise RuntimeError("no sink")
+
+        monkeypatch.setattr(kas_agents, "sel", _broken)
+
+        out = to_client_custom_agent("a", _spec(allowedTools=["use_subagent"]), "p")
+        assert _rule(out["permissions"], "subagent")["effect"] == "allow"
+
+
 class TestKeysTheWireCannotCarry:
     """A key with no slot in the schema is reported — and only reported once.
 

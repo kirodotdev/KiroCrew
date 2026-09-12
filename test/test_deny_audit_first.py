@@ -41,6 +41,7 @@ from kiro_crew.dashboard.chat_runner import (
     _reject_hook_blocked,
     _reject_hook_error,
     _reject_invalid_tool,
+    _reject_spawn_ceiling,
 )
 
 
@@ -60,6 +61,21 @@ class _Event:
     tool_call_id = "call-1"
     title = "bash"
     tool_kind = "execute"
+
+
+class _SpawnEvent(_Event):
+    """A spawn deny persists tool meta, so it needs the fields ``_tool_meta`` reads.
+
+    The sibling helpers append a bare row; this one carries ``meta`` so the spawn
+    deny gets the same inline detail panel a hook deny does. Kept local rather
+    than widened onto ``_Event`` so the sibling tests keep asserting against the
+    minimal shape they were written for.
+    """
+
+    title = "Sub-agent: research"
+    tool_kind = ""
+    tool_purpose = ""
+    tool_input = ""
 
 
 class _StalledRejectClient:
@@ -178,6 +194,35 @@ class TestAuditSurvivesStalledPipe:
             assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "hook_error"
 
     @pytest.mark.asyncio
+    async def test_spawn_ceiling_audit_lands_before_the_stalled_reject(self):
+        # The dashboard's spawn-ceiling deny is a governance verdict, so losing its
+        # audit row is worse than losing a hook deny's: the record that an
+        # administrator's ceiling actually bit is the only evidence it was enforced.
+        with mock.patch.object(chat_runner, "sel") as sel_factory:
+            audit = sel_factory.return_value
+            await _cancelled_at_the_turn_deadline(
+                _reject_spawn_ceiling(
+                    _StalledRejectClient(),
+                    _Slot(),
+                    _SpawnEvent(),
+                    session_key="s",
+                    reason="capabilities.spawn is disabled for this surface",
+                    refusal_reasons=[],
+                    refusal_notices=None,
+                )
+            )
+            assert audit.log_tool_invocation.called, (
+                "the spawn was denied by policy and the coroutine cancelled at the "
+                "turn deadline, but no SEL record exists"
+            )
+            kwargs = audit.log_tool_invocation.call_args.kwargs
+            assert kwargs["outcome"] == "denied"
+            # Matches the CLI's _SPAWN_CEILING_CODE so one query covers both
+            # surfaces; reading as "hook_deny" would be indistinguishable from the
+            # security gate's own verdict.
+            assert kwargs["error"] == "spawn_not_permitted"
+
+    @pytest.mark.asyncio
     async def test_audit_lands_even_when_the_steer_is_the_await_that_stalls(self):
         # The steer is wire I/O for the same decision and runs FIRST on notice
         # paths, so audit-after-reject and audit-between would both lose here.
@@ -250,6 +295,63 @@ class TestHealthyPathUnchanged:
         assert kwargs["tool_kind"] == "execute"
         assert kwargs["error"] == "validation_failed: bad name"
         assert order == ["reject"], "fallback-only callers still deny exactly once"
+
+
+class TestSpawnCeilingDenyEffects:
+    """The spawn deny's own downstream effects, with a live pipe."""
+
+    @pytest.mark.asyncio
+    async def test_audit_then_steer_then_reject_and_the_reason_reaches_the_model(self):
+        order: list[str] = []
+        with mock.patch.object(chat_runner, "sel") as sel_factory:
+            audit = sel_factory.return_value
+            audit.log_tool_invocation.side_effect = lambda **_: order.append("audit")
+            slot = _Slot()
+            reasons: list[tuple[str, str]] = []
+            notices: list[str] = []
+            await _reject_spawn_ceiling(
+                _HealthyClient(order),
+                slot,
+                _SpawnEvent(),
+                session_key="s",
+                reason="spawning is not permitted for agent 'deployer'",
+                refusal_reasons=reasons,
+                refusal_notices=notices,
+            )
+        assert order == ["audit", "steer", "reject"]
+        # The fallback channel: without this entry a harness with no steer -- or a
+        # steer never folded in -- leaves the deny with NO channel to the model,
+        # which reads to it as the user having cancelled.
+        assert reasons and "deployer" in reasons[0][1]
+        assert notices, "the in-band notice list must be fed"
+        assert any(kind == "tool" for kind, _ in slot.rows)
+
+    @pytest.mark.asyncio
+    async def test_the_activity_feed_shows_the_block_when_a_state_is_present(self):
+        # A block the feed never shows reads as a silent stall to the person
+        # watching it. `state` is optional so the helper stays unit-testable, so
+        # the broadcast has to be pinned rather than assumed.
+        broadcasts: list[tuple[str, dict]] = []
+
+        class _State:
+            def broadcast_ws(self, kind, payload):
+                broadcasts.append((kind, payload))
+
+        with mock.patch.object(chat_runner, "sel"):
+            await _reject_spawn_ceiling(
+                _HealthyClient([]),
+                _Slot(),
+                _SpawnEvent(),
+                session_key="s",
+                reason="capabilities.spawn is disabled",
+                refusal_reasons=[],
+                refusal_notices=None,
+                state=_State(),
+            )
+        assert broadcasts, "the spawn block never reached the activity feed"
+        kind, payload = broadcasts[0]
+        assert kind == "activity_event"
+        assert "spawn ceiling" in payload["text"]
 
 
 class TestEveryDenySiteAuditsBeforeTheWire:

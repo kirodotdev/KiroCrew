@@ -24,6 +24,7 @@ import pytest
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_permissions import (
     CAPABILITY_BY_TOOL,
+    SUBAGENT_CAPABILITY,
     WITHHELD_FROM_AUTO_APPROVE,
     allowed_tools_to_permissions,
 )
@@ -52,6 +53,44 @@ class TestBuiltinToolsBecomeCapabilities:
         first = allowed_tools_to_permissions(entries)
         second = allowed_tools_to_permissions(list(reversed(entries)))
         assert first == second
+
+
+class TestTheSubAgentGrantUsesCrewsOwnToolName:
+    """The name an ``allowedTools`` list actually carries has to be a key.
+
+    ``allowedTools`` is a CREW field, written in Crew tool names, and Crew's
+    sub-agent tool is ``use_subagent`` -- that is the spelling in the liveness
+    wrapper set, the chat runner, the session handle and the shipped app specs.
+    A table keyed only on KAS's internal ``invoke_sub_agent`` toolId therefore
+    classifies every real spec's sub-agent grant as unmappable, emits no rule, and
+    KAS resolves the spawn to ``ask``: the agent cannot spawn unattended even
+    though its spec auto-approved the tool.
+    """
+
+    @pytest.mark.parametrize("entry", ["use_subagent", "invoke_sub_agent"])
+    def test_every_attested_spelling_grants_the_subagent_capability(self, entry):
+        policy = allowed_tools_to_permissions([entry])
+        assert policy == {"rules": [{"capability": SUBAGENT_CAPABILITY, "effect": "allow"}]}
+
+    def test_the_spellings_collapse_to_one_rule(self):
+        """They name one capability, so a spec listing two must not emit two rules."""
+        policy = allowed_tools_to_permissions(["use_subagent", "invoke_sub_agent"])
+        assert policy["rules"] == [{"capability": SUBAGENT_CAPABILITY, "effect": "allow"}]
+
+    def test_the_bare_kas_capability_name_is_not_a_grant(self):
+        """``subagent`` is KAS's capability, not a tool name any spec carries.
+
+        Nothing in the repo lists it in ``tools`` or ``allowedTools``, so a key for
+        it would grant an unattended spawn to a spelling no spec was written in.
+        It stays unmappable, which resolves to ``ask``.
+        """
+        assert allowed_tools_to_permissions(["subagent"]) is None
+
+    def test_a_scoped_entry_is_left_to_prompt(self):
+        """``subagent/<name>`` names one agent, and a rule here would carry no
+        ``match`` -- so translating it would widen "spawn research" into "spawn
+        anything". It appears only in ``tools``, never in an ``allowedTools``."""
+        assert allowed_tools_to_permissions(["subagent/research"]) is None
 
 
 class TestTheShellAndFilesystemFamiliesAreRefused:
@@ -313,3 +352,21 @@ class TestTheDiskWriter:
         once = dict(config["permissions"])
         _seed_kas_permissions(config)
         assert config["permissions"] == once
+
+
+class TestTheSubAgentCapabilityConstant:
+    """Two modules have to agree on KAS's spelling of the spawn capability.
+
+    The translation below emits it; ``_dispatch`` compares the consent block on a
+    permission request against it. A constant makes the agreement checkable, so a
+    KAS rename cannot leave one side reading a string the other stopped sending.
+    """
+
+    def test_it_is_kas_s_spelling(self):
+        assert SUBAGENT_CAPABILITY == "subagent"
+
+    def test_every_spawn_tool_name_maps_to_it(self):
+        spawn_tools = {tool for tool, cap in CAPABILITY_BY_TOOL.items() if "subagent" in tool}
+        assert spawn_tools == {"use_subagent"}
+        assert CAPABILITY_BY_TOOL["invoke_sub_agent"] == SUBAGENT_CAPABILITY
+        assert all(CAPABILITY_BY_TOOL[tool] == SUBAGENT_CAPABILITY for tool in spawn_tools)

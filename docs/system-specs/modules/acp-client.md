@@ -174,6 +174,29 @@ that verified-identity half (arguments unverified) and
 expression for the unconditional grant paths documented in
 `security.md` § Child-fidelity split.
 
+**Backend-attested spawn (`AcpEvent.spawn_attested`).** A KAS sub-agent spawn is
+the one permission request that arrives with no preceding `tool_call` frame at
+all, so every provenance cache above misses and no title-keyed classification
+applies. The request does carry `_meta.kiro.consent.capability`, which
+`_dispatch._kiro_consent_capability` reads and `build_permission_event` compares
+against `kas_permissions.SUBAGENT_CAPABILITY`; the boolean result is
+`spawn_attested`. The same block also carries the spawn's target agent, read by
+`_dispatch._kiro_consent_resource` into `AcpEvent.spawn_target`
+(`triggeringResource` before `resource`, mirroring the precedence kiro-cli's own
+permission UI applies); it is read only when `spawn_attested` is set, because on
+any other consent frame that field names something else. Same provenance class as
+`shell_classified`,
+`raw_params_trusted` and `mcp_identity_trusted`: backend-stated, never
+model-authored, so a gate may key on it. It is a derived boolean rather than the
+raw capability string so KAS's capability vocabulary stays inside this layer, and
+it is `False` whenever the backend omits `_meta.kiro` or the consent block, or
+names any other capability — the fail-closed direction, because the only gate
+that reads it relaxes a refusal. `spawn_target` is `""` under the same
+conditions, which the spawn ceiling treats as an unnamed target and refuses under
+an `agents` allow-list. `providers/acp._to_llm_event` copies both onto the
+`LLMEvent`, and their consumers plus the deny→prompt-only invariant are in
+`security.md` § Backend-attested spawn.
+
 The handshake also branches on the backend:
 
 - `protocolVersion` in the `initialize` request: kiro-cli expects the date string `"2025-08-22"`; claude-agent-acp expects an integer (`1`, per the upstream ACP SDK schema).

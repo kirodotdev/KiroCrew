@@ -634,6 +634,33 @@ class AcpEvent:
     # (fail-closed: callers that gate on these get no match).
     tool_name: str = ""
     mcp_server_name: str = ""
+    # True when the backend itself said this permission request is a sub-agent
+    # spawn, via ``_meta.kiro.consent.capability`` (see
+    # ``_dispatch._kiro_consent_capability``). Same provenance as the two fields
+    # above and read the same way: backend-stated, never model-authored, so a gate
+    # may key on it. It is a derived boolean rather than the raw capability string
+    # so KAS's capability vocabulary stays inside the ACP layer, and it is False
+    # whenever the backend omits ``_meta.kiro`` or the consent block.
+    #
+    # That default is fail-closed for the CLI's ``_unverifiable_shell``, which only
+    # ever RELAXES a refusal on it. (``_prompt_allows`` reads the flag too, but
+    # only to name the spawn target in the consent line -- never to decide the
+    # answer.) It is NOT fail-closed for the two spawn-ceiling gates
+    # (``cli_chat`` and ``dashboard.chat_runner``), where False means the ceiling
+    # is skipped -- so the flag is deliberately not the only enforcement for any
+    # spawn shape. What it covers is the spawn the BACKEND performs itself,
+    # which never reaches Crew's SpawnSDK; every spawn that does go through
+    # ``SubagentManager.spawn`` is vetted independently at
+    # ``subagent_manager.admission`` regardless of this flag, so an MCP-served
+    # ``spawn_run`` (capability ``mcp``, not ``subagent``) is governed there rather
+    # than being ungoverned.
+    spawn_attested: bool = False
+    # The agent that spawn names, off the same consent block
+    # (``triggeringResource`` before ``resource``). Same provenance as the flag
+    # above, so the spawn ceiling's ``agents`` scope may key on it. "" when KAS
+    # states no target, which that scope treats as unnamed and refuses under an
+    # allow-list rather than waving through.
+    spawn_target: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the

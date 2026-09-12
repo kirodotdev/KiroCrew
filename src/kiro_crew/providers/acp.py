@@ -1489,6 +1489,14 @@ class AcpProvider(LLMProvider):
             # effect (the gate sees an empty server name and never records).
             tool_name=e.tool_name,
             mcp_server_name=e.mcp_server_name,
+            # Same channel, same reason to forward it: the CLI's
+            # unverifiable-shell gate relaxes its refusal only on a spawn the
+            # BACKEND attested, so dropping this restores the hard deny for
+            # every permission request that crossed this provider.
+            spawn_attested=e.spawn_attested,
+            # Dropping this would leave the ceiling's `agents` scope evaluating
+            # an unnamed target on every KAS spawn.
+            spawn_target=e.spawn_target,
             diff_old_text=e.diff_old_text,
             diff_path=e.diff_path,
         )

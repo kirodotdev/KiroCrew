@@ -3770,8 +3770,9 @@ class AcpClient:
         self._pending_skill_reads: dict[str, list[str]] = {}
         # Map toolCallId → trusted MCP server name (_meta.kiro.mcpServerName),
         # cached from the tool_call notification so the later permission_request
-        # event (which carries no _meta) can inherit it — the signal the
-        # app-own-server auto-approve keys on. Mirrors _tool_call_is_shell.
+        # event (whose own _meta carries no tool identity) can inherit it — the
+        # signal the app-own-server auto-approve keys on. Mirrors
+        # _tool_call_is_shell.
         self._tool_call_mcp_server: dict[str, str] = {}
         # Map toolCallId → trusted tool name (_meta.kiro.toolName), cached like
         # _tool_call_mcp_server so the permission_request event can rebuild the

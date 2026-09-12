@@ -2946,6 +2946,7 @@ DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
 DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
 DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
+DENY_CAUSE_SPAWN_CEILING_ERROR = "spawn_ceiling_error"
 
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
@@ -2983,6 +2984,14 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "it. Do not immediately reissue the same call: the person who did not "
         "answer is still away, and re-prompting re-arms the same wait for the "
         "same silence.",
+    ),
+    DENY_CAUSE_SPAWN_CEILING_ERROR: (
+        "was refused because the spawn ceiling could not be evaluated",
+        "this is a fail-closed refusal, not a verdict on the spawn: the "
+        "authorization check itself faulted, so the spawn was denied rather than "
+        "let past a ceiling that could not be enforced. No hook was involved. "
+        "Retrying the identical spawn is reasonable once; if it faults again, say "
+        "what happened rather than routing around it silently.",
     ),
 }
 

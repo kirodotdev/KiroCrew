@@ -1189,6 +1189,70 @@ def governance_permits(
         return _D(True, f"{GOVERNANCE_ERROR_REASON}; no opinion", rule="default")
 
 
+def governance_scope_constrained(
+    capability: str,
+    inner: str,
+    *,
+    session_key: str = "",
+    agent: str = "",
+    app: str = "",
+) -> bool:
+    """Does any level CONSTRAIN ``capabilities.<capability>``'s ``inner`` scope?
+
+    A structural presence question, deliberately not a permission question. A
+    chokepoint whose subject cannot be named as an item -- a spawn with no target
+    agent -- cannot learn this from a ``Decision``: ``governance.resolve``
+    collapses the inner rule into ``rule="rule2-intersect"`` on a permit, so
+    "the deny-mode ruleset let an empty item through" and "there is no such scope
+    at all" both come back as an identical permit, and only the first should
+    deny. The scope's *presence* is the distinguishing fact, so read it directly
+    off the ``CapabilityGate`` on either level.
+
+    Presence, not emptiness: a declared-but-empty scope still constrains (it is
+    an opinion, expressed as "nothing"/"everything" depending on its mode).
+    Absence on BOTH levels means the policy has no opinion on that scope, which
+    must stay permissive -- that is the property callers rely on.
+
+    Fails CLOSED (``True``) on an evaluation error: this exists to gate a subject
+    that cannot be vetted by name, so "I could not tell" has to read as
+    constrained. Mirrors ``governance_permits``' resolution path exactly (the
+    boot-frozen ceiling from the active context, the active profile for this
+    surface) so the two answer about the same two levels.
+
+    Sole production caller today: ``subagent._vet_spawn_governance``, which asks
+    exactly ``("spawn", "agents")`` — the unnamed-spawn-target case. The
+    ``capability``/``inner`` parameters are convenience for a future second
+    caller, not a contract; nothing else generalizes over them yet.
+    """
+    from kiro_crew.platform.context import (
+        PlatformCompositionError,
+        current_context,
+    )
+    from kiro_crew.platform.governance import CapabilityGate
+
+    scope = f"capabilities.{capability}"
+
+    def _constrains(control: object) -> bool:
+        return isinstance(control, CapabilityGate) and inner in control.scopes
+
+    try:
+        ceiling = getattr(current_context(), "governance", None)
+        profile = resolve_active_scope(session_key, agent=agent, app=app)
+        return _constrains(ceiling.get(scope) if ceiling is not None else None) or _constrains(
+            profile.get(scope) if profile is not None else None
+        )
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        audit_governance_degraded(
+            "governance_scope_constrained",
+            session_key=session_key,
+            scope=f"{scope}.scopes.{inner}",
+            failed_closed=True,
+        )
+        return True
+
+
 def vet_and_audit(
     scope: str,
     item: str,

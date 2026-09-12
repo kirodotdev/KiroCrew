@@ -116,6 +116,129 @@ class TestValidateAgent:
         assert (name, "not found" in err, code) == ("", True, sa.AGENT_NOT_FOUND_CODE)
 
 
+# ── _resolve_spawn_target ────────────────────────────────────────────────
+class TestResolveSpawnTarget:
+    """What an empty spawn request actually runs as.
+
+    ``session_allocation.get_subagent_runtime`` resolves an omitted agent to the
+    parent session's own agent, then ``kirocrew``. Vetting "" instead judged a
+    name nothing runs under, so an ``agents`` allow-list refused a spawn of an
+    agent it names.
+    """
+
+    def test_a_named_agent_is_left_alone(self):
+        from kiro_crew import subagent as sa
+
+        sessions = SimpleNamespace(_get_session_agent=lambda k: "planner")
+        assert sa._resolve_spawn_target(sessions, "sess-1", "scout") == "scout"
+
+    def test_an_empty_request_resolves_to_the_parents_agent(self):
+        from kiro_crew import subagent as sa
+
+        sessions = SimpleNamespace(_get_session_agent=lambda k: "planner")
+        assert sa._resolve_spawn_target(sessions, "sess-1", "") == "planner"
+
+    def test_an_unknown_parent_falls_back_to_the_host_default(self):
+        from kiro_crew import subagent as sa
+
+        sessions = SimpleNamespace(_get_session_agent=lambda k: "")
+        assert sa._resolve_spawn_target(sessions, "sess-1", "") == "kirocrew"
+
+    def test_a_missing_or_non_string_accessor_does_not_raise(self):
+        # ``sessions`` is injected, and this runs BEFORE the vet's own
+        # fail-closed wrapper -- so a raise here would crash the spawn instead
+        # of denying it, and a non-str would interpolate junk into the policy item.
+        from kiro_crew import subagent as sa
+
+        assert sa._resolve_spawn_target(object(), "sess-1", "") == "kirocrew"
+        odd = SimpleNamespace(_get_session_agent=lambda k: 7)
+        assert sa._resolve_spawn_target(odd, "sess-1", "") == "kirocrew"
+
+
+class TestSessionAgentFallbackIsAsymmetric:
+    """The caller does NOT inherit the target's `kirocrew` fallback.
+
+    An unreadable parent means the target still runs SOMETHING (`kirocrew`), but
+    the caller identity is genuinely unknown -- and naming a caller that is not
+    the caller resolves somebody else's task profile, which is worse than
+    resolving none and falling back to the surface bind.
+    """
+
+    def test_an_unknown_parent_gives_no_caller_identity(self):
+        from kiro_crew import subagent as sa
+
+        sessions = SimpleNamespace(_get_session_agent=lambda k: "")
+        assert sa._session_agent(sessions, "sess-1") == ""
+        assert sa._resolve_spawn_target(sessions, "sess-1", "") == "kirocrew"
+
+    def test_the_reader_is_guarded_the_same_way_for_both(self):
+        from kiro_crew import subagent as sa
+
+        assert sa._session_agent(object(), "sess-1") == ""
+        assert sa._session_agent(SimpleNamespace(_get_session_agent=lambda k: 7), "s") == ""
+
+
+class TestTheGateReadsTheAgentExecutionActuallyRuns:
+    """The gate must resolve the parent agent the way execution does.
+
+    ``subagent_manager/run.py:700`` computes the agent EVERY spawn shape runs as
+    with ``sessions.get_agent`` -- FOLDED, resolving exact -> canonical ->
+    legacy-bare alias. The gate read ``_get_session_agent``, which does not fold.
+    On a canonical or legacy-bare session key the folded read hits and the
+    unfolded one misses, so the gate vetted the ``kirocrew`` fallback while
+    execution ran the real parent agent: permitted, then runs denied.
+
+    The folded read DOMINATES the unfolded one -- ``_fold_key`` returns the key
+    unchanged when it is already live, so whenever the unfolded read finds a
+    session the folded read finds the same one. Preferring it can only turn a
+    miss into the true name, never one name into a different name.
+    """
+
+    def test_the_target_is_read_through_the_folded_lookup(self):
+        from kiro_crew import subagent as sa
+
+        sessions = SimpleNamespace(
+            get_agent=lambda k: "planner",  # folded: what run.py:700 runs as
+            _get_session_agent=lambda k: "",  # unfolded: misses on an alias key
+        )
+        assert sa._resolve_spawn_target(sessions, "kirocrew:sess-1", "") == "planner"
+
+    def test_the_caller_identity_is_read_through_the_folded_lookup(self):
+        # Same defect on the caller half: an unfolded miss resolves no task
+        # profile, so a ceiling written for that agent is skipped entirely.
+        from kiro_crew import subagent as sa
+
+        sessions = SimpleNamespace(
+            get_agent=lambda k: "planner",
+            _get_session_agent=lambda k: "",
+        )
+        assert sa._session_agent(sessions, "kirocrew:sess-1") == "planner"
+
+    def test_a_non_string_folded_lookup_falls_through_to_the_unfolded_one(self):
+        # Existing doubles are ``MagicMock()`` with only ``_get_session_agent``
+        # assigned -- ``get_agent`` auto-creates and returns a Mock. The
+        # isinstance guard has to reject that and fall through, not poison the
+        # policy item with a repr.
+        from kiro_crew import subagent as sa
+
+        sessions = SimpleNamespace(get_agent=lambda k: 7, _get_session_agent=lambda k: "planner")
+        assert sa._session_agent(sessions, "s") == "planner"
+
+    def test_a_raising_folded_lookup_does_not_escape(self):
+        # ``get_agent`` folds through ``_fold_key`` -> injected key derivers, a
+        # raise surface the unfolded read never had. This runs BEFORE
+        # ``_vet_spawn_governance``'s fail-closed wrapper, so a raise here would
+        # crash the spawn instead of denying it.
+        from kiro_crew import subagent as sa
+
+        def _boom(_key):
+            raise RuntimeError("fold exploded")
+
+        sessions = SimpleNamespace(get_agent=_boom, _get_session_agent=lambda k: "planner")
+        assert sa._session_agent(sessions, "s") == "planner"
+        assert sa._session_agent(SimpleNamespace(get_agent=_boom), "s") == ""
+
+
 # ── _vet_spawn_governance ─────────────────────────────────────────────────
 
 

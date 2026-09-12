@@ -1774,7 +1774,50 @@ read-your-writes should add it deliberately, with its own tests.
   due time has passed, so leaving it enabled would refire it on every timer
   tick; the operator re-enables it after loosening; the sandbox
   ordinal floor is clamped in `sandbox.wrap_argv`;
-  spawn in `subagent._vet_spawn_governance`; outbound messaging in
+  spawn in `subagent._vet_spawn_governance` — reached from Crew's own SpawnSDK
+  and, for a spawn the ACP backend performs itself, from
+  `cli_chat._answer_permission` on a `spawn_attested` permission request
+  (the target comes from the same backend-stated consent block as the
+  attestation, and an unnamed one is denied by an `agents` allow-list rather than
+  skipping the scope; the surface's own `gate.agent` travels as `caller_agent` so
+  the SPAWNING agent's task profile is consulted too — see `cli.md` § Tool
+  permission requests) and from `dashboard.chat_runner`'s permission branch on
+  the same attestation. The two surfaces need the check in DIFFERENT positions,
+  and only one of them is a matter of taste. The CLI has no auto-approve path at
+  all — its hooks gate is a deny ceiling and `TOOL_AUTO_APPROVE` still asks — so
+  anywhere before the prompt suffices there. The dashboard EXECUTES
+  `TOOL_AUTO_APPROVE`: it approves and `continue`s. So the check runs ahead of the
+  hooks gate itself, ahead of every approve path — not merely ahead of the card.
+  Two properties make this a real bypass rather than a config hazard, and the
+  first cut of this change shipped past both. A spawn arrives FRAMELESS, so its
+  `tool_kind` is `""`, so `HookManager` falls through to
+  `_is_read_only_tool(title)` against the MODEL-AUTHORED title: a spawn the model
+  titles "Search the repo …" auto-approves with no operator configuration at all.
+  And `AcpEvent.child_low_fidelity` is False for a non-child event by
+  construction, so nothing downgrades that grant and the unconditional
+  trust-all/YOLO grant applies too. Being ahead of the gate also puts it outside
+  `if state.context_builder:` — the same reason `_child_lf_warning` is computed
+  outside that block — so a host with no context builder still has a ceiling.
+  `TestDashboardSpawnCeiling` pins the ordering by ENUMERATING the branch's
+  `approve_tool` sites from the AST rather than naming known grants: the first
+  version of that test compared against a hand-written list of three and was green
+  over a fourth, which is the by-omission shape this whole defect class takes.
+  The dashboard passes `app` as well (its hooks gate reads the same `slot._app`),
+  which the CLI cannot: `_ToolGate` has no app field, so that asymmetry is a
+  difference in what the surfaces KNOW rather than in what they enforce.
+  `_reject_spawn_ceiling` is the deny, beside its `_reject_invalid_tool` /
+  `_reject_hook_error` siblings so a later path cannot deny by omission, and it
+  audits `spawn_not_permitted` to match the CLI's `_SPAWN_CEILING_CODE` so one
+  query covers both surfaces; the fail-closed evaluation branch uses a
+  `gate_failed:` leading token for the same reason. Messaging runners are still
+  unwired. Crew's own
+  SpawnSDK path resolves an omitted agent to the one it will actually run as
+  (`_resolve_spawn_target`) before vetting, so an `agents` allow-list judges a
+  real name rather than `""`. `BUILTIN_TOOL_SCOPES` additionally maps both spellings of
+  the sub-agent tool, `use_subagent` and KAS's `invoke_sub_agent`, to
+  `capabilities.spawn`, so a ceiling with an opinion on that scope also withholds
+  the tool from the auto-approve projection in `kas_permissions` rather than
+  handing out a blanket grant nobody is asked about; outbound messaging in
   `mcp_core._vet_messaging_governance` plus the per-transport `channels` check
   in `mcp_core._vet_channel_governance`; dashboard cross-surface mirror creation
   in `dashboard.chat_mirror` reuses the fail-closed

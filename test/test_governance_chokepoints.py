@@ -12,16 +12,19 @@ scopes enforced at the host gate via tool kind + real args.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import os
+import pathlib
 
 import pytest
 
-from kiro_crew import sandbox
+import kiro_crew.dashboard.chat_runner as chat_runner
+from kiro_crew import sandbox, subagent
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform.bootstrap import build_default_context
-from kiro_crew.platform.governance import parse_policy
+from kiro_crew.platform.governance import parse_policy, resolve
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +44,147 @@ def _install(policy_body):
     base = build_default_context(KiroCrewConfig.load())
     ceiling = parse_policy(policy_body) if policy_body is not None else None
     ctx_mod.set_context(dataclasses.replace(base, governance=ceiling))
+
+
+# -- capabilities.spawn.scopes.agents: the unnamed target -------------------
+def _spawn_policy(agents_scope):
+    body = {
+        "version": 1,
+        "boot": {"fail_closed": True},
+        "capabilities": {"spawn": {"enabled": True}},
+    }
+    if agents_scope is not None:
+        body["capabilities"]["spawn"]["scopes"] = {"agents": agents_scope}
+    return body
+
+
+_DENY_MODE = _spawn_policy({"mode": "deny", "deny": ["deployer"]})
+_ALLOW_MODE = _spawn_policy({"mode": "allow", "allow": ["planner"]})
+_NO_AGENTS_SCOPE = _spawn_policy(None)
+
+
+class TestSpawnVetFailsClosedOnEvaluationError:
+    """Both spawn-gate governance_permits calls must fail CLOSED.
+
+    ``governance_permits`` defaults ``fail_closed=False`` -> a governance
+    EVALUATION error degrades to PERMIT. For a spawn authorization chokepoint the
+    safe direction is to DENY on an unreadable/erroring policy (parity with
+    ``governance_scope_constrained``, which already fails closed). So the two
+    calls in ``_vet_spawn_governance`` must both pass ``fail_closed=True``.
+    """
+
+    def test_both_governance_permits_calls_fail_closed(self, monkeypatch):
+        import types
+
+        from kiro_crew.platform import governance_profiles as gp
+
+        calls: list[dict] = []
+
+        def _rec(scope, item, **kw):
+            calls.append(kw)
+            return types.SimpleNamespace(permitted=True, reason="")
+
+        monkeypatch.setattr(gp, "governance_permits", _rec)
+        # Named agent so both permits calls run and the scope-constrained path
+        # (unnamed only) is not reached.
+        subagent._vet_spawn_governance("", "planner")
+
+        assert len(calls) == 2
+        assert all(
+            c.get("fail_closed") is True for c in calls
+        ), f"both spawn-gate calls must pass fail_closed=True, got {calls}"
+
+
+class TestUnnamedSpawnAgainstAnAgentsScope:
+    """An unnamed spawn target must be judged by a scope that constrains agents.
+
+    ``subagent.py`` vets ``f"agents:{agent}"``; with no agent that is ``"agents:"``
+    -> inner ``agents``, value ``""``. A DENY-mode ruleset permits whatever it
+    does not explicitly deny and no pattern matches the empty string, so the
+    scope PERMITS a spawn whose target it cannot name. The allow-mode half of
+    the same check fails closed on that input, and its error string reads true
+    only there.
+    """
+
+    def test_the_governance_primitive_permits_the_empty_item(self):
+        # The mechanism, stated as fact. This is correct AT THAT LAYER -- an
+        # empty item matches no deny pattern -- which is exactly why the gate
+        # cannot learn the answer from a Decision and has to check structurally.
+        ceiling = parse_policy(_DENY_MODE)
+        assert not resolve(ceiling, None, "capabilities.spawn", "agents:deployer").permitted
+        assert resolve(ceiling, None, "capabilities.spawn", "agents:").permitted
+
+    def test_a_deny_mode_agents_scope_refuses_an_unnamed_target(self):
+        _install(_DENY_MODE)
+        err = subagent._vet_spawn_governance("", "")
+        assert err is not None
+        assert "no agent" in err
+
+    def test_the_denial_wording_is_true_in_deny_mode_too(self):
+        # A string saying the policy "names permitted agents" is true of an
+        # allow-list, false of a deny-list, which is the mode that reaches it here.
+        _install(_ALLOW_MODE)
+        err = subagent._vet_spawn_governance("", "")
+        assert err is not None
+        assert "names permitted agents" not in err
+
+    def test_an_allow_mode_agents_scope_still_refuses_an_unnamed_target(self):
+        _install(_ALLOW_MODE)
+        assert subagent._vet_spawn_governance("", "") is not None
+
+    def test_a_named_agent_the_scope_permits_is_unaffected(self):
+        _install(_DENY_MODE)
+        assert subagent._vet_spawn_governance("", "planner") is None
+
+    def test_a_named_agent_the_scope_denies_is_still_refused(self):
+        _install(_DENY_MODE)
+        assert subagent._vet_spawn_governance("", "deployer") is not None
+
+    def test_no_agents_scope_at_all_still_permits_an_unnamed_target(self):
+        # The property the round-7 comment states and this fix must preserve: a
+        # policy with no opinion on agents is unaffected either way.
+        _install(_NO_AGENTS_SCOPE)
+        assert subagent._vet_spawn_governance("", "") is None
+
+    def test_an_ungoverned_host_still_permits_an_unnamed_target(self):
+        _install(None)
+        assert subagent._vet_spawn_governance("", "") is None
+
+    def test_a_degraded_presence_check_refuses_an_unnamed_target(self, monkeypatch):
+        # The presence check exists to judge a subject that cannot be vetted by
+        # name, so "I could not tell" has to read as constrained. ``permits``
+        # degrades to a PERMIT (no opinion), which is what makes the structural
+        # helper the only thing standing between a degraded evaluation and an
+        # unjudged spawn -- so it degrades the other way.
+        _install(_NO_AGENTS_SCOPE)
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("resolution exploded")
+
+        monkeypatch.setattr(gp, "resolve_active_scope", _boom)
+        assert gp.governance_scope_constrained("spawn", "agents") is True
+        assert subagent._vet_spawn_governance("", "") is not None
+
+    def test_a_composition_error_propagates_from_the_presence_check(self, monkeypatch):
+        # Fail-closed CPP: a composition error is a boot-level fault and must not
+        # be flattened into a routine denial.
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        _install(_NO_AGENTS_SCOPE)
+
+        def _boom(*_a, **_kw):
+            raise PlatformCompositionError("bad policy")
+
+        monkeypatch.setattr(gp, "resolve_active_scope", _boom)
+        with pytest.raises(PlatformCompositionError):
+            gp.governance_scope_constrained("spawn", "agents")
+
+    def test_a_declared_but_empty_agents_scope_still_constrains(self):
+        # Presence, not emptiness: an empty deny-list is still an opinion about
+        # agents, and an unnamed target is still one it cannot name.
+        _install(_spawn_policy({"mode": "deny", "deny": []}))
+        assert gp.governance_scope_constrained("spawn", "agents") is True
+        assert subagent._vet_spawn_governance("", "") is not None
 
 
 # ── sandbox ordinal floor ──
@@ -162,8 +306,302 @@ class TestSpawnGate:
 
         assert subagent._vet_spawn_governance("cli_chat", "anything") is None
 
+    def test_an_allow_list_denies_a_spawn_that_states_no_agent(self):
+        # THE HOLE this closes. Skipping the `agents` check whenever the caller
+        # cannot name a target -- which is exactly the ACP-backend spawn -- leaves
+        # a ceiling narrowed to `researcher` enforced against Crew's own spawns
+        # and against nothing else.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "spawn": {
+                        "enabled": True,
+                        "scopes": {"agents": {"mode": "allow", "allow": ["researcher"]}},
+                    }
+                },
+            }
+        )
+        from kiro_crew import subagent
+
+        reason = subagent._vet_spawn_governance("cli_chat", "")
+        assert reason is not None
+        assert "states no agent" in reason
+
+    def test_a_deny_list_also_refuses_a_spawn_that_states_no_agent(self):
+        # REVERSED, deliberately. This asserted the opposite ("naming the agents
+        # you refuse says nothing about an unnamed one, so denying it here would
+        # be us inventing policy") and that reading does not survive asking what
+        # actually runs.
+        #
+        # A deny-list's default-permit is safe only because every candidate can be
+        # TESTED against the list. An unnamed target is not a member of the open
+        # set -- it is an untestable candidate that resolves, at execution time, to
+        # an agent which may well be a denied one. Permitting it is not honouring
+        # the operator's default; it is declining to evaluate the control. The
+        # operator wrote "never spawn deployer" and a caller that omits the name
+        # got a spawn that could be deployer.
+        #
+        # It is also the reasoning the allow-mode case above already accepts: an
+        # unnamed target is a target the scope must JUDGE, not one it skips. That
+        # principle is mode-independent; only the implementation was not, because
+        # matching "" against patterns happens to fail closed in allow mode and
+        # open in deny mode.
+        #
+        # Consequence asymmetry settles the rest. Refusing when the operator meant
+        # permit is loud and recoverable (drop the scope, or state an allow list).
+        # Permitting when the operator meant deny runs a denied agent silently,
+        # which is the failure the control exists to prevent.
+        #
+        # Blast radius is narrow: only a policy with a DENY-mode agents scope, and
+        # only for a spawn with no nameable target. ``admission.py`` resolves its
+        # target first (``_resolve_spawn_target``), so this reaches just the
+        # backend-attested path -- the caller the module comment describes as one
+        # that "cannot state a target".
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "spawn": {
+                        "enabled": True,
+                        "scopes": {"agents": {"mode": "deny", "deny": ["deployer"]}},
+                    }
+                },
+            }
+        )
+        from kiro_crew import subagent
+
+        reason = subagent._vet_spawn_governance("cli_chat", "")
+        assert reason is not None
+        assert "states no agent" in reason
+        # Mode-neutral wording: a deny-list does not "name permitted agents", so
+        # an allow-mode-only string reads false on the very path that reaches it.
+        assert "names permitted agents" not in reason
+
+    def test_no_agents_scope_permits_a_spawn_that_states_no_agent(self):
+        # What keeps the feature alive if KAS omits the target: a policy with an
+        # opinion on spawning but none on WHICH agents must not start refusing
+        # every backend spawn.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"spawn": {"enabled": True}},
+            }
+        )
+        from kiro_crew import subagent
+
+        assert subagent._vet_spawn_governance("cli_chat", "") is None
+
 
 # ── shared helpers ──
+class TestDashboardSpawnCeiling:
+    """The dashboard surface enforces the spawn ceiling, ahead of EVERY grant.
+
+    Two surfaces, two correct positions, and only one of them is a matter of
+    taste. `cli_chat` treats its hooks verdict as a deny ceiling -- its own
+    docstring says "TOOL_AUTO_APPROVE still asks" -- so anywhere before the prompt
+    suffices there. This surface EXECUTES `TOOL_AUTO_APPROVE`: it approves and
+    `continue`s. A spawn also arrives frameless, so `tool_kind` is "" and
+    `HookManager` falls through to `_is_read_only_tool` against the MODEL-AUTHORED
+    title, which auto-approves a spawn titled "Search ..." with no operator config
+    at all. So the ceiling must precede every approve path, not merely the card.
+
+    The first version of this suite compared the ceiling's line against a
+    HAND-WRITTEN list of three grant markers, and shipped green over a fourth
+    grant that ran before it -- the by-omission gap `TestEveryDenySiteAuditsBefore
+    TheWire` was designed against. These tests therefore ENUMERATE the approve
+    sites from the AST instead of naming them, and scope every search to the
+    permission branch so an unrelated line elsewhere in a 12k-line module can
+    neither hide a defect nor red the build.
+
+    They remain source tests, not behavioural: no harness drives this permission
+    loop (it needs a live state, slot, client, native tracker and event stream).
+    What they cannot see is stated in `test_deny_audit_first.py`, which drives the
+    deny helper itself.
+    """
+
+    RUNNER = pathlib.Path(chat_runner.__file__)
+
+    # ── locating the code under test ──────────────────────────────────────
+
+    def _permission_branch(self):
+        """The `event.kind == EVENT_PERMISSION_REQUEST` branch, as one AST node.
+
+        Every search below is scoped to this node. Scoping is what makes the
+        assertions mean what they say: an unscoped search for the guard would pass
+        on a guard sitting in an unrelated function, and an unscoped search for a
+        grant would trip on a mention in a comment or a sibling handler.
+        """
+        tree = ast.parse(self.RUNNER.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+                continue
+            left = node.test.left
+            if not (isinstance(left, ast.Attribute) and left.attr == "kind"):
+                continue
+            if any(
+                isinstance(c, ast.Name) and c.id == "EVENT_PERMISSION_REQUEST"
+                for c in node.test.comparators
+            ):
+                return node
+        return None
+
+    def _vet_calls(self):
+        """EVERY ceiling call in the branch -- direct or via `asyncio.to_thread`.
+
+        Enumerated rather than first-match: `ast.walk` is breadth-first, so a
+        first-match helper returns whichever site happens to be shallower when
+        there are two, leaving the other unpinned and making the ordering test's
+        reference line arbitrary. Both call shapes are recognised so rewriting
+        `to_thread(vet, ...)` into `vet(...)` does not silently un-pin the site.
+        """
+        branch = self._permission_branch()
+        assert branch is not None, "the permission branch vanished"
+        found = []
+        for node in ast.walk(branch):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id == "_vet_spawn_governance":
+                found.append(("direct", node))
+            elif (
+                node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "_vet_spawn_governance"
+            ):
+                found.append(("to_thread", node))
+        return found
+
+    def _the_vet_call(self):
+        calls = self._vet_calls()
+        assert len(calls) == 1, (
+            f"expected exactly one ceiling call site in the permission branch, "
+            f"found {len(calls)} -- a second site is either a bypass or unpinned"
+        )
+        return calls[0]
+
+    def _guard(self):
+        """The `if event.spawn_attested:` node inside the permission branch."""
+        branch = self._permission_branch()
+        assert branch is not None, "the permission branch vanished"
+        for node in ast.walk(branch):
+            if (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Attribute)
+                and node.test.attr == "spawn_attested"
+                and isinstance(node.test.value, ast.Name)
+                and node.test.value.id == "event"
+            ):
+                return node
+        return None
+
+    # ── the invariants ────────────────────────────────────────────────────
+
+    def test_the_dashboard_consults_the_ceiling_at_all(self):
+        # The gap this closes: without this guard chat_runner.py carries zero
+        # occurrences of spawn_attested, spawn_target or capabilities.spawn.
+        assert self._guard() is not None, "the dashboard never consults the spawn ceiling"
+        assert self._the_vet_call(), "the guard is present but consults nothing"
+
+    def test_every_approve_path_is_downstream_of_the_ceiling(self):
+        # THE load-bearing test, and the one whose first version was wrong.
+        # Enumerated from the AST: a grant added later is covered without anyone
+        # remembering to add it to a list. Every `approve_tool` await in the
+        # branch must sit after the ceiling, because each one both grants and
+        # `continue`s -- one upstream of the ceiling makes the ceiling dead code.
+        branch = self._permission_branch()
+        guard_line = self._guard().lineno
+        approves = [
+            node.lineno
+            for node in ast.walk(branch)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "approve_tool"
+        ]
+        assert approves, "no approve path found -- the scan rotted, not the code"
+        early = [line for line in approves if line < guard_line]
+        assert not early, (
+            f"approve_tool at {early} runs before the spawn ceiling at {guard_line}: "
+            "each of those grants and then `continue`s, so a forbidden spawn is "
+            "approved with no human ever seeing it and the ceiling is dead code"
+        )
+
+    def test_the_ceiling_precedes_the_hooks_gate_that_cannot_see_it(self):
+        # Specifically ahead of `if state.context_builder:`, whose gate emits only
+        # `commands`/`tools` scopes and so can never read `capabilities.spawn`,
+        # yet whose TOOL_AUTO_APPROVE arm grants. Scoped to the branch: an
+        # unrelated `state.context_builder` test elsewhere in the module must not
+        # decide this.
+        branch = self._permission_branch()
+        guard_line = self._guard().lineno
+        gates = [
+            node.lineno
+            for node in ast.walk(branch)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Attribute)
+            and node.test.attr == "context_builder"
+        ]
+        assert gates, "the hooks-gate block vanished from the permission branch"
+        assert guard_line < min(gates), (
+            f"the ceiling at {guard_line} runs after the hooks gate at {min(gates)}, "
+            "whose auto-approve arm grants and continues"
+        )
+
+    def test_a_truthy_refusal_actually_denies_and_stops(self):
+        # Without this, deleting the deny and logging the refusal instead leaves
+        # every other test in this class green while every forbidden spawn runs.
+        guard = self._guard()
+        denies, stops = False, False
+        for node in ast.walk(guard):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_reject_spawn_ceiling"
+            ):
+                denies = True
+            if isinstance(node, ast.Continue):
+                stops = True
+        assert denies, "the refusal is computed and never acted on"
+        assert stops, "the refusal denies but does not `continue`: the event falls through"
+
+    def test_every_identity_the_surface_has_reaches_the_policy(self):
+        # Four optional inputs with falsy defaults is why this defect class kept
+        # recurring: an omission is invisible at the call site. The dashboard HAS
+        # all four -- the hooks gate reads the same slot._app and slot.agent -- so
+        # a missing one is unenforceable policy, not a safe default. VALUES are
+        # asserted, not just names: swapped bindings pass a names-only check while
+        # resolving the policy against the wrong identity.
+        _shape, call = self._the_vet_call()
+        got = {}
+        for kw in call.keywords:
+            v = kw.value
+            # `slot._app or ""` / `slot.agent or ""`
+            inner = v.values[0] if isinstance(v, ast.BoolOp) else v
+            got[kw.arg] = ast.unparse(inner)
+        assert got.get("app") == "slot._app", f"app must carry slot._app, got {got.get('app')!r}"
+        assert (
+            got.get("caller_agent") == "slot.agent"
+        ), f"caller_agent must carry slot.agent, got {got.get('caller_agent')!r}"
+
+    def test_the_caller_agent_cannot_land_in_the_app_slot(self):
+        # The vet's third positional is `app`. A positionally-passed caller would
+        # bind there: it type-checks, it runs, and it enforces nothing. Order is
+        # asserted too -- swapping the two positionals keeps the count at 3 while
+        # vetting a nonexistent session, which finds no ceiling.
+        shape, call = self._the_vet_call()
+        positional = call.args[1:] if shape == "to_thread" else call.args
+        assert len(positional) == 2, (
+            "only the session key and the target may travel positionally; every "
+            f"other identity must be a keyword, got {len(positional)} positional"
+        )
+        assert [ast.unparse(a) for a in positional] == ["session_key", "event.spawn_target"], (
+            "positionals must be (session_key, target) in that order; reversed, the "
+            "vet resolves a nonexistent session and finds no ceiling"
+        )
+
+
 class TestHelpers:
     def test_governance_permits_capability(self):
         _install(

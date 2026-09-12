@@ -38,6 +38,7 @@ from kiro_crew.providers.base import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.subagent import _vet_spawn_governance
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,10 @@ _DENY_KEY = "d"
 _HOOK_DENY_CODE = "hook_deny"
 _NONINTERACTIVE_CODE = "noninteractive"
 _USER_DENY_CODE = "user_denied"
+#: A sub-agent spawn the ``capabilities.spawn`` ceiling withholds. Distinct from
+#: ``hook_deny`` because the hooks gate cannot see this one: it classifies a
+#: builtin by name and no name maps to the spawn scope, so the check runs here.
+_SPAWN_CEILING_CODE = "spawn_not_permitted"
 #: An ``execute``-kind request the trusted shell cache never confirmed, so no
 #: command could be recovered to gate on. Distinct from ``hook_deny``: the gate
 #: did not reject it, we refused to ASK about it.
@@ -498,6 +503,13 @@ def _unverifiable_shell(event: LLMEvent) -> bool:
     The cost is a refused call when the cache genuinely missed. For an
     authorization gate that is the correct direction: a refusal the user can
     retry, rather than a command approved on a description of itself.
+
+    The ONE thing that stands in for a missing classification is one the backend
+    stated itself: ``spawn_attested`` is derived from ``_meta.kiro.consent`` on the
+    request, which the model does not author. It substitutes for the cache, it does
+    not override the checks -- the payload-kind deny below still applies -- and
+    passing it only lets the request reach the human, whom the gate's hooks and the
+    spawn ceiling have already had their say before.
     """
     if event.is_shell:
         # Trusted signal: the gate's own deny-by-default backstop covers an
@@ -524,7 +536,19 @@ def _unverifiable_shell(event: LLMEvent) -> bool:
         # deny-by-default backstop governs.
         if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
             return False
-        return True
+        # Unless the backend attested it for us. A KAS sub-agent spawn arrives with
+        # no preceding ``tool_call`` frame at all, so the cache CANNOT hit and this
+        # branch would refuse a call no human is ever offered the chance to
+        # approve. A spawn is the one frameless case observed and the one waived;
+        # anything else -- including a capability this build has never seen --
+        # keeps the refusal.
+        #
+        # Ordered AFTER the MCP escape deliberately, so that escape decides every
+        # case it already decided and this test only reprieves what it denied. And
+        # attestation is not a blanket allow: an attested spawn falls through to
+        # the payload-kind deny below, so a shell-shaped ``kind`` still refuses.
+        if not event.spawn_attested:
+            return True
     # Normalised before the shared check so a cosmetic variant still denies --
     # widening a fail-closed test is safe in a way widening an allow is not.
     # ``tool_kind`` is relayed verbatim from ACP, so a backend may supply a
@@ -554,13 +578,13 @@ async def _prompt_allows(event: LLMEvent) -> bool:
     Anything else -- an unrecognised word, a blank line, EOF -- denies, so the
     safe answer is the one a user gets by doing nothing.
 
-    A shell call also shows its command, and any call with a trusted identity
-    shows that identity. ``title`` is LLM-authored prose, so approving on it
-    alone asks the user to consent to a description rather than to what runs --
-    the same reason the security gate keys on ``shell_command`` and
-    ``mcp_server_name`` rather than the title. Only those non-model-authored
-    fields are shown, never the whole tool input: this is the question, not a
-    detail panel.
+    A shell call also shows its command, a call with a trusted identity shows that
+    identity, and an attested spawn shows the agent it will start. ``title`` is
+    LLM-authored prose, so approving on it alone asks the user to consent to a
+    description rather than to what runs -- the same reason the security gate keys
+    on ``shell_command``, ``mcp_server_name`` and ``spawn_target`` rather than the
+    title. Only those non-model-authored fields are shown, never the whole tool
+    input: this is the question, not a detail panel.
     """
     print(
         f"{_terminal_reset()}\nPermission required: "
@@ -583,6 +607,15 @@ async def _prompt_allows(event: LLMEvent) -> bool:
         # the description-not-substance problem the shell and MCP lines exist to
         # avoid.
         print(f"Tool: {_for_consent(event.tool_name, stream=sys.stdout)}")
+    # For a spawn the identity that matters is the AGENT, and the title is the one
+    # field that cannot be trusted to name it: "Sub-agent: research" over a spawn
+    # of `deployer` wins consent for something the human never saw. Printed for an
+    # attested spawn only, because that is where the target is backend-stated --
+    # and printed as unnamed when KAS states none, since a human who is told the
+    # target is missing can still say no.
+    if event.spawn_attested:
+        agent = _for_consent(event.spawn_target, stream=sys.stdout) or "unnamed agent"
+        print(f"Sub-agent: {agent}")
     # The trusted identity says WHICH tool runs; it does not say what it runs
     # against. ``fs_write`` under a benign title is consent to a verb, and a
     # write to an ordinary valuable file is not disclosed by the verb alone --
@@ -834,6 +867,49 @@ async def _answer_permission(
         except Exception:
             logger.warning("Could not prepare the CLI policy-denial notice", exc_info=True)
         return
+
+    if event.spawn_attested:
+        # The hooks gate above cannot cover this one. It classifies a builtin by
+        # title, and a spawn's title maps to `commands`/`tools`, never to
+        # `capabilities.spawn` -- so a ceiling that disables spawning says nothing
+        # the gate can read. Checked here, on the backend's own attestation rather
+        # than the title, and before the human is asked, so an administrator's
+        # ceiling is not something a person at the terminal can approve away.
+        try:
+            # Every identity by KEYWORD. The vet's third positional is ``app``,
+            # so a positional ``gate.agent`` here would bind the caller to the app
+            # slot: it type-checks, it runs, and it enforces nothing.
+            refusal = await asyncio.to_thread(
+                _vet_spawn_governance,
+                gate.session_key,
+                event.spawn_target,
+                caller_agent=gate.agent,
+            )
+        except Exception:
+            logger.warning("Spawn ceiling check failed; refusing the spawn", exc_info=True)
+            await _reject_internal_failure(
+                provider,
+                gate,
+                event,
+                error=_GATE_FAILURE_CODE,
+                notice=(
+                    "\nDenied automatically: the spawn ceiling could not be evaluated.\n"
+                    "   Fix the governance error, then retry the tool call."
+                ),
+            )
+            return
+        if refusal:
+            await _audit_refusal(gate, event, error=_SPAWN_CEILING_CODE)
+            await provider.reject_tool(event.request_id)
+            try:
+                safe_title = _for_consent(title, stream=sys.stderr)
+                safe_reason = _for_consent(refusal, stream=sys.stderr)
+                _print_permission_notice(
+                    f"\nBlocked by the spawn ceiling: {safe_title} -- {safe_reason}"
+                )
+            except Exception:
+                logger.warning("Could not prepare the CLI spawn-denial notice", exc_info=True)
+            return
 
     if _unverifiable_shell(event):
         # Refusing to ASK, not a gate rejection: with no trusted shell signal

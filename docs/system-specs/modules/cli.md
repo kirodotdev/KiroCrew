@@ -609,6 +609,8 @@ surface, not just a prompt. Every request runs the same ladder, in this order:
 permission_request
   → HookManager.on_tool_call        (sensitive paths, denied commands, ceiling ∩ profile)
       deny → SEL "denied" → reject_tool → stderr notice          [not overridable]
+  → backend-attested spawn?         (`spawn_attested` + `spawn_target`, i.e. `_meta.kiro.consent`)
+      capabilities.spawn withholds → SEL "denied" → reject_tool  [not overridable]
   → may this invocation ask?        (command mode AND both streams a TTY)
       no   → SEL "denied" → reject_tool → stderr notice
   → prompt the human
@@ -631,6 +633,58 @@ answers permission requests; it does not carry the dashboard's trust and
 auto-approval semantics, and honouring `TOOL_AUTO_APPROVE` here would add a
 second execution path with no human confirmation. Asking more often than the
 dashboard is the safe direction.
+
+**A backend-attested spawn is checked against `capabilities.spawn`.** The hooks
+gate above cannot cover this one: `classify_tool_title` maps an unprefixed
+builtin to `commands`/`tools`, never to `capabilities.spawn`, so a ceiling that
+disables spawning outright says nothing the gate can read. A KAS sub-agent spawn
+also never reaches `subagent._vet_spawn_governance`, which is where every Crew
+spawn is vetted — the backend performs it itself. So when `event.spawn_attested`
+is set, `_answer_permission` calls that same `_vet_spawn_governance` directly --
+one implementation of "may this surface spawn", and no local wrapper to drift from
+it -- and a refusal records `spawn_not_permitted` and rejects. Every identity goes
+by keyword, because the vet's third positional is `app`: a positionally-passed
+caller would bind to the app slot, type-check, run, and enforce nothing. It runs
+before
+the human is asked, so an administrator's ceiling is not something a person at
+the terminal can approve away, and through `asyncio.to_thread` because resolving
+a governance profile stats and reads `profiles/`. If it raises, the request is
+refused as `gate_failed` rather than escalated to a human, who would otherwise be
+standing in for a policy nobody could read.
+
+**Both halves of the policy are checked, `enabled` and `agents`.** The target
+comes from `event.spawn_target` — the backend's own `_meta.kiro.consent`
+(`triggeringResource` before `resource`, the precedence kiro-cli's permission UI
+applies to the same block) — never from the LLM-authored `title`, which is
+exactly what an authorization check may not key on. So a ceiling narrowed to
+named agents is enforced on this surface too, not left to a human who would be
+approving a spawn the policy forbids.
+
+A frame that states no target reaches `_vet_spawn_governance` with `agent=""`,
+and that empty target is judged rather than skipped. Because the check is a
+structural *presence* test (`governance_scope_constrained`, not item matching),
+**any declared `agents` scope — allow-mode or deny-mode — rejects the unnamed
+target**: a deny-list would otherwise permit `""` (no pattern matches it), which
+is exactly the bypass the presence check closes. Only a policy with **no**
+`agents` scope permits it, as unconstrained — that is what keeps the feature
+working if KAS omits the field on a spawn frame.
+
+**The caller's own agent travels as well as the target.** `gate.agent` is
+passed as `caller_agent`, because `resolve_active_scope` consults an agent-name
+task profile only when that name is supplied and otherwise falls back to the
+surface bind. Omitting it left a ceiling written for the agent *doing* the
+spawning binding nothing here — and since the hooks gate cannot see a spawn at
+all, that ceiling was enforced on no path. The target says what may be spawned;
+the caller says who may spawn it, and both are policy questions.
+
+**The attestation only ever relaxes a refusal (deny → prompt).** Its other
+consumer is the unverifiable-shell rule below, where a spawn arrives with no
+preceding `tool_call` frame so no command classification exists and the rule
+would hard-deny before anyone is asked. `spawn_attested` substitutes for that
+missing classification; it does not approve anything, does not suppress the
+payload-kind deny, and does not skip the ceiling check above, which the request
+has already passed by the time the prompt is drawn. Provenance and fail-closed
+behaviour are in `acp-client.md` § Backend-attested spawn.
 
 | Mode | stdin+stdout TTY | Behaviour |
 |---|---|---|
@@ -688,8 +742,25 @@ found would refuse them all to close a gap that exists only for tools which name
 one. A non-string value is treated as absent rather than raised on: raising would
 leave the request unanswered, which is the hang this path exists to end.
 
-Beyond the command and the path, the whole tool input is still **not** shown —
-this is the question, not a detail panel.
+**An attested spawn discloses the agent it will start.** A spawn shows no command
+and no path, so the title would otherwise be the whole question — and the title is
+the one field that cannot be trusted to name the agent:
+
+```
+Permission required: Sub-agent: research
+Sub-agent: deployer
+   [a] allow once  [d] deny (default):
+```
+
+The agent comes from `event.spawn_target`, the backend's own consent block, and is
+rendered like the other disclosed fields (sanitised, one line). A frame that states
+no agent prints `Sub-agent: unnamed agent` rather than nothing, for the same reason
+a nameless MCP tool prints `unnamed tool`: silence reads as though nothing was
+withheld, and a human told the target is missing can still refuse what the policy
+permitted.
+
+Beyond the command, the path and the spawn target, the whole tool input is still
+**not** shown — this is the question, not a detail panel.
 
 **Terminal controls are neutralised on this surface.** Every untrusted string
 the permission UI prints — the title, the command, and a gate reason — goes
@@ -747,6 +818,7 @@ already made:
 |---|---|---|
 | gate denied | `denied` | `hook_deny` |
 | gate raised before a verdict | `denied` | `gate_failed` |
+| attested spawn the `capabilities.spawn` ceiling withholds | `denied` | `spawn_not_permitted` |
 | execute-kind request has no verified command | `denied` | `unverified_shell` |
 | nobody to ask | `denied` | `noninteractive` |
 | prompt availability/render/read failed | `denied` | `prompt_failed` |

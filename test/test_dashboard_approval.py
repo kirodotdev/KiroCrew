@@ -1996,6 +1996,9 @@ async def _drive_deny_turn(
     title: str,
     tool_input: str = "",
     approve_prompt: bool = False,
+    tool_kind: str = "edit",
+    spawn_attested: bool = False,
+    spawn_target: str = "",
 ) -> None:
     """Run one turn whose only tool call lands on the deny path under test.
 
@@ -2017,9 +2020,13 @@ async def _drive_deny_turn(
                     LLMEvent(
                         kind=EVENT_PERMISSION_REQUEST,
                         title=title,
-                        tool_kind="edit",
+                        # A real spawn arrives FRAMELESS, so its kind is "" -- which
+                        # is what makes the hooks gate fall through to a title match.
+                        tool_kind=tool_kind,
                         request_id="req-1",
                         tool_input=tool_input,
+                        spawn_attested=spawn_attested,
+                        spawn_target=spawn_target,
                     ),
                     _complete_event(),
                 ]
@@ -2256,6 +2263,246 @@ class TestDenyRowTitleRedaction:
         # Each deny shape is rendered in exactly one place — its helper.
         assert source.count('f"🚫 {title} (invalid: {error})"') == 1
         assert source.count('f"🚫 {title} (hook error)"') == 1
+        assert source.count('f"\\U0001f6ab {title} -- {_reason}"') == 1
+
+
+class TestDashboardSpawnCeilingBehaviour:
+    """The ceiling denies a forbidden spawn on the real permission branch.
+
+    The source-scan suite in ``test_governance_chokepoints.py`` pins WHERE the
+    check sits; these drive it. The important one is
+    ``test_an_auto_approvable_title_cannot_carry_a_forbidden_spawn_past_the_ceiling``:
+    it reproduces the bypass three independent reviewers found in the first cut of
+    this change, where the check sat after the hooks gate's ``TOOL_AUTO_APPROVE``
+    arm and was therefore dead code for exactly the requests that needed it.
+    """
+
+    def _vetted(self, monkeypatch, refusal):
+        """Patch the ceiling to a fixed verdict and record what it was asked."""
+        seen: list[dict] = []
+
+        def _fake(key, agent, app="", caller_agent=""):
+            seen.append({"key": key, "agent": agent, "app": app, "caller": caller_agent})
+            return refusal
+
+        monkeypatch.setattr(chat_runner, "_vet_spawn_governance", _fake)
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_a_forbidden_spawn_is_denied_and_never_approved(self, tmp_path, monkeypatch):
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        seen = self._vetted(monkeypatch, "capabilities.spawn is disabled")
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(
+                state,
+                client,
+                slot,
+                title="Sub-agent: research",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="deployer",
+            )
+        assert seen, "the ceiling was never consulted"
+        client.reject_tool.assert_awaited_with("req-1")
+        assert not client.approve_tool.await_args_list, "a forbidden spawn was approved"
+        recs = [
+            c.kwargs
+            for c in audit.log_tool_invocation.call_args_list
+            if c.kwargs.get("error") == "spawn_not_permitted"
+        ]
+        assert recs, "no spawn-ceiling audit record"
+        assert recs[0]["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_an_auto_approvable_title_cannot_carry_a_forbidden_spawn_past_the_ceiling(
+        self, tmp_path, monkeypatch
+    ):
+        # THE regression test. A spawn is frameless (kind ""), so `HookManager`
+        # falls through to `_is_read_only_tool` against the MODEL-AUTHORED title --
+        # "Search ..." leads with a read-only verb and auto-approves. That grant
+        # both approves and `continue`s, so a ceiling placed after it never runs.
+        # No operator config is involved: the model chooses the title.
+        state, client = _make_state(
+            tmp_path, context_builder=_context_builder(ToolHookResult.auto_approve())
+        )
+        slot = _make_slot()
+        seen = self._vetted(monkeypatch, "spawning is not permitted for 'deployer'")
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _drive_deny_turn(
+                state,
+                client,
+                slot,
+                title="Search the repo for the failing test",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="deployer",
+            )
+        assert seen, "the ceiling was never consulted -- an approve path ran first"
+        assert not client.approve_tool.await_args_list, (
+            "the hooks auto-approve granted a ceiling-forbidden spawn: the ceiling "
+            "is downstream of a grant that approves and continues"
+        )
+        client.reject_tool.assert_awaited_with("req-1")
+
+    @pytest.mark.asyncio
+    async def test_the_caller_agent_reaches_the_policy_as_the_caller(self, tmp_path, monkeypatch):
+        # A names-only assertion passes on swapped bindings, so the VALUE is pinned
+        # against a slot whose agent is distinguishable from the spawn target.
+        #
+        # `app` is deliberately NOT varied here: setting `slot._app` routes the turn
+        # down the unregistered-app path (`chat_runner.py:6686`) and it never
+        # reaches the permission branch, so an app-valued behavioural test would
+        # assert nothing. That `app` carries `slot._app` rather than some other
+        # value is pinned instead by
+        # `TestDashboardSpawnCeiling::test_every_identity_the_surface_has_reaches_the_policy`,
+        # which reads the binding off the AST.
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        slot.agent = "caller-agent"
+        seen = self._vetted(monkeypatch, None)
+        with patch("kiro_crew.dashboard.chat_runner.sel"):
+            await _drive_deny_turn(
+                state,
+                client,
+                slot,
+                title="Sub-agent: research",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="deployer",
+                approve_prompt=True,
+            )
+        assert seen == [
+            {
+                # The SURFACE-NAMESPACED key, not the bare slot key: governance
+                # binds a profile per surface, and the CLI's counterpart is
+                # `cli_chat`. A bare `chat-1-test` would resolve no surface bind.
+                "key": f"dashboard:{slot.key}",
+                "agent": "deployer",
+                "app": "",
+                "caller": "caller-agent",
+            }
+        ], "the caller agent must arrive as caller_agent, never in the app slot"
+
+    @pytest.mark.asyncio
+    async def test_a_permitted_spawn_is_not_denied_by_the_ceiling(self, tmp_path, monkeypatch):
+        # The false-deny direction. A ceiling that refuses everything would pass
+        # every test above.
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        seen = self._vetted(monkeypatch, None)
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(
+                state,
+                client,
+                slot,
+                title="Sub-agent: research",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="researcher",
+                approve_prompt=True,
+            )
+        assert seen, "the ceiling was never consulted"
+        assert not [
+            c
+            for c in audit.log_tool_invocation.call_args_list
+            if c.kwargs.get("error") == "spawn_not_permitted"
+        ], "a permitted spawn was denied by the ceiling"
+
+    @pytest.mark.asyncio
+    async def test_a_non_spawn_request_never_consults_the_ceiling(self, tmp_path, monkeypatch):
+        # The guard is `event.spawn_attested`, so an ordinary tool call must not
+        # pay for it -- and must not be judged against a spawn scope.
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        seen = self._vetted(monkeypatch, "would deny if consulted")
+        with patch("kiro_crew.dashboard.chat_runner.sel"):
+            await _drive_deny_turn(
+                state, client, slot, title="Edit main.py", approve_prompt=True
+            )
+        assert seen == [], "an ordinary tool call was judged against the spawn ceiling"
+
+    @pytest.mark.asyncio
+    async def test_an_evaluation_failure_denies_rather_than_aborting_the_turn(
+        self, tmp_path, monkeypatch
+    ):
+        # Fail-closed, and it must DENY rather than raise: a raise out of the
+        # permission branch leaves the request unanswered and hangs the turn.
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+
+        def _boom(key, agent, app="", caller_agent=""):
+            raise RuntimeError("governance store unreadable")
+
+        monkeypatch.setattr(chat_runner, "_vet_spawn_governance", _boom)
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(
+                state,
+                client,
+                slot,
+                title="Sub-agent: research",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="deployer",
+            )
+        client.reject_tool.assert_awaited_with("req-1")
+        assert not client.approve_tool.await_args_list
+        # Stable leading token, so one query finds every fail-closed evaluation
+        # rather than having to match free text.
+        recs = [
+            c.kwargs
+            for c in audit.log_tool_invocation.call_args_list
+            if str(c.kwargs.get("error", "")).startswith("gate_failed:")
+        ]
+        assert recs, "the fail-closed audit code is not queryable"
+        # The guard is hoisted ABOVE the hooks gate, so a fault here means no hook
+        # ran: the deny must be attributed to the ceiling itself, not to a hook.
+        # Pinning the outcome in both directions is what would have caught the
+        # original defect, where this arm stamped outcome="hook_error".
+        assert recs[0]["outcome"] == "denied"
+        assert recs[0]["outcome"] != "hook_error"
+
+    @pytest.mark.asyncio
+    async def test_the_deny_row_and_audit_redact_a_planted_credential(
+        self, tmp_path, monkeypatch
+    ):
+        # Same contract as the sibling deny paths: the title is model-authored, so
+        # a credential planted there must reach neither a row nor the audit.
+        secret = "AKIA" + "1234567890ABCDEF"
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        self._vetted(monkeypatch, f"denied while holding {secret}")
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(
+                state,
+                client,
+                slot,
+                title=f"Sub-agent: {secret}",
+                tool_kind="",
+                spawn_attested=True,
+                spawn_target="deployer",
+            )
+        rows = [m.get("content", "") for m in slot.messages]
+        assert not any(secret in row for row in rows), rows
+        recs = [
+            c.kwargs
+            for c in audit.log_tool_invocation.call_args_list
+            if c.kwargs.get("error") == "spawn_not_permitted"
+        ]
+        assert recs, "no spawn-ceiling audit record"
+        assert secret not in recs[0]["tool_name"], recs[0]
+        # The refusal string names operator policy, but an `agents` scope entry
+        # echoes the model's own target, so it is redacted on both surfaces too.
+        assert not any(secret in r for r in slot.messages[-1].get("content", ""))
 
 
 class TestApprovalAnswerersDoNotRaceTheStream:
