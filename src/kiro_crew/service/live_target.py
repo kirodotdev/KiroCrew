@@ -128,6 +128,24 @@ def _reject(message: str) -> Path:
     raise InvalidTarget(message)
 
 
+#: The document that means "no live target" WITHOUT the file being absent.
+#:
+#: The sandbox masks this pointer from agent subprocesses, and on Linux a mask is a
+#: ``mount(2)`` that cannot target a path which does not exist — so an ABSENT pointer is
+#: an UNMASKED pointer, and a namespace spawned while it was absent can write one after
+#: Dev Fleet creates it, choosing the code the gateway execs into at its next start.
+#: ``sandbox._materialize_live_target_mask_target`` closes that by publishing this
+#: document before the spawn, which requires a spelling that every reader treats exactly
+#: as it treats absence: :func:`read_target_reason` returns ``(None, None)`` for it, so
+#: the boot path stays on the installed build and logs nothing, and the dashboard reports
+#: no pinned target rather than an unusable one.
+#:
+#: An explicit ``null`` rather than an empty object, so a MISSING ``checkout`` key keeps
+#: its existing complaint: ``{}`` is what a hand-edit produces and ``{"chekout": ...}`` is
+#: what a typo produces, and neither should pass silently as "nothing pinned".
+NO_TARGET_DOCUMENT: str = json.dumps({"checkout": None}, indent=2) + "\n"
+
+
 def read_target() -> Path | None:
     """The stored live target, or ``None`` when there is none to honour.
 
@@ -167,6 +185,12 @@ def read_target_reason() -> tuple[Path | None, str | None]:
     if not isinstance(data, dict):
         return None, f"the live-target pointer is not a JSON object: {path}"
     raw = data.get("checkout")
+    if raw is None and "checkout" in data:
+        # The mask's absent-equivalent document (:data:`NO_TARGET_DOCUMENT`), or an
+        # operator clearing the pin without deleting the file. Indistinguishable from
+        # absence BY DESIGN — same ``(None, None)``, so no caller can tell the
+        # materialised stub from a host that never pinned anything.
+        return None, None
     if not isinstance(raw, str):
         return None, f"the live-target pointer has no 'checkout' string: {path}"
     try:

@@ -187,6 +187,14 @@ class TestANewOwnedLeavesAppCannotSilentlySkipMaterialization:
         covered = {
             sb.MD_NOTEBOOK_APP_NAME: set(sb._MD_NOTEBOOK_PRECREATE_CONTENT)
             | {sb._MD_NOTEBOOK_STAGING_LEAF},
+            # dev-fleet owns one leaf, the live-target pointer. (a) Its
+            # absent-equivalent document is ``_LIVE_TARGET_PRECREATE_CONTENT`` and
+            # ``_materialize_live_target_mask_target`` publishes it before launch;
+            # ``test_sandbox_dev_fleet_carveout.py`` pins both, and that the document
+            # reads as absent rather than as an unusable pointer. (b) Its spawn DOES
+            # take the ``-I`` startup: the pointer is writable in that namespace, so a
+            # planted ``sitecustomize`` there would choose the gateway's next image.
+            sb.DEV_FLEET_APP_NAME: {sb._LIVE_TARGET_LEAF},
         }
         assert set(sb._APP_BACKEND_OWNED_LEAVES) == set(covered), (
             "an app gained entries in _APP_BACKEND_OWNED_LEAVES without materialisation "

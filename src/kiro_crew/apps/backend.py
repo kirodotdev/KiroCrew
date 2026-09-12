@@ -51,6 +51,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.sandbox import (
+    DEV_FLEET_APP_NAME,
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
@@ -1696,13 +1697,21 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         logger.warning("Refusing to spawn third-party app %s backend: %s", app_name, denied)
         return None
 
-    # Whether this spawn executes the SHIPPED md-notebook backend — provenance on the
-    # executed path the admission gate above vetted. Only the isolated-startup branch
-    # below reads it: that is the one spawn whose namespace holds an unmasked PAT, so
-    # interpreter startup hooks must not ride along. The state-file carve-out further
-    # down is keyed off the GENERIC ``is_builtin_app`` check instead, because it applies
-    # to every app that owns hidden leaves.
-    _shipped_md_notebook = app_name == MD_NOTEBOOK_APP_NAME and is_builtin_app(
+    # Whether this spawn executes a SHIPPED builtin whose namespace holds an unmasked
+    # crew-home leaf — provenance on the executed path the admission gate above vetted.
+    # Only the isolated-startup branch below reads it: these are the spawns that carry a
+    # ``_APP_BACKEND_OWNED_LEAVES`` carve-out, so interpreter startup hooks must not ride
+    # along. The carve-out itself is keyed off the GENERIC ``is_builtin_app`` check
+    # further down, because it applies to every app that owns hidden leaves.
+    #
+    # md-notebook's namespace holds an unmasked PAT, so a hook would READ a secret.
+    # dev-fleet's holds the unmasked live-target pointer, so a hook would WRITE the
+    # gateway's next ``execve`` target — the same class, one step worse. Both leaves are
+    # reachable from an agent-writable user site (``sitecustomize`` / ``usercustomize`` /
+    # a ``.pth``) that a FRESH interpreter honours even though the running gateway never
+    # re-imports it, which is what ``-I`` shuts off.
+    _isolated_startup_apps = (MD_NOTEBOOK_APP_NAME, DEV_FLEET_APP_NAME)
+    _shipped_carveout_builtin = app_name in _isolated_startup_apps and is_builtin_app(
         app_name=app_name, app_root=execution_path
     )
 
@@ -2052,15 +2061,16 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     # packages, with cwd at the kiro_crew source root so relative imports inside the
     # module work without venv setup.
     #
-    # The md-notebook spawn ALONE starts isolated (``-I``): a bare ``python -m`` runs the
-    # interpreter's startup hooks — ``sitecustomize`` / ``usercustomize`` / user-site
+    # A spawn that CARRIES A CARVE-OUT starts isolated (``-I``): a bare ``python -m`` runs
+    # the interpreter's startup hooks — ``sitecustomize`` / ``usercustomize`` / user-site
     # ``.pth`` — and the default user site is an agent-writable, gateway-independent
     # injection path a FRESH interpreter honours even though the running gateway never
     # re-imports it. For md-notebook that startup code would run inside the one namespace
-    # where the PAT is unmasked, so the hooks must not ride along. Scoped to the spawn
-    # that carries the carve-out, not to every module builtin: the others have no
-    # unmasked secret in their namespace, and rewriting their import environment here
-    # would be a rider on a fix scoped to one.
+    # where the PAT is unmasked; for dev-fleet, inside the one namespace where the
+    # live-target pointer is WRITABLE, which selects the code the gateway starts next. So
+    # the hooks must not ride along. Scoped to the spawns that carry a carve-out, not to
+    # every module builtin: the others have no unmasked crew-home leaf in their namespace,
+    # and rewriting their import environment here would be a rider.
     #
     # ``-I`` also drops cwd-on-sys.path, the user site's PACKAGES, and ``PYTHONPATH`` (it
     # implies ``-E``), so the import universe the module needs is restated EXPLICITLY:
@@ -2075,7 +2085,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         python_bin = sys.executable
         _import_root = str(Path(__file__).resolve().parent.parent.parent)
         cwd = _import_root
-        if _shipped_md_notebook:
+        if _shipped_carveout_builtin:
             cmd = [
                 python_bin,
                 "-I",
