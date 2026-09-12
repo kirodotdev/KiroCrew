@@ -493,6 +493,12 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "so in-namespace readers can look the file up directly without a /proc walk"
     ),
     "mcp_gateway/claim.py": "docstring reference to the contract (no code reads)",
+    "config/paths.py": (
+        "docstring reference only (no code reads): shared_kiro_agents_writable "
+        "explains the #9690 failure shape — a foreign KIROCREW_HOME pinned into "
+        "the shared agent specs makes stubs search session_pid_<pid> mappings "
+        "in a home the real gateway never writes"
+    ),
     "session_pid.py": "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead processes",
     "mcp_computer.py": (
         "comment reference only (no code reads): the computer-use stdio shim "
