@@ -18,6 +18,7 @@ not enable pytest-asyncio auto mode).
 import argparse
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -770,6 +771,55 @@ class TestLogsCmdOtherSources:
         with pytest.raises(_ExecCalled) as exc:
             cli_server._logs_cmd(argparse.Namespace(follow=False, lines=0))
         assert exc.value.argv[:3] == ["tail", "-n", "100"]
+
+    def test_missing_tail_binary_reads_the_log_in_python(
+        self, monkeypatch, tmp_path, sel_rec, capsys
+    ) -> None:
+        """No ``tail(1)`` (Windows ships none): the resolved file is read
+        in-process instead of exec'ing a missing binary (#10291)."""
+        monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.UNSUPPORTED)
+        monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+        lines = [f"line {i}\n" for i in range(150)]
+        (tmp_path / "gateway.log").write_text("".join(lines), encoding="utf-8", newline="\n")
+
+        def _no_exec(*a, **k):  # pragma: no cover - proves no exec attempted
+            raise AssertionError("must not exec when tail is missing")
+
+        monkeypatch.setattr(os, "execvp", _no_exec)
+        cli_server._logs_cmd(argparse.Namespace(follow=False, lines=10))
+        assert capsys.readouterr().out == "".join(lines[-10:])
+        assert sel_rec.operations == ["logs"]
+
+    def test_missing_tail_follow_streams_until_interrupt(
+        self, monkeypatch, tmp_path, sel_rec, capsys
+    ) -> None:
+        """Follow mode without ``tail(1)`` prints the tail, streams an
+        appended line, then exits cleanly on interrupt (no hang, no traceback)."""
+        monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.UNSUPPORTED)
+        monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+        log = tmp_path / "gateway.log"
+        log.write_text("one\ntwo\n", encoding="utf-8", newline="\n")
+
+        def _no_exec(*a, **k):  # pragma: no cover - proves no exec attempted
+            raise AssertionError("must not exec when tail is missing")
+
+        monkeypatch.setattr(os, "execvp", _no_exec)
+        calls = []
+
+        def _sleep(_s):
+            calls.append(1)
+            if len(calls) == 1:
+                with open(log, "a", encoding="utf-8", newline="\n") as fh:
+                    fh.write("three\n")
+            else:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli_server.time, "sleep", _sleep)
+        cli_server._logs_cmd(argparse.Namespace(follow=True, lines=10))
+        out = capsys.readouterr().out
+        assert out == "one\ntwo\nthree\n"
 
 
 # --------------------------------------------------------------------------
