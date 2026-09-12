@@ -7088,6 +7088,12 @@
       "subtitle": "I cinque campi anonimi che {{productName}} invia e come disattivarli.",
       "title": "Privacy"
     },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "L'evidenziazione si sta riavviando. Puoi continuare a modificare.",
+      "highlighting_starting_editing_available": "L'evidenziazione della sintassi si sta avviando. Puoi continuare a modificare.",
+      "highlighting_unavailable_content_readable_reload": "L'evidenziazione della sintassi non sarà disponibile fino al ricaricamento. Il contenuto resta leggibile.",
+      "highlighting_unavailable_reload": "L'evidenziazione della sintassi non è disponibile. Salva o copia la bozza, quindi ricarica per ripristinarla; puoi continuare a modificare."
+    },
     "projectPicker": {
       "back": "Indietro",
       "browse": "Sfoglia",

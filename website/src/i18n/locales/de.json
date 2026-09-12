@@ -6984,6 +6984,12 @@
       "subtitle": "Die fünf anonymen Felder, die {{productName}} sendet, und wie du sie abschaltest.",
       "title": "Datenschutz"
     },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "Die Hervorhebung wird neu gestartet. Bearbeiten bleibt möglich.",
+      "highlighting_starting_editing_available": "Die Syntaxhervorhebung wird gestartet. Bearbeiten bleibt möglich.",
+      "highlighting_unavailable_content_readable_reload": "Die Syntaxhervorhebung ist bis zum Neuladen nicht verfügbar. Der Inhalt bleibt lesbar.",
+      "highlighting_unavailable_reload": "Die Syntaxhervorhebung ist nicht verfügbar. Speichern oder kopieren Sie Ihren Entwurf und laden Sie dann neu, um sie wiederherzustellen; Bearbeiten bleibt möglich."
+    },
     "projectPicker": {
       "back": "Zurück",
       "browse": "Durchsuchen",

@@ -6984,6 +6984,12 @@
       "subtitle": "{{productName}} যে পাঁচটি বেনামী ফিল্ড পাঠায়, এবং কীভাবে তা বন্ধ করবেন।",
       "title": "গোপনীয়তা"
     },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "হাইলাইটিং পুনরায় চালু হচ্ছে। সম্পাদনা করা যাবে।",
+      "highlighting_starting_editing_available": "সিনট্যাক্স হাইলাইটিং শুরু হচ্ছে। সম্পাদনা করা যাবে।",
+      "highlighting_unavailable_content_readable_reload": "পুনরায় লোড না করা পর্যন্ত সিনট্যাক্স হাইলাইটিং অনুপলব্ধ। বিষয়বস্তু পড়া যাবে।",
+      "highlighting_unavailable_reload": "সিনট্যাক্স হাইলাইটিং অনুপলব্ধ। আপনার খসড়া সংরক্ষণ বা অনুলিপি করুন, তারপর সিনট্যাক্স হাইলাইটিং পুনরুদ্ধার করতে পুনরায় লোড করুন; সম্পাদনা করা যাবে।"
+    },
     "projectPicker": {
       "back": "পেছনে",
       "browse": "ব্রাউজ করুন",

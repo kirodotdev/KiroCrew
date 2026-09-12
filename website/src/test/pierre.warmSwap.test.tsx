@@ -51,6 +51,12 @@ describe('WarmSwap', () => {
     expect(screen.queryByTestId('impl')).toBeNull()
   })
 
+  it('does not duplicate fallback text inside hidden staging', () => {
+    const view = render(<PierrePatch patch={PATCH} />)
+    expect(view.container.querySelectorAll('pre')).toHaveLength(1)
+    expect(view.container.querySelectorAll('[aria-hidden="true"] pre')).toHaveLength(0)
+  })
+
   it('notifies FilePair when WarmSwap reveals the implementation', async () => {
     let roCallback: (() => void) | null = null
     class StubRO {

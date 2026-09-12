@@ -7088,6 +7088,12 @@
       "subtitle": "Les cinq champs anonymes que {{productName}} envoie, et comment les désactiver.",
       "title": "Confidentialité"
     },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "La coloration redémarre. La modification reste possible.",
+      "highlighting_starting_editing_available": "La coloration syntaxique démarre. La modification reste possible.",
+      "highlighting_unavailable_content_readable_reload": "La coloration syntaxique est indisponible jusqu’au rechargement. Le contenu reste lisible.",
+      "highlighting_unavailable_reload": "La coloration syntaxique est indisponible. Enregistrer ou copier le brouillon, puis recharger la page pour la restaurer ; la modification reste possible."
+    },
     "projectPicker": {
       "back": "Retour",
       "browse": "Parcourir",

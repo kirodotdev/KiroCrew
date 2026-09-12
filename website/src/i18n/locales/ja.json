@@ -6880,6 +6880,12 @@
       "subtitle": "{{productName}}が送信する5つの匿名フィールドと、それをオフにする方法。",
       "title": "プライバシー"
     },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "ハイライトを再起動しています。編集は続けられます。",
+      "highlighting_starting_editing_available": "構文ハイライトを開始しています。編集は続けられます。",
+      "highlighting_unavailable_content_readable_reload": "再読み込みするまで構文ハイライトを利用できません。内容は引き続き読めます。",
+      "highlighting_unavailable_reload": "構文ハイライトを利用できません。下書きを保存またはコピーしてから、構文ハイライトを復元するために再読み込みしてください。編集は続けられます。"
+    },
     "projectPicker": {
       "back": "戻る",
       "browse": "参照",

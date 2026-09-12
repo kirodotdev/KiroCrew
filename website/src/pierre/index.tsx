@@ -12,7 +12,7 @@
  * user has turned off highlighted diffs (see `usePlainDiff`), which is why the
  * fallback component is a real surface here rather than a loading state.
  */
-import { Suspense, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useRef, useState } from 'react'
+import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
@@ -171,6 +171,20 @@ function warmKeyOf(text: string): string {
   return `${text.length}:${(h >>> 0).toString(36)}`
 }
 
+/** Whether the nearest WarmSwap has revealed its children. `true` outside any
+ *  WarmSwap, so a bare surface keeps its ordinary Suspense fallback. */
+const WarmSwapRevealedContext = createContext(true)
+
+/** Suspense for the impl under a WarmSwap. While the WarmSwap still shows its
+ *  own fallback the inner fallback is `null`: a second copy of the text would
+ *  duplicate content for transcript search and its height would look like a
+ *  paint. Once revealed — by paint or by the deadline fail-safe — the fallback
+ *  is real, so a chunk that outlives the deadline shows plain text, not blank. */
+function StagedSuspense({ fallback, children }: { fallback: React.ReactNode; children: React.ReactNode }) {
+  const revealed = useContext(WarmSwapRevealedContext)
+  return <Suspense fallback={revealed ? fallback : null}>{children}</Suspense>
+}
+
 /**
  * Keeps a readable fallback ON SCREEN while the Pierre impl mounts and its
  * async highlight runs, swapping only once the impl has real painted height.
@@ -253,7 +267,7 @@ function WarmSwap({ fallback, children, warmKey, onVisible }: {
         className={painted ? undefined : 'absolute inset-0 overflow-hidden invisible'}
         aria-hidden={painted ? undefined : true}
       >
-        {children}
+        <WarmSwapRevealedContext.Provider value={painted}>{children}</WarmSwapRevealedContext.Provider>
       </div>
       {!painted && fallback}
     </div>
@@ -271,21 +285,26 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
    *  must then NOT scroll. */
   scrollClassName?: string
 }) {
-  const impl = (
-    <Suspense fallback={
-      /* The fallback carries the same scroll classes, so the pre-chunk text
-         scrolls in the same box and the layout does not shift when the chunk
-         resolves. */
-      <div className={scrollClassName}><PlainCodeFallback text={file.contents} /></div>
-    }>
-      <CodeImpl file={file} options={options} className={className} langHint={langHint} scrollClassName={scrollClassName} />
-    </Suspense>
+  // Whole-file surfaces own their scroll container and cannot be wrapped in
+  // an invisible measurement box, so they retain a direct Suspense fallback.
+  if (scrollClassName) {
+    return (
+      <Suspense fallback={<div className={scrollClassName}><PlainCodeFallback text={file.contents} /></div>}>
+        <CodeImpl file={file} options={options} className={className} langHint={langHint} scrollClassName={scrollClassName} />
+      </Suspense>
+    )
+  }
+  // WarmSwap owns the visible fallback while it stages; StagedSuspense keeps
+  // the hidden impl from duplicating that text, then supplies its own once the
+  // surface is revealed so a slow chunk never shows blank.
+  const fallback = <PlainCodeFallback text={file.contents} />
+  return (
+    <WarmSwap warmKey={warmKeyOf(file.contents)} fallback={fallback}>
+      <StagedSuspense fallback={fallback}>
+        <CodeImpl file={file} options={options} className={className} langHint={langHint} />
+      </StagedSuspense>
+    </WarmSwap>
   )
-  // Whole-file surfaces (scrollClassName) own their scroll container and are
-  // windowed by Pierre itself; wrapping them in an invisible box would break
-  // that measurement, so only snippet surfaces warm-swap.
-  if (scrollClassName) return impl
-  return <WarmSwap warmKey={warmKeyOf(file.contents)} fallback={<PlainCodeFallback text={file.contents} />}>{impl}</WarmSwap>
 })
 
 export const PierrePatch = memo(function PierrePatch({ patch, options, className, renderHeaderMetadata }: {
@@ -312,12 +331,16 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   // print raw and the diff still has to be computed inside the chunk. It drops
   // the colour and the workers instead — see `PierreFilePairImpl`.
   const [plain] = usePlainDiff()
+  // The fallback carries no header actions: the caller's cluster can be three
+  // buttons, and a diff-added row of three is barred (`max-two-buttons-per-row`).
+  // Pierre's own header carries them, exactly as on main.
   if (plain) return <PlainCodeFallback text={patch} className={className} />
+  const fallback = <PlainCodeFallback text={patch} />
   return (
-    <WarmSwap warmKey={warmKeyOf(patch)} fallback={<PlainCodeFallback text={patch} />}>
-      <Suspense fallback={<PlainCodeFallback text={patch} />}>
+    <WarmSwap warmKey={warmKeyOf(patch)} fallback={fallback}>
+      <StagedSuspense fallback={fallback}>
         <PatchImpl patch={patch} options={options} className={className} renderHeaderMetadata={renderHeaderMetadata} />
-      </Suspense>
+      </StagedSuspense>
     </WarmSwap>
   )
 })
@@ -460,23 +483,34 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   }
 
   const fallbackNode = (
-    <PlainCodeFallback
-      text={fallbackText ?? (newFile ?? oldFile)?.contents ?? ''}
+    <PlainFilePairFallback
+      oldFile={oldFile}
+      newFile={newFile}
+      options={options}
+      geometry="pierre-swap"
+      text={fallbackText}
       className={fallbackClassName}
+      renderHeaderMetadata={renderHeaderMetadata}
+      renderHeaderPrefix={renderHeaderPrefix}
+      renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
     />
   )
+  // Collapsed pairs render outside WarmSwap, where StagedSuspense is always
+  // revealed and behaves as a plain Suspense with the fallback.
   const impl = (
-    <Suspense fallback={fallbackNode}>
+    <StagedSuspense fallback={fallbackNode}>
       <FilePairImpl
         oldFile={oldFile}
         newFile={newFile}
         options={options}
         className={className}
+        fallbackClassName={fallbackClassName}
+        fallbackContentStyle={fallbackContentStyle}
         renderHeaderMetadata={renderHeaderMetadata}
         renderHeaderPrefix={renderHeaderPrefix}
         renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
       />
-    </Suspense>
+    </StagedSuspense>
   )
 
   // A collapsed pair renders ONLY its header (~32px) — under the paint

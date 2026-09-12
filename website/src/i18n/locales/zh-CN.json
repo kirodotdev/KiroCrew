@@ -6880,6 +6880,12 @@
       "subtitle": "{{productName}} 发送的五个匿名字段，以及如何关闭。",
       "title": "隐私"
     },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "正在重新启动高亮显示。仍可继续编辑。",
+      "highlighting_starting_editing_available": "正在启动语法高亮。仍可继续编辑。",
+      "highlighting_unavailable_content_readable_reload": "重新加载前语法高亮不可用。内容仍可阅读。",
+      "highlighting_unavailable_reload": "语法高亮不可用。请保存或复制草稿，然后重新加载以恢复语法高亮；仍可继续编辑。"
+    },
     "projectPicker": {
       "back": "返回",
       "browse": "浏览",

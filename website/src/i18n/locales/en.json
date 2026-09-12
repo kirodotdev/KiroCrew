@@ -4803,6 +4803,12 @@
       "tell_kiro_about_you": "Tell Kiro about you",
       "your_role": "Your role"
     },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "Syntax highlighting is restarting. Editing remains available.",
+      "highlighting_starting_editing_available": "Syntax highlighting is starting. Editing remains available.",
+      "highlighting_unavailable_content_readable_reload": "Syntax highlighting is unavailable until you reload. Content remains readable.",
+      "highlighting_unavailable_reload": "Syntax highlighting is unavailable. Save or copy your draft, then reload to restore syntax highlighting; editing remains available."
+    },
     "projectPicker": {
       "back": "Back",
       "browse": "Browse",
