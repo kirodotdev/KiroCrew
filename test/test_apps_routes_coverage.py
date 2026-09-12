@@ -27,6 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import kiro_crew.apps.routes as routes_mod
@@ -2262,6 +2263,50 @@ class TestRegistryInstallStream:
             )
             events = _sse_events(await resp.text())
         assert json.loads(events[-1][1])["error"] == "clone exploded"
+
+    @pytest.mark.asyncio
+    async def test_client_gone_at_write_eof_is_not_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A browser tab closed mid-install makes the final write_eof raise
+        # ClientConnectionResetError ("Cannot write to closing transport").
+        # That is a routine disconnect, not a server error — it must not
+        # escape the handler, where aiohttp would log an unhandled
+        # "Error handling request" traceback.
+        _setup_env(tmp_path, monkeypatch)
+
+        async def _failed(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            return {"ok": False, "name": name, "error": "build failed"}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _failed)
+
+        writes: list[bytes] = []
+
+        async def _prepare(self, request):  # noqa: ANN001 - stub mirrors aiohttp
+            return None
+
+        async def _write(self, data):  # noqa: ANN001 - stub mirrors aiohttp
+            writes.append(bytes(data))
+
+        async def _gone(self, data=b""):  # noqa: ANN001 - stub mirrors aiohttp
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+        monkeypatch.setattr(web.StreamResponse, "prepare", _prepare)
+        monkeypatch.setattr(web.StreamResponse, "write", _write)
+        monkeypatch.setattr(web.StreamResponse, "write_eof", _gone)
+
+        request = MagicMock()
+
+        async def _json() -> dict:
+            return {"name": "some-app"}
+
+        request.json = _json
+
+        resp = await routes_mod.handle_registry_install_stream(request)
+
+        assert isinstance(resp, web.StreamResponse)
+        # The done event was still flushed before the client vanished.
+        assert any(b"event: done" in w for w in writes)
 
 
 # ---------------------------------------------------------------------------
