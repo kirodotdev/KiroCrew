@@ -40,8 +40,11 @@ def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, s
     # caller does that; closing it means this parameter going away, not the order
     # flipping.
     secret = run_marker.read_secret(port)
-    if not secret and secret_path.exists():
-        secret = secret_path.read_text().strip()
+    if not secret:
+        try:
+            secret = secret_path.read_text().strip()
+        except FileNotFoundError:
+            pass
     if secret:
         headers["X-Internal-Secret"] = secret
     try:
