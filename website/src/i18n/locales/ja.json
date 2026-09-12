@@ -1669,6 +1669,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "バックエンドに到達できません：",
+        "cannot_open_folder": "このフォルダーを開けません",
+        "folder_unavailable": "このフォルダーは利用できません。",
+        "go_to_parent_folder": "親フォルダーへ移動",
         "chat_about_this": "これについてチャット",
         "copy_path": "パスをコピー",
         "open": "開く",

@@ -1741,6 +1741,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend inaccessible :",
+        "cannot_open_folder": "Impossible d’ouvrir ce dossier",
+        "folder_unavailable": "Ce dossier n’est pas disponible.",
+        "go_to_parent_folder": "Aller au dossier parent",
         "chat_about_this": "Discuter de ceci",
         "copy_path": "Copier le chemin",
         "open": "Ouvrir",

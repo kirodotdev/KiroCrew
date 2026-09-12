@@ -1669,6 +1669,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "백엔드에 연결할 수 없습니다:",
+        "cannot_open_folder": "이 폴더를 열 수 없습니다",
+        "folder_unavailable": "이 폴더를 사용할 수 없습니다.",
+        "go_to_parent_folder": "상위 폴더로 이동",
         "chat_about_this": "이 항목에 대해 대화하기",
         "copy_path": "경로 복사",
         "open": "열기",

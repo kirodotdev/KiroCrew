@@ -1028,6 +1028,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend not reachable:",
+        "cannot_open_folder": "Cannot open this folder",
+        "folder_unavailable": "This folder is unavailable.",
+        "go_to_parent_folder": "Go to parent folder",
         "chat_about_this": "Chat about this",
         "copy_path": "Copy path",
         "open": "Open",

@@ -230,6 +230,19 @@ describe('TreeNode', () => {
     expect(screen.getByText('index.ts')).toBeInTheDocument()
   })
 
+  it('surfaces the error, not a perpetual loading label, when a child folder fails to load', async () => {
+    // A childless dir lazy-loads on expand; when that fetch rejects (e.g. a
+    // symlink resolving outside the allow-list) the row must surface the error
+    // through ErrorNotice rather than stay on "loading..." forever.
+    const lockedNode: TreeEntry = { name: 'locked', path: '/home/user/locked', type: 'dir' }
+    vi.mocked(fileExplorerApi.tree).mockRejectedValue(new Error('path not allowed'))
+    renderWithQuery(
+      <TreeNode node={lockedNode} depth={0} expanded={{ '/home/user/locked': true }} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={new Map()} />,
+    )
+    await waitFor(() => expect(screen.getByText('path not allowed')).toBeInTheDocument())
+    expect(screen.queryByText(/loading/i)).not.toBeInTheDocument()
+  })
+
   it('displays git badge when file is modified', () => {
     const gitMap = new Map<string, GitInfo>([
       ['/home/user', { repoRoot: '/home/user', branch: 'main', statuses: { 'app.py': 'M' } }],

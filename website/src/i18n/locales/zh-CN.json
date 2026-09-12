@@ -1618,6 +1618,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "无法连接后端：",
+        "cannot_open_folder": "无法打开此文件夹",
+        "folder_unavailable": "此文件夹不可用。",
+        "go_to_parent_folder": "转到上级文件夹",
         "chat_about_this": "就此发起聊天",
         "copy_path": "复制路径",
         "open": "打开",

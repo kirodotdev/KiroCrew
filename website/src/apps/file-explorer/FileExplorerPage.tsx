@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../store'
 import { setPendingInput } from '../../store/chatSlice'
 import { Skeleton, Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '../../components/ui/context-menu'
 import { fileExplorerApi } from './api'
@@ -112,7 +113,7 @@ export default function FileExplorerPage() {
   }, [])
 
   // ── Tree (React Query) — consumed directly at render, no local state sync ──
-  const { data: treeData } = useQuery({
+  const { data: treeData, error: treeError } = useQuery({
     queryKey: ['file-explorer', 'tree', activeFolder?.rootPath],
     queryFn: () => fileExplorerApi.tree(activeFolder!.rootPath, 2),
     enabled: !!activeFolder?.rootPath && initialized,
@@ -363,6 +364,7 @@ export default function FileExplorerPage() {
         onRenameFolder={renameFolderTab}
       />
       {healthError && <div className="mc-fe-banner"><AlertTriangle size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.backend_not_reachable')} {(healthError as Error).message}</div>}
+      {treeError && <ErrorNotice variant="block" title={i18nT('apps.fileExplorer.fileExplorerPage.cannot_open_folder')} message={(treeError as Error).message} askAgent />}
       <PathBar rootPath={activeFolder.rootPath} gitInfo={rootGitInfo} onChangeRoot={changeRoot} onNavigate={openMaybe} />
       <div className={`mc-fe-split${isMobile ? ' is-stacked' : ''}`}>
         {/* Narrow: the control that reaches the tree sits at the TOP, so no
@@ -397,6 +399,13 @@ export default function FileExplorerPage() {
                     gitMap={tabGitMap}
                     onContextMenu={onTreeContextMenu}
                   />
+                </div>
+              ) : treeError ? (
+                <div className="mc-fe-empty" style={{ flexDirection: 'column', gap: 8 }}>
+                  {i18nT('apps.fileExplorer.fileExplorerPage.folder_unavailable')}
+                  <Btn onClick={() => changeRoot(dirname(activeFolder.rootPath))}>
+                    <CornerDownRight size={13} /> {i18nT('apps.fileExplorer.fileExplorerPage.go_to_parent_folder')}
+                  </Btn>
                 </div>
               ) : <div className="mc-fe-empty"><Skeleton className="h-full w-full" /></div>}
             </ContextMenuTrigger>

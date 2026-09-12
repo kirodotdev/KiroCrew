@@ -1690,6 +1690,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend inacessível:",
+        "cannot_open_folder": "Não é possível abrir esta pasta",
+        "folder_unavailable": "Esta pasta não está disponível.",
+        "go_to_parent_folder": "Ir para a pasta principal",
         "chat_about_this": "Conversar sobre isso",
         "copy_path": "Copiar caminho",
         "open": "Abrir",

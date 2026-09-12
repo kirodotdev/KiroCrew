@@ -1726,6 +1726,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Бэкенд недоступен:",
+        "cannot_open_folder": "Не удалось открыть эту папку",
+        "folder_unavailable": "Эта папка недоступна.",
+        "go_to_parent_folder": "Перейти к родительской папке",
         "chat_about_this": "Обсудить в чате",
         "copy_path": "Копировать путь",
         "open": "Открыть",

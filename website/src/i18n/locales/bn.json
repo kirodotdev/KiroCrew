@@ -1654,6 +1654,9 @@
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "ব্যাকএন্ডে পৌঁছানো যাচ্ছে না:",
+        "cannot_open_folder": "এই ফোল্ডারটি খোলা যায়নি",
+        "folder_unavailable": "এই ফোল্ডারটি উপলব্ধ নেই।",
+        "go_to_parent_folder": "প্যারেন্ট ফোল্ডারে যান",
         "chat_about_this": "এটি নিয়ে চ্যাট করুন",
         "copy_path": "পাথ কপি করুন",
         "open": "খুলুন",
