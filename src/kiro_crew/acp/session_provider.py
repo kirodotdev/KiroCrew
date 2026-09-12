@@ -66,6 +66,8 @@ class AcpSessionProvider(LLMProvider):
         runtime: AcpRuntime,
         *,
         owns_runtime: bool = False,
+        session_key: str = "",
+        channel_id: str | None = None,
     ) -> None:
         self._handle = handle
         self._runtime = runtime
@@ -74,9 +76,17 @@ class AcpSessionProvider(LLMProvider):
         self._owns_runtime = owns_runtime
         self._resumed_flag: bool = False
         self._resume_session_id: str = ""
-        # Warm-pool correlation keys (parity with AcpClient); set by rekey().
-        self._session_key: str = ""
-        self._channel_id: str | None = None
+        # The session this provider serves. ``rekey()`` sets it on a warm-pool
+        # claim, but a COLD start reaches no rekey at all (pool miss, pooling
+        # off, a subagent's own session), so the creating caller — which knows
+        # the key, having just used it to name this session's stub token — hands
+        # it in here. Left empty it is not merely cosmetic: ``reclaim()`` would
+        # push a claim with an empty ``session_key``, which gatewayd rejects as
+        # malformed BEFORE it records the token binding, so a token could never
+        # be re-bound after a daemon respawn and the session would stay
+        # identity-less for the rest of its life.
+        self._session_key: str = session_key
+        self._channel_id: str | None = channel_id
 
     # ── LLMProvider interface ──
 
@@ -142,6 +152,12 @@ class AcpSessionProvider(LLMProvider):
                     )
                 raise AcpError(f"failed to re-apply model {prior_model} to fresh session") from exc
         self._handle = new_handle
+        # The fresh session launched fresh stubs carrying a fresh token, and
+        # nothing has named it: an unnamed token is refused, not resolved from
+        # the shared runtime's tree. Claim it now, against the session this
+        # provider already serves (empty on a worker no session has claimed yet,
+        # where rekey() does the naming instead).
+        self.reclaim()
         # Best-effort teardown of the old session on the shared process so its
         # context doesn't linger (RSS growth). Never let cleanup mask success.
         try:
@@ -250,6 +266,25 @@ class AcpSessionProvider(LLMProvider):
 
     async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes."""
+        # Re-establish this session's gateway claim before the turn can call a
+        # tool. The shared identity publisher does the same at every surface that
+        # drives a USER turn, and this is the boundary the sessions it cannot see
+        # cross — a subagent's, which no dispatch surface publishes for, and
+        # which is the session type the token exists to protect. Without it a
+        # daemon respawn mid-run leaves a subagent's stubs refused for the whole
+        # remaining run rather than for one turn. Idempotent and
+        # fire-and-forget: gatewayd skips a connection already carrying this
+        # session, so the steady-state effect is refreshing the token binding.
+        #
+        # Guarded, like the identity publisher's own call: a turn must never fail
+        # because a claim could not be pushed, and the worst case of not pushing
+        # is a session that stays fail-closed for one more turn. The guard is
+        # here rather than inside ``reclaim``, which reads its state directly so
+        # a wiring break surfaces where it is asserted.
+        try:
+            self.reclaim()
+        except Exception:
+            logger.debug("stream: stub re-claim failed", exc_info=True)
         try:
             async for event in self._handle.prompt(message):
                 yield event
@@ -462,14 +497,41 @@ class AcpSessionProvider(LLMProvider):
         # session this runtime served BEFORE the handoff; leaking them lets
         # check_context_usage() compact the new, empty session.
         self._handle.last_prompt_stats.reset_context_state()
-        # Claim-push: re-target every MCP stub connection under the shared
-        # runtime's PID to the claiming session (see AcpClient.rekey for the
-        # rationale). Fire-and-forget; no-ops without a gateway socket.
+        # Claim-push: re-target this session's MCP stub connections under the
+        # shared runtime's PID to the claiming session (see AcpClient.rekey for
+        # the rationale). Fire-and-forget; no-ops without a gateway socket.
+        #
+        # Named by the handle's stub token, so the claim reaches THIS session's
+        # stubs and leaves every sibling session on the same runtime alone — a
+        # subagent's stubs must not be re-pointed at the slot that claimed the
+        # runtime. Empty (the gateway injected no stubs, or an older session)
+        # falls back to the PID-wide re-target this always did.
         schedule_claim(
             self._runtime._mcp_gateway_socket,
             self._runtime.pid,
             session_key,
             channel_id,
+            getattr(self._handle, "stub_session_token", ""),
+        )
+
+    def reclaim(self) -> None:
+        """Re-push this session's claim (parity with AcpClient.reclaim).
+
+        The shared runtime makes this the case that matters: its stubs belong to
+        several sessions at once, so the claim must name THIS session's token —
+        and after a gatewayd respawn every one of those tokens is unbound, which
+        gatewayd refuses rather than resolving from the shared process tree.
+        Called at the start of every turn by the shared identity publisher.
+        """
+        token = getattr(self._handle, "stub_session_token", "")
+        if not token:
+            return
+        schedule_claim(
+            self._runtime._mcp_gateway_socket,
+            self._runtime.pid,
+            self._session_key,
+            self._channel_id,
+            token,
         )
 
     @property

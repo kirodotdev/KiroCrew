@@ -42,6 +42,15 @@ async def publish_turn_identity(sessions: Any, session_key: str) -> None:
     replacements — blocking filesystem work that must not run on the event
     loop. Fail-safe: a missing pid (session not yet spawned) or any filesystem
     error is swallowed so identity publication can never break a turn.
+
+    The same turn boundary re-pushes this session's gateway claim
+    (:meth:`AcpClient.reclaim`), for the same reason the pid file is rewritten
+    here rather than once at spawn: the mapping lives outside this process and
+    can be lost while the session is alive. gatewayd holds the token ->  session
+    binding in memory only, so a daemon respawn leaves every live session's
+    stubs carrying a token nothing names — refused, not resolved from the shared
+    process tree — and this is what re-binds it, bounding the outage to the turn
+    it happened in.
     """
     try:
         pid = sessions.get_pid(session_key)
@@ -51,6 +60,27 @@ async def publish_turn_identity(sessions: Any, session_key: str) -> None:
             )
     except Exception:
         logger.debug("publish_turn_identity failed for %s", session_key, exc_info=True)
+    try:
+        _reclaim_gateway_stubs(sessions, session_key)
+    except Exception:
+        logger.debug("stub re-claim failed for %s", session_key, exc_info=True)
+
+
+def _reclaim_gateway_stubs(sessions: Any, session_key: str) -> None:
+    """Ask this session's provider to re-push its gateway claim, if it has one.
+
+    Reached through ``getattr`` on purpose: only the ACP providers carry a stub
+    token, every other provider (and every test double) simply has no
+    ``reclaim`` and is left alone. Fire-and-forget inside ``reclaim`` itself, so
+    this adds no await to the turn's critical path.
+    """
+    provider = sessions.get_provider(session_key)
+    if provider is None:
+        return
+    inner = getattr(provider, "client", None) or getattr(provider, "_client", None) or provider
+    reclaim = getattr(inner, "reclaim", None)
+    if callable(reclaim):
+        reclaim()
 
 
 def _channel_inbound_permitted_sync(channel_type: str) -> bool:

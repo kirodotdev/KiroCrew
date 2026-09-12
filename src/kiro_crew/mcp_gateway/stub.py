@@ -41,6 +41,7 @@ from kiro_crew.executors import configure_default_executor, subprocess_executor
 from kiro_crew.jsonl_util import bounded_records, rotate_jsonl_at
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import decode_target_args, hash_command, hash_effective_env
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 from kiro_crew.metrics.events import MCP_RECONNECTS, emit_counter
@@ -495,8 +496,13 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         work_dir = str(args.work_dir)
 
     caller = _build_caller_block(channel_id)
+    # Per-session token from the injected ACP entry's own env
+    # (``session_servers.attach_stub_session_token``). Absent for a stub
+    # launched from a hand-written config or an overlay predating the token: the
+    # field is then omitted below and gatewayd keeps its PID-keyed behavior.
+    session_token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
 
-    return {
+    payload = {
         "type": "register",
         "stub_uuid": str(uuid.uuid4()),
         "server_name": args.server,
@@ -552,6 +558,14 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "session_type": caller["session_type"],
         "principal_id": caller["principal_id"],
     }
+    if session_token:
+        # Sibling field, deliberately NOT a PoolKey dimension: a per-connection
+        # value in the key would give every session its own backend and pooling
+        # would silently stop (see the ``pool`` module docstring). The token says
+        # WHICH session this connection belongs to, never which backends are
+        # interchangeable.
+        payload["stub_session_token"] = session_token
+    return payload
 
 
 async def _write_frame(writer: asyncio.StreamWriter, obj: dict) -> None:
@@ -1745,6 +1759,14 @@ def fallback_exec(args: argparse.Namespace) -> None:
     # the real backend directly, so it must run with its declared env to match
     # the non-pooled baseline — the daemon's own environment lacks it.
     exec_env = dict(os.environ)
+    # Never hand the backend this session's stub token. It is a bearer name for
+    # the session's identity at gatewayd, and the process about to replace this
+    # one is the operator's third-party server binary — which on a later gateway
+    # start could register with it and be answered as this session. Its own
+    # declared env is restored below; this one value was never part of it. The
+    # non-fallback path is unaffected: gatewayd spawns backends from its OWN
+    # environment, so the token has never reached one there.
+    exec_env.pop(STUB_SESSION_TOKEN_ENV, None)
     exec_env.update(_parse_env_file(getattr(args, "env_file", "") or ""))
     if platform_compat.IS_WINDOWS:
         _fallback_spawn_child(argv, exec_env)

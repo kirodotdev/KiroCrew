@@ -1842,8 +1842,17 @@ class RunEventCoordinator(ManagerComponent):
         handle = await runtime.create_session(
             cwd=cwd or None,
             agent=agent or None,
+            # THE reason this item exists: the subagent runs on the parent's
+            # kiro-cli process, so every process-tree identity source answers
+            # with the PARENT slot. Naming the owner here binds this session's
+            # stub token to the subagent before its stubs register, so the
+            # subagent cannot act as — or be re-pointed at — its parent.
+            session_key=session_key,
         )
-        provider = AcpSessionProvider(handle, runtime)
+        # A subagent's provider never rekeys either, and its whole point is that
+        # it is NOT its parent: without the key its re-claim carries none and
+        # gatewayd drops it, leaving this session unable to re-bind its token.
+        provider = AcpSessionProvider(handle, runtime, session_key=session_key)
         # The handle exists now. Publish ownership before any cancellable await so
         # force-reap always takes the shared-session branch and destroys this handle
         # instead of resetting a nonexistent dedicated session.
