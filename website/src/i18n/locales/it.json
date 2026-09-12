@@ -4971,6 +4971,8 @@
         "backup_restore_foreign_confirm": "Questo archivio è stato caricato da un'altra installazione ({{install}}). Ripristinarlo scarica i dati di quella installazione, non quelli di questa installazione. Scaricarlo comunque?",
         "backup_restore_unverified_confirm": "Questo archivio si trova nella cartella propria di questa installazione, ma questa installazione non ha alcuna traccia di averlo caricato. Chiunque possa scrivere sul drive può creare quella cartella, quindi potrebbe non essere di questa installazione. Scaricarlo comunque?",
         "backup_restore_unknown_confirm": "Questo archivio è stato caricato prima che le installazioni avessero un nome, quindi non si sa quale installazione l'abbia scritto. Scaricarlo comunque?",
+        "backup_restore_overwritten_confirm": "Questa installazione ha caricato questo archivio, ma il drive non contiene più ciò che ha caricato: qualcos'altro l'ha sovrascritto nel frattempo. Scaricarlo comunque?",
+        "backup_restore_overwritten_refused": "Questa installazione ha caricato questo archivio, ma il drive non contiene più ciò che ha caricato. Per scaricarlo comunque, apri Backup archiviati e scegli Scarica.",
         "backup_restore_foreign_refused": "Quell’archivio appartiene a un’altra installazione. Conferma il ripristino per scaricarlo comunque.",
         "backup_restore_confirm_yes": "Scarica",
         "backup_restore_confirm_no": "Annulla",

@@ -3771,6 +3771,8 @@
         "backup_restore_foreign_confirm": "This archive was uploaded by another install ({{install}}). Restoring it downloads that install's data, not this install's. Download it anyway?",
         "backup_restore_unverified_confirm": "This archive is stored under this install's own folder, but this install has no record of uploading it. Anything that can write to the drive can create that folder, so it may not be this install's. Download it anyway?",
         "backup_restore_unknown_confirm": "This archive was uploaded before installs were named, so which install wrote it is unknown. Download it anyway?",
+        "backup_restore_overwritten_confirm": "This install uploaded this archive, but the drive no longer holds what it uploaded — something else has written over it since. Download it anyway?",
+        "backup_restore_overwritten_refused": "This install uploaded this archive, but the drive no longer holds what it uploaded. To download it anyway, open Stored backups and choose Download it.",
         "backup_restore_foreign_refused": "That archive belongs to another install. Confirm the restore to download it anyway.",
         "backup_restore_confirm_yes": "Download it",
         "backup_restore_confirm_no": "Cancel",

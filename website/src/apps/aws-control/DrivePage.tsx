@@ -3912,6 +3912,10 @@ export function BackupSection({ account }: { account: string }) {
     mutationFn: (label: string) => awsControlApi.installLabel(label),
     onSuccess: () => { setEditingLabel(false); invalidate() },
   })
+  // The archive row awaiting an in-page confirm, by key. Never the label: two
+  // installs can publish the same label, and the confirm is about a specific
+  // object.
+  const [confirmKey, setConfirmKey] = useState<string | null>(null)
   // Restore carries the confirmed override. A row whose origin is not 'self' asks
   // first, and confirming ANY of them sends foreignOk true -- foreign, unverified
   // and legacy alike -- because the backend refuses every origin it cannot prove is
@@ -3919,20 +3923,54 @@ export function BackupSection({ account }: { account: string }) {
   const restoreMut = useMutation({
     mutationFn: (v: { key: string; foreignOk?: boolean }) =>
       awsControlApi.backupRestore(account, v.key, v.foreignOk),
+    onError: (error, v) => {
+      // The refusal is the backend's own origin judgment, made against the
+      // drive's current bytes; the row's rendered origin is a cached read of the
+      // upload ledger. When the two disagree -- a 'self' row whose stored bytes a
+      // co-writer has since replaced -- the unconfirmed restore lands here, and
+      // without opening the confirm strip the refusal is a dead end: no path on
+      // the page can ever send the override. Only an UNCONFIRMED attempt opens
+      // the strip; a refusal of an attempt that already carried foreignOk stays
+      // an error, because re-asking the question it answered would loop.
+      if (!v.foreignOk && (error as Error | null)?.message === 'foreign_install_archive') {
+        setConfirmKey(v.key)
+      }
+    },
   })
-  // The archive row awaiting an in-page confirm, by key. Never the label: two
-  // installs can publish the same label, and the confirm is about a specific
-  // object.
-  const [confirmKey, setConfirmKey] = useState<string | null>(null)
 
   const data = backupQ.data
-  // Counted from the SAME slice the list below renders, so the empty state cannot
+  // The rows the archive list below actually renders -- each kind's listing
+  // under its display cap, flattened in render order. Computed ONCE so the
+  // empty state, the strip-visibility invariant, and the list itself share a
+  // single definition of "on screen" and cannot drift when the cap changes.
+  const renderedRows = BACKUP_KINDS.flatMap((kind) => (data?.remote?.[kind] ?? []).slice(0, 5))
+  // The refusal sentence below and the confirm strip answer the same question,
+  // so exactly one of them may be on screen -- and the strip only exists while
+  // the disclosure is open AND its row is among the rendered rows. Visibility
+  // is therefore DERIVED from the same rows the list renders: a state flag
+  // would go stale when the disclosure collapses or a refetch drops the
+  // refused key out of the listing, and the failure would render nowhere.
+  // The strip must also be answering THIS refusal -- a strip opened for some
+  // other row does not speak for the refused one.
+  const refusedKey = restoreMut.variables?.key
+  const refusalAnswered =
+    confirmKey !== null &&
+    confirmKey === refusedKey &&
+    showRemote &&
+    renderedRows.some((f) => f.key === confirmKey)
+  // Which sentence a refusal gets follows the refused row's own drawn origin:
+  // a 'self' row was refused because the drive's bytes moved under it, and the
+  // foreign-install sentence would contradict the attribution the row itself
+  // renders. Looked up across the whole listing (not the render slice) --
+  // wording truth does not depend on the display cap. A row a refetch removed
+  // entirely falls back to the foreign sentence, the pre-diff behavior.
+  const refusedSelf = BACKUP_KINDS.some((kind) =>
+    (data?.remote?.[kind] ?? []).some((f) => f.key === refusedKey && f.origin === 'self'))
+
+  // Counted from the SAME rows the list below renders, so the empty state cannot
   // disagree with what is on screen: a kind holding only the label sidecar, or rows
   // trimmed by the per-kind cap, must not read as rows that exist.
-  const rowCount = BACKUP_KINDS.reduce(
-    (n, kind) => n + (data?.remote?.[kind] ?? []).slice(0, 5).length,
-    0,
-  )
+  const rowCount = renderedRows.length
 
   return (
     <section data-testid="backup-section">
@@ -4162,7 +4200,7 @@ export function BackupSection({ account }: { account: string }) {
                     {i18nT('apps.awsControl.console.backup_none_from_this_install')}
                   </p>
                 )}
-                {BACKUP_KINDS.flatMap((kind) => (data.remote?.[kind] ?? []).slice(0, 5).map((f) => {
+                {renderedRows.map((f) => {
                   const asking = confirmKey === f.key
                   return (
                     <div key={f.key} data-testid="backup-archive-row">
@@ -4191,7 +4229,16 @@ export function BackupSection({ account }: { account: string }) {
                               ? i18nT('apps.awsControl.console.backup_restore_unknown_confirm')
                               : f.origin === 'unverified'
                                 ? i18nT('apps.awsControl.console.backup_restore_unverified_confirm')
-                                : i18nT('apps.awsControl.console.backup_restore_foreign_confirm', { install: f.install.slice(0, 8) })}
+                                : f.origin === 'self'
+                                  // A self row reaches this strip only after the
+                                  // backend refused its unconfirmed restore: the
+                                  // ledger says this install uploaded it, the
+                                  // drive's bytes no longer match that record.
+                                  // Neither the foreign nor the unverified
+                                  // sentence is true of that state, so it gets
+                                  // its own.
+                                  ? i18nT('apps.awsControl.console.backup_restore_overwritten_confirm')
+                                  : i18nT('apps.awsControl.console.backup_restore_foreign_confirm', { install: f.install.slice(0, 8) })}
                           </p>
                           <Btn
                             onClick={() => {
@@ -4209,7 +4256,23 @@ export function BackupSection({ account }: { account: string }) {
                             {i18nT('apps.awsControl.console.backup_restore_confirm_yes')}
                           </Btn>
                           <Btn
-                            onClick={() => setConfirmKey(null)}
+                            onClick={() => {
+                              // Cancel CONCLUDES a refused attempt: the reader
+                              // answered the question with "no", so the refusal
+                              // sentence must not come back and tell them to
+                              // answer it again. Only this strip's own refusal
+                              // is cleared -- a pre-flight confirm fired no
+                              // attempt, and an unrelated earlier failure keeps
+                              // its sentence.
+                              if (
+                                f.key === restoreMut.variables?.key &&
+                                restoreMut.isError &&
+                                (restoreMut.error as Error | null)?.message === 'foreign_install_archive'
+                              ) {
+                                restoreMut.reset()
+                              }
+                              setConfirmKey(null)
+                            }}
                             data-testid="backup-restore-confirm-no"
                           >
                             {i18nT('apps.awsControl.console.backup_restore_confirm_no')}
@@ -4218,7 +4281,7 @@ export function BackupSection({ account }: { account: string }) {
                       )}
                     </div>
                   )
-                }))}
+                })}
               </div>
             </div>
           )}
@@ -4237,15 +4300,24 @@ export function BackupSection({ account }: { account: string }) {
       {/* Restore is the call the recommended write-only policy denies (the
           caveat above says so) — and its failure used to be invisible, the one
           outcome that caveat exists to explain. A `foreign_install_archive`
-          refusal is its own sentence: it means the archive belongs to another
-          install and the restore was not confirmed. */}
+          refusal is its own sentence, keyed to the refused row's drawn origin —
+          but only while the strip answering THIS refusal is actually on screen.
+          The strip IS the confirmation the sentence asks for, so rendering both
+          would tell the reader to do the thing the page is already asking them
+          to do; the moment the strip is not rendered (disclosure collapsed, row
+          out of the render slice, or the strip belongs to another row), the
+          sentence carries the failure instead. */}
       <AwsErrorNotice
         askAgent
         error={restoreMut.error}
         message={
           restoreMut.isError
             ? (restoreMut.error as Error | null)?.message === 'foreign_install_archive'
-              ? i18nT('apps.awsControl.console.backup_restore_foreign_refused')
+              ? refusalAnswered
+                ? null
+                : i18nT(refusedSelf
+                  ? 'apps.awsControl.console.backup_restore_overwritten_refused'
+                  : 'apps.awsControl.console.backup_restore_foreign_refused')
               : i18nT('apps.awsControl.console.backup_restore_failed')
             : null
         }

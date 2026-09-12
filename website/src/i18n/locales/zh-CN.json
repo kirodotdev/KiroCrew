@@ -4813,6 +4813,8 @@
         "backup_restore_foreign_confirm": "此存档由另一个安装实例（{{install}}）上传。恢复它会下载那个安装实例的数据，而不是此安装实例的数据。仍要下载吗？",
         "backup_restore_unverified_confirm": "此存档存放在此安装实例自己的文件夹里，但此安装实例没有上传它的记录。任何能写入云盘的东西都能创建那个文件夹，所以它未必来自此安装实例。仍要下载吗？",
         "backup_restore_unknown_confirm": "此存档是在安装实例命名之前上传的，因此无法得知是哪个安装实例写入的。仍要下载吗？",
+        "backup_restore_overwritten_confirm": "此存档由此安装实例上传，但云盘上现在的内容已不是它当时上传的——后来被其他数据覆盖了。仍要下载吗？",
+        "backup_restore_overwritten_refused": "此存档由此安装实例上传，但云盘上现在的内容已不是它当时上传的。若仍要下载，请打开“已存储的备份”并选择“下载”。",
         "backup_restore_foreign_refused": "该存档属于另一个安装实例。请确认恢复以仍要下载它。",
         "backup_restore_confirm_yes": "下载",
         "backup_restore_confirm_no": "取消",
