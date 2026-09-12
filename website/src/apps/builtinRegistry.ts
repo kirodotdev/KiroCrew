@@ -35,6 +35,7 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, LazyComponent> = {
   '/dev-fleet': lazy(() => import('../pages/DevFleetPage')),
   '/issue-radar': lazy(() => import('./issue-radar/IssueRadarPage')),
   '/meetings': lazy(() => import('./meetings/MeetingsPage')),
+  '/guide': lazy(() => import('./guide/GuidePage')),
   '/papyrus': lazy(() => import('./papyrus/PapyrusPage')),
   '/pptx-maker': lazy(() => import('./pptx-maker/PptxMakerPage')),
   '/ops-mission-control': lazy(() => import('./ops-mission-control/OpsMissionControlPage')),
