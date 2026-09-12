@@ -607,15 +607,15 @@
   },
   {
     "id": "local-destructive-rm-rf-root",
-    "pattern": "rm -rf /.*",
+    "pattern": "(?:(?<![^\\s;|&(){}/`])rm|[\"\\']rm(?=.*[;|&\\n]))(?: -[a-z])* (?:(?!--)[^\\s;|&()\\\"']+ )?(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|(?:-[a-z]*r[a-z]*|--recursive)(?: -[a-z])* (?:-[a-z]*f[a-z]*|--force)|(?:-[a-z]*f[a-z]*|--force)(?: -[a-z])* (?:-[a-z]*r[a-z]*|--recursive))(?: --no-preserve-root| --)? /.*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which can wipe the entire operating system and all data."
+    "description": "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which can wipe the entire operating system and all data. Packed (-fr, -rfv), split (-r -f), and long-option (--recursive/--force) spellings match, with runs of single-letter flags allowed around them."
   },
   {
     "id": "local-destructive-rm-rf-home",
-    "pattern": "rm -rf ~.*",
+    "pattern": "(?:(?<![^\\s;|&(){}/`])rm|[\"\\']rm(?=.*[;|&\\n]))(?: -[a-z])* (?:(?!--)[^\\s;|&()\\\"']+ )?(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|(?:-[a-z]*r[a-z]*|--recursive)(?: -[a-z])* (?:-[a-z]*f[a-z]*|--force)|(?:-[a-z]*f[a-z]*|--force)(?: -[a-z])* (?:-[a-z]*r[a-z]*|--recursive))(?: --no-preserve-root| --)? \"?(?:~|\\$HOME(?![A-Za-z0-9_])|\\$\\{HOME\\}|\\$\\{HOME:[^}]*\\}).*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config."
+    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config. Same flag spellings as the root rule, plus the $HOME/${HOME} spellings the shell expands to ~."
   },
   {
     "id": "iac-teardown-terraform-destroy",
