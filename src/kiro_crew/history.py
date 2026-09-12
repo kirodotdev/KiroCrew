@@ -47,6 +47,7 @@ from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
     _CONSOLIDATION_BACKOFF_MAX_SECS,
     _CONSOLIDATION_MAX_ATTEMPTS,
     _CONSOLIDATION_META_KEYS,
+    _CONSOLIDATION_PROMPT_BUDGET_CHARS,
     _CONSOLIDATION_REFUSED,
     _CONSOLIDATION_THRESHOLD,
     _PLACEHOLDER_BODIES,
@@ -55,6 +56,7 @@ from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
     _TOOL_ROLES,
     AttemptedSpan,
     HistoryConsolidator,
+    _consolidation_chunk,
     _ConsolidationNotDispatched,
     _ConsolidationRefusedSentinel,
     _count_tool_call_messages,
@@ -2458,8 +2460,9 @@ class ConversationLog:
         """True when the recorded attempts belong to the span in front of us now.
 
         A span is identified by where it starts AND how far it reaches: the
-        ``(rotation_generation, last_consolidated)`` pair it was charged against
-        plus the message count that was actually attempted. While a span keeps
+        ``(rotation_generation, last_consolidated)`` pair it was charged against,
+        the message count the transcript held at the time, and the boundary the
+        prompt actually reached. While a span keeps
         failing none of the three move — the marker is only advanced on success —
         so the cap holds across attempts. Anything that changes the CONTENT under
         the counter moves one of them: a rotation and a dashboard rewrite
@@ -2489,6 +2492,27 @@ class ConversationLog:
         ``None`` means "no count available", which skips the extent test and keeps
         the cap — the conservative direction, since the alternative is spending a
         billed turn on an unverified premise.
+
+        Growth releases the cap only for an attempt that reached the END of the
+        transcript it was charged against — ``consolidation_attempts_prompted``
+        equal to ``consolidation_attempts_count``. A bounded attempt
+        (``prompted`` short of the total, because
+        :func:`~kiro_crew.history_consolidation._consolidation_chunk` cut the
+        prompt at the budget) attempted a PREFIX of the unconsolidated tail, and
+        appending messages cannot change a prefix: the next pass starts at the
+        same marker, renders the same budget, and puts the same content in front
+        of the provider. Counting that as new content is what would let a
+        permanently over-budget head message be re-billed on every idle window
+        for as long as the session keeps receiving turns — the attempts would
+        reset before they could ever reach the cap that abandons it. Whether the
+        attempt was bounded is read from the stamp, so this stays one metadata
+        read with no transcript access.
+
+        The cost is that a bounded span whose abandon-marker write ALSO failed
+        keeps its cap until a rotation, a rewrite, or a later successful marker
+        write moves it. That span is genuinely unchanged, so refusing it is
+        correct in itself; what it loses is the growth rescue an unbounded span
+        keeps. Re-billing identical content forever is the worse of the two.
 
         Growth is compared with ``>`` rather than ``!=`` on purpose. A count that
         SHRANK is a rotation or compaction, which already moves the generation or
@@ -2520,9 +2544,10 @@ class ConversationLog:
         if message_count is not None and "consolidation_attempts_count" in meta:
             try:
                 attempted = int(meta.get("consolidation_attempts_count", 0) or 0)
+                prompted = int(meta.get("consolidation_attempts_prompted", attempted) or attempted)
             except (TypeError, ValueError, OverflowError):
                 return True
-            if message_count > attempted:
+            if prompted >= attempted and message_count > attempted:
                 return False
         return True
 
@@ -2543,6 +2568,7 @@ class ConversationLog:
             "consolidation_attempts_generation": span.generation,
             "consolidation_attempts_offset": max(0, span.offset),
             "consolidation_attempts_count": max(0, span.total),
+            "consolidation_attempts_prompted": max(0, span.prompted),
         }
 
     def record_consolidation_failure(

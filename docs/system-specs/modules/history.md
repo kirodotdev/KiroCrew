@@ -763,6 +763,62 @@ Non-blocking via `asyncio.create_task`. Requires `SessionManager` to be passed
 at construction time; consolidation is silently skipped if no session manager
 is available.
 
+**Bounded prompt input.** A history pass renders at most
+`_CONSOLIDATION_PROMPT_BUDGET_CHARS` (65,536 characters) of transcript, taken as
+a message-aligned prefix of the unconsolidated tail by `_consolidation_chunk()`.
+The budget counts characters rather than bytes because it exists to fit a
+context window, which is measured in tokens: code points track tokens evenly
+across scripts, while a byte budget would give a CJK transcript a third of the
+span it gives a Latin one.
+The tail is otherwise unbounded — a session that goes a long time between passes,
+or whose consolidation kept failing, renders every message since the marker into
+one prompt, and past some length no provider accepts it, so the span that most
+needs extracting becomes the one that can never be extracted. The budget charges
+the `"\n"` the prompt builder joins with, one per message after the first.
+
+The split is message-aligned because `last_consolidated` counts messages: a
+prompt cut mid-message would leave the marker describing a boundary that does
+not exist in the transcript. A first message that alone exceeds the budget is
+prompted anyway rather than refused — its size is a permanent property of the
+transcript, so refusing stalls that session (and everything queued behind that
+message) forever, while sending it is no worse than the unbounded prompt the
+budget replaces and terminates through the ordinary attempt cap.
+
+**The marker follows the prompt, not the snapshot.** Both the success path and
+the abandon path advance `last_consolidated` to the end of the PROMPTED prefix
+(`AttemptedSpan.prompted`), never to the snapshot total. Advancing past the
+prefix would mark messages consolidated that no model has read, dropping them
+from memory silently — the same loss on the failure path as on the success path.
+A long tail therefore drains over successive passes.
+
+`AttemptedSpan.total` stays the transcript's extent at snapshot time and is not
+collapsed into `prompted`. The retry accounting stamps both
+(`consolidation_attempts_count` and `consolidation_attempts_prompted`) and needs
+both. `total` is what a later transcript is compared against to tell new content
+from the same content; collapsing it into the prefix would read as growth on
+every later check, handing a failing span an unlimited supply of billed retries.
+`prompted` is what says whether that comparison means anything: an attempt that
+stopped short of `total` covered a prefix, and appending messages cannot change a
+prefix, so `_attempts_describe_current_span` does NOT let growth release the cap
+for a bounded attempt. Without that, a permanently over-budget head message in a
+session still receiving turns would reset its attempts on every idle window and
+never reach the cap that abandons it.
+
+**Draining.** One pass consolidates one budget's worth, so a tail larger than the
+budget needs several. In the gateway that happens on its own — the next turn, the
+idle sweep, or a session-end hook fires the next pass. Two callers have no sweep
+behind them: `consolidate_now()` (the `kirocrew consolidate` CLI, whose process
+exits when it returns) loops `_consolidate` itself until the tail is drained or a
+pass makes no progress, and the CLI prints the remainder rather than `done` when
+one is left. After a gateway restart a deferred tail waits for the next user turn
+or session-end hook on that session; nothing sweeps it on startup.
+
+Prefs-only passes (`include_history=False`) keep the whole tail. Their window is
+an in-memory offset that `maybe_consolidate`'s done-callback advances to the
+count it scheduled against, with no channel back from the pass, so bounding that
+prompt without also making the offset follow the bound would drop the remainder
+from preference and project extraction outright.
+
 **Loop safety:** the task body runs on the event loop thread, so any blocking
 work inside it must be offloaded. `_write_structured_memory` and `_save_lessons`
 both embed items via blocking in-process llama.cpp inference calls
