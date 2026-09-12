@@ -180,6 +180,13 @@ class SlackClientOps(ABC):
         Pass an empty string to clear the status indicator.
         """
 
+    async def set_agent_session_status(self, channel: str, thread_ts: str, status: str) -> bool:
+        """Set an Agent Session lifecycle status via agents.sessions.setStatus.
+
+        Default returns False (unsupported) — subclasses override to hit Slack.
+        """
+        return False
+
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
         """Set assistant thread title via assistant.threads.setTitle."""
 
@@ -659,6 +666,32 @@ class RealSlackClient(SlackClientOps):
             )
         except Exception:
             logger.debug("assistant.threads.setStatus failed", exc_info=True)
+
+    async def set_agent_session_status(self, channel: str, thread_ts: str, status: str) -> bool:
+        """Set an Agent Session lifecycle status via agents.sessions.setStatus.
+
+        ``status`` is one of the lifecycle values active/processing/suspended/
+        closed (NOT free-form text like assistant.threads.setStatus). Setting
+        ``processing`` makes Slack render a NATIVE stop button next to the agent
+        status — but only if the app subscribes to the ``agent_session_stopped``
+        event; otherwise Slack shows a non-interactive loading indicator. Returns
+        True on success, False on any failure (feature not enabled, app not
+        declared as an agent, missing scope, older workspace) so callers fall
+        back to the assistant.threads.* surface with no regression.
+        """
+        try:
+            resp = await self._web.api_call(
+                "agents.sessions.setStatus",
+                params={
+                    "channel_id": channel,
+                    "thread_ts": thread_ts,
+                    "status": status,
+                },
+            )
+            return bool(resp.get("ok"))
+        except Exception:
+            logger.debug("agents.sessions.setStatus failed", exc_info=True)
+            return False
 
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
         """Set assistant thread title via assistant.threads.setTitle."""

@@ -395,6 +395,7 @@ When a message arrives while a session is actively processing, it's queued inste
 - **⏳ reaction**: added to queued messages so the user sees visual feedback
 - **FIFO drain**: `_on_done` callback drains both queue levels after each handler completes
 - **Cancellation**: `message_deleted` event removes queued messages or marks in-flight messages as cancelled; first `!stop` press clears the queue (via `stop_turn` which calls `clear_queue` unconditionally)
+- **Native stop button** (`agent_session_stopped` event): when the app is declared as a Slack agent and subscribes to `agent_session_stopped`, the renderer marks the session `processing` via `agents.sessions.setStatus` at turn start (Slack then shows a native stop button) and `active` at turn end. Clicking the button delivers `agent_session_stopped`; `_handle_agent_session_stopped` (owner-gated) routes into the same `SessionManager.stop_turn()` path as `!stop`, stops any `streaming_message_ts` streams, and transitions the session off `processing`. `set_agent_session_status` returns `False` (no-op fallback to `assistant.threads.setStatus`) when the workspace/app has not opted in, so unconfigured installs are unaffected.
 - **`is_cancelled()` check**: handler checks before responding and before the LLM call to suppress responses for deleted messages
 
 ## Linked Thread Sync (`handler.py` + `interactions.py`)

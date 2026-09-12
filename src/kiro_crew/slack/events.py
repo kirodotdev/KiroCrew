@@ -968,6 +968,13 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
                     )
             return
 
+        # ── Agent Session native stop button ──
+        if event_type == "agent_session_stopped":
+            t = asyncio.create_task(_handle_agent_session_stopped(orch, event))
+            orch._handler_tasks.add(t)
+            t.add_done_callback(orch._handler_tasks.discard)
+            return
+
         # ── Messages and mentions ──
         if event_type not in ("message", "app_mention"):
             return
@@ -1707,6 +1714,106 @@ async def _handle_message_deleted(orch: GatewayOrchestrator, event: dict) -> Non
             outcome="allowed",
             source="slack",
             resources=f"ts={deleted_ts} session={_del_session_key} queued={was_queued}",
+        )
+
+
+async def _handle_agent_session_stopped(orch: "GatewayOrchestrator", event: dict) -> None:
+    """Handle the Slack ``agent_session_stopped`` event (native stop button).
+
+    Slack sends this when the user clicks the native stop button shown while an
+    Agent Session is in the ``processing`` status. Slack does NOT auto-stop the
+    work or move the session off ``processing`` — the app must do both. This
+    routes into the same cooperative-cancel path as ``!stop`` / the inline Stop
+    button (``SessionManager.stop_turn``), stops any streams named in the
+    payload, and transitions the session back to ``active`` so the stop button
+    clears.
+
+    Payload: ``{channel, thread_ts, streaming_message_ts[], user, type}``. The
+    session key mirrors the rest of the Slack path: ``thread_ts`` (falling back
+    to the first streaming message ts when a root-level session has no thread).
+    """
+    channel = event.get("channel", "")
+    thread_ts = event.get("thread_ts") or ""
+    streams = event.get("streaming_message_ts") or []
+    user = event.get("user", "")
+    session_key = thread_ts or (streams[0] if streams else "")
+
+    # Owner-only, consistent with !stop and every other user-driven control.
+    if not is_allowed_user(user):
+        sel().log_api_access(
+            caller=user or "unknown",
+            operation="slack.agent_session_stopped",
+            outcome="denied",
+            source="slack",
+            error="unauthorized sender",
+        )
+        return
+
+    if not (session_key and channel):
+        return
+
+    async def _clear_status() -> None:
+        # Transition the session off `processing` so Slack removes the stop
+        # button, and stop any active streams named in the payload. Both are
+        # best-effort; streaming_message_ts is empty when no stream was active,
+        # in which case only the status transition applies.
+        if orch.slack:
+            for _ts in streams:
+                await orch.slack.stop_stream(channel, _ts)
+            await orch.slack.set_agent_session_status(channel, thread_ts, "active")
+            await orch.slack.set_thread_status(channel, thread_ts, "")
+
+    if not orch.sessions:
+        await _clear_status()
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="agent_session_stopped",
+            tool_kind="command",
+            outcome="no_session",
+            metadata={"user": user, "channel": channel},
+        )
+        return
+
+    has_session = orch.sessions.has_session(session_key)
+    active_task = orch._session_tasks.pop(session_key, None)
+    if has_session or active_task:
+        orch.sessions.clear_queue(session_key)
+        # Dropped pending (pre-session) entries never reach _dispatch_queued's
+        # cleanup, so unlink their temp files here.
+        for _item in orch._pending_queue.pop(session_key, None) or []:
+            unlink_queued_temp_paths(_item[2])
+
+        async def _on_soft() -> None:
+            await _clear_status()
+
+        async def _on_hard() -> None:
+            await _clear_status()
+
+        outcome = await orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
+        if active_task and not active_task.done():
+            active_task.cancel()
+        # stop_turn "idle" means neither callback fired — still clear the native
+        # status so the stop button does not linger.
+        if outcome == "idle":
+            await _clear_status()
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="agent_session_stopped",
+            tool_kind="command",
+            outcome=outcome,
+            metadata={"user": user, "channel": channel},
+        )
+    else:
+        await _clear_status()
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="agent_session_stopped",
+            tool_kind="command",
+            outcome="no_session",
+            metadata={"user": user, "channel": channel},
         )
 
 
