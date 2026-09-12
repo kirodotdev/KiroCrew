@@ -39,6 +39,55 @@ def _cp(stdout: str = "", returncode: int = 0, stderr: str = "") -> subprocess.C
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _exact_stop_model(
+    monkeypatch,
+    *,
+    root_pid: int,
+    tokens: dict[int, str],
+    alive: set[int],
+    children: dict[int, list[int]],
+    terminate=None,
+) -> list[int]:
+    """Model the authoritative record and exact handles production stop requires."""
+
+    handles = {pid: pid + 10_000 for pid in tokens}
+    by_handle = {handle: pid for pid, handle in handles.items()}
+    terminated: list[int] = []
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (root_pid, tokens[root_pid]))
+    monkeypatch.setattr(
+        win,
+        "open_process_termination_handle",
+        lambda pid, expected: handles[pid] if expected == tokens[pid] else None,
+    )
+
+    def _descendants(pid, retained=None, root_handle=None):
+        assert root_handle == handles[pid]
+        retained = retained or {}
+        return {
+            child: handles[child]
+            for child in children.get(pid, [])
+            if child in alive and child not in retained
+        }
+
+    def _terminate(handle):
+        pid = by_handle[handle]
+        terminated.append(pid)
+        if terminate is not None:
+            return terminate(pid)
+        alive.discard(pid)
+        return True
+
+    monkeypatch.setattr(win, "descendant_termination_handles", _descendants)
+    monkeypatch.setattr(
+        win,
+        "process_handle_active",
+        lambda handle: by_handle[handle] in alive,
+    )
+    monkeypatch.setattr(win, "terminate_process_handle", _terminate)
+    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
+    return terminated
+
+
 @pytest.fixture
 def cfg(tmp_path, monkeypatch) -> PodConfig:
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -614,19 +663,18 @@ def test_stop_ends_the_gateways_children_after_the_gateway_itself(cfg, monkeypat
         return 4242 if 4242 in alive else None
 
     monkeypatch.setattr(win, "supervised_pid", _supervised)
-    killed: list[tuple[int, str]] = []
-
-    def _kill(pid, token, sig=None):
-        killed.append((pid, token))
-        alive.discard(pid)
-        return True
-
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
+    terminated = _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300, 4301]},
+    )
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
     assert cp.returncode == 0, cp.stderr
-    assert (4300, "1010") in killed and (4301, "1020") in killed
+    assert 4300 in terminated and 4301 in terminated
     assert alive == set()
 
 
@@ -651,26 +699,33 @@ def test_stop_keeps_the_pod_when_a_child_survives_the_gateway(cfg, monkeypatch):
     monkeypatch.setattr(win, "pid_exists", lambda pid: pid in alive)
     monkeypatch.setattr(win, "supervised_pid", lambda c, n: 4242 if 4242 in alive else None)
 
-    def _kill(pid, token, sig=None):
+    def _terminate(pid):
         if pid == 4242:
             alive.discard(pid)
-        return True  # the child ignores it and stays alive
+        return True  # the child ignores termination and stays alive
 
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
-    monkeypatch.setattr(win.time, "sleep", lambda s: alive.discard(4242))
+    terminated = _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300]},
+        terminate=_terminate,
+    )
+    monkeypatch.setattr(win.time, "sleep", lambda _seconds: alive.discard(4242))
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
     assert cp.returncode == 1
-    assert "child processes are still running" in cp.stderr and "4300" in cp.stderr
+    assert "terminal snapshots" in cp.stderr and "NOT proven zero-residue" in cp.stderr
+    assert 4300 in terminated
     assert "/Delete" not in calls, "a pod with a live child must not be deleted"
     assert win.task_script_path(cfg, "demo").exists()
 
 
 def test_stop_treats_a_child_that_vanished_under_the_kill_as_gone(cfg, monkeypatch):
-    """taskkill reports rc=128 when a tree member exits between the snapshot and
-    the kill; that raises ProcessLookupError, and the child being gone is the
-    outcome wanted, so the stop must finish rather than traceback."""
+    """An exact child handle that becomes inactive during termination is gone,
+    not residue, even when the termination primitive reports no action."""
     win.write_task_script(cfg, "demo")
     tokens = {4242: "1000", 4300: "1010"}
     alive = {4242, 4300}
@@ -690,13 +745,18 @@ def test_stop_treats_a_child_that_vanished_under_the_kill_as_gone(cfg, monkeypat
     monkeypatch.setattr(win, "pid_exists", lambda pid: pid in alive)
     monkeypatch.setattr(win, "supervised_pid", lambda c, n: 4242 if 4242 in alive else None)
 
-    def _kill(pid, token, sig=None):
+    def _terminate(pid):
         alive.discard(pid)
-        if pid == 4300:
-            raise ProcessLookupError("[taskkill rc=128] no running instance of the task")
-        return True
+        return pid != 4300  # False means the exact child object was already gone.
 
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
+    _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300]},
+        terminate=_terminate,
+    )
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
@@ -735,20 +795,19 @@ def test_stop_leaves_alone_a_stray_the_parent_map_lists_under_a_recycled_pid(cfg
     # existence, which is the confusion `_still_alive` exists to remove.
     monkeypatch.setattr(win, "pid_exists", lambda pid: pid in alive)
     monkeypatch.setattr(win, "supervised_pid", lambda c, n: 4242 if 4242 in alive else None)
-    killed: list[int] = []
-
-    def _kill(pid, token, sig=None):
-        killed.append(pid)
-        alive.discard(pid)
-        return True
-
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
+    terminated = _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300]},
+    )
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
     assert cp.returncode == 0, cp.stderr
-    assert 7777 not in killed and 7777 in alive
-    assert 4300 in killed
+    assert 7777 not in terminated and 7777 in alive
+    assert 4300 in terminated
 
 
 def test_a_failed_tree_kill_still_runs_the_fallback_kill(cfg, monkeypatch):
@@ -852,6 +911,7 @@ class TestHandoffWindow:
         win.write_task_script(cfg, "demo")
         calls: list[str] = []
         live = {"pid": 4242}
+        alive = {4242}
 
         def _schtasks(*argv):
             calls.append(argv[0])
@@ -861,12 +921,19 @@ class TestHandoffWindow:
                 dead_supervisor = f"{2**22 + 91}\n1000\n"
                 win.handoff_marker_path(cfg, "demo").write_text(dead_supervisor, encoding="utf-8")
                 live["pid"] = None
+                alive.discard(4242)
             return _cp()
 
         monkeypatch.setattr(win, "schtasks", _schtasks)
         monkeypatch.setattr(win, "supervised_pid", lambda c, n: live["pid"])
         monkeypatch.setattr(win, "process_start_time", lambda pid: "1000" if pid == 4242 else None)
-        monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
+        _exact_stop_model(
+            monkeypatch,
+            root_pid=4242,
+            tokens={4242: "1000"},
+            alive=alive,
+            children={},
+        )
         monkeypatch.setattr(win, "_unattributable_live_pid", lambda c, n: None)
 
         cp = win.stop(cfg, "demo", timeout=1.0)

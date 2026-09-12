@@ -874,6 +874,76 @@ def test_spawn_feature_gateway_isolates_the_agent_spec_home() -> None:
             assert captured_env["KIROCREW_HOME"] == str(data_home)
 
 
+def test_spawn_feature_gateway_explicit_host_inputs_are_child_scoped() -> None:
+    fake_proc = _make_fake_proc_with_ready(
+        '{"port": 51234, "token": "t-abc", "pid": 9876, "home": "/tmp/x"}'
+    )
+    captured: dict[str, object] = {}
+    preflight: dict[str, object] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: object) -> FakePopen:
+        captured.update(kwargs)
+        return fake_proc
+
+    def before_spawn(env: dict[str, str], cwd: Path) -> None:
+        preflight["env"] = dict(env)
+        preflight["cwd"] = cwd
+        env["KIRO_HOME"] = "mutated-copy"
+
+    override = Path("/host/.kiro")
+    binary = Path("/host/bin/kiro-cli")
+    with (
+        patch("kiro_crew.testing.harness.subprocess.Popen", side_effect=fake_popen),
+        patch("kiro_crew.testing.harness._terminate_process_group"),
+        patch(
+            "kiro_crew.testing.harness.platform_compat.process_descendants",
+            return_value=[],
+        ),
+    ):
+        with spawn_feature_gateway(
+            fixture="empty",
+            kiro_home=override,
+            kiro_bin=binary,
+            before_spawn=before_spawn,
+        ) as handle:
+            data_home = handle.home
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["KIRO_HOME"] == str(override)
+    assert env["KIROCREW_KIRO_BIN"] == str(binary)
+    assert env["KIROCREW_HOME"] == str(data_home)
+    assert env["KIRO_HOME"] == str(override)
+    assert captured["cwd"] == str(_resolve_workspace_src().parent)
+    assert preflight["env"]["KIRO_HOME"] == str(override)
+    assert preflight["env"]["KIROCREW_KIRO_BIN"] == str(binary)
+    assert preflight["cwd"] == _resolve_workspace_src().parent
+
+
+def test_spawn_feature_gateway_host_inputs_default_to_isolation() -> None:
+    fake_proc = _make_fake_proc_with_ready(
+        '{"port": 51234, "token": "t-abc", "pid": 9876, "home": "/tmp/x"}'
+    )
+    captured_env: dict[str, str] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: object) -> FakePopen:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        captured_env.update(env)
+        return fake_proc
+
+    with (
+        patch("kiro_crew.testing.harness.subprocess.Popen", side_effect=fake_popen),
+        patch("kiro_crew.testing.harness._terminate_process_group"),
+        patch(
+            "kiro_crew.testing.harness.platform_compat.process_descendants",
+            return_value=[],
+        ),
+    ):
+        with spawn_feature_gateway(fixture="empty") as handle:
+            assert captured_env["KIRO_HOME"] == str(handle.home / "kiro")
+
+
 def test_spawn_feature_gateway_crons_opt_in() -> None:
     """``crons=True`` drops ``--no-crons`` so the scheduler thread runs.
 

@@ -459,6 +459,40 @@ PRECONDITION (the packaged fake ACP backend missing, `kiro_crew.testing` not
 importable) is a graceful `pytest.skip` on a local run and a `pytest.fail` on the
 job. Set it wherever you expect gateways to actually boot.
 
+## Real-`kiro-cli` opt-in smoke
+
+`test/e2e/test_real_kiro_smoke.py` is the one test in this gate that uses the
+host's signed-in CLI and real model service. It can incur network traffic, model
+latency, and account usage, so it is never part of the default offline gate.
+
+- `KIROCREW_E2E_REAL_KIRO=1` activates it.
+- `KIROCREW_E2E_REAL_KIRO_REQUIRE=1` both activates it and turns a missing CLI,
+  sign-in, or safe-host precondition into a failure. A required run cannot pass
+  as a module-level skip.
+- Resolution ignores an inherited `KIROCREW_KIRO_BIN` test override. The path
+  that passes `kiro-cli whoami` is pinned back into the gateway child, so the
+  probe and ACP turn cannot select different binaries. The identity root is the
+  host's real `Path.home()/.kiro`, not a pytest path override.
+- Every token-bearing dashboard request uses `build_loopback_opener`, which
+  disables environment proxies and rejects redirects.
+- The prompt contains only a scratch path. The test approves exactly one
+  permission after correlating its `approval_id`, `tool_call_id`, structured
+  input, and the preceding `kind="read"` tool event to that exact path. Any
+  second or mismatched operation is rejected and fails the test.
+- Success requires the slot to stop running without an error or queued recovery,
+  the correlated tool event to finish with output exactly equal to the nonce,
+  and one assistant message whose body is exactly that nonce. A streaming chunk
+  or a nonce appearing only in JSON metadata is not completion evidence.
+
+The real identity home is not copied. Immediately before `Popen`, a fresh
+Python process receives a copy of the gateway's final environment and the exact
+gateway cwd. In that unmocked process it requires the production shared-home
+guard to decline writes, confirms the sanitizer and first-run MCP cleanup are
+no-ops, and snapshots the actual host agent-spec directory. The same fresh
+probe repeats after teardown and the snapshots must match. A failed precondition
+stops before gateway spawn. `KIROCREW_HOME` remains the harness's throwaway data
+home; ordinary callers retain their isolated `KIRO_HOME` and fake backend.
+
 ### The job's own honesty checks
 
 - **`KIROCREW_HARNESS_READY_TIMEOUT` per OS**: 60 on Ubuntu, 90 on macOS, 180 on
