@@ -283,6 +283,17 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The conductor work ledger: a worker's full file toolset must not reach any
     # conductor's records except through the routes that check its binding.
     "work-ledger",
+    # Every append-only per-unit ledger, crew and session alike (ledger/store.py).
+    # The design treats the ledger as the authority a conductor reads instead of
+    # re-deriving, so an in-sandbox process able to write here could forge an
+    # entry attributed to the gateway or rewrite the history it is reporting
+    # into. The library's write rules bind only callers who go through it, and the
+    # file-tool fence answers only the agent's own tools -- neither answers a
+    # sandboxed subprocess calling ``open()``, which is what this entry is for.
+    # Nothing in-sandbox reads one: the store runs in the GATEWAY process, so
+    # HIDDEN rather than READONLY. Named at the shared ``ledgers`` root, so a
+    # future unit kind is covered without a new entry.
+    "ledgers",
     "cron-history",
     # The cron in-flight markers, masked rather than sealed read-only because
     # nothing in the sandbox reads one: they are written and cleared by the run
@@ -827,6 +838,16 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # Private memory has the same late-creation hazard: an agent spawned before
     # the first member must never gain access when that member's database appears.
     "memory_stores",
+    # Append-only per-unit ledgers, and the hazard is the sharpest here: the
+    # record is the AUTHORITY a reader trusts instead of re-deriving, and the
+    # store creates this root on its first write. A sandbox spawned before that
+    # write finds the name absent, the ``SENSITIVE_DIRS`` loop skips what does not
+    # exist, and the mask is then vacuous for the life of that sandbox -- which can
+    # itself create the directory and populate it with entries a conductor would
+    # read as the gateway's. Materialising it empty at 0700 gives the bind a name
+    # to cover before anything can write one. macOS needs no entry here: a
+    # Seatbelt deny is a path rule that holds for a name that does not exist yet.
+    "ledgers",
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each

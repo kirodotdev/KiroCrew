@@ -49,8 +49,11 @@ the code (`session_ledger.py`, `work_ledger.py`): a **ledger** is the append-onl
 - FR-5 A projection folds one ledger and carries its `seq` as version; a reconnect
   truncates.
 - FR-6 A phase change without a reason is a defect (Crew Mode §7).
-- FR-7 Safe to surface: no secrets, transcript bodies, machine paths or host names in
-  public fields; a `ref` instead.
+- FR-7 Safe to surface: no secrets, machine paths or host names in public fields; a `ref`
+  instead. Message BODIES are in scope and are written, because they are redacted before
+  they reach the file -- exfiltration URLs then credentials, in the writer rather than at
+  the call sites, so a new call site cannot forget -- and a redaction that fails yields the
+  empty string, never the input.
 - FR-8 Cold load synthesizes closers for open intervals.
 - NFR-1 Cheap to fold: checkpoints on disk; state never replays everything.
 - NFR-2 The backend extracts, the frontend loads pages; no client folds a ledger.
@@ -98,7 +101,7 @@ Crew activity ledger:
 | family | types | pointer |
 |---|---|---|
 | shipped | `member/*`, `activity/record`, `slot/*`, `patrol/*` | `slot/*` → the session |
-| messages | `message/received`, `message/sent` | body → the transcript store |
+| messages | `message/received`, `message/sent` | redacted body in the ledger; transcript position via `ref` once the bridge lands (not written in PR 1) |
 | tree | `crew/child-attached`, `crew/parent-attached`, `*-detached` | — |
 | signed | `crew:<parent>/dispatch`, `crew:<child>/report` | report → the child's segment |
 | topics | `crew/topic-*`, `crew/forwarded`, `crew/run-state` | topic → its work session |
@@ -113,8 +116,14 @@ message" is a summary with no `thread` whose `ref` points at the thread.
 
 Session ledger: `session/opened|closed`, `turn/started|completed {usage, credits}`,
 `step/*`, `tool/*`, `approval/requested|decided`, `model/selected`, `compaction/applied`,
-`remote/placed|lost`. Bodies stay in the transcript store; the ledger indexes them by
-`ref`.
+`remote/placed|lost`. Bodies are DUAL-WRITTEN into the session ledger: each is redacted,
+then written whole, or split across `message/chunk` entries the citing entry names in
+`chunks` when it cannot fit one line. The transcript file remains the authoritative read
+path until the seeding step (`session/seeded`) imports it and the file stops being written.
+For that bridge period the `ref` on a message entry is to point at its transcript position
+so the two records can be reconciled while both exist -- NOT YET WRITTEN: PR 1 emits the
+body alone, and `ref` and `session/seeded` arrive with the bridge (see Delivery). A
+consumer must not be built against the reconciliation contract until then.
 
 ## 5. Projections and pages
 
@@ -172,11 +181,17 @@ a ledger from `session/opened`.
 **PR 1** ([#10091](https://github.com/kirodotdev/KiroCrew/pull/10091)) is the whole storage
 layer, for both kinds: the files, the envelope with `src`, `thread` and `ref`, the headers,
 type ownership, guest namespaces, `get` and `iter_from`, page by `seq`, page by `thread`,
-`resolve` with `ok` and `gone`, torn-tail repair that closes an open interval on open with a
+`resolve` with `ok`, `gone`, `pruned` and `corrupt` -- retention and damage are separate
+answers, because a reader told the lines were pruned stops looking -- torn-tail repair that closes an open interval on open with a
 deterministic closer — an interrupted turn gets `turn/completed {stop_reason: interrupted}`
 stamped at the last real entry's time, so two readers of the same bytes agree — and the
 OS-masked `ledgers/` leaf. Its first writer ships with it: the session emitter behind
-`KIROCREW_SESSION_LEDGER=1`, default off. A session-kind entry carries its turn identity in
+`KIROCREW_SESSION_LEDGER=1`, default off, INCLUDING message bodies. The `ref` back-pointer
+to a transcript position and the `session/seeded` import are migration steps and follow;
+until then the transcript file is still written and still the read path. There is no
+streaming-delta emitter: redacting one delta at a time cannot see a credential split across
+two of them, and `message/chunk` is written only by the oversize-body split, over text
+already redacted whole. A session-kind entry carries its turn identity in
 `data.turn` (and `data.step`), known at emit time, and leaves `thread` unset.
 
 **PR 2** is projections and checkpoints, the dashboard paging endpoints and frames, the

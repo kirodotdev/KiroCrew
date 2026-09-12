@@ -716,6 +716,9 @@ async def _stage_loop(
                             slot,
                             context,
                             _directive_user_origin=False,
+                            # Stage context assembled by the orchestrator, so the
+                            # ledger records the gateway rather than a user.
+                            _turn_actor="gateway",
                         ),
                         _turn_timeout,
                     )
@@ -725,6 +728,7 @@ async def _stage_loop(
                         slot,
                         context,
                         _directive_user_origin=False,
+                        _turn_actor="gateway",
                     )
             except (asyncio.TimeoutError, TimeoutError):
                 # `_bounded_turn` raises builtin TimeoutError; on 3.10

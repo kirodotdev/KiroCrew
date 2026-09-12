@@ -105,6 +105,19 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Session ledger entries",
+        "session_ledger_emit.py",
+        "Message bodies written to the append-only per-session ledger under "
+        "`<home>/ledgers/sessions/` -- what the user typed, what the model "
+        "answered, and steers injected mid-turn. This sink is a FILE rather than "
+        "a response, so what it writes outlives the process and is read back "
+        "later by folds and the session panel; that makes it an output boundary "
+        "with a longer reach than an egress response, not a lesser one. Every "
+        "body passes the shared exfiltration-URL then credential chain in the "
+        "emitter rather than at its call sites, so a new call site cannot forget, "
+        "and a redaction that fails writes the empty string instead of the input.",
+    ),
+    (
         "Memory recovery responses",
         "dashboard/handlers/memory_admin.py",
         "Retired episode text and supersession references, plus backup and restore "

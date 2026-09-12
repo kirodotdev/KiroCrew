@@ -1053,6 +1053,16 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # static guard that every dispatch carries a CHAT_TURN_TIMEOUT ceiling.
     # Both arms are wrapped identically: a hung peer must hit the same wall a hung
     # local turn does.
+    # The attachment ids this handler just accepted, so the ledger names the file
+    # instead of leaving the turn's input unexplained. Passed only when there ARE
+    # some: an ordinary send then calls `_run_chat` with exactly the arguments it
+    # always did, which is what keeps the many test doubles of it valid.
+    _accepted_attachments = [
+        path for paths in attachment_meta(user_meta).values() for path in paths
+    ]
+    _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
+    if _accepted_attachments:
+        _turn_kwargs["_attachments"] = _accepted_attachments
     task = spawn_guarded_turn(
         state,
         slot,
@@ -1061,12 +1071,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             (
                 relay_remote_turn(state, slot, message)
                 if slot.is_remote
-                else _run_chat(
-                    state,
-                    slot,
-                    message,
-                    _directive_user_origin=not bool(request_app),
-                )
+                else _run_chat(state, slot, message, **_turn_kwargs)
             ),
         ),
     )

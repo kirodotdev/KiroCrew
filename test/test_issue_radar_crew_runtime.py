@@ -1851,16 +1851,24 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
         slot = _FakeSlot()
         ran: list[str] = []
         origins: list[bool | None] = []
+        actors: list[str | None] = []
 
+        # ``**_rest`` on purpose: this double stands in for ``_run_chat``, whose
+        # keyword surface grows, and a double that enumerates it fails on the next
+        # argument added rather than on anything this test is about. The two
+        # keywords it DOES name are the two it asserts on.
         async def _turn(
             _state: Any,
             _slot: Any,
             prompt: str,
             *,
             _directive_user_origin: bool | None = None,
+            _turn_actor: str | None = None,
+            **_rest: Any,
         ) -> None:
             ran.append(prompt)
             origins.append(_directive_user_origin)
+            actors.append(_turn_actor)
 
         with mock.patch.object(cr, "_run_chat", _turn):
             self.assertTrue(cr.dispatch_crew_turn(state, slot, "advance one item"))
@@ -1868,6 +1876,9 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.capped, [slot.key])
         self.assertEqual(ran, ["advance one item"])
         self.assertEqual(origins, [False])
+        # A crew-composed prompt is not a person typing, and the session ledger
+        # records who caused a turn as fact.
+        self.assertEqual(actors, ["crew"])
 
     async def test_a_turn_that_never_got_a_permit_says_so_in_the_transcript(self):
         """A refused turn and a finished one must not look the same.
@@ -1886,6 +1897,7 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             *,
             _directive_user_origin: bool | None = None,
+            **_rest: Any,
         ) -> None:
             raise AssertionError("the turn must not run without a permit")
 

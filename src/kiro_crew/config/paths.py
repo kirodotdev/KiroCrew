@@ -457,16 +457,54 @@ def ensure_data_home() -> Path:
         # The private launcher already established the home. Its namespace view
         # is readonly; attempting chmod there produces a false security warning.
         return home
-    try:
-        from kiro_crew.platform_compat import restrict_dir_to_owner
+    from kiro_crew.platform_compat import restrict_dir_to_owner
 
+    try:
         restrict_dir_to_owner(home)
     except OSError:
         logger.warning(
             "Cannot restrict the data home to owner-only; it may be readable by other users",
             exc_info=True,
         )
+    # UNCONDITIONAL, not in an `else`. The home failing to tighten is the case
+    # where the ledger root's own mode matters MOST: it is the only remaining
+    # boundary, and skipping it there leaves every lazily created ledger
+    # directory at the process umask. The helper reports its own failure, so a
+    # filesystem that refuses both still boots.
+    _ensure_ledger_root(home, restrict_dir_to_owner)
     return home
+
+
+def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
+    """Establish ``<home>/ledgers`` owner-only, before anything writes a ledger.
+
+    Eager rather than lazy because two other mechanisms are stated per PATH and
+    both are weaker while the name does not exist: the Linux sandbox bind-mask
+    skips a leaf that is absent, and an absent directory has no mode to inherit.
+    Creating it here makes the guarantee a property of establishing the home,
+    the same argument the caller's own tightening makes for the home itself.
+
+    *restrict* is the caller's already-resolved ``restrict_dir_to_owner``, handed
+    down rather than imported again: this module is a LEAF that imports no
+    ``kiro_crew`` package at module scope, which ``TestLeafPurity`` pins, so one
+    deferred import per entry point is the budget. It is also what covers a
+    directory that already exists with a looser mode, and what makes the guarantee
+    mean something on Windows.
+
+    Best-effort, for the reason the caller's own tightening is: a read-only or
+    exotic filesystem must not make the gateway unbootable, and the sandbox mask
+    plus the file-tool fence still stand if this one assertion cannot be made.
+    """
+    root = home / "ledgers"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        restrict(root)
+    except OSError:
+        logger.warning(
+            "Cannot restrict %s to owner-only; ledgers may be readable by other users",
+            root,
+            exc_info=True,
+        )
 
 
 def config_package_dir() -> Path:

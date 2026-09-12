@@ -2932,8 +2932,26 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         if manager is not None:
             await manager.shutdown()
 
+    async def _session_ledger_drain(app_: web.Application) -> None:
+        """Write out the session ledger's buffered appends before the process goes.
+
+        The emitter hands appends to a writer thread so a turn never waits on the
+        filesystem, which means a record can be in memory when shutdown starts.
+        Exiting without this drops exactly the entries a reader most wants after a
+        restart -- the last thing each session did. The drain is bounded inside
+        the emitter, and runs in a thread so a slow disk delays the exit instead
+        of blocking the loop that is closing everything else down.
+        """
+        try:
+            from kiro_crew import session_ledger_emit
+
+            await asyncio.to_thread(session_ledger_emit.drain_for_shutdown)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("session ledger drain failed during shutdown", exc_info=True)
+
     app.on_startup.append(_instances_startup)
     app.on_cleanup.append(_instances_shutdown)
+    app.on_cleanup.append(_session_ledger_drain)
 
 
 def build_host_canonical_redirect(canonical_host: str) -> Any:

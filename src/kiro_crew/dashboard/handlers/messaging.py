@@ -2468,6 +2468,11 @@ async def api_send_message(request: web.Request) -> web.Response:
                                 slot,
                                 wrapped,
                                 _directive_user_origin=False,
+                                # Structural provenance for the session ledger:
+                                # the queued twin above carries
+                                # CRON_NOTIFICATION_KIND, and this branch is the
+                                # same injector dispatching directly.
+                                _turn_actor="cron",
                             ),
                         )
                         slot.task = task

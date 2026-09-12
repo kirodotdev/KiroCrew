@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import session_ledger_emit
 from kiro_crew.dashboard.chat_utils import _redact_for_display, _redact_meta
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -137,22 +138,27 @@ def _row_has_delivery_id(slot: Any, delivery_id: str) -> bool:
     return False
 
 
-def _queue_has_delivery_id(slot: Any, delivery_id: str) -> bool:
-    """Whether a QUEUE entry carries *delivery_id* in its meta.
+def _queued_entry_id(slot: Any, delivery_id: str) -> str:
+    """The id of the QUEUE entry carrying *delivery_id* in its meta, or ``""``.
 
-    True exactly when the turn's teardown requeued THIS steer: the requeue moves
-    the id out of `_steer_delivery_ids` and into the new queue entry's meta.
+    Non-empty exactly when the turn's teardown requeued THIS steer: the requeue
+    moves the id out of `_steer_delivery_ids` and into the new queue entry's meta.
 
     Identity rather than content, because a content count cannot tell this steer's
     requeue apart from an unrelated client queueing the same text in the same
     window -- and reading that as "mine was requeued" drops the transcript row for
     a steer the turn actually consumed.
+
+    The entry's OWN id is returned rather than a bool because the ledger records
+    which queue entry the text became, and the only id this coroutine could
+    otherwise reach is the client's `sendId` -- a different namespace, minted by a
+    different party, which no reader could join against the queue.
     """
     for item in slot._queue:
         meta = item.get("meta")
         if isinstance(meta, dict) and meta.get("steer_delivery_id") == delivery_id:
-            return True
-    return False
+            return str(item.get("id") or "")
+    return ""
 
 
 def find_written_steer_row(
@@ -321,6 +327,47 @@ async def steer_into_running_turn(
         logger.warning("steer failed for slot %s: %s", slot.key, exc)
         steered = False
 
+    # The append-only log's record of this steer is written AFTER the
+    # reconciliation below, never here. ``steered`` only means the client accepted
+    # The append-only log's record of this steer is NOT written here, and the
+    # delivered case is not written from this coroutine at all. ``steered`` means
+    # the client accepted the write and nothing more: the turn it was written into
+    # may have ended during the await, and a steer left pending is requeued by that
+    # turn's teardown without ever cutting anything. So a `message/steered` written
+    # here would assert into a permanent file that a turn received text it may
+    # never see. That entry belongs to the ``steering_consumed`` echo, which is the
+    # only positive evidence that a turn consumed the steer and the only site that
+    # knows WHICH turn did -- see ``chat_runner._settle_consumed_steers``.
+    def _record_steer_requeued(queue_id: str) -> None:
+        """Record that this steer became a QUEUED message instead of cutting a turn.
+
+        It has to be recorded here because the requeue moves the text straight into
+        the slot queue without passing the append that records ``message/queued``,
+        so nothing else in the system knows it happened. No turn: a queued message
+        belongs to no turn yet, and it names the one it eventually runs as when
+        that turn starts.
+
+        ``queue_id`` is the requeued entry's OWN id, read off the entry this path
+        found. It is the same quantity `queue_for_next_turn` records, so one reader
+        joins both against the queue; the client's `sendId` is a different
+        namespace minted by a different party and would look like a queue id
+        without being one.
+
+        Called from the ONE path that has seen the queue entry, never from one that
+        expects a requeue to happen later. A pending steer can still be discarded
+        by a hard kill before its teardown requeues it, and this entry cannot be
+        taken back.
+        """
+        sid = session_ledger_emit.session_id_of(client)
+        if not sid:
+            return
+        session_ledger_emit.on_message_queued(
+            sid,
+            source="steer",
+            size_bytes=len(message.encode("utf-8", "surrogatepass")),
+            queued_seq=queue_id,
+        )
+
     # ONE reconciliation for every path. The outcome turns on WHERE the text is
     # now, not on `steered`: the RPC returning True only means the client
     # accepted the write, and the turn it was written into may already have ended
@@ -341,10 +388,18 @@ async def steer_into_running_turn(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
         )
+        # No ledger entry: the drain already STARTED a turn with this text, and
+        # that turn recorded its own `message/received`. Writing `message/queued`
+        # now would place the queued fact AFTER the received fact that supersedes
+        # it, which reads as a message queued after it had already run.
         return STEER_REQUEUED
 
     still_registered = bool(slot._pending_steers.count(message))
-    queued = _queue_has_delivery_id(slot, delivery_id)
+    # The requeued entry's own id when the teardown moved our steer, else "". Held
+    # rather than discarded to a bool, because the entry the ledger names has to be
+    # the entry this path actually found.
+    queued_id = _queued_entry_id(slot, delivery_id)
+    queued = bool(queued_id)
     stopped = int(getattr(slot, "_stop_generation", 0) or 0) != stop_gen
 
     if still_registered:
@@ -360,6 +415,13 @@ async def steer_into_running_turn(
         if stopped:
             # Still registered means the teardown has not run yet and will
             # requeue it, so the text still runs — the caller must NOT resend.
+            #
+            # No ledger entry, because "will requeue" is a PREDICTION and this log
+            # records only what is observed: a second stop can hard-kill and
+            # discard the pending steers before the teardown runs, and then a
+            # `message/queued` would permanently claim a queue entry that was
+            # never made. When the requeue does happen the text runs as its own
+            # turn and reaches the log as that turn's `message/received`.
             _log_stop_race(slot, stop_gen, preserved=True)
             return STEER_REQUEUED
         # Delivered and live: fall through to cut the segment and persist the row.
@@ -372,6 +434,7 @@ async def steer_into_running_turn(
         # a row here would duplicate it.
         if stopped:
             _log_stop_race(slot, stop_gen, preserved=True)
+        _record_steer_requeued(queued_id)
         return STEER_REQUEUED
     # Absence alone does not say WHICH consumer took the registration. THREE
     # things remove one: the running turn CONSUMING the steer, the hard-kill
@@ -433,6 +496,13 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
+    # No `message/steered` from here. Reaching this point rules out every requeue
+    # and discard KNOWN SO FAR, which is what entitles this path to persist a
+    # transcript row -- but that row is mutable and starts as `written`, promoted to
+    # `consumed` only when the echo confirms the injection. A ledger entry has no
+    # such state: it would assert consumption this coroutine cannot prove, and a
+    # turn that ends without the echo still requeues the text. The entry is written
+    # by ``chat_runner._settle_consumed_steers`` instead, from the echo itself.
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -573,6 +643,20 @@ def queue_for_next_turn(
         message,
         meta=meta,
         directive_user_origin=directive_user_origin,
+    )
+    # Append-only session ledger. The session id comes off the client the running
+    # turn published on the slot -- a message is only queued because a turn IS
+    # running, so it is there. No turn ordinal: this message belongs to no turn
+    # yet, and it names the one it eventually runs as when that turn starts.
+    session_ledger_emit.on_message_queued(
+        session_ledger_emit.session_id_of(getattr(slot, "_acp_client", None)),
+        source=slot.key,
+        # "replace", not strict: a JSON body may carry a lone surrogate, which
+        # strict UTF-8 refuses to encode. The message is ALREADY queued at this
+        # point, so raising here would 500 the request while the queued message
+        # still runs, and the retry would run it twice.
+        size_bytes=len(message.encode("utf-8", "replace")),
+        queued_seq=str(qid),
     )
     state.broadcast_ws(
         "queue_push",

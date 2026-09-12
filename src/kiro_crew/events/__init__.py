@@ -6,11 +6,16 @@ Public surface:
 - :mod:`kiro_crew.events.kinds` — the registered event types
 - :mod:`kiro_crew.events.backfill` — read-only validator over existing stores
 
-This package is the SCHEMA and its production-data proof, nothing more. The
-on-disk store (writer, watermark reader, retention) lands with the first emit
-site that produces events and the first consumer that folds them; the envelope's
-additive-only rule makes adding those later free. Nothing here modifies an
-existing store; see base.py's module docstring for the schema contract.
+This package is the SCHEMA and its production-data proof, nothing more. An
+on-disk store for THIS envelope (writer, watermark reader, retention) waits for
+an unsequenced fact whose emitter needs it; the additive-only rule makes adding
+it later free. It is not where an ordered fact goes: the decision of record is
+``docs/request-for-change/rfc-append-only-ledger.md``, which puts facts needing
+order, threading or citation on the per-unit append-only ledger in
+:mod:`kiro_crew.ledger`, with a writer that assigns a per-unit ``seq``. That envelope is field-compatible with this one -- ``type`` for
+``kind``, ``time`` for ``ts_ms`` -- so one projection folds both with a field
+rename. Nothing here modifies an existing store; see base.py's module docstring
+for the schema contract.
 """
 
 from __future__ import annotations
