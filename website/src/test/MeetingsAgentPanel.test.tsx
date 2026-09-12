@@ -314,6 +314,10 @@ describe('AgentPanel — editable minutes', () => {
     expect(onSaveOutput).toHaveBeenCalledWith('# Still mine\n')
     expect((screen.getByLabelText('Note Taker output, editable') as HTMLTextAreaElement).value)
       .toBe('# Still mine\n')
+    // The pending label must not stick after a failed save — the finally path
+    // clears it, so the button offers a retry as "Save", not a frozen "Saving…".
+    expect(screen.getByText(EDITABLE.save)).toBeTruthy()
+    expect(screen.queryByText(EDITABLE.saving)).toBeNull()
   })
 
   it('keeps text typed while the submitted save is in flight', async () => {
@@ -336,13 +340,67 @@ describe('AgentPanel — editable minutes', () => {
       .toBe('# Submitted\n\nTyped while saving')
   })
 
-  it('cancelling discards the draft and never calls the server', () => {
+  it('cancelling a dirty draft asks first, then discards and never calls the server', async () => {
     const { openEditor, onSaveOutput } = mountEditable()
     fireEvent.change(openEditor(), { target: { value: 'scratch' } })
     fireEvent.click(screen.getByText(EDITABLE.cancel))
+
+    // The draft differs from what is on screen, so closing it is a loss the
+    // user must approve — same dialog discipline as revert.
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(EDITABLE.discardDraftHint)).toBeTruthy()
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: EDITABLE.discardDraft }))
+    })
+
     expect(onSaveOutput).not.toHaveBeenCalled()
     // Reopening starts from the agent's text again, not from the abandoned draft.
     expect(screen.getByLabelText(EDITABLE.edit)).toBeTruthy()
+  })
+
+  it('keeps the draft open when the cancel confirmation is declined', async () => {
+    const { openEditor } = mountEditable()
+    fireEvent.change(openEditor(), { target: { value: 'scratch' } })
+    fireEvent.click(screen.getByText(EDITABLE.cancel))
+
+    const dialog = screen.getByRole('dialog')
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    })
+
+    expect(
+      (screen.getByLabelText('Note Taker output, editable') as HTMLTextAreaElement).value,
+    ).toBe('scratch')
+  })
+
+  it('cancelling an untouched draft closes without asking', async () => {
+    const { openEditor, onSaveOutput } = mountEditable()
+    openEditor()
+    await act(async () => {
+      fireEvent.click(screen.getByText(EDITABLE.cancel))
+    })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(onSaveOutput).not.toHaveBeenCalled()
+    expect(screen.getByLabelText(EDITABLE.edit)).toBeTruthy()
+  })
+
+  it('focuses the editor on entering edit mode', () => {
+    // The clicked Edit button unmounts with the read view, so without an explicit
+    // autofocus the browser drops focus to <body>.
+    const { openEditor } = mountEditable()
+    const field = openEditor()
+    expect(document.activeElement).toBe(field)
+  })
+
+  it('shows the placeholder only while nothing has ever been written', () => {
+    mount(MARKDOWN, { output: '', onSaveOutput: vi.fn() })
+    expect(screen.getByText('Note Taker output will appear here.')).toBeTruthy()
+    cleanup()
+    // A saved-but-empty edit is the user's own (deliberate) version — reporting
+    // "output will appear here" would misstate their blank as agent silence.
+    mountEditable({ output: '', edit: { stale: false } })
+    expect(screen.queryByText('Note Taker output will appear here.')).toBeNull()
+    expect(screen.getByText(EDITABLE.edited)).toBeTruthy()
   })
 
   it('a poll landing under an open editor does not overwrite the draft', () => {
@@ -424,7 +482,7 @@ describe('AgentPanel — editable minutes', () => {
 
     expect(onRevertOutput).not.toHaveBeenCalled()
     const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText(/Discard my edits and show what Note Taker wrote/))
+    expect(within(dialog).getByText(/Permanently delete my edits and show what Note Taker wrote/))
       .toBeTruthy()
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: EDITABLE.revert }))
@@ -452,6 +510,57 @@ describe('AgentPanel — editable minutes', () => {
     openEditor()
     expect((screen.getByText(EDITABLE.save) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByText(EDITABLE.cancel) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('labels the save control Saving… only for this panel’s own in-flight save', async () => {
+    // `editSaving` is session-wide (any panel's save or revert), so it must not
+    // drive the LABEL: an idle panel next to a busy sibling would read Saving…
+    // (asserted above — session-wide disable keeps the plain Save label). The
+    // pending label comes from this panel's own submitted request.
+    const pending = deferred()
+    const onSaveOutput = vi.fn(() => pending.promise)
+    const { openEditor } = mountEditable({ onSaveOutput })
+    fireEvent.change(openEditor(), { target: { value: '# Mine\n' } })
+
+    fireEvent.click(screen.getByText(EDITABLE.save))
+    expect(screen.getByText(EDITABLE.saving)).toBeTruthy()
+    expect(screen.queryByText(EDITABLE.save)).toBeNull()
+
+    await act(async () => {
+      pending.resolve()
+      await pending.promise
+    })
+    // The submitted snapshot landed, so the editor closed with it.
+    expect(screen.queryByText(EDITABLE.saving)).toBeNull()
+    expect(screen.getByLabelText(EDITABLE.edit)).toBeTruthy()
+  })
+
+  it('an untouched draft stays clean when the agent writes more underneath', async () => {
+    // The dirty check compares against the SEED the editor opened with, never
+    // the live `output` prop: the 5-second outputs poll refreshes that prop, so
+    // comparing against it would raise a data-loss dialog for a draft the user
+    // never touched.
+    const props: React.ComponentProps<typeof AgentPanel> = {
+      agent: MARKDOWN,
+      output: '# Generated\n',
+      listening: true,
+      chatView: false,
+      onToggleListening: vi.fn(),
+      onToggleChatView: vi.fn(),
+      onSendMessage: vi.fn(),
+      onSaveOutput: vi.fn(async () => undefined),
+      onRevertOutput: vi.fn(),
+    }
+    const { rerender } = render(<AgentPanel {...props} />)
+    fireEvent.click(screen.getByLabelText(EDITABLE.edit))
+
+    rerender(<AgentPanel {...props} output="# Generated\n\nthe agent added more" />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(EDITABLE.cancel))
+    })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByLabelText(EDITABLE.edit)).toBeTruthy()
   })
 
   it('leaves the editor controls live when nothing is in flight', () => {

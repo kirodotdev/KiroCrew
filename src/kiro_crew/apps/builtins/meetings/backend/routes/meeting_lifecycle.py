@@ -647,12 +647,12 @@ def _save_edit(meeting_id: str, agent_id: str, content: str, root: Any) -> None:
         store.write_agent_edit(meeting_id, _editable_agent(agent_id, root), content, root)
 
 
-def _drop_edit(meeting_id: str, agent_id: str, root: Any) -> bool:
+def _drop_edit(meeting_id: str, agent_id: str, root: Any) -> None:
     """Validate the meeting and agent, then delete its edit sidecar. BLOCKING."""
     with store.meta_transaction():
         if store.read_meeting_meta(meeting_id, root) is None:
             raise BadRequest("meeting not found", status=404, code="meeting_not_found")
-        return store.revert_agent_edit(meeting_id, _editable_agent(agent_id, root), root)
+        store.revert_agent_edit(meeting_id, _editable_agent(agent_id, root), root)
 
 
 async def handle_put_output(request: web.Request) -> web.Response:
@@ -699,17 +699,17 @@ async def handle_put_output(request: web.Request) -> web.Response:
 async def handle_delete_output(request: web.Request) -> web.Response:
     """Revert one agent's output to what the agent itself last wrote.
 
-    ``reverted: false`` for an agent with no edit is a success, not a 404: the
-    request asked for "no edit on this agent" and that is the state afterwards.
+    Reverting an agent with no edit is a success, not a 404: the request asked
+    for "no edit on this agent" and that is the state afterwards.
     """
     meeting_id = _meeting_id(request)
     root = data_root(request)
     body = await json_body(request)
     agent_id = store.safe_agent_id(field_str(body, "agent_id", required=True, max_len=64))
 
-    reverted = await asyncio.to_thread(_drop_edit, meeting_id, agent_id, root)
+    await asyncio.to_thread(_drop_edit, meeting_id, agent_id, root)
     audit("meetings.revert_output", f"{meeting_id} agent:{agent_id}", outcome="ok")
-    return web.json_response({"ok": True, "agent_id": agent_id, "reverted": reverted})
+    return web.json_response({"ok": True, "agent_id": agent_id})
 
 
 def _read_translations_since(meeting_id: str, since: int, root: Any) -> dict[str, Any]:
