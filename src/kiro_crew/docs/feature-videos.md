@@ -48,6 +48,22 @@ Rules the catalog enforces, each of which drops the entry with a logged warning 
 
 Place the clip and its poster in `website/public/app-assets/feature-videos/`.
 
+## Publishing a Release of Videos
+
+The shipped runtime plays the clips bundled with it, described above. A hosted
+release is the other half: `scripts/feature-videos/publish.py` builds the signed
+folder a CDN serves, `scripts/feature-videos/verify.py` re-checks it, and a human
+uploads it. Neither command touches the network, so the credentials that can
+write to a public origin stay with the person who owns them.
+
+The runtime side that fetches such a folder is a separate change. Until it lands,
+a published release is a no-op for a running dashboard.
+
+Both scripts live in a repo checkout, not in an install, and so do their
+instructions: see
+[scripts/feature-videos/README.md](https://github.com/kirodotdev/KiroCrew/blob/main/scripts/feature-videos/README.md)
+for the input layout, the signing keys, every refusal and the upload steps.
+
 ## Declaring a `used_when` Signal
 
 `used_when` names deterministic probes. Any one of them firing withdraws the video, because an intro for a feature already in use is worse than no intro. A probe that raises, or a signal nobody registered, counts as "not used" — the clip still plays, and the reason is logged.
