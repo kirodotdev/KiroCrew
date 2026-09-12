@@ -14,11 +14,13 @@ which :func:`test_added_line_gate_self_test_passes` runs.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import os
 import subprocess
 import sys
+import textwrap
 from dataclasses import fields
 from unittest.mock import MagicMock
 
@@ -636,6 +638,12 @@ def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
             continue
         assert "if self._is_codex" in source, f"{fn.__name__}: codex seam spliced ungated"
         assert "if self._is_claude" in source, f"{fn.__name__}: claude seam spliced ungated"
+        # opencode is the third member of ACP_BACKENDS_SESSION_MCP_ARRAY and the one
+        # whose array a stray element costs entirely: a malformed entry fails the
+        # WHOLE session/new with -32602 there, where codex drops it and succeeds. So
+        # an ungated splice of ANOTHER harness's hook into an opencode session is the
+        # worst-consequence version of this defect, not the mildest.
+        assert "if self._is_opencode" in source, f"{fn.__name__}: opencode seam spliced ungated"
 
 
 def test_codex_mcp_seam_projects_through_its_mirror() -> None:
@@ -655,6 +663,41 @@ def test_codex_mcp_seam_projects_through_its_mirror() -> None:
     assert "self._session_mcp_servers()" in source
     assert acp_backends.ACP_BACKEND_CODEX in acp_backends.ACP_BACKENDS_SESSION_MCP_ARRAY
     assert mirrors.mirror_for(acp_backends.ACP_BACKEND_CODEX) is not None
+
+
+def test_opencode_mcp_seam_projects_through_its_mirror() -> None:
+    """The same three facts for opencode, and the one that had to be MEASURED.
+
+    This seam was empty on the reading that opencode's ``initialize`` advertises
+    ``mcpCapabilities`` of http and sse and no stdio, so the array could not carry
+    Crew's stdio servers. ACP's ``McpCapabilities`` has exactly two boolean fields
+    and no stdio field, so no conforming agent can advertise stdio and the absence
+    was never evidence -- driven against a real ``opencode acp``, the element Crew
+    already emits is accepted. Until then a selectable harness served sessions with
+    no ``spawn_run``, no ``cron_add`` and no ``send_message``, and nothing was red.
+
+    What it must NOT contain is codex's transport filter: this harness accepts
+    ``http`` and ``sse`` elements too, so dropping them would remove capability the
+    session would have had.
+    """
+    source = inspect.getsource(acp_client.AcpClient._opencode_session_mcp_servers)
+    assert "self._session_mcp_servers()" in source
+    assert acp_backends.ACP_BACKEND_OPENCODE in acp_backends.ACP_BACKENDS_SESSION_MCP_ARRAY
+    assert mirrors.mirror_for(acp_backends.ACP_BACKEND_OPENCODE) is not None
+    # The absent filter is read off the AST rather than the text, because the
+    # docstring EXPLAINS why codex's filter is not applied here -- a substring check
+    # would be satisfied by deleting that explanation and broken by writing it.
+    fn = ast.parse(textwrap.dedent(source)).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    called = {
+        node.func.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "drop_unadvertised_transports" not in called, (
+        "the opencode hook applies codex's transport filter, which would drop the "
+        "http and sse elements this harness accepts"
+    )
 
 
 def test_model_preflight_allows_unknown_advertised_set() -> None:

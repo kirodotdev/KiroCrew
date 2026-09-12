@@ -39,6 +39,7 @@ from kiro_crew.acp_backends import (
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
+from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
 
 
 class ProjectionKind(str, Enum):
@@ -65,6 +66,47 @@ class ProjectionKind(str, Enum):
     NO_CHANNEL = "no-channel"
 
 
+class PerToolDeny(str, Enum):
+    """How far a backend can honour the spec's per-TOOL MCP restriction.
+
+    ``mcpServers.<name>.disabledTools`` is a RESTRICTION a user writes, and the
+    dashboard's ordinary tool-off action writes it. How much of it survives the trip
+    to a backend is a property of the transport, and the three members below are the
+    three states that exist -- each one observable in what the projection returns,
+    which is what lets a test hold the declaration to the behaviour rather than to
+    its own prose.
+
+    This is a DECLARATION, not a requirement. Per-tool MCP deny is not something
+    every provider can offer, and this folder's thesis is that an honest "this
+    transport cannot carry it" beats a projection that quietly drops it. What a
+    reader needs is to know WHICH of the three they are getting before a session
+    runs.
+
+    Three members rather than the one flag its shipped reader branches on
+    (``cli_doctor`` acts on ``WHOLE_SERVER`` alone), and the reason is the drift
+    test rather than a future renderer: the three states are told apart by two
+    INDEPENDENT observations -- whether a narrowed server stays mounted, and whether
+    the projection hands the client a deny set -- so the test catches claude
+    silently ceasing to write its deny rules and codex silently ceasing to hand over
+    its pairs. A boolean cannot express either: both would read false and stay
+    false while the behaviour changed underneath. A reader that renders all three
+    (the per-provider ability card) is a consumer this serves, not the reason it has
+    three members.
+    """
+
+    #: The restriction reaches the harness as a per-tool rule in a file Crew writes,
+    #: so the narrowed server stays MOUNTED and the harness itself refuses the tool.
+    SETTINGS_FILE = "settings-file"
+    #: No per-tool slot on the wire, but the backend asks permission per MCP call
+    #: with an identity Crew can match, so Crew refuses the call itself. The narrowed
+    #: server may stay mounted where that channel is complete.
+    PER_CALL = "per-call"
+    #: No channel at all -- neither a rule the harness reads nor a per-call identity
+    #: Crew can match. The only faithful action is WITHHOLDING the whole server, so
+    #: the restriction costs availability rather than being silently dropped.
+    WHOLE_SERVER = "whole-server"
+
+
 @dataclass(frozen=True)
 class McpProjection:
     """One backend's declared answer to "how do Crew's MCP servers get here?".
@@ -87,6 +129,12 @@ class McpProjection:
     tracking: str = ""
     #: ``external`` only: the dotted module path holding the projection.
     projection: str = ""
+    #: ``mirror`` only: how far this backend honours a per-TOOL MCP restriction.
+    #: Required there and refused elsewhere, because a mirror is what performs the
+    #: projection and so is the only kind that can answer -- a ``native`` backend
+    #: reads the spec itself, and an ``external`` projection's answer belongs with
+    #: its own module when that moves into this folder (RFC section 5).
+    per_tool_deny: PerToolDeny | None = None
 
     def __post_init__(self) -> None:
         if not self.reason.strip():
@@ -116,12 +164,21 @@ class McpProjection:
             raise ValueError("projection is only meaningful for an external projection")
         if self.kind in (ProjectionKind.NATIVE, ProjectionKind.MIRROR) and self.tracking:
             raise ValueError("tracking is only meaningful for a kind that is not a finished state")
+        if self.kind is ProjectionKind.MIRROR and self.per_tool_deny is None:
+            raise ValueError(
+                "a mirror must declare how far it honours a per-tool MCP restriction "
+                "(per_tool_deny) — leaving it unsaid puts a reader back to inferring "
+                "it from source, which is the state this record replaced"
+            )
+        if self.kind is not ProjectionKind.MIRROR and self.per_tool_deny is not None:
+            raise ValueError("per_tool_deny is only meaningful for a mirror projection")
 
 
 #: Backends whose spec projection lives in this folder.
 MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_CLAUDE: ClaudeCodeMirror,
     ACP_BACKEND_CODEX: CodexMirror,
+    ACP_BACKEND_OPENCODE: OpenCodeMirror,
 }
 
 #: Every backend this build can spell, and how its MCP surface is reached.
@@ -145,11 +202,22 @@ PROJECTIONS: dict[str, McpProjection] = {
         kind=ProjectionKind.MIRROR,
         reason="claude_code.py — both faces: the session/new mcpServers array and "
         "<work_dir>/.claude/settings.local.json",
+        # The narrowed server stays MOUNTED: session_mcp_deny_rules re-expresses
+        # disabledTools as permissions.deny rules in the settings file the adapter
+        # reads, so the restriction survives as a per-tool rule.
+        per_tool_deny=PerToolDeny.SETTINGS_FILE,
     ),
     ACP_BACKEND_CODEX: McpProjection(
         kind=ProjectionKind.MIRROR,
         reason="codex.py — the wire face alone. Crew writes no codex file, so the "
         "session/new array is this backend's whole MCP channel",
+        # No wire slot and no file of Crew's, but codex asks session/request_permission
+        # per MCP call carrying rawInput.server/tool, so the CLIENT refuses a
+        # switched-off tool (AcpClient._deny_spec_disabled_tool). Complete for Crew's
+        # control plane, which is why that stays mounted; a third-party server is
+        # withheld instead, since its readOnlyHint tools are approved inside codex
+        # without ever asking.
+        per_tool_deny=PerToolDeny.PER_CALL,
     ),
     ACP_BACKEND_KAS: McpProjection(
         kind=ProjectionKind.EXTERNAL,
@@ -167,28 +235,36 @@ PROJECTIONS: dict[str, McpProjection] = {
         tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
     ),
     ACP_BACKEND_OPENCODE: McpProjection(
-        kind=ProjectionKind.NO_CHANNEL,
-        reason=(
-            "opencode's initialize result advertises mcpCapabilities of http and sse and "
-            "no stdio, so the session/new mcpServers array cannot carry the stdio servers "
-            "a projection would put in it — which is why it is outside "
-            "ACP_BACKENDS_SESSION_MCP_ARRAY. What it reads instead is its own config "
-            "file's mcp block, and writing that would mean writing into a checked-out "
-            "repository, the thing this harness's routing seed deliberately avoids by "
-            "travelling in the child's environment. The shared MCP gateway does not "
-            "reach it either: _pooled_mcp_servers does append broker stubs for a "
-            "backend outside MIRRORS, but a stub is shaped as a stdio element too "
-            "(mcp_gateway.session_servers._acp_server_entry emits command/args/env), so "
-            "it lands in the very array this harness advertises no transport for. An "
-            "opencode session therefore holds none of Crew's own tools, gateway on or "
-            "off"
-        ),
-        channel=(
-            "an http or sse MCP endpoint the shared gateway serves, addressable from the "
-            "session/new array this harness does accept — or a config channel Crew owns "
-            "that is not the operator's checkout"
-        ),
-        tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+        kind=ProjectionKind.MIRROR,
+        reason="opencode.py -- the wire face alone, and the entry that shows why a "
+        "no-channel claim has to be measured rather than inferred. It was declared "
+        "no-channel on the reading that opencode's initialize advertises "
+        "mcpCapabilities of http and sse and NO stdio, so the session/new array "
+        "could not carry Crew's stdio servers. That inference was wrong: ACP's "
+        "McpCapabilities schema has exactly two boolean fields, http and sse, and "
+        "no stdio field at all, so a conforming agent cannot advertise stdio and "
+        "that answer is what FULL support looks like. Driven against opencode "
+        "1.18.30, the element acp.session_mcp.acp_server_element already emits is "
+        "accepted, the child is spawned, its tools are listed and the element's env "
+        "reaches it. The same entry also contradicted itself -- its last sentence "
+        "said the array carries the shared gateway's broker stubs, which are stdio "
+        "elements too -- and both halves could not be true. Crew writes no opencode "
+        "MCP config: OPENCODE_CONFIG_CONTENT (which Crew does seed, for the "
+        "permission routing alone) MERGES rather than replaces, and declaring one "
+        "server in both that block and the array double-mounts it, so the array is "
+        "this backend's whole MCP channel",
+        # WHOLE-SERVER ONLY, and declared rather than enforced. There is no per-tool
+        # slot on the element and no file of Crew's, and unlike codex there is no
+        # per-call fallback either: this harness emits no _meta.kiro and no
+        # rawInput.server/tool -- only a fused `<server>_<tool>` title -- so
+        # AcpClient._deny_spec_disabled_tool has nothing to match and the mirror
+        # returns an empty deny set rather than pairs that could never fire. A
+        # narrowed server is therefore withheld whole, Crew's own control plane
+        # included (providers/mirrors/opencode.py::narrowed_control_plane), which is
+        # where this backend parts company with codex. Per-tool MCP deny is not a
+        # requirement on every provider; what this field owes a reader is that they
+        # are getting the whole-server form here BEFORE a session runs.
+        per_tool_deny=PerToolDeny.WHOLE_SERVER,
     ),
 }
 

@@ -56,13 +56,18 @@ from typing import Any, Mapping
 
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, session_mcp_projection
 from kiro_crew.acp_backends import ACP_BACKEND_CODEX
-from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.providers.mirrors.base import (
     AgentConfigMirror,
     Concern,
     Disposition,
     Ruling,
     SessionProjection,
+)
+from kiro_crew.providers.mirrors.identity import (
+    control_plane_identity_env,
+    identity_bound_crew_servers,
+    with_env,
+    withheld_servers,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,77 +131,34 @@ def _identity_env(session_key: str, channel_id: str) -> dict[str, str]:
 
     Every value here is something a claude MCP child gets for free by inheriting
     the adapter's process environment and a codex one does not (``env_clear`` plus
-    an allowlist, see the module docstring). Resolved live rather than read from the
-    spec, exactly as ``managed_mcp_spec_entry`` resolves the command.
-
-    ``KIROCREW_BOUND_PORT`` for the same reason ``members.member_dispatch_session_server``
-    carries it: without the port the child falls through to the run marker, whose
-    check needs ``find_listening_pids`` (``lsof``), which sees no listener from
-    inside a sandbox's user namespace -- so the child dials the default port and
-    every call is a connection refused on a gateway bound anywhere else.
-
-    Fail-soft throughout: a config-plane failure must not fail a spawn, and no home
-    override is exactly the state a default install is in.
+    an allowlist, see the module docstring). That ARGUMENT is codex's; the carriage
+    itself is every array-backend's, so it lives in
+    :func:`~kiro_crew.providers.mirrors.identity.control_plane_identity_env` -- a
+    key added there for one backend and missed by a copy here would leave this
+    control plane silently unable to do whatever the key enabled.
     """
-    # circular import: agent's module graph is heavy (it imports config), and
-    # port_resolution reaches config.loader, whose provider-backend path imports
-    # members. Both resolved at call time, as session_mcp.py resolves them.
-    from kiro_crew.agent import _managed_mcp_env
-    from kiro_crew.port_resolution import resolve_serving_port
-
-    env: dict[str, str] = {}
-    try:
-        env.update(_managed_mcp_env())
-    except Exception:  # pragma: no cover - defensive; the helper is fail-soft
-        logger.warning("codex session MCP: could not resolve the managed home", exc_info=True)
-    if session_key:
-        env["KIROCREW_SESSION_KEY"] = session_key
-    if channel_id:
-        env["KIROCREW_CHANNEL_ID"] = channel_id
-    try:
-        env["KIROCREW_BOUND_PORT"] = str(resolve_serving_port())
-    except Exception:  # pragma: no cover - defensive
-        logger.warning("codex session MCP: could not resolve the serving port", exc_info=True)
-    return env
+    return control_plane_identity_env(session_key, channel_id, label="codex")
 
 
 def _with_env(element: dict[str, Any], extra: Mapping[str, str]) -> dict[str, Any]:
     """*element* with *extra* merged into its ACP array-of-pairs ``env``.
 
-    Later wins, so a value resolved here replaces a stale one the entry carried --
-    the same precedence ``managed_mcp_spec_entry`` applies to the command.
+    :func:`~kiro_crew.providers.mirrors.identity.with_env`, kept under this name
+    because the module's own prose refers to it.
     """
-    pairs: list[dict[str, str]] = [
-        p for p in element.get("env") or [] if isinstance(p, dict) and p.get("name") not in extra
-    ]
-    pairs.extend({"name": k, "value": v} for k, v in extra.items())
-    out = dict(element)
-    out["env"] = pairs
-    return out
+    return with_env(element, extra)
 
 
 def _identity_bound_crew_servers() -> frozenset[str]:
     """Crew's own managed servers that mounting would leave UNUSABLE on codex.
 
-    Every managed server minus the control plane. The control plane is the part
-    :func:`codex_elements` rebuilds with this session's identity; everything else
-    reaches codex from the agent spec unreplaced, so it would come up bound to no
-    session and answer ``not_bound`` to every call. That present-but-unusable shape
-    is the defect this whole folder exists to kill, so those names are withheld and
-    the absence is logged.
-
-    DERIVED, not enumerated. An earlier revision spelled the three names out with a
-    comment saying they were "``agent._MANAGED_MCP_SERVERS`` minus the control
-    plane" -- and a hand-copy of a subtraction drifts in the bad direction here: a
-    server added to the managed set later would miss this one, mount, and answer
-    ``not_bound``, reintroducing by omission the very defect above.
-
-    The managed set is read from :mod:`kiro_crew.mcp_cleanup`, which a ratchet test
-    already pins equal to ``agent._MANAGED_MCP_SERVERS`` and which imports nothing
-    heavier than ``config.paths`` -- so this leaf stays off ``agent``'s import graph
-    without spelling the names again, exactly as ``acp.kas_agents`` reads it.
+    :func:`~kiro_crew.providers.mirrors.identity.identity_bound_crew_servers`. The
+    subtraction is shared rather than re-derived per mirror: a server added to the
+    managed set later must reach every projection's withhold set by construction,
+    and a second copy of it is the drift that would mount one answering
+    ``not_bound``.
     """
-    return frozenset(KIROCREW_BIN_MCP_SERVERS) - frozenset(CONTROL_PLANE_SERVERS)
+    return identity_bound_crew_servers()
 
 
 def codex_withheld_servers(restricted: frozenset[str]) -> frozenset[str]:
@@ -224,8 +186,12 @@ def codex_withheld_servers(restricted: frozenset[str]) -> frozenset[str]:
     exactly that second read, which is why this takes the set and not the agent.
 
     Free of I/O; the caller has already paid for the parse.
+
+    :func:`~kiro_crew.providers.mirrors.identity.withheld_servers` holds the rule;
+    this name is codex's door onto it, so the module's prose and the mirrors README
+    keep referring to one function per backend.
     """
-    return frozenset(restricted) | _identity_bound_crew_servers()
+    return withheld_servers(restricted)
 
 
 def codex_name(name: str) -> str:

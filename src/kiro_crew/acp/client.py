@@ -4273,6 +4273,50 @@ class AcpClient:
             self._session_mcp_servers(), self._agent_mcp_capabilities
         )
 
+    def _opencode_session_mcp_servers(self) -> list:
+        """MCP server array passed to an opencode ``session/new`` / ``session/load``.
+
+        The opencode twin of :meth:`_codex_session_mcp_servers`, and it must stay
+        non-empty for the same reason: ``opencode acp`` reads no
+        ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the session
+        through any other door. Until this hook existed an opencode session held
+        none of Crew's own tools at all -- no ``spawn_run``, no ``cron_add``, no
+        ``send_message`` -- while working in every visible respect.
+
+        What it does NOT do is the interesting half. There is no transport filter
+        here, unlike codex: an ``http`` element and an ``sse`` element are both
+        ACCEPTED by ``opencode acp``, so ``drop_unadvertised_transports`` would only
+        remove servers the harness would have mounted. Measured, not assumed --
+        ``test/test_opencode_session_mcp.py::test_real_opencode_acp_accepts_the_crew_stdio_element``
+        drives a real ``opencode acp`` the way its codex sibling drives codex-acp,
+        and pins the ``initialize`` ``mcpCapabilities`` shape so a release that
+        starts refusing the stdio element goes red here rather than silently
+        emptying every session's tool set.
+
+        The failure mode a bad element causes is the OPPOSITE of codex's, which is
+        why the shared translator's skip discipline matters more here, not less: a
+        malformed element (no ``command``, or an ``env`` that is not an array) fails
+        the WHOLE ``session/new`` with ``-32602`` on this harness, where codex drops
+        the element and succeeds. ``acp.session_mcp.acp_server_element`` returns
+        ``None`` for an entry with neither ``command`` nor ``url`` and stringifies
+        what it cannot type, so one hand-edited spec line costs that server rather
+        than the session.
+
+        The translation lives in the mirror
+        (:mod:`kiro_crew.providers.mirrors.opencode`), not here, for the same reason
+        claude's and codex's do: projecting the agent spec onto a backend's native
+        shape is one named contract with one implementation per backend.
+
+        The seam is deliberately KEPT rather than replaced by a capability-set
+        call: an edition may override this method, and swapping the call site for a
+        set membership test would silently stop calling that override.
+
+        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
+        this accessor adds no scheduling or failure point to a call site shared with
+        kiro-cli (harness-parity H13).
+        """
+        return self._session_mcp_servers()
+
     def _claude_local_settings_path(self) -> Path:
         return self._work_dir / ".claude" / "settings.local.json"
 
@@ -5909,6 +5953,20 @@ class AcpClient:
                     f"itself."
                 )
             argv = [opencode_bin, OPENCODE_ACP_SUBCMD]
+            # Translate the agent spec into this session's MCP array HERE, on
+            # opencode's own arm, for exactly the reason the claude and codex arms
+            # do it on theirs: the translation reads disk, and doing it at the
+            # shared session/new call site would put an executor hop and a new
+            # failure mode on EVERY backend's construction path, kiro-cli included
+            # (harness-parity H13). No ordering constraint of claude's applies --
+            # this harness's array is not conditional on Crew owning a permission
+            # file, because its routing is seeded on OPENCODE_CONFIG_CONTENT and
+            # then read back out of the harness itself below, so a session that
+            # cannot establish the asking posture is refused rather than run.
+            # Correctness does not depend on this warm: _session_mcp_servers
+            # resolves a cold cache itself; the warm is what keeps the read off the
+            # loop.
+            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
             # The same refuse-then-mask preflight the codex arm runs, keyed on the
             # same routing question rather than on this harness's identity: it is
             # ENFORCED, so the OS credential mask is the compensating control for the
@@ -6848,6 +6906,7 @@ class AcpClient:
             "mcpServers": [
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._codex_session_mcp_servers() if self._is_codex else []),
+                *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -6937,7 +6996,9 @@ class AcpClient:
         self._can_load_session = init_resp.get("agentCapabilities", {}).get("loadSession", False)
         # Which MCP transports this agent will accept in the session array. Only the
         # codex projection consults it (see _codex_session_mcp_servers); every other
-        # backend either reads no array or accepts the shapes Crew already sends.
+        # backend either reads no array or accepts the shapes Crew already sends --
+        # opencode is the measured case of the latter, accepting stdio, http and sse
+        # alike, so its hook applies no filter (see _opencode_session_mcp_servers).
         advertised = (init_resp.get("agentCapabilities") or {}).get("mcpCapabilities")
         self._agent_mcp_capabilities = dict(advertised) if isinstance(advertised, dict) else {}
         self._agent_version = agent_version_from_init(init_resp)
@@ -6985,6 +7046,7 @@ class AcpClient:
                         "mcpServers": [
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
                             *(self._codex_session_mcp_servers() if self._is_codex else []),
+                            *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }

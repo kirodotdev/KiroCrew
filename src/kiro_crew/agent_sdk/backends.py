@@ -194,14 +194,25 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 #: spec belongs here, and the next such harness should join the set rather than
 #: add a second branch at the call site (harness-parity H6).
 #
-# OpenCode is NOT a member, and the reason is its own advertisement rather than a
-# guess: its ``initialize`` result carries ``mcpCapabilities: {"http": true, "sse":
-# true}`` and no stdio capability, so the stdio servers Crew would put in the array
-# are servers it cannot mount. It reads its MCP servers from its own config file
-# instead, which is a channel this array does not reach. An opencode session is
-# therefore a plain chat with none of Crew's tools; ``providers/mirrors`` records
-# why no projection exists for it.
-ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+# opencode is the third member, and it is here because the reason it was EXCLUDED
+# was wrong rather than because anything about the harness changed. That reason read
+# its ``initialize`` result -- ``mcpCapabilities: {"http": true, "sse": true}`` --
+# as an advertisement carrying "no stdio", and concluded the array could not mount
+# the stdio servers Crew puts in it. ACP's ``McpCapabilities`` schema has exactly
+# two boolean fields, ``http`` and ``sse``, and NO stdio field, so a conforming
+# agent cannot advertise stdio at all and that answer is what full support looks
+# like. Absence of a flag that cannot exist is not evidence. Driven against
+# opencode 1.18.30, the element ``acp.session_mcp.acp_server_element`` already
+# emits is accepted, the named child is spawned, its tools are listed and the
+# element's ``env`` reaches it -- so the excluded harness had in fact been serving
+# sessions with none of Crew's own tools for no reason at all. The exclusion also
+# contradicted the shipped code it sat beside: the shared gateway's broker stubs
+# are stdio elements too (``mcp_gateway.session_servers._acp_server_entry``) and
+# ``_pooled_mcp_servers`` appended them to this very array for opencode whenever
+# pooling was on. See ``providers/mirrors/opencode.py``.
+ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
 
 # Private member tools must execute inside the owned sandbox. A backend joins
 # only after its direct MCP launch path is verified; selectability grants none
@@ -494,9 +505,13 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 # then a codex member session stays plain chat — the dispatch tools are simply not
 # mounted, never mounted-and-refused.
 #
-# opencode is excluded on the evidence in ``ACP_BACKENDS_SESSION_MCP_ARRAY``: it
-# advertises http and sse MCP transports only, so there is no per-session mount for
-# a member dispatch to ride on.
+# opencode is excluded, but NOT any longer for want of a mount: it is a member of
+# ``ACP_BACKENDS_SESSION_MCP_ARRAY`` and its sessions now carry Crew's control
+# plane, so the transport a member dispatch would ride on exists. What is missing is
+# the same DECISION codex is waiting on -- mounting session control into a member DM
+# thread is a new capability, separate from giving a session the tools its own agent
+# spec declares. Until that is taken, an opencode member session stays plain chat:
+# the dispatch tools are simply not mounted, never mounted-and-refused.
 ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
 
 # Backends implementing the ``_session/steer`` extension (mid-turn steer). Neither
@@ -769,8 +784,10 @@ ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
 # describes its running set for a watcher to reconcile against. claude-agent-acp
 # reads no agent file at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``), and codex-acp
 # has not demonstrated the capability — neither inherits it.
-# opencode is not a member: nothing in Crew's agent tree describes its running MCP
-# set, so there is no file a watcher could reconcile a running session against.
+# opencode is not a member either, and its reason is unchanged by the mirror: its
+# MCP set now comes from the ``session/new`` array, resolved per spawn, so there is
+# still no file on disk a watcher could reconcile a RUNNING session against. A
+# change takes effect on the next session, as it does for every array backend.
 ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under

@@ -1253,10 +1253,18 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     and a spec with an empty ``tools`` list produces no unresolved ref to hang it
     off.
 
-    Prints only for that one kind. ``native``, ``mirror`` and ``external`` all
-    mean the servers do reach the session, so a row there would be noise on every
-    stock install — and the refs row already speaks when a projection drops
-    something.
+    The no-channel row prints only for that one kind. ``native``, ``mirror`` and
+    ``external`` all mean the servers do reach the session, so a row there would be
+    noise on every stock install — and the refs row already speaks when a
+    projection drops something.
+
+    A SECOND row, independent of the kind, prints when the selected backend's
+    declared per-tool MCP deny reach is ``whole-server``. That one is not about
+    whether the servers arrive but about what a RESTRICTION on them costs, and it
+    is here because its consequence is the kind an operator meets by accident:
+    switching one tool off is an ordinary action that says nothing about servers,
+    and on such a harness it removes the whole server — Crew's own control plane
+    included. Same terms as the row above: report only, no ``issues`` entry.
 
     Reports only, and appends NO entry to ``issues``, on the terms
     :func:`_doctor_strict_identity` and :func:`_doctor_unresolved_mcp_refs` both
@@ -1279,10 +1287,28 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     declared = backend_mcp_projection(backend)
     if declared is None:
         return
-    kind, channel, tracking = declared
+    kind, channel, tracking, per_tool_deny = declared
+    label = _backend_policy_label(backend)
+    if per_tool_deny == _WHOLE_SERVER_DENY:
+        # The one reach whose consequence an operator meets by accident. Switching a
+        # tool off is an ordinary dashboard action that says nothing about servers,
+        # and on this harness it removes the SERVER -- so a session can lose its
+        # control plane without anything having looked like a mistake. Printed for
+        # the selected backend only, and report-only like every row here.
+        print(f"  mcp per-tool deny: \u23f9 {label} withholds the whole server")
+        _print_wrapped(
+            "This harness has no channel for a per-TOOL MCP restriction: no deny "
+            "slot on the session/new element, no settings file of Crew's, and no "
+            "per-call MCP identity for Crew to refuse a single tool by. So "
+            "switching one tool off (an agent spec's disabledTools, or the "
+            "dashboard's tool-off action) withholds that server ENTIRELY from this "
+            "harness's sessions rather than just that tool -- Crew's own "
+            "kirocrew-core included, which leaves such a session unable to report "
+            "back to its channel. The restriction is honoured, at the cost of the "
+            "server; narrowing nothing leaves every server mounted."
+        )
     if kind != "no-channel":
         return
-    label = _backend_policy_label(backend)
     print(f"  mcp projection: \u23f9 {label} carries none of Kiro Crew's own tools")
     _print_wrapped(
         "This harness advertises no transport the session MCP array can use, so "
@@ -1296,6 +1322,13 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     # printed through the same display guard as every other value in this report.
     _print_wrapped(f"Would need: {_safe_display(channel)}")
     _print_wrapped(f"Tracked at: {_safe_display(tracking)}")
+
+
+#: The ``PerToolDeny`` member whose consequence is worth a row. Compared as a
+#: plain string because the value crosses the agent-sdk boundary as one -- the
+#: enum lives in ``providers/mirrors`` and importing it here is the edge the
+#: boundary gate refuses.
+_WHOLE_SERVER_DENY = "whole-server"
 
 
 def _backend_policy_label(backend: str) -> str:

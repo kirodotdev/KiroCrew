@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
@@ -30,6 +31,7 @@ from kiro_crew.providers.mirrors import (
     Concern,
     Disposition,
     McpProjection,
+    PerToolDeny,
     ProjectionKind,
     Ruling,
     has_mirror,
@@ -246,11 +248,45 @@ class TestEveryBackendIsAccountedFor:
         assert declared.projection == "kiro_crew.acp.kas_agents"
         assert declared.tracking
 
-    def test_the_one_no_channel_backend_names_what_would_have_to_exist(self):
+    def test_any_no_channel_backend_names_what_would_have_to_exist(self):
+        """A loop rather than a named backend, because the shipped set now has none.
+
+        This asserted the rule against opencode, which WAS the one ``no-channel``
+        entry -- on the reading that its ``initialize`` advertising
+        ``mcpCapabilities`` of http and sse and no stdio meant the array could not
+        carry Crew's stdio servers. Measured against a real ``opencode acp``, the
+        array carries them, so the kind moved to ``mirror`` and no backend is
+        ``no-channel`` today. The rule still has to hold for the next one, and a
+        test pinned to a name would have been deleted with the name; the negative
+        direction is driven through doctored tables in
+        ``TestTheGuardCatchesEachFailure``.
+        """
+        for backend, declared in PROJECTIONS.items():
+            if declared.kind is not ProjectionKind.NO_CHANNEL:
+                continue
+            assert declared.channel.strip(), backend
+            assert declared.tracking.strip(), backend
+
+    def test_opencode_is_a_mirror_because_the_no_stdio_inference_was_refuted(self):
+        """The entry this file's own rule was demonstrated on, pinned by name.
+
+        Not a restatement of the table. The ``no-channel`` claim rested on reading
+        an ABSENT ``stdio`` flag in ``mcpCapabilities`` as a refusal -- and ACP's
+        ``McpCapabilities`` has exactly two boolean fields, ``http`` and ``sse``, so
+        no conforming agent can set a stdio flag and the absence could never have
+        been evidence. A revert to ``no-channel`` on that reasoning would have to
+        delete this test, which is the point: the harness's own advertisement is
+        recorded here as insufficient, so the next author re-measures instead of
+        re-inferring.
+        """
         declared = projection_for(ACP_BACKEND_OPENCODE)
-        assert declared.kind is ProjectionKind.NO_CHANNEL
-        assert declared.channel.strip()
-        assert declared.tracking.strip()
+        assert declared.kind is ProjectionKind.MIRROR
+        assert has_mirror(ACP_BACKEND_OPENCODE)
+        # A settled kind may carry neither of the addressable fields.
+        assert not declared.channel and not declared.tracking
+        mirror = mirror_for(ACP_BACKEND_OPENCODE)
+        assert mirror is not None
+        assert mirror.rulings()[Concern.MCP_SERVERS].disposition is Disposition.DELIVERED
 
 
 class TestRulingsAreComplete:
@@ -509,6 +545,9 @@ class TestAProseOnlyDeclarationFailsTheParityTest:
                 McpProjection(
                     kind=ProjectionKind.MIRROR,
                     reason="a mirror class in this folder projects the spec for it",
+                    # Present only so this constructs: the case under test is the
+                    # missing MIRRORS class, and the missing field has its own test.
+                    per_tool_deny=PerToolDeny.WHOLE_SERVER,
                 )
             )
         )
@@ -579,3 +618,181 @@ class TestAMirrorMustActuallyDeliverItsServers:
             Disposition.DELIVERED,
             Disposition.TRANSLATED,
         ), f"{backend!r} is registered as a mirror but rules mcpServers {ruling.disposition.value}"
+
+
+class TestPerToolDenyIsDeclaredAndTrue:
+    """The declaration a reader gets BEFORE a session runs, held to the behaviour.
+
+    ``mcpServers.<name>.disabledTools`` is a restriction a user writes and the
+    dashboard's tool-off action writes, and how much of it survives the trip to a
+    backend is a property of the transport. Per-tool MCP deny is NOT a requirement
+    on every provider -- this folder's thesis is that an honest "this transport
+    cannot carry it" beats a projection that quietly drops it -- so the answer is
+    DECLARED on the projection record rather than enforced into existence.
+
+    A declaration nobody checks rots, which is what these tests are for. Each
+    member of :class:`PerToolDeny` names a state that is OBSERVABLE in what a
+    mirror's ``session_projection`` returns for one narrowed third-party server and
+    one narrowed control-plane server, so the field is cross-checked against
+    behaviour rather than against its own prose.
+    """
+
+    _NARROWED_SPEC = {
+        "name": "kirocrew",
+        "tools": ["@narrowed", "@kirocrew-core"],
+        "mcpServers": {
+            "narrowed": {"command": "/bin/foo", "disabledTools": ["danger"]},
+            "kirocrew-core": {"command": "/x", "disabledTools": ["spawn_run"]},
+        },
+    }
+
+    @pytest.fixture
+    def narrowed(self, tmp_path, monkeypatch):
+        """A spec whose third-party server AND control plane are both narrowed.
+
+        Same seam as ``test_codex_session_mcp.py``: materialization would rebuild
+        the managed default from bundled defaults, and this supplies the spec.
+        """
+        import json
+
+        from kiro_crew import agent as agent_mod
+        from kiro_crew.acp import session_mcp
+
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "kirocrew.json").write_text(json.dumps(self._NARROWED_SPEC), encoding="utf-8")
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "settings-mcp.json")
+        monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _a: True)
+        managed = {
+            "kirocrew-core": {"command": "/opt/kirocrew", "args": ["mcp-core"]},
+            "kirocrew-cron": {"command": "/opt/kirocrew", "args": ["mcp-cron"]},
+        }
+        monkeypatch.setattr(
+            session_mcp,
+            "managed_mcp_spec_entry",
+            lambda name: dict(managed[name]) if name in managed else None,
+        )
+        monkeypatch.setattr(session_mcp, "_mcp_registry_mode", lambda: False)
+        return agents
+
+    @pytest.mark.parametrize("backend", sorted(MIRRORS))
+    def test_every_mirror_declares_it(self, backend):
+        """Completeness, the same ratchet ``rulings()`` gets.
+
+        A new mirror cannot ship silent on this: the constructor refuses a
+        ``kind=mirror`` with no ``per_tool_deny``, and this asserts the shipped
+        tables actually carry one rather than trusting that they were constructed.
+        """
+        declared = projection_for(backend)
+        assert isinstance(declared.per_tool_deny, PerToolDeny), backend
+
+    @pytest.mark.parametrize("backend", sorted(MIRRORS))
+    def test_the_declaration_matches_what_the_projection_does(self, backend, narrowed):
+        """The anti-drift half: the field is checked against behaviour.
+
+        The three members are distinguishable by two observations, which is why they
+        are three and not a boolean:
+
+        * ``settings-file`` -- the narrowed server stays MOUNTED, because the
+          restriction survives as a per-tool rule in a file the harness reads.
+        * ``per-call`` -- the narrowed third-party server is withheld, and the
+          projection hands the client a NON-EMPTY deny set to refuse calls with.
+        * ``whole-server`` -- the narrowed server is withheld and the deny set is
+          EMPTY, because there is no per-call identity to match.
+
+        So a mirror that stops withholding, or starts returning pairs it cannot
+        enforce, fails here instead of quietly contradicting the card a user read.
+        """
+        mirror = mirror_for(backend)
+        assert mirror is not None
+        projection = mirror.session_projection("kirocrew", permission_surface_owned=True)
+        mounted = {str(e.get("name")) for e in projection.params.get("mcpServers") or []}
+        declared = projection_for(backend).per_tool_deny
+
+        if declared is PerToolDeny.SETTINGS_FILE:
+            assert "narrowed" in mounted, (
+                f"{backend!r} declares settings-file, so the restriction rides a file and "
+                "the narrowed server must stay mounted"
+            )
+        else:
+            assert "narrowed" not in mounted, (
+                f"{backend!r} declares {declared.value}, which has no per-tool rule for a "
+                "third-party server, so it must be withheld rather than mounted un-narrowed"
+            )
+
+        if declared is PerToolDeny.PER_CALL:
+            assert projection.denied_tools, (
+                f"{backend!r} declares per-call, so the projection must hand the client "
+                "the pairs it refuses calls with -- an empty set means nothing enforces it"
+            )
+        else:
+            assert not projection.denied_tools, (
+                f"{backend!r} declares {declared.value}, so a non-empty deny set claims an "
+                "enforcement path this transport does not have"
+            )
+
+    def test_opencode_is_whole_server_only_and_withholds_the_control_plane_too(self, narrowed):
+        """The entry this field was added for, pinned by name.
+
+        opencode mounts the agent spec through ``session/new`` and honours a per-tool
+        restriction ONLY by withholding the whole server -- Crew's own control plane
+        included, which is where it parts company with codex. codex keeps
+        ``kirocrew-core`` mounted because it has a per-call refusal behind it; this
+        harness emits no ``_meta.kiro`` and no ``rawInput.server``/``tool``, only a
+        fused ``<server>_<tool>`` title, so there is nothing for
+        ``AcpClient._deny_spec_disabled_tool`` to match.
+
+        Named rather than left to the parametrized pair above because the difference
+        BETWEEN the two array backends is the fact a reader is most likely to get
+        wrong, and a change to it should have to edit an assertion that says so.
+        """
+        assert projection_for(ACP_BACKEND_OPENCODE).per_tool_deny is PerToolDeny.WHOLE_SERVER
+        assert projection_for(ACP_BACKEND_CODEX).per_tool_deny is PerToolDeny.PER_CALL
+
+        opencode = mirror_for(ACP_BACKEND_OPENCODE)
+        codex = mirror_for(ACP_BACKEND_CODEX)
+        assert opencode is not None and codex is not None
+        opencode_mounted = {
+            str(e.get("name")) for e in opencode.session_projection("kirocrew").params["mcpServers"]
+        }
+        codex_mounted = {
+            str(e.get("name")) for e in codex.session_projection("kirocrew").params["mcpServers"]
+        }
+        assert "kirocrew-core" not in opencode_mounted
+        assert "kirocrew-core" in codex_mounted
+
+    def test_a_settled_non_mirror_kind_may_not_declare_it(self):
+        """Only a mirror can answer, so only a mirror may claim to.
+
+        A ``native`` backend reads the spec itself and an ``external`` projection's
+        answer belongs with its own module when it moves here, so a value on either
+        would be a claim this record cannot stand behind.
+        """
+        with pytest.raises(ValueError, match="only meaningful for a mirror"):
+            McpProjection(
+                kind=ProjectionKind.NATIVE,
+                reason="this harness is handed the agent spec and reads it itself",
+                per_tool_deny=PerToolDeny.SETTINGS_FILE,
+            )
+
+    def test_a_mirror_that_leaves_it_unsaid_is_refused(self):
+        """The completeness ratchet, in the constructor rather than in a reviewer."""
+        with pytest.raises(ValueError, match="per-tool MCP restriction"):
+            McpProjection(
+                kind=ProjectionKind.MIRROR,
+                reason="a mirror in this folder projects it, and says nothing about deny",
+            )
+
+    def test_the_documented_state_table_names_every_member(self):
+        """The card a human reads must not omit a state the code can be in.
+
+        ``providers/mirrors/README.md`` is the reading of ``PROJECTIONS``, and the
+        per-provider ability card renders the same field. A member added here without
+        a mention there is a state a user can be in and cannot look up.
+        """
+        readme = (_REPO_ROOT / "src/kiro_crew/providers/mirrors/README.md").read_text(
+            encoding="utf-8"
+        )
+        for member in PerToolDeny:
+            assert member.value in readme, f"README.md does not name {member.value!r}"
