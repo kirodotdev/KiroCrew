@@ -24,8 +24,9 @@ import: the skill editor's frontmatter splicer
 grammar in TypeScript, because it must never write a value this reader would
 decode differently than it wrote it. ``readerCannotDecode`` and
 ``backendReadsValue`` there encode this dialect's quirks that matter to a
-writer -- quote characters are stripped off both ends rather than unquoted, and
-nothing is unescaped -- and its refusal rules are derived from them. That
+writer -- one MATCHED level of wrapping quotes is removed (collapsing a
+single-quoted scalar's ``''``), a mismatched or content quote stays, and no
+backslash is unescaped -- and its refusal rules are derived from them. That
 mirror was measured against this module, not inferred, but nothing in the
 build enforces it: change the quote handling, the block-scalar folding, or the
 unescaping here and the editor will keep writing for the old dialect, which is
@@ -163,10 +164,14 @@ class FrontmatterDialect:
 
     extraction: Extraction
     indent_policy: IndentPolicy
-    # Strip surrounding double/single quote characters from plain values.
-    # This is str.strip("\"'"), i.e. it removes *runs* of quote characters
-    # from both ends and tolerates mismatched pairs — preserved from the
-    # originals. Never applied to a resolved block scalar.
+    # Remove ONE level of wrapping quotes from a plain value, and only when
+    # the value is actually quoted: at least two characters, with the first
+    # and last the SAME quote character (" or '). A single-quoted scalar's
+    # '' escape collapses to ', the one escape that grammar has. Anything
+    # else — an unquoted value, mismatched edges, a value that merely begins
+    # or ends with a quote character — is kept byte-identical: a quote an
+    # author wrote as content stays content. Never applied to a resolved
+    # block scalar.
     strip_quotes: bool
     # True: the first occurrence of a duplicate key wins (single-value lookup
     # semantics). False: the last occurrence wins (dict-overwrite semantics).
@@ -188,7 +193,7 @@ class FrontmatterDialect:
 
 
 # ``SkillsLoader._parse_frontmatter`` — the skills catalog reader. Strict
-# opener, indented lines are prose, quotes stripped from plain values, block
+# opener, indented lines are prose, quoted plain values unquoted, block
 # scalars resolved, last duplicate wins.
 SKILL_LOADER = FrontmatterDialect(
     extraction="column0_fence",
@@ -213,7 +218,7 @@ STEERING_LOADER = FrontmatterDialect(
 
 # ``onboarding_import._frontmatter`` — the import screen's collapsed map.
 # Lenient on the opener (trailing text tolerated), the closer indentation,
-# and indented keys; quotes stripped; no block-scalar resolution. The
+# and indented keys; quoted values unquoted; no block-scalar resolution. The
 # activation DECISION does not ride on this map alone:
 # ``onboarding_import._column0_activation_declared`` mirrors the loader's
 # region and key rules separately, precisely because this grammar diverges
@@ -421,10 +426,10 @@ def _first_newline_is_crlf(text: str) -> bool:
 
 # A value this writer cannot spell so that BOTH readers agree on it. A
 # double-quoted YAML scalar processes escape sequences; this module's reader
-# understands none of them (its ``strip_quotes`` is ``str.strip("\"'")``, which
-# removes RUNS of quote characters and nothing else). So a value carrying a
-# double quote or a backslash, or sitting against a single quote at either end,
-# has no representation the two agree on and is refused rather than mangled.
+# does not (its ``strip_quotes`` removes exactly one level of wrapping quotes
+# and collapses a single-quoted scalar's ``''`` — no backslash escape exists).
+# So a value carrying a double quote or a backslash has no representation the
+# two agree on and is refused rather than mangled.
 _UNSPELLABLE_CHARS = ('"', "\\")
 
 # Characters a YAML reader either REFUSES outright or reads as a line break, so
@@ -489,10 +494,6 @@ def _render_frontmatter_value(value: str) -> str:
         raise ValueError("a frontmatter value may not contain a double quote or a backslash")
     if _YAML_UNWRITABLE_RE.search(value):
         raise ValueError("a frontmatter value may not contain a control character")
-    # ``strip_quotes`` eats runs of quote characters from BOTH ends, so a value
-    # against a single quote would come back short of what was written.
-    if value[:1] == "'" or value[-1:] == "'":
-        raise ValueError("a frontmatter value may not begin or end with a single quote")
     if _PLAIN_SAFE_RE.fullmatch(value) and value.lower() not in _YAML_KEYWORDS:
         return value
     return '"' + value + '"'
@@ -508,13 +509,18 @@ def split_inline_comment(raw: str) -> tuple[str, str]:
     YAML starts a comment at a ``#`` PRECEDED BY WHITESPACE, so ``a#b`` is a
     value and ``a #b`` is a value plus a comment. Inside a quoted scalar the
     ``#`` is content, which is why the quoted form is scanned to its closing
-    quote first.
+    quote first — and in a single-quoted scalar ``''`` is an escaped quote, so
+    the closing delimiter is the first UNPAIRED quote, exactly as YAML scans
+    it. Stopping at the pair's first half instead exposed the rest of the
+    scalar to the comment scan, and an in-scalar ``#`` truncated the value.
     """
     body = raw.lstrip()
     lead = raw[: len(raw) - len(body)]
     if body[:1] in ('"', "'"):
         quote = body[0]
         end = body.find(quote, 1)
+        while quote == "'" and end != -1 and body[end + 1 : end + 2] == "'":
+            end = body.find(quote, end + 2)
         if end != -1:
             rest = body[end + 1 :]
             cut = rest.find("#")
@@ -722,11 +728,13 @@ def _verify_round_trip(
 ) -> None:
     """Raise unless re-parsing *block* yields exactly what was written.
 
-    The single-line grammar here has no escape sequence — ``strip_quotes`` is
-    ``str.strip("\"'")``, so a value that itself ends in a quote character comes
-    back shorter than it went in. Rather than mangle the caller's value, refuse
-    it: every caller of this writer is serving a user edit, where a rejection is
-    recoverable and a silent truncation is not.
+    The single-line grammar processes no backslash escape — ``strip_quotes``
+    removes exactly one level of wrapping quotes, collapsing a single-quoted
+    scalar's ``''``, and nothing more — so a value this writer cannot spell
+    (one carrying a double quote, say) would read back different from what was
+    written. Rather than mangle the caller's value, refuse it: every caller of
+    this writer is serving a user edit, where a rejection is recoverable and a
+    silent truncation is not.
     """
     parsed = _parse_block_lines(block, dialect)
     for key, value in updates.items():
@@ -782,6 +790,27 @@ def _extract_block(
     # A new Extraction literal must get its own branch: falling through to
     # any existing mode would silently hand it that mode's grammar.
     raise ValueError(f"unknown frontmatter extraction mode: {extraction!r}")
+
+
+def _unquote_frontmatter_value(value: str) -> str:
+    """Remove exactly ONE level of wrapping quotes, only when *value* is quoted.
+
+    A value is quoted when it is at least two characters and its first and last
+    characters are the SAME quote character (``"`` or ``'``). One level comes
+    off; a single-quoted scalar's ``''`` escape collapses to ``'``, the one
+    escape that grammar has. Everything else — an unquoted value, mismatched
+    edge quotes, a value that merely begins or ends with a quote character — is
+    returned byte-identical: a quote the author wrote as content stays content.
+    A run-strip of both ends cannot make that distinction — it hands back
+    ``say "hi`` for ``say "hi"`` — which is why this is a matched-pair test
+    rather than ``str.strip``.
+    """
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        inner = value[1:-1]
+        if value[0] == "'":
+            return inner.replace("''", "'")
+        return inner
+    return value
 
 
 def _parse_block_lines(lines: list[str], dialect: FrontmatterDialect) -> dict[str, str]:
@@ -862,7 +891,7 @@ def _parse_block_lines(lines: list[str], dialect: FrontmatterDialect) -> dict[st
                 value, _ = split_inline_comment(value)
                 value = value.strip()
             if dialect.strip_quotes:
-                value = value.strip("\"'")
+                value = _unquote_frontmatter_value(value)
         if dialect.first_key_wins and key in fields:
             continue
         fields[key] = value

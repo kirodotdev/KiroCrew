@@ -3334,17 +3334,20 @@ this change, which could splice a folded value; the trade is a capability for a 
 form is still written, as a block literal, because there the author's intent is
 unambiguous.
 
-**The writer is bound by the reader's dialect, not by YAML.** `SKILL_LOADER` strips
-quote characters and resolves bare `|` / `>` block scalars, and does nothing else --
-no unescaping, no explicit indentation indicators. So a managed value is only ever
+**The writer is bound by the reader's dialect, not by YAML.** `SKILL_LOADER` removes
+one matched level of wrapping quotes (collapsing a single-quoted scalar's `''`) and
+resolves bare `|` / `>` block scalars, and does nothing else -- no backslash
+unescaping, no explicit indentation indicators. So a managed value is only ever
 emitted in a form that dialect decodes: a plain or quoted scalar with no backslash
 escape, or a bare block scalar. A value whose OWN TEXT begins or ends with a quote
-character also goes to a block scalar: the reader unquotes with `value.strip("\"'")`,
-which cannot tell a wrapping quote from one belonging to the text, so
-`description: Runs "build"` would read back as `Runs "build`. That rule tests the value,
-not the rendered line -- a correctly wrapper-quoted scalar begins and ends with a quote
-by construction, and routing those to a block scalar costs a value its leading
-whitespace for nothing. A value whose first line begins with whitespace would
+character also goes to a block scalar. The reader would survive most of those
+inline -- it removes exactly the one wrapping level the YAML writer would add -- but
+the block literal is the one representation with no quoting subtleties on either
+side, so the route is kept as a guarantee rather than a necessity. That rule tests
+the value, not the rendered line -- a correctly wrapper-quoted scalar begins and
+ends with a quote by construction, and routing those to a block scalar costs a
+value its leading whitespace for nothing. A value whose first line begins with
+whitespace would
 force YAML to emit `|2-`, which the reader would take as the literal value, so the
 leading whitespace is dropped instead -- the same bounded loss the previous
 line-based assembler had, preferred over losing the whole value.
