@@ -101,6 +101,9 @@ with no row here.
      - driver-internal (which wire request switches the model)
    * - ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``
      - semantic question (``SessionCapabilities.effort_via_config_option``)
+   * - ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``
+     - driver-internal (whether an advertised ``<model>[<effort>]`` id is applied
+       as two config-option writes)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -654,6 +657,18 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
 # for: the same ``session/new`` result that advertises its ``model`` select
 # advertises a ``mode`` select beside it and no ``effort`` option at all.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+
+# Backends whose ADVERTISED model ids are ``<model>[<effort>]`` pairs that the
+# ``model`` config option does not accept whole. codex-acp is the member: its
+# ``models.availableModels`` is one entry per model x reasoning effort (the
+# legacy ``session/set_model`` vocabulary, and what the picker shows), while its
+# ``model`` select takes only the bare model and the effort travels down the
+# separate ``reasoning_effort`` option. A member's exhausted spelling ladder falls
+# through to that two-write split; a non-member's refused bracketed id stays
+# refused. Opt-in (harness-parity H13): claude-agent-acp's ``[1m]`` suffix is a
+# context window and must reach the wire intact, and opencode's ``provider/model``
+# ids carry no suffix at all -- neither may inherit a split it never advertised.
+ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list
 # (captured from ``session/new`` and cached across sessions) rather than trusting
