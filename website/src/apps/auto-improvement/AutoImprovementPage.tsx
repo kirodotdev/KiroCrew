@@ -1,7 +1,8 @@
 // Auto-Improvement — dashboard page (/auto-improvement).
 //
-// Measures a GitHub repository before it changes it: the ruler is calibrated and
-// proved first, then keep-or-revert cycles draft survivors as DRAFT pull requests.
+// Measures a GitHub or GitLab repository before it changes it: the ruler is
+// calibrated and proved first, then keep-or-revert cycles draft survivors as
+// DRAFT pull/merge requests.
 // This page is the read + discuss surface over that: ruler trust state, the
 // findings ledger, and live PR status pulled through the gateway's own provider.
 //
@@ -112,18 +113,34 @@ const COMMITTED_STATUS = 'committed'
 /** A short commit sha, as the direct-commit path records it in the ledger's `cr`. */
 const SHA_RE = /^[0-9a-f]{7,40}$/i
 
-/** The GitHub URL for a committed finding's sha, or null when we cannot build one.
+/** The code-host URL for a committed finding's sha, or null when we cannot build one.
  *
  *  The direct-commit path stores a bare sha (e.g. `1537c449`) rather than a url, so
  *  the generic `prUrlOf` — which only accepts `http…` — rendered NOTHING for a
- *  committed finding and the row instead showed a re-commit button. `repo` is the
- *  `owner/name` display string the config already carries. */
-function commitUrlOf(finding: Finding, repo: string): string | null {
+ *  committed finding and the row instead showed a re-commit button. The web base is
+ *  derived from the CONFIGURED `target_url` (the validated https URL setup persisted)
+ *  rather than a hardcoded host: github.com takes `/commit/<sha>`, every other host
+ *  setup accepts is a GitLab and takes `/-/commit/<sha>`. Exported for tests. */
+export function commitUrlOf(finding: Finding, targetUrl: string): string | null {
   const sha = (finding.pr || finding.cr || '').trim()
   if (!SHA_RE.test(sha)) return null
-  // Only build a url for an `owner/name` we recognize; never guess a host.
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return null
-  return `https://github.com/${repo}/commit/${sha}`
+  // Only build a url from the configured target; never guess a host. When the
+  // config has not loaded or holds something unparseable, render no link.
+  let base: URL
+  try {
+    base = new URL(targetUrl)
+  } catch {
+    return null
+  }
+  if (base.protocol !== 'https:') return null
+  // Normalize the repo path: setup stores the URL as pasted, so it may carry a
+  // `.git` suffix or a trailing slash that a web commit URL must not repeat.
+  const path = base.pathname.replace(/\.git$/, '').replace(/\/+$/, '')
+  if (!path || path === '/') return null
+  // Setup accepts exactly one GitHub host; every other allowed host is a GitLab
+  // (gitlab.com or a configured self-hosted instance), whose web path is `/-/commit/`.
+  const infix = base.hostname === 'github.com' ? '/commit/' : '/-/commit/'
+  return `${base.origin}${path}${infix}${sha}`
 }
 
 /** Map a watcher verdict onto the shared badge vocabulary. */
@@ -270,6 +287,9 @@ export default function AutoImprovementPage() {
   const qc = useQueryClient()
   const findings = findingsResp?.findings ?? []
   const repo = String(config?.target_display || config?.target_url || 'repository')
+  // The validated https URL setup persisted; commit links are derived from it so
+  // the page never guesses a host (see commitUrlOf).
+  const targetUrl = String(config?.target_url || '')
   // The branch this run's findings belong to. Shown so it is always clear WHICH
   // repository+branch the list is scoped to — the findings set changes when
   // either does.
@@ -448,10 +468,11 @@ export default function AutoImprovementPage() {
                         : f.status}
                     </span>
                     {/* Already committed: offer the COMMIT, not a re-commit action. The
-                        ledger stores a bare sha here, so this is a link out to GitHub. */}
-                    {f.status === COMMITTED_STATUS && commitUrlOf(f, repo) ? (
+                        ledger stores a bare sha here, so this is a link out to the
+                        configured code host. */}
+                    {f.status === COMMITTED_STATUS && commitUrlOf(f, targetUrl) ? (
                       <a
-                        href={commitUrlOf(f, repo) as string}
+                        href={commitUrlOf(f, targetUrl) as string}
                         target="_blank"
                         rel="noopener noreferrer"
                         aria-label={i18nT('autoImprovement.viewCommit')}
