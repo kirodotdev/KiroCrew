@@ -8,6 +8,7 @@ here, plus TTL expiry, single-use consumption, and the endpoint refusals.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -227,25 +228,249 @@ class TestStepUpModule:
             update_stepup.clear_pending()
 
 
+def _freeze_check(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Neutralise the arm handler's pre-arm re-check, counting its calls.
+
+    The handler re-consults the feed so an approval installs the NEWEST build
+    rather than a verdict up to 12 hours old. Tests that stage `_update_info`
+    by hand need that refresh stubbed out or the real check would overwrite the
+    state under test -- and reach the network from a unit test.
+    """
+    calls: list[int] = []
+
+    # Mirrors the real signature: the arm path passes `wait=True` so a check already
+    # in flight is awaited rather than no-opped onto the stale cache. A stub that
+    # dropped the kwarg would fail the call instead of neutralising it.
+    async def _noop(wait: bool = False) -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(updates, "_do_update_check", _noop)
+    return calls
+
+
 @pytest.mark.asyncio
 class TestArmEndpoint:
     async def test_arm_refuses_non_managed_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.platform import wheel_engine
 
+        checks = _freeze_check(monkeypatch)
         monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: False)
         resp = await updates.api_update_arm(_request())
         assert resp.status == 409
         assert json.loads(resp.body.decode())["code"] == "arm_wrong_shape"
+        assert checks == [], "a host that cannot apply an update must not pay a feed round trip"
 
-    async def test_arm_refuses_without_a_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_arm_rechecks_and_pins_what_the_feed_serves_NOW(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cached verdict can be 12 hours old (the background poll's period).
+
+        Arming it would either pin the user to a build the feed has already
+        superseded or dead-end the flow, because the apply refuses any version
+        the feed has moved past -- arm, host approval, refusal, start over. So
+        the arm re-checks first and pins that answer.
+        """
         from kiro_crew.platform import wheel_engine
 
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        updates._set_update_info(update_available=True, latest_version="9.9.9", channel="stable")
+
+        async def _fresh_check(wait: bool = False) -> None:
+            # A newer release published since the cached verdict was computed.
+            updates._set_update_info(
+                update_available=True, latest_version="9.9.10", channel="stable"
+            )
+
+        monkeypatch.setattr(updates, "_do_update_check", _fresh_check)
+        try:
+            resp = await updates.api_update_arm(_request())
+            assert resp.status == 200
+            on_disk = update_stepup.read_pending()
+            assert on_disk is not None
+            assert on_disk.version == "9.9.10", (
+                "armed the stale cached version -- the approve would install a build the "
+                "feed has already superseded, or be refused outright"
+            )
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_arm_response_carries_the_folded_display_version(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The panel offered a version up to 12h old; the arm may pin a newer one.
+
+        So the response has to say WHICH version was armed, and say it the way
+        the rest of the UI does -- folded, because the raw stamp of a promoted
+        stable build reads `0.4.1rc1` and naming a prerelease the user never
+        chose is its own dishonesty. The armed `version` stays raw: the apply
+        compares it byte-for-byte.
+        """
+        from kiro_crew.platform import wheel_engine
+
+        _freeze_check(monkeypatch)
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        updates._set_update_info(update_available=True, latest_version="0.4.1rc1", channel="stable")
+        try:
+            resp = await updates.api_update_arm(_request())
+            assert resp.status == 200
+            payload = json.loads(resp.body.decode())
+            assert payload["version"] == "0.4.1rc1"
+            assert payload["version_display"] == "0.4.1"
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_arm_refuses_when_the_fresh_check_finds_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retraction between the cached verdict and the click refuses the arm.
+
+        And says so in its own words. The panel renders ``error`` verbatim, so the
+        no-verdict message ("run a check first") would be a wrong statement of fact
+        here -- a check just ran, and running another returns this same refusal.
+        """
+        from kiro_crew.platform import wheel_engine
+        from kiro_crew.platform.update_capability import CHECK_SUCCEEDED
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        updates._set_update_info(update_available=True, latest_version="9.9.9", channel="stable")
+
+        async def _retracted(wait: bool = False) -> None:
+            updates._set_update_info(
+                update_available=False,
+                latest_version="",
+                channel="stable",
+                check_status=CHECK_SUCCEEDED,
+            )
+
+        monkeypatch.setattr(updates, "_do_update_check", _retracted)
+        try:
+            resp = await updates.api_update_arm(_request())
+            assert resp.status == 409
+            payload = json.loads(resp.body.decode())
+            assert payload["code"] == "arm_no_longer_offered"
+            assert "run a check first" not in payload["error"]
+            assert update_stepup.read_pending() is None
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_arm_FAILS_OPEN_when_the_fresh_check_cannot_reach_the_feed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A feed hiccup must not cost the user the arm they just clicked.
+
+        A failed check replaces the cached result WHOLESALE, blanking
+        `update_available` -- so without the fallback the click would come back
+        "run a check first", and because the panel gates the whole affordance on
+        `update_available`, the offer itself would vanish until the next poll.
+        The desktop updater's freshness gate makes the same call: only a POSITIVE
+        answer that the version is gone may refuse.
+        """
+        from kiro_crew.platform import wheel_engine
+        from kiro_crew.platform.update_capability import CHECK_FAILED
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        updates._set_update_info(update_available=True, latest_version="9.9.9", channel="stable")
+
+        async def _unreachable(wait: bool = False) -> None:
+            updates._set_update_info(
+                update_available=None, latest_version="", check_status=CHECK_FAILED
+            )
+
+        monkeypatch.setattr(updates, "_do_update_check", _unreachable)
+        try:
+            resp = await updates.api_update_arm(_request())
+            assert resp.status == 200, "a momentary feed failure must not refuse the arm"
+            on_disk = update_stepup.read_pending()
+            assert on_disk is not None
+            assert (
+                on_disk.version == "9.9.9"
+            ), "the cached verdict is what stands when the feed cannot answer"
+            assert on_disk.channel == "stable"
+            # The arm is only half of it. The panel reads `_update_info` off the
+            # status frame, not this endpoint's response, so a cache still blanked
+            # by the failed check unmounts the in-app flow within one 5s interval
+            # and the arm above becomes an approval command with nothing left on
+            # screen to invoke it. Pin the restored cache, not just the response.
+            assert (
+                updates._update_info["update_available"] is True
+            ), "the blanked cache must be restored, or the offer vanishes under the armed panel"
+            assert updates._update_info["latest_version"] == "9.9.9"
+            assert (
+                updates._update_info["check_status"] != CHECK_FAILED
+            ), "restoring must be wholesale: no live verdict beside a failed check_status"
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_a_failed_pre_arm_check_does_not_suspend_the_background_poll(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rewind covers the CLOCK as well as the verdict.
+
+        `_do_update_check` stamps `_last_update_check` on its failure path on purpose,
+        so a broken feed cannot turn the 12-hourly background poll into a hot retry
+        loop. That protection belongs to the poll; this check is a click, which the
+        same contract exempts from rate limiting. If the stamp survives the rewind,
+        one arm click that happened to hit a momentary feed failure suspends every
+        automatic update check for 12 hours -- an effect nobody asked for, and
+        invisible because the panel still shows the restored verdict.
+        """
+        from kiro_crew.platform import wheel_engine
+        from kiro_crew.platform.update_capability import CHECK_FAILED
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        updates._set_update_info(update_available=True, latest_version="9.9.9", channel="stable")
+
+        # A poll checked successfully a while ago; its clock is what must survive.
+        poll_clock = time.time() - 600.0
+        updates._last_update_check = poll_clock
+
+        async def _unreachable(wait: bool = False) -> None:
+            # What the real failure path does: blank the verdict AND stamp the clock.
+            updates._set_update_info(
+                update_available=None, latest_version="", check_status=CHECK_FAILED
+            )
+            updates._last_update_check = time.time()
+
+        monkeypatch.setattr(updates, "_do_update_check", _unreachable)
+        try:
+            resp = await updates.api_update_arm(_request())
+            assert resp.status == 200
+            assert updates._last_update_check == poll_clock, (
+                "the failed check's stamp must be rewound with the verdict, or a click "
+                "silently pushes the background poll out by the full interval"
+            )
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+            updates._last_update_check = 0.0
+
+    async def test_arm_refuses_without_a_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No verdict at all keeps the "run a check first" refusal.
+
+        `update_available: None` is the absence of an answer, not the answer "no" --
+        the distinction the retraction test above pins from the other side. Here the
+        advice is correct and actionable, so it must survive.
+        """
+        from kiro_crew.platform import wheel_engine
+
+        _freeze_check(monkeypatch)
         monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
         monkeypatch.setattr(updates, "resolve_provider", lambda: None)
         updates._set_update_info(update_available=None, latest_version="")
         resp = await updates.api_update_arm(_request())
         assert resp.status == 409
-        assert json.loads(resp.body.decode())["code"] == "arm_no_verdict"
+        payload = json.loads(resp.body.decode())
+        assert payload["code"] == "arm_no_verdict"
+        assert "run a check first" in payload["error"]
 
     async def test_arm_refuses_when_check_reports_nothing_to_apply(
         self, monkeypatch: pytest.MonkeyPatch
@@ -288,6 +513,66 @@ class TestArmEndpoint:
         finally:
             update_stepup.clear_pending()
             updates._set_update_info()
+
+    async def test_a_straddling_check_is_awaited_rather_than_arming_the_stale_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The re-check must not silently no-op onto the cache it exists to replace.
+
+        `_do_update_check` is single-flight, so a status poll holding the guard used
+        to make the arm's re-check return instantly -- arming the very stale version
+        the re-check is there to catch, which approval then rejects. The arm asks for
+        `wait=True`, so it parks on the running check and reads ITS answer.
+        """
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+
+        # A poll owns the guard, and its check has not answered yet.
+        updates._check_in_flight = True
+        updates._check_done = asyncio.Event()
+        updates._set_update_info(update_available=True, latest_version="0.4.7", channel="stable")
+
+        async def _land_the_newer_verdict() -> None:
+            # The running check finds a build published since the offer.
+            await asyncio.sleep(0.05)
+            updates._set_update_info(
+                update_available=True, latest_version="0.4.8", channel="stable"
+            )
+            updates._check_in_flight = False
+            assert updates._check_done is not None
+            updates._check_done.set()
+
+        finisher = asyncio.create_task(_land_the_newer_verdict())
+        try:
+            resp = await updates.api_update_arm(_request())
+            assert resp.status == 200
+            pending = update_stepup.read_pending()
+            assert pending is not None
+            # 0.4.7 here would be the bug: the stale offer armed and later rejected.
+            assert pending.version == "0.4.8"
+        finally:
+            await finisher
+            update_stepup.clear_pending()
+            updates._check_in_flight = False
+            updates._check_done = None
+            updates._set_update_info()
+
+    async def test_a_background_poll_still_no_ops_instead_of_blocking(self) -> None:
+        """`wait=True` is opt-in: the default must stay fire-and-forget.
+
+        A status poll awaiting the running check would serialize the status frame
+        behind a CDN fetch, which is what the single-flight guard exists to avoid.
+        """
+        updates._check_in_flight = True
+        updates._check_done = asyncio.Event()  # deliberately never set
+        try:
+            # Returns rather than parking forever on the unset gate.
+            await asyncio.wait_for(updates._do_update_check(), timeout=1.0)
+        finally:
+            updates._check_in_flight = False
+            updates._check_done = None
 
     async def test_arm_refuses_a_channel_move_below_the_minimum_version(
         self, monkeypatch: pytest.MonkeyPatch
@@ -389,6 +674,7 @@ class TestArmEndpoint:
     async def test_arm_response_carries_no_nonce(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.platform import wheel_engine
 
+        _freeze_check(monkeypatch)
         monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
         monkeypatch.setattr(updates, "resolve_provider", lambda: None)
         updates._set_update_info(update_available=True, latest_version="9.9.9", channel="stable")
@@ -417,6 +703,7 @@ class TestArmEndpoint:
         on the stable channel."""
         from kiro_crew.platform import wheel_engine
 
+        _freeze_check(monkeypatch)
         monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
         monkeypatch.setattr(updates, "resolve_provider", lambda: None)
         monkeypatch.setattr(updates, "min_version", lambda: "0.4.0")
@@ -436,11 +723,13 @@ class TestArmEndpoint:
     async def test_policy_managed_host_refuses_arm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.platform import wheel_engine
 
+        checks = _freeze_check(monkeypatch)
         monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
         monkeypatch.setattr(updates, "resolve_provider", lambda: object())
         resp = await updates.api_update_arm(_request())
         assert resp.status == 409
         assert json.loads(resp.body.decode())["code"] == "arm_policy_managed"
+        assert checks == [], "policy owns this host's updates; the arm must not check its feed"
 
 
 @pytest.mark.asyncio

@@ -3923,7 +3923,13 @@ export const api = {
   restartGateway: () => post('/api/restart').then(j),
   // In-app wheel update step-up: arming records the request and returns the
   // host command to run; the approval nonce never reaches this client.
-  armUpdate: () => post('/api/update/arm').then(j) as Promise<{ ok?: boolean; armed?: boolean; request_id?: string; version?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
+  //
+  // The gateway RE-CHECKS the feed before arming, so the armed `version` can
+  // outrank the one the panel was offering (that verdict is refreshed only
+  // every 12h). `version_display` is the armed version folded for display, and
+  // is what the armed copy must name — the raw one keeps a promoted build's rc
+  // stamp.
+  armUpdate: () => post('/api/update/arm').then(j) as Promise<{ ok?: boolean; armed?: boolean; request_id?: string; version?: string; version_display?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
   armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; request_id?: string; version?: string; expires_in?: number; approve_command?: string }>,
   cancelUpdate: () => post('/api/update/cancel').then(j),
   simulateUpdate: (opts?: { delay?: number; fail_at?: string }) => post('/api/update/simulate', opts || {}).then(j),

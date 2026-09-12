@@ -652,6 +652,9 @@ test("#709: an in-flight re-check reports the PENDING version, not the running o
   await u.check();
   emit("update-available", { version: "1.1.0" });
   u.download(); // leave it in flight
+  // The click re-confirms the feed first; wait for that hand-off so a download really
+  // is in flight when the re-check below asks what is happening.
+  await new Promise((r) => setImmediate(r));
   states.length = 0;
   await u.check(); // must report progress, with the pending version
   const s = states.find((x) => x.state === "downloading");
@@ -2200,12 +2203,16 @@ test("re-check and re-click while a download is in flight report progress instea
   const dl = u.download(); // in flight -- do not await yet
   await new Promise((r) => setImmediate(r));
   assert.strictEqual(calls.downloadUpdate, 1);
+  // The click's own freshness re-check has already run by now; what this test pins is
+  // that the impatient re-check and re-click add NOTHING on top of it, so measure
+  // against the count once the download is in flight rather than against zero.
+  const checksOnceDownloading = calls.checkForUpdates;
   states.length = 0;
   // Impatient re-check AND re-click mid-download: neither may restart the
   // updater flow underneath the running download.
   await u.check();
   await u.download();
-  assert.strictEqual(calls.checkForUpdates, 1);
+  assert.strictEqual(calls.checkForUpdates, checksOnceDownloading, "neither re-entry issued a new check");
   assert.strictEqual(calls.downloadUpdate, 1);
   assert.ok(stateNames().includes("downloading"));
   // Completion clears the flag and surfaces install.
@@ -2514,6 +2521,13 @@ test("an installer failure that arrives while a check is in flight fires onInsta
   // (electron-updater funnels every failure through one channel -- the phase
   // derivation is the only classifier).
   emit("error", new Error("Code signature at URL ... did not pass validation"));
+  // The shared handler defers one macrotask when a check is in flight, to ask whether
+  // the error is that check's own rejection before deriving a phase from the flags.
+  // A genuine installer failure never matches the check's claim, so it still lands
+  // here as an install failure — one tick later. The abandoned-check path imposes the
+  // same delay on this same classification, so this is the file's existing timing, not
+  // a new one.
+  await new Promise((r) => setTimeout(r, 0));
   const errState = states.filter((s) => s.state === "error").pop();
   assert.ok(errState, "an error state must be emitted");
   assert.strictEqual(
@@ -2528,6 +2542,53 @@ test("an installer failure that arrives while a check is in flight fires onInsta
   assert.strictEqual(calls.quitAndInstall.length, 0, "a dispatch whose install already failed must never reach quitAndInstall");
   rejectCheck(new Error("feed unreachable"));
   await checkPromise;
+});
+
+test("a check straddling an install dispatch has its OWN feed failure reported as the check's, not the install's", async () => {
+  // The mirror of the precedence above, and the case that precedence alone gets
+  // wrong. `safeCheck` refuses to START a check during an install (its early return
+  // names this consequence), but nothing stops an install starting while a check is
+  // already running. In that order `installing` outranks `checking`, so the CHECK's
+  // own feed failure was reported as the install's and fired the host's gateway
+  // recovery while the dispatch was still inside stopGateway() -- respawning a
+  // gateway whose predecessor was still flushing, which is the ordering the dispatch
+  // forbids for the bundle swap.
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  let installFailedCalls = 0;
+  deps.onInstallFailed = () => { installFailedCalls += 1; };
+  let rejectCheck;
+  deps.autoUpdater.checkForUpdates = () => new Promise((_, reject) => { rejectCheck = reject; });
+  let releaseGateway;
+  deps.stopGateway = () => new Promise((resolve) => { releaseGateway = resolve; });
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const checkPromise = u.check(); // checking = true, unresolved
+  const installPromise = u.install(); // installing = true, awaiting stopGateway
+  await new Promise((r) => setImmediate(r));
+
+  // Faithful to the library: it emits `error` and THEN rejects checkForUpdates with
+  // the SAME object (AppUpdater.checkForUpdates -- `this.emit("error", e, …); throw e`),
+  // which is what makes identity, rather than arrival order, the usable discriminator.
+  const feedErr = new Error("feed unreachable");
+  emit("error", feedErr);
+  rejectCheck(feedErr);
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.strictEqual(
+    installFailedCalls,
+    0,
+    "a check's own failure must not fire host recovery while the dispatch is still stopping the gateway",
+  );
+  const errState = states.filter((s) => s.state === "error").pop();
+  assert.ok(errState, "the failure must still be reported to the renderer");
+  assert.strictEqual(errState.phase, "check", "a check's own feed failure is a check failure, whatever else is in flight");
+
+  // And the install is not collateral damage: fail-open installs what is staged.
+  releaseGateway();
+  await installPromise;
+  await checkPromise;
+  assert.strictEqual(installFailedCalls, 0, "still no recovery once the stop settles");
+  assert.strictEqual(calls.quitAndInstall.length, 1, "the dispatch completes -- an unanswerable feed installs the staged build");
 });
 
 test("a check still in flight when the gateway has stopped aborts the install through the recovery path", async () => {
@@ -2554,6 +2615,10 @@ test("a check still in flight when the gateway has stopped aborts the install th
   // settles must proceed.
   resolveCheck();
   await checkPromise;
+  // The retry re-verifies -- every install does, with no recent-answer reuse to skip
+  // it -- so the feed has to answer this one. Leaving the deferred stub in place would
+  // hang the retry on a request nobody resolves.
+  deps.autoUpdater.checkForUpdates = () => Promise.resolve();
   await u.install();
   assert.strictEqual(calls.quitAndInstall.length, 1, "a retry after the check settles must reach quitAndInstall");
 });
@@ -2672,8 +2737,74 @@ test("a genuine install failure after a straddling check settles still fires rec
   assert.strictEqual(installFailedCalls, 1, "a check failure outside an install must not fire recovery");
   // A retry now commits, and a LATER genuine installer failure in that
   // dispatch classifies as `install` and fires recovery -- the flag was armed.
+  // The retry re-verifies like every install does, so the feed must answer it.
+  deps.autoUpdater.checkForUpdates = () => Promise.resolve();
   await u.install();
   assert.strictEqual(calls.quitAndInstall.length, 1, "the retry must commit once the check has settled");
   emit("error", new Error("Squirrel could not validate the update"));
   assert.strictEqual(installFailedCalls, 2, "recovery must remain armed for a real install failure after the check settles");
+});
+
+// ---------------------------------------------------------------------------
+// STRUCTURAL: every exit of the manual install path replays a deferred quit.
+//
+// The behavioural tests above cover the exits that exist TODAY. This one covers
+// the exit somebody adds tomorrow: `honorDeferredQuit()` is called at separate
+// return points, so an exit added without it would silently swallow the user's
+// Cmd+Q -- the exact failure that machinery exists to prevent -- and no
+// behavioural test would fail, because no behavioural test knows the new path
+// is there.
+//
+// The rule is positional, and the freshness gate is the line that divides it.
+// Before the gate, a return is a STAND-DOWN: another dispatch already owns this
+// stage (or nothing is staged), so it also owns the parked quit and honoring it
+// here would quit out from under it. From the gate onward this call owns the
+// dispatch, so every exit must replay the quit it deferred.
+// ---------------------------------------------------------------------------
+
+test("every exit of the manual install path after the freshness gate honors a deferred quit", () => {
+  const src = require("fs").readFileSync(require.resolve("../auto-update"), "utf8");
+  const lines = src.split("\n");
+
+  const start = lines.findIndex((l) => /async function applyUpdateAndRestart\(/.test(l));
+  assert.ok(start >= 0, "applyUpdateAndRestart not found -- the manual install path was renamed");
+
+  // Brace-match the function so the scan cannot run past it into a sibling.
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < lines.length; i += 1) {
+    depth += (lines[i].match(/\{/g) || []).length - (lines[i].match(/\}/g) || []).length;
+    if (i > start && depth === 0) { end = i; break; }
+  }
+  assert.ok(end > start, "could not brace-match applyUpdateAndRestart");
+
+  const body = lines.slice(start, end + 1);
+  const gate = body.findIndex((l) => l.includes("verifyStageIsLatest()"));
+  assert.ok(gate > 0, "the freshness gate call is gone -- this test's dividing line no longer exists");
+
+  const standDowns = [];
+  const unhonored = [];
+  body.forEach((line, i) => {
+    if (!/^\s*return;?\s*$/.test(line)) return;
+    if (i < gate) { standDowns.push(start + i + 1); return; }
+    // Look back a few lines: the call sits immediately before its return, after
+    // whatever logging or renderer emit that exit does first.
+    const before = body.slice(Math.max(0, i - 6), i).join("\n");
+    if (!before.includes("honorDeferredQuit()")) unhonored.push(start + i + 1);
+  });
+
+  assert.deepStrictEqual(
+    unhonored,
+    [],
+    `every return after the freshness gate must call honorDeferredQuit() first; these do not: ${unhonored.join(", ")}`
+      + " -- an exit that skips it drops a quit the user already asked for",
+  );
+  // Pin the stand-down count too: a NEW pre-gate return is a new way to leave
+  // without replaying the quit, and it has to be read against the ownership
+  // argument above rather than added silently.
+  assert.strictEqual(
+    standDowns.length,
+    2,
+    `expected exactly 2 pre-gate stand-down returns (already-installing, nothing-staged), found ${standDowns.length} at ${standDowns.join(", ")}`,
+  );
 });
