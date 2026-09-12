@@ -853,7 +853,11 @@ class TestAFailedRemovalDoesNotLeakIntoTheNextSave:
 
         reloaded = CronService(base_dir=tmp_path)
         assert reloaded.get_job(parent.id) is None
-        assert reloaded.get_job(malformed.id).session_key == ["not", "a", "string"]
+        # The malformed row survives the unrelated removal. The loader coerces a
+        # non-string owner to unset, so the invariant is "still present, not
+        # poisoned" -- not byte preservation of a value the loader rejects.
+        assert reloaded.get_job(malformed.id) is not None
+        assert reloaded.get_job(malformed.id).session_key == ""
 
     def test_a_failed_removal_is_not_persisted_by_an_unrelated_later_save(
         self, tmp_path, monkeypatch
