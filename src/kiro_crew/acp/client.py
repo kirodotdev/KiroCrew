@@ -178,8 +178,12 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
-from kiro_crew.mcp_gateway.claim import schedule_claim
-from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled_session_servers
+from kiro_crew.mcp_gateway.claim import mint_stub_session_token, schedule_claim
+from kiro_crew.mcp_gateway.session_servers import (
+    attach_stub_session_token,
+    injection_server_names,
+    pooled_session_servers,
+)
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import MIRRORS, mirror_for
@@ -3669,6 +3673,15 @@ class AcpClient:
         self._mcp_gateway_socket = (
             str(mcp_gateway_socket) if mcp_gateway_socket and not self._private_memory else None
         )
+        # Token this client's injected broker-stub entries carry, so gatewayd can
+        # tell this session's stub connections from those of another session on
+        # the same runtime PID (``mcp_gateway.claim.mint_stub_session_token``).
+        # Minted once per client: one client drives one child process serving one
+        # session at a time, and a warm-pool ``rekey()`` re-binds the SAME token
+        # to the claiming session rather than re-minting — the stub processes
+        # outlive a single chat, so a fresh token would leave the live ones
+        # carrying a name no claim will ever mention again. Never logged.
+        self._stub_session_token = mint_stub_session_token()
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
@@ -4035,8 +4048,16 @@ class AcpClient:
         Split from :meth:`_pooled_mcp_servers` so codex can take them through its
         own withholding rules while that method keeps returning ``[]`` for codex at
         the shared call site. Blocking; both callers are already off the loop.
+
+        Each entry carries this client's stub session token, which is what a
+        claim names so gatewayd re-targets the stubs of THIS session. One client
+        drives one kiro-cli process serving one session at a time, so the token
+        is per client and is re-bound — not re-minted — by every ``rekey()``.
         """
-        return pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
+        return attach_stub_session_token(
+            pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id),
+            self._stub_session_token,
+        )
 
     def _append_member_dispatch_server(self, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Mount the dashboard session-control server into a member DM session.
@@ -5010,6 +5031,32 @@ class AcpClient:
             self._process.pid if self._process else None,
             session_key,
             channel_id,
+            self._stub_session_token,
+        )
+
+    def reclaim(self) -> None:
+        """Re-push this session's claim, naming it by its stub token.
+
+        Idempotent: gatewayd skips a connection whose caller is already this
+        session, so the steady-state effect is refreshing the token binding.
+        That refresh is the point — the binding lives only in the daemon's
+        memory, so a gatewayd respawn under a live session leaves its stubs
+        holding a token nothing names, and a token nothing names is refused
+        rather than resolved from the process tree. Called at the start of every
+        turn by the shared identity publisher, so a restart costs at most the
+        turn it happened in.
+
+        No-ops without a token (no stubs injected), without a socket, or without
+        a live process — the same preconditions ``schedule_claim`` enforces.
+        """
+        if not self._stub_session_token:
+            return
+        schedule_claim(
+            self._mcp_gateway_socket,
+            self._process.pid if self._process else None,
+            self._session_key or "",
+            self._channel_id,
+            self._stub_session_token,
         )
 
     async def set_model(self, model_id: str) -> None:

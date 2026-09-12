@@ -95,7 +95,11 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
+from kiro_crew.mcp_gateway.session_servers import (
+    attach_stub_session_token,
+    pooled_session_servers,
+)
 from kiro_crew.metrics.events import (
     CHILD_PERMISSION_DENIED,
     CHILD_PERMISSION_ROUTED,
@@ -3211,6 +3215,47 @@ class AcpRuntime:
             self._session_start_timeout = await asyncio.to_thread(_resolve_session_start_timeout)
         return self._session_start_timeout
 
+    async def _own_stub_session(
+        self, entries: list[dict[str, Any]], session_key: str
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Give *entries* a token naming ONE session on this shared runtime.
+
+        Returns the entries carrying the token plus the token itself, which the
+        caller records on the session handle so a later ``rekey()`` can name the
+        same session.
+
+        Every identity channel a broker stub had before this token is keyed on
+        the process tree, and this runtime multiplexes N sessions over ONE
+        kiro-cli process — so a ``spawn_run`` subagent's stub resolved to the
+        PARENT slot and a parent re-claim overwrote it. The token is what gatewayd
+        matches a claim against instead of the PID alone.
+
+        When the owning session key is already known, the claim is pushed HERE,
+        before ``session/new``, and awaited: kiro-cli launches this session's
+        stubs while serving that request, so a claim sent afterwards would race
+        the register it exists to inform. Best-effort — ``send_claim`` swallows a
+        missing/wedged gatewayd under its own timeout and returns False, and a
+        session whose key is not known yet (a warm-pool worker, claimed later)
+        is named by the ``rekey()`` claim instead.
+        """
+        if not entries or not self._mcp_gateway_socket:
+            # No socket means no gatewayd this runtime can reach, so no claim can
+            # ever bind a token — and gatewayd's answer for a token nothing bound
+            # is the process-tree behavior it already had. Minting one here would
+            # put an inert value on every session/new for no reader.
+            return entries, ""
+        token = mint_stub_session_token()
+        entries = attach_stub_session_token(entries, token)
+        if session_key and self.pid:
+            await send_claim(
+                self._mcp_gateway_socket,
+                self.pid,
+                session_key,
+                None,
+                token,
+            )
+        return entries, token
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -3218,11 +3263,18 @@ class AcpRuntime:
         mcp_servers: list[dict[str, Any]] | None = None,
         crew_agent: str | None = None,
         member_session_key: str = "",
+        session_key: str = "",
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
         ``crew_agent`` is the canonical Kiro Crew identity for THIS session;
         None falls back to the runtime's own (spawn-time or rekeyed) identity.
+
+        ``session_key`` is the Kiro Crew session that will OWN this ACP session.
+        It is what makes the session's broker stubs resolvable as this session
+        rather than as the runtime — see :meth:`_own_stub_session`. Empty when
+        the owner is not known yet (a pooled worker claimed later), and the
+        ``rekey()`` claim then carries the token.
 
         ``member_session_key`` marks a crew member's DM session and carries its
         session key: the dashboard session-control server is mounted as a
@@ -3243,6 +3295,11 @@ class AcpRuntime:
             mcp_servers = await asyncio.to_thread(
                 pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
             )
+            mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        else:
+            # An explicit array is the caller's own composition (a mirror's
+            # projection, a test double); it is not this method's to re-key.
+            stub_token = ""
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time like the projection seams below.
@@ -3322,6 +3379,9 @@ class AcpRuntime:
             watchdog=_wd,
             crew_agent=_crew,
         )
+        # The token this session's stubs carry, so a later claim (warm-pool
+        # rekey) can name THIS session instead of every session on the runtime.
+        handle.stub_session_token = stub_token
 
         # Populate state from session/new response (configOptions, available models)
         handle.store_session_config(resp)
@@ -3493,6 +3553,7 @@ class AcpRuntime:
         agent: str | None = None,
         crew_agent: str | None = None,
         member_session_key: str = "",
+        session_key: str = "",
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -3509,6 +3570,11 @@ class AcpRuntime:
         agent, so a member session resumed WITHOUT the same injection loses
         its dispatch tools mid-conversation — the mount must ride every path
         that (re)establishes the session's tool set, not just the first one.
+
+        ``session_key`` mirrors create_session() for the same reason: load
+        re-declares the broker stubs, so it re-launches them, and a resumed
+        session whose stubs carried no token would fall back to resolving as the
+        runtime — the parent slot — for the rest of its life.
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -3528,6 +3594,7 @@ class AcpRuntime:
         mcp_servers = await asyncio.to_thread(
             pooled_session_servers, self._mcp_gateway_overlay, active_agent
         )
+        mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().
@@ -3638,6 +3705,8 @@ class AcpRuntime:
             watchdog=_wd,
             crew_agent=_crew,
         )
+        # Mirrors create_session: the resumed session's own stub token.
+        handle.stub_session_token = stub_token
         handle.store_session_config(resp)
         # session/load echoes ``currentModelId`` exactly like session/new, and a
         # session persisted before the account's served list changed can come

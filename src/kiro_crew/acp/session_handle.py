@@ -564,6 +564,13 @@ class AcpSessionHandle:
         # When True, destroy() skips the transcript unlink (subagent
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
+        # Token carried by THIS session's injected broker-stub entries
+        # (``mcp_gateway.claim.mint_stub_session_token``), set by the runtime
+        # that created the session. It is what a later claim-push names so
+        # gatewayd re-targets this session's stub connections and not every
+        # session's on the shared runtime. Empty when the gateway injected no
+        # stubs. Never logged: it is a bearer name for this session's identity.
+        self.stub_session_token: str = ""
         # Watchdog windows are snapshotted here (construction time) so the
         # dispatch loop never reads config; the liveness oracle carries the
         # per-session evidence state (tracked child, counter samples).
