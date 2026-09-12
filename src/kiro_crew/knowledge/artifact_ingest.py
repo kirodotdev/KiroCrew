@@ -403,8 +403,11 @@ async def ingest_artifact(
         return None
 
     # Same rule as the folder path: a row that owned nothing holds a claim for its
-    # previous content, and this artifact has changed.
-    kstore.release_stale_claim(source_id, prev_hash, content_hash, old_item_ids)
+    # previous content, and this artifact has changed. Offloaded: it takes the
+    # write lock through the knowledge connection.
+    await asyncio.to_thread(
+        kstore.release_stale_claim, source_id, prev_hash, content_hash, old_item_ids
+    )
 
     ext = _KIND_EXT.get(art.kind)
     if ext is None:
@@ -842,7 +845,10 @@ async def reconcile_artifacts(
             # start, because the deduped state row holds an empty group and the
             # per-slug short-circuit requires one -- so counting it would let a
             # budget's worth of duplicates starve every other artifact forever.
-            status = (pipeline.get_job_status(job_id) or {}).get("status")
+            # Offloaded: the status read takes the knowledge connection.
+            status = (await asyncio.to_thread(pipeline.get_job_status, job_id) or {}).get(
+                "status"
+            )
             if status == DUPLICATE_JOB_STATUS:
                 continue
             ingested += 1
@@ -905,7 +911,9 @@ class ArtifactKnowledgeSync:
     async def _handle(self, action: str, slug: str) -> None:
         async with self._lock:
             if action == "delete":
-                src = self.kstore.get_source_by_uri(ARTIFACT_SOURCE_URI)
+                src = await asyncio.to_thread(
+                    self.kstore.get_source_by_uri, ARTIFACT_SOURCE_URI
+                )
                 if src:
                     # Same reasoning as the eligibility path below: a batch delete
                     # plus a graph reload is not loop-safe work.
@@ -915,15 +923,21 @@ class ArtifactKnowledgeSync:
                 # Metadata-only rename: refresh the stored display name (the
                 # Sources-UI group label) without re-ingesting. No-op if the
                 # artifact isn't tracked (ineligible kind / not yet ingested).
-                src = self.kstore.get_source_by_uri(ARTIFACT_SOURCE_URI)
+                src = await asyncio.to_thread(
+                    self.kstore.get_source_by_uri, ARTIFACT_SOURCE_URI
+                )
                 if not src:
                     return
                 try:
                     art = await asyncio.to_thread(self.art_store.get, slug)
                 except ArtifactNotFoundError:
                     return
-                if refresh_artifact_name(
-                    self.kstore, src["id"], slug, _redact_for_ingest(art.name)
+                if await asyncio.to_thread(
+                    refresh_artifact_name,
+                    self.kstore,
+                    src["id"],
+                    slug,
+                    _redact_for_ingest(art.name),
                 ):
                     sel().log_tool_invocation(
                         session_key="gateway",
@@ -933,7 +947,9 @@ class ArtifactKnowledgeSync:
                         resources=str({"slug": slug}),
                     )
                 return
-            source_id, _ = ensure_artifact_source(self.kstore)
+            source_id, _ = await asyncio.to_thread(
+                ensure_artifact_source, self.kstore
+            )
             # An upsert can arrive because the artifact's KIND changed, and kind
             # is what decides eligibility. ``ingest_artifact`` early-returns on an
             # ineligible kind, so re-ingesting alone would leave the chunks from
