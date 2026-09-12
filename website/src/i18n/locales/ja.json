@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "サーバーはリクエストを受け付けましたが、応答を読み取れませんでした。",
       "paste_token_url_or_raw_token": "トークン URL またはトークンを貼り付け…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "トンネルエッジでレート制限されています (HTTP 429) — バーストでリクエストが多すぎます。ダッシュボードは自動的に再試行します。これが続く場合は、数秒待ってからリロードしてください。",
       "session_expired": "セッションの有効期限が切れました。",
@@ -123,6 +124,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "エージェントが処理中…",
+      "app_not_allowed_to_send_named": "{{app}} はチャットメッセージを送信できません。このアプリは権限にチャットへのアクセスを宣言していません。",
+      "server_refused_with_status": "サーバーが拒否しました（HTTP {{status}}）。しばらくしてからもう一度お試しください。",
       "chat_message": "チャットメッセージ",
       "message": "メッセージ…",
       "send": "送信",
@@ -9864,7 +9867,8 @@
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
-      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "delivery_unconfirmed_option": "送信が確認できません — 会話履歴を確認し、見当たらなければ選択肢をもう一度選んでください。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

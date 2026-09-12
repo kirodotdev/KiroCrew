@@ -19,7 +19,7 @@
  * drive turn state instead.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 type AnyFn = (...args: never[]) => unknown
@@ -415,6 +415,27 @@ describe('ChatPanel composer', () => {
     ).toBeInTheDocument()
     // The typed text is not lost, so the user can retry.
     expect(composer()).toHaveValue('keep me')
+  })
+
+  it('a failed send merges its text with a draft typed while it was in flight, dropping neither', async () => {
+    // handleSend clears the composer before awaiting; the user types a second
+    // draft into the empty field; the send then rejects. Choosing one text
+    // would silently lose the other -- the restore merges both, the way every
+    // recovery site in the app does (mergeRecoveredDraft).
+    await renderPanel()
+    let reject: (e: Error) => void = () => {}
+    sendMessage.mockReturnValueOnce(new Promise((_, rej) => { reject = rej }))
+    await userEvent.type(composer(), 'first text')
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(composer()).toHaveValue('')
+    await userEvent.type(composer(), 'second draft')
+    await act(async () => { reject(new Error('offline')) })
+    expect(
+      await screen.findByText("Couldn't send — check your connection and try again."),
+    ).toBeInTheDocument()
+    const value = composer().value
+    expect(value).toContain('second draft')
+    expect(value).toContain('first text')
   })
 
   it('dismisses the failure banner', async () => {

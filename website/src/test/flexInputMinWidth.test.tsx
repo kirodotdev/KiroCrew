@@ -20,6 +20,7 @@ const mockPost = vi.fn()
 
 vi.mock('../app-sdk/index', () => ({
   useAppApi: () => ({ get: mockGet, post: mockPost }),
+  useAppInfo: () => ({ name: 'test-app', version: '0', permissions: { api: ['/api/chat'], events: [] } }),
 }))
 
 vi.mock('../app-sdk/ChatMessageList', () => ({

@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "The server accepted the request, but its reply could not be read.",
       "paste_token_url_or_raw_token": "Paste token URL or raw token…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
       "session_expired": "Session expired.",
@@ -73,6 +74,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "Agent is working...",
+      "app_not_allowed_to_send_named": "{{app}} isn't allowed to send chat messages — it doesn't declare chat access in its permissions.",
+      "server_refused_with_status": "The server rejected it (HTTP {{status}}) — try again in a moment.",
       "message": "Message..."
     },
     "chatMessageList": {
@@ -3913,7 +3916,8 @@
       "could_not_generate_title": "Couldn't generate a title",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
-      "could_not_send_to_side_chat": "Couldn't send to the side chat"
+      "could_not_send_to_side_chat": "Couldn't send to the side chat",
+      "delivery_unconfirmed_option": "Delivery not confirmed — check the conversation above, then re-pick the option if it is missing."
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",

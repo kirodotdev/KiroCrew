@@ -5,6 +5,7 @@ import type { RootState } from '../store'
 import { renderWithProviders, createTestStore } from './helpers'
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
+import { ApiError } from '../api/apiError'
 import SelectionToolbar, { useSelectionActions, type SelectionAction } from '../components/SelectionToolbar'
 
 // SideChat pulls the api client — stub the side-* calls it may touch. The
@@ -143,8 +144,11 @@ describe('Select-to-Ask', () => {
 
   it('a failed submit hands the text back to the slot it was SUBMITTED for, not the slot now shown', async () => {
     // The host can re-bind the panel while a request is in flight (split
-    // view's Ask, a member switch). A rejection must restore A's question to
-    // A's draft, never append it to B's.
+    // view's Ask, a member switch). A REFUSAL must restore A's question to
+    // A's draft, never append it to B's. (A refusal -- the server said no --
+    // is the outcome that hands text back; a raw network rejection after the
+    // turn was dispatched is "delivery unconfirmed" and leaves the optimistic
+    // bubble as the text's visible copy instead, see SideChat.sendReceipt.)
     let rejectTurn: (e: Error) => void = () => {}
     sideTurn.mockImplementationOnce(() => new Promise((_, rej) => { rejectTurn = rej }))
     const store = createTestStore({
@@ -164,7 +168,7 @@ describe('Select-to-Ask', () => {
     view.rerender(<SideChat slot="slot-b" />)
     fireEvent.change(ta(), { target: { value: 'typing in B' } })
 
-    await act(async () => { rejectTurn(new Error('network')); await Promise.resolve() })
+    await act(async () => { rejectTurn(new ApiError(429, 'side queue is full (max 20)', '')); await Promise.resolve() })
     await waitFor(() => expect(readSideChatDraft('slot-a')).toContain('question for A'))
     // B's visible draft is untouched by A's failure.
     expect(ta().value).toBe('typing in B')

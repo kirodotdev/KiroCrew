@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "सर्वर ने अनुरोध स्वीकार कर लिया, लेकिन उसका जवाब पढ़ा नहीं जा सका।",
       "paste_token_url_or_raw_token": "टोकन URL या सीधा टोकन पेस्ट करें…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "टनल एज ने रेट-लिमिट लगा दिया (HTTP 429) — कम समय में बहुत ज़्यादा अनुरोध। डैशबोर्ड अपने आप फिर कोशिश करता है; अगर यह बना रहे, तो कुछ सेकंड रुककर रीलोड करें।",
       "session_expired": "सत्र समाप्त हो गया।",
@@ -126,6 +127,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "एजेंट काम कर रहा है...",
+      "app_not_allowed_to_send_named": "{{app}} को चैट संदेश भेजने की अनुमति नहीं है: यह ऐप अपनी अनुमतियों में चैट एक्सेस घोषित नहीं करता।",
+      "server_refused_with_status": "सर्वर ने इसे अस्वीकार कर दिया (HTTP {{status}}) — थोड़ी देर में फिर कोशिश करें।",
       "chat_message": "चैट संदेश",
       "message": "संदेश...",
       "send": "भेजें",
@@ -10007,7 +10010,8 @@
       "could_not_generate_title": "शीर्षक नहीं बना सके",
       "could_not_open_side_chat": "साइड चैट नहीं खुल सकी",
       "side_command_not_run": "/side कमांड नहीं चला। तुम्हारा संदेश अभी भी कंपोज़र में है।",
-      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके"
+      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके",
+      "delivery_unconfirmed_option": "डिलीवरी की पुष्टि नहीं हुई — बातचीत देखो और अगर संदेश न हो तो विकल्प फिर से चुनो।"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",

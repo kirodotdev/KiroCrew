@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "Le serveur a accepté la requête, mais la réponse n'a pas pu être lue.",
       "paste_token_url_or_raw_token": "Colle l’URL du token ou le token brut…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Débit limité par la bordure du tunnel (HTTP 429) — trop de requêtes d’un coup. Le tableau de bord réessaie automatiquement ; si cela persiste, attends quelques secondes et recharge la page.",
       "session_expired": "Session expirée.",
@@ -129,6 +130,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "L’agent travaille...",
+      "app_not_allowed_to_send_named": "{{app}} n'est pas autorisée à envoyer des messages de chat : elle ne déclare pas l'accès au chat dans ses autorisations.",
+      "server_refused_with_status": "Le serveur l'a refusé (HTTP {{status}}) — réessayez dans un instant.",
       "chat_message": "Message de chat",
       "message": "Message...",
       "send": "Envoyer",
@@ -10150,7 +10153,8 @@
       "could_not_generate_title": "Impossible de générer un titre",
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
-      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe"
+      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
+      "delivery_unconfirmed_option": "Envoi non confirmé — vérifiez la conversation, puis resélectionnez l'option si elle n'y figure pas."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

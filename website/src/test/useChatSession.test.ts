@@ -156,8 +156,8 @@ describe('useChatSession', () => {
         if (path === '/api/chat/slots') {
           return Promise.resolve({ key: expectedSlotName })
         }
-        if (path === '/api/chat') {
-          return Promise.resolve({})
+        if (path === '/api/chat?ws=1') {
+          return Promise.resolve({ ok: true })
         }
         if (path === '/api/chat/folders') {
           return Promise.resolve({ id: 'f1', name: 'Workbench' })
@@ -193,7 +193,8 @@ describe('useChatSession', () => {
         agent: 'test-agent',
       })
 
-      expect(mockPost).toHaveBeenCalledWith('/api/chat', expect.objectContaining({
+      // The seed rides the shared transport: JSON-receipt endpoint, agent on the wire.
+      expect(mockPost).toHaveBeenCalledWith('/api/chat?ws=1', expect.objectContaining({
         slot: expectedSlotName,
         agent: 'test-agent',
       }))
@@ -236,8 +237,8 @@ describe('useChatSession', () => {
         if (path === '/api/chat/slots') {
           return Promise.resolve({ key: expectedSlotName })
         }
-        if (path === '/api/chat') {
-          return Promise.reject(new Error('JSON parse error'))
+        if (path === '/api/chat?ws=1') {
+          return Promise.reject(new Error('seed refused'))
         }
         if (path === '/api/chat/folders') {
           return Promise.resolve({ id: 'f1', name: 'Workbench' })

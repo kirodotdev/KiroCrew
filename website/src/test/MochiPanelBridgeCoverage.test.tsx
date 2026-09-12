@@ -42,6 +42,9 @@ interface Reply {
   jsonThrows?: boolean
   /** The request itself never completes. */
   reject?: boolean
+  /** The request hangs until the caller's abort signal fires, then rejects the
+   *  way `fetch` does on abort -- how the transport's deadline is reached. */
+  hang?: boolean
 }
 
 interface Route {
@@ -65,6 +68,11 @@ const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
   )
   const reply = hit?.reply ?? {}
   if (reply.reject === true) throw new Error('network down')
+  if (reply.hang === true) {
+    return await new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })
+  }
   const ok = reply.ok ?? true
   return {
     ok,
@@ -155,6 +163,11 @@ beforeEach(() => {
   api.unpinFile.mockClear()
   api.getWatchlist.mockResolvedValue({ items: [] })
   api.getPinned.mockResolvedValue({ pins: [] })
+  // The send now reads its receipt through the chat-core transport, and the
+  // route table's bare `{}` default is a readable body with neither `ok` nor
+  // `queued` -- a refusal. Default the send endpoint to an accepted dispatch so
+  // the tests that only care about slot binding keep sending.
+  route('/api/chat?ws=1', { body: { ok: true } }, 'POST')
   vi.stubGlobal('WebSocket', MockSocket)
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -725,6 +738,87 @@ describe('panelBridge send', () => {
     const bridge = await loadBridge()
     await bridge.sendMessage('plain')
     expect(bodyOf(calls('/api/chat?ws=1', 'POST')[0]).meta).toBeUndefined()
+  })
+
+  // ── the receipt decides whether the bubble exists ───────────────────────
+  //
+  // The old send echoed BEFORE the POST and never read the reply, so a refused
+  // send left a user bubble the server never took and no error anywhere. The
+  // chat-core transport's receipt now gates the echo: a send that provably did
+  // not run rejects (the vendored ChatPanel restores the text and shows
+  // `chat.send_failed` on a rejection), an accepted or indeterminate one echoes.
+
+  it('a `{ok:false}` refusal inside a 200 rejects with the server reason and echoes nothing', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { body: { ok: false, error: 'slot is stopping' } }, 'POST')
+    const bridge = await loadBridge()
+    const seen: Record<string, unknown>[] = []
+    bridge.onChatMessage((m) => seen.push(m))
+    await expect(bridge.sendMessage('hello')).rejects.toMatchObject({ name: 'send-refused', message: 'slot is stopping' })
+    expect(seen).toHaveLength(0)
+  })
+
+  it('a bodyless non-2xx is still flagged a refusal (empty message) and echoes nothing', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { ok: false, status: 503, jsonThrows: true }, 'POST')
+    const bridge = await loadBridge()
+    const seen: Record<string, unknown>[] = []
+    bridge.onChatMessage((m) => seen.push(m))
+    await expect(bridge.sendMessage('hello')).rejects.toMatchObject({ name: 'send-refused', message: '' })
+    expect(seen).toHaveLength(0)
+  })
+
+  it('a fetch that never completes rejects and echoes nothing, as the bare fetch did', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { reject: true }, 'POST')
+    const bridge = await loadBridge()
+    const seen: Record<string, unknown>[] = []
+    bridge.onChatMessage((m) => seen.push(m))
+    await expect(bridge.sendMessage('hello')).rejects.toThrow()
+    expect(seen).toHaveLength(0)
+  })
+
+  it('a queued send echoes -- the server took custody, even if not yet running', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { body: { ok: true, queued: true } }, 'POST')
+    const bridge = await loadBridge()
+    const seen: Record<string, unknown>[] = []
+    bridge.onChatMessage((m) => seen.push(m))
+    await bridge.sendMessage('hello')
+    expect(seen).toHaveLength(1)
+  })
+
+  it('an accepted send with an unreadable receipt echoes -- a 2xx means the server took it', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { jsonThrows: true }, 'POST')
+    const bridge = await loadBridge()
+    const seen: Record<string, unknown>[] = []
+    bridge.onChatMessage((m) => seen.push(m))
+    await bridge.sendMessage('hello')
+    expect(seen).toHaveLength(1)
+  })
+
+  it('a send whose receipt never arrives rejects and echoes nothing -- unconfirmed, the panel restores the draft', async () => {
+    // The POST may never have reached the gateway. Echoing would paint a bubble
+    // that vanishes on reload with the typed text gone; a rejection hands the
+    // text back through ChatPanel's existing send_failed path instead.
+    vi.useFakeTimers()
+    try {
+      route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+      route('/api/chat?ws=1', { hang: true }, 'POST')
+      const bridge = await loadBridge()
+      const seen: Record<string, unknown>[] = []
+      bridge.onChatMessage((m) => seen.push(m))
+      const outcome = bridge.sendMessage('hello')
+      // Flagged unconfirmed (empty message: no server reason) so the panel shows
+      // the delivery-unconfirmed copy, never "try again".
+      const assertion = expect(outcome).rejects.toMatchObject({ name: 'send-unconfirmed', message: '' })
+      await vi.advanceTimersByTimeAsync(10_500)
+      await assertion
+      expect(seen).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('refuses to send into a slot another agent owns', async () => {

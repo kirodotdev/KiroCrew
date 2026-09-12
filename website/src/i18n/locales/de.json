@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "Der Server hat die Anfrage angenommen, aber die Antwort konnte nicht gelesen werden.",
       "paste_token_url_or_raw_token": "Token-URL oder Roh-Token einfügen…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
       "session_expired": "Sitzung abgelaufen.",
@@ -126,6 +127,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "Agent arbeitet...",
+      "app_not_allowed_to_send_named": "{{app}} darf keine Chatnachrichten senden – die App deklariert in ihren Berechtigungen keinen Chat-Zugriff.",
+      "server_refused_with_status": "Der Server hat sie abgelehnt (HTTP {{status}}) – versuche es gleich noch einmal.",
       "chat_message": "Chat-Nachricht",
       "message": "Nachricht...",
       "send": "Senden",
@@ -10007,7 +10010,8 @@
       "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
       "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
-      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen"
+      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
+      "delivery_unconfirmed_option": "Zustellung nicht bestätigt — prüfe den Verlauf und wähle die Option erneut, falls sie fehlt."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

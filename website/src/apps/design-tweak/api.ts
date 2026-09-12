@@ -11,6 +11,8 @@
 // string templates, so an id containing `&` or `#` cannot smuggle a parameter.
 
 import { toApiError } from '../../api/apiError'
+import { SEND_REFUSED, sendTurn } from '../../chat-core/transport/sendTurn'
+import { i18nT } from '../../i18n/t'
 import type {
   AddProjectResponse, ChatSlotResponse, DeleteCommentResponse,
   DetectDevServerResponse, DevServerStartResponse, HealthResponse, HistoryResponse,
@@ -216,14 +218,11 @@ function slotDetailUrl(key: string): string {
   return CHAT_SLOTS + '/' + encodeURIComponent(key)
 }
 
-/**
- * `ws=1` makes the host answer with JSON. Without it the reply is an SSE stream,
- * and the parse error used to be caught and "recovered" by opening a NEW ad-hoc
- * chat — so one request produced two sessions and the app's own per-app session
- * was bypassed.
- */
-const CHAT_SEND = '/api/chat' + '?' + new URLSearchParams({ ws: '1' }).toString()
-
+/** Slot and transcript endpoints only -- all JSON. The SEND goes through the
+ *  chat-core transport (`sendChatMessage` below), which owns `?ws=1`, the
+ *  deadline and the receipt contract; the non-JSON tolerance this helper used
+ *  to carry existed for the SSE stream the bare send endpoint answered with,
+ *  and went with the send. */
 async function chatApi<T = unknown>(url: string, method: string, body?: unknown): Promise<T> {
   const r = await fetch(url, {
     method,
@@ -232,10 +231,7 @@ async function chatApi<T = unknown>(url: string, method: string, body?: unknown)
   })
   if (!r.ok) throw await toApiError(r)
   const t = await r.text()
-  // POST /api/chat answers with an SSE STREAM unless ?ws=1 is set, so the body can
-  // legitimately be `data: {...}` rather than JSON. Parsing that threw, and the
-  // throw is what diverted a request into a brand-new ad-hoc chat.
-  try { return (t ? JSON.parse(t) : null) as T } catch { return { ok: true, raw: t } as T }
+  return (t ? JSON.parse(t) : null) as T
 }
 
 /** Create (or adopt) this app's deterministic chat slot. Idempotent server-side. */
@@ -341,9 +337,43 @@ export async function readSlotTranscript(
   }
 }
 
-/** Send one turn into a slot. */
-export function sendChatMessage(message: string, slot: string): Promise<unknown> {
-  return chatApi(CHAT_SEND, 'POST', { message, slot, agent: '' })
+/**
+ * Send one turn into a slot through the chat-core transport (the dashboard's
+ * own wire: this app runs in the dashboard bundle and sends as the dashboard
+ * does). Resolves ONLY on a confirmed acceptance -- `dispatched` or `queued`
+ * -- because the caller marks the request delivered on resolution, and
+ * `deliveredAt` permanently short-circuits `deliveryVerdict` / `verifyDelivery`.
+ * Every other status rejects, each with its own reason, so the request stays
+ * unacknowledged and ground truth (`verifyDelivery` asking the session) decides:
+ *
+ * - `refused`: the server said no. The old helper only threw on a non-2xx, so a
+ *   `{ok:false}` refusal inside a 200 was marked delivered.
+ * - `transport-error`: no response; as the bare fetch always did.
+ * - `unknown` / `response-late`: accepted, or accepted for all we know, but not
+ *   CONFIRMED -- marking delivered here would strand the sealed edits if the
+ *   POST never landed. The old helper resolved a non-JSON 2xx as `{ok:true}` by
+ *   accident of a parse fallback; it had no deadline at all.
+ */
+export async function sendChatMessage(message: string, slot: string): Promise<void> {
+  const receipt = await sendTurn({ message, slot })
+  switch (receipt.status) {
+    case 'dispatched':
+    case 'queued':
+      return
+    case 'refused': {
+      // Flagged by name: the caller tells a definitive refusal (fix and resend)
+      // apart from an unconfirmed dispatch (verify against the session).
+      const err = new Error(receipt.reason || (i18nT('pages.chatPage.send_failed') as string))
+      err.name = SEND_REFUSED
+      throw err
+    }
+    case 'transport-error':
+      throw new Error(i18nT('pages.chatPage.send_failed') as string)
+    case 'unknown':
+      throw new Error(i18nT('api.client.accepted_body_unreadable') as string)
+    case 'response-late':
+      throw new Error(i18nT('pages.chat.recoveryCard.no_response_returned') as string)
+  }
 }
 
 /** Deep link into the Chat tab at a given slot. */
