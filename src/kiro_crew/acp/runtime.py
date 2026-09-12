@@ -761,7 +761,7 @@ class AcpRuntime:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(
                     f"Invalid model identifier: {model!r} — must match "
-                    f"^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,127}}$"
+                    rf"^[a-zA-Z0-9][a-zA-Z0-9._\[\]-]{{0,127}}$"
                 )
         self._model = model
         self._sandbox_mode = sandbox_mode

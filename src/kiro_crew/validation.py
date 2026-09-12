@@ -129,8 +129,9 @@ _AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$|^[a-zA
 # end of the string.
 ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 
-# Valid model name pattern — alphanumerics, hyphens, dots (e.g. "claude-opus-4.8", "deepseek-3.2")
-_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+# Valid model names include bounded provider qualifiers (for example,
+# ``gpt-6-astra[high]``) as well as ordinary dotted and dashed identifiers.
+_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\[\]-]*$")
 
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64
 # lowercase hex chars. This value flows into hmac.compare_digest at the
@@ -1602,8 +1603,8 @@ _ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image|weba
 
 # Model identifiers passed to kiro-cli ``--model`` (AcpRuntime). First char
 # must be alphanumeric so a value can never be parsed as a CLI flag, and the
-# charset covers real model ids (gpt-5.6-sol, claude-sonnet-4.6) only.
-MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+# charset covers real model ids, including provider-qualified effort variants.
+MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\[\]-]{0,127}$")
 _ARTIFACT_SOURCE_RE = re.compile(r"^(chat|cron|subagent|manual|import)$")
 # Single source of truth: the MCP save/update field cap MUST equal the store's
 # own content cap, else the tool path rejects content the store would accept
