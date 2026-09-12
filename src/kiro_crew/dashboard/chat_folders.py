@@ -1,5 +1,5 @@
-"""Folder management — CRUD, pin, assignment. Also hosts the shared
-LLM emoji generator the artifact library uses for ITS folder icons."""
+"""Folder management — CRUD, pin, assignment, icon generation. The shared
+LLM emoji generator here serves both chat folders and the artifact library."""
 
 from __future__ import annotations
 
@@ -189,6 +189,131 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
     icon, _ = redact_credentials(icon)
     # Validate: must be exactly one emoji (guard against stray LLM text).
     return icon if _is_single_emoji(icon) else ""
+
+
+# Strong refs so in-flight icon tasks aren't garbage-collected mid-run — the
+# same pattern as the artifact library's _ARTIFACT_FOLDER_ICON_TASKS.
+_CHAT_FOLDER_ICON_TASKS: set[asyncio.Task[None]] = set()
+
+#: Per-folder coalescing index over ``_CHAT_FOLDER_ICON_TASKS``: at most ONE
+#: live generation task per folder id. Spawning for a folder that already has
+#: a pending task CANCELS the pending one and takes its slot — the latest
+#: request's name wins, matching the epoch rule for write-backs. Without this,
+#: an authenticated caller looping ``regenerate_icon`` PATCHes could enqueue
+#: tasks faster than the serialized generator drains them (one bounded model
+#: call at a time behind ``_folder_icon_lock``), growing both the pending-task
+#: set and the paid-call backlog without bound. Entries remove themselves via
+#: the done callback (identity-checked, so a superseded task's callback never
+#: evicts its successor).
+_CHAT_FOLDER_PENDING_ICON_TASKS: dict[str, asyncio.Task[None]] = {}
+
+#: Per-folder icon epoch, bumped under the folder-store lock by every
+#: user-visible mutation the generated icon must not outlive: a manual icon
+#: set, an icon clear, and a rename. An in-flight generation task captures the
+#: epoch at scheduling time and its write-back is dropped unless the epoch is
+#: unchanged. One invariant closes all three races — the previous
+#: ``expected_icon`` value-pin passed whenever the icon VALUE happened to be
+#: unchanged, so a clear (``None`` -> ``None``) or a rename (icon untouched)
+#: let a stale emoji land after the user's action. Deliberately per-folder,
+#: not the store-wide ``folders_generation()`` counter: that bumps on every
+#: folder mutation anywhere, so pinning to it would cancel a legitimate icon
+#: delivery whenever an unrelated folder changed mid-generation. In-memory on
+#: purpose — in-flight tasks die with the process, so the epoch has nothing
+#: to survive a restart for. Entries are dropped on folder delete.
+_CHAT_FOLDER_ICON_EPOCHS: dict[str, int] = {}
+
+
+def _bump_icon_epoch(folder_id: str) -> None:
+    """Invalidate any in-flight icon generation for this folder.
+
+    Must be called under the folder-store lock — from a ``mutate_folders``
+    post-commit hook or a mutation callback — which is what orders the bump
+    against the write-back's check. The post-commit hook is the right home
+    for a bump tied to a persisted change: it never runs for a rolled-back
+    or no-op transaction, so the epoch always mirrors committed state.
+    """
+    _CHAT_FOLDER_ICON_EPOCHS[folder_id] = _CHAT_FOLDER_ICON_EPOCHS.get(folder_id, 0) + 1
+
+
+def _spawn_chat_folder_icon_task(
+    state: DashboardState,
+    folder_id: str,
+    name: str,
+    *,
+    expected_epoch: int,
+) -> None:
+    """Fire-and-forget: derive a single-emoji icon for a chat folder and store it.
+
+    The create/update response returns immediately; the icon lands later via
+    the slots push (the WS frame triggers the client's folder refetch). The
+    write-back re-finds the folder by id under the store lock, so a folder
+    deleted while generation was in flight is never resurrected, and only
+    applies while the folder's icon epoch still equals ``expected_epoch`` (its
+    value when this task was scheduled) — a manual icon set, an icon clear, or
+    a rename that lands while generation is pending wins over the stale
+    result. Best-effort — any failure leaves the folder's current icon
+    unchanged. Coalesced per folder: a spawn for a folder with a generation
+    already pending cancels the pending task and replaces it, so concurrent
+    regenerate requests can never accumulate more than one live task — and
+    one model call — per folder. Folder delete cancels and unregisters the
+    folder's pending task, so a task never outlives its folder and the live
+    set stays bounded by the extant-folder cap. A superseded task that has
+    already begun its store write finishes that write under the lock before
+    unwinding, so persisted snapshots stay strictly serialized.
+    """
+
+    async def _run() -> None:
+        try:
+            icon = await generate_emoji_for_name(state, name)
+            if not icon:
+                return
+
+            def _write(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
+                target = next((f for f in folders if f["id"] == folder_id), None)
+                if target is None:
+                    return False, False  # deleted mid-generation; drop the icon
+                if _CHAT_FOLDER_ICON_EPOCHS.get(folder_id, 0) != expected_epoch:
+                    # The icon or name changed while generation was in flight
+                    # (manual set, clear, or rename) — drop the stale result.
+                    return False, False
+                target["icon"] = icon
+                return True, True
+
+            # Shield the write-back from coalescing cancellation. Cancelling a
+            # task awaiting asyncio.to_thread cannot stop the executor thread:
+            # the CancelledError would release the store lock while the thread
+            # finishes writing its whole-list snapshot, letting a stale
+            # snapshot land after a superseding transaction and silently
+            # revert interim committed folder mutations on reload. A started
+            # transaction therefore always runs to completion under the lock;
+            # cancellation still stops the throttle-wait and model phases.
+            persist = asyncio.ensure_future(state.mutate_folders(_write))
+            try:
+                written = await asyncio.shield(persist)
+            except asyncio.CancelledError:
+                await persist
+                raise
+            if written:
+                state.push_slots_update()
+        except Exception:  # noqa: BLE001 — best-effort background task
+            logger.debug("chat folder icon generation failed for %s", folder_id, exc_info=True)
+
+    task = asyncio.ensure_future(_run())
+    _CHAT_FOLDER_ICON_TASKS.add(task)
+    # Coalesce per folder: cancel any pending generation for this folder and
+    # take its slot, so a burst of regenerate requests holds at most one live
+    # task (and at most one paid model call) per folder at a time.
+    prior = _CHAT_FOLDER_PENDING_ICON_TASKS.get(folder_id)
+    if prior is not None and not prior.done():
+        prior.cancel()
+    _CHAT_FOLDER_PENDING_ICON_TASKS[folder_id] = task
+
+    def _cleanup(done: asyncio.Task[None]) -> None:
+        _CHAT_FOLDER_ICON_TASKS.discard(done)
+        if _CHAT_FOLDER_PENDING_ICON_TASKS.get(folder_id) is done:
+            del _CHAT_FOLDER_PENDING_ICON_TASKS[folder_id]
+
+    task.add_done_callback(_cleanup)
 
 
 def _folder_history_counts(state: DashboardState) -> dict[str, int]:
@@ -546,6 +671,7 @@ async def create_folder_record(
     project_dir: str = "",
     default_agent: str = "",
     color: str = "",
+    icon: str = "",
     request_app: str = "",
     tags: list[str] | None = None,
     unique_project_dir: bool = False,
@@ -578,6 +704,13 @@ async def create_folder_record(
     non-empty — the same optional-key shape as ``color``, so a tagless folder
     keeps the record it has on disk today.
 
+    ``icon`` is an optional explicit emoji for the folder glyph, validated
+    grapheme-exact like every stored icon and included in the folder dict only
+    when non-empty — the same optional-key shape as ``color``. Whether an
+    ABSENT icon triggers background generation is the caller's decision, not
+    this function's: the folder API spawns the generator only when the request
+    said nothing about the icon, and the scaffold never does.
+
     Returns:
         The created folder, exactly as it was appended to the store.
 
@@ -603,8 +736,8 @@ async def create_folder_record(
 
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
-            parent, unusable ``project_dir``, unknown color, or a
-            ``unique_project_dir`` collision).
+            parent, unusable ``project_dir``, unknown color, non-emoji
+            ``icon``, or a ``unique_project_dir`` collision).
         FolderOwnershipError: if an app tried to nest under a folder it does
             not own.
     """
@@ -640,6 +773,11 @@ async def create_folder_record(
         # the dashboard renders `error` verbatim into a localized UI, so a new
         # error response without an id is untranslatable by construction.
         raise FolderCreateError("color must be one of the folder palette values", "color_invalid")
+    icon = icon.strip()
+    if icon and not _is_single_emoji(icon):
+        # Same contract shape as ``color``: a stored icon is always a single
+        # grapheme-exact emoji, whichever caller created the folder.
+        raise FolderCreateError("icon must be a single emoji", "icon_invalid")
     folder: dict[str, Any] = {
         "id": uuid.uuid4().hex[:12],
         "name": name,
@@ -652,6 +790,8 @@ async def create_folder_record(
     }
     if color:
         folder["color"] = color
+    if icon:
+        folder["icon"] = icon
     if request_app:
         folder["owner_app"] = request_app
 
@@ -743,6 +883,23 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        # ``[]``, ``"s"``, ``5``, ``true`` and ``null`` are all valid JSON, so
+        # the parse above succeeds and the ``body.get()`` below would raise
+        # AttributeError from outside the try — a 500 for what is really
+        # malformed client input.
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "invalid_json"},
+            status=400,
+        )
+    # Explicit emoji icon, read here rather than in ``create_folder_record``
+    # because the HANDLER owns the generator decision: ``None`` (key absent)
+    # means "derive one in the background", ``""`` is an explicit opt-out, and
+    # a value is stored as-is — a caller that already chose an icon must not
+    # have it silently overwritten seconds later. Validation lives with the
+    # other field validation in ``create_folder_record``.
+    raw_icon = body.get("icon")
+    icon_val = str(raw_icon).strip() if raw_icon is not None else ""
     # Organizational tags copied onto every new chat filed into this folder.
     # Shape-checked here — the request-facing half, so a non-array payload is
     # refused before any folder work happens — while the AUTHORITATIVE
@@ -770,6 +927,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             project_dir=str(body.get("project_dir") or ""),
             default_agent=str(body.get("default_agent") or "").strip(),
             color=str(body.get("color") or ""),
+            icon=icon_val,
             request_app=request_app,
             tags=folder_tags,
         )
@@ -795,6 +953,21 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         return web.json_response({"error": str(exc)}, status=400)
     state.push_slots_update()
+    if not icon_val and raw_icon is None:
+        # No explicit icon — derive one in the background. The 201 below
+        # returns with no icon; the write-back's slots push delivers it.
+        # An explicit empty string is an opt-OUT ("this folder gets no
+        # icon"), not an omission — only a caller that said nothing about
+        # the icon gets the generator. A just-appended uuid4 id has no
+        # epoch entry, so the expectation is the literal starting epoch;
+        # any icon/name mutation that lands before the result bumps past
+        # it and invalidates the write-back.
+        _spawn_chat_folder_icon_task(
+            state,
+            str(folder["id"]),
+            str(folder["name"]),
+            expected_epoch=0,
+        )
     source, caller = _audit_origin(request)
     sel().log_api_access(
         caller=caller,
@@ -820,6 +993,15 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        # ``[]``, ``"s"``, ``5``, ``true`` and ``null`` are all valid JSON, so
+        # the parse above succeeds and the ``body.get()`` below would raise
+        # AttributeError from outside the try — a 500 for what is really
+        # malformed client input.
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "invalid_json"},
+            status=400,
+        )
     # Validate ALL submitted fields into a pending-changes dict BEFORE mutating
     # ``folder`` — otherwise an early field (e.g. name) is persisted while a later
     # field (e.g. an invalid/cyclic parent_id) returns 400, leaving the rejected
@@ -903,6 +1085,41 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 status=400,
             )
         changes["color"] = color_val
+    raw_regen = body.get("regenerate_icon", False)
+    if not isinstance(raw_regen, bool):
+        # Strings are truthy ("false" would arm regeneration); require a real
+        # boolean so a sloppy caller gets a 400 instead of a surprise.
+        return web.json_response(
+            {
+                "error": "regenerate_icon must be a boolean",
+                "code": "regenerate_icon_invalid",
+            },
+            status=400,
+        )
+    regenerate_icon = raw_regen
+    if "icon" in body and regenerate_icon:
+        # Mutually exclusive: the manual icon would be saved and returned, then
+        # the background regeneration would silently overwrite it. Reject the
+        # ambiguous request so the conflict is explicit to the caller.
+        return web.json_response(
+            {
+                "error": "cannot set icon and regenerate_icon in the same request",
+                "code": "icon_conflict",
+            },
+            status=400,
+        )
+    if "icon" in body:
+        # User-chosen emoji for the folder glyph. None or empty string clears
+        # back to the default glyph; anything else must be exactly one emoji
+        # grapheme (no text, no multiple emoji).
+        raw_icon = body["icon"]
+        icon_val = str(raw_icon).strip() if raw_icon is not None else ""
+        if icon_val and not _is_single_emoji(icon_val):
+            return web.json_response(
+                {"error": "icon must be a single emoji", "code": "icon_invalid"},
+                status=400,
+            )
+        changes["icon"] = icon_val
     if "tags" in body:
         # Vocabulary-constrained tag list. An empty list clears the folder's
         # tags; anything else must be ids that exist in the tag vocabulary.
@@ -914,6 +1131,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # the folder there so a concurrent delete cannot resurrect it, and
     # re-deciding the tree-shape rules there so two concurrent reparents cannot
     # each validate against the pre-state and persist a cycle between them.
+    # ``committed_name`` is filled under that same lock, from the folder as it
+    # is committed, so a regenerate spawned below derives from exactly the
+    # persisted name — never from a pre-lock snapshot a concurrent write may
+    # have superseded.
+    committed_name: list[str] = []
 
     def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         target = next((f for f in folders if f["id"] == fid), None)
@@ -946,11 +1168,34 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         target.update(changes)
         if not target.get("color"):
             target.pop("color", None)
+        if not target.get("icon"):
+            # Empty string clears the key entirely, so "absent means the
+            # default glyph" stays the single on-disk representation
+            # (mirrors color above).
+            target.pop("icon", None)
         if not target.get("tags"):
             # Empty list clears the key entirely, so "absent means no tags"
             # stays the single on-disk representation (mirrors color above).
             target.pop("tags", None)
+        committed_name.append(str(target.get("name") or ""))
         return True, ""
+
+    committed_epoch: list[int] = []
+
+    def _bump_epoch_on_commit() -> None:
+        # Invalidate any in-flight icon generation: its result was derived
+        # for the pre-change name and must not land over this mutation. Runs
+        # under the store lock only after persistence is proven, so it stays
+        # ordered against the write-back's epoch check while a rolled-back
+        # write leaves the epoch untouched and a still-valid in-flight
+        # generation can land. The epoch a regenerate spawned below must
+        # expect is captured here, after this request's own bump and under
+        # the same lock — a concurrent mutation committing after this hook
+        # bumps past it, so a generation derived from this request's
+        # committed name is invalidated rather than landing over newer state.
+        if "icon" in changes or "name" in changes:
+            _bump_icon_epoch(fid)
+        committed_epoch.append(_CHAT_FOLDER_ICON_EPOCHS.get(fid, 0))
 
     if "tags" in changes:
         # Same point-of-application rule as create: the authoritative
@@ -961,9 +1206,9 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         async with tags_write_lock(state):
             refreshed, _ = _validate_folder_tags(state, changes["tags"])
             changes["tags"] = refreshed if refreshed is not None else []
-            err = await state.mutate_folders(_apply)
+            err = await state.mutate_folders(_apply, on_committed=_bump_epoch_on_commit)
     else:
-        err = await state.mutate_folders(_apply)
+        err = await state.mutate_folders(_apply, on_committed=_bump_epoch_on_commit)
     if err == "not_found":
         # Deleted between the validation above and acquiring the store lock.
         return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
@@ -1005,6 +1250,22 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 "code": "folder_cycle",
             },
             status=409,
+        )
+    if regenerate_icon:
+        # "Reset to auto" — re-run the emoji generator in the background.
+        # Runs only after _apply succeeded, so app ownership has already been
+        # enforced on this folder. The write-back's slots push delivers the
+        # new icon when it lands. Both inputs are captured at commit time
+        # under the store lock: the name by _apply, the epoch by the
+        # post-commit hook after this request's own bump — so the write-back
+        # is pinned to exactly the committed state, and a manual set, clear,
+        # or rename landing while the generator runs invalidates the stale
+        # result.
+        _spawn_chat_folder_icon_task(
+            state,
+            fid,
+            committed_name[0] if committed_name else "",
+            expected_epoch=committed_epoch[0] if committed_epoch else 0,
         )
     state.push_slots_update()
     source, caller = _audit_origin(request)
@@ -1176,6 +1437,24 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     except Exception:
         await _restore_unfiled()
         raise
+    # Pop the epoch only after the removal is confirmed persisted. Popping
+    # inside the callback would be a module-level side effect that survives a
+    # failed store write: the folder would still exist while its epoch read 0
+    # again, letting a stale in-flight generation clobber a manual icon. After
+    # a confirmed delete the entry has nothing left to guard (the write-back
+    # already drops results for a folder it cannot re-find); popping keeps the
+    # dict from growing with every deleted-folder id over the process lifetime.
+    _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
+    # Cancel the folder's pending icon generation and drop its registry entry.
+    # Without this, an owner looping create->delete accumulates one queued
+    # task per deleted folder behind the serialized generator — each holds a
+    # strong reference and a slot in the one-at-a-time model queue. The cancel
+    # is safe after a confirmed delete: a write already started finishes under
+    # the shield, and its write-back re-finds the folder by id, which no
+    # longer exists, so nothing lands.
+    pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
+    if pending is not None and not pending.done():
+        pending.cancel()
     state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(

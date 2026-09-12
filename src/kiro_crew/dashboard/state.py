@@ -7356,8 +7356,17 @@ class DashboardState:
         """
         return int(getattr(self, "_folders_generation", 0) or 0)
 
-    async def mutate_folders(self, mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]]) -> _T:
-        """Serialize a folder mutation and confirm its off-loop persistence."""
+    async def mutate_folders(
+        self,
+        mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]],
+        on_committed: Callable[[], None] | None = None,
+    ) -> _T:
+        """Serialize a folder mutation and confirm its off-loop persistence.
+
+        ``on_committed`` runs under the repository lock only after the write
+        is proven, so callers can attach side effects that must not outlive a
+        rolled-back or no-op transaction.
+        """
 
         def _mark_committed() -> None:
             # This runs under the repository lock and only after the write is
@@ -7365,6 +7374,8 @@ class DashboardState:
             # re-fetch a tree that never changed, and concurrent commits must
             # not collapse two monotonic generation bumps into one.
             self._folders_generation = self.folders_generation() + 1
+            if on_committed is not None:
+                on_committed()
 
         return await _FOLDER_REPOSITORY.mutate(
             lambda: self._folders,

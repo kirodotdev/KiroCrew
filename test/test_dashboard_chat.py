@@ -13091,9 +13091,9 @@ class TestFolderTags:
         held: list[bool] = []
         orig_mutate = state.mutate_folders
 
-        async def _spy(fn):
+        async def _spy(fn, **kwargs):
             held.append(tags_write_lock(state).locked())
-            return await orig_mutate(fn)
+            return await orig_mutate(fn, **kwargs)
 
         monkeypatch.setattr(state, "mutate_folders", _spy)
         app = _make_folder_app(state)
