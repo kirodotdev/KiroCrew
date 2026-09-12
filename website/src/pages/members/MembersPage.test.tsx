@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
+import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
 import { memberThreadQueryKey } from '../../api/membersQuery'
 import {
@@ -34,6 +35,10 @@ vi.mock('../../api/client', () => ({
     // keeps the chat-style Summary row out of the menu so the Crew summary tab
     // is the one summary these cases see.
     sessionSummary: vi.fn(() => Promise.resolve({ enabled: false })),
+    // The wake block's create dialog hosts JobForm, whose only two reads are
+    // the model list and the create call itself.
+    models: vi.fn(() => Promise.resolve({ models: [] })),
+    createCron: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }))
 
@@ -157,6 +162,16 @@ function echoThread(slug: string) {
  */
 const PANE_READY = { timeout: 5000 }
 
+/* The shell's side of the leave guard. `useMayLeaveForNavigation` is what every
+ * wired in-app exit calls, so asking through it is asking the way the app does
+ * rather than reaching into the page's internals. */
+let askLeave: () => boolean = () => true
+function LeaveProbe() {
+  const mayLeave = useMayLeaveForNavigation()
+  askLeave = mayLeave
+  return null
+}
+
 async function renderPage(
   members = [row()],
   defaultAgent = 'kirocrew',
@@ -171,10 +186,11 @@ async function renderPage(
   else if (thread) threadMock.mockResolvedValue(thread)
   else threadMock.mockImplementation(echoThread)
   const utils = renderWithProviders(
-    <>
+    <NavigationLeaveGuardProvider>
       <MembersPage />
       <LocationProbe />
-    </>,
+      <LeaveProbe />
+    </NavigationLeaveGuardProvider>,
     { route },
   )
   await waitFor(() => expect(api.members).toHaveBeenCalled())
@@ -1101,6 +1117,271 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(list).not.toHaveTextContent('other-crew-job')
     expect(list).not.toHaveTextContent('script-job')
     expect(list).not.toHaveTextContent('unbound-hook')
+  })
+
+  it('the wake block creates a schedule bound to the open member', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    // The dialog names the member it binds to, and the crew renders as a fixed
+    // value rather than a picker: this surface exists because the member is
+    // already the subject, so there is nothing to choose.
+    await screen.findByText(/new schedule for oncall/i)
+    expect(screen.getByTestId('jobform-locked-agent')).toHaveTextContent('oncall')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'nightly-triage' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'triage the queue' } })
+    fireEvent.click(screen.getByTestId('member-schedule-submit'))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    // `member_id` is the load-bearing half: it is what binds the job to this
+    // member's PRIVATE memory. `agent` carries the member's provider TEMPLATE,
+    // not its name — the two are distinct, and passing `providerAgent` is what
+    // keeps the job running on the same template the member itself uses.
+    const body = vi.mocked(api.createCron).mock.calls[0][0] as Record<string, unknown>
+    expect(body.member_id).toBe('oncall')
+    expect(body.agent).toBe('kirocrew')
+    expect(body.name).toBe('nightly-triage')
+  })
+
+  it('a second dialog opens dismissible after a successful create', async () => {
+    // Explicit, because a sibling case above pins a never-settling create and
+    // mockReturnValue outlives a clearAllMocks.
+    vi.mocked(api.createCron).mockResolvedValue({ ok: true })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    // First create, all the way through: JobForm reports saving=false only on a
+    // FAILED submit, so a success leaves the host's flag set unless the host
+    // clears it itself. Left set, it outlives the dialog — and every later one
+    // opens mid-save with no dismissal path at all.
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'first-job' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'do the thing' } })
+    fireEvent.click(screen.getByTestId('member-schedule-submit'))
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    expect(screen.getByTestId('member-schedule-dismiss')).toBeEnabled()
+    fireEvent.click(screen.getByTestId('member-schedule-dismiss'))
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+  })
+
+  it('the empty wake state offers the create action in words', async () => {
+    vi.mocked(api.crons).mockResolvedValue({ jobs: [] })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    // A 12px header icon is not where a reader learns the action exists.
+    const inline = await screen.findByTestId('member-wake-create-empty')
+    expect(inline).toHaveTextContent('New schedule')
+    fireEvent.click(inline)
+    await screen.findByText(/new schedule for oncall/i)
+  })
+
+  it('offers an honest exit while the create is in flight instead of refusing one', async () => {
+    // A create that never settles. Earlier revisions refused every dismissal
+    // here; that produced a window with no exit, a silent Escape, and a stale
+    // callback that closed a later dialog. A POST cannot be un-sent, so the
+    // dialog stops claiming otherwise and says so instead.
+    vi.mocked(api.createCron).mockReturnValue(new Promise(() => {}))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'hung-job' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'never settles' } })
+    fireEvent.click(screen.getByTestId('member-schedule-submit'))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+
+    // The exit is offered, relabelled so it does not claim to cancel, next to a
+    // line that states what closing does and does not do.
+    expect(screen.getByTestId('member-schedule-inflight')).toHaveTextContent(/may still be created/i)
+    const dismiss = screen.getByTestId('member-schedule-dismiss')
+    expect(dismiss).toHaveTextContent('Close')
+    expect(dismiss).toBeEnabled()
+    fireEvent.click(dismiss)
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+  })
+
+  it('a late create cannot close the dialog that replaced it, nor take its draft', async () => {
+    // The corruption path both review lanes named: an escaped request keeps
+    // running, and its captured onSaved still points at the host.
+    let settleFirst: (v: unknown) => void = () => {}
+    vi.mocked(api.createCron).mockReturnValueOnce(new Promise((resolve) => { settleFirst = resolve }))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'escapes' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'still running' } })
+    fireEvent.click(screen.getByTestId('member-schedule-submit'))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    fireEvent.click(screen.getByTestId('member-schedule-dismiss'))
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+
+    // A SECOND dialog, with a draft in it.
+    vi.mocked(api.createCron).mockResolvedValue({ ok: true })
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'typed-later' } })
+
+    // Now the escaped request finally succeeds. It must refresh the list and
+    // touch nothing else: the dialog on screen is not the one it belonged to.
+    await act(async () => { settleFirst({ ok: true }) })
+    expect(screen.getByText(/new schedule for oncall/i)).toBeTruthy()
+    expect(screen.getByLabelText('Name')).toHaveValue('typed-later')
+    // ...and it did not leave the live dialog stuck mid-save either.
+    expect(screen.getByTestId('member-schedule-dismiss')).toHaveTextContent('Cancel')
+  })
+
+  it('asks before an overlay click or Escape destroys a typed draft', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    // An untouched form is not work: backing straight out must not arm a confirm,
+    // or people learn to click through the one that guards a real draft.
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape', code: 'Escape' })
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'half-typed' } })
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape', code: 'Escape' })
+    // Now it asks, and the draft survives the question.
+    expect(await screen.findByText(/discard this schedule/i)).toBeTruthy()
+    expect(screen.getByLabelText('Name')).toHaveValue('half-typed')
+    fireEvent.click(screen.getByRole('button', { name: /keep editing/i }))
+    await waitFor(() => expect(screen.queryByText(/discard this schedule/i)).toBeNull())
+    expect(screen.getByLabelText('Name')).toHaveValue('half-typed')
+    // Discarding is the deliberate second click.
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape', code: 'Escape' })
+    await screen.findByText(/discard this schedule/i)
+    fireEvent.click(screen.getByTestId('member-schedule-discard'))
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+  })
+
+  it('reports a create that failed after its dialog was dismissed', async () => {
+    let failFirst: (v: unknown) => void = () => {}
+    vi.mocked(api.createCron).mockReturnValueOnce(new Promise((resolve) => { failFirst = resolve }))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'doomed' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'will fail' } })
+    fireEvent.click(screen.getByTestId('member-schedule-submit'))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    // Closed mid-flight, having been told the schedule may still be created.
+    fireEvent.click(screen.getByTestId('member-schedule-dismiss'))
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+
+    // It failed instead. The form that would have shown the error is gone, so
+    // the block reports it rather than leaving the user believing it exists.
+    await act(async () => { failFirst({ error: 'cron store is read-only' }) })
+    const notice = await screen.findByTestId('member-schedule-late-error')
+    // Outcome as the heading, the server's own words underneath — and the RAW
+    // error must survive as the message, because that is what askAgent matches
+    // against the error journal to recover structured context.
+    expect(notice).toHaveTextContent(/wasn't created/i)
+    expect(notice).toHaveTextContent('cron store is read-only')
+    // It names the member it belongs to, so it cannot be read as anyone else's.
+    expect(notice).toHaveTextContent('oncall')
+  })
+
+  it('a late-create failure stays with its own member across a roster switch', async () => {
+    let failFirst: (v: unknown) => void = () => {}
+    vi.mocked(api.createCron).mockReturnValueOnce(new Promise((resolve) => { failFirst = resolve }))
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'ledger', slug: 'ledger', bound: true, slot_key: 'member-ledger' }),
+    ])
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    fireEvent.click(screen.getByTestId('member-wake-create'))
+    await screen.findByText(/new schedule for oncall/i)
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'doomed' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'will fail' } })
+    fireEvent.click(screen.getByTestId('member-schedule-submit'))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    fireEvent.click(screen.getByTestId('member-schedule-dismiss'))
+    await waitFor(() => expect(screen.queryByText(/new schedule for oncall/i)).toBeNull())
+    await act(async () => { failFirst({ error: 'cron store is read-only' }) })
+    await screen.findByTestId('member-schedule-late-error')
+
+    // Switch to another member: the block is redrawn for THEM, so oncall's
+    // failure must not follow and read as ledger's own.
+    fireEvent.click(await rosterRow('ledger'))
+    await waitFor(() => expect(screen.queryByTestId('member-schedule-late-error')).toBeNull())
+    // ...and it is still there when the member it belongs to is reopened.
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-schedule-late-error')).toHaveTextContent('oncall')
+  })
+
+  it('two dismissed creates that both fail keep their own member notices', async () => {
+    // Nothing serialises escaped creates, so a single error slot let the second
+    // failure overwrite the first and lose it.
+    let failA: (v: unknown) => void = () => {}
+    let failB: (v: unknown) => void = () => {}
+    vi.mocked(api.createCron)
+      .mockReturnValueOnce(new Promise((resolve) => { failA = resolve }))
+      .mockReturnValueOnce(new Promise((resolve) => { failB = resolve }))
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'ledger', slug: 'ledger', bound: true, slot_key: 'member-ledger' }),
+    ])
+    const submitFor = async (member: string, name: string) => {
+      fireEvent.click(await rosterRow(member))
+      await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+      fireEvent.click(screen.getByTestId('member-wake-create'))
+      await screen.findByText(new RegExp(`new schedule for ${member}`, 'i'))
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: name } })
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'x' } })
+      fireEvent.click(screen.getByTestId('member-schedule-submit'))
+      await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+      fireEvent.click(screen.getByTestId('member-schedule-dismiss'))
+      await waitFor(() => expect(screen.queryByTestId('member-schedule-submit')).toBeNull())
+    }
+    await submitFor('oncall', 'a-job')
+    await submitFor('ledger', 'b-job')
+    await act(async () => { failA({ error: 'oncall store refused' }); failB({ error: 'ledger store refused' }) })
+
+    // ledger is open, so ledger's failure is the one on screen...
+    expect(await screen.findByTestId('member-schedule-late-error')).toHaveTextContent(/ledger store refused/i)
+    // ...and oncall's was not overwritten by it.
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-schedule-late-error')).toHaveTextContent(/oncall store refused/i)
+  })
+
+  it('guards a typed draft against browser Back, not just the dialog controls', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+      fireEvent.click(await rosterRow('oncall'))
+      await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+      // Nothing typed: leaving must not ask, or the prompt stops meaning
+      // anything and people learn to click through it.
+      expect(askLeave()).toBe(true)
+      expect(confirmSpy).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByTestId('member-wake-create'))
+      await screen.findByText(/new schedule for oncall/i)
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'half-typed' } })
+      // Now every wired exit asks, and the answer is respected both ways. The
+      // same dirtiness is published as the Back guard's stake, which is what
+      // arms it before a press it cannot intercept.
+      expect(askLeave()).toBe(false)
+      expect(confirmSpy).toHaveBeenCalled()
+      confirmSpy.mockReturnValue(true)
+      expect(askLeave()).toBe(true)
+    } finally {
+      confirmSpy.mockRestore()
+    }
   })
 
   it('a failed wake-sources fetch renders the error state, never the affirmative empty state', async () => {
