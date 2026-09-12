@@ -699,6 +699,77 @@ describe('DevFleetPage sync run lifecycle', () => {
     await waitFor(() => expect(screen.queryByLabelText('Dismiss sync status')).toBeNull())
   }, 20000)
 
+  it('names a failed step from its stderr tail, not from the stale stdout line that follows it', async () => {
+    // The sync runner merges every step's stdout and stderr into one pipe, and a
+    // child block-buffers stdout to a pipe while writing stderr unbuffered — so a
+    // refused `git merge --ff-only` ENDS with its `Updating <old>..<new>` progress
+    // line, after the diagnostic. Naming the failure from the last output line
+    // therefore yields "Pull+Build failed: Updating 2f9ed9724..bf09e50e5", which
+    // names nothing a user can act on. The runner labels the failing step's stderr
+    // tail, and that is what must render.
+    const output = [
+      '::step::1::Merge',
+      'error: Your local changes to the following files would be overwritten by merge:',
+      '\tconfig-baseline.json',
+      'Please commit your changes or stash them before you merge.',
+      'Aborting',
+      'Updating 2f9ed9724..bf09e50e5',
+      '::steperr::1::error: Your local changes to the following files would be overwritten by merge:',
+      '::steperr::1::\tconfig-baseline.json',
+      '::steperr::1::Please commit your changes or stash them before you merge.',
+      '::steperr::1::Aborting',
+    ]
+    installFetch(fleetOf(MAIN_ROW), (u, opts) => {
+      if (u.includes('/sync') && isPost(opts)) return res({ ok: true, run_id: 'sync-merge' })
+      if (u.includes('/run?id=sync-merge')) {
+        return res({ status: 'done', exit_code: 1, output, started: nowSec() - 5 })
+      }
+      return null
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('Pull+Build')).toBeInTheDocument(), { timeout: 4000 })
+    await startSync()
+    await waitFor(() => expect(screen.getByText('Pull+Build failed')).toBeInTheDocument(), { timeout: 8000 })
+
+    const notice = screen.getByTestId('sync-error')
+    expect(notice.textContent).toContain('would be overwritten by merge')
+    expect(notice.textContent).toContain('config-baseline.json')
+    // The progress line is not what the failure is named after.
+    expect(notice.textContent).not.toContain('Updating 2f9ed9724')
+
+    // Both markers are protocol: the log shows the transcript once, with no
+    // duplicated tail and no `::steperr::` prefixes leaking through.
+    fireEvent.click(screen.getByLabelText('Toggle log'))
+    const pre = await waitFor(() => document.querySelector('pre') as HTMLPreElement)
+    expect(pre.textContent).not.toContain('::steperr::')
+    expect(pre.textContent).not.toContain('::step::')
+    expect(pre.textContent).toContain('Updating 2f9ed9724..bf09e50e5')
+    expect(pre.textContent?.match(/Aborting/g)).toHaveLength(1)
+  }, 20000)
+
+  it('keeps the failure notice visible when a step forges a blank stderr marker', async () => {
+    // `::steperr::` is a label on a worktree-controlled stream, so a step can
+    // print one itself. An all-blank forged tail must not resolve to the empty
+    // message ErrorNotice renders as nothing — that would hide the failure.
+    installFetch(fleetOf(MAIN_ROW), (u, opts) => {
+      if (u.includes('/sync') && isPost(opts)) return res({ ok: true, run_id: 'sync-forged' })
+      if (u.includes('/run?id=sync-forged')) {
+        return res({
+          status: 'done',
+          exit_code: 1,
+          output: ['::step::0::Pull', 'real failure text', '::steperr::0::   '],
+          started: nowSec() - 5,
+        })
+      }
+      return null
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('Pull+Build')).toBeInTheDocument(), { timeout: 4000 })
+    await startSync()
+    await waitFor(() => expect(screen.getByText('Pull+Build failed')).toBeInTheDocument(), { timeout: 8000 })
+    expect(screen.getByTestId('sync-error').textContent).toContain('real failure text')
+  }, 20000)
+
   it('declares the run lost when the registry 404s mid-poll instead of freezing the bar', async () => {
     installFetch(fleetOf(MAIN_ROW), (u, opts) => {
       if (u.includes('/sync') && isPost(opts)) return res({ ok: true, run_id: 'sync-gone' })

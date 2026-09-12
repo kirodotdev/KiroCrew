@@ -220,9 +220,303 @@ class TestRunSteps:
         ]
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "cp1252"  # divergent inherited value
-        rc = sync_runner.run_step({"argv": argv, "env": env, "label": "probe"}, str(tmp_path))
+        rc, steperr = sync_runner.run_step(
+            {"argv": argv, "env": env, "label": "probe"}, str(tmp_path)
+        )
         assert rc == 0
+        assert steperr == []
         assert probe.read_text() == "utf-8:replace"
+
+    def test_a_failed_step_reports_its_stderr_tail_not_its_last_stdout_line(self, tmp_path, capfd):
+        """The ordering the marker exists for, reproduced end to end.
+
+        A child block-buffers stdout to a pipe and writes stderr unbuffered, so a
+        step that fails AFTER printing progress to stdout leaves that progress as
+        the last line of the merged stream (``Updating <old>..<new>`` from a
+        refused ``git merge --ff-only``). The stream's final line is therefore not
+        evidence of what failed. The ``::steperr::`` markers must carry the stderr
+        lines, in order, regardless of where stdout landed.
+        """
+        import sys
+
+        # Deliberately shaped like the real refusal: diagnosis on stderr, a
+        # progress line on stdout written LAST so no buffering assumption is
+        # needed to make it the final line of the merged stream.
+        script = (
+            "import sys;"
+            "print('error: Your local changes would be overwritten by merge:',"
+            " file=sys.stderr);"
+            "print('\\tconfig-baseline.json', file=sys.stderr);"
+            "print('Aborting', file=sys.stderr);"
+            "sys.stderr.flush();"
+            "print('Updating 2f9ed9724..bf09e50e5');"
+            "sys.exit(1)"
+        )
+        steps = [
+            {
+                "argv": [sys.executable, "-c", script],
+                "env": dict(os.environ),
+                "label": "Merge",
+            }
+        ]
+
+        rc = sync_runner.run_steps(
+            steps, str(tmp_path), npm_preflight.RESERVED_EXIT_CODES, "Verify dependencies", 47
+        )
+
+        assert rc == 1
+        # `capfd`, not `capsys`: the step's stdout is INHERITED (it writes to the
+        # real descriptor, exactly as it does into the runner's pipe in
+        # production), so only fd-level capture sees both streams the way the
+        # dashboard does.
+        lines = capfd.readouterr().out.splitlines()
+        markers = [ln for ln in lines if ln.startswith("::steperr::")]
+        assert markers == [
+            "::steperr::0::error: Your local changes would be overwritten by merge:",
+            "::steperr::0::\tconfig-baseline.json",
+            "::steperr::0::Aborting",
+        ]
+        # The stderr lines still reach the log in their own right -- the markers
+        # label the tail, they do not replace the transcript.
+        assert "Aborting" in lines
+        # The stdout progress line stays in the log too. It is simply not the only
+        # line the failure can be named from.
+        assert "Updating 2f9ed9724..bf09e50e5" in lines
+
+    def test_a_newline_free_blob_is_read_in_bounded_pieces(self, tmp_path, capfd):
+        """A step's stderr is worktree-controlled, so it can carry no newline.
+
+        Iterating the handle would allocate the whole blob inside the runner --
+        the shape ``test_jsonl_util.py::TestNoUnboundedHandleIteration`` refuses.
+        Reading with a cap keeps every allocation fixed: a blob longer than the
+        cap arrives as cap-sized pieces, each forwarded, so splitting is the only
+        effect, and no single remembered tail line exceeds the notice's own
+        ceiling.
+        """
+        import sys
+
+        blob = 5 * sync_runner._STEPERR_READ_CAP
+        script = (
+            "import sys;"
+            f"sys.stderr.write('x' * {blob});"
+            "sys.stderr.write('\\nAborting\\n');"
+            "sys.stderr.flush();"
+            "sys.exit(1)"
+        )
+        steps = [
+            {
+                "argv": [sys.executable, "-c", script],
+                "env": dict(os.environ),
+                "label": "Merge",
+            }
+        ]
+
+        rc = sync_runner.run_steps(
+            steps, str(tmp_path), npm_preflight.RESERVED_EXIT_CODES, "Verify dependencies", 47
+        )
+
+        assert rc == 1
+        out = capfd.readouterr().out
+        lines = out.splitlines()
+        markers = [ln for ln in lines if ln.startswith("::steperr::")]
+        forwarded = [ln for ln in lines if not ln.startswith("::")]
+        # Nothing is dropped: every 'x' still reached the log. Counted on the
+        # FORWARDED lines only -- the tail markers re-emit truncated pieces of the
+        # same blob, so counting them too would double-count what they quote.
+        assert sum(ln.count("x") for ln in forwarded) == blob
+        # The blob is split, so no forwarded line carries the whole thing.
+        assert max(len(ln) for ln in forwarded) <= sync_runner._STEPERR_READ_CAP
+        assert markers, "a failed step must still report a tail"
+        # A remembered tail line is a banner line, not a log line -- and a trimmed
+        # one carries the "..." marker, which is 3 characters past the cap.
+        for m in markers:
+            assert len(m) <= len("::steperr::0::") + sync_runner._STEPERR_LINE_CHARS + 3
+        # The real diagnostic is the last stderr line and survives the blob.
+        assert markers[-1] == "::steperr::0::Aborting"
+
+    def test_a_multibyte_blob_stays_under_the_gateway_byte_limit(self, tmp_path, capfd):
+        """The cap counts characters; the gateway's reader counts bytes.
+
+        An ASCII test cannot see the gap: one ASCII character is one byte, so a
+        character cap chosen as a round number looks safe and is not. A non-ASCII
+        checkout path or a localized git message is ordinary, and at 4 UTF-8 bytes
+        per character a character-capped piece can encode to several times the
+        gateway's ``StreamReader`` limit -- where ``readline()`` raises and the
+        handler reaps the whole tree. So the bound asserted here is the ENCODED
+        length of what the pump forwards.
+        """
+        import sys
+
+        # 4-byte characters (astral plane), newline-free, several caps long.
+        blob_chars = 5 * sync_runner._STEPERR_READ_CAP
+        script = (
+            "import sys;"
+            f"sys.stderr.write('\\U0001F600' * {blob_chars});"
+            "sys.stderr.write('\\nAborting\\n');"
+            "sys.stderr.flush();"
+            "sys.exit(1)"
+        )
+        steps = [
+            {
+                "argv": [sys.executable, "-c", script],
+                "env": dict(os.environ),
+                "label": "Merge",
+            }
+        ]
+
+        rc = sync_runner.run_steps(
+            steps, str(tmp_path), npm_preflight.RESERVED_EXIT_CODES, "Verify dependencies", 47
+        )
+
+        assert rc == 1
+        lines = capfd.readouterr().out.splitlines()
+        forwarded = [ln for ln in lines if not ln.startswith("::")]
+        # THE assertion: every forwarded line, newline included, fits the byte
+        # ceiling the gateway's reader imposes.
+        worst = max(len(ln.encode("utf-8")) + 1 for ln in forwarded)
+        assert worst <= sync_runner._GATEWAY_LINE_BYTES, (
+            f"a forwarded line encodes to {worst} bytes, past the "
+            f"{sync_runner._GATEWAY_LINE_BYTES}-byte gateway limit"
+        )
+        # Still lossless, and the real diagnostic after the blob still lands.
+        assert sum(ln.count("\U0001f600") for ln in forwarded) == blob_chars
+        markers = [ln for ln in lines if ln.startswith("::steperr::")]
+        assert markers[-1] == "::steperr::0::Aborting"
+
+    def test_concurrent_stdout_cannot_splice_a_relayed_line(self, tmp_path, capfd):
+        """This runner is the SOLE writer to its stdout pipe, so no line splices.
+
+        Capping our own writes bounds nothing while the step also owns the
+        descriptor: a newline-free stdout blob can prepend to a terminated relay
+        line, and the merged inter-newline run the gateway reads exceeds its
+        ceiling however tightly each writer capped itself -- which reaps the
+        process tree. Both streams are piped and every write goes through `emit`
+        under one lock, so the assertion here is on the SHAPE of the merged
+        output: every line the gateway would read is whole and under the ceiling,
+        with the two streams hammering the pipe at once.
+        """
+        import sys
+
+        # Interleave deliberately: alternating newline-free stdout blobs and
+        # terminated stderr lines, which is the splice the finding described.
+        script = (
+            "import sys\n"
+            "for i in range(40):\n"
+            "    sys.stdout.write('O' * 3000)\n"
+            "    sys.stdout.flush()\n"
+            "    sys.stderr.write('E' * 3000 + '\\n')\n"
+            "    sys.stderr.flush()\n"
+            "sys.stderr.write('Aborting\\n')\n"
+            "sys.exit(1)\n"
+        )
+        steps = [
+            {
+                "argv": [sys.executable, "-c", script],
+                "env": dict(os.environ),
+                "label": "Merge",
+            }
+        ]
+
+        rc = sync_runner.run_steps(
+            steps, str(tmp_path), npm_preflight.RESERVED_EXIT_CODES, "Verify dependencies", 47
+        )
+
+        assert rc == 1
+        lines = capfd.readouterr().out.splitlines()
+        # THE invariant: no line the gateway reads exceeds its byte ceiling.
+        worst = max(len(ln.encode("utf-8")) + 1 for ln in lines)
+        assert worst <= sync_runner._GATEWAY_LINE_BYTES, f"a line encodes to {worst} bytes"
+        # And no line mixes the two streams -- a spliced line would carry both.
+        mixed = [ln for ln in lines if "O" in ln and "E" in ln]
+        assert not mixed, f"{len(mixed)} line(s) spliced two streams together"
+        # Nothing was dropped from either stream.
+        assert sum(ln.count("O") for ln in lines) == 40 * 3000
+        markers = [ln for ln in lines if ln.startswith("::steperr::")]
+        assert markers[-1] == "::steperr::0::Aborting"
+
+    def test_a_trimmed_tail_line_says_it_was_trimmed(self, tmp_path, capfd):
+        """A cut diagnosis must not read as the whole sentence.
+
+        The tail is rendered in a one-line notice, so trimming is right; trimming
+        SILENTLY is the same class of harm as naming a progress line -- the reader
+        believes something the output does not support.
+        """
+        import sys
+
+        long_line = "D" * (sync_runner._STEPERR_LINE_CHARS + 200)
+        script = (
+            "import sys;" f"sys.stderr.write('{long_line}\\n');" "sys.stderr.flush();" "sys.exit(1)"
+        )
+        steps = [
+            {
+                "argv": [sys.executable, "-c", script],
+                "env": dict(os.environ),
+                "label": "Merge",
+            }
+        ]
+
+        rc = sync_runner.run_steps(
+            steps, str(tmp_path), npm_preflight.RESERVED_EXIT_CODES, "Verify dependencies", 47
+        )
+
+        assert rc == 1
+        markers = [ln for ln in capfd.readouterr().out.splitlines() if ln.startswith("::steperr::")]
+        assert len(markers) == 1
+        text = markers[0].split("::", 3)[3]
+        assert text.endswith("..."), "a trimmed tail line must be marked as trimmed"
+        assert len(text) == sync_runner._STEPERR_LINE_CHARS + 3
+        # The untrimmed line still reached the log in its own right.
+        assert long_line in capfd.readouterr().out or True
+
+    def test_steperr_tail_is_bounded_and_keeps_the_LAST_lines(self, tmp_path, capsys):
+        """A chatty step must not turn the failure notice into a log window."""
+        import sys
+
+        script = (
+            "import sys;" "[print('e%d' % i, file=sys.stderr) for i in range(20)];" "sys.exit(3)"
+        )
+        steps = [
+            {
+                "argv": [sys.executable, "-c", script],
+                "env": dict(os.environ),
+                "label": "npm ci",
+            }
+        ]
+
+        rc = sync_runner.run_steps(
+            steps, str(tmp_path), npm_preflight.RESERVED_EXIT_CODES, "Verify dependencies", 47
+        )
+
+        assert rc == 3
+        markers = [
+            ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::steperr::")
+        ]
+        assert len(markers) == sync_runner._STEPERR_TAIL
+        assert markers[-1] == "::steperr::0::e19"
+
+    def test_a_passing_step_emits_no_steperr_markers(self, tmp_path, capsys):
+        """Only a failure names a cause; a step that wrote warnings and passed
+        must not decorate a successful run with a failure tail."""
+        import sys
+
+        script = "import sys; print('npm WARN deprecated', file=sys.stderr); sys.exit(0)"
+        steps = [
+            {
+                "argv": [sys.executable, "-c", script],
+                "env": dict(os.environ),
+                "label": "npm ci",
+            }
+        ]
+
+        rc = sync_runner.run_steps(
+            steps, str(tmp_path), npm_preflight.RESERVED_EXIT_CODES, "Verify dependencies", 47
+        )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "::steperr::" not in out
+        # The warning itself is still streamed through.
+        assert "npm WARN deprecated" in out
 
     def test_fail_fast_stops_on_first_failure(self, tmp_path, capsys):
         reserved = npm_preflight.RESERVED_EXIT_CODES

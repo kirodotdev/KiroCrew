@@ -80,12 +80,56 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // stalls in one band, then jumps. An indeterminate spinner plus the step name
 // and elapsed time is the honest signal.
 const STEP_MARKER_RE = /^::step::(\d+)::(.+)$/
+// The tail of a FAILED step's stderr, re-emitted by the sync runner under its own
+// marker. It exists because output ORDER in the runner's single pipe is not
+// evidence: a child block-buffers stdout to a pipe and writes stderr unbuffered,
+// so the stdout buffer flushes at EXIT -- after the diagnostic. A refused
+// `git merge --ff-only` therefore ENDS with `Updating <old>..<new>`, so a bare
+// "last output line" rule names that progress line as the reason Pull+Build
+// failed. These markers name the failure from the stream diagnostics arrive on.
+const STEPERR_MARKER_RE = /^::steperr::(\d+)::([\s\S]*)$/
 // The failure diagnosis arrives on the run as `cause`, derived by the gateway
 // from the exit code -- never parsed out of this stream, which also carries
-// worktree-controlled build output. So the log needs no marker handling.
+// worktree-controlled build output. `::steperr::` does NOT change that: it is
+// the raw log tail, rendered as such, and never sets `lastIsCause`.
 
 function filterStepMarkers(lines: string[]): string[] {
-  return lines.filter((l) => !STEP_MARKER_RE.test(l))
+  // Both markers are protocol. `::steperr::` lines are also DUPLICATES -- the
+  // runner already streamed each stderr line into the log -- so dropping them
+  // keeps the log panel a faithful transcript rather than one with its tail
+  // repeated.
+  return lines.filter((l) => !STEP_MARKER_RE.test(l) && !STEPERR_MARKER_RE.test(l))
+}
+
+/**
+ * The failure text for a finished sync run, from its output alone.
+ *
+ * Prefers the failing step's stderr tail (`::steperr::`) over the last output
+ * line. The last line is only a good guess when the failing process wrote
+ * nothing to stdout: npm prints its diagnosis FIRST and its "a complete log of
+ * this run can be found in ..." pointer LAST, and git prints `Updating a..b` to
+ * stdout before a refused fast-forward errors on stderr -- so in both cases the
+ * final line is the least informative one produced. Falls back to that last-line
+ * rule for a run from a gateway that emits no `::steperr::` markers.
+ */
+function syncFailureTail(out: string[]): string {
+  const stderrTail = out
+    .map((l) => STEPERR_MARKER_RE.exec(l)?.[2])
+    // Blank texts are dropped, not merely trimmed away later: the runner only
+    // ever emits non-blank lines, so a `::steperr::0::` with nothing after it can
+    // only be a step printing the marker itself — and an all-blank tail would
+    // resolve to `''`, which `ErrorNotice` renders as NOTHING. That would let a
+    // build script hide the failure notice, which is a bigger gift than the
+    // verbatim-output echo it already had.
+    .filter((t): t is string => !!t && !!t.trim())
+  if (stderrTail.length) return stderrTail.join('\n')
+  // The fallback must exclude BOTH markers, not just `::step::`. A run whose only
+  // `::steperr::` lines were blank (the forgery above) leaves them as the last
+  // lines of the output, and a fallback that skipped only step markers would
+  // then render the raw marker as the failure text.
+  return [...out].reverse().find(
+    (l) => l?.trim() && !STEP_MARKER_RE.test(l) && !STEPERR_MARKER_RE.test(l),
+  ) || ''
 }
 
 /* ─── Restart identity handshake ─── */
@@ -1032,12 +1076,10 @@ export default function DevFleetPage() {
         const t0 = run.started ? run.started * 1000 : Date.now()
         const out = run.output || []
         // Same preference as the two poll paths: a reported cause outranks the
-        // last output line, which for npm is its log-file pointer. Missing it
+        // step's stderr tail, which outranks the last output line. Missing it
         // here meant a page RELOAD after a failed build showed the uninformative
         // line even though the diagnosis was stored on the run.
-        const last = run.cause
-          || [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l))
-          || ''
+        const last = run.cause || syncFailureTail(out)
         if (run.status === 'running') {
           setSyncRun({ rid, status: 'running', lines: out, startedAt: t0, stepLabel: run.step_label })
           pollSyncRun(rid, t0)
@@ -1130,9 +1172,7 @@ export default function DevFleetPage() {
       if (!run) continue
       const t0 = run.started ? run.started * 1000 : startedAt
       const out = run.output || []
-      const last = run.cause
-        || [...out].reverse().find((l: string) => l?.trim() && !STEP_MARKER_RE.test(l))
-        || ''
+      const last = run.cause || syncFailureTail(out)
       if (run.status === 'done' || run.status === 'timeout') {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last, lastIsCause: Boolean(run.cause) })
@@ -1171,13 +1211,10 @@ export default function DevFleetPage() {
       }
       const out = run.output || []
       const t0 = run.started ? run.started * 1000 : startedAt
-      // Prefer the cause a step reported over the last output line. npm prints
-      // its diagnosis FIRST and its "a complete log of this run can be found
-      // in ..." pointer LAST, so the last line is the least informative one it
-      // produces — which is what this used to surface on every failed build.
-      const last = run.cause
-        || [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l))
-        || ''
+      // Prefer the cause a step reported, then the failing step's stderr tail,
+      // then the last output line -- see `syncFailureTail` for why the last line
+      // is the worst of the three.
+      const last = run.cause || syncFailureTail(out)
       if (run.status === 'done' || run.status === 'timeout') {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last, lastIsCause: Boolean(run.cause) })
@@ -1932,14 +1969,22 @@ export default function DevFleetPage() {
       <div style={{ gridColumn: '4 / -1', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8, minWidth: 0 } as CSSProperties}>
         {/* A gateway-composed diagnosis (lastIsCause) is the one line the user
             has to act on, so it is the notice's message and wraps in full. When
-            the backend gave no diagnosis the message is the raw log tail — the
-            full log is one click away in the Log panel. Inputs are all in git,
+            the backend gave no diagnosis the message is the failing step's
+            stderr tail (or, from a gateway that emits no `::steperr::` markers,
+            the raw log tail) — the full
+            log is one click away in the Log panel. Inputs are all in git,
             so the hand-off loses nothing. The notice takes its own line
             (`basis-full`) so the Log / dismiss pair below it stays a two-control
-            row (max-two-buttons-per-row). */}
+            row (max-two-buttons-per-row).
+            `whitespace-pre-wrap` on the message only: a stderr tail is several
+            lines and git's is indented to associate paths with their headline,
+            so collapsing it would run "would be overwritten by merge:" straight
+            into the file name. The inline variant does not pre-wrap by default
+            and must not start doing so for every other consumer. */}
         <ErrorNotice
           title={i18nT('pages.devFleetPage.pull_build_failed')}
           message={syncRun.last}
+          messageClassName="whitespace-pre-wrap"
           variant="inline"
           askAgent
           className="basis-full min-w-0 flex-wrap select-text"

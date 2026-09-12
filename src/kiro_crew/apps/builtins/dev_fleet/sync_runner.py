@@ -41,16 +41,64 @@ text; nothing printed here is promoted into the authoritative diagnosis.
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import os
 import shutil
 import subprocess  # nosec B404 - running the sync's own steps is this module's purpose
 import sys
+import threading
 
 #: Suffix appended to a stash path to name its backup. A ``node_modules`` moved
 #: aside for the duration of a step lands at ``<stash>`` + this.
 _BACKUP_SUFFIX = ".kirocrew-sync-backup"
+
+#: How many trailing stderr lines of a FAILED step are re-emitted as
+#: ``::steperr::`` markers. Four covers the shape git and pip use -- a headline,
+#: the offending paths, the remedy sentence -- without turning the banner into a
+#: log window; the full log is one click away in the dashboard either way.
+_STEPERR_TAIL = 4
+
+#: How long to wait for a step's stderr pump to reach EOF after the step exits.
+#: Bounded rather than unbounded because a GRANDCHILD (npm spawns several)
+#: inherits the write end of that pipe, so a survivor keeps it open and EOF never
+#: arrives. Before stderr was piped such a survivor simply kept writing into the
+#: inherited pipe and the runner exited anyway, so waiting forever here would
+#: turn a cosmetic leak into a wedged Pull+Build. Late lines are dropped instead.
+_STEPERR_DRAIN_S = 5.0
+
+#: The gateway reads this runner's pipe with ``asyncio.StreamReader.readline()``,
+#: whose limit is 64 KiB of BYTES (``runtime.py``). A line past it raises
+#: ``LimitOverrunError`` there, and that handler reaps the whole process tree --
+#: so the ceiling this pump forwards under is not ours to pick.
+_GATEWAY_LINE_BYTES = 64 * 1024
+
+#: Per-read ceiling on a step's stderr, in characters. DERIVED, not picked.
+#:
+#: A step runs worktree-controlled code, so it can write a newline-free blob of
+#: any length, and ``for line in stream`` would allocate the whole blob inside
+#: this runner. ``readline(cap)`` bounds each read instead: a longer run comes
+#: back in cap-sized pieces and every piece is forwarded, so splitting is the only
+#: effect and the allocation is fixed. That is the bounded-reader posture
+#: ``test_jsonl_util.py::TestNoUnboundedHandleIteration`` requires; this module
+#: cannot call the repo's own ``jsonl_util`` readers because it is stdlib-only
+#: and executes from a snapshot by path.
+#:
+#: The cap counts CHARACTERS, because the stream is a text wrapper, while the
+#: gateway's limit counts BYTES -- so the two units have to be reconciled here or
+#: the bound is a bound in name only. A Python character encodes to at most 4
+#: UTF-8 bytes and the pump appends one newline, so the worst-case encoded line
+#: is ``cap * 4 + 1`` bytes; dividing the gateway's byte ceiling by that is the
+#: whole derivation. Multibyte stderr (a non-ASCII checkout path, a localized
+#: git message) is ordinary, not exotic, and a character cap chosen as a round
+#: number holds only for ASCII.
+_STEPERR_READ_CAP = (_GATEWAY_LINE_BYTES - 1) // 4
+
+#: Ceiling on ONE remembered tail line, in characters. The tail names a failure
+#: in a one-notice banner, not in a log, so a cap-sized piece has no business
+#: being rendered whole. The full piece still reaches the log.
+_STEPERR_LINE_CHARS = 500
 
 
 def gone(path: str) -> bool:
@@ -119,18 +167,12 @@ def reconcile_leftovers(steps: list[dict], exit_tree_ambiguous: int) -> None:
         if have_tree and have_backup:
             # The paths are LOG text; the diagnosis is the exit code, which the
             # gateway maps. Nothing here is promoted out of stdout.
-            print(
-                "a previous sync left a dependency-tree backup beside the tree",
-                flush=True,
-            )
-            print("tree: %s" % stash, flush=True)
-            print("backup: %s" % backup, flush=True)
+            emit("a previous sync left a dependency-tree backup beside the tree")
+            emit("tree: %s" % stash)
+            emit("backup: %s" % backup)
             sys.exit(exit_tree_ambiguous)
         if have_backup:
-            print(
-                "restoring a dependency tree left stashed by an earlier run",
-                flush=True,
-            )
+            emit("restoring a dependency tree left stashed by an earlier run")
             os.rename(backup, stash)
 
 
@@ -185,39 +227,169 @@ class NodeModulesTransaction:
             return
         if self.rc == 0:
             if not gone(backup):
-                print(
+                emit(
                     "note: a dependency-tree backup could not be removed and "
-                    "was left at %s" % backup,
-                    flush=True,
+                    "was left at %s" % backup
                 )
         elif gone(stash):
             os.rename(backup, stash)
-            print("restored %s after a failed step" % stash, flush=True)
+            emit("restored %s after a failed step" % stash)
         else:
-            print("partial: %s" % stash, flush=True)
-            print("backup: %s" % backup, flush=True)
+            emit("partial: %s" % stash)
+            emit("backup: %s" % backup)
             self.rc = self.exit_restore_failed
         # Never suppress an exception: the step body's rc handling is done before
         # exit, and an exception must still propagate after the tree is restored.
         # (Returning None -- always falsy -- is the no-suppression contract.)
 
 
-def run_step(st: dict, cwd: str) -> int:
-    """Run one step's subprocess and return its exit code.
+#: Serializes every write this runner makes to its stdout pipe.
+#:
+#: The gateway reads that pipe with a LINE reader, so a line is only bounded if
+#: nothing can splice into the middle of it. Two pumps plus the main thread's
+#: marker prints are three writers; without one lock a step's newline-free run
+#: could prepend to another's terminated line and the merged inter-newline run
+#: would exceed :data:`_GATEWAY_LINE_BYTES` however tightly each writer capped
+#: itself. Holding this for every write is what makes the bound true by
+#: construction rather than by hope.
+_WRITE_LOCK = threading.Lock()
 
-    Each step is a separate process that inherits the runner's stdout pipe but
-    re-derives its encoding from the locale, so a Python step (pip, the
+
+def emit(line: str) -> None:
+    """Write ONE whole line to the runner's stdout, under the shared lock.
+
+    Every write to that pipe goes through here -- the pumps and the step markers
+    alike. A caller that bypasses it reintroduces the splice this lock exists to
+    prevent, so there is deliberately no second path.
+    """
+    with _WRITE_LOCK:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
+
+def _pump(stream, tail: "collections.deque[str] | None") -> None:
+    """Relay one of a step's streams to our stdout, optionally keeping its tail.
+
+    Runs on a thread for the step's whole lifetime, so a step that writes more
+    than a pipe buffer's worth cannot block waiting for a reader. Each piece is
+    written through IMMEDIATELY, so piping costs nothing in liveness: the
+    dashboard's "current activity" line keeps advancing.
+
+    Reads are bounded by :data:`_STEPERR_READ_CAP` rather than iterating the
+    handle, so a newline-free blob from a worktree-controlled step cannot become
+    one unbounded allocation here. A blob longer than the cap arrives as
+    cap-sized pieces, each forwarded, so splitting it across log lines is the
+    only effect.
+
+    *tail* is a deque for the stream whose last lines name a failure (stderr) and
+    ``None`` for the one that does not (stdout). Blank pieces are forwarded but
+    never remembered -- they pad a diagnosis, they are never the diagnosis.
+    """
+    while True:
+        chunk = stream.readline(_STEPERR_READ_CAP)
+        if not chunk:
+            break
+        line = chunk.rstrip("\n")
+        emit(line)
+        if tail is not None and line.strip():
+            tail.append(_trim_tail_line(line))
+
+
+def _trim_tail_line(line: str) -> str:
+    """Cut a remembered line to banner length, MARKED when it was cut.
+
+    The tail is rendered in a one-line notice, so a cap is right; a silent cut is
+    not. A diagnosis trimmed without a marker reads as the whole sentence, which
+    is the same class of harm as naming a progress line -- the reader believes
+    something the output does not support.
+    """
+    if len(line) <= _STEPERR_LINE_CHARS:
+        return line
+    return line[:_STEPERR_LINE_CHARS] + "..."
+
+
+def run_step(st: dict, cwd: str) -> tuple[int, list[str]]:
+    """Run one step's subprocess; return its exit code and its stderr tail.
+
+    Each step is a separate process whose stdout AND stderr are piped to us, and
+    which re-derives its encoding from the locale -- so a Python step (pip, the
     build-and-stage child) would encode a non-ASCII checkout path with the
     codepage and die on it. ``PYTHONIOENCODING`` is the only channel that reaches
     a child, so it is set here on every step's env -- non-Python steps (git, npm)
     ignore it and are unaffected. Assigned rather than defaulted: the reader's
     encoding is fixed, so a divergent inherited value would be the defect.
+
+    **Both streams are piped, and stderr's tail is returned, because the ORDER of
+    a failed step's output in one merged pipe is a lie.** With stdout and stderr
+    sharing one descriptor, a child block-buffers stdout to a pipe while writing
+    stderr unbuffered -- so the stdout buffer flushes at EXIT, after the
+    diagnostic. ``git merge --ff-only`` refused for local changes emits, in pipe
+    order::
+
+        error: Your local changes to the following files would be overwritten ...
+        Please commit your changes or stash them before you merge.
+        Aborting
+        Updating 2f9ed9724..bf09e50e5     <- stdout, flushed last
+
+    The dashboard promotes the LAST output line when the exit code carries no
+    reserved diagnosis, so a bare last-line rule names ``Updating <old>..<new>``
+    -- a progress line -- as the reason Pull+Build failed. Returning the tail as
+    data lets the failure be named from the stream that carries diagnostics,
+    instead of from a position that depends on libc buffering.
+
+    **The step writes to neither pipe directly; this runner is the sole writer.**
+    That is what makes the byte bound real. Capping our own writes bounds nothing
+    while a step also owns the descriptor: it can emit a newline-free blob that
+    prepends to a terminated relay line, and the merged inter-newline run the
+    gateway reads exceeds :data:`_GATEWAY_LINE_BYTES` however tightly each writer
+    capped itself -- which reaps the process tree. With both streams piped and
+    every write going through :func:`emit` under one lock, each line the gateway
+    sees is whole and under the ceiling by construction.
+
+    What this guarantees, exactly -- four statements, no more:
+
+    1. Order WITHIN one stream is preserved.
+    2. Order ACROSS the two is unspecified: two pumps relay independently, so
+       they interleave by timing.
+    3. Every forwarded line is WHOLE and under :data:`_GATEWAY_LINE_BYTES`. No
+       writer can splice into another's line.
+    4. Everything the STEP ITSELF wrote is relayed. The pumps read to EOF, and by
+       the time ``wait()`` returns the step is gone and its bytes are already in
+       the pipes. Output written AFTER the drain cutoff by something that outlived
+       the step -- the surviving grandchild :data:`_STEPERR_DRAIN_S` exists for --
+       is dropped, and that trade is the point of bounding the join.
+
+    (2) is the premise of the change rather than a gap in it: a position in this
+    stream was never evidence of what failed, which is exactly why the tail is
+    labelled instead of located. Nothing is filtered or reordered within a stream.
     """
     env = dict(st["env"])
     env["PYTHONIOENCODING"] = "utf-8:replace"
-    return subprocess.run(  # nosec B603 - argv list, no shell
-        st["argv"], cwd=cwd, env=env
-    ).returncode
+    tail: collections.deque[str] = collections.deque(maxlen=_STEPERR_TAIL)
+    proc = subprocess.Popen(  # nosec B603 - argv list, no shell
+        st["argv"],
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        errors="replace",
+    )
+    # Daemon so an undrainable pipe (see _STEPERR_DRAIN_S) cannot hold up
+    # interpreter exit either. stdout gets no tail: the tail names a failure, and
+    # naming it from stdout is the defect this whole change exists to remove.
+    pumps = [
+        threading.Thread(target=_pump, args=(proc.stdout, None), daemon=True),
+        threading.Thread(target=_pump, args=(proc.stderr, tail), daemon=True),
+    ]
+    for pump in pumps:
+        pump.start()
+    rc = proc.wait()
+    # AFTER wait(): the child is gone, so the pumps are draining what is left in
+    # the pipes and reach EOF unless a surviving grandchild holds one open.
+    for pump in pumps:
+        pump.join(timeout=_STEPERR_DRAIN_S)
+    return rc, list(tail)
 
 
 def demote_reserved(rc: int, label: str, reserved: frozenset[int], preflight_label: str) -> int:
@@ -233,11 +405,10 @@ def demote_reserved(rc: int, label: str, reserved: frozenset[int], preflight_lab
     when it demotes.
     """
     if rc in reserved and label != preflight_label:
-        print(
+        emit(
             "step %s exited %d, which is a reserved diagnosis code; reporting "
             "it as a plain failure because only the %s step may assert one"
-            % (label, rc, preflight_label),
-            flush=True,
+            % (label, rc, preflight_label)
         )
         return 1
     return rc
@@ -255,9 +426,13 @@ def run_steps(
     """Run the reconciled step list in order, fail-fast, with the transaction.
 
     Emits one ``::step::<idx>::<label>`` marker per step -- the run worker parses
-    these to name the current step in the dashboard. Returns the exit code to
-    exit with: 0 if every step passed, otherwise the first non-zero code (after
-    reserved-code demotion and any restore-failure override).
+    these to name the current step in the dashboard. A step that FAILS is
+    followed by up to :data:`_STEPERR_TAIL` ``::steperr::<idx>::<line>`` markers
+    carrying the tail of its stderr, which is what lets the dashboard name the
+    failure without trusting output ORDER in a merged pipe (see
+    :func:`run_step`). Returns the exit code to exit with: 0 if every step
+    passed, otherwise the first non-zero code (after reserved-code demotion and
+    any restore-failure override).
 
     The frontend-skip verdict is held HERE, in runner state, not on disk. When
     the trusted preflight step (identified by ``preflight_label``) exits
@@ -273,16 +448,15 @@ def run_steps(
     """
     skip_frontend = False
     for i, st in enumerate(steps):
-        print("::step::%d::%s" % (i, st["label"]), flush=True)
+        emit("::step::%d::%s" % (i, st["label"]))
         if skip_frontend and st["label"] in frontend_labels:
-            print(
+            emit(
                 "::skip::%d::%s -- backend-only sync, frontend unchanged and "
-                "node_modules populated" % (i, st["label"]),
-                flush=True,
+                "node_modules populated" % (i, st["label"])
             )
             continue
         with NodeModulesTransaction(st.get("stash"), exit_restore_failed) as txn:
-            rc = run_step(st, cwd)
+            rc, steperr = run_step(st, cwd)
             rc = demote_reserved(rc, st["label"], reserved, preflight_label)
             # The preflight asserting the frontend is already built is a SUCCESS
             # that also suppresses the two frontend steps. Only the trusted
@@ -296,6 +470,20 @@ def run_steps(
         # The transaction may have overridden rc to its restore-failed code.
         rc = txn.rc
         if rc != 0:
+            # Re-emit the failing step's stderr tail under its own marker, so the
+            # dashboard can name the failure from the stream diagnostics arrive
+            # on rather than from the last line in a merged pipe -- which for a
+            # step that block-buffered its stdout is a stale progress line (see
+            # `run_step`). Emitted only on failure and only for the step that
+            # failed: on the success path there is nothing to name.
+            #
+            # This is still LOG TEXT, not a diagnosis. The authoritative cause
+            # remains the exit code, mapped by the gateway, and these lines are
+            # presented as the raw tail they are -- so a worktree-run step that
+            # prints a plausible sentence to stderr gains exactly what it already
+            # had: its output shown verbatim in the failure notice.
+            for line in steperr:
+                emit("::steperr::%d::%s" % (i, line))
             return rc
     return 0
 
@@ -381,10 +569,9 @@ def main(argv: list[str] | None = None) -> int:
         # the pinned digest travels in argv (immutable once this process exists),
         # so a rewrite of the file between staging and startup cannot substitute
         # steps. Content is diagnosis; the refusal is the protection.
-        print(
+        emit(
             "sync runner: steps file does not match the staged manifest "
-            "(sha256 %s != expected %s)" % (digest, args.steps_sha256),
-            flush=True,
+            "(sha256 %s != expected %s)" % (digest, args.steps_sha256)
         )
         return 1
     steps = json.loads(raw.decode("utf-8"))

@@ -824,6 +824,97 @@ failure, because every other step runs worktree-controlled code that can exit an
 number it likes; and only the sync run kind is stamped at all, since `_start_run`
 is shared with `provision`, whose script enforces no such reservation.
 
+**When there is no reserved code, the failure is named from the failing step's
+stderr — never from the last output line.** Every step's stdout and stderr land
+in ONE pipe (`_start_run` spawns the runner with `stderr=STDOUT`, and steps
+inherit it), and a child block-buffers stdout to a pipe while writing stderr
+unbuffered — so the stdout buffer flushes at process EXIT, *after* the
+diagnostic. The stream order is therefore not evidence of what failed. A refused
+`git merge --ff-only` demonstrates it exactly:
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+        config-baseline.json
+Please commit your changes or stash them before you merge.
+Aborting
+Updating 2f9ed9724..bf09e50e5     <- stdout, flushed last
+```
+
+`run_step` therefore gives each step's stderr its own pipe, pumps it through to
+stdout line by line (so the log and the live "current activity" line are
+unchanged), and remembers its last `_STEPERR_TAIL` non-blank lines. When the step
+fails, `run_steps` re-emits those as `::steperr::<idx>::<line>` markers, and the
+UI's ladder is `cause` → the `::steperr::` block → the last output line. Both
+marker families are filtered out of the log panel: the stderr lines already
+appear there in their own order, so the markers would only duplicate the tail.
+
+Order WITHIN each stream is preserved; order ACROSS the two is unspecified. The
+child writes stdout straight to the inherited descriptor while the pump relays
+stderr, so the two interleave by timing rather than by causality. That is the
+premise of the change rather than a gap in it — a position in this stream was
+never evidence of what failed, which is why the tail is labelled instead of
+located.
+
+**The pump reads with a cap, it does not iterate the handle.** A step runs
+worktree-controlled code, so it can write a newline-free blob of any length, and
+`for line in stream` would allocate the whole blob inside the runner — the
+unbounded-read shape `test_jsonl_util.py::TestNoUnboundedHandleIteration`
+refuses. `readline(_STEPERR_READ_CAP)` bounds every allocation instead: a longer
+run arrives as cap-sized pieces, each forwarded, so splitting is the only effect and
+the
+blob is merely split across lines. The repo's own `jsonl_util` bounded readers
+are unavailable here — this module is stdlib-only and executes from a snapshot by
+path — so the bound is spelled with the stdlib.
+
+**That cap is derived from the gateway's byte limit, not chosen.** The two ends
+count different units: `readline` caps CHARACTERS because the stream is a text
+wrapper, while the gateway reads this pipe with `asyncio.StreamReader.readline()`,
+whose 64 KiB limit counts BYTES — and a line past it raises `LimitOverrunError`
+there, whose handler reaps the whole process tree. A character encodes to at most
+4 UTF-8 bytes and the pump appends one newline, so the cap is
+`(_GATEWAY_LINE_BYTES - 1) // 4`. A round-number character cap would satisfy the
+byte ceiling only for ASCII, and multibyte stderr — a non-ASCII checkout path, a
+localized git message — is ordinary. `test_dev_fleet_sync_runner.py` asserts the
+ENCODED length of every forwarded line, since an ASCII fixture cannot see the
+gap. A remembered tail line is separately capped at `_STEPERR_LINE_CHARS`, because
+the tail is rendered in a one-notice banner rather than in a log.
+
+**The drain after the step exits is bounded too.** `pump.join` waits
+`_STEPERR_DRAIN_S` and no longer. EOF on that pipe needs every writer gone, and a
+GRANDCHILD inherits the write end — `npm` spawns several — so one survivor keeps
+it open and EOF never arrives. An unbounded join would turn that survivor from a
+cosmetic leak into a wedged Pull+Build, so late lines are dropped instead. What
+that costs is precise: everything the STEP ITSELF wrote is relayed, since its
+bytes are in the pipe by the time `wait()` returns; what can be dropped is output
+written after the cutoff by something that outlived the step, which is the
+survivor this bound exists for.
+
+**This runner is the SOLE writer to its stdout pipe, and that is what makes the
+byte bound real.** Capping our own writes bounds nothing while a step also owns
+the descriptor: it can emit a newline-free blob that prepends to a terminated
+relay line, and the merged inter-newline run the gateway reads then exceeds
+`_GATEWAY_LINE_BYTES` however tightly each writer capped itself — which raises in
+the reader and reaps the process tree. So `run_step` pipes stdout as well as
+stderr, relays each on its own pump, and every write in the module — both pumps
+and every `::step::` / `::steperr::` / transaction line — goes through `emit`,
+which holds one lock for the whole line. A step that deliberately interleaves
+newline-free stdout blobs with terminated stderr lines produces 15 spliced lines
+without that, which `test_concurrent_stdout_cannot_splice_a_relayed_line` pins by
+mutation.
+
+`run_step`'s docstring states the guarantees exhaustively, as four numbered
+lines. Read them there rather than inferring them from prose here — sweeping
+wording about the log being complete or in order is what made this paragraph wrong
+twice.
+
+`::steperr::` is a **label on a worktree-controlled stream, not a diagnosis.** It
+never sets `lastIsCause`, so it renders as the raw tail it is — a step printing a
+plausible sentence to stderr gains exactly what it already had, its output shown
+verbatim. The one shape that is guarded is an all-blank forged tail, which would
+resolve to the empty string and make `ErrorNotice` render nothing: blank marker
+texts are dropped, and the last-line fallback skips marker lines too, so a forged
+marker can neither hide the notice nor be surfaced raw.
+
 The build and the copy are ONE step because they share ONE holder of the staging
 lock (`.dist.staging.lock`, next to `static/dist`). `npm run build` empties
 `website/dist` before repopulating it, so a peer flow — another sync, or the
