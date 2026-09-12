@@ -4674,8 +4674,13 @@ async def _validate_telegram_token(token: str) -> str | None:
     import aiohttp  # noqa: F811
 
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
+    _tg_base = os.environ.get(
+        "TELEGRAM_API_BASE_URL",
+        "https://api.telegram.org/bot{token}/{method}",
+    )
+    verify_url = _tg_base.format(token=token, method="getMe")
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(f"https://api.telegram.org/bot{token}/getMe") as resp:
+        async with session.get(verify_url) as resp:
             data = await resp.json(content_type=None)
             if isinstance(data, dict) and data.get("ok"):
                 return None
