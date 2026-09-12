@@ -13,8 +13,12 @@ ships green.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import sys
+import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -475,6 +479,7 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         ).returncode
 
     assert run(str(suite)) == 0, "recursive collection should honour collect_ignore"
@@ -535,3 +540,136 @@ def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> Non
         "a same-named suite outside test/ is not covered by conftest's "
         f"collect_ignore and must keep running on Windows; got {selected}"
     )
+
+
+# --- container image test suite: image-only-dependency collection guard ---------
+#
+# The crew container image's test suite lives under
+# ``src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests`` and is
+# reached by ``setup.cfg``'s ``testpaths = ... src/kiro_crew/apps/builtins``. Four
+# of its modules ``import httpx`` (and one ``fastapi``/``uvicorn``) at module top
+# level -- deps that ``container/requirements.txt`` marks "Container runtime only.
+# These must NOT become dependencies of the Kiro Crew app itself", so the app's own
+# CI env does not carry them. Its conftest therefore sets ``collect_ignore_glob`` to
+# skip the suite when those collection-time deps are absent, rather than raising a
+# ``ModuleNotFoundError`` at collection that cascades every backend shard. These
+# pin that guard: it must skip on a missing dep, and it must NOT skip when all are
+# present (or the 309 tests silently stop running everywhere).
+
+_CONTAINER_CONFTEST = (
+    _REPO_ROOT
+    / "src"
+    / "kiro_crew"
+    / "apps"
+    / "builtins"
+    / "aws_control"
+    / "crew"
+    / "runtime"
+    / "container_tests"
+    / "conftest.py"
+)
+
+
+def _os_reporting(name: str):
+    """A stand-in ``os`` module whose ``name`` is *name*, for ``sys.modules``.
+
+    ``mock.patch.object(os, "name", ...)`` cannot be used here. ``pathlib.Path.__new__``
+    consults ``os.name`` on EVERY instantiation to pick ``PosixPath`` or ``WindowsPath``,
+    and the conftest calls ``Path(__file__).resolve()``, so patching the real attribute
+    makes that line raise ``cannot instantiate 'WindowsPath' on your system`` -- in both
+    directions, since a Windows runner patched to ``posix`` fails the mirror way.
+
+    Swapping the module that the conftest's own ``import os`` resolves to keeps the
+    change inside the module under test: ``pathlib`` bound the real ``os`` object when it
+    was first imported and never looks it up again.
+    """
+    proxy = types.ModuleType("os")
+    proxy.__dict__.update(vars(os))
+    # Through ``__dict__`` rather than ``proxy.name``: mypy types a ``ModuleType``
+    # attribute set by the stub for the real ``os``, so the direct assignment is an
+    # ``attr-defined`` error on a line that is doing exactly what it means to.
+    proxy.__dict__["name"] = name
+    return proxy
+
+
+def _run_container_conftest(*, present: set[str], os_name: str = "posix"):
+    """Load the container conftest as a module with ``find_spec`` reporting only ``present``.
+
+    Uses the same ``spec_from_file_location`` + ``exec_module`` mechanism as
+    ``_load_selector`` above, so the conftest's module-level guard runs and its
+    ``collect_ignore_glob`` / ``_missing_image_deps`` can be read back. Returns the
+    loaded module.
+    """
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *a, **k):
+        if name in {"fastapi", "httpx", "uvicorn", "boto3"}:
+            return object() if name in present else None
+        return real_find_spec(name, *a, **k)
+
+    spec = importlib.util.spec_from_file_location(
+        "container_conftest_under_test", _CONTAINER_CONFTEST
+    )
+    assert spec and spec.loader, "could not build an import spec for the container conftest"
+    module = importlib.util.module_from_spec(spec)
+    saved = importlib.util.find_spec
+    try:
+        importlib.util.find_spec = fake_find_spec  # type: ignore[assignment]
+        # Pin the platform the conftest sees, so what a caller measures is the branch it
+        # asked for. The conftest tests ``os.name`` BEFORE it tests the deps, so on a
+        # Windows runner ``collect_ignore_glob`` is set whatever ``present`` says, and
+        # every dep-branch assertion would be reading the platform branch's answer.
+        #
+        # Skipping those tests on Windows was the alternative and is worse: the
+        # dependency logic is not platform-specific, so a skip stops checking a live
+        # property on one platform while still scoring as a pass.
+        with mock.patch.dict(sys.modules, {"os": _os_reporting(os_name)}):
+            spec.loader.exec_module(module)
+    finally:
+        importlib.util.find_spec = saved  # type: ignore[assignment]
+    return module
+
+
+def test_container_suite_skipped_when_a_collect_time_dep_is_missing() -> None:
+    ns = _run_container_conftest(present={"fastapi", "uvicorn"})  # httpx missing
+    assert ns._missing_image_deps == ["httpx"]
+    assert getattr(ns, "collect_ignore_glob", None) == ["test_*.py"], (
+        "conftest must set collect_ignore_glob to skip the image suite when a "
+        "collection-time dep (httpx/fastapi/uvicorn) is absent"
+    )
+
+
+def test_container_suite_runs_when_all_collect_time_deps_present() -> None:
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
+    assert ns._missing_image_deps == []
+    assert getattr(ns, "collect_ignore_glob", None) is None, (
+        "conftest must NOT skip the image suite when every collection-time dep is "
+        "importable, or the 309 tests stop running where their subject can run"
+    )
+
+
+def test_the_platform_branch_wins_over_the_dep_branch() -> None:
+    """On a non-POSIX host the suite is skipped even with every dep importable.
+
+    The two branches answer different questions -- "can this subject run here at all"
+    and "are its imports satisfied" -- and the platform one has to win, because the
+    image is Linux-only however complete the dev env is. Ordering them the other way
+    would collect 309 POSIX-dependent tests on Windows whenever someone had installed
+    ``requirements-dev.txt`` there.
+    """
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"}, os_name="nt")
+    assert ns._missing_image_deps == [], "the dep branch had nothing to complain about"
+    assert getattr(ns, "collect_ignore_glob", None) == [
+        "test_*.py"
+    ], "the image suite must not be collected on a non-POSIX host, whatever its deps"
+
+
+def test_boto3_is_not_a_collect_time_gate() -> None:
+    """boto3 is imported lazily, so a venv without it must still run the suite.
+
+    Both ``backup/store.py`` and ``front/transcript.py`` import boto3 inside a
+    function. If boto3 were in the guard list, every AWS-free dev env would skip
+    the whole suite for a dependency that never blocks import.
+    """
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})  # no boto3
+    assert getattr(ns, "collect_ignore_glob", None) is None

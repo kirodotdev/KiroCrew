@@ -736,6 +736,13 @@ _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
 _ALLOWED = {
     "config/paths.py",
     "security/paths.py",
+    # A third case, and a different kind. The AWS Control crew container runs as its
+    # own process inside a Linux image where ``kiro_crew`` is not importable, so
+    # ``supervisor/bundle.py`` re-implements this resolver rather than calling it.
+    # The exempt file is that module's own TEST, which asserts what the
+    # re-implementation returns against a tmp_path: it neither reads nor writes the
+    # owner's home.
+    "apps/builtins/aws_control/crew/runtime/container_tests/test_supervisor_bundle.py",
 }
 
 

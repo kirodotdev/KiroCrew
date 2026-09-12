@@ -1405,6 +1405,85 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+  backend-test-crew-container:
+    name: Backend Tests (crew container)
+    needs: [await-fast-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/requirements.txt
+
+      # Two installs, deliberately not merged into one resolution.
+      #
+      # `-e .` and the dev group are what every other backend lane installs, and this
+      # suite needs them for a reason that is not obvious: no container test imports
+      # `kiro_crew`, but the repo-root conftest's autouse isolation fixtures do
+      # (`importlib.import_module("kiro_crew.apps")`), so a venv without the package
+      # errors at test SETUP rather than at collection. Measured: 233 errors, every
+      # one a ModuleNotFoundError on a transitive app dependency.
+      #
+      # The image's own runtime pins come from `container/requirements.txt` and are
+      # installed ONLY here. That file's header forbids them becoming dependencies of
+      # the application ("the app's backend hooks are imported into every owner's
+      # gateway process, and a web framework there buys nothing"), which is exactly
+      # why this cannot be folded into the `backend-test` shards: their environment IS
+      # the application's.
+      #
+      # Not `container/requirements-dev.txt`, which is the file the review named. It
+      # carries `-r requirements.txt`, pytest and pytest-asyncio and nothing else,
+      # while this rootdir's addopts pass `-n auto --dist loadgroup
+      # --max-worker-restart=2 --timeout=120`; with no xdist and no pytest-timeout
+      # installed that is an argument error, not a test run. Its `pytest==8.3.4` also
+      # contradicts the dev group's `9.0.3` that the rootdir conftest is written
+      # against, so the two sets cannot share one resolution. The image build still
+      # uses that file; CI installs the runtime half plus this repo's own toolchain.
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e "." --group dev
+          uv pip install --system -r \
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/requirements.txt
+
+      # CREW_CONTAINER_TESTS_REQUIRED is the point of this job, not a detail of it.
+      # The suite's conftest answers a missing image dependency with
+      # `collect_ignore_glob`, which takes the WHOLE suite out of collection while the
+      # run still reports success. Under this variable every reason it would decline to
+      # collect becomes a hard error, and the collection is additionally checked against
+      # the tree: every module that defines tests must yield at least one, and the total
+      # must clear a floor. So a dependency rename reds THIS lane instead of quietly
+      # restoring a lane that reports success while collecting nothing.
+      #
+      # `-n0`: the suite forks real process trees and binds real ports, so xdist
+      # workers would race each other for both. It runs in about ten seconds serially,
+      # which is less than the workers cost to start.
+      #
+      # `--no-cov` for the same reason as the sibling sandbox lane: this data is not
+      # part of the coverage gate's combine, and half-reported coverage is worse than
+      # none.
+      - name: Run the crew container suite
+        env:
+          CREW_CONTAINER_TESTS_REQUIRED: "1"
+        run: |
+          # As in backend-test (#7296): the `python` matcher annotates any traceback
+          # in the log, including one printed inside a warning, and never matches a
+          # pytest failure.
+          echo "::remove-matcher owner=python::"
+          pytest -q -n0 --timeout=180 --no-cov \
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests/
+
   coverage-combine:
     name: Coverage Combine
     needs: [backend-test, changes]

@@ -1,13 +1,13 @@
 ---
 title: Remote Instance on Fargate
-status: draft
+status: in-progress
 kind: framework
 author: Raymond Chen (chenmingwei23)
 created: 2026-09-07
-last-audited: 2026-09-07
-audited-at: 424efa423
+last-audited: 2026-09-12
+audited-at: bf09e50e5
 doc-pr:
-implementation-prs: []
+implementation-prs: [9223]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -144,7 +144,26 @@ one is an API call, not a deployment.
 persists between the two except what the crew was told to write elsewhere.
 
 **No service, no load balancer.** Nothing needs to be reconciled to a desired
-count, and nothing needs a listener.
+count, and no traffic is distributed across tasks. The task is addressed
+directly.
+
+**The channel into the task is a front process in the task.** Decided, not open.
+The image runs a small HTTP front on port 8080 that receives a turn and forwards
+it to the crew's own gateway over loopback; reaching that port is an authorised
+call in the owner's own account, and the task is not published to the internet and
+has no external DNS name. Two routes answer without the control secret, a turn
+endpoint and a liveness check; every other path requires `SMC_CONTROL_SECRET`. The
+front layer's contract is
+[aws-control](../system-specs/modules/aws-control.md).
+
+The option not taken was a port-forward into the task with no listener at all,
+which is what EC2 remote instances use. It was rejected for this phase because the
+product this backend exists to deliver is "deploy a crew and chat with it": an
+endpoint delivers that now, and the front process is where further endpoints are
+added, while the port-forward path needs a Fargate target format and task-role
+messaging permissions established first. It stays available as a second phase; the
+cost of the choice is stated in section 6 under "the registry, the tunnel, and the
+relay", and in section 7.
 
 ### What it plugs into
 
@@ -192,7 +211,11 @@ Naming these explicitly, because a new compute backend is a good opportunity to
 change things that should not change.
 
 **Authorisation is IAM.** Reaching a remote crew is an authorised call in the
-owner's own account. There is no second principal and no new authentication path.
+owner's own account. There is no second principal. There is one new
+authentication path, and it is small and inward-facing: the task's front process
+requires `SMC_CONTROL_SECRET` on every route except the two customer ones, so the
+owner's control plane can be told apart from a turn. It authorises nothing about
+who the caller is; IAM still decides that, before the call reaches the task.
 
 **Credentials live in the CLI's own store on the remote compute.** This is the
 property EC2 remote instances already have, and a session that expires is what
@@ -203,9 +226,25 @@ introduces a long-lived credential.
 makes a remote crew reachable by anyone else, and no design here should assume a
 second caller might appear later.
 
-**The registry, the tunnel, and the relay.** A Fargate-backed remote crew appears
-where an EC2-backed one appears. If it does not, this RFC has failed at its main
-purpose, which is adding a backend rather than a parallel feature.
+**The registry, the tunnel, and the relay.** These are unchanged in themselves,
+and a Fargate-backed crew does not appear in them in this phase. That is a change
+of purpose from an earlier draft of this section, which said a Fargate-backed
+crew appears wherever an EC2-backed one appears and called anything less a
+failure of the RFC's main purpose. It is stated as a change rather than softened,
+because it is one.
+
+A Fargate-backed crew is reached through its own front process in the task (see
+section 4), not through the relay surfaces an EC2-backed crew uses. The trade:
+the product this backend exists to deliver is "deploy a crew and chat with it",
+one endpoint satisfies that, and the front process is where further endpoints are
+added. Reusing the relay surfaces instead would mean making them work against a
+target format they do not have today, on a task whose role does not carry
+messaging permissions, before anything is chattable at all. Parity with those
+surfaces stays a goal and becomes later work; it is no longer this phase's
+success criterion. What would make this the parallel feature the earlier wording
+feared is a SECOND way to reach a crew that never converges -- so the front
+process is the one channel for a Fargate-backed crew, and the relay work, when it
+happens, reaches it rather than going around it.
 
 ## 7. Security considerations
 
@@ -230,9 +269,12 @@ need to be answered.
 ### What does not change
 
 Still one principal, still IAM, still the owner's own account, still credentials
-in the CLI's store on remote compute with the same lifetime rules. No inbound
-path is added and no data is shared between two parties, because there is only
-one party.
+in the CLI's store on remote compute with the same lifetime rules. One inbound
+path is added, and its shape is the point: a listener in the task on port 8080
+serving exactly two routes without the control secret, a turn endpoint and a
+liveness check, with everything else refused unless the caller holds
+`SMC_CONTROL_SECRET`. No data is shared between two parties, because there is
+still only one party.
 
 ## 8. Migration plan
 
@@ -337,14 +379,6 @@ the problem, and a turn is not reliably short enough to fit the execution limit.
 the thing this RFC is trying to remove.
 
 ## 11. Open questions
-
-**How the channel into the task works.** A task can be reached through an
-IAM-authorised endpoint, or through a port-forward into the task with no listener
-at all. The second is what EC2 remote instances already do, and reusing it is what
-would let a Fargate-backed crew appear in the existing relay surfaces without new
-plumbing. It needs verifying on Fargate before phase 1 commits to it: the target
-format differs from an instance id, and the task role needs messaging permissions
-it does not receive by default.
 
 **Sign-in inside a task.** The EC2 flow runs an interactive login on the host and
 scrapes the device-code prompt. The equivalent inside a task needs to be
