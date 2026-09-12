@@ -13,10 +13,12 @@ message, while never touching an agent that is merely awaiting spawn approval.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.providers.base import EVENT_COMPLETE
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 
 
@@ -64,6 +66,54 @@ def test_stalled_false_when_runtime_launched():
     # runtime pid assigned -> past startup; a slow first turn must not be reaped
     info = _info(_exec_started=now - 600, _pid=4242, turns=0)
     assert mgr._is_startup_stalled(info, now) is False
+
+
+def test_stalled_false_after_first_provider_stream_begins():
+    mgr = _make_manager(startup_timeout=120)
+    now = 1_000.0
+    info = _info(_exec_started=now - 600, _first_stream_started=now - 590, _pid=None, turns=0)
+    assert mgr._is_startup_stalled(info, now) is False
+
+
+@pytest.mark.asyncio
+async def test_recovery_execution_resets_the_first_stream_marker():
+    """A recovered run must be eligible for its own startup watchdog window."""
+    sessions = MagicMock()
+    provider = AsyncMock()
+    provider.start = AsyncMock()
+    provider.shutdown = AsyncMock()
+    provider.context_usage_pct = lambda: 0.0
+    provider.context_used_tokens = MagicMock(return_value=0)
+    provider.context_window_tokens = MagicMock(return_value=0)
+
+    async def stream(*_args, **_kwargs):
+        yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn", runtime_global=False)
+
+    provider.stream = MagicMock(side_effect=stream)
+    marker_at_acquire: list[float | None] = []
+
+    async def get_or_create(*_args, **_kwargs):
+        marker_at_acquire.append(info._first_stream_started)
+        return provider, True, False
+
+    sessions.get_or_create = AsyncMock(side_effect=get_or_create)
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.release = MagicMock()
+    sessions.reset = AsyncMock()
+    sessions.record_success = MagicMock()
+    sessions.get_agent = MagicMock(return_value="")
+    sessions.get_approval_policy = MagicMock(return_value="auto")
+    sessions.has_session = MagicMock(return_value=True)
+    ctx = MagicMock()
+    ctx.build_message = MagicMock(return_value=("message", None))
+    ctx.hooks.auto_approve_subagent_tools = False
+    mgr = SubagentManager(sessions=sessions, ctx_builder=ctx)
+    mgr._should_use_session_sharing = MagicMock(return_value=False)  # type: ignore[method-assign]
+    info = _info(_first_stream_started=1.0)
+
+    await mgr._run_inner(info, "subagent:a1b2c3d4")
+
+    assert marker_at_acquire == [None]
 
 
 def test_stalled_false_when_a_turn_was_produced():

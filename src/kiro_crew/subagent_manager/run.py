@@ -630,6 +630,7 @@ class RunEventCoordinator(ManagerComponent):
         # watchdog measures from here, not from registration (which may include
         # an arbitrary spawn-approval wait). Must be the first statement.
         info._exec_started = time.time()
+        info._first_stream_started = None
         # Reset the activity clock to execution start too: last_activity is set
         # at registration (like ``started``), which can include a long spawn-
         # approval / queue wait. Without this, _maybe_flag_stall would treat
@@ -1213,6 +1214,7 @@ class RunEventCoordinator(ManagerComponent):
         # leaves TurnUsage.duration_ms at 0, so the row needs this.
         # Includes transient-retry backoff, which is real wall time the caller
         # waited for this turn.
+        info._first_stream_started = time.time()
         _turn_t0 = time.monotonic()
         async for event in _stream_with_transient_retry():
             # Refresh the activity clock for every event kind that BELONGS to
