@@ -44,6 +44,7 @@ from kiro_crew.pinned_fs import (
     open_in_pinned_parent,
     supports_pinned_walk,
 )
+from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -326,8 +327,11 @@ def slug_for_name(name: str) -> str:
     entirely in punctuation still yields something addressable.
     """
     base = slugify(name)
-    # slugify falls back to its own module's noun; ours should read as a member.
-    if base == "artifact":
+    # slugify hash-falls-back under its own module's noun; a member's stored
+    # activity, rules, and DM bindings are addressed by this slug, so keep the
+    # documented "member" fallback rather than adopting the artifact-prefixed
+    # hash (which would also strand data recorded under "member").
+    if base == slug_hash_fallback(name, "artifact"):
         base = "member"
     return validate_slug(base)
 

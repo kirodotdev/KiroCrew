@@ -19,6 +19,7 @@ from typing import Any
 
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
+from kiro_crew.slugs import slug_hash_fallback
 
 # ── Custom Themes — validation & parsing core ──
 
@@ -190,7 +191,7 @@ def _slugify_theme_name(name: str) -> str:
     """Convert a theme name to a filesystem-safe slug."""
     slug = re.sub(r"[^a-z0-9\-]", "-", name.lower()).strip("-")
     slug = re.sub(r"-+", "-", slug)
-    return slug[:_THEME_SLUG_MAX_LEN] or "custom"
+    return slug[:_THEME_SLUG_MAX_LEN] or slug_hash_fallback(name, "custom")
 
 
 def _safe_theme_slug(slug: str) -> str | None:
@@ -441,6 +442,42 @@ _THEME_AUDIO_SRC_RE = re.compile(r"^(?:audio/)?([a-z0-9_-]{1,64}\.(?:mp3|ogg|wav
 def _installed_theme_dir(slug: str) -> Path:
     """Directory for an *installed* theme: ``_themes_dir()/<slug>/``."""
     return _themes_dir() / slug
+
+
+def _installed_theme_manifest_identity(slug: str) -> str | None:
+    """The slug-derivation source of the installed pack at ``slug``, or ``None``.
+
+    A pack's identity is what its slug derives from: the manifest's own
+    ``slug`` field when it declares one, else its ``name`` -- the same
+    precedence :func:`_validate_theme_dir` applies to an incoming pack, so
+    two packs match only when they would have derived the same slug. Read
+    without following links (``safe_read_file_bytes_nolink`` bounded to the
+    themes root): this is live registry state agent file tools can reach, so
+    a planted link must read as no identity. Any unreadable, oversized, or
+    malformed manifest also reads as ``None``: identity that cannot be
+    established must not match anything.
+    """
+    manifest_path = _installed_theme_dir(slug) / _THEME_MANIFEST_NAME
+    raw = safe_read_file_bytes_nolink(
+        str(manifest_path),
+        str(_themes_dir()),
+        max_bytes=_THEME_FILE_CAPS["manifest"],
+    )
+    if raw is None:
+        return None
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    slug_field = manifest.get("slug")
+    if isinstance(slug_field, str) and slug_field.strip():
+        return slug_field
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name
 
 
 def _read_json_file(path: Path, max_bytes: int) -> tuple[Any, str | None]:
@@ -1407,9 +1444,21 @@ def _validate_theme_dir(
         return None, data_err
 
     raw_slug = manifest.get("slug")
-    slug = _slugify_theme_name(
-        raw_slug if isinstance(raw_slug, str) and raw_slug.strip() else name
-    )
+    slug_source = raw_slug if isinstance(raw_slug, str) and raw_slug.strip() else name
+    slug = _slugify_theme_name(slug_source)
+    if slug == slug_hash_fallback(slug_source, "custom"):
+        # The hash fallback fired: nothing slug-safe survives in this pack's
+        # declared identity. A pack like this installed before hash fallbacks
+        # existed lives under the constant slug "custom", so a reinstall that
+        # adopts the hashed slug would fork a second record and strand that
+        # one. When the legacy record derives its slug from the SAME source
+        # (its manifest slug field, else its name -- the precedence above),
+        # keep its slug so the promote overwrites it (the normal update
+        # path). A legacy record with a different slug source keeps the
+        # hashed slug: giving its directory away would clobber an unrelated
+        # theme that merely shares a display name.
+        if _installed_theme_manifest_identity("custom") == slug_source:
+            slug = "custom"
     return {
         "slug": slug,
         "name": theme_data["name"],

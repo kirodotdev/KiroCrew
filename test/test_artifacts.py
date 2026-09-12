@@ -19,6 +19,7 @@ from kiro_crew.artifacts import (
     ArtifactStore,
     ArtifactValidationError,
     _infer_kind,
+    _validate_slug,
     detect_editor_kind,
     has_unthemed_hardcoded_colors,
     slugify,
@@ -96,10 +97,21 @@ class TestSlugify:
     def test_collapses_punctuation(self) -> None:
         assert slugify("hello! world?? foo!! bar") == "hello-world-foo-bar"
 
-    def test_empty_falls_back(self) -> None:
-        assert slugify("") == "artifact"
-        assert slugify("!!!") == "artifact"
-        assert slugify("---") == "artifact"
+    def test_empty_falls_back_to_distinct_hash_slugs(self) -> None:
+        # No surviving slug-safe characters: fall back to artifact-<hash> so
+        # distinct inputs derive distinct slugs.
+        for name in ("", "!!!", "---"):
+            out = slugify(name)
+            assert out.startswith("artifact-")
+            assert _validate_slug(out) == out
+        assert slugify("!!!") != slugify("---")
+
+    def test_non_ascii_names_derive_distinct_stable_slugs(self) -> None:
+        chinese = slugify("\u4f1a\u8bae\u7eaa\u8981")
+        japanese = slugify("\u8cb7\u3044\u7269\u30ea\u30b9\u30c8")
+        assert chinese != japanese
+        assert chinese == slugify("\u4f1a\u8bae\u7eaa\u8981")
+        assert _validate_slug(chinese) == chinese
 
     def test_truncates_long_input(self) -> None:
         long = "a" * 300

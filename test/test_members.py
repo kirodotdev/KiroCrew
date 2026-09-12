@@ -38,6 +38,12 @@ class TestSlugForName:
         # shared slugify() belongs to the artifact store.
         assert slug_for_name("!!!") == "member"
 
+    def test_non_ascii_name_still_falls_back_to_member(self):
+        # slugify() hash-falls-back for all-non-ASCII names; the member
+        # contract keeps the constant so data stored under "member" stays
+        # addressable.
+        assert slug_for_name("\u4f1a\u8bae\u7eaa\u8981") == "member"
+
     def test_result_always_satisfies_the_slug_pattern(self):
         for name in ("Code Review", "Café Crew", "!!!", "a" * 200, "-leading", "trailing-"):
             validate_slug(slug_for_name(name))

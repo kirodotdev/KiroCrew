@@ -49,6 +49,7 @@ from kiro_crew.dashboard.theme_validate import (
     _overrides_layout_violation,
     _resolve_theme_asset,
     _safe_theme_slug,
+    _slugify_theme_name,
     _sniff_audio,
     _theme_asset_descriptor,
     _validate_audio_manifest,
@@ -1821,3 +1822,117 @@ class TestCssParserCorpus:
         assert any(c["installAccepts"] for c in cases)
         assert any(not c["installAccepts"] for c in cases)
         assert any(c["installAccepts"] and not c["runtimeKeeps"] for c in cases)
+
+
+# ── _slugify_theme_name hash fallback ──────────────────────────────
+
+
+def test_theme_slug_non_ascii_names_derive_distinct_stable_slugs() -> None:
+    korean = _slugify_theme_name("\ub2e4\ud06c \ubaa8\ub4dc")
+    russian = _slugify_theme_name("\u0442\u0451\u043c\u043d\u0430\u044f \u0442\u0435\u043c\u0430")
+    assert korean.startswith("custom-")
+    assert korean != russian
+    assert korean == _slugify_theme_name("\ub2e4\ud06c \ubaa8\ub4dc")
+    # The fallback stays filesystem-safe by the repo's own traversal guard.
+    assert _safe_theme_slug(korean) == korean
+
+
+def test_theme_slug_ascii_names_are_unchanged() -> None:
+    assert _slugify_theme_name("Solarized Dark") == "solarized-dark"
+
+
+class TestLegacyConstantSlugContinuity:
+    """A pre-hash-fallback pack lives under the constant slug "custom"; a
+    reinstall of the SAME pack must keep addressing that record instead of
+    forking a hashed twin, while a DIFFERENT pack must not clobber it."""
+
+    def _arrange(self, tmp_path, monkeypatch, legacy_name):
+        import kiro_crew.dashboard.theme_validate as tv_mod
+
+        monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
+        legacy = tv_mod._installed_theme_dir("custom")
+        legacy.mkdir(parents=True, exist_ok=True)
+        _write(
+            legacy / "theme.json",
+            {"name": legacy_name, "emoji": "x", "level": 0, "formatVersion": 1},
+        )
+        _write(legacy / "variables.json", _VALID_VARS)
+
+    def _pack(self, tmp_path, name):
+        d = tmp_path / "incoming"
+        d.mkdir(parents=True, exist_ok=True)
+        _write(d / "theme.json", {"name": name, "emoji": "x", "level": 0, "formatVersion": 1})
+        _write(d / "variables.json", _VALID_VARS)
+        return d
+
+    def test_same_pack_reinstall_keeps_the_legacy_slug(self, tmp_path, monkeypatch):
+        self._arrange(tmp_path, monkeypatch, "\u6df1\u8272\u4e3b\u9898")
+        summary, err = _validate_theme_dir(self._pack(tmp_path, "\u6df1\u8272\u4e3b\u9898"))
+        assert err is None, err
+        assert summary is not None and summary["slug"] == "custom"
+
+    def test_same_display_name_different_slug_source_is_not_the_same_pack(
+        self, tmp_path, monkeypatch
+    ):
+        import kiro_crew.dashboard.theme_validate as tv_mod
+
+        # Legacy pack declares an explicit non-ASCII slug field; the incoming
+        # pack has no slug field but the SAME display name. Identity is the
+        # slug SOURCE, so they must not match -- matching would hand the
+        # legacy directory to a different pack.
+        monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
+        legacy = tv_mod._installed_theme_dir("custom")
+        legacy.mkdir(parents=True, exist_ok=True)
+        _write(
+            legacy / "theme.json",
+            {
+                "slug": "\u4e3b\u9898\u4e00",
+                "name": "\u6df1\u8272\u4e3b\u9898",
+                "emoji": "x",
+                "level": 0,
+                "formatVersion": 1,
+            },
+        )
+        _write(legacy / "variables.json", _VALID_VARS)
+        summary, err = _validate_theme_dir(self._pack(tmp_path, "\u6df1\u8272\u4e3b\u9898"))
+        assert err is None, err
+        assert summary is not None
+        assert summary["slug"].startswith("custom-")
+        assert summary["slug"] != "custom"
+
+    def test_symlinked_legacy_manifest_reads_as_no_identity(self, tmp_path, monkeypatch):
+        import kiro_crew.dashboard.theme_validate as tv_mod
+
+        monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
+        secret = tmp_path / "secret.json"
+        _write(secret, {"name": "\u6df1\u8272\u4e3b\u9898", "formatVersion": 1})
+        legacy = tv_mod._installed_theme_dir("custom")
+        legacy.mkdir(parents=True, exist_ok=True)
+        try:
+            (legacy / "theme.json").symlink_to(secret)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        summary, err = _validate_theme_dir(self._pack(tmp_path, "\u6df1\u8272\u4e3b\u9898"))
+        assert err is None, err
+        assert summary is not None
+        # The planted link is never followed: no identity, so no continuity.
+        assert summary["slug"].startswith("custom-")
+        assert summary["slug"] != "custom"
+
+    def test_different_pack_gets_a_hashed_slug_not_the_legacy_dir(self, tmp_path, monkeypatch):
+        self._arrange(tmp_path, monkeypatch, "\u6df1\u8272\u4e3b\u9898")
+        summary, err = _validate_theme_dir(self._pack(tmp_path, "\ub2e4\ud06c \ubaa8\ub4dc"))
+        assert err is None, err
+        assert summary is not None
+        assert summary["slug"].startswith("custom-")
+        assert summary["slug"] != "custom"
+
+    def test_no_legacy_record_gets_a_hashed_slug(self, tmp_path, monkeypatch):
+        import kiro_crew.dashboard.theme_validate as tv_mod
+
+        monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
+        summary, err = _validate_theme_dir(self._pack(tmp_path, "\u6df1\u8272\u4e3b\u9898"))
+        assert err is None, err
+        assert summary is not None
+        assert summary["slug"].startswith("custom-")
+        assert summary["slug"] != "custom"
