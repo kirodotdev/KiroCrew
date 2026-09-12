@@ -283,6 +283,23 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``test_the_routing_read_back_runs_off_the_event_loop`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
         "acp/client.py::_verify_opencode_routing",
+        # The pi gate read-back, the same shape as the opencode one above. ONE fixed
+        # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
+        # sandbox run directory, execing the resolved ``pi`` binary) plus the three
+        # literal words in ``_PI_RPC_ARGS`` (``--mode rpc --no-themes``, what the
+        # adapter itself passes) -- no shell, a 30s timeout, and a cwd that is the
+        # session work dir. The only input written to the child is
+        # ``_PI_READBACK_REQUEST``, a constant ``get_commands`` frame on stdin; the
+        # agent supplies nothing to it. Stdout is read for one response, whose
+        # command list decides whether the session may start at all.
+        #
+        # SANDBOX-WRAPPED before it is spawned, by the same caller pattern: the
+        # floor check runs first and the argv arrives through ``wrap_argv_async``
+        # with the same credential mask the session spawn gets, because the child
+        # is the agent itself loading extensions out of the operator's own
+        # directories. Called from a worker thread, never the event loop --
+        # ``test/test_acp_pi_backend.py`` pins that.
+        "acp/client.py::_verify_pi_gate",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
@@ -39,6 +40,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     PROVIDER_LABEL_OPENCODE,
+    PROVIDER_LABEL_PI,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
@@ -514,6 +516,11 @@ class AcpProvider(LLMProvider):
     def is_opencode_backend(self) -> bool:
         """True when this ACP provider talks to OpenCode (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_OPENCODE
+
+    @property
+    def is_pi_backend(self) -> bool:
+        """True when this ACP provider talks to pi-acp (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_PI
 
     @property
     def is_kas_backend(self) -> bool:
@@ -1801,4 +1808,6 @@ def provider_label(provider: Any) -> str:
         return PROVIDER_LABEL_CODEX
     if backend == ACP_BACKEND_OPENCODE:
         return PROVIDER_LABEL_OPENCODE
+    if backend == ACP_BACKEND_PI:
+        return PROVIDER_LABEL_PI
     return PROVIDER_LABEL_DEFAULT

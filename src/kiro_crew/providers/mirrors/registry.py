@@ -35,6 +35,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
 )
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
@@ -187,6 +188,29 @@ PROJECTIONS: dict[str, McpProjection] = {
             "an http or sse MCP endpoint the shared gateway serves, addressable from the "
             "session/new array this harness does accept — or a config channel Crew owns "
             "that is not the operator's checkout"
+        ),
+        tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+    ),
+    ACP_BACKEND_PI: McpProjection(
+        kind=ProjectionKind.NO_CHANNEL,
+        reason=(
+            "pi-acp ACCEPTS the session/new mcpServers array without error, stores it on "
+            "its session state, and never hands it to the pi process: its initialize "
+            "result advertises mcpCapabilities of http:false and sse:false, its own "
+            "documentation lists MCP forwarding as not wired, and a stdio server placed "
+            "in the array produced no error and no tool (verified live). That is worse "
+            "than a refused array, because a projection written into it would make the "
+            "dashboard report Crew tools as mounted on a session where none can be "
+            "called -- which is why pi is outside ACP_BACKENDS_SESSION_MCP_ARRAY. The "
+            "shared gateway's broker stubs are stdio elements too and land in the same "
+            "inert array. A pi session therefore holds none of Crew's own tools, "
+            "gateway on or off"
+        ),
+        channel=(
+            "the adapter forwarding the array to the pi process (an open upstream "
+            "change does this by loading a bridge extension into pi), or an extension "
+            "of Crew's that bridges MCP the way the gate extension bridges permissions "
+            "-- the one channel this harness is shown to read today"
         ),
         tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
     ),

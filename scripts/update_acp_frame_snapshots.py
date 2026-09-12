@@ -68,11 +68,13 @@ def main(argv: list[str]) -> int:
     rewritten: list[str] = []
     for fixture in fixtures:
         try:
-            _meta, frames = harness.read_fixture(fixture)
+            meta, frames = harness.read_fixture(fixture)
         except (harness.FixtureError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
-        rendered = harness.snapshot_json(harness.replay_frames(frames))
+        rendered = harness.snapshot_json(
+            harness.replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce"))
+        )
         target = harness.expected_path(fixture)
         if target.exists() and target.read_text(encoding="utf-8") == rendered:
             continue

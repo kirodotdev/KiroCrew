@@ -67,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_KNOWN,
 )
 
@@ -474,6 +475,42 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # Excluded deliberately: it signs in through its own credential file, so a
         # ``kiro-cli logout`` says nothing about whether a running opencode session
         # is still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_PI,
+        # Verified on disk rather than read off documentation: a key written into
+        # ``auth.json`` under a scratch ``PI_CODING_AGENT_DIR`` is what
+        # ``pi auth check --credentials`` reports back, and the same probe against
+        # the default directory reports the provider absent. API keys and OAuth
+        # tokens for every provider share this one file.
+        credential_leaves=(".pi/agent/auth.json",),
+        # The variable relocates pi's WHOLE agent directory -- settings, models,
+        # sessions and this file together -- so it stands in for the leaf's parent
+        # and the default override spelling (final segment) is the right one.
+        home_override_env_vars=("PI_CODING_AGENT_DIR",),
+        # The one leaf the mask must spare: this harness is enforced, so the mask
+        # denies its child the whole credential floor, and pi authenticates ITSELF
+        # from this file. The read gate still refuses the same leaf to the agent's
+        # file tools.
+        adapter_own_leaves=(".pi/agent/auth.json",),
+        # Action only, no state: a model served locally on the operator's own
+        # machine needs no sign-in, only a provider entry.
+        sign_in_remedy=(
+            "Pi signs in on its own — run pi in a terminal and use its /login command "
+            "to reach a hosted model. A model served locally on this machine needs no "
+            "sign-in: name it in pi's models.json instead. Neither is checked here: "
+            "the harness reads them."
+        ),
+        signed_out_message=(
+            "Pi is not signed in. Run `pi` in your terminal and complete `/login`, or "
+            "name a locally served model in `~/.pi/agent/models.json`, then start a "
+            "new chat."
+        ),
+        # Excluded deliberately: it signs in through its own credential file, so a
+        # ``kiro-cli logout`` says nothing about whether a running pi session is
+        # still authenticated.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),

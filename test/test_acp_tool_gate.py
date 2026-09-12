@@ -30,6 +30,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     Routing,
     permission_config_for,
     routing_for,
@@ -86,16 +87,23 @@ def test_only_implemented_mechanisms_are_enforced() -> None:
     """The enforced set is a mechanism list, not a harness allowlist.
 
     Scoping by mechanism is what makes widening it require IMPLEMENTING one; an
-    id-based allowlist could be widened by editing a literal. Both members carry an
+    id-based allowlist could be widened by editing a literal. Every member carries an
     observation: SESSION_CONFIG checks the advertised option before the first
-    prompt, and VERIFIED_SEEDED_SETTINGS reads back the setting it wrote. Plain
-    SEEDED_SETTINGS is absent for exactly that reason -- it writes without reading.
+    prompt, VERIFIED_SEEDED_SETTINGS reads back the setting it wrote, and
+    VERIFIED_GATE_EXTENSION reads the harness's own command registry back for the
+    gate it loaded. Plain SEEDED_SETTINGS is absent for exactly that reason -- it
+    writes without reading.
     """
     assert gate.ENFORCED_ROUTINGS == frozenset(
-        {Routing.SESSION_CONFIG, Routing.VERIFIED_SEEDED_SETTINGS}
+        {
+            Routing.SESSION_CONFIG,
+            Routing.VERIFIED_SEEDED_SETTINGS,
+            Routing.VERIFIED_GATE_EXTENSION,
+        }
     )
     assert gate.is_enforced(ACP_BACKEND_CODEX) is True
     assert gate.is_enforced(ACP_BACKEND_OPENCODE) is True
+    assert gate.is_enforced(ACP_BACKEND_PI) is True
     assert gate.is_enforced(ACP_BACKEND_CLAUDE) is False
     for backend in AGENT_SPEC_BACKENDS:
         assert gate.is_enforced(backend) is False

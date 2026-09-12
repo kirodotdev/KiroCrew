@@ -354,6 +354,52 @@ def opencode_install_command() -> str:
     return OPENCODE_INSTALL_COMMAND
 
 
+def pi_components_resolve() -> tuple[bool, bool]:
+    """``(adapter, pi_cli)`` -- the pi backend's two halves, separately.
+
+    ``_resolve_pi_acp_bin`` finds the adapter Crew spawns; ``_resolve_pi_bin``
+    finds the agent the adapter spawns, which Crew must ALSO resolve because its
+    gate launcher execs it by absolute path. Two answers rather than one
+    conjunction, for the reason the claude seam gives: the two halves are
+    different half-installs with the same remedy but different diagnoses.
+    """
+    from kiro_crew.acp.client import _resolve_pi_acp_bin, _resolve_pi_bin
+
+    adapter_argv, _searched = _resolve_pi_acp_bin()
+    pi_bin, _searched_pi = _resolve_pi_bin()
+    return bool(adapter_argv), bool(pi_bin)
+
+
+def pi_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved either pi component as absent?
+
+    Two caches, one answer: a cached miss on EITHER component means the next spawn
+    fails regardless of what a fresh probe finds. Consulted, never invalidated, for
+    the reason ``claude_adapter_cached_negative`` gives.
+    """
+    from kiro_crew.acp import client as _client
+
+    unresolved = getattr(_client, "_UNRESOLVED", object())
+    for name in ("_pi_acp_argv_cache", "_pi_bin_cache"):
+        cached = getattr(_client, name, None)
+        if cached is None or cached is unresolved:
+            continue
+        try:
+            found, _searched = cached  # type: ignore[misc]
+        except Exception:
+            continue
+        if not found:
+            return True
+    return False
+
+
+def pi_install_command() -> str:
+    """The one command that installs both pi components, from the spawn path."""
+    from kiro_crew.acp.client import PI_INSTALL_COMMAND
+
+    return PI_INSTALL_COMMAND
+
+
 def claude_adapter_install_command() -> str:
     """``npm i -g <adapter package>`` -- the adapter's remedy, from the repo.
 

@@ -40,3 +40,9 @@
 src/kiro_crew/_vendor/**/*.py text eol=lf
 src/kiro_crew/_vendor/**/*.md text eol=lf
 src/kiro_crew/_vendor/**/*.typed text eol=lf
+
+# The pi gate extension is loaded only after its SHA-256 matches the digest this
+# build pinned (acp/client.py PI_GATE_EXTENSION_SHA256). The digest is over the
+# checkout bytes, so a CRLF rewrite on a Windows clone would refuse every pi
+# session there and only there. Pin LF like the vendor manifest above.
+src/kiro_crew/agent_sdk/gate_extensions/**/*.ts text eol=lf

@@ -114,7 +114,7 @@ def test_replayed_events_match_snapshot(fixture: Path) -> None:
         len(frames) < _MAX_FRAMES
     ), f"{fixture.name} has {len(frames)} frames; keep a fixture under {_MAX_FRAMES}"
 
-    replayed = replay_frames(frames)
+    replayed = replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce"))
     target = expected_path(fixture)
     assert target.exists(), (
         f"{target.name} is missing. Run `python3 {_UPDATE_SCRIPT}` to write it, "
@@ -130,8 +130,10 @@ def test_replayed_events_match_snapshot(fixture: Path) -> None:
 def test_the_snapshot_render_is_byte_stable() -> None:
     """The script's on-disk form must round-trip, or every run reports a diff."""
     for fixture in fixture_files():
-        _meta, frames = read_fixture(fixture)
-        rendered = snapshot_json(replay_frames(frames))
+        meta, frames = read_fixture(fixture)
+        rendered = snapshot_json(
+            replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce"))
+        )
         assert rendered == expected_path(fixture).read_text(encoding="utf-8"), (
             f"{expected_path(fixture).name} differs from the script's render even though the "
             f"parsed events match -- run `python3 {_UPDATE_SCRIPT}`"
@@ -255,8 +257,11 @@ def test_the_corpus_is_not_vacuous() -> None:
     ), f"only {len(files)} fixture file(s) for {len(ACP_BACKENDS_KNOWN)} known backend(s)"
     total_events = 0
     for path in files:
-        _meta, frames = read_fixture(path)
-        total_events += sum(len(entry.get("events", [])) for entry in replay_frames(frames))
+        meta, frames = read_fixture(path)
+        total_events += sum(
+            len(entry.get("events", []))
+            for entry in replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce"))
+        )
     assert total_events > 0, "the corpus replays into zero events; the parsers are not reached"
 
 
@@ -288,8 +293,8 @@ def test_replaying_the_whole_corpus_modifies_no_committed_file() -> None:
     assert before, "the corpus is empty; this check would be vacuous"
 
     for path in fixture_files():
-        _meta, frames = read_fixture(path)
-        snapshot_json(replay_frames(frames))
+        meta, frames = read_fixture(path)
+        snapshot_json(replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce")))
 
     after = {p: (p.stat().st_mtime_ns, p.stat().st_size) for p in tracked if p.is_file()}
     assert after == before, (
