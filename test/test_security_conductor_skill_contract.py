@@ -301,16 +301,22 @@ class TestRetrospectiveBrief:
     def test_lessons_are_proposed_through_the_ledger_cli(self, skill_text: str) -> None:
         assert "ledger.py propose-lesson" in _flat(_section(skill_text, self.HEADING))
 
-    def test_the_lesson_half_is_gated_on_having_a_finding_to_cite(self, skill_text: str) -> None:
-        """`propose-lesson` requires `--source-finding` and refuses an id that
-        resolves to no finding, and a `policy_block` is an event rather than a
-        finding. An instruction to propose one anyway is an order to run a command
-        that exits 2, so the brief states the constraint and orders the half that
-        always works first."""
+    def test_both_lesson_sources_are_named_and_neither_is_a_dead_end(self, skill_text: str) -> None:
+        """A `policy_block` is an event rather than a finding, so `--source-finding`
+        has no id to resolve for one. `propose-lesson` takes
+        `--source-policy-block` for exactly that case, so the brief must name it:
+        an instruction that only offered the finding flag would send a worker to run
+        a command that exits 2, and the guidance half of the ruling would be lost
+        again.
+        """
         body = _flat(_section(skill_text, self.HEADING))
         assert "golden-path row first" in body
         assert "--source-finding" in body
-        assert "only when the block has a finding to cite" in body
+        assert "--source-policy-block" in body
+        # Every false positive gets both halves now; the old brief made the lesson
+        # conditional, and that condition is the gap this replaces.
+        assert "only when the block has a finding to cite" not in body
+        assert "propose it for every false positive" in body
         assert "never invent a finding id" in body
 
     def test_an_unapproved_lesson_never_reaches_a_seed(self, skill_text: str) -> None:
