@@ -5903,6 +5903,7 @@ class TestRunChatCompactDeferredWait:
         await _run_chat(state, slot, "/compact")
 
         client.wait_for_compaction.assert_not_called()
+        state.sessions.mark_needs_reinjection.assert_called_once_with("dashboard:s1")
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert any("Conversation compacted" in m["content"] for m in assistant_msgs)
         assert not any("timed out" in m["content"] for m in assistant_msgs)
@@ -5953,6 +5954,7 @@ class TestRunChatCompactDeferredWait:
         await _run_chat(state, slot, "/compact")
 
         client.wait_for_compaction.assert_awaited_once()
+        state.sessions.mark_needs_reinjection.assert_called_once_with("dashboard:s1")
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert any("summary text" in m["content"] for m in assistant_msgs)
         # A completed deferred compaction must send the `reset` form — the
@@ -5968,6 +5970,27 @@ class TestRunChatCompactDeferredWait:
         compaction_msgs = [m for m in assistant_msgs if "summary text" in m["content"]]
         assert compaction_msgs
         assert all(m.get("meta", {}).get("kind") == "compaction" for m in compaction_msgs)
+
+    @pytest.mark.asyncio
+    async def test_completed_status_arms_skills_context_reinjection(self, tmp_path, monkeypatch):
+        """A provider-native completed status restores skills context once."""
+        from kiro_crew.providers.base import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, LLMEvent
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(
+            [
+                LLMEvent(kind=EVENT_COMPACTION_STATUS, text="completed"),
+                LLMEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "continue after provider compaction")
+
+        state.sessions.mark_needs_reinjection.assert_called_once_with("dashboard:s1")
 
     @pytest.mark.asyncio
     async def test_kiro_backend_broadcasts_real_post_compaction_usage(self, tmp_path, monkeypatch):
@@ -5995,6 +6018,7 @@ class TestRunChatCompactDeferredWait:
 
         await _run_chat(state, slot, "/compact")
 
+        state.sessions.mark_needs_reinjection.assert_called_once_with("dashboard:s1")
         usage_calls = [
             c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "context_usage"
         ]
@@ -6032,6 +6056,7 @@ class TestRunChatCompactDeferredWait:
 
         await _run_chat(state, slot, "/compact")
 
+        state.sessions.mark_needs_reinjection.assert_not_called()
         usage_calls = [
             c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "context_usage"
         ]

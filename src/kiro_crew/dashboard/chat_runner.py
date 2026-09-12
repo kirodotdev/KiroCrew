@@ -6416,6 +6416,16 @@ async def _run_chat(
     session_key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
 
+    def _restore_skills_context_after_compaction() -> None:
+        """Re-inject the session-start skills context on the next turn."""
+        try:
+            state.sessions.mark_needs_reinjection(session_key)
+        except Exception:
+            logger.warning(
+                "post-compaction skills context reinjection could not be armed",
+                exc_info=True,
+            )
+
     # Time-to-first-token clock: starts when the user's message reaches the
     # runner, stops at the first visible model output (text OR thinking chunk).
     # This is the end-to-end latency eager spawn / warm pooling exist to cut —
@@ -10533,6 +10543,7 @@ async def _run_chat(
                     saw_compaction = True
                     if event.text == "completed":
                         _compaction_completed = True
+                        _restore_skills_context_after_compaction()
                     _produced_visible_output = True
                     if not event.synthesized:
                         # A REAL mid-turn terminal IS a segment boundary: text
@@ -11328,6 +11339,7 @@ async def _run_chat(
             # backend that reports asynchronously loses the notice, and awaiting one
             # that already finished strands the waiter for its whole timeout.
             if capabilities_of(client).compacts_inline:
+                _restore_skills_context_after_compaction()
                 msg = "✅ Conversation compacted."
                 _append_compaction_notice(state, slot, msg)
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
@@ -11343,6 +11355,7 @@ async def _run_chat(
                 compaction_result = await client.wait_for_compaction()
                 logger.info("Deferred compaction result: %s", compaction_result)
                 if compaction_result["type"] == "completed":
+                    _restore_skills_context_after_compaction()
                     summary, _ = redact_credentials(compaction_result.get("summary", ""))
                     summary, _ = redact_exfiltration_urls(summary)
                     msg = (
