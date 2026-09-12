@@ -2432,6 +2432,19 @@ jobs:
         working-directory: website
         run: npx playwright install chromium
 
+      - name: Real-browser dialog guard (agent picker in Schedule dialogs)
+        # The unit suite pins structure only: AgentSelector.dialog.test.tsx's own
+        # header says the interaction cannot be exercised faithfully under
+        # happy-dom and delegates the end-to-end proof to this script -- which,
+        # until #8963, no workflow invoked, so the guarded behaviour had no
+        # automatic guard at all. It lives in this job for the same reason as the
+        # render gate below: it reuses the Chromium install above and the
+        # production bundle from `npm run build`, and needs no gateway -- the
+        # script serves website/dist over loopback and answers every /api/** call
+        # from fixtures, like the other capture harnesses.
+        working-directory: website
+        run: npm run verify:agent-selector-dialog
+
       - name: i18n render-time gate (en-XA + shipped locales)
         # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
         # JSON, so three defect classes are invisible to all of them: a string that

@@ -6,16 +6,25 @@
  * Testing Library's event batch, so the popup never opens under fireEvent.
  *
  * Drives the REAL built SPA (website/dist) behind the shared `serveDist`
- * server with every /api/** call answered from fixtures:
- *   open /schedule -> Add job (Radix MODAL dialog) -> open the agent picker ->
- *   click a non-default agent -> assert the value committed AND the dialog
- *   stayed open -> reopen and assert the keyboard path (filter input focused,
- *   ArrowDown roves to an option, Enter on a narrowed filter commits).
+ * server with every /api/** call answered from fixtures, against BOTH dialogs
+ * that host the picker (#8963 — the edit dialog used to have no guard at all):
+ *
+ *   create: open /schedule -> Add job (Radix MODAL dialog) -> drive the picker
+ *   edit:   close it -> click the fixture job's row (same JobDetailDialog,
+ *           titled by the job's name) -> drive the same picker again
+ *
+ * The drill per dialog: open the agent picker -> click a non-default agent ->
+ * assert the value committed AND the dialog stayed open -> reopen and assert
+ * the keyboard path (filter input focused, ArrowDown roves to an option,
+ * Enter on a narrowed filter commits) -> reopen and assert a real wheel event
+ * scrolls the overflowing list -> Escape dismisses the popup, not the dialog.
  *
  * With the pre-fix build (bare createPortal to document.body) the option click
  * times out on Playwright's hit-test: react-remove-scroll's
  * `pointer-events: none` on the body swallows it — run with EXPECT=broken to
- * capture that state as the "before" evidence instead of failing.
+ * capture that state as the "before" evidence instead of failing. Broken mode
+ * drives the create dialog only: it exists to reproduce the #6358 pre-fix
+ * state, which predates the edit-dialog leg.
  *
  * Usage: EXPECT=fixed|broken node scripts/verify-agent-selector-dialog.mjs [outDir]
  */
@@ -47,6 +56,96 @@ const AGENTS = [
   })),
 ]
 
+// One persisted job so the schedule table has a row to click: the EDIT dialog
+// is reachable only through an existing job (SchedulePage `openDetail` on the
+// row), which is exactly the leg the create-only fixture left undriven. A
+// plain message job (no `script`/`command`) keeps the agent picker rendered.
+const JOBS = [{
+  id: 'job-01', name: 'Nightly digest', message: 'Summarize the day',
+  enabled: true, schedule: 'every day 09:00', last_status: 'ok',
+  agent: 'kirocrew',
+}]
+
+/**
+ * The interaction under test, identical for both host dialogs: the agent
+ * picker opened and committed from inside a Radix MODAL dialog. `shot`
+ * prefixes the screenshots so the create and edit runs stay distinguishable.
+ */
+async function driveAgentPicker(page, dialog, shot) {
+  const trigger = dialog.getByRole('button', { name: 'Switch agent' })
+  await trigger.click()
+  const listbox = page.getByRole('listbox', { name: 'Agent list' })
+  await listbox.waitFor({ timeout: 5000 })
+
+  await page.screenshot({ path: join(OUT, `${shot}-dropdown-open.png`) })
+
+  await page.getByRole('option', { name: /oncall/ }).click({ timeout: 5000 })
+
+  // The selection must commit…
+  const committed = await trigger.textContent()
+  if (!committed?.includes('oncall')) {
+    throw new Error(`[${shot}] agent selection did not commit: trigger reads "${committed}"`)
+  }
+  // …and Radix's DismissableLayer must treat it as INSIDE the dialog's layer
+  // stack: an outside-interaction would have closed the whole dialog.
+  if (!(await dialog.count())) {
+    throw new Error(`[${shot}] selecting an agent closed the job dialog underneath`)
+  }
+  await page.screenshot({ path: join(OUT, `${shot}-selection-committed.png`) })
+
+  // Keyboard path: reopen — the filter input must take focus (the dialog's
+  // FocusScope used to reclaim it), ArrowDown must rove to an option, and
+  // Enter on a narrowed filter must commit.
+  await trigger.click()
+  await listbox.waitFor({ timeout: 5000 })
+  const input = page.getByLabel('Filter agents')
+  if (!(await input.evaluate(el => el === document.activeElement))) {
+    throw new Error(`[${shot}] filter input did not take focus inside the modal dialog`)
+  }
+  await page.keyboard.press('ArrowDown')
+  const onOption = await page.evaluate(() => document.activeElement?.getAttribute('role') === 'option')
+  if (!onOption) throw new Error(`[${shot}] ArrowDown did not move focus to an option (keyboard still dead)`)
+  await page.keyboard.press('ArrowUp')
+  await input.pressSequentially('res')
+  await page.screenshot({ path: join(OUT, `${shot}-keyboard-filter.png`) })
+  await page.keyboard.press('Enter')
+  const kbCommitted = await trigger.textContent()
+  if (!kbCommitted?.includes('research')) {
+    throw new Error(`[${shot}] keyboard selection did not commit: trigger reads "${kbCommitted}"`)
+  }
+  if (!(await dialog.count())) {
+    throw new Error(`[${shot}] keyboard selection closed the job dialog underneath`)
+  }
+
+  // Escape must dismiss only the popup on reopen, never the dialog.
+  await trigger.click()
+  await listbox.waitFor({ timeout: 5000 })
+
+  // The option list must also SCROLL inside the modal: the popover portals
+  // outside DialogContent, so it sits in neither react-remove-scroll's lock
+  // container nor its shards — react-remove-scroll cancels wheel events it
+  // does not recognise, so drive a REAL wheel over the list and assert it
+  // moved (with a long roster this is a third way the picker could be
+  // "unusable inside dialogs").
+  const scrollable = await listbox.evaluate(el => el.scrollHeight > el.clientHeight)
+  if (!scrollable) {
+    throw new Error(`[${shot}] fixture roster does not overflow the list — the wheel assertion is vacuous`)
+  }
+  await listbox.hover()
+  await page.mouse.wheel(0, 120)
+  await page.waitForTimeout(200)
+  const scrolled = await listbox.evaluate(el => el.scrollTop)
+  if (scrolled <= 0) {
+    throw new Error(`[${shot}] wheel over the agent list did not scroll it inside the modal dialog`)
+  }
+
+  await page.keyboard.press('Escape')
+  await listbox.waitFor({ state: 'detached', timeout: 5000 })
+  if (!(await dialog.count())) {
+    throw new Error(`[${shot}] Escape on the agent popup also closed the job dialog underneath`)
+  }
+}
+
 const { srv, base } = await serveDist()
 const browser = await chromium.launch()
 
@@ -65,32 +164,33 @@ try {
         await json(route, { agents: AGENTS, default_agent: 'kirocrew' })
         return true
       }
+      if (path === '/api/crons') {
+        await json(route, { jobs: JOBS })
+        return true
+      }
       return false
     },
   })
   await page.addInitScript(() => localStorage.setItem('mc-lang', 'en'))
 
   await page.goto(base + '/schedule', { waitUntil: 'domcontentloaded' })
-  await page.getByRole('button', { name: /Add job|Create your first job/ }).first().waitFor({ timeout: 15000 })
+  await page.getByRole('button', { name: 'Add job' }).first().waitFor({ timeout: 15000 })
 
   // Open the create-job MODAL dialog.
-  await page.getByRole('button', { name: /Add job|Create your first job/ }).first().click()
+  await page.getByRole('button', { name: 'Add job' }).first().click()
   const dialog = page.getByRole('dialog', { name: 'New job' })
   await dialog.waitFor({ timeout: 10000 })
-
-  // THE interaction under test: the agent picker opened and committed from
-  // inside a Radix modal dialog.
-  const trigger = dialog.getByRole('button', { name: 'Switch agent' })
-  await trigger.click()
-  const listbox = page.getByRole('listbox', { name: 'Agent list' })
-  await listbox.waitFor({ timeout: 5000 })
-
-  await page.screenshot({ path: join(OUT, EXPECT === 'broken' ? 'before-dropdown-open.png' : 'after-dropdown-open.png') })
 
   if (EXPECT === 'broken') {
     // Pre-fix build: the popup renders but sits under the modal's
     // pointer-events cut, so the click on an option never lands. Playwright's
     // hit-test surfaces exactly that — the timeout IS the defect.
+    const trigger = dialog.getByRole('button', { name: 'Switch agent' })
+    await trigger.click()
+    const listbox = page.getByRole('listbox', { name: 'Agent list' })
+    await listbox.waitFor({ timeout: 5000 })
+    await page.screenshot({ path: join(OUT, 'before-dropdown-open.png') })
+
     let clickLanded = true
     try {
       await page.getByRole('option', { name: /oncall/ }).click({ timeout: 3000 })
@@ -106,73 +206,25 @@ try {
     await page.screenshot({ path: join(OUT, 'before-click-through.png') })
     console.log('OK (broken build confirmed): option click does not land / does not commit')
   } else {
-    await page.getByRole('option', { name: /oncall/ }).click({ timeout: 5000 })
+    await driveAgentPicker(page, dialog, 'create')
+    console.log('OK [create]: select-in-dialog commits (mouse + keyboard), dialog survives, Escape scoped')
 
-    // The selection must commit…
-    const committed = await trigger.textContent()
-    if (!committed?.includes('oncall')) {
-      throw new Error(`agent selection did not commit: trigger reads "${committed}"`)
-    }
-    // …and Radix's DismissableLayer must treat it as INSIDE the dialog's layer
-    // stack: an outside-interaction would have closed the whole dialog.
-    if (!(await dialog.count())) {
-      throw new Error('selecting an agent closed the job dialog underneath')
-    }
-    await page.screenshot({ path: join(OUT, 'after-selection-committed.png') })
+    // Same component, same modal, DIFFERENT entry: the edit dialog opens from
+    // an existing job's row and titles itself with the job's name. Until this
+    // leg existed the guarded behaviour had a guard on one of its two doors.
+    //
+    // Fresh navigation, NOT Escape: the drill just closed the agent popup with
+    // Escape, and a second Escape aimed at the dialog races the popup's
+    // unmounting DismissableLayer, which can still swallow it — observed as a
+    // create-dialog-never-detaches timeout on an identical rebuild. A goto has
+    // no such race and also clears the create form's leftover state.
+    await page.goto(base + '/schedule', { waitUntil: 'domcontentloaded' })
+    await page.getByText('Nightly digest', { exact: true }).first().click()
+    const editDialog = page.getByRole('dialog', { name: 'Nightly digest' })
+    await editDialog.waitFor({ timeout: 10000 })
 
-    // Keyboard path: reopen — the filter input must take focus (the dialog's
-    // FocusScope used to reclaim it), ArrowDown must rove to an option, and
-    // Enter on a narrowed filter must commit.
-    await trigger.click()
-    await listbox.waitFor({ timeout: 5000 })
-    const input = page.getByLabel('Filter agents')
-    if (!(await input.evaluate(el => el === document.activeElement))) {
-      throw new Error('filter input did not take focus inside the modal dialog')
-    }
-    await page.keyboard.press('ArrowDown')
-    const onOption = await page.evaluate(() => document.activeElement?.getAttribute('role') === 'option')
-    if (!onOption) throw new Error('ArrowDown did not move focus to an option (keyboard still dead)')
-    await page.keyboard.press('ArrowUp')
-    await input.pressSequentially('res')
-    await page.screenshot({ path: join(OUT, 'after-keyboard-filter.png') })
-    await page.keyboard.press('Enter')
-    const kbCommitted = await trigger.textContent()
-    if (!kbCommitted?.includes('research')) {
-      throw new Error(`keyboard selection did not commit: trigger reads "${kbCommitted}"`)
-    }
-    if (!(await dialog.count())) {
-      throw new Error('keyboard selection closed the job dialog underneath')
-    }
-
-    // Escape must dismiss only the popup on reopen, never the dialog.
-    await trigger.click()
-    await listbox.waitFor({ timeout: 5000 })
-
-    // The option list must also SCROLL inside the modal: the popover portals
-    // outside DialogContent, so it sits in neither react-remove-scroll's lock
-    // container nor its shards — react-remove-scroll cancels wheel events it
-    // does not recognise, so drive a REAL wheel over the list and assert it
-    // moved (with a long roster this is a third way the picker could be
-    // "unusable inside dialogs").
-    const scrollable = await listbox.evaluate(el => el.scrollHeight > el.clientHeight)
-    if (!scrollable) {
-      throw new Error('fixture roster does not overflow the list — the wheel assertion is vacuous')
-    }
-    await listbox.hover()
-    await page.mouse.wheel(0, 120)
-    await page.waitForTimeout(200)
-    const scrolled = await listbox.evaluate(el => el.scrollTop)
-    if (scrolled <= 0) {
-      throw new Error('wheel over the agent list did not scroll it inside the modal dialog')
-    }
-
-    await page.keyboard.press('Escape')
-    await listbox.waitFor({ state: 'detached', timeout: 5000 })
-    if (!(await dialog.count())) {
-      throw new Error('Escape on the agent popup also closed the job dialog underneath')
-    }
-
-    console.log('OK: select-in-dialog commits (mouse + keyboard), dialog survives, Escape scoped')
+    await driveAgentPicker(page, editDialog, 'edit')
+    console.log('OK [edit]: select-in-dialog commits (mouse + keyboard), dialog survives, Escape scoped')
   }
 
   await context.close()

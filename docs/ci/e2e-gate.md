@@ -175,9 +175,13 @@ silent darkening is no guard.
 `ci.yml`'s `e2e` job (`E2E (stub ACP backend, offline)`) installs the backend
 with `--group dev`, runs `npm ci` and `npm run build` in `website/`, stages
 `website/dist` into `src/kiro_crew/static/dist` so the specs render the real
-bundled dashboard rather than a 404, installs Chromium, runs the i18n render-time
-gate (which reuses that Chromium install), and finally runs `python setup.py
-test_e2e`.
+bundled dashboard rather than a 404, installs Chromium, runs the real-browser
+dialog guard (`npm run verify:agent-selector-dialog` — the end-to-end proof
+that `AgentSelector.dialog.test.tsx` delegates here because happy-dom cannot
+exercise Radix's layer interplay; it drives the agent picker inside BOTH the
+create and the edit job dialogs against `website/dist` with fixture-stubbed
+`/api/**`), runs the i18n render-time gate (which reuses that Chromium
+install), and finally runs `python setup.py test_e2e`.
 
 ### The browser install is budgeted, and installs no apt packages
 
