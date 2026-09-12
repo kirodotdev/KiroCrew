@@ -57,7 +57,9 @@ export interface SlotDraftStoreOpts<T> {
 export interface SlotDraftStore<T> {
   load(): Record<string, T>
   save(drafts: Record<string, T>): void
-  set(drafts: Record<string, T>, slot: string, value: T): void
+  set(drafts: Record<string, T>, slot: string, value: T, updatedAt?: number): void
+  /** Last persisted edit time for one slot, when this store has a TTL sidecar. */
+  updatedAt(slot: string): number | null
   /** @internal test-only: reset module state between tests. `undefined` in the
    *  prod bundle (gated on `!import.meta.env.PROD`). */
   __resetForTests: () => void
@@ -219,16 +221,22 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
   /** Mutate `drafts` for `slot`: delete-then-reinsert a sanitized deep copy if
    *  accepted (refreshes LRU position), delete if `sanitize` rejects it (empty /
    *  corrupt). Stamps touch time for TTL eviction when the store has a TTL. */
-  function set(drafts: Record<string, T>, slot: string, value: T): void {
+  function set(drafts: Record<string, T>, slot: string, value: T, updatedAt?: number): void {
     ensureTimestampsLoaded()
     delete drafts[slot]
     const clean = sanitize(value)
     if (clean !== null) {
       drafts[slot] = clean
-      if (hasTtl) timestamps[slot] = Date.now()
+      if (hasTtl) timestamps[slot] = updatedAt ?? Date.now()
     } else if (hasTtl) {
       delete timestamps[slot]
     }
+  }
+
+  function updatedAt(slot: string): number | null {
+    ensureTimestampsLoaded()
+    const value = timestamps[slot]
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
   }
 
   const __resetForTests: () => void = import.meta.env.PROD
@@ -238,5 +246,5 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
         timestampsLoaded = false
       }
 
-  return { load, save, set, __resetForTests }
+  return { load, save, set, updatedAt, __resetForTests }
 }

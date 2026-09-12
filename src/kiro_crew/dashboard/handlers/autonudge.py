@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     stale_owner_session_response,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.goal_drafts import get_goal_draft_store
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_AGENT_TURNS,
     DEFAULT_MONITOR_CADENCE_SECS,
@@ -424,6 +425,69 @@ def _monitor_config(body: dict[str, Any]) -> MonitorState:
         ),
         wake_instructions=wake.strip(),
     )
+
+
+async def api_goal_draft_get(request: web.Request) -> web.Response:
+    """GET /api/autonudge/draft/slot/{slot_key} — canonical goal form draft."""
+
+    denied = await _require_monitor_owner(request, "goal_draft_get")
+    if denied is not None:
+        return denied
+    try:
+        snapshot = await asyncio.to_thread(
+            get_goal_draft_store().get,
+            request.match_info["slot_key"],
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_goal_draft"}, status=400)
+    except OSError:
+        logger.warning("Could not read goal draft", exc_info=True)
+        return web.json_response(
+            {"error": "goal draft storage is unavailable", "code": "goal_draft_unavailable"},
+            status=503,
+        )
+    return web.json_response(snapshot.to_public_dict())
+
+
+async def api_goal_draft_put(request: web.Request) -> web.Response:
+    """PUT /api/autonudge/draft/slot/{slot_key} — last-write-wins goal draft.
+
+    ``draft: null`` writes a tombstone rather than deleting the timestamp, so a
+    stale browser-local value cannot resurrect a goal that was cleared on
+    another device.  ``updated_at`` is the edit time from the browser's existing
+    local draft sidecar; the store bounds future clock skew before comparing it.
+    """
+
+    denied = await _require_monitor_owner(request, "goal_draft_put")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("request body must be an object")
+        draft = body.get("draft")
+        if draft is not None and not isinstance(draft, dict):
+            raise ValueError("draft must be an object or null")
+        updated_at = body.get("updated_at")
+        if isinstance(updated_at, bool) or not isinstance(updated_at, (int, float)):
+            raise ValueError("updated_at must be a finite timestamp")
+        snapshot = await asyncio.to_thread(
+            get_goal_draft_store().put,
+            request.match_info["slot_key"],
+            message=None if draft is None else draft.get("message"),
+            idle_secs=None if draft is None else draft.get("idle_secs"),
+            max_cycles=None if draft is None else draft.get("max_cycles"),
+            updated_at=updated_at,
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_goal_draft"}, status=400)
+    except OSError:
+        logger.warning("Could not persist goal draft", exc_info=True)
+        return web.json_response(
+            {"error": "goal draft storage is unavailable", "code": "goal_draft_unavailable"},
+            status=503,
+        )
+    return web.json_response(snapshot.to_public_dict())
 
 
 async def api_autonudge_list(request: web.Request) -> web.Response:
