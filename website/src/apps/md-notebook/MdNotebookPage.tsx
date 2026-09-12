@@ -2172,7 +2172,20 @@ export default function MdNotebookPage() {
           }}
         />
       ) : (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <div
+        style={{
+          flex: 1,
+          // While narrow the panel takes the full width and this column
+          // squeezes to zero -- but its absolutely-positioned header controls
+          // (sync pill, view switch) escape the zero box and land on the
+          // panel's tree rows beneath. display:none keeps it mounted (queries
+          // keep running) while removing it from layout, paint, tab order
+          // and the accessibility tree.
+          display: isMobile && panelShown ? 'none' : 'flex',
+          flexDirection: 'column',
+          minWidth: 0,
+        }}
+      >
         <div ref={headerBandRef} style={{ position: 'relative' }}>
           <div
             ref={headerControlsRef}
