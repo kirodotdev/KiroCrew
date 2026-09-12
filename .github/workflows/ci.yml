@@ -1648,7 +1648,13 @@ jobs:
     # The templates it lints live under src/kiro_crew/deploy/, which the
     # paths-filter counts as backend, so a frontend-only diff cannot touch one.
     if: needs.changes.outputs.only_frontend != 'true'
-    runs-on: ubuntu-latest
+    # PILOT: this one job runs on a CodeBuild-hosted runner (project
+    # `kirocrew-gha-linux`, Ubuntu 22.04) instead of ubuntu-latest. Only runs
+    # inside kirodotdev/KiroCrew that are not fork PRs get the codebuild label;
+    # a fork's own CI and fork PRs stay on ubuntu-latest, because the runner
+    # never serves them. Rollback: `ubuntu-latest`. Policy, image caveat and
+    # exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

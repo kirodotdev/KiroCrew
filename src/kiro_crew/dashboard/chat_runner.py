@@ -4330,9 +4330,21 @@ _RESUME_PREFETCH_TTL_SECS = 600.0
 # falls out of the accounting.
 _RESUME_PREFETCH_MAX_LIVE = resource_status.PREWARM_MAX_LIVE
 # Insertion-ordered arm registry (loop-owned, like all chat_runner state):
-# session_key -> None. Entries leave on TTL fire, on eviction, or lazily when
-# an eviction attempt finds the session already claimed/gone.
+# session_key -> _RESERVED (admitted, not yet registered) or the arm
+# generation the entry registered under (see _arm_generation). Entries leave
+# on TTL fire, on eviction, or lazily when an eviction attempt finds the
+# session already claimed/gone.
 _armed_prefetches: "dict[str, object]" = {}
+
+# Bumped at every registration (_cap_armed_prefetches). An admission carries
+# the generation current when its SLOT SIGNAL arrived and may only evict
+# entries registered at or before it: an entry registered AFTER the signal
+# was armed by a CONCURRENT signal that won the same allowance, not by an
+# older one the newer signal outranks. Without this, two simultaneous slot
+# signals on an allowance of one spawn twice -- the slower signal's admission
+# lands after the faster one registered, sees a "live" entry, evicts the
+# session spawned moments ago, and spawns its own.
+_arm_generation = 0
 
 # Registry value for a key whose spawn is admitted but not yet registered. It
 # counts against the allowance like a live entry -- the process is about to
@@ -4340,6 +4352,16 @@ _armed_prefetches: "dict[str, object]" = {}
 # signals admitted concurrently against an allowance of one would otherwise
 # both pass (each seeing an empty registry) and both spawn.
 _RESERVED = object()
+
+
+def _entry_arm_generation(value: object) -> float:
+    """The arm generation a registry entry registered under.
+
+    Entries predating the generation scheme (or seeded by tests) carry
+    ``None``; treat them as generation zero -- older than every signal, so
+    always within eviction reach.
+    """
+    return value if isinstance(value, (int, float)) else 0
 
 
 def _prewarm_allowance() -> int:
@@ -4352,11 +4374,24 @@ def _prewarm_allowance() -> int:
     return resource_status.prewarm_allowance()
 
 
-async def _evict_prefetches_beyond(sessions: Any, limit: int, *, keep: str | None = None) -> bool:
+async def _evict_prefetches_beyond(
+    sessions: Any,
+    limit: int,
+    *,
+    keep: str | None = None,
+    up_to_generation: float | None = None,
+) -> bool:
     """Evict oldest unclaimed prefetches until at most *limit* remain.
 
     *keep* is a key exempt from eviction AND from the count — the session being
     (re-)armed, whose own registration is accounted for by the caller.
+
+    *up_to_generation* bounds which entries are within reach: only entries
+    registered at or before that arm generation may be evicted. ``None``
+    means unbounded — the post-registration cap and the critical band evict
+    regardless of age. Admission passes its signal's generation so it never
+    tears down a session a CONCURRENT signal registered while this one was
+    still working toward its admission (see ``_arm_generation``).
 
     Returns ``True`` once the population is within *limit*. A failed removal
     returns ``False`` at once and LEAVES the entry registered: the process is
@@ -4365,14 +4400,28 @@ async def _evict_prefetches_beyond(sessions: Any, limit: int, *, keep: str | Non
     that attempt finds the session already claimed or gone.
     """
     while len([k for k in _armed_prefetches if k != keep]) > limit:
-        evictable = [k for k, v in _armed_prefetches.items() if k != keep and v is not _RESERVED]
+        evictable = [
+            k
+            for k, v in _armed_prefetches.items()
+            if k != keep
+            and v is not _RESERVED
+            and (up_to_generation is None or _entry_arm_generation(v) <= up_to_generation)
+        ]
         if not evictable:
-            # Every entry over the limit is a reservation: an admitted spawn
-            # whose process does not exist yet, so there is nothing to remove.
-            # Room cannot be made; the caller treats this like a failed
-            # eviction and the reservation's owner registers or rolls back.
+            # Every entry over the limit is out of reach: a reservation (an
+            # admitted spawn whose process does not exist yet) or a session a
+            # newer-generation signal registered. Room cannot be made; the
+            # caller treats this like a failed eviction — the reservation's
+            # owner registers or rolls back, and a concurrent registrant
+            # keeps the allowance it already spent.
             return False
         oldest = evictable[0]
+        # The removal below awaits; a focus/reload signal can re-register the
+        # SAME key with a newer generation meanwhile. Capture the entry's
+        # value and pop only if it is still the one this eviction selected —
+        # unconditionally popping by key would erase the replacement's
+        # accounting and let the next admission spawn on top of it.
+        oldest_value = _armed_prefetches.get(oldest)
         try:
             # Shielded for the same reason as the TTL removal: an interrupted
             # removal leaks the process holding the native lock.
@@ -4389,11 +4438,18 @@ async def _evict_prefetches_beyond(sessions: Any, limit: int, *, keep: str | Non
         except Exception:
             logger.warning("Resume prefetch: eviction failed for %s", oldest, exc_info=True)
             return False
-        _armed_prefetches.pop(oldest, None)
+        if _armed_prefetches.get(oldest) is oldest_value:
+            _armed_prefetches.pop(oldest, None)
+        # A changed value means a re-registration won the window: leave its
+        # entry alone and let the loop re-evaluate — under an admission's
+        # generation bound the fresh entry is out of reach, so the admission
+        # refuses rather than tearing it down.
     return True
 
 
-async def _admit_prefetch(sessions: Any, new_key: str, allowance: int) -> bool:
+async def _admit_prefetch(
+    sessions: Any, new_key: str, allowance: int, *, signal_generation: float | None = None
+) -> bool:
     """Make room for *new_key* BEFORE it spawns; ``False`` when it must not.
 
     A zero allowance refuses, and first evicts every idle pre-warm already
@@ -4405,6 +4461,15 @@ async def _admit_prefetch(sessions: Any, new_key: str, allowance: int) -> bool:
     the handshake. An eviction that FAILS refuses too: the room was not made,
     so admitting on top of it would exceed the allowance just the same.
 
+    *signal_generation* is the arm generation current when this admission's
+    slot signal arrived (``None``: read it now). Eviction is bounded by it,
+    so an admission delayed past a concurrent signal's registration — the
+    allowance probe runs in a worker thread, and Windows scheduling can hold
+    it beyond the other signal's whole handshake — refuses instead of tearing
+    down the session that signal spawned moments ago and spawning a second
+    one. A genuinely LATER signal reads a generation at or
+    above every live registration, so newest-signal-wins eviction is intact.
+
     Admission RESERVES *new_key* in the registry before returning ``True``: the
     eviction above awaits, and two slot signals admitted in the same window
     would otherwise each see the room the other is about to fill. The
@@ -4414,14 +4479,20 @@ async def _admit_prefetch(sessions: Any, new_key: str, allowance: int) -> bool:
     without one. A key already registered is re-armed in place and is not
     reserved again, so a rollback cannot drop a live entry.
     """
+    if signal_generation is None:
+        signal_generation = _arm_generation
     if allowance <= 0:
         # The band that refuses a new pre-warm also has no room for the ones
         # already idle, *new_key*'s own earlier pre-warm included -- a re-arm
-        # in this band gets no exemption. A failed eviction is logged by the
-        # helper and the next signal retries it.
+        # in this band gets no exemption, and neither does a concurrent
+        # signal's fresh registration: the host is critical, so the idle
+        # population falls to zero regardless of age. A failed eviction is
+        # logged by the helper and the next signal retries it.
         await _evict_prefetches_beyond(sessions, 0)
         return False
-    if not await _evict_prefetches_beyond(sessions, allowance - 1, keep=new_key):
+    if not await _evict_prefetches_beyond(
+        sessions, allowance - 1, keep=new_key, up_to_generation=signal_generation
+    ):
         return False
     if new_key not in _armed_prefetches:
         _armed_prefetches[new_key] = _RESERVED
@@ -4450,8 +4521,10 @@ async def _cap_armed_prefetches(
     first real turn on that slot cold-starts, exactly as if the allowance had
     read zero before the spawn and ``_admit_prefetch`` had refused.
     """
+    global _arm_generation
+    _arm_generation += 1
     _armed_prefetches.pop(new_key, None)  # re-arm moves the key to newest
-    _armed_prefetches[new_key] = None
+    _armed_prefetches[new_key] = _arm_generation
     if cap <= 0:
         await _evict_prefetches_beyond(sessions, 0)
         return
@@ -4487,7 +4560,13 @@ def schedule_eager_spawn(
     prev = getattr(slot, "_eager_spawn_task", None)
     if prev is not None and not prev.done():
         prev.cancel()
-    task = asyncio.create_task(_eager_spawn(state, slot, allow_resume=allow_resume))
+    # The arm generation as of THIS slot signal, read synchronously HERE:
+    # create_task only queues the coroutine, so a registration landing before
+    # its first step would otherwise be inside a later snapshot and look
+    # evictable to the very signal it raced.
+    task = asyncio.create_task(
+        _eager_spawn(state, slot, allow_resume=allow_resume, signal_generation=_arm_generation)
+    )
     slot._eager_spawn_task = task
     return task
 
@@ -4569,7 +4648,11 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
 
 
 async def _eager_spawn(
-    state: "DashboardState", slot: "_ChatSlot", *, allow_resume: bool = False
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    *,
+    allow_resume: bool = False,
+    signal_generation: float | None = None,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -4591,6 +4674,14 @@ async def _eager_spawn(
        session.
     """
     try:
+        # The arm generation as of this slot signal. ``schedule_eager_spawn``
+        # reads it synchronously at signal arrival (create_task only queues
+        # this coroutine, so reading it here would already be one scheduling
+        # hop late); a direct call falls back to reading it now, before any
+        # await. Every registration that lands after the snapshot belongs to
+        # a concurrent signal, and the admission below must not evict it.
+        if signal_generation is None:
+            signal_generation = _arm_generation
         await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS)
         sessions = getattr(state, "sessions", None)
         if sessions is None:
@@ -4793,7 +4884,9 @@ async def _eager_spawn(
             # is made first (oldest unclaimed evicted) so the population never
             # overshoots during the handshake. Off the loop: it reads procfs.
             allowance = await asyncio.to_thread(_prewarm_allowance)
-            if not await _admit_prefetch(sessions, session_key, allowance):
+            if not await _admit_prefetch(
+                sessions, session_key, allowance, signal_generation=signal_generation
+            ):
                 logger.info(
                     "Eager spawn: host memory admits %d pre-warmed session(s) and "
                     "%d are live; leaving slot %s to first turn",
