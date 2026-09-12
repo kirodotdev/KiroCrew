@@ -167,17 +167,22 @@ class TestEphemeralAuthorityCaveat:
     """Whether the job BEING written can manage crons on a later run."""
 
     def test_an_ephemeral_agent_job_is_warned(self):
-        out = _ephemeral_authority_caveat(persistent=False, is_agent_job=True, sequence_len=0)
+        out = _ephemeral_authority_caveat(persistent=False, is_agent_job=True, agent_sequence=[])
         assert "persistent_session is false" in out
         assert "including ones it creates itself" in out
 
     def test_a_persistent_agent_job_is_not_warned(self):
-        assert _ephemeral_authority_caveat(persistent=True, is_agent_job=True, sequence_len=0) == ""
+        assert (
+            _ephemeral_authority_caveat(persistent=True, is_agent_job=True, agent_sequence=[]) == ""
+        )
 
     def test_a_multi_agent_job_is_not_warned(self):
         """That path mints a stable per-agent key and ignores the flag."""
         assert (
-            _ephemeral_authority_caveat(persistent=False, is_agent_job=True, sequence_len=2) == ""
+            _ephemeral_authority_caveat(
+                persistent=False, is_agent_job=True, agent_sequence=["a", "b"]
+            )
+            == ""
         )
 
     @pytest.mark.parametrize("persistent", [True, False])
@@ -188,7 +193,9 @@ class TestEphemeralAuthorityCaveat:
         unconditionally and a command cron issues no MCP call at all.
         """
         assert (
-            _ephemeral_authority_caveat(persistent=persistent, is_agent_job=False, sequence_len=0)
+            _ephemeral_authority_caveat(
+                persistent=persistent, is_agent_job=False, agent_sequence=[]
+            )
             == ""
         )
 

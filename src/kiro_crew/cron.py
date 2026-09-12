@@ -311,6 +311,59 @@ def referenced_skill_names() -> set[str]:
     return out
 
 
+def agent_sequence_dispatches(seq: list[str]) -> bool:
+    """Whether a job's ``agent_sequence`` is what dispatch actually runs.
+
+    A sequence of more than one agent takes precedence over ``agent_id``; a
+    shorter one is dormant and dispatch falls through to ``agent_id``. This is
+    the ONE spelling of that gate -- the Slack dispatch path, session-key
+    stability, and the doctor's disk reader all call it, so a change to the
+    dispatch semantics cannot silently leave a consumer reporting (or keying)
+    against the old rule.
+    """
+    return len(seq) > 1
+
+
+def job_agent_names_from_disk() -> list[tuple[str, str]]:
+    """``(job name, agent name)`` for every agent a stored cron job dispatches.
+
+    Read-only + best-effort like :func:`referenced_skill_names`: reads
+    ``crons.json`` directly (so it needs no running scheduler) and returns an
+    empty list on any error. ``kirocrew doctor`` uses this to warn when a job
+    still names a deprecated agent spec.
+
+    Mirrors dispatch, not storage: a ``script`` or ``command`` job bypasses
+    agent dispatch entirely, so its agent fields are dormant and the record is
+    skipped whole; otherwise, when :func:`agent_sequence_dispatches` the
+    sequence entries are reported and ``agent_id`` is dormant, else
+    ``agent_id`` is reported and the sequence (if any) is dormant. A record
+    whose fields the scheduler's own loader rejects (a non-list sequence, a
+    non-string entry or ``agent_id``) dispatches nothing, so it contributes
+    nothing here rather than failing doctor over a job that never runs.
+    """
+    out: list[tuple[str, str]] = []
+    try:
+        for j in _read_job_records(config_dir() / _CRONS_FILE)[0]:
+            if j.get("script") or j.get("command"):
+                continue  # runs with no LLM; agent fields are dormant
+            label = j.get("name") or j.get("id")
+            holder = label if isinstance(label, str) and label else "<unnamed job>"
+            seq = j.get("agent_sequence", [])
+            if not isinstance(seq, list) or any(not isinstance(s, str) for s in seq):
+                continue  # the scheduler's loader rejects this record whole
+            agent_id = j.get("agent_id", "")
+            if agent_id is not None and not isinstance(agent_id, str):
+                continue  # same rejection class
+            if agent_sequence_dispatches(seq):
+                names = [s for s in seq if s]
+            else:
+                names = [agent_id] if agent_id else []
+            out.extend((holder, name) for name in names)
+    except Exception:
+        return []
+    return out
+
+
 _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
@@ -959,7 +1012,7 @@ def cron_session_key_is_stable(job: CronJob) -> bool:
     record separates them. The sequential path ignores ``persistent_session``
     entirely, which is why it is checked second rather than combined.
     """
-    if len(job.agent_sequence) > 1:
+    if agent_sequence_dispatches(job.agent_sequence):
         return True
     return job.persistent_session
 
