@@ -16,6 +16,7 @@ from typing import Any
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -33,11 +34,13 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
+    effort_option_id,
     model_registry_namespace,
     selectable_backends,
 )
@@ -88,6 +91,12 @@ METHOD_SESSION_UPDATE = "session/update"
 METHOD_METADATA = "_kiro.dev/metadata"
 METHOD_COMMANDS_EXECUTE = "_kiro.dev/commands/execute"
 METHOD_SESSION_LOAD = "session/load"
+#: The other standard restore verb, for an agent that keeps sessions but does not
+#: implement full loading: it restores the session WITHOUT replaying the previous
+#: messages. Its request and response carry the same fields as ``session/load``'s,
+#: which is why one membership set (``ACP_BACKENDS_RESUME_WITHOUT_LOAD``) decides
+#: which of the two a harness is sent rather than each having a restore path.
+METHOD_SESSION_RESUME = "session/resume"
 # kiro-cli extension: evict a session from the multiplexed process, freeing its
 # transcript/context + reaping its MCP children. Without this the shared
 # kiro-cli process retains every session's state for its whole lifetime, so RSS
@@ -185,6 +194,7 @@ PROVIDER_LABEL_CLAUDE = "claude_code"
 PROVIDER_LABEL_KAS = "kas"
 PROVIDER_LABEL_CODEX = "codex"
 PROVIDER_LABEL_OPENCODE = "opencode"
+PROVIDER_LABEL_DEEPSEEK = "deepseek"
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under

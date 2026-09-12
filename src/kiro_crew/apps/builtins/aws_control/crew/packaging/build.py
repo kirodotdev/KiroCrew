@@ -292,6 +292,7 @@ _SENSITIVE_RELATIVE_DIRS = (
     ".codex/auth.json",
     ".config/gcloud",
     ".docker/config.json",
+    ".dsh/.credentials.yaml",
     ".git-credentials",
     ".gnupg",
     ".gpg",

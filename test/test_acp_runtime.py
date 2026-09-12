@@ -4565,7 +4565,26 @@ class TestAcpRuntimeLoadSession:
         import kiro_crew.acp.runtime as rt_mod
 
         _SEND_FUNCS = {"_send_request", "_send_and_await"}
-        _SESSION_METHODS = {"METHOD_SESSION_NEW", "METHOD_SESSION_LOAD"}
+        # All THREE session-creating verbs. ``session/resume`` is the standard
+        # alternative to ``session/load`` for an agent that keeps sessions without
+        # implementing full loading, and a resumed session re-declares its whole MCP
+        # surface exactly as a loaded one does -- so a builder sending it must consult
+        # the pooled stubs for the same reason, and leaving it out would exempt the
+        # newest restore path from this ratchet.
+        _SESSION_METHODS = {
+            "METHOD_SESSION_NEW",
+            "METHOD_SESSION_LOAD",
+            "METHOD_SESSION_RESUME",
+        }
+
+        # Every session-method constant one expression can evaluate to, so a builder
+        # that CHOOSES its verb is read as naming both.
+        def _method_names(node: ast.AST) -> set:
+            if isinstance(node, ast.Name):
+                return {node.id} & _SESSION_METHODS
+            if isinstance(node, ast.IfExp):
+                return _method_names(node.body) | _method_names(node.orelse)
+            return set()
 
         def _builders(module) -> dict[str, str]:
             src = inspect.getsource(module)
@@ -4573,15 +4592,29 @@ class TestAcpRuntimeLoadSession:
             for node in ast.walk(ast.parse(src)):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
+                # Locals bound to one of those constants, so ``restore_method = A if
+                # ... else B`` followed by a send of ``restore_method`` is still seen.
+                # Without this the scan sees only a constant named AT the call, and one
+                # variable makes a builder invisible -- which is exactly the silent
+                # un-pooling this ratchet exists to catch.
+                aliases = set()
+                for inner in ast.walk(node):
+                    if not isinstance(inner, ast.Assign) or not _method_names(inner.value):
+                        continue
+                    for target in inner.targets:
+                        if isinstance(target, ast.Name):
+                            aliases.add(target.id)
                 for call in ast.walk(node):
-                    if (
+                    if not (
                         isinstance(call, ast.Call)
                         and isinstance(call.func, ast.Attribute)
                         and call.func.attr in _SEND_FUNCS
                         and call.args
-                        and isinstance(call.args[0], ast.Name)
-                        and call.args[0].id in _SESSION_METHODS
                     ):
+                        continue
+                    first = call.args[0]
+                    aliased = isinstance(first, ast.Name) and first.id in aliases
+                    if _method_names(first) or aliased:
                         out[node.name] = ast.get_source_segment(src, node) or ""
                         break
             return out
@@ -4597,12 +4630,19 @@ class TestAcpRuntimeLoadSession:
             assert name in builders, f"{name} no longer issues session/new — remove its exemption"
             builders.pop(name)
         # The four known builders; a new one is included automatically.
-        assert {
+        _EXPECTED = {
             "create_session",
             "load_session",
             "_new_session_following_substitution",
             "_initialize_session",
-        } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
+        }
+        # Names what is MISSING first and the found set second, so a reader chasing
+        # this failure looks up the name that is absent rather than one that is
+        # present.
+        assert _EXPECTED <= builders.keys(), (
+            f"expected builders missing from scan: {sorted(_EXPECTED - builders.keys())} "
+            f"(found: {sorted(builders)})"
+        )
         for name, body in builders.items():
             assert "pooled_session_servers" in body or "_pooled_mcp_servers" in body, (
                 f"{name} issues session/new or session/load but never consults "

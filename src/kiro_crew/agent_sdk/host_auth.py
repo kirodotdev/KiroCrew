@@ -64,6 +64,7 @@ from typing import Dict, FrozenSet, Protocol, Tuple, runtime_checkable
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -474,6 +475,59 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # Excluded deliberately: it signs in through its own credential file, so a
         # ``kiro-cli logout`` says nothing about whether a running opencode session
         # is still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_DEEPSEEK,
+        # The harness's ACP layer authenticates NOTHING: its ``initialize`` result
+        # advertises no auth methods and its ``authenticate`` returns immediate
+        # success. The secret it needs is a PROVIDER key, resolved inside the harness
+        # from its own store, so these are the leaves that store is made of.
+        #
+        # Verified on disk rather than read off documentation: run with ``DSH_HOME``
+        # pointed at a scratch tree, the harness creates its home there and its own
+        # credential provider names ``<home>/.credentials.yaml`` as the file it
+        # writes and ``<home>/.env`` as the read-only fallback it also resolves keys
+        # from. The fallback is on the floor beside the writable file because a key
+        # is a key wherever the harness reads it: fencing only the file it writes
+        # would leave the same secret readable one path over.
+        credential_leaves=(".dsh/.credentials.yaml", ".dsh/.env"),
+        # One variable relocates the whole home, which is what makes it the override
+        # that matters here.
+        home_override_env_vars=("DSH_HOME",),
+        # Stated rather than left empty. ``DSH_HOME`` stands in for the leaves' own
+        # parent, so each keeps only its final segment there, and that happens to be
+        # what an empty tuple would have anchored. Spelling it out is the point: the
+        # floor re-anchors by the spelling declared here, and a reader checking
+        # whether the right file is fenced under an override should not have to
+        # re-derive which prefix this variable replaces.
+        override_relative_leaves=(".credentials.yaml", ".env"),
+        # Nothing excluded from the mask, because no mask is applied: this harness's
+        # routing is ``UNVERIFIED``, so it is outside ``tool_gate.ENFORCED_ROUTINGS``,
+        # ``adapter_hidden_credential_dirs`` returns empty for it, and there is
+        # nothing to carve an exception out of. Declaring one anyway would be an
+        # assertion about a control that never runs. The leaves above still stand:
+        # they are what the READ GATE fences from the agent's own file tools, which is
+        # a separate control and does run.
+        adapter_own_leaves=(),
+        # States the ACTION only, and asserts no state, because for this harness
+        # there may be no state to assert: a provider route pointed at a model served
+        # on the operator's own machine needs no key at all.
+        sign_in_remedy=(
+            "DeepSeek Harness holds its own provider key. Save one in its "
+            "configuration to reach a hosted model. A model served locally on this "
+            "machine needs no key: point a provider route at it instead. Neither is "
+            "checked here, because the harness reads them itself."
+        ),
+        signed_out_message=(
+            "DeepSeek Harness has no provider key. Save one in its configuration, or "
+            "point a provider route at a model served locally on this machine, then "
+            "start a new chat."
+        ),
+        # Excluded deliberately, and for this harness the reason is stronger than a
+        # separate store: there is no host credential on the wire at all, so a
+        # ``kiro-cli logout`` cannot bear on whether a running session still works.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),

@@ -33,6 +33,7 @@ import pytest
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -168,8 +169,16 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # the same capture reason, its ids being ``provider/model`` pairs drawn from the
     # operator's own provider list. The settings seed stays claude-only — the two
     # opt-ins are independent, and a deliberate edit this pin forces to be seen.
+    # deepseek joins for that same capture reason, in its strongest form: its
+    # select's values are JSON-encoded ``[provider, model]`` pairs from its own live
+    # catalog, which nothing can spell from a stored bare model name.
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
-        {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+        {
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_DEEPSEEK,
+        }
     )
     assert ACP_BACKENDS_SEED_LOCAL_SETTINGS == frozenset({ACP_BACKEND_CLAUDE})
 

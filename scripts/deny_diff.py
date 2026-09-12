@@ -152,6 +152,10 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     # OpenCode's credential home follows the XDG data directory; a relocated token
     # must not reach the classification child any more than a default one does.
     "XDG_DATA_HOME",
+    # DeepSeek Harness relocates its WHOLE home, credential store included, from one
+    # variable. Same reasoning as the entry above, and the source test pins this tuple
+    # against the harness declarations so a new override cannot be forgotten here.
+    "DSH_HOME",
 )
 
 

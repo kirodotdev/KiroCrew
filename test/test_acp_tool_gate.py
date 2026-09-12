@@ -27,6 +27,7 @@ from kiro_crew import acp_tool_gate as gate
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -96,6 +97,14 @@ def test_only_implemented_mechanisms_are_enforced() -> None:
     )
     assert gate.is_enforced(ACP_BACKEND_CODEX) is True
     assert gate.is_enforced(ACP_BACKEND_OPENCODE) is True
+    # deepseek is NOT enforced, and it is the case that shows enforcement following the
+    # MECHANISM rather than the harness: it has a permission setting Crew can pin and
+    # read back, and that setting governs model-initiated escalations rather than tool
+    # calls. Its sandbox decides those itself. So its routing is ``UNVERIFIED``, which
+    # is outside the enforced set by construction -- there is no observation to
+    # enforce.
+    assert gate.is_enforced(ACP_BACKEND_DEEPSEEK) is False
+    assert routing_for(ACP_BACKEND_DEEPSEEK) is Routing.UNVERIFIED
     assert gate.is_enforced(ACP_BACKEND_CLAUDE) is False
     for backend in AGENT_SPEC_BACKENDS:
         assert gate.is_enforced(backend) is False

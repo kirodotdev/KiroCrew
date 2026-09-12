@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.backends import effort_option_id
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
@@ -336,10 +337,16 @@ class AcpWorker(Worker):
         ``/effort`` slash command, including one that has no such command.
 
         This pool constructs its client with the DEFAULT backend and never passes
-        ``acp_backend``, so the answer here is the kiro one and both spellings
-        agree on it; ``test_agent_sdk_capabilities`` pins that, so a future pool
-        that does select a backend gets the capability answer rather than an
-        identity guess.
+        ``acp_backend``, so the answer here is the kiro one; ``test_agent_sdk_capabilities``
+        pins that, so a future pool that does select a backend gets the capability
+        answer rather than an identity guess.
+
+        The option's *id* is read from ``effort_option_id`` for the same reason,
+        even though the default backend spells it ``effort``: the spelling is per
+        harness, so a literal here would become a silent no-op the moment this
+        pool selected one that spells it differently -- the option would report
+        unsupported, the level list would come back empty, and the requested
+        effort would never reach the session.
         """
         client = self._client
         requested = self._effort
@@ -348,7 +355,8 @@ class AcpWorker(Worker):
         try:
             backend = getattr(client, "backend", "")
             via_config_option = capabilities_for(backend).effort_via_config_option
-            if via_config_option and not client.supports_config_option("effort"):
+            option_id = effort_option_id(backend)
+            if via_config_option and not client.supports_config_option(option_id):
                 logger.warning(
                     "AcpWorker: effort=%s unsupported; using provider default",
                     requested,
@@ -366,7 +374,7 @@ class AcpWorker(Worker):
                 )
                 return
             if via_config_option:
-                await client.set_config_option("effort", effective)
+                await client.set_config_option(option_id, effective)
             else:
                 await client.send_command("/effort", args={"level": effective})
         except Exception:
