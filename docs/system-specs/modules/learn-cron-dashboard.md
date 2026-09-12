@@ -2734,10 +2734,11 @@ The dashboard contract is separate from legacy `/api/autonudge` mutations:
 `GET/POST /api/monitors`, `GET /api/monitors/slot/{slot}`, `PATCH
 /api/monitors/{id}`, `POST /api/monitors/{id}/stop`, and the sole explicit
 revival route `POST /api/monitors/{id}/restart`. Reads include terminal records.
-The dashboard imports its monitor version, bounded limits, provider kinds, and
-enum vocabularies from `website/src/monitoring/contract.json`; a backend parity
-test compares that artifact to `monitor_frontend_contract()`, so a backend
-contract change cannot land while the normalizer still enforces stale values.
+The monitor version, bounded limits, provider kinds, and enum vocabularies
+are published as `website/src/monitoring/contract.json`; a backend parity
+test compares that artifact to `monitor_frontend_contract()`. The dashboard
+has no consumer of that artifact: the composer opens the generic goal-loop
+popover, and structured monitors are created by agents through the MCP tools.
 Every browser monitor route requires the configured dashboard owner before it
 reads a caller-selected slot or id, parses a mutation body, or touches the
 service. A signed allowed-user dashboard session is not sufficient. A stale
