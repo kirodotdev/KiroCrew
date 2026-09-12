@@ -45,6 +45,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.types import AcpEvent
 from kiro_crew.autonudge import APPROVAL_STALL_REASON, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
@@ -102,22 +103,30 @@ def _slack_default_deliver() -> Any:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Tests: _is_heartbeat_safe_tool normalisation
+# Tests: _is_heartbeat_safe_tool trusted-identity gating
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestHeartbeatSafeToolNormalisation:
-    """A malformed ``mcp__`` title yields no server-qualified identity."""
+class TestHeartbeatSafeToolTrustGating:
+    """``_is_heartbeat_safe_tool`` authorizes on the event's trusted identity
+    fields, never on ``event.title`` text — an event with no trusted identity
+    is refused regardless of what its title happens to spell out."""
 
-    def test_mcp_prefix_without_tool_segment_is_refused(self):
-        # "mcp__foo".split("__", 2) is only 2 parts, so neither the qualified
-        # form nor the bare-name strip applies: the title stays "mcp__foo",
-        # misses HEARTBEAT_SAFE_TOOLS, and (qualified == "") can never match an
-        # edition entry -> deny-by-default.
-        assert gw._is_heartbeat_safe_tool("mcp__foo") is False
+    def test_untrusted_identity_is_refused(self):
+        # mcp_identity_trusted defaults to False; a title alone (however it is
+        # spelled) proves nothing about the tool actually being called.
+        event = AcpEvent(kind="permission_request", title="mcp__foo", request_id="r1")
+        assert gw._is_heartbeat_safe_tool(event) is False
 
-    def test_at_prefix_without_slash_is_refused(self):
-        assert gw._is_heartbeat_safe_tool("@server-only") is False
+    def test_trusted_identity_with_no_tool_name_is_refused(self):
+        event = AcpEvent(
+            kind="permission_request",
+            title="@server-only",
+            request_id="r1",
+            mcp_identity_trusted=True,
+            tool_name="",
+        )
+        assert gw._is_heartbeat_safe_tool(event) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
