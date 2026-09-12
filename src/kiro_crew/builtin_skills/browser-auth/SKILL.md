@@ -6,19 +6,13 @@ triggers: login required, behind a login wall, authenticated browsing, session e
 
 # Browser Auth: browsing what needs a login
 
-For a public page, the `browser` MCP tool is the primary path — it drives the
-dashboard's own Browser panel, which the user is already watching. This skill is
-the `playwright-cli` path, and that is where auth lives: attach mode and saved
-storage state have no `browser`-tool equivalent. The tool also refuses a
-loopback, private, or link-local target, so a logged-in intranet host on a private
-range is a `playwright-cli` job by construction.
+For public pages, use the `browser` MCP tool in the dashboard's Browser panel.
+This skill handles login walls through `playwright-cli`: attach and saved state
+have no native-tool equivalent. Loopback, private and link-local targets also
+need the CLI's approval path. A policy denial has no fallback.
 
-Public pages need no auth: `playwright-cli open <url>` and you are done. This skill
-is for the pages that answer with a sign-in screen.
-
-There is no bundled SSO. Every path below reduces to the same idea: **a browser
-context that already holds the user's session**, either theirs directly or a copy
-of it saved to a file.
+There is no bundled SSO. Use the user's existing browser context or saved state;
+never navigate a borrowed tab away from the user's work.
 
 ## Pick a path
 
@@ -62,28 +56,21 @@ playwright-cli attach --extension=chrome
 playwright-cli goto https://internal.example.com/dashboard
 ```
 
-`attach --extension=chrome` binds YOUR process's session, not a session called
-`chrome`: Kiro Crew gives every agent process its own `PLAYWRIGHT_CLI_SESSION`, and
-`attach` binds that name. Keep using bare commands afterwards
-(`playwright-cli tab-list`). A hand-written `--s=chrome` answers `The browser
-'chrome' is not open` — that is the wrong session, not a failed attach, and
-re-attaching in response to it is the trap.
+`PLAYWRIGHT_CLI_SESSION` names your process's browser; `attach --extension=chrome`
+binds it, not a session named `chrome`. Keep using bare commands such as
+`playwright-cli tab-list`. A hand-written `--s=chrome` gives
+`The browser 'chrome' is not open`: wrong session, not a failed attach; do not
+re-attach to fix it.
 
-One browser belongs to a session FAMILY rather than to one agent: a chat session,
-the subagents it spawns, and their siblings normally share one process. If you are
-a subagent and your parent or a sibling may browse at the same time, pick ONE
-distinct `-s=<slug of your own task>` and pass it on every command, `attach`
-included — otherwise your `goto` moves their page and your `close` destroys their
-browser.
+A parent and its subagents normally share one session FAMILY's browser. Assume
+sharing: if your parent or sibling may browse concurrently, choose ONE task-specific
+`-s=<name>` and keep it on every command, `attach` / `open` included. Your `goto`
+otherwise moves their page and your `close` destroys their browser. Never generate
+a fresh name per command.
 
-No token or pairing step exists for the attach itself: the extension and the CLI
-find each other over the relay. An optional token in **Settings → Browser** removes
-the approval click the extension otherwise asks the human for, and the same panel
-installs the CLI for a user who does not have it.
-
-The session is the user's real browser, so their existing login applies with no
-cookie handling at all. Chromium-family only, since Playwright ships an attach
-extension for that family alone.
+The extension and CLI pair through a relay. An optional token in
+**Settings → Browser** removes the human approval click during attach; the same
+panel installs the CLI. Attach uses the user's real logins without cookie handling.
 
 Never `close` an attached session: it closes the windows the user is working in.
 To release the session when you are finished, use `playwright-cli detach`, which
@@ -133,8 +120,10 @@ at all.
 A sign-in screen is the symptom of an expired or absent session, not of a broken
 command, so the fix is always to re-establish the session rather than to retry.
 
-1. `playwright-cli snapshot` and read the YAML at the printed path to confirm it is
-   really a login page and not a permissions error.
+1. `playwright-cli snapshot` and read the YAML at the printed path to distinguish
+   a login page from a permissions error. The path is relative to that command's
+   directory; if you moved, use `$PLAYWRIGHT_MCP_OUTPUT_DIR/<printed filename>`.
+   Never guess a filename; take fresh refs after any page change.
 2. `playwright-cli cookie-list` to see whether the context carried a session at all.
 3. **Attach sessions:** the user's own login expired. Ask them to sign in again in
    their browser; nothing else is needed.

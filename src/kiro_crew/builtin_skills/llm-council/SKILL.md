@@ -218,23 +218,9 @@ backend — `kas_permissions.allowed_tools_to_permissions` converts it into a KA
 inline policy that is then ceiling-clamped, and shipped in-process callers pass it —
 it is simply not reachable from `spawn_run`.
 
-> **Future work: expose `allowed_tools` on `spawn_run`.** Surface the per-subagent
-> tool allowlist the ACP backend already enforces, so council members are
-> config-scoped to the read-only research set above instead of relying on a prompt
-> guardrail.
-
 ## Presenting to the user
 
 Show each member's output labeled by **model** (transparency — only the Chairman's
 *judging* is brand-blind). Then: synthesis → the final answer + dissent/confidence
 note; vote → the tally + verdict; adversarial → the consolidated verdict + required
 changes.
-
-## Ceiling / upgrade path
-
-Prompt-and-orchestration only — no Kiro Crew core changes. If it proves valuable,
-promote to a first-class `council` MCP tool over `SubagentManager` (which already
-accepts a per-subagent `model=`) or a `workflow_run` template — a monitorable,
-one-call primitive with per-member model + mode selection, and a read-only tool
-**trust profile** (the future work above) so members are config-scoped, not
-prompt-scoped.

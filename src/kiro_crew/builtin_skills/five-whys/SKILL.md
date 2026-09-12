@@ -177,18 +177,13 @@ of it — `focus` another node first, otherwise resume would land on a pruned no
 Unknown (plugin) event types validate fine and are ignored by the core folds.
 `report` prints the finished markdown — close-out is one command.
 
-**Free text never rides the shell command line.** A question, answer, note,
-citation, title, or plugin-event JSON can contain `$(...)`, backticks or quotes,
-which the shell would execute or mangle. So for every command that carries free
-text, write the field(s) to a **unique** temp file with the write tool — a fresh
-path per write (e.g. via `mktemp`), never a fixed shared path two concurrent
-dives could clobber — as **one JSON object**, and pass `--stdin-json`, feeding it
-on stdin: `... ask <log> --parent 1 --stage what --stdin-json < <unique>.json`
-where the file is `{"q": "..."}`. All of a command's free text (an answer and its
-`source`, or the whole plugin event) travels in that single object — so no free
-text is ever a shell argument, and two untrusted fields share one read. Short,
-safe values (`--parent`, `--stage`, `--id`, `--kind`, `--origin`, `--anchor`)
-stay as ordinary flags.
+**Free text never rides the shell command line.** Write every command's free-text
+fields (including `source`, title, or the whole plugin event) as one JSON object
+using the write tool in a fresh, unique temp file (e.g. allocated with `mktemp`).
+Feed it on stdin with `--stdin-json` as shown above; never use a fixed shared path.
+This prevents concurrent-session clobber and shell execution of `$(...)`, backticks
+or quotes. Only safe values for `--parent`, `--stage`, `--id`, `--kind`, `--origin`
+and `--anchor` stay as ordinary flags.
 
 ## Capabilities (plugins)
 
@@ -259,11 +254,8 @@ Example capabilities:
 - **Never hand-write or hand-fold JSONL.** Every read and write goes through
   `scripts/five_whys.py` — it validates, allocates ids, and folds deterministically,
   so the tree and report can't drift from the log.
-- **Never interpolate free text or plugin JSON into the shell command.** Put all
-  of a command's free text in one `--stdin-json` JSON object, written to a
-  **unique** temp file with the write tool and fed on stdin (see The mechanical
-  core); a fixed path risks a concurrent-session clobber, and text with `$(...)`,
-  backticks or quotes would otherwise be executed or corrupt the command.
+- Use the **free-text stdin contract** in The mechanical core for every command
+  carrying text or plugin JSON.
 - **Don't dump — drip.** Resist answering the whole topic in one turn; the value
   is the one-step-at-a-time ladder. Short answer + a menu, then wait.
 - **The user's own question always branches** — never redirect it back to your menu.

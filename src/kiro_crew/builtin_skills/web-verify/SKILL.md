@@ -1,6 +1,6 @@
 ---
 name: web-verify
-description: Look at your OWN front-end change before claiming it works -- navigate the loopback URL of a dev server or pod you started, screenshot the surface you changed, read the image to judge it, and embed it in chat. Three capture backends: playwright-cli (the session the dashboard Browser panel shows), the agent-browser CLI (vercel-labs, annotated frames + baseline pixel diff + a11y audit), or scripted Playwright via pod-e2e as the fallback. Use after any user-visible UI edit (component, layout, theme, empty/error state) and to produce the screenshots a PR needs. Distinct from web-preview (iframe for the user to look at) and web-browse (render an external page for the user).
+description: Use after a user-visible UI edit to verify your OWN change on an isolated loopback server. Capture, read and show real screenshots. Backends: playwright-cli (live Browser panel), agent-browser (annotated frames, pixel diff, a11y), or scripted Playwright. Not web-preview or external-page web-browse.
 triggers: verify the ui, check my change, does it look right, screenshot my change, verify front-end, visual check, self-verify, look at the change, prove the ui works, screenshots for the pr, agent-browser, playwright screenshot
 ---
 
@@ -26,7 +26,7 @@ only and refuses loopback, which is every URL in this skill — so
 | backend | how | notes |
 |---|---|---|
 | **`playwright-cli`** | `playwright-cli open <url>` then `playwright-cli screenshot`. It prints the path it wrote; read that. The positional argument is an element **ref**, not a path, and `--filename` resolves against the CWD (so it can clobber a repo file and is not auto-approved) -- take the printed path instead of naming the file. | The panel-integrated path: the session is what the dashboard's **Browser** panel shows, so the user watches the verification instead of waiting for a summary. Prefer it when `playwright-cli` is on PATH. |
-| **agent-browser** (`vercel-labs/agent-browser`) | `agent-browser open <url>` then `screenshot <path>`; `snapshot -i` for refs, `screenshot --annotate` for numbered element labels, `diff screenshot --baseline before.png` for a pixel diff, `a11y` for an axe-core audit. Batch a whole flow in one call with `agent-browser batch`. | A standalone Rust CLI (`npm install -g agent-browser` plus `agent-browser install`); it drives its own Chrome, so frames land on disk and do **not** appear in the Browser panel. Reach for it when it is already installed, or when you specifically want annotated frames, a baseline pixel diff, or the a11y audit. |
+| **agent-browser** (`vercel-labs/agent-browser`) | `agent-browser open <url>` then `screenshot <path>`; `snapshot -i` for refs, `screenshot --full` for a whole page, `screenshot --annotate` for numbered element labels, `diff screenshot --baseline before.png` for a pixel diff, `a11y` for an axe-core audit. Batch a whole flow in one call with `agent-browser batch`. | A standalone Rust CLI (`npm install -g agent-browser` plus `agent-browser install`); it drives its own Chrome, so frames land on disk and do **not** appear in the Browser panel. Reach for it when it is already installed, or when you specifically want annotated frames, a baseline pixel diff, or the a11y audit. |
 | **Scripted Playwright** | the `pod-e2e` runner, or a repo capture harness under `website/scripts/`, writing PNGs to a directory. | The right choice for many deterministic frames or a repeatable harness in CI, and it keeps this loop working on a host with no browser CLI at all. |
 
 All three end the same way: read the frame, judge it, embed it in chat. **Say which
@@ -111,10 +111,17 @@ to the other two backends unchanged; only the navigate and screenshot calls diff
 6. **Fix and re-shoot** if the frame contradicts your change. Iterate, then report
    the final state.
 
-When a step needs a ref (an element screenshot, dismissing a modal), run
-`playwright-cli snapshot`, read the YAML at the printed path, and use refs from
-that snapshot. Refs are invalidated by the next page change, so re-snapshot after
-navigating or after a click that moves the page.
+`PLAYWRIGHT_CLI_SESSION` names your process's browser; bare commands use it.
+A parent and its subagents normally share one session family's browser. If a
+subagent may browse alongside its parent or siblings, it must choose ONE
+task-specific `-s=<name>` and use it on every command, `open` / `attach` included.
+Do not reuse, navigate away from, or close the user's borrowed attached browser.
+Use a separate context for verification.
+
+For an element ref, run `playwright-cli snapshot` and read its YAML. Printed paths
+are relative to the command's working directory; after moving, use
+`$PLAYWRIGHT_MCP_OUTPUT_DIR/<printed filename>`, never a guessed filename.
+Take a fresh snapshot after navigation or a click that changes the page.
 
 ## Keep it bounded
 
@@ -135,21 +142,10 @@ control), and confirm the token was accepted. The `pod-e2e` runner pre-seeds
 
 ## Fallback: when `playwright-cli` is absent
 
-Keep going; do not skip verification. Two ways to still get real frames:
-
-- **`agent-browser`** if it is installed: `agent-browser open
-  "http://127.0.0.1:PORT/?token=…"` then `agent-browser screenshot /tmp/<name>.png`
-  (add `--full` for the whole page, `--annotate` for numbered element labels).
-  `agent-browser batch` runs the whole open, wait, screenshot sequence in one call,
-  and `diff screenshot --baseline <before>.png` gives a pixel diff when you are
-  proving a layout fix. Frames land on disk, not in the Browser panel, so say so.
-- **Scripted Playwright**: the `pod-e2e` skill boots an isolated pod and captures
-  screenshots into an artifact dir, and repos may carry their own harness under
-  `website/scripts/`.
-
-Read the resulting PNGs and embed them the same way. Capture harnesses go stale
-when new gates land upstream, so if a frame comes back blank, stub the gate's
-status endpoint rather than trusting the blank frame.
+Use the installed `agent-browser` or Scripted Playwright row above. Their frames
+land on disk, not in the Browser panel; say so, then read and embed the PNGs.
+Capture harnesses can miss new gates: for a blank frame, stub the gate's status
+endpoint in the isolated harness rather than accepting it as evidence.
 
 ## Screenshots for the PR
 

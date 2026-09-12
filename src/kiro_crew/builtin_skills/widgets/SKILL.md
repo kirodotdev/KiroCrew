@@ -24,8 +24,8 @@ Rules below.
   color-coded comparison tables, status cards, before/after previews, small
   interactive probes.
 - **Don't use** for content markdown already handles well — plain prose,
-  bullet lists, fenced code, simple tables. Widget iframes carry more
-  overhead than markdown; default to markdown.
+  bullet lists, fenced code, simple tables. Widget iframes cost more to render
+  and add more context than markdown; default to markdown.
 - **Save to file** for anything large. `<mcwidget>` bodies fit comfortably
   up to a few KB; beyond that, write an HTML file and return the absolute
   path so the dashboard shows a thumbnail / link instead.
@@ -120,24 +120,16 @@ it for new content.
 
 ## Every widget is already an artifact
 
-When your message is finalized, each `<mcwidget>` in it is auto-registered as
-an **unpinned** artifact, keyed by the message timestamp and the widget's index
-in that message. Registration is idempotent and happens on the backend, so it
-does not depend on the user scrolling the message into view. Unpinned
-auto-registered widgets are pruned oldest-first past 200; the star in chat pins
-one and takes it out of the sweep. Widgets emitted in an incognito or temporary
-session are never registered.
+Each finalized `<mcwidget>` without `slug=` is auto-registered on the backend,
+keyed idempotently by message timestamp and widget index, even if never viewed.
+Incognito and temporary sessions never register widgets. Unpinned auto-registered
+widgets are pruned oldest-first past 200; the user's star keeps one out of the sweep.
 
-Two consequences:
-
-- Do **not** call `artifact_save` on a widget you just emitted — that creates a
-  duplicate, and the tool answers with a duplicate warning.
-- `slug=` binds the chat impression to an artifact; it does **not** persist
-  content. Registration is skipped entirely for a widget carrying one, so
-  nothing reads or writes that artifact. To revise a saved widget, run
-  `artifact_get` then `artifact_update` to bump the version, and re-emit with
-  `<mcwidget title="…" slug="<known-slug>">` so the impression binds to it
-  instead of registering a second record.
+Do **not** call `artifact_save` on emitted content: it creates a duplicate and
+returns a warning. `slug=` only binds an impression; it skips registration and
+neither reads nor writes the artifact. To revise one, call `artifact_get`, then
+`artifact_update` to persist a new version, and re-emit with
+`<mcwidget title="…" slug="<known-slug>">`.
 
 Rules:
 
@@ -200,39 +192,15 @@ chips / badges look cleaner without.
    style="color:var(--accent)">#1234</a>
 ```
 
-**Render identifiers as links wherever possible.** Inside widgets, bare
-IDs and bare URLs are wasted real-estate — the user can't click a plain-text
-reference. Whenever you mention a known-format identifier or a bare URL,
-render it as an `<a>` to its canonical `https://` target.
-
-URL templates — use these mechanically. Substitute the placeholders
-(`<org>`, `<repo>`, `<n>`, `<id>`) with the real values and emit the
-identifier verbatim:
-
-| Identifier                          | URL template                                              |
-|-------------------------------------|-----------------------------------------------------------|
-| PR / merge request `#<n>`           | `https://github.com/<org>/<repo>/pull/<n>`                |
-| Issue `#<n>`                        | `https://github.com/<org>/<repo>/issues/<n>`              |
-| Commit `<sha>`                      | `https://github.com/<org>/<repo>/commit/<sha>`            |
-| Docs / wiki page `<slug>`           | `https://example.com/docs/<slug>`                         |
-| Generic bare URL                    | itself (`https://…`) — just wrap it in an `<a>`           |
-
-For any identifier scheme not listed here, follow the same principle: map
-the bare reference to its canonical `https://` URL. If you don't know the
-canonical URL for an identifier, leave it as plain text rather than guessing.
+**Render identifiers and bare URLs as links** to their known canonical `https://`
+targets, keeping the identifier as the label. If a canonical URL is unknown, leave
+the identifier as plain text rather than guessing.
 
 For chat messages, paste the full URL the user shares; never reconstruct.
 
 When the visible label can be made shorter than the URL (e.g. a long doc
 title), use a meaningful label (`<a href="…">Migration design doc</a>`)
 rather than dumping the raw URL.
-
-## Cost
-
-Each widget iframe is heavier than the equivalent markdown on both render
-and context-size budgets. Reach for `<mcwidget>` only when the visual
-structure genuinely helps the reader. If in doubt, write markdown first;
-promote to a widget only if the result is clearly worse.
 
 ## Interactive widgets
 

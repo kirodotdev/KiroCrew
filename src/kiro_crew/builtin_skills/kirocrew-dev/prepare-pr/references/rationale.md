@@ -18,19 +18,14 @@ A failed server check re-enters Phase 1 rather than patching in place because ba
 movement between rounds is the common case on a repo carrying 175+ open PRs. Patching
 in place produces a fix validated against a base that no longer exists.
 
-## Why 10 iterations is a backstop and 3 is the real limit
+## Why retrospective and runtime bounds are separate
 
-The escalation triggers fire at ~3 rounds. That makes 10 unreachable in any healthy
-run: a loop that reaches 10 has already missed a trigger. It is retained purely as a
-runaway guard, and `SKILL.md` says so, because a cap presented as a target invites
-using it.
-
-**Same-span recurrence needed its own trigger** because the count-based rule cannot
-see it. When each round closes exactly the finding it was given and receives one new
-blocker in the *same* `file:function` span, the failing-check count stays pinned at
-1 — it never rises and never falls, so "3 iterations with no drop" never fires. This
-is the most expensive round pattern measured on this repo, and in every instance the
-correct structural fix had already been written down mid-flight and then deferred.
+A recurring span needs a retrospective because a stable failing-check count cannot
+show whether each repair adds another mechanism that attracts the next finding.
+The retrospective rechecks the whole diff against the original intent; it is not
+a mandatory stop at the third round. Local review passes, monitor cycles and wall
+clock measure different costs. The current bounds and escalation rules live only
+in `SKILL.md`; none is a target, and only the user may extend an exhausted budget.
 
 ## Why the two Phase 0 gates come before opening
 
@@ -234,16 +229,9 @@ bodies. A round is complete when every check finished **and** every bot posted, 
 
 ## Why arming cannot be confirmed from the reply
 
-Arming happens when the turn's *result* is processed, so a successful
-`monitor_start` can only ever come back as *requested* — the tool says so itself. A
-synchronous refusal is visible before the turn ends and is real. The residual case —
-the applier refusing after the turn ends — is unobservable from inside the turn by
-construction and shows up as a cycle that never arrives.
-
-Treating a bare *requested* as an arming failure fires the `wait` fallback on every
-arm and reinstates the very timeout the `monitor_start` branch exists to remove,
-which is why `SKILL.md` states the two branches as one rule with an explicit default.
-
-`max_cycles` counts cycles, not rounds. One 20–40 minute round costs several
-5-minute cycles, so the default expires after roughly the first two or three rounds
-and deactivates the loop silently, well short of the 10-iteration backstop.
+Arming is applied after the tool returns, so an acknowledgement alone does not
+prove a loop exists. A synchronous refusal is definitive; other results need the
+state check prescribed in `SKILL.md`. That check and its bounded fallback prevent
+both silent abandonment and duplicate poll drivers. Monitor cycles are not server
+rounds, so a wall-clock bound must accompany the cycle budget. The execution
+procedure owns those budgets rather than a second copy here.

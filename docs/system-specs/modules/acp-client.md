@@ -215,6 +215,19 @@ Data-driven — no code changes needed:
 
 Note: there IS a top-level `agents/` directory used at runtime for project-level overrides, but the bundled source lives in `src/kiro_crew/config/`.
 
+The normal and orchestrator prompts are alternative, self-contained inputs, not
+layers concatenated together; custom/app agents can supply their own prompts.
+Their compact tool directories retain exact callable syntax, session ownership,
+privacy boundaries, stop conditions and output formats. Shared wording is not
+moved into a common include: source deduplication alone would not reduce the
+selected prompt sent to the model. `test/test_prompt_compact_contract.py` checks
+each file's UTF-8 size budget, template slots, critical operational clauses and
+the orchestrator example against the real plan parser. Prompt tests guard text
+contracts, not a guarantee that a model follows them; runtime controls remain
+authoritative. The normal prompt's browser instructions keep approval groups,
+borrowed-browser ownership and subagent session isolation inline rather than
+relying on a skill pointer for those controls.
+
 Default model: `claude-opus-4.8`. Default tools: `execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `use_aws`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `@kirocrew-cron`, `@kirocrew-core`.
 
 **Agent compatibility repair** (`agent.py`): `repair_agent_configs()` is the single

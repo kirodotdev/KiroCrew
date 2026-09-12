@@ -405,6 +405,20 @@ switching mode takes effect on the next fresh session, and
 `{{MAX_SUBAGENTS}}` in the prompt is substituted with the live resolved
 concurrency cap.
 
+The bundled prompt is self-contained and replaces, rather than appends to, the
+normal prompt. Its planning contract is explicit: a plan request in any language
+wins over complexity heuristics; otherwise dependent phases, multiple files or
+systems, and useful intermediate checkpoints must all be present. A plan has one
+approval footer, ends the planning turn, and is not re-presented during execution.
+Go pauses between stages; Go All continues after checkpoints but stops on failure
+or escalation; Cancel aborts. Stages retain verification, independent fan-out,
+direct-work exceptions, the wall-clock/start gate and three-round limit. Reversible
+in-scope decisions continue without interruption; missing access, unsanctioned
+destructive work, repeated failure and conflicts without a safe default escalate.
+`test/test_prompt_compact_contract.py` validates the worked plan with the real
+parser and guards the prompt's byte budget and operational clauses; it does not
+replace the Python stage and permission gates.
+
 ## Size and Retention Caps
 
 Defined once in `context_management.py` so they can be tuned in one place.

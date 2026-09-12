@@ -12,19 +12,39 @@ that skill, not here. Its portability design is
 [../request-for-change/rfc-prepare-pr-portability.md](../request-for-change/rfc-prepare-pr-portability.md). The human release process
 is [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
+### Agent repair routing
+
+For Kiro Crew PR CI AI comments, agents MUST load and execute
+[prepare-pr's Review repair routing](../../src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/SKILL.md#review-repair-routing).
+That is the sole procedural contract: Opus-family findings prefer Fable 5.1
+repair subagents, and GPT 5.6 findings prefer GPT 6 repair subagents, with ordered
+lower-tier fallback from the current backend listing. These are prose family
+preferences, not hardcoded model IDs, config defaults or new profile fields.
+The delegate implements the minimal fix, tests and self-reviews it; the parent
+verifies and consolidates, and publishes only with user authorization.
+
+A catalogue entry or accepted pin is not entitlement or proof of service.
+Runtime/provider evidence identifies the actual model when available; otherwise
+the result is explicitly unverified. Downgrades are disclosed, attempts are
+bounded, and partial edits are inspected before any continuation. Missing
+delegation is a blocker, never a parent self-fix presented as delegation.
+The CI workflows and base-ref profile's read-only local reviewer semantics stay
+unchanged. Worktree-dev and babysit point to this contract; general monitoring
+does not depend on the Kiro Crew repository or on prepare-pr being installed.
+
 ## Shape
 
 CI is a **fan-out of independent workflows that one aggregator folds into a single
-verdict**, with exactly one ordering edge inside it: the ten cheap blocking
+verdict**, with exactly one ordering edge inside it: the cheap blocking
 gates run in their own workflow, and both the expensive matrix and the fork
 reviewers wait for its verdict rather than racing it.
 
 ```
 pull_request
-  |-- fast-gate.yml     "Fast Gate"    the 11 cheap blocking gates (~44s wall clock)
+  |-- fast-gate.yml     "Fast Gate"    the cheap blocking gates (~44s wall clock)
   |     |
   |     |-- ci.yml's `await-fast-gate` job releases the heavy jobs
-  |     '-- the six fork-*-review.yml lanes trigger on its completion
+  |     '-- the fork-*-review.yml lanes trigger on its completion
   |
   |-- ci.yml            "CI"           lint, sharded tests, coverage gate, e2e
   |-- build.yml         "Build"        wheel + desktop artifacts still build
@@ -46,7 +66,7 @@ pull_request
 
 Three structural facts explain most of the rest:
 
-- **The cheap gates decide whether the expensive ones get to run.** The ten
+- **The cheap gates decide whether the expensive ones get to run.** The
   gates in `Fast Gate` cost 198 job-seconds between them, about 70% of which is
   runner acquisition and checkout, and they finish in ~44 seconds because they run
   in parallel. A median CI run is 240 job-minutes and 54 minutes of wall clock, and
@@ -184,7 +204,7 @@ be dodged by an edge case in its own globs.
 
 They live in their own workflow for two reasons that both come down to who has to
 wait for them. `ci.yml`'s heavy jobs now wait through `await-fast-gate`, so a red
-gate skips ~220 job-minutes of tests it was previously running beside. And the five
+gate skips ~220 job-minutes of tests it was previously running beside. And the
 `fork-*-review.yml` lanes need SOME trusted workflow to vouch for a fork's head
 commit before they start (see [Fork PRs](#fork-prs)); waiting for all of `CI` put a
 fork PR's AI verdict ~54 minutes out, when the gates that verdict actually needs are
@@ -1497,22 +1517,12 @@ Readiness-label events cannot recursively rerun or cancel a review: ignored labe
 events use a per-run concurrency key, so they cannot cancel an
 active review or replace a pending authoritative reviewer event.
 
-The bundled `prepare-pr` skill front-loads the same review contract before the
-first push. Description/diff reconciliation and every allowed commit mutation
-happen before review. After local gates, it dispatches two independent,
-read-only subagents over the finished base-to-head diff: one owns correctness,
-security, and platform compatibility; the other owns contracts, tests, error
-paths, and the user workflow. Both use the canonical severity and output rules
-from `.github/workflows/codex-review.yml`. Legitimate Critical/High findings are
-fixed before publication; Medium/Low findings remain advisory unless a human
-escalates them. If a blocker fix changes code, one focused verifier
-checks that fix. The skill records the verifier-cleared SHA and fails closed if
-HEAD changes before push; it does not start an unbounded local review loop.
-During a post-submit round, it records one concise, marker-keyed GPT disposition
-comment before re-pushing whenever findings were fixed or rebutted. That record
-names the prior reviewed SHA, finding identity, outcome, and evidence so the
-next reconciliation call can distinguish a real delta from a repeated argument;
-the record remains untrusted evidence and does not carry an override forward.
+The bundled `prepare-pr` skill owns the local pre-push procedure. It resolves
+read-only reviewers and gates from the base-ref profile, extracts each reviewer's
+own CI contract, and binds publication to the verifier-cleared SHA. AI-comment
+repair delegation follows [Agent repair routing](#agent-repair-routing), not a
+replacement of that profile. Dispositions retain the prior judged SHA, finding
+identity and evidence; they never carry a human override onto a new head.
 
 `prepare-pr/scripts/pr_status.py` treats the aggregate status as authoritative
 when present, including over stale failed or pending duplicate checks in

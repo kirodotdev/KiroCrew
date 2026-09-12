@@ -53,6 +53,16 @@ stated as re-snapshot rather than as retry-on-error.
 browsing contexts coexist under one CLI install and one agent can keep a
 logged-in context separate from a throwaway one.
 
+### Skill contract
+
+The shipped browser and computer-use skills are self-contained: custom agents can
+replace the base prompt. Compression removes repeated explanations within a skill,
+not operational constraints or tool signatures. Each workflow retains its applicable
+session-family isolation, printed-path and fresh-ref rules, approval and refusal
+boundaries, borrowed-browser and pointer/password safety, and privacy inspection
+plus explicit authorization before publishing. No shared prompt fragment is needed
+to execute a loaded skill safely.
+
 ### Capability model
 
 **Presence of a vetted `playwright-cli` launcher is availability, not approval.**

@@ -125,17 +125,13 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 
 ## Browsing (`browser` MCP tool, then `playwright-cli`)
 
-Browsing is not a `kirocrew` subcommand. The primary path is the **`browser` MCP
-tool**, which drives the dashboard's built-in Browser panel in-process
-(`op=navigate|snapshot|click|type|press_key|hover|select_option|screenshot|wait_for|back|console`).
-It refuses a loopback, private, or link-local target, and it needs a native panel
-serving the session.
-
-`playwright-cli` is the fallback: no native panel (a remote gateway, or a
-plain-browser dashboard), an attached logged-in browser, saved storage state, and
-the full operate verb set. It is available when the binary is on `PATH`.
-**Settings → Browser** installs it with one click (and holds the optional attach
-token); the equivalent by hand is `npm install -g @playwright/cli@latest`
+Browsing is not a `kirocrew` subcommand. Start with the **`browser` MCP tool**
+in the native Browser panel:
+`op=navigate|snapshot|click|type|press_key|hover|select_option|screenshot|wait_for|back|console`.
+It refuses loopback, private, and link-local targets. Use `playwright-cli` when
+no native panel serves the session, or for attached logins, saved storage state,
+and the full operate verbs. It must be on `PATH`; install via **Settings → Browser**
+(also holds the attach token) or `npm install -g @playwright/cli@latest`
 (Node.js 20 or newer).
 
 | Command | Description |
@@ -149,16 +145,14 @@ token); the equivalent by hand is `npm install -g @playwright/cli@latest`
 | `playwright-cli show --port <n> --host 127.0.0.1` | Serve the CLI's dashboard for the Browser panel |
 
 **Browsing workflow:** load the `web-browse`, `web-verify`, or `browser-auth`
-skill for the shape of the task, then:
-1. `command -v playwright-cli`. Absent means browsing is unavailable: read the page
-   with `web_fetch` and tell the user the install command.
-2. `playwright-cli open <url>`. The printed URL and title usually confirm the page
-   without reading anything else.
-3. Read the snapshot YAML at the printed path only when you need the tree, for
-   example before clicking. Refs like `[ref=e5]` belong to that snapshot, so
-   re-snapshot after any page change.
-4. On a login redirect, the session is absent or expired: `state-load` a saved
-   session, or ask the user to sign in in the Browser panel and `state-save` it.
+skill for the task. On the CLI path:
+1. Check `command -v playwright-cli`; if absent, use `web_fetch` and give the
+   install command above.
+2. Run `playwright-cli open <url>`; read its snapshot YAML only when the tree is
+   needed, such as before clicking. Refs (`[ref=e5]`) expire on page changes:
+   re-snapshot before the next action.
+3. On a login redirect, `state-load` a saved session or let the user sign in in
+   the Browser panel, then `state-save`.
 
 **No npm access (internal registry, air-gapped host):** detection is **PATH-based**
 -- `playwright-cli` on `PATH` is all that matters, so ANY install route works and the

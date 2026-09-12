@@ -45,45 +45,23 @@ page URL, the page title, and a path to a snapshot YAML.
 This is the **view** path. It is deliberately narrow: open the URL and show it,
 nothing more.
 
-## What you get back, and what to do with it
+## Read outputs only when needed
 
-One command prints roughly three lines. That is usually the whole answer for this
-skill: the URL and title confirm the page loaded, so you do not need the snapshot
-at all.
+The URL and title confirm the page loaded. Read the snapshot YAML only when you
+need the tree, using the exact printed path. That path is relative to the command's
+working directory; if you moved, use `$PLAYWRIGHT_MCP_OUTPUT_DIR/<printed filename>`.
+This absolute directory holds auto-named snapshots, screenshots and console logs.
+Never guess a filename. Read it promptly: retention is 24 hours / 200 files with a
+five-minute grace window.
 
-- **Open the snapshot YAML only when you need the tree** (you are about to click
-  something, or the user asked what is on the page). Read it with your own file
-  tools, at the exact path printed. Do not guess a path.
-- **You do not need a screenshot to make the page appear.** `open` alone shows it.
-  Screenshot only when *you* need to inspect the rendering, which is the
-  `web-verify` skill's job.
-- **A screenshot is not what the user sees.** They are watching the live session.
+`open` alone shows the live page to the user. Capture a screenshot only to inspect
+the rendering: run `playwright-cli screenshot` and use its printed path, never
+`--filename` (it can overwrite a repo file and requires approval). Its positional
+argument is an element ref, not a path.
 
-## The printed path is relative to the command's directory
-
-The path on stdout is computed against the working directory the command ran in, so
-it reads like `../../../../var/folders/.../page-2026-08-12T23-27-18-650Z.yml` and is
-correct only from there. If your working directory has changed since, do not try to
-repair the `../` chain: take the file name from the end of the printed path and read
-
-```bash
-"$PLAYWRIGHT_MCP_OUTPUT_DIR/page-2026-08-12T23-27-18-650Z.yml"
-```
-
-That variable is absolute and is where every snapshot, screenshot and console log
-lands, because the gateway sets it for the whole process tree. The file name is
-unique per command, so this recovers the exact file rather than a near miss.
-
-The service prunes that directory — files older than 24 hours, or past 200
-files, with a five-minute grace window — so read a path soon after it is printed
-rather than holding it across a long session.
-
-## Refs are invalidated by the page
-
-A ref like `[ref=e5]` belongs to the snapshot that produced it. After `goto`,
-`reload`, `go-back`, or any click that changes the page, run `snapshot` again and
-take refs from the new file. A stale ref can act on the wrong element without
-reporting an error, so re-snapshotting is the rule rather than a recovery step.
+Refs such as `[ref=e5]` belong to one snapshot. After `goto`, `reload`, `go-back`,
+or a click that changes the page, take a fresh `snapshot` before using refs again;
+a stale ref can hit the wrong element without an error.
 
 ## Precondition: `playwright-cli` must be on PATH
 
@@ -91,22 +69,13 @@ reporting an error, so re-snapshotting is the rule rather than a recovery step.
 command -v playwright-cli
 ```
 
-If it is absent, do NOT attempt this. Read the page with `web_fetch` instead and
-tell the user:
+If absent, use `web_fetch` and tell the user the panel fallback needs the vetted,
+sandbox-sealed install from **Settings → Browser**. Installation makes browsing
+available; agent commands still follow the ordinary shell approval ladder.
 
-> "I can't open pages in the Browser panel: `playwright-cli` isn't installed on
->  this host. **Settings → Browser** has an Install button that writes the vetted,
->  sandbox-sealed copy. For now, here's what I read from the page."
-
-Installing the vetted copy makes browsing available on this host. It does not
-skip shell approval: the first agent command still follows the ordinary approval
-ladder. There is one toggle:
-**Settings → Browser** can turn the *built-in panel* off
-(`dashboard.use_builtin_browser`). Browsing still works when it is off — the
-`browser` tool simply answers that the built-in browser is disabled and to use
-`playwright-cli`. Relay that as the user's own setting, not as a missing panel.
-Either way, **Settings → Browser** carries the one-click install, so name it
-rather than leaving the user with only a command to paste.
+That panel also controls `dashboard.use_builtin_browser`. When it is off, the
+`browser` tool directs you to `playwright-cli`; relay this as the user's setting,
+not a missing panel.
 
 ## What the capability means for your judgement
 
@@ -130,29 +99,16 @@ permission, is the thing to get right:
 
 ## Your PROCESS owns its browser, and `attach` binds to it
 
-Kiro Crew gives every agent process its own `PLAYWRIGHT_CLI_SESSION`, so a command
-with no `-s=` reaches YOUR process's browser, never a `default` shared with other
-chats. You do not need `-s=` to isolate yourself from another chat session, and you
-do not need to remember a name.
+Kiro Crew sets `PLAYWRIGHT_CLI_SESSION` per process, so bare commands address your
+browser without needing `-s=` to separate unrelated chats.
 
-**The exception: one browser per session FAMILY, not per agent.** The name is per
-PROCESS, and with session sharing on (the default) an eligible subagent's session
-is created on the PARENT's process — so a chat session, the subagents it spawns,
-and those subagents' siblings normally share ONE browser. A task-runner run is its
-own separate family: it has no live parent session, so it cold-starts one
-run-scoped process that every step of that run shares. What this isolates is one
-family from another; it does NOT isolate you from
-your parent or your siblings. Some subagent spawns do get their own process — a
-per-spawn model or reasoning-effort override, an internal-spawn-API `allowed_tools`
-(not a `spawn_run` parameter) or a bare spawn, a continuable spawn, a
-continuable spawn, or a Claude-Code-backed parent — so from inside a subagent you
-cannot tell which case you are in; assume you are sharing. If you are a subagent
-and your parent or a sibling may browse concurrently, choose ONE distinct
-`-s=<name>` for yourself (a short slug of your own task, not a shared word like
-`tmp`) and pass it on every command, `attach` / `open` included. Otherwise your
-`goto` moves their page and your `close` destroys their browser. Reuse that one
-name rather than inventing a new one per command — each new name leaves behind a
-browser nothing reclaims.
+**Isolation is per session FAMILY, not per agent.** A parent and its subagents
+normally share one browser; task-runner steps share their run's browser too.
+Some spawns have separate processes, but a subagent must assume sharing. If your
+parent or a sibling may browse concurrently, choose ONE task-specific
+`-s=<name>` (not `tmp`) and use it on every command, `attach` / `open` included.
+Otherwise your `goto` moves their page and your `close` destroys their browser.
+Reuse the name: a new name per command leaves extra browsers behind.
 
 **The `browser` MCP tool has no `-s=` equivalent.** It resolves the caller
 leniently, walking up into the parent slot, so a subagent's op — including the
@@ -160,25 +116,15 @@ mutating verbs — lands on the PARENT session's panel. If you are a subagent an
 your parent may be browsing, use `playwright-cli` under your own `-s=<name>`
 instead of the tool.
 
-`playwright-cli attach --extension=chrome` therefore binds your session's name, not
-`chrome`. Keep using bare commands afterwards:
-
-```bash
-playwright-cli tab-list
-playwright-cli snapshot
-```
-
-A hand-written `--s=chrome` after that attach answers
+`playwright-cli attach --extension=chrome` binds that session name, not `chrome`.
+Keep the same command form afterwards (bare `playwright-cli tab-list`, or your
+chosen `-s=<name>`). Adding `--s=chrome` instead produces:
 
 ```
 The browser 'chrome' is not open, please run open first
 ```
 
-because the attached browser is under your session's own name. That message is
-about the wrong session, not a failed attach — re-attaching in response to it is
-the trap. Pass `-s=<name>` only when you deliberately want a SECOND browser
-alongside your own, and then pass the same name to every command including the
-`attach` or `open` that created it.
+That is a wrong session name, not a failed attach; do not re-attach to fix it.
 
 `playwright-cli list` shows every browser on the machine, including other
 sessions'. Only close one you opened. A session named `panel-<owner6>-<slot8>` is the

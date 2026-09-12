@@ -169,16 +169,16 @@ the GitHub new issue form at:
 
 **Option 3: Direct creation via `gh` CLI**
 
-If the user prefers, create it directly. Do **not** hand-write the title/body
-into the shell — use your file-writing tool to drop them into `mktemp` files,
-then reference those files (see **Shell safety** above):
+On the user's choice, allocate files, then use the file-writing tool to write
+`BODY_FILE` with the confirmed body and `TITLE_FILE` with the confirmed title,
+per **Shell safety** above:
 
-1. `BODY_FILE=$(mktemp -t kc-issue-body.XXXXXX.md)` — then write the confirmed
-   markdown body into it with your file-writing tool.
-2. `TITLE_FILE=$(mktemp -t kc-issue-title.XXXXXX.txt)` — then write the
-   confirmed title into it with your file-writing tool.
-3. Create the issue, loading both from files so no untrusted text is parsed by
-   the shell:
+```bash
+BODY_FILE=$(mktemp -t kc-issue-body.XXXXXX.md)
+TITLE_FILE=$(mktemp -t kc-issue-title.XXXXXX.txt)
+```
+
+Then run:
 
 ```bash
 TITLE="$(cat "$TITLE_FILE")"
@@ -196,12 +196,6 @@ no grouping label applies.
 
 This requires `gh auth` on the user's machine. If it fails with auth errors,
 fall back to Option 2.
-
-## Labels
-
-Do not maintain a label list in this file — it drifts from the repository. Read
-the live list with `gh label list` (step 5) and follow the selection rules
-there.
 
 ## Guidelines
 

@@ -1,516 +1,225 @@
 ---
 name: kirocrew-worktree-dev
-description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not for users' own projects): every change is built and verified inside a git worktree, never against the live gateway. Covers worktree creation, the blocking local build gates (pytest + isort + flake8 + mypy + tsc + vitest), the built-dist gotcha, feature flags, live preview paths (isolated pods, dev-backend.sh as fallback), and the PR workflow. Use only when building, testing, switching, or verifying a change to Kiro Crew's own codebase."
+description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not users' projects): develop, build and verify in a git worktree, never against the live gateway. Covers environment setup, build/dist ordering, feature flags, isolated previews, cleanup and publication authorization; prepare-pr owns the PR workflow."
 triggers: kirocrew worktree, kirocrew build gate, kirocrew dev, kirocrew source, contribute to kirocrew, kirocrew repo
 repo_scope: src/kiro_crew
 ---
 
-# HARD RULE: Kiro Crew development happens inside a git worktree
+# Kiro Crew worktree development
 
-> **Scope guard: this skill applies ONLY when the working directory is the
-> Kiro Crew source repository (or a worktree of it).** If you are working in any
-> other project, ignore this skill entirely — its rules (worktree mandate,
-> build gates, single-commit squash, force-push) are conventions of the Kiro Crew repo
-> and may be wrong or harmful elsewhere.
+This skill applies ONLY to the Kiro Crew source repository or a worktree of it.
+Ignore it for other projects. One feature uses one dedicated worktree containing
+both `src/kiro_crew/` and `website/`, including backend-only changes.
+Never edit the live checkout or start/stop the live gateway from a feature session.
 
-Every local Kiro Crew change — frontend, backend, or both — is developed, built,
-and verified in a dedicated **git worktree**, never by editing the live checkout
-or developing against the running gateway directly. One feature = one worktree.
-This is the single most important rule; violating it is the most common way to
-waste hours.
-
-## Rule 0 — Every change is developed in a worktree (FE + BE together)
-
-- **Every** Kiro Crew change happens in a dedicated worktree. Never edit the
-  live/production checkout, and never develop against the running gateway.
-- A Kiro Crew feature spans **two layers**: `src/kiro_crew/` (backend, Python)
-  and `website/` (frontend, React/Vite). A worktree carries both; even a
-  backend-only change lives in a worktree.
-- **Single-active model.** Making a worktree "live" swaps the *code* behind the
-  same dashboard URL and the same shared data home — `~/.kiro/crew` by default
-  (legacy installs auto-migrate from `~/.kirocrew` on first launch;
-  `KIROCREW_HOME` overrides) — including your REAL DB and sessions. Only one
-  worktree is live at a time. Be deliberate about migrations, and switch back
-  to the clean baseline when done.
-
-## Rule 1 — Create a worktree off `main`
+## Worktree and environment
 
 ```bash
-# From your main KiroCrew clone:
+# From the main clone; skip creation when already in the assigned worktree.
 git fetch origin main
 git worktree add ../kirocrew-wt-<name> -b feat/<name> origin/main
 cd ../kirocrew-wt-<name>
-```
-
-This gives you an isolated directory with its own branch. All work happens
-inside this worktree directory — never in the main clone.
-
-Set up the worktree's own environment once (same dep set as CI — `dev` is a
-PEP 735 dependency group, NOT a package extra, so it needs `--group`, which
-requires pip ≥ 25.1: run `.venv/bin/pip install -U pip` first if it errors; on
-Windows the venv binaries live under `.venv\Scripts\` instead of `.venv/bin/`):
-```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[voice]" --group dev
+python3 -m venv .venv
+.venv/bin/pip install -e ".[voice]" --group dev
 cd website && npm ci && cd ..
+git worktree list
 ```
 
-To list existing worktrees: `git worktree list`
-To clean up after merging: `git worktree remove ../kirocrew-wt-<name>`
+`dev` is a PEP 735 dependency group, not an extra. `--group` needs pip >= 25.1;
+if unsupported, upgrade the worktree's pip with `.venv/bin/pip install -U pip`.
+On Windows use `.venv\Scripts\` in place of `.venv/bin/`.
 
-## Rule 2 — The build gate (ALL must pass before PR)
+Making a worktree live swaps code behind the same URL and REAL data home,
+including DB and sessions. Only one can be live at a time. This is not preview
+isolation: get explicit authorization for a live cutover or migration, and return
+to the clean baseline afterwards. The default home is `~/.kiro/crew`;
+`KIROCREW_HOME` overrides it and legacy `~/.kirocrew` installs auto-migrate.
 
-**`.github/workflows/ci.yml` plus `.github/workflows/fast-gate.yml` are the
-canonical gate list** — they are what actually gates the PR; if this skill and
-CI disagree, CI wins. The eleven cheap blocking gates live in `fast-gate.yml`
-and `ci.yml` blocks on it through `await-fast-gate`, so reading only `ci.yml`
-shows you the expensive half of the gate list and none of the fast half. What this rule adds is
-the worktree-specific gotchas (parallelism, mypy CI-parity, dist ordering),
-not a replacement gate list.
+## Verification
 
-This rule covers **running** the gate and reading its verdict. **Writing** the tests
-it runs — isolation, the five determinism classes, cross-platform traps, residue
-diagnosis, suite speed — is the **writing-tests** skill. Load that one when a test is
-yours to fix; this one stays out of it rather than carrying a second, shorter copy
-that would drift.
+Read `.github/workflows/ci.yml` AND `.github/workflows/fast-gate.yml` for the
+canonical blocking gates; CI wins over prose. Never weaken or skip a check to
+make it green. For test authoring, flakes, isolation or suite speed, load
+`writing-tests` and the owning section of
+`docs/system-specs/common/testing-conventions.md` before fixing the test.
 
-Run from the worktree root:
+During iteration, run `python3 scripts/local-gate.py` from the worktree.
+`--dry-run` prints the plan, `--base REF` selects a base and `--full` forces both
+surfaces. Do not hand-narrow its classification: meta, mixed or unreadable diffs
+fall back to the full gate. The script is an ITERATION gate, never a push gate.
+Before publication, MUST load [prepare-pr](../prepare-pr/SKILL.md) and run its
+complete resolved `gates[]` floor from the base-ref profile. That skill alone owns
+PR preparation, local reviewers, history, dispositions and push-to-green steps.
+
+Minimum manual checks, not a replacement for that floor:
 
 ```bash
-# Backend (Python) — isort, flake8, mypy are ALL blocking in CI
-python -m pytest -q          # setup.cfg addopts already runs xdist (-n auto --dist loadgroup)
+python -m pytest -q
 isort --check-only src/kiro_crew test
 flake8 src/kiro_crew test
 mypy src/kiro_crew/
-
-# Frontend (TypeScript + React)
 cd website
 npx tsc -b
 npx vitest run
 cd ..
 ```
 
-**All gates must be green.** Never weaken or skip tests to go green.
+- Rebuild and stage frontend dist BEFORE backend tests that read static assets.
+- Full pytest uses `setup.cfg`'s `-n auto --dist loadgroup` and
+  `--max-worker-restart=2`. Keep grouping for `xdist_group` serialization. The
+  root conftest budgets workers by free memory and concurrent runs; explicit
+  `-n <N>` bypasses it. Check host headroom before a full suite. A scoped
+  subagent may use serial targeted tests; the parent owns aggregate gates.
+- To omit coverage during iteration without dropping the parallel safeguards:
 
-**Run pytest in parallel — and keep `--dist loadgroup`.** The full backend
-suite is large (tens of thousands of items — read the count `setup.cfg` states
-rather than trusting a number here); serial runs can exceed 45 minutes and time out in
-agent sessions. The default `setup.cfg` addopts already includes `-n auto
---dist loadgroup` — `loadgroup` is required so `@pytest.mark.xdist_group`
-serialization is honored; dropping it races those tests and produces flaky
-failures. `-n auto` is not one worker per core: a
-`pytest_xdist_auto_num_workers` hook in the rootdir `conftest.py` bounds the
-count by free memory and by what other concurrent runs on the host already hold,
-because a worker costs ~1.5 GiB almost entirely during collection. So a run can
-legitimately pick far fewer workers than the core count, and an explicit `-n <N>`
-bypasses that budget — which is how a parallel run OOMs. The knobs are in
-`docs/system-specs/common/testing-conventions.md` § Running on a machine with
-little RAM. If you need to override addopts (e.g. to skip coverage during
-iteration), use exactly this form, which preserves the xdist flags:
+  ```bash
+  python -m pytest -q --override-ini="addopts=--ignore=build/private -n auto --dist loadgroup --max-worker-restart=2"
+  ```
 
-```bash
-python -m pytest -q --override-ini="addopts=--ignore=build/private -n auto --dist loadgroup"
-```
+  Never a bare `--override-ini=addopts=` for the multi-test gate.
+- Capture logs under `$KIROCREW_SCRATCH`; check the command's exit code, not a
+  pipe's last command. A green `tail` does not mean a green test.
+- Reproduce a failure on a clean `origin/main` worktree before calling it
+  pre-existing or flaky. A branch-only failure is yours. Never fix a flake with
+  a retry, longer sleep, relaxed assertion or skip; use `writing-tests`.
+- To rank suspected flakes, mine CI rather than guessing from a local pass:
 
-Never a bare `--override-ini=addopts=` (it silently drops `--dist loadgroup`).
-For the full gate list itself, don't trust any restated copy (including this
-one) — read `.github/workflows/ci.yml` AND `.github/workflows/fast-gate.yml`,
-which together are what actually gates the PR.
+  ```bash
+  gh run list --workflow=ci.yml --limit 250 --json databaseId,conclusion \
+    --jq '.[]|select(.conclusion=="failure")|.databaseId' > "$KIROCREW_SCRATCH/ci-ids"
+  ```
 
-**Triaging failures: blame your change last, but verify.** Some hosts carry
-environment-specific failures (permissions, missing optional binaries) that are
-unrelated to any change. If a test fails, re-run it on a clean `origin/main`
-checkout — if it fails there too, it's pre-existing and can be noted rather
-than fixed; if it only fails on your branch, it's yours. Never label a failure
-"known flaky" without that main-vs-branch comparison.
+  Read candidate runs with `gh run view <id> --log-failed`, rank recurring test
+  names, then compare each against main. A ratchet failing on feature branches
+  may be a true positive. Check Windows timing/process causes as well as Linux.
+- Match mypy's version to the dev-group pin in `pyproject.toml`; install the same
+  `.[voice]` plus `--group dev` dependencies as CI. A venv with `faiss-cpu`
+  makes imports typed where CI sees `Any`, so it is not a CI mirror. On macOS
+  run `mypy --platform linux src/kiro_crew`.
 
-**A confirmed flake is a bug with a root cause, not noise to retry.** Do NOT add a
-rerun, lengthen a `sleep`, or relax an assertion. Once a failure is yours, FIXING it
-is the **writing-tests** skill's concern, not this one — it carries the decision order
-over `docs/system-specs/common/testing-conventions.md` § Determinism, and four of the
-five classes have a fix that looks like the obvious one and is not. Do not act on a
-one-line summary of that list, here or anywhere: pick the class from the symptom
-first.
-
-What this rule keeps is the step before that — deciding whether a red is yours at
-all. To find what is actually flaky rather than guessing, mine CI instead of the
-local suite (a real flake often will not reproduce on macOS at all):
-
-```bash
-gh run list --workflow=ci.yml --limit 250 --json databaseId,conclusion \
-  --jq '.[]|select(.conclusion=="failure")|.databaseId' > /tmp/ids
-xargs -P 10 -I{} sh -c 'gh run view {} --log-failed 2>/dev/null \
-  | sed "s/\x1b\[[0-9;]*m//g" | grep -oE "_{3,} ?[A-Za-z_][A-Za-z0-9_.]* ?_{3,}"' \
-  < /tmp/ids | sort | uniq -c | sort -rn | head -30
-```
-
-Rank by that frequency, and check each candidate against `origin/main` before fixing:
-a ratchet/contract test failing on feature branches is a TRUE POSITIVE, not a flake.
-The Windows shards fail far more than Linux, so expect timer-granularity and
-process-semantics causes there.
-
-**Suite speed is not this rule's concern.** If a gate run is slow enough to be the
-problem, the method — profile rather than guess, compare candidates back to back on
-the same host, which fixture shapes actually pay off, and the mutation check that
-proves a faster test still tests — is **writing-tests** § Keep the parallel suite
-fast, over `docs/system-specs/common/testing-conventions.md` § Keeping the suite
-fast. This rule only tells you to run the gate and how to read its verdict.
-
-**mypy must reproduce CI, not just "run".** CI installs `-e ".[voice]" --group
-dev` (mypy pinned in `pyproject.toml` `[dependency-groups] dev`) and does NOT
-install `faiss`. Two things make a local run diverge from CI:
-- **Version drift** — error codes change between mypy versions; verify your
-  `mypy --version` matches the pin in `pyproject.toml`.
-- **Extra deps that CI lacks** — a dev venv with `faiss-cpu` installed gives
-  `faiss.*` real types and makes mypy STRICTER than CI (false failures that CI,
-  seeing `faiss` as a missing import, treats as `Any`). Do NOT use a
-  faiss-equipped venv as a CI mirror.
-
-Build a dedicated CI-parity venv once and reuse it for every worktree
-(mypy reads config from the worktree root's `pyproject.toml`):
+A reusable mypy-only environment can be provisioned from the repo root:
 
 ```bash
 python3 -m venv ~/.kiro/crew/venvs/mypy-ci
-~/.kiro/crew/venvs/mypy-ci/bin/pip install -e ".[voice]" --group dev   # from repo root; never add faiss
-# then from any worktree root:
+~/.kiro/crew/venvs/mypy-ci/bin/pip install -e ".[voice]" --group dev
+# Never add faiss. Run from the worktree, which supplies mypy's config.
 ~/.kiro/crew/venvs/mypy-ci/bin/mypy src/kiro_crew/
 ```
 
-**Order matters:** if you changed frontend code, rebuild the dist (Rule 3)
-before running backend tests that import static assets.
+## The served frontend is built dist
 
-### Two tiers: a diff-scoped fast inner loop, one full floor at push
-
-The full gate above is the **push gate** and never moves. But running all six
-gates on every fix→re-verify round is what produces the 45-minute timeouts — the
-cost lands during *iteration*, not at the push. So split verification into two
-tiers with different jobs:
-
-- **Iteration model (fast tier).** During the fix→re-verify loop, run
-  `scripts/local-gate.py` instead of the six gates by hand. It classifies the
-  diff into the same buckets `ci.yml`'s `changes` job uses and runs only the
-  surfaces the diff can affect, so an iteration costs what the diff costs rather
-  than what the repo costs. `--dry-run` prints the plan without running,
-  `--base REF` sets the base, `--full` forces both surfaces. Its narrowing is
-  deliberately **fail-open** — a meta path, both surfaces touched, or an
-  unreadable diff all fall back to the full gate — so a classification miss
-  costs local time, never a skipped test. Do NOT re-derive that bucket list as
-  your own prose or scope selection: `test/test_local_gate.py` pins the script's
-  rules to `ci.yml`, and a hand-maintained copy silently drifts out of that
-  ratchet.
-- **Gate model (full floor).** The real blocking floor is the `gates[]` list in
-  `prepare-pr/profiles/kirocrew.json` (dozens of entries, pinned to `ci.yml` and
-  `fast-gate.yml` by `test/test_prepare_pr_profiles.py`), not the six commands
-  above — those six are the minimum you would run by hand. Run the complete
-  resolved `gates[]` list, all green, **once before you push**. It is never
-  skipped, never replaced, and never satisfied by a fast-tier run:
-  `scripts/local-gate.py` is the ITERATION gate and says so itself, so its
-  diff-scoped subset earns you quick rounds and never earns you the push.
-
-This is what mitigates the documented full-suite timeout *during iteration*
-without loosening anything: the pre-push full floor plus the `ci.yml` ratchet
-(the profile test that fails when CI gains a gate the floor lacks) keep the
-determinism guarantee fully intact. Fast tier = how you iterate; full floor =
-the gate that lets you push.
-
-## Rule 3 — The served frontend is a built `dist`, not a dev server
-
-- The gateway serves the frontend from `src/kiro_crew/static/dist/` (a compiled
-  bundle). Source `.tsx` edits are invisible until the website is rebuilt.
-- After frontend changes, build AND stage (the build outputs to `website/dist`;
-  the gateway serves the staged copy — the copy step is NOT automatic, and the
-  destination must be CLEARED first: Vite emits content-hashed filenames, so
-  copying over an existing bundle accumulates stale assets that can be served
-  or packaged):
-  ```bash
-  cd website && npm ci && npm run build && cd ..
-  rm -rf src/kiro_crew/static/dist && cp -R website/dist src/kiro_crew/static/dist
-  ```
-  Or use `make build`, which does the frontend build + clean dist staging +
-  install in one step.
-- `dist/` is gitignored → it does NOT transfer via `git fetch` or worktree
-  creation. After creating a worktree or any frontend change you MUST rebuild.
-- Component names are minified in the production bundle — when checking whether
-  a feature compiled in, grep for surviving string literals (route paths,
-  `/api/...`, visible labels), not React component names.
-
-## Rule 4 — Feature flags live in the active instance's `$KIROCREW_HOME/config.json`
-
-- Flags belong in the config of the instance you are actually looking at.
-  Each runtime has its own home: the live gateway uses `~/.kiro/crew/` (the
-  default since the data-home move; legacy `~/.kirocrew` auto-migrates),
-  `dev-backend.sh` uses the worktree's `.kirocrew-dev/`, and each pod has its
-  own isolated `KIROCREW_HOME`. Editing `~/.kiro/crew/config.json` while
-  previewing via dev-backend or a pod changes your PRODUCTION config and does
-  nothing to the preview — edit the preview instance's own `config.json`.
-- Config is read live (fingerprint cache) — edits are picked up without a
-  gateway restart.
-- Flags belong in config, not per-worktree code, so they persist across
-  worktree switches when a worktree is made live (worktrees made live share
-  the live `~/.kiro/crew` home).
-- If a flagged feature "doesn't show," check the flag in the **running
-  instance's** config BEFORE suspecting the bundle — an absent flag (or a flag
-  set in the wrong instance's home), not a missing build, is the common cause.
-
-## Rule 5 — Previewing a worktree live: multiple paths
-
-**Build gates green is the floor** — it proves the code compiles and tests pass.
-Actually *running* the worktree to click through it is an **optional** preview
-step. **Prefer the isolated pod over `dev-backend.sh`** — it is hands-off (no
-port/data-home bookkeeping to remember) and disposable (`pod down` leaves zero
-residue), where `dev-backend.sh` leaves a foreground process and a
-`.kirocrew-dev/` directory you manage yourself. Reach for `dev-backend.sh` only
-where a pod cannot run.
-
-1. **Isolated pod (preferred).** Preview the full stack on its own port without
-   touching the live gateway:
-   ```bash
-   kirocrew pod up <worktree-name> --json   # own KIROCREW_HOME, own port, no crons
-   kirocrew pod down <worktree-name>        # zero residue
-   ```
-   Best for QA agents and end-to-end tests, but the default for a human
-   iterating on a worktree too — it needs no cleanup discipline of its own.
-   `kirocrew pod --help` remains authoritative; the verbs are `up`, `down`, `ls`,
-   `status`, `logs`, `provision`, `prune` (reap pods for worktrees that are
-   gone), `token` (re-mint a dashboard token, default TTL 2h), `url` (print the
-   pod's base URL without re-minting), `scenarios` (list the shipped `--seed`
-   names, so you do not have to trigger a refusal to learn them), `exec` (run a
-   command inside the pod's own environment), `api` (the pod's HTTP-probe
-   envelope) and `install`. The worktree must be
-   built first (venv + dist); `kirocrew pod up
-   --provision` does the full on-ramp. `--approval reads|yolo|interactive` sets
-   the approval mode the pod's gateway boots with, persisted per pod so it
-   survives a service-manager restart; omit it to inherit `agent.approval_mode`.
-   `--crons` runs the pod's cron scheduler — pods boot `--no-crons`, so a
-   scheduled job you are testing never fires without it. `--no-embeddings` boots
-   the pod without the embedding model: it downloads no GGUF and computes no
-   vector, and memory/knowledge search answers through the documented keyword
-   fallback, so ingestion load tests stop paying per-chunk embed compute. Your own
-   home keeps its model — the variable is set in the pod's env only. `--ttl`
-   (default `2h`) bounds the dashboard token. All of these apply at boot, so re-up
-   a stopped pod to change them.
-
-   For behavior that needs existing data, seed a shipped fixture instead of
-   clicking state in by hand:
-   ```bash
-   kirocrew pod up <worktree-name> --seed minimal --json
-   ```
-   A bare name populates the whole isolated home; an unknown name is refused
-   with the available names. A path remains the sanitized config-only form.
-
-   Pods need Linux `systemd --user` or macOS `launchd` (`kirocrew pod install`
-   once per machine) — see [`kiro_crew/pod/README.md`](../../../pod/README.md)
-   for the platform gate. Without one of those, fall through to
-   `dev-backend.sh` below.
-
-2. **`dev-backend.sh` (fallback where a pod cannot run).** From the worktree
-   root:
-   ```bash
-   ./dev-backend.sh
-   ```
-   Starts the gateway on its own dev port using `.kirocrew-dev/` as its data
-   directory (isolated from your production `~/.kiro/crew/`). It uses
-   `PYTHONPATH=src` so code changes are picked up on restart. Ctrl+C to stop,
-   re-run after changes. Use this on a host with no `systemd --user` / `launchd`
-   (or before running `kirocrew pod install`), or when you specifically need a
-   foreground process to attach a debugger to.
-
-3. **No preview at all (also valid).** For many changes, the build gate + unit
-   tests are enough confidence to cut the PR. Previewing live is optional.
-
-### Turn a preview into proof
-
-A pod being healthy proves only that a gateway answered. To prove changed
-behavior, run the copy-pasteable trace in
-`docs/guides/worktree-verification-recipes.md` for the changed surface. The
-recipes use the feature map to select the owning endpoint, assert seeded backend
-state, run the packaged pod-e2e Playwright harness and preserve screenshot
-evidence, or diagnose and reclaim a failed pod.
-
-The recipes note which pod commands exist today; treat anything they mark as
-forthcoming as absent until `kirocrew pod --help` lists it. They also record the
-current session-control compatibility
-gap rather than presenting an HTTP 403 as an agent-driving proof.
-
-### Agent specs + MCP servers are a SEPARATE isolation axis from the data home
-
-`KIROCREW_HOME` isolates config, DB, sessions and workspace. It does **not**
-isolate `~/.kiro/agents/*.json` — the specs that define which MCP servers exist.
-That directory is machine-wide, and a gateway rewrites its specs on every start.
-
-A worktree gateway is therefore **prevented from clobbering them**: you will see
-
-```
-Refusing to rewrite the shared agent home <path> from an ephemeral instance
-(checkout <repo>, data home <home>): it would repoint the real install's MCP
-servers at this instance's venv and data home, and break them outright when it
-is torn down. This instance will use the existing specs instead.
-```
-
-That warning is the guard working, not a failure. Consequence to know about: the
-preview runs against the **real install's** agents and MCP servers, so it is safe
-but not self-contained — a change to Kiro Crew's own managed MCP servers
-(`mcp-core`, `mcp-cron`, `mcp-computer`) is not exercised by a worktree preview.
-Verify those with unit tests, or temporarily point the real spec at the worktree
-and put it back afterwards.
-
-**Do not reach for `KIRO_HOME` to get around this yet.** It is kiro-cli's
-directory-wide override — it moves sessions, settings, skills and steering too,
-and Kiro Crew still reads the host paths for most of those, so setting it breaks
-session resume. Making it a real isolation switch means routing the remaining
-~two dozen `~/.kiro/**` readers through `kiro_home()` first.
-
-## Rule 6 — Hands off the live plane
-
-- Never edit the live/production checkout, and never start/stop the live gateway
-  directly from a feature session. If you need to verify live, use
-  `dev-backend.sh` (isolated port) or pods.
-
-## Rule 7 — Submit a PR via GitHub (only when the user asks)
-
-**Committing, pushing, and opening a PR each require explicit user
-authorization** — per repo convention (AGENTS.md), never `git commit` or
-`git push` proactively, and pushing needs its own approval separate from
-committing. A green build gate means the change is *ready* to publish, not
-that you should publish it.
-
-When the user asks for a PR:
+The gateway serves `src/kiro_crew/static/dist/`, not source TSX or a Vite server.
+After creating a worktree or changing frontend code, build and clean-stage:
 
 ```bash
-git add <specific files>     # stage only the files this change touches, never blanket -A
-git commit -m "feat: <description>"
-git push origin feat/<name>
-gh pr create --base main --title "feat: <description>" --body "<details>"
+cd website && npm ci && npm run build && cd ..
+rm -rf src/kiro_crew/static/dist && cp -R website/dist src/kiro_crew/static/dist
 ```
 
-- PRs target `main`.
-- **At most two commits per PR.** CI blocks a third; one commit is the norm.
-  Squash before opening (`git rebase -i origin/main` or `git reset --soft
-  origin/main` + one commit), and fold review-round fixes in with
-  `git commit --amend` + `git push --force-with-lease origin feat/<name>`
-  rather than stacking commits. Spend the second commit only when a mechanical
-  follow-up (a regenerated artifact, a formatting sweep) is worth keeping
-  separable from the change it accompanies.
-- **Push as a standalone command.** Prefer running `git push` (including
-  `--force-with-lease`) on its own line with explicit remote and branch —
-  some agent security policies fail closed on pushes embedded in compound
-  commands (`&&`, `;`, pipes). Treating commit, push, and PR edits as three
-  separate steps is safe everywhere.
-- **UI screenshots:** upload them as GitHub attachments, never commit them.
-  Write local paths in the body file and pass the same files to
-  `gh pr create|edit --body-file <body> --attach <path>` (gh >= 2.99); each path
-  is rewritten to a permanent `https://github.com/user-attachments/assets/<uuid>`
-  URL that no squash or force-push invalidates, so nothing is ever re-pinned.
-  A video renders as a player only when `![](<path>)` stands alone in its
-  paragraph. Never `raw.githubusercontent.com` or another external host
-  (blocked by GitHub Camo on private repos). Details: the **prepare-pr** skill,
-  *Screenshots*.
-- CI runs the same gates (pytest, isort, flake8, mypy, tsc, vitest) — but run
-  them locally first. CI is for confirmation, not discovery.
+Only remove that generated dist in the assigned worktree; rebuilding restores it.
+`make build` also builds, clean-stages and installs. Copying over an old dist
+leaves stale content-hashed assets. Dist is gitignored and does not transfer with
+a fetch or new worktree. To inspect a minified bundle, search surviving route,
+API or label strings, not React component names.
 
-## Rule 8 — Opening the PR is not the end: monitor it
+## Flags and isolated preview
 
-Don't open a PR and walk away. Review bots and CI produce findings that need
-triage, and the base branch moves under you. Pushes during the loop follow the
-same rule as Rule 7: AGENTS.md requires explicit approval for every push, so a
-monitoring loop's scope — including whether its fix-and-push rounds are
-pre-approved — must be stated by the user when they ask for it (e.g. "babysit
-this PR and push fixes"). Absent that, confirm before each push.
+Flags belong in the RUNNING instance's `$KIROCREW_HOME/config.json`, not in code.
+The live gateway uses the shared home; `dev-backend.sh` uses `.kirocrew-dev/`;
+each pod has its own home. Editing production config cannot enable a preview
+flag. Check the right instance's flag before blaming the bundle. Config's live
+fingerprint cache picks up edits without a restart; live flags persist across
+live-worktree switches.
 
-- From an interactive session, start a same-session monitoring loop (see the
-  **babysit** skill / `monitor_start`): poll CI + review comments, fix
-  legitimate findings in the worktree, amend + force-push, repeat until green.
-- Read the **full bodies** of review-bot comments even when their checks show
-  as passing — non-blocking MEDIUMs and advisory notes are still legitimate
-  feedback.
-- The **prepare-pr** skill covers the full commit→green loop end-to-end.
-- Rebase when the base moves; re-verify gates after every rebase.
-- Never merge on the user's behalf — merge-ready means green + approved +
-  current, then hand it back.
+Green gates are the floor. Preview is optional where unit coverage suffices;
+when verifying changed UI, load `web-verify` and inspect the rendered change.
+Prefer a disposable isolated pod, built first with venv and dist:
 
-## Rule 9 — Leave the worktree clean (so prune can reap it)
+```bash
+kirocrew pod up <worktree-name> --json
+kirocrew pod up <worktree-name> --seed minimal --json
+kirocrew pod down <worktree-name>
+```
 
-A worktree's tree MUST be clean when you finish a work session on it —
-`git status --porcelain` should print **nothing**. This is not cosmetic: Dev
-Fleet's **"Prune merged"** fail-closes on a dirty tree (a `merged_dirty`
-verdict — untracked files count as dirty), so a merged worktree with even one
-stray untracked file or one unrestored tracked file is **refused for deletion**
-and piles up, wasting disk.
+`kirocrew pod --help` is authoritative. `--provision` runs the build on-ramp.
+`--seed` names shipped fixtures (`pod scenarios` lists them); an unknown name is
+refused, while a path is the sanitized config-only form. Other boot flags:
 
-Two habits keep the tree clean:
+- `--approval reads|yolo|interactive` persists the pod's mode; omission inherits
+  `agent.approval_mode`. No approval flag grants permission to publish or touch live.
+- `--crons` enables its scheduler; the default is `--no-crons`.
+- `--no-embeddings` avoids GGUF download and vectors in this pod only; search uses
+  keyword fallback, useful for ingestion tests. The real home's model is untouched.
+- `--ttl` bounds the dashboard token (default `2h`). Re-up a stopped pod to change
+  boot flags. `pod token` re-mints a token; `pod url` prints the base URL without it.
 
-- **Write scratch OUTSIDE the worktree.** PR bodies, build/test log dumps, QA
-  artifacts, and temp notes must never be written into the worktree root. Use a
-  temp dir instead:
-  ```bash
-  SCRATCH=$(mktemp -d)                          # e.g. /tmp/tmp.XXXXXX
-  gh pr create --body-file "$SCRATCH/pr-body.md" ...
-  python -m pytest -q > "$SCRATCH/fullsuite.log" 2>&1
-  ```
-  Approved QA media is no exception: it is uploaded from the artifact dir as a
-  PR attachment with `gh pr edit --attach` and never enters the tree (see the
-  pod-e2e skill). The capture scripts' local output dir, `temp-screenshots/`,
-  is gitignored, so frames left there are invisible to `git status`.
-- **Restore regenerated tracked files; delete stray untracked ones — but only
-  what YOU produced.** Before you end the session, run `git status --porcelain`
-  and INSPECT each line before touching it. Only discard content this session
-  itself created or regenerated:
-  ```bash
-  git status --porcelain                        # MUST end up empty
-  git diff config-baseline.json                 # inspect FIRST — confirm the
-  git checkout -- config-baseline.json          # rewrite came from YOUR test run
-  rm -f .pr-body.md                             # scratch YOU wrote this session
-  ```
-  `git checkout --` and `rm` are destructive and unrecoverable. If a modified
-  tracked file or an untracked path was NOT produced by this session — or you
-  can't tell — do NOT discard it: it may be the user's in-progress work. Ask
-  the user (or leave it and report the dirty state) instead.
+Pods need Linux `systemd --user` or macOS `launchd`; run `kirocrew pod install`
+once per host. See [pod platform requirements](../../../pod/README.md).
+`pod ls`, `status`, `logs`, `provision`, `prune`, `exec` and `api` cover inspection,
+provisioning, removal of gone worktrees, in-pod commands and HTTP probes.
+Without a service manager, or for a foreground debugger, run `./dev-backend.sh`
+from the worktree. It uses an isolated port/home and `PYTHONPATH=src`; Ctrl+C
+stops it, and rerunning picks up code changes. Reclaim its process and dev home
+yourself. Never use the live gateway instead.
 
-If you genuinely need a new ignored scratch pattern, add it to the root
-`.gitignore` (the agent-workflow scratch section) rather than leaving it to
-dirty every tree.
+A healthy pod proves only boot. For behavior proof, follow
+`docs/guides/worktree-verification-recipes.md`: select the owning endpoint from
+the feature map, assert seeded state, run the pod-e2e Playwright harness and
+preserve screenshots. Treat commands marked forthcoming as absent until help
+lists them, and a session-control HTTP 403 as a gap, not successful proof.
 
-## Rule 10 — Comment style: explain why, don't restate code
+### Agent/MCP specs are a separate isolation axis
 
-Comments and docstrings describe **behavior and rationale** — the non-obvious
-*why*, invariants, edge cases, units, security constraints. They are NOT a task
-log and NOT a paraphrase of the code.
+`KIROCREW_HOME` isolates config, DB and sessions, NOT machine-wide
+`~/.kiro/agents/*.json`. An ephemeral gateway refuses to rewrite that shared
+agent home so its MCP paths cannot outlive its venv. The warning is protection,
+not a failure: preview uses the real install's specs and MCP servers. A preview
+therefore does NOT exercise changes to `mcp-core`, `mcp-cron` or `mcp-computer`.
+Use unit tests; any temporary change to the real spec requires explicit user
+authorization and restoration afterwards.
 
-- **No process/task-log citations** in code: PR/CR numbers, review-round or
-  finding markers (`GPT review round 4`, `R16 F3`, `Codex HIGH`), incident
-  dates, milestone tags (`M1`, `v0.6.0`), commit SHAs. That history lives in git.
-- **No historical narration** ("previously…", "used to…", "we now…"). State the
-  CURRENT behavior in present tense; keep the reason if it explains the code's shape.
-- **Don't restate the code.** Cut comments that only repeat the adjacent line
-  (`i += 1  # increment i`, `# return result`). Keep it concise: if a comment
-  adds nothing a reader wouldn't see at a glance, drop it — but keep any
-  non-obvious *why*.
-- **Exempt:** the `_vendor/` tree and semantic pragmas (`# type: ignore`,
-  `# noqa`, `# pragma`, `// @ts-…`, `// eslint-…`) — never touch them.
+Do not bypass this with `KIRO_HOME`: it also moves sessions, settings, skills
+and steering, while remaining host-path readers can break resume. It is not yet
+a complete preview-isolation switch.
 
-Applies to any code you write or edit here, and to doc prose too: describe what
-the system does, not a changelog of how it got there.
+## Review repair and publication authorization
 
-## Why these rules exist (gotchas they prevent)
+For Kiro Crew PR CI AI comments, MUST load
+[prepare-pr: Review repair routing](../prepare-pr/SKILL.md#review-repair-routing)
+BEFORE any repair. Follow that canonical model-pinned delegation procedure;
+parent self-fixing is not a substitute. This pointer does not change the profile's
+read-only local-review gate.
 
-- Editing the live checkout → the running gateway picks up partial changes →
-  runtime crashes or stale frontend served alongside new backend routes.
-- `dist/` not rebuilt after a frontend change → the served frontend lacks the
-  new feature even though the source has it (Rule 3).
-- A flagged feature "missing" is usually a flag set in the wrong instance's
-  `KIROCREW_HOME`, not a missing bundle (Rule 4).
-- Running tests against the main clone while developing in a worktree → you're
-  testing the wrong code.
-- Serial pytest on the full suite → 45-minute timeouts in agent sessions;
-  bare `--override-ini=addopts=` drops `--dist loadgroup` → flaky races in
-  `xdist_group`-serialized tests (Rule 2).
-- A faiss-equipped or version-drifted mypy venv → local results that contradict
-  CI in both directions (Rule 2: CI-parity venv).
-- Branches with three or more commits → PR Hygiene check fails; squash first (Rule 7).
-- Committing or pushing without an explicit user request → violates the repo's
-  agent safety convention (Rule 7).
-- Pushing directly to `main` → breaks CI for everyone; always use a feature
-  branch + PR.
-- Scratch files (PR bodies, log dumps) written into the worktree, or a tracked
-  baseline a test rewrote and never restored → `git status` is dirty → Dev
-  Fleet "Prune merged" fail-closes (`merged_dirty`) and merged worktrees pile
-  up, wasting disk (Rule 9).
+Committing, pushing and opening a PR each require explicit user authorization.
+Permission to commit is not permission to push, and green gates grant neither.
+A fix-and-push monitoring scope must be explicit; absent it, confirm each push.
+Never push to a protected base branch. For authorized publication, follow
+prepare-pr's SHA-pinned force-with-lease protocol and `single_commit` handling,
+and AGENTS.md's at-most-two-commit limit; never use an implicit lease or interactive
+git. No direct merge: hand back
+review-ready work; only explicit ship intent permits prepare-pr's auto-merge path.
+
+## Cleanup and comments
+
+Keep scratch, PR bodies, logs and QA media under `$KIROCREW_SCRATCH`, not the
+worktree. Capture scripts' gitignored `temp-screenshots/` is also permitted;
+evidence is uploaded as attachments, never committed. Before ending:
+
+```bash
+git status --porcelain
+git diff -- <regenerated-file>
+```
+
+Inspect every change. Restore/remove only residue YOU produced, not user changes
+or another agent's work. Discarding uncommitted content is unrecoverable: ask if
+ownership is unclear. Leave requested uncommitted implementation intact and report
+it; cleanup is not permission to commit or discard it. A merged worktree must be
+clean, including untracked files, before Dev Fleet's `Prune merged` can reap it.
+After merge and cleanup: `git worktree remove ../kirocrew-wt-<name>`.
+Add a genuinely needed ignored scratch pattern to `.gitignore` only within scope.
+
+Comments and docstrings state current behavior and the non-obvious why: invariants,
+edge cases, units and security constraints. No task log, PR/CR numbers, review-round
+markers, incident dates, milestone tags, SHAs or historical narration. Do not
+paraphrase adjacent code. Leave `_vendor/` and semantic pragmas (`type: ignore`,
+`noqa`, `pragma`, TypeScript/eslint directives) untouched.

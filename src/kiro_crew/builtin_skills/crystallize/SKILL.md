@@ -127,29 +127,13 @@ a session that touched credentials / sensitive paths. Being asked does not make 
    candidate rather than overwriting it. That guard covers the pending path only —
    the live path in (b) has none.
 
-   **(b) Live — ONLY on an explicit "create a live skill" / "create an active
-   skill".** The user must actually say "live" or "active" (or confirm it when
-   asked) — never take this path by inference. Write directly to a top-level
-   live directory `<skills-dir>/<slug>/SKILL.md` — no `auto/` prefix, no
-   `.meta.json`, no pending stage — using this frontmatter:
+   **(b) Live: ONLY when the user explicitly says "live" / "active" or confirms
+   it when asked.** Write `<skills-dir>/<slug>/SKILL.md` directly, with no
+   `auto/` prefix, `.meta.json`, or pending stage.
 
-   ```
-   ---
-   name: <slug>
-   description: <=150 chars, starts with a verb
-   triggers: <3-8 comma-separated keywords/phrases>
-   source: crystallize
-   ---
-
-   # <slug>
-
-   ## When to use
-   ...
-   ## Steps
-   ...
-   ## Gotchas
-   ...
-   ```
+   Reuse (a)'s template with `name: <slug>`, `source: crystallize`, and title
+   `# <slug>`; omit `session_key` and `created_at`. Keep the same description,
+   triggers, and When to use / Steps / Gotchas sections.
 
    **Do not overwrite an existing skill:** if `<skills-dir>/<slug>/` already
    exists (a live or builtin skill), pick a different slug or ask the user —
