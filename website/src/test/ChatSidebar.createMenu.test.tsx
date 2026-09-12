@@ -63,7 +63,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn() }))
+const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn(), projectBundles: vi.fn() }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -152,6 +152,11 @@ beforeEach(() => {
     active: true, warm_set_cap: 5, sso: {},
     instances: [{ id: 'i-nobita', name: 'nobita' }, { id: 'i-gian', name: 'gian' }],
   })
+  mocks.projectBundles.mockResolvedValue({
+    projects: [{
+      id: 'project-payments', name: 'Payments Platform', health: { status: 'healthy' },
+    }],
+  })
 })
 afterEach(() => {
   mobileViewport.value = false
@@ -165,6 +170,40 @@ describe('create-button caret menu', () => {
     openCreateMenu()
     expect(await screen.findByText('New chat')).toBeTruthy()
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
+  })
+
+  it('starts a new session with a healthy Project from the create menu', async () => {
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await screen.findByText('Payments Platform'))
+
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
+    expect(mocks.createChatSlot.mock.calls.some(call => call.includes('project-payments'))).toBe(true)
+  })
+
+  it('reports a failed Project session create through the new-chat error notice', async () => {
+    // A rejected Project create must not be a silent no-op: it reports through
+    // the same ErrorNotice every other local create in this menu uses.
+    mocks.createChatSlot.mockRejectedValue(new Error('project workspace unavailable'))
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await screen.findByText('Payments Platform'))
+
+    const alert = await screen.findByTestId('new-chat-error')
+    expect(alert.textContent).toContain('project workspace unavailable')
+  })
+
+  it('shows a failed Project list read inside the create menu instead of dropping the section', async () => {
+    mocks.projectBundles.mockRejectedValue(new Error('registry unreadable'))
+    renderSidebar()
+    openCreateMenu()
+
+    const notice = await screen.findByTestId('new-chat-projects-error')
+    expect(notice.textContent).toContain('Projects could not be loaded')
+    // The sibling hand-off row is what keyboard users reach (roving focus skips
+    // a button nested in the passive notice).
+    expect(screen.getByRole('menuitem', { name: /ask/i })).toBeTruthy()
+    expect(screen.queryByText('Payments Platform')).toBeNull()
   })
 
   it('explains the engineered entries, at the point of choice', async () => {
@@ -324,10 +363,11 @@ describe('create-button caret menu', () => {
     // the binding, and it must be sent at BIRTH — the backend opens the peer's
     // slot before creating the local one, so a disconnected or version-skewed
     // peer fails the create instead of leaving a session that cannot send.
+    // The trailing `undefined` is `project_id`: this entry binds no project.
     await waitFor(() =>
       expect(mocks.createChatSlot).toHaveBeenCalledWith(
         undefined, undefined, undefined, undefined, 'persistent', undefined, undefined,
-        undefined, 'i-nobita',
+        undefined, 'i-nobita', undefined,
       ),
     )
   })

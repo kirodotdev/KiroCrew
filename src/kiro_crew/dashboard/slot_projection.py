@@ -284,6 +284,7 @@ class SlotProjection:
             # any use for it — these two carry every branch the frontend makes.
             "executor": slot.executor,
             "instance_id": slot.instance_id,
+            "project_id": slot.project_id,
             "artifact": slot._artifact,
             "messages": len(slot.messages),
             "running": slot.running,

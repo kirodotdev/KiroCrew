@@ -1,7 +1,7 @@
 import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, Reply, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, FolderKanban, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, Reply, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -2613,6 +2613,7 @@ function ChatSidebar({
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const isMobile = useIsMobile()
@@ -5192,7 +5193,8 @@ function ChatSidebar({
   // one. `usePreviewFlag` rather than a bare read because the sidebar does
   // not remount when that toggle flips.
   const crewPreview = usePreviewFlag(PREVIEW_CREW)
-  const navigate = useNavigate()
+  // `navigate` is declared once at the top of this component (both this entry
+  // and the Projects entry in the create menu use it).
   const openCrewMembers = () => {
     navigate(crewPreview ? '/members' : settingsPath({ tab: 'developer', highlight: SETTINGS_CREW_MEMBERS_PREVIEW_ID }))
   }
@@ -5284,6 +5286,30 @@ function ChatSidebar({
       setNewChatError('')
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '' })).unwrap()
     },
+    onSuccess: focusComposer,
+    onError: onNewChatError,
+  })
+  const projectBundlesQuery = useQuery({
+    queryKey: ['project-bundles'],
+    queryFn: () => typeof api.projectBundles === 'function'
+      ? api.projectBundles()
+      : Promise.resolve({ projects: [] }),
+  })
+  const healthyProjects = (projectBundlesQuery.data?.projects ?? []).filter(
+    project => project.health.status === 'healthy',
+  )
+  // A failed Project list read must not silently drop the Projects section
+  // from the create menu; it renders as the in-menu notice below.
+  const projectBundlesError = projectBundlesQuery.isError
+    ? i18nT('pages.projectBundlesPage.failed_to_load_projects')
+    : ''
+  const projectBundlesErrorId = useId()
+  const createProjectChatMutation = useMutation({
+    mutationFn: (projectId: string) => dispatch(createSlot({
+      agent: defaultAgent || undefined,
+      mode: mode || '',
+      project_id: projectId,
+    })).unwrap(),
     onSuccess: focusComposer,
     onError: onNewChatError,
   })
@@ -6172,6 +6198,53 @@ function ChatSidebar({
                 <DropdownMenuItem disabled={creatingSlot} onClick={() => { createPlainChatMutation.mutate() }}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
+                {projectBundlesError && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>{i18nT('pages.projectBundlesPage.projects')}</DropdownMenuLabel>
+                    {/* Inside Radix menu content the notice stays passive and the
+                     *  hand-off is the sibling menu item (roving focus skips a
+                     *  nested button) — the same shape as the remote-crew row. */}
+                    <div className="px-2 py-1.5">
+                      <ErrorNotice
+                        id={projectBundlesErrorId}
+                        message={projectBundlesError}
+                        variant="inline"
+                        testId="new-chat-projects-error"
+                      />
+                    </div>
+                    <ErrorNoticeMenuItem
+                      Item={DropdownMenuItem}
+                      message={projectBundlesError}
+                      describedBy={projectBundlesErrorId}
+                    />
+                  </>
+                )}
+                {healthyProjects.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>{i18nT('pages.projectBundlesPage.projects')}</DropdownMenuLabel>
+                    {healthyProjects.map(project => (
+                      <DropdownMenuItem
+                        aria-label={`${project.name} — ${project.registrations?.at(-1)?.path ?? project.id}`}
+                        className="items-start"
+                        disabled={creatingSlot || createProjectChatMutation.isPending}
+                        key={project.id}
+                        onClick={() => createProjectChatMutation.mutate(project.id)}
+                      >
+                        <FolderKanban size={14} className="text-muted" />
+                        <span className="flex min-w-0 flex-col gap-px">
+                          <span className="truncate">{project.name}</span>
+                          <span className="truncate font-mono text-[11px] text-muted">{project.registrations?.at(-1)?.path ?? project.id}</span>
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuItem onClick={() => navigate('/capabilities?tab=projects')}>
+                      <Settings size={14} className="text-muted" />
+                      {i18nT('pages.projectBundlesPage.manage_projects')}
+                    </DropdownMenuItem>
+                  </>
+                )}
                 {/* The two engineered modes carry a one-line description, because the
                  *  moment a user cannot tell them apart is the moment this menu opens
                  *  — and until now the only explanation lived in a native title= on

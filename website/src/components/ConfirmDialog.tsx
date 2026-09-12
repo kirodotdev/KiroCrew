@@ -14,9 +14,8 @@ import { i18nT } from '../i18n/t'
  * This dialog is the themed, non-blocking replacement: the confirm button
  * restates the action instead of "OK", and the caller awaits a boolean.
  *
- * The confirm button is always styled destructively and the cancel label is
- * always the shared one: every current caller confirms a destructive act, so
- * the knobs would ship without a consumer. Add them when a caller needs them.
+ * The cancel label is always shared. Callers can opt out of destructive button
+ * styling for consequential trust or enablement decisions.
  */
 export interface ConfirmOptions {
   /** Short dialog title. A question restating the stakes reads best. */
@@ -25,6 +24,8 @@ export interface ConfirmOptions {
   body?: ReactNode
   /** Restates the action ("Discard changes", "Destroy site") — never "OK". */
   confirmLabel: string
+  /** Trust/enable confirmations are consequential without being destructive. */
+  danger?: boolean
 }
 
 interface PendingConfirm {
@@ -94,14 +95,14 @@ export function useConfirm(): {
           <Btn onClick={() => settle(false)}>
             {i18nT('components.confirmDialog.cancel')}
           </Btn>
-          <Btn danger onClick={() => settle(true)}>
+          <Btn danger={opts.danger !== false} onClick={() => settle(true)}>
             {opts.confirmLabel}
           </Btn>
         </>
       }
     >
-      {/* Full-contrast body: this line carries the consequence ("permanently
-          deletes bucket …"), which must not read quieter than the buttons. */}
+      {/* Full-contrast body: this line carries the consequence or trust scope,
+          which must not read quieter than the buttons. */}
       {opts.body != null ? <p className="text-sm text-text m-0">{opts.body}</p> : null}
     </Modal>
   ) : null

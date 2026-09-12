@@ -141,6 +141,7 @@ from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_no
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import carry_provenance, is_incognito_transcript, transcript_stems
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.project_sessions import ProjectSessionError, resolve_project_attachment
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import (
@@ -2369,6 +2370,92 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         name = str(name)
     agent = body.get("agent", "")
     model = body.get("model", "")
+    project_id = body.get("project_id", "")
+    if not isinstance(project_id, str):
+        return web.json_response(
+            {"error": "project_id must be a string", "code": "project_invalid_request"},
+            status=400,
+        )
+    project_id = project_id.strip()
+    existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
+    project_attachment = None
+    if project_id:
+        # Circular import boundary: source-provider handlers are registered through
+        # dashboard modules that also import this chat handler. Match the existing
+        # deferred owner checks below instead of closing that startup cycle.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        if not is_owner_dashboard_request(request):
+            try:
+                await asyncio.to_thread(
+                    lambda: sel().log_api_access(
+                        caller=request.get("user", "dashboard"),
+                        operation="project_attach",
+                        outcome="denied",
+                        source="dashboard",
+                        resources="non_owner_block",
+                    )
+                )
+            except Exception:
+                logger.debug("SEL audit for denied Project attachment failed", exc_info=True)
+            return web.json_response(
+                {"error": "owner authorization required", "code": "owner_only"}, status=403
+            )
+        if (
+            existing_slot is not None
+            and existing_slot.total_messages > 0
+            and existing_slot.project_id != project_id
+        ):
+            return web.json_response(
+                {
+                    "error": "Cannot change Project after messages have been sent. Open a new session instead.",
+                    "code": "project_rebind_requires_new_session",
+                },
+                status=409,
+            )
+        try:
+            await asyncio.to_thread(
+                lambda: sel().log_api_access(
+                    caller=request.get("user", "dashboard"),
+                    operation="project_attach",
+                    outcome="allowed",
+                    source="dashboard",
+                    resources=f"project={project_id}",
+                    critical=True,
+                )
+            )
+        except Exception:
+            logger.error("SEL audit for Project attachment failed", exc_info=True)
+            return web.json_response(
+                {
+                    "error": "Project permission audit is unavailable",
+                    "code": "project_audit_unavailable",
+                },
+                status=503,
+            )
+        # Circular import boundary: Project routes are registered alongside
+        # dashboard.chat, which imports this module. Resolve the shared registry only
+        # after route initialization, while retaining its off-loop first-use path.
+        from kiro_crew.dashboard.handlers_project import project_registry_for_request
+
+        project_registry = await project_registry_for_request(request)
+        try:
+            project_attachment = await asyncio.to_thread(
+                resolve_project_attachment,
+                project_id,
+                registry=project_registry,
+            )
+        except ProjectSessionError as exc:
+            error = _redact_for_display(str(exc))
+            if exc.code == "project_not_found":
+                return web.json_response(
+                    {"error": error, "code": exc.code},
+                    status=404,
+                )
+            return web.json_response(
+                {"error": error, "code": exc.code},
+                status=409,
+            )
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
     # visibly too late: get_or_create_slot broadcasts the new slot before this
     # handler returns, so the dashboard renders it at the top level for a frame
@@ -2379,7 +2466,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "folder not found", "code": "folder_not_found"}, status=400
         )
-    existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
     # Remote execution binding. Three authorization gates run BEFORE the peer is
     # touched, because `create_peer_slot` is a write on ANOTHER machine spending
     # the owner's tunnel credential — a request that is going to be refused must
@@ -2715,6 +2801,42 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # would turn this 404 into an existence oracle for slots the caller
             # may not know about. The prose stays in `error` for logs.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        if project_attachment is not None:
+            project_workspace = str(project_attachment.workspace_dir)
+            if not is_new_slot and (
+                slot.project_id != project_attachment.project_id
+                or slot.project != project_workspace
+            ):
+                # The early message-count check runs before Project resolution and
+                # audit. Repeat it at the mutation boundary so a concurrent first
+                # message cannot turn that stale decision into a destructive rebind.
+                if slot.total_messages > 0:
+                    return web.json_response(
+                        {
+                            "error": "Cannot change Project after messages have been sent. Open a new session instead.",
+                            "code": "project_rebind_requires_new_session",
+                        },
+                        status=409,
+                    )
+                # Empty slots may already own an eagerly spawned agent session. Tear
+                # it down before changing the binding so its old cwd cannot survive,
+                # but let the session manager atomically refuse if a turn wins the
+                # race after the message-count check.
+                session_key = _history_key_for(slot.key)
+                reset = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
+                if slot.total_messages > 0 or (
+                    not reset and state.sessions.get_provider(session_key) is not None
+                ):
+                    return web.json_response(
+                        {
+                            "error": "Cannot change Project after messages have been sent. Open a new session instead.",
+                            "code": "project_rebind_requires_new_session",
+                        },
+                        status=409,
+                    )
+            slot.project_id = project_attachment.project_id
+            slot.project = project_workspace
+            slot._project_brief = project_attachment.brief
         # Pin title if explicitly provided (prevents auto-title from overwriting)
         title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
         if title:
@@ -2892,7 +3014,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # A pinned title must persist too (not just a folder move): without the
         # write, a restart rehydrates the previous title with a refreshable
         # "auto" origin and the background refresh may rewrite the pin.
-        if folder_id or title or remote_slot_key:
+        if folder_id or title or remote_slot_key or project_attachment is not None:
             # The create/recreate request has been authorized against this
             # transcript.  Do not let a rebind while the off-loop write waits on
             # the history lock redirect its newly supplied metadata to another
@@ -8125,6 +8247,14 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             )
         prior_workspace = slot.workspace
         prior_project = slot.project
+        # The Project bundle the slot was attached to, if any. A workspace
+        # switch DETACHES it: the new directory is not evidence of that
+        # bundle's identity, and a session claiming one Project while
+        # executing in an unrelated tree is the state the clearing prevents.
+        # Captured so the 409 paths below can unwind the detach with the
+        # bindings it accompanied.
+        prior_project_id = slot.project_id
+        prior_project_brief = slot._project_brief
         # Commit as identity tokens (the agent handler's _CommitToken
         # precedent): ``slot.project`` has lock-free writers -- the in-turn
         # set_project directive lands during the reset await -- so a rollback
@@ -8134,6 +8264,8 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         committed_project = _CommitToken(default_project_dir(ws_name))
         slot.workspace = committed_workspace
         slot.project = committed_project
+        slot.project_id = ""
+        slot._project_brief = ""
         logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
 
         def _rollback() -> None:
@@ -8151,6 +8283,15 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 slot.workspace = prior_workspace
             if slot.project is committed_project:
                 slot.project = prior_project
+                # Restored with the path they described, and only while this
+                # request's own commit still stands: an attachment that landed
+                # during the reset await is a NEWER binding than the one being
+                # unwound, so a blind restore would resurrect a detached
+                # Project over it.
+                if not slot.project_id:
+                    slot.project_id = prior_project_id
+                if not slot._project_brief:
+                    slot._project_brief = prior_project_brief
             slot._dirty = True
 
         # skip_if_busy: message dispatch does not take slot._lock, so a send
@@ -8347,6 +8488,14 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
         old_project = slot.project
+        # The Project bundle this slot was attached to, if any. A manually
+        # selected directory is not evidence of Project-bundle identity, so the
+        # commit below CLEARS the durable relation rather than leaving a session
+        # claiming one Project while executing in an unrelated tree. Captured so
+        # the rebind 409 below can unwind the detach with the path it
+        # accompanied.
+        old_project_id = slot.project_id
+        old_project_brief = slot._project_brief
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
         # writes this field without the lock, and may legitimately write the
@@ -8355,6 +8504,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
         slot.project = committed_project
+        slot.project_id = ""
+        slot._project_brief = ""
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),
@@ -8391,6 +8542,13 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 # same 409 the sibling switch handlers use.
                 if slot.project is committed_project:
                     slot.project = old_project
+                    # Unwound with the path they described, and only while this
+                    # request's own commit still stands — an attachment that
+                    # landed during the await is newer than the detach.
+                    if not slot.project_id:
+                        slot.project_id = old_project_id
+                    if not slot._project_brief:
+                        slot._project_brief = old_project_brief
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -8404,6 +8562,13 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # deferred reset itself, but only when no turn is running — the
             # same killpg constraint that deferred the reset applies to it.
             schedule_eager_spawn(state, slot)
+        if project != old_project or old_project_id or old_project_brief:
+            # Mark for the periodic flush (the workspace handler's rule): the
+            # flush writes a slot's metadata line only while ``_dirty`` is set,
+            # and nothing else on this path sets it. A detached Project
+            # identity must reach disk, or a gateway crash before the next
+            # message restores a session claiming a Project it left.
+            slot._dirty = True
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
 

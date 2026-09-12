@@ -452,6 +452,8 @@ def copy_file_pinned(
     expected_src_ident: "tuple[int, int] | None" = None,
     on_skip: SkipReporter = _noop_skip,
     on_created: "Callable[[os.stat_result], None] | None" = None,
+    on_copied: Callable[[int], None] | None = None,
+    refusal: type[Exception] = PinnedPathRefusal,
 ) -> bool:
     """Copy one file's bytes from a descriptor pinned to a validated inode.
 
@@ -515,6 +517,8 @@ def copy_file_pinned(
 
     ``FileNotFoundError`` propagates so a caller can tolerate a source that vanished
     mid-walk; every other ``OSError`` propagates so real failures still abort.
+    *max_bytes* bounds the exact opened content, including a file that grows after
+    ``fstat``; *on_copied* receives the verified byte count after a successful copy.
     """
     if dst is None and dst_name is None:  # pragma: no cover - caller bug
         raise ValueError("copy_file_pinned needs either dst or dst_name")
@@ -566,6 +570,10 @@ def copy_file_pinned(
             # file's LOGICAL size, so the swapped-in sparse giant is refused
             # here with zero bytes written. The in-loop bound below covers the
             # one case this cannot -- a source that grows after this fstat.
+            # Reported, not raised: a caller that cannot continue past an
+            # over-budget file promotes this report to its own refusal (see
+            # ``stage_tree_pinned``), so both contracts are served by one
+            # mechanism.
             on_skip(SKIP_TOO_LARGE, by_name)
             return False
         # The bytes are written to the FINAL name, opened O_CREAT|O_EXCL, and no name is
@@ -620,14 +628,26 @@ def copy_file_pinned(
         # to remove it, which my own Windows shard caught.
         try:
             exceeded = False
+            copied_bytes = 0
             with os.fdopen(fd, "rb") as fsrc:
                 fd = -1  # ownership passed to the file object
                 # fdopen takes ownership and closes what it is given, so it gets a
                 # duplicate: dst_fd itself has to outlive the write for the two
                 # descriptor-based metadata calls below.
                 with os.fdopen(os.dup(dst_fd), "wb") as fdst:
-                    if max_bytes is None:
+                    if max_bytes is None and on_copied is None:
                         shutil.copyfileobj(fsrc, fdst)
+                        copied_bytes = st.st_size
+                    elif max_bytes is None:
+                        # No ceiling, but the caller wants the VERIFIED count, so
+                        # the bytes are counted as they are written rather than
+                        # taken from the pre-copy ``fstat``.
+                        while True:
+                            chunk = fsrc.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            fdst.write(chunk)
+                            copied_bytes += len(chunk)
                     else:
                         # Enforced WHILE copying: the fstat pre-check above cannot
                         # see a source that grows after it, and only aborting on
@@ -644,6 +664,7 @@ def copy_file_pinned(
                                 break
                             fdst.write(chunk)
                             remaining -= len(chunk)
+                            copied_bytes += len(chunk)
             if exceeded:
                 # AFTER the dup'd writer has closed (its buffer flushes on close,
                 # so truncating first would let the flush write stale bytes
@@ -669,6 +690,8 @@ def copy_file_pinned(
                 # published inode itself — never a name re-resolution.
                 on_created(os.fstat(dst_fd))
             published = True
+            if on_copied is not None:
+                on_copied(copied_bytes)
         except BaseException:
             # No name is unlinked here. `O_EXCL` above proves this entry is ours, so the
             # partial content is emptied through the descriptor -- the one operation that
@@ -1053,6 +1076,8 @@ def stage_tree_pinned(
     on_skip: SkipReporter = _noop_skip,
     skip_existing: bool = False,
     must_create: bool = False,
+    max_entries: int | None = None,
+    max_bytes: int | None = None,
     refusal: type[Exception] = PinnedPathRefusal,
 ) -> None:
     """Copy a tree with BOTH traversals pinned end to end.
@@ -1096,12 +1121,35 @@ def stage_tree_pinned(
             "helper's to make silently."
         )
 
+    copied_entries = 0
+    copied_bytes = 0
+
+    def _record_copy(size: int) -> None:
+        nonlocal copied_bytes
+        copied_bytes += size
+
+    def _file_skip(reason: str, path: str) -> None:
+        # ``copy_file_pinned`` REPORTS an over-budget file (its contract: truncate
+        # whatever was written, report ``SKIP_TOO_LARGE``, continue). A stage that
+        # declared *max_bytes* cannot continue past that: it asked for a whole tree
+        # under a ceiling, and a silently short tree is the outcome the ceiling
+        # exists to prevent. So the report is promoted to this call's refusal, which
+        # also covers the case the pre-copy size check cannot -- a source that grows
+        # while it is being copied.
+        if reason == SKIP_TOO_LARGE and max_bytes is not None:
+            raise refusal(f"refusing to stage the {what}: the tree contains too many bytes")
+        on_skip(reason, path)
+
     def _walk(src_fd: int, dst_fd: int, by_name: str) -> None:
+        nonlocal copied_entries
         names = os.listdir(src_fd)
         skipped = set(ignore(by_name, names)) if ignore else set()
         for entry in sorted(names):
             if entry in skipped:
                 continue
+            copied_entries += 1
+            if max_entries is not None and copied_entries > max_entries:
+                raise refusal(f"refusing to stage the {what}: the tree contains too many entries")
             path = os.path.join(by_name, entry)
             try:
                 st = os.stat(entry, dir_fd=src_fd, follow_symlinks=False)
@@ -1194,6 +1242,9 @@ def stage_tree_pinned(
                 finally:
                     os.close(child_src)
             elif _stat.S_ISREG(st.st_mode):
+                remaining_bytes = None if max_bytes is None else max_bytes - copied_bytes
+                if remaining_bytes is not None and remaining_bytes < 0:
+                    raise refusal(f"refusing to stage the {what}: the tree contains too many bytes")
                 try:
                     copy_file_pinned(
                         path,
@@ -1202,7 +1253,10 @@ def stage_tree_pinned(
                         dst_dir_fd=dst_fd,
                         dst_name=entry,
                         skip_existing=skip_existing,
-                        on_skip=on_skip,
+                        on_skip=_file_skip,
+                        max_bytes=remaining_bytes,
+                        on_copied=_record_copy,
+                        refusal=refusal,
                     )
                 except FileNotFoundError:
                     on_skip(SKIP_VANISHED, path)

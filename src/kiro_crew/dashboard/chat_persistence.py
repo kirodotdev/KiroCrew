@@ -98,6 +98,17 @@ _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 _TITLE_ORIGINS = ("auto", "user")
 
 
+def _canonical_project_id(stored: object) -> str:
+    """Return a canonical persisted Project UUID, or fail closed."""
+    if not isinstance(stored, str):
+        return ""
+    try:
+        canonical = str(uuid.UUID(stored))
+    except (AttributeError, ValueError):
+        return ""
+    return stored if stored == canonical else ""
+
+
 def _rehydrate_title_origin(titled: bool, stored: object) -> str:
     """Resolve a rehydrated slot's title origin from persisted metadata.
 
@@ -1096,6 +1107,9 @@ def _rehydrate_slot_from_history(
                 _relay_was_in_flight = bool(meta.get("relay_in_flight"))
         if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
             slot.mode = _mode
+        project_id = _canonical_project_id(meta.get("project_id"))
+        if project_id:
+            slot.project_id = project_id
         if meta.get("created_by"):
             # Creator attribution restored so the member ownership boundary in
             # session-control authorization survives a restart: without it every
@@ -1637,6 +1651,9 @@ def _apply_recent_session(
         slot.project = meta["project"]
     if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
         slot.mode = _mode
+    project_id = _canonical_project_id(meta.get("project_id"))
+    if project_id:
+        slot.project_id = project_id
     if meta.get("created_by"):
         # Same rehydration as _rehydrate_slot_from_history: without it a
         # member-created worker restored through the recent-session path
@@ -2999,8 +3016,11 @@ def _save_slot_to_history(
                 # falsy as "the global store", which is also how a session written
                 # before crew stores existed reads.
                 fields["memory_store"] = named_store_or_empty(slot.memory_store)
-                if slot.project:
-                    fields["project"] = slot.project
+                # Project path and bundle identity are clearable. The metadata
+                # merge cannot delete keys, so a detach must overwrite both values
+                # with empty strings instead of preserving the previous binding.
+                fields["project"] = slot.project or ""
+                fields["project_id"] = slot.project_id or ""
                 if slot._app:
                     fields["app"] = slot._app
                 if slot._origin:
@@ -3326,6 +3346,8 @@ def _save_slot_to_history(
                     # in-flight, so a True read back on reload is the crash signal
                     # that triggers the interrupted-turn row.
                     meta_line["relay_in_flight"] = True
+            if slot.project_id:
+                meta_line["project_id"] = slot.project_id
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
             if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):
