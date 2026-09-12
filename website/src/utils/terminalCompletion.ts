@@ -220,14 +220,35 @@ export function commandWord(line: string, tokenStart: number, markerX?: number):
 const WRAPPERS: ReadonlySet<string> = new Set(['sudo', 'env', 'time', 'nohup', 'command', 'exec'])
 
 /**
+ * A UNC prefix in either spelling — `\\host\share\…` or `//host/share/…`.
+ *
+ * A local restatement rather than an import of `UNC_PREFIX_RE`
+ * (`utils/urlTransform.ts`, the same line `isPathCandidate` in
+ * `MarkdownRenderer.tsx` holds): this module is deliberately dependency-free
+ * so its logic stays unit-testable without pulling in `react-markdown`
+ * transitively through `urlTransform.ts`. See `WIN_PRODUCER_PATH_RE`
+ * (`utils/fileTokens.ts`) for the same trade already made there.
+ *
+ * Refused ahead of the Windows-path check below: `mode === 'path'` fetches
+ * `POST /api/terminal/complete` for the token, and completing a UNC path
+ * would have the gateway list a directory on a NAMED HOST — on Windows that
+ * stat is an outbound SMB connection, offering the host's credentials for
+ * nothing but typing a token in the terminal.
+ */
+const UNC_PREFIX_RE = /^(?:\\\\|\/\/)/
+
+/**
  * Whether a completion menu should open for this token.
  *
  * Two independent triggers, both narrow on purpose:
- *  - the token already looks like a path (`/`, `./`, `../`, `~`), whatever the
- *    command is — this is the `cd ../` and `ls ./` case;
+ *  - the token already looks like a path (`/`, `\`, `./`, `../`, `~`),
+ *    whatever the command is — this is the `cd ../` and `ls ./` case, and on
+ *    a Windows gateway the `cd ..\` / `dir .\` case too;
  *  - the command is a known path command, so even a bare token lists the cwd.
  *
- * Flags (`-x`, `--long`) and variable/substitution starts never trigger.
+ * Flags (`-x`, `--long`) and variable/substitution starts never trigger. A
+ * UNC-shaped token never triggers either, regardless of command — see
+ * `UNC_PREFIX_RE`.
  *
  * This governs the PATH tier only; `completionMode` layers the command tier on
  * top for the words this refuses.
@@ -235,13 +256,15 @@ const WRAPPERS: ReadonlySet<string> = new Set(['sudo', 'env', 'time', 'nohup', '
 export function shouldComplete(token: string, command: string): boolean {
   if (token.startsWith('-') || token.startsWith('$') || token.startsWith('`')) return false
   if (command === '') return false // still typing the command name itself
-  if (token.includes('/') || token.startsWith('~') || token.startsWith('.')) return true
+  if (UNC_PREFIX_RE.test(token)) return false
+  if (token.includes('/') || token.includes('\\') || token.startsWith('~') || token.startsWith('.')) return true
   return PATH_COMMANDS.has(command)
 }
 
 /** Whether a word could name a file — i.e. whether the PATH tier owns it. */
 function looksLikePath(token: string): boolean {
-  return token.includes('/') || token.startsWith('~')
+  if (UNC_PREFIX_RE.test(token)) return false
+  return token.includes('/') || token.includes('\\') || token.startsWith('~')
 }
 
 /** Which tier answers this word, or `none` when the menu stays shut. */

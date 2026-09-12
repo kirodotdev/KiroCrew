@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { urlTransform, decodeLocalPath, WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
+import { urlTransform, decodeLocalPath, WINDOWS_ABS_PATH_RE, UNC_PREFIX_RE } from '../utils/urlTransform'
 
 describe('urlTransform', () => {
   it('allows vscode remote SSH URL', () => {
@@ -84,6 +84,18 @@ describe('urlTransform', () => {
 
     it('does not treat a single letter without separator as a drive path', () => {
       expect(urlTransform('c:foo', 'src')).toBe('')
+    })
+  })
+
+  describe('UNC_PREFIX_RE', () => {
+    it('matches both UNC spellings', () => {
+      expect(UNC_PREFIX_RE.test('\\\\fileserver\\home\\me\\shot.png')).toBe(true)
+      expect(UNC_PREFIX_RE.test('//fileserver/home/me/shot.png')).toBe(true)
+    })
+
+    it('does not match a drive-rooted or POSIX path', () => {
+      expect(UNC_PREFIX_RE.test('C:\\Users\\me\\shot.png')).toBe(false)
+      expect(UNC_PREFIX_RE.test('/home/me/shot.png')).toBe(false)
     })
   })
 

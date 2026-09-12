@@ -146,6 +146,23 @@ describe('shouldComplete', () => {
   it('never triggers while the command name is still being typed', () => {
     expect(shouldComplete('cd', '')).toBe(false)
   })
+
+  it('triggers on a backslash-separated token, whatever the command', () => {
+    // A Windows gateway names its files with `\`; the menu must open for
+    // `cd ..\` and `dir .\` the same way it does for the POSIX spelling.
+    expect(shouldComplete('..\\Kiro', 'unknowncmd')).toBe(true)
+    expect(shouldComplete('.\\src', 'unknowncmd')).toBe(true)
+    expect(shouldComplete('src\\comp', 'unknowncmd')).toBe(true)
+  })
+
+  it('never triggers on a UNC-shaped token, in either separator spelling', () => {
+    // Completing a UNC path would have the gateway list a directory on a
+    // NAMED HOST — on Windows that stat is an outbound SMB connection. Refused
+    // even for a token that would otherwise look path-shaped.
+    expect(shouldComplete('\\\\host\\share', 'unknowncmd')).toBe(false)
+    expect(shouldComplete('//host/share', 'unknowncmd')).toBe(false)
+    expect(shouldComplete('\\\\host\\share', 'cd')).toBe(false)
+  })
 })
 
 describe('foldersOnly', () => {
@@ -542,6 +559,24 @@ describe('completionMode', () => {
     // spend a subprocess to answer nothing.
     expect(completionMode('o/r', 'gh')).toBe('path')
     expect(completionMode('~/x', 'gh')).toBe('path')
+  })
+
+  it('routes a backslash-separated word to the path tier too', () => {
+    expect(completionMode('src\\comp', 'gh')).toBe('path')
+  })
+
+  it('never routes a UNC-shaped word to the path tier', () => {
+    // The path tier would fetch POST /api/terminal/complete for the token —
+    // completing a UNC path would have the gateway list a directory on a
+    // named host. Under a non-path command it falls to 'command': a
+    // UNC-shaped word is not path-shaped enough to claim the listing, but it
+    // is still a word a command-tier probe could in principle answer.
+    expect(completionMode('\\\\host\\share', 'gh')).toBe('command')
+    expect(completionMode('//host/share', 'gh')).toBe('command')
+    // Under a known path command the UNC refusal wins outright — the menu
+    // stays shut rather than falling back to 'path' the way a bare token
+    // under `cd` normally would (see the `python ⎸` case above).
+    expect(completionMode('\\\\host\\share', 'cd')).toBe('none')
   })
 })
 
