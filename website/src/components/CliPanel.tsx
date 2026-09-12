@@ -468,22 +468,43 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
     dismissSelection()
   }, [sel, sessionId, cwd, onSendToChat, dismissSelection])
 
+  // Confirm only after a write actually lands; a failed copy shows "Copy
+  // failed" and keeps the selection so the user can retry. When the async
+  // Clipboard API is unavailable (plain-HTTP remote connection: no secure
+  // context) or its write is rejected (packaged desktop app: the permission
+  // handler denies `clipboard-sanitized-write`), fall back to
+  // `document.execCommand('copy')` on the live xterm selection, which fires
+  // xterm's own `copy` listener -- the same path the context menu's role:copy
+  // takes (#9740). Deliberately NOT `copyToClipboard`'s hidden-textarea
+  // fallback: that moves focus off the terminal (see TerminalKeyBar for why
+  // the terminal avoids it), while this keeps focus in the terminal. The
+  // fallback must run before `dismissSelection()` clears the selection.
   const handleCopy = useCallback(() => {
     if (!sel?.text) return
-    // Confirm only after the write actually lands; a denied/unavailable
-    // clipboard shows "Copy failed" and keeps the selection so the user can
-    // fall back to the native copy shortcut.
+    const nativeCopy = (): boolean => {
+      term.focus()
+      // Guarded: older jsdom / happy-dom test DOMs have no execCommand.
+      return typeof document.execCommand === 'function' && document.execCommand('copy')
+    }
+    const confirm = () => {
+      setCopied('done')
+      // Keep the toolbar up briefly so the confirmation is visible.
+      setTimeout(dismissSelection, 900)
+    }
     const write = navigator.clipboard?.writeText(sel.text)
-    if (!write) { setCopied('failed'); return }
+    if (!write) {
+      if (nativeCopy()) confirm()
+      else setCopied('failed')
+      return
+    }
     write.then(
+      confirm,
       () => {
-        setCopied('done')
-        // Keep the toolbar up briefly so the confirmation is visible.
-        setTimeout(dismissSelection, 900)
+        if (nativeCopy()) confirm()
+        else setCopied('failed')
       },
-      () => setCopied('failed'),
     )
-  }, [sel, dismissSelection])
+  }, [sel, term, dismissSelection])
 
   return (
     <div
@@ -512,8 +533,9 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
       >
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
-            (it reserves Tab/arrows/Escape while its menu is open, and Enter only once
-            a row has been arrowed onto). A later
+            (it reserves Tab/arrows/Escape while its menu is open, Enter only once
+            a row has been arrowed onto, and Ctrl+Shift+C to copy a live selection,
+            #9740). A later
             feature that attaches its own handler here would silently replace it —
             extend the handler inside TerminalCompletion instead. */}
         <TerminalCompletion term={term} sessionId={sessionId} active={visible} />

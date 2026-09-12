@@ -509,6 +509,22 @@ export default function TerminalCompletion({ term, sessionId, active }: {
         if (e.key === 'Enter') return true
         if (e.key === 'Tab') return claim(e)
       }
+      // Ctrl+Shift+C copies the terminal selection (#9740). xterm's
+      // `evaluateKeyboardEvent` produces no key for Ctrl+Shift+<letter> and the
+      // browser has no native binding either, so the chord must be bound here, in
+      // the single custom-key-handler slot. `document.execCommand('copy')` fires
+      // xterm's own `copy` listener on the live selection -- the same path the
+      // context menu's role:copy takes -- and unlike the async Clipboard API it
+      // needs no permission grant or secure context. With no selection the key
+      // falls through unchanged (today it sends nothing to the shell; keep that).
+      if (
+        e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey
+        && (e.key === 'C' || e.key === 'c' || e.code === 'KeyC')
+      ) {
+        if (!term.hasSelection()) return true
+        document.execCommand('copy')
+        return claim(e)
+      }
       const s = stateRef.current.sug
       if (!s) return true
       if (e.ctrlKey || e.metaKey || e.altKey) return true

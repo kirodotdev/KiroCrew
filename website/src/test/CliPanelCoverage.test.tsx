@@ -626,6 +626,63 @@ describe('CliPanel copy action', () => {
     expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
     expect(term.clearCalls).toBe(0)
   })
+
+  /* ── native copy-event fallback (#9740) ──
+   * happy-dom implements no `execCommand`, so the failure cases above already
+   * exercise the guarded miss; these install a stub to reach the fallback. */
+
+  it('falls back to the native copy event when the Clipboard API is unavailable', () => {
+    setClipboard(undefined) // plain-HTTP remote: no secure context
+    const execCommand = vi.fn(() => true)
+    document.execCommand = execCommand
+    try {
+      const { term, container } = mount()
+      term.selection = 'remote output'
+      endDrag(container, { x: 200, y: 100 })
+      act(() => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+      // Focus returns to the terminal first so xterm's own `copy` listener
+      // serialises the still-live selection (mount already focused once).
+      expect(term.focusCalls).toBe(2)
+      expect(execCommand).toHaveBeenCalledWith('copy')
+      expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+    } finally {
+      Reflect.deleteProperty(document, 'execCommand')
+    }
+  })
+
+  it('falls back to the native copy event when the clipboard write is rejected', async () => {
+    // Packaged desktop app: the permission handler denies the sanitized write.
+    setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+    const execCommand = vi.fn(() => true)
+    document.execCommand = execCommand
+    try {
+      const { term, container } = mount()
+      term.selection = 'desktop output'
+      endDrag(container, { x: 200, y: 100 })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+      expect(execCommand).toHaveBeenCalledWith('copy')
+      expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+    } finally {
+      Reflect.deleteProperty(document, 'execCommand')
+    }
+  })
+
+  it('reports failure when both the clipboard write and the native fallback fail', async () => {
+    setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+    const execCommand = vi.fn(() => false)
+    document.execCommand = execCommand
+    try {
+      const { term, container } = mount()
+      term.selection = 'output'
+      endDrag(container, { x: 200, y: 100 })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+      expect(execCommand).toHaveBeenCalledWith('copy')
+      expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
+      expect(term.clearCalls).toBe(0) // selection kept so the user can retry
+    } finally {
+      Reflect.deleteProperty(document, 'execCommand')
+    }
+  })
 })
 
 /* ── send to chat ─────────────────────────────────────────────────────────── */

@@ -14,6 +14,7 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
   const renderCbs: (() => void)[] = []
   const osc: Record<number, (data: string) => boolean> = {}
   let keyHandler: (e: KeyboardEvent) => boolean = () => true
+  let hasSel = false
   let row = line
   let wrapped = false
   /** Cell widths, sparse: anything unset is an ordinary single-width cell. */
@@ -67,6 +68,7 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
       return { dispose: () => { renderCbs.splice(renderCbs.indexOf(cb), 1) } }
     },
     attachCustomKeyEventHandler: (h: (e: KeyboardEvent) => boolean) => { keyHandler = h },
+    hasSelection: () => hasSel,
   }
   return {
     term: term as unknown as Terminal,
@@ -74,6 +76,8 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     setLine: (next: string) => { row = next },
     /** Move the fake cursor (the shell's own echo does this for real). */
     setCursor: (x: number) => { buf.cursorX = x },
+    /** Give the terminal a live text selection (what a mouse drag does for real). */
+    setSelection: (v: boolean) => { hasSel = v },
     /** Switch screens the way vim/less/htop do on start-up. */
     setBufferType: (t: 'normal' | 'alternate') => { buf.type = t },
     /** Mark the cursor row as the continuation of a longer logical line. */
@@ -1140,5 +1144,55 @@ describe('TerminalCompletion — command tier', () => {
     await trigger(h)
 
     expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+  })
+})
+
+describe('TerminalCompletion — Ctrl+Shift+C copy binding (#9740)', () => {
+  /* happy-dom implements no `execCommand`; the component only reaches it once a
+   * selection is live, so each case installs (or withholds) its own stub. */
+  const execCommand = vi.fn(() => true)
+  beforeEach(() => {
+    execCommand.mockClear()
+    document.execCommand = execCommand
+  })
+  afterEach(() => {
+    Reflect.deleteProperty(document, 'execCommand')
+  })
+
+  function mountTerm() {
+    vi.stubGlobal('fetch', mockComplete([]))
+    const line = `${PROMPT}`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    return h
+  }
+
+  it('copies a live selection via the native copy event and claims the key', () => {
+    const h = mountTerm()
+    h.setSelection(true)
+    const r = h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true })
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    // Claimed outright: xterm must not process the chord further, and the DOM
+    // event is cancelled so no browser default can run.
+    expect(r.passedThrough).toBe(false)
+    expect(r.prevented).toBe(true)
+  })
+
+  it('lets the chord fall through unchanged when there is no selection', () => {
+    const h = mountTerm()
+    h.setSelection(false)
+    const r = h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true })
+    expect(execCommand).not.toHaveBeenCalled()
+    expect(r.passedThrough).toBe(true)
+    expect(r.prevented).toBe(false)
+  })
+
+  it('leaves plain Ctrl+C alone even while a selection is live', () => {
+    const h = mountTerm()
+    h.setSelection(true)
+    const r = h.key({ key: 'c', code: 'KeyC', ctrlKey: true })
+    expect(execCommand).not.toHaveBeenCalled()
+    expect(r.passedThrough).toBe(true)
+    expect(r.prevented).toBe(false)
   })
 })
