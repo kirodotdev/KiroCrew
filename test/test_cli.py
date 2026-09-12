@@ -2111,6 +2111,98 @@ class TestArgsLookLikeKirocrew:
         assert _args_look_like_kirocrew("python -m kiro_crew GATEWAY") is False
 
 
+class TestComposedEditionGatewayModule:
+    """A composed edition's gateway boots from the COMPANION's module.
+
+    Its launcher execs ``-m <companion module>`` so the composition root is
+    entered rather than the core CLI. Keying the classifier on the literal
+    ``kiro_crew`` made ``kirocrew stop`` / ``restart`` drop the one listening pid
+    and report "No Kiro Crew gateway currently running on port <p>" on every such
+    install — the port lookup found the gateway, the classifier rejected it, and
+    the graceful-API / lock-owner fallbacks never ran because they are reached
+    only when the port lookup itself comes back empty.
+    """
+
+    # The real argv observed on a composed install, verbatim.
+    COMPOSED_ARGV = (
+        "/opt/kirocrew/backend-dist/kirocrew-backend-arm64/bin/python3.12 "
+        "-s -m kirocrew_companion gateway --no-open --port 5476"
+    )
+
+    @staticmethod
+    def _entry_point(value):
+        class _EP:
+            def __init__(self, v):
+                self.value = v
+
+        return _EP(value)
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        from kiro_crew.port_resolution import _gateway_module_roots
+
+        _gateway_module_roots.cache_clear()
+        yield
+        _gateway_module_roots.cache_clear()
+
+    def test_composed_module_matches_when_companion_installed(self, monkeypatch):
+        from kiro_crew.cli_server import _args_look_like_kirocrew
+        from kiro_crew.platform import discovery
+
+        monkeypatch.setattr(
+            discovery,
+            "plugin_entry_points",
+            lambda: [self._entry_point("kirocrew_companion.compose:build_context")],
+        )
+        assert _args_look_like_kirocrew(self.COMPOSED_ARGV) is True
+
+    def test_composed_module_rejected_without_the_companion(self, monkeypatch):
+        """Precision is preserved: the widening comes from the INSTALLED entry
+        points, so a standalone host still refuses to signal that process."""
+        from kiro_crew.cli_server import _args_look_like_kirocrew
+        from kiro_crew.platform import discovery
+
+        monkeypatch.setattr(discovery, "plugin_entry_points", lambda: [])
+        assert _args_look_like_kirocrew(self.COMPOSED_ARGV) is False
+
+    def test_core_module_still_matches_with_a_companion_installed(self, monkeypatch):
+        from kiro_crew.cli_server import _args_look_like_kirocrew
+        from kiro_crew.platform import discovery
+
+        monkeypatch.setattr(
+            discovery,
+            "plugin_entry_points",
+            lambda: [self._entry_point("kirocrew_companion.compose:build_context")],
+        )
+        assert _args_look_like_kirocrew("python3 -m kiro_crew gateway") is True
+
+    def test_companion_module_without_a_server_subcommand_is_refused(self, monkeypatch):
+        """The subcommand gate still applies to the widened module set — a
+        companion task-runner process must never be SIGTERMed by ``stop``."""
+        from kiro_crew.cli_server import _args_look_like_kirocrew
+        from kiro_crew.platform import discovery
+
+        monkeypatch.setattr(
+            discovery,
+            "plugin_entry_points",
+            lambda: [self._entry_point("kirocrew_companion.compose:build_context")],
+        )
+        assert _args_look_like_kirocrew("python -m kirocrew_companion run /tmp/spec.md") is False
+
+    def test_discovery_failure_leaves_the_core_module_matching(self, monkeypatch):
+        """Entry-point discovery is best-effort: a raising probe must degrade to
+        the core module rather than making ``stop`` blind everywhere."""
+        from kiro_crew.cli_server import _args_look_like_kirocrew
+        from kiro_crew.platform import discovery
+
+        def _boom():
+            raise RuntimeError("metadata unreadable")
+
+        monkeypatch.setattr(discovery, "plugin_entry_points", _boom)
+        assert _args_look_like_kirocrew("python3 -m kiro_crew gateway") is True
+        assert _args_look_like_kirocrew(self.COMPOSED_ARGV) is False
+
+
 class TestStop:
     """Tests for _stop CLI function."""
 
