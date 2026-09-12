@@ -83,7 +83,14 @@ const apiMock = vi.hoisted(() => ({
   setSlotColor: vi.fn(),
 }))
 
+const historyTerminalCleanupMock = vi.hoisted(() => ({
+  deleteHistoryWithTerminals: vi.fn((key: string) => apiMock.deleteSession(key)),
+  captureTerminalActivation: vi.fn(() => ({ loaded: true, retired: false, confirmedDelete: false })),
+  activateTerminalsAfterNavigation: vi.fn(),
+}))
+
 vi.mock('../api/client', () => ({ api: apiMock }))
+vi.mock('../lib/historyTerminalCleanup', () => historyTerminalCleanupMock)
 
 function makeStore() {
   return configureStore({
@@ -138,6 +145,10 @@ const initial = chatReducer(undefined, { type: '@@INIT' })
 
 beforeEach(() => {
   for (const fn of Object.values(apiMock)) fn.mockReset()
+  for (const fn of Object.values(historyTerminalCleanupMock)) fn.mockReset()
+  historyTerminalCleanupMock.deleteHistoryWithTerminals.mockImplementation((key: string) => apiMock.deleteSession(key))
+  historyTerminalCleanupMock.captureTerminalActivation.mockReturnValue({ loaded: true, retired: false, confirmedDelete: false })
+  historyTerminalCleanupMock.activateTerminalsAfterNavigation.mockResolvedValue(undefined)
   apiMock.chatSlots.mockResolvedValue([])
   apiMock.setSlotColor.mockResolvedValue({})
   apiMock.chatSlotProject.mockResolvedValue({})

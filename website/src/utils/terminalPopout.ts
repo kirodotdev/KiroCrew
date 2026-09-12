@@ -228,7 +228,7 @@ function subscribePoppedOut(scope: string | null, cb: () => void): () => void {
     window.clearInterval(tick)
   }
 }
-export function useTerminalPoppedOut(scope: string | null): boolean {
+export function useTerminalPoppedOut(scope: string | null = null): boolean {
   const subscribeScope = useCallback((cb: () => void) => subscribePoppedOut(scope, cb), [scope])
   const snapshot = useCallback(() => getPoppedOutSnapshot(scope), [scope])
   return useSyncExternalStore(subscribeScope, snapshot, snapshot)
