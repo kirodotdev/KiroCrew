@@ -21,9 +21,12 @@ export interface SendReceiptBody {
  *
  *  - `accepted` — the server said `ok` or `queued`; the message is its problem now.
  *  - `refused`  — the server said no, either in a readable body or with a non-2xx
- *                 status. Nothing was sent, so the payload is safe to hand back.
- *  - `unknown`  — the request was accepted (2xx) but its body could not be read.
- *                 The message may well have been delivered.
+ *                 status; or an intermediary answered in the endpoint's place, so
+ *                 the request never reached it. Nothing was sent, so the payload
+ *                 is safe to hand back.
+ *  - `unknown`  — the request was accepted (2xx) by the endpoint itself but its
+ *                 body could not be read. The message may well have been
+ *                 delivered, so the payload must NOT be handed back.
  */
 export type SendOutcome = 'accepted' | 'refused' | 'unknown'
 
@@ -34,10 +37,42 @@ export interface SendReceipt {
 }
 
 /** The part of `Response` a receipt is read from — narrowed so a test can stand
- *  one up without constructing a whole `Response`. */
+ *  one up without constructing a whole `Response`.
+ *
+ *  The two provenance members are OPTIONAL so every existing double stays valid;
+ *  a double that omits them reads as "not redirected, no content type", which is
+ *  the pre-existing behaviour. */
 export interface SendResponseLike {
   ok: boolean
   json(): Promise<unknown>
+  /** Whether the browser followed a redirect chain to produce this response. */
+  redirected?: boolean
+  headers?: { get(name: string): string | null }
+}
+
+/**
+ * Positive evidence that a 2xx response was written by an INTERMEDIARY rather
+ * than by the send endpoint — the shape an SSO/auth proxy produces once the
+ * browser's session with it has lapsed.
+ *
+ * Both signals are about PROVENANCE, not about content:
+ *
+ *   - `redirected` — the browser followed a redirect chain, so whatever answered
+ *     sits at the end of that chain. `POST /api/chat` never redirects, so a
+ *     redirected answer did not come from it.
+ *   - an HTML content type — the endpoint answers JSON on every path, refusals
+ *     included, so `text/html` is a page (a login form), not a receipt.
+ *
+ * Deliberately NOT "the body would not parse". That is `unknown`'s case and it
+ * stays exactly as it was: a TRUNCATED gateway reply to a POST that did run must
+ * keep its silence, because handing the payload back there duplicates a
+ * delivered turn (the regression #5672 fixed). Only a response the gateway
+ * demonstrably did not write is reclassified.
+ */
+function answeredByIntermediary(response: SendResponseLike): boolean {
+  if (response.redirected) return true
+  const contentType = response.headers?.get('content-type') ?? ''
+  return /^\s*text\/html\b/i.test(contentType)
 }
 
 /**
@@ -71,6 +106,16 @@ export async function readSendReceipt(response: SendResponseLike): Promise<SendR
   const body = readable ? (parsed as SendReceiptBody) : {}
   if (!response.ok) return { body, outcome: 'refused' }
   if (!readable) {
+    // An intermediary answered in the endpoint's place, so the POST never
+    // reached it. That is a refusal in the one sense every call site acts on —
+    // "nothing was sent, so the payload is safe to hand back" — and it is the
+    // difference between the composer keeping the user's text and dropping it.
+    //
+    // Without this, an auth proxy's login page (a 2xx that will not parse) took
+    // `unknown`'s silent branch: no error row, no banner, and a composer already
+    // cleared at submit, so the message was lost with nothing on screen saying
+    // so. `unknown` still owns the case it was written for, one line below.
+    if (answeredByIntermediary(response)) return { body, outcome: 'refused' }
     // The one outcome with NO user-facing trace, by design — so it needs a
     // diagnostic one, or an intermediary that mangles every receipt degrades
     // sends invisibly and leaves nobody anything to find. Console only: this
