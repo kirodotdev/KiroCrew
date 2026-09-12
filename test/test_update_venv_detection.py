@@ -348,7 +348,10 @@ class TestApiUpdateApplyVenvDispatch:
             pip_called.append(True)
             return True
 
-        async def fake_restart(s):
+        async def fake_restart(s, *, resolver):
+            from kiro_crew.platform.wheel_engine import respawn_executable
+
+            assert resolver is respawn_executable
             restart_called.append(True)
 
         monkeypatch.setattr(

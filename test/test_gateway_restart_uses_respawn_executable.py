@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import GatewayOrchestrator
 
@@ -188,6 +189,36 @@ class TestResolverIsLoadedBeforeTheApply:
             "prune. Resolve the interpreter with wheel_engine.respawn_executable() "
             "(imported before the apply step) and pass it as executable=."
         )
+
+
+class TestDashboardResolverIsLoadedBeforeTheApply:
+    @pytest.mark.parametrize(
+        ("method", "apply_names"),
+        [
+            ("api_update_apply", {"apply_policy_update", "_venv_pip_install"}),
+            ("api_update_approve", {"apply_wheel_update"}),
+        ],
+    )
+    def test_import_precedes_every_apply(self, method, apply_names):
+        tree = ast.parse(inspect.getsource(dashboard_updates))
+        fn = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == method
+        )
+        imports = TestResolverIsLoadedBeforeTheApply._resolver_import_lines(fn)
+        assert len(imports) == 1, f"{method}: expected one resolver import, got {imports}"
+        applies = [
+            node.lineno
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in apply_names
+        ]
+        assert applies, f"{method}: no apply reference found"
+        assert imports[0] < min(
+            applies
+        ), f"{method}: resolver import at line {imports[0]} follows apply at {min(applies)}"
 
 
 class TestAutoApplyWheelUpdate:

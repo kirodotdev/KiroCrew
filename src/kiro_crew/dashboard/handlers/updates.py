@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import aiohttp
@@ -1415,7 +1416,9 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     return rc == 0
 
 
-async def _restart_gateway(state: DashboardState) -> bool:
+async def _restart_gateway(
+    state: DashboardState, *, resolver: Callable[[], str] | None = None
+) -> bool:
     """Save state, close sessions, and exec the same Python process once.
 
     Restart is a process-wide transition.  Two callers must never both drain
@@ -1436,12 +1439,13 @@ async def _restart_gateway(state: DashboardState) -> bool:
         # other install shape the resolver answers ``sys.executable``.
         # Offloaded: the resolver walks the venv's sibling directory, which is
         # synchronous filesystem I/O this loop must not wait on.
-        # Imported here, not at module scope: this module loads on the gateway
-        # boot path, and the updater subsystems are needed only when an
-        # update/restart actually runs (no-new-work-on-gateway-boot-path).
-        from kiro_crew.platform.wheel_engine import respawn_executable
+        # Applying callers import the resolver before the install can replace
+        # their import tree. A plain restart has no apply, so load it here.
+        if resolver is None:
+            from kiro_crew.platform.wheel_engine import respawn_executable
 
-        exe = await asyncio.to_thread(respawn_executable)
+            resolver = respawn_executable
+        exe = await asyncio.to_thread(resolver)
         if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
             state.push_update_progress("error", "Cannot restart: invalid Python executable path")
             return False
@@ -1497,6 +1501,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # run the built-in mechanism their own policy excluded. A dashboard token
     # proves who the caller is, not that this host may update by git.
     from kiro_crew.platform.update_provider import apply_policy_update
+    from kiro_crew.platform.wheel_engine import respawn_executable
 
     applied = await apply_policy_update()
     if applied is not None:
@@ -1512,7 +1517,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 },
                 status=500,
             )
-        await _restart_gateway(state)
+        await _restart_gateway(state, resolver=respawn_executable)
         return web.json_response({"ok": True, "status": "updating"})
 
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
@@ -1769,7 +1774,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
 
             # Restart: save history + clean up sessions then exec the same process.
             logger.info("Update complete — saving history and cleaning up before restart")
-            await _restart_gateway(state)
+            await _restart_gateway(state, resolver=respawn_executable)
         except Exception:
             logger.exception("Update failed")
             state.push_update_progress("failed", "Update failed — check logs")
@@ -2541,7 +2546,11 @@ async def api_update_approve(request: web.Request) -> web.Response:
     from kiro_crew.platform import update_stepup
     from kiro_crew.platform.update_layout import cdn_bases as _cdn
     from kiro_crew.platform.update_layout import cdn_bases_are_safe as _cdn_safe
-    from kiro_crew.platform.wheel_engine import WheelUpdateError, apply_wheel_update
+    from kiro_crew.platform.wheel_engine import (
+        WheelUpdateError,
+        apply_wheel_update,
+        respawn_executable,
+    )
 
     # A policy-defined command provider OWNS updates on this host, and its
     # commands never read the built-in mechanism this endpoint drives. Checked
@@ -2669,7 +2678,7 @@ async def api_update_approve(request: web.Request) -> web.Response:
             return
         logger.info("In-app wheel update to v%s promoted; restarting", pending.version)
         await _audit("success", resources=f"v{pending.version} promoted")
-        await _restart_gateway(state)
+        await _restart_gateway(state, resolver=respawn_executable)
 
     task = asyncio.create_task(_apply())
     state._background_tasks.add(task)
