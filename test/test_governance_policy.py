@@ -1651,6 +1651,23 @@ class TestPolicySignatureAbsenceGate:
             parse_policy(_policy_body(), signature_state=SIGNATURE_UNSIGNED)
         )
 
+    @pytest.mark.parametrize("junk", ["false", None, 0, 1, ""])
+    def test_junk_flag_in_wellformed_trust_root_fails_closed(
+        self, monkeypatch, tmp_path, junk
+    ):
+        # A well-formed trust root whose flag is PRESENT but not a boolean is a
+        # different case from a broken file: the operator wrote the key down, so
+        # it reads fail-closed as opted-in (via admission._coerce_flag) and an
+        # unsigned policy is refused. Locks the enforcement reader to the same
+        # strict read as the key store.
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text(json.dumps({"require_policy_signature": junk}))
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        with pytest.raises(PlatformCompositionError):
+            assert_policy_signature_satisfied(
+                parse_policy(_policy_body(), signature_state=SIGNATURE_UNSIGNED)
+            )
+
     def test_absent_admission_file_is_a_noop(self, monkeypatch, tmp_path):
         # No trust root: nobody opted in, so an unsigned policy still loads and
         # governs (the compatibility contract) and no policy stays ungoverned.

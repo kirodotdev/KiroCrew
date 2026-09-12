@@ -230,6 +230,48 @@ def _coerce_trust_keys(raw: object) -> Dict[str, str]:
     return out
 
 
+# Sentinel distinguishing "key absent" from "key present with value null":
+# ``d.get(key)`` alone cannot tell ``"require_signature": null`` apart from the
+# key not being written at all, and the two must read differently (absent means
+# the gate is off by its documented default; present-but-not-boolean reads
+# fail-closed).
+_MISSING = object()
+
+
+def _coerce_flag(d: Mapping[str, object], key: str) -> bool:
+    """Read one admission gate flag strictly.
+
+    A real JSON boolean is honoured; an absent key leaves the gate OFF (the
+    documented default). Any other PRESENT value — ``null``, the string
+    ``"false"``, ``0``, ``1``, a list — is NOT interpreted: ``bool()`` on a raw
+    JSON value turns any non-empty string (``"false"`` included) into ``True``
+    while ``null`` and ``""`` read as ``False``, so a hand-edited or
+    template-rendered policy carrying ``"require_policy_signature": null``
+    silently disables the very gate the operator wrote down. Such a value is
+    warned about and read as ``True`` — ON, the fail-closed direction for an
+    admission gate. ``bool`` is a subclass of ``int``, so the boolean check
+    must run before any int handling. Same strict-read shape as
+    ``governance._coerce_boot_flag`` for the ``boot`` gate flags.
+    """
+    value = d.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+    if isinstance(value, bool):
+        return value
+    # Log the TYPE, never the value: a mis-typed flag can carry a secret (a
+    # credential pasted into the policy — this file also holds ``trust_keys``),
+    # and this warning lands in the persistent gateway log ring, which
+    # ``GET /api/logs`` serves. Mirrors ``governance._coerce_boot_flag``.
+    logger.warning(
+        "admission policy %s is %s, not a boolean; reading it fail-closed "
+        "as True. Write true or false (unquoted), or omit the key to leave the "
+        "gate off. Earlier releases read a null or empty value here as off.",
+        key,
+        type(value).__name__,
+    )
+    return True
+
+
 @dataclass(frozen=True)
 class AdmissionPolicy:
     """The fleet-controlled trust root. Never sourced from a plugin."""
@@ -276,8 +318,8 @@ class AdmissionPolicy:
         approved = d.get("approved", None)
         return AdmissionPolicy(
             mode=str(d.get("mode", MODE_OPEN)),
-            require_signature=bool(d.get("require_signature", False)),
-            require_policy_signature=bool(d.get("require_policy_signature", False)),
+            require_signature=_coerce_flag(d, "require_signature"),
+            require_policy_signature=_coerce_flag(d, "require_policy_signature"),
             trust_keys=_coerce_trust_keys(d.get("trust_keys")),
             approved=(_coerce_str_list(approved) if approved is not None else None),
             banned=_coerce_str_list(d.get("banned", [])),
@@ -456,7 +498,13 @@ def _verify_seed_integrity(policy_bytes: bytes) -> None:
             return
         expected = checksum_path.read_text(encoding="utf-8").strip()
         actual = hashlib.sha256(policy_bytes).hexdigest()
-        if not hmac.compare_digest(expected, actual):
+        # Bytes for the same reason as ``_signature_valid``: ``expected`` is
+        # text from a user-owned file, and a non-ASCII character in it would
+        # make ``hmac.compare_digest`` raise instead of reporting a mismatch.
+        if not hmac.compare_digest(
+            expected.encode("utf-8", "surrogatepass"),
+            actual.encode("utf-8", "surrogatepass"),
+        ):
             logger.error(
                 "admission policy at %s does not match its seed checksum "
                 "(modified since first-run); recording integrity event",
@@ -630,7 +678,17 @@ def _signature_valid(manifest: PluginManifest, policy: AdmissionPolicy) -> bool:
     if not secret:
         return False
     expected = hmac_signature(secret, manifest.signing_payload())
-    return hmac.compare_digest(expected, manifest.signature)
+    # Compare as BYTES: ``hmac.compare_digest`` accepts two ASCII-only strs but
+    # raises TypeError the moment either str operand carries a non-ASCII
+    # character, and ``manifest.signature`` is attacker-supplied text from the
+    # plugin's own manifest — the TypeError would escape ``evaluate_admission``
+    # on exactly the input this gate exists to refuse. Encoding both sides
+    # (``surrogatepass`` so a lone surrogate accepted by ``json.loads`` cannot
+    # crash the encode either) makes any malformed signature an ordinary False.
+    return hmac.compare_digest(
+        expected.encode("utf-8", "surrogatepass"),
+        str(manifest.signature).encode("utf-8", "surrogatepass"),
+    )
 
 
 def _capabilities_within_ceiling(

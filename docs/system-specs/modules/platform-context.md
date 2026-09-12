@@ -319,6 +319,17 @@ Policy shape (`admission_policy.json`):
 }
 ```
 
+**Strict gate-flag reading.** `require_signature` and
+`require_policy_signature` are read strictly by `_coerce_flag`: a real JSON
+boolean is honoured, an absent key leaves the gate off (the documented
+default), and any other present value — explicit `null`, the string
+`"false"`, `0`, `1` — is warned about and read as **on**, the fail-closed
+direction (#9641). `bool()` on the raw value used to read any non-empty
+string as ON but `null`/`""` as OFF, so a template rendering
+`"require_policy_signature": null` silently disabled the gate. Same
+strict-read shape as the `boot` gate flags in
+[governance](governance.md) (#9176).
+
 **This policy is also the trust root for the security ceiling.**
 `require_policy_signature` (default `false`) additionally demands a *verified*
 `identity.signature` on `security_policy.json`, keyed by that document's
