@@ -278,13 +278,68 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage` |
 | `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report |
-| `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint` |
+| `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint`. **Runs on the CodeBuild-hosted runner** (pilot, below) except for fork PRs |
 | `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
 | `e2e` | The i18n render-time gate, then `python setup.py test_e2e` |
 
 Details worth knowing:
+
+- **CodeBuild-hosted runner (pilot).** `cfn-lint` is the first job whose
+  `runs-on` is not a GitHub-hosted label but
+  `codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}`:
+  an AWS CodeBuild project subscribed to this repository's `workflow_job` webhook
+  starts one ephemeral self-hosted runner per queued job, runs that single job,
+  and terminates. Why: at peak the repository's `ubuntu-latest` queue holds a
+  30-second job for 13 minutes (measured 2026-09-11 on this job: mean queue 155 s,
+  max 788 s, 6 of 29 runs over five minutes), and the repository is ~99% of the
+  org's Actions consumption, so the wait is a fair-use ceiling no workflow change
+  can lift. The runner infrastructure (project, role, webhook filters) is
+  modelled in the maintainers' internal `KiroCrewPublishCDK` package, not here.
+  Three things to know when touching it:
+  - **Forks never see it.** The `runs-on` value is an expression: a run in any
+    repository other than `kirodotdev/KiroCrew` (a fork's own CI on its `main`),
+    or a `pull_request` whose head repository is not this one, gets
+    `ubuntu-latest`; everything else gets the CodeBuild label. The webhook on the AWS side is
+    additionally filtered to runs triggered by accounts that can push to this
+    repository (plus dependabot), so a fork PR that rewrites its workflow to force
+    the label never starts a build — its job simply never gets a runner. The
+    `workflow_job` payload carries no "from a fork" bit, which is why both layers
+    exist rather than one.
+  - **The image is not `ubuntu-latest`.** It is `aws/codebuild/standard:7.0`
+    (Ubuntu 22.04). Anything a job assumed pre-installed must come from a
+    `setup-*` action; `cfn-lint` already installs its own Python. Moving another
+    job here means checking that first.
+  - **Rollback is one line:** set `runs-on` back to `ubuntu-latest`. A CodeBuild
+    project that receives webhooks for jobs it does not match starts nothing.
+  - **A queued job is not bounded by `timeout-minutes`.** That budget starts when a
+    runner picks the job up. A job whose log shows the `codebuild-…` label and no
+    runner means the webhook did not start a build — the project name in the label
+    does not match, or the triggering account is not on the allowlist (a new
+    maintainer's first push) — and it will sit *queued* until GitHub's own
+    ~24-hour pending limit, blocking that PR's `PR Readiness` the whole time with
+    no in-repo signal. The response is the rollback above, not waiting for the
+    timeout; the allowlist and the project name are fixed on the infrastructure
+    side, not in this file.
+  - **Trust model.** A self-hosted runner exposes its host identity to the job it
+    runs; that is inherent, not something this PR adds. What bounds it: only runs
+    triggered by accounts that can push here reach the runner (forks never do);
+    the runner role can write one log group and mint a GitHub token from one
+    connection, nothing else, in an account holding nothing else; and an alert fires on
+    any token minted through that connection by anything other than CodeBuild's own
+    runner registration. The residual — a job step minting a GitHub App token whose
+    repository permissions may exceed a writer's — is detected, not prevented.
+    Two recommended controls are **not yet in place**: an organization-level
+    ruleset on `main` whose bypass excludes GitHub Apps (drafted; needs an org
+    owner), and a check that the App installation is scoped to this repository
+    alone (needs repository-settings access).
+  - **Pilot exit condition.** The pilot ends on whichever comes first: **50
+    non-fork `CI` runs** on this job or **2026-10-10**. Expand to more Linux jobs
+    only if the median queue-to-start on CodeBuild is under 60 s and no run waited
+    longer than the hosted baseline's mean (155 s) for a runner; otherwise roll it
+    back. Either way the outcome is recorded here so this entry does not become a
+    permanent one-off.
 
 - **The macOS peer-identity canary is asserted by name.** `pytest -q` does not name
   passing tests and a skip exits 0, so a canary that quietly stopped running (a
