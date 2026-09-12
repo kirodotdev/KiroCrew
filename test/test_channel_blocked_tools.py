@@ -73,7 +73,10 @@ async def test_blocked_tool_rejected_even_on_trusted_channel(monkeypatch, tool):
     await _stream_task(_make_agent(), _make_channel(), client, "hi")
     client.reject_tool.assert_awaited_once_with(7)
     client.approve_tool.assert_not_awaited()
-    outcomes = [kw.get("outcome") for _, kw in sel_mock.log_tool_invocation.call_args_list]
+    outcomes = [
+        kw.get("outcome")
+        for _, kw in sel_mock.log_tool_invocation.call_args_list
+    ]
     assert "rejected_blocked_tool" in outcomes
 
 
@@ -106,6 +109,11 @@ async def test_blocked_tool_rejected_even_on_trusted_channel(monkeypatch, tool):
         ("do_send_message", False),
         ("evil_send_notification", False),
         ("kirocrew-core_send_message_v2", False),
+        # A rendered PATH is not a tool call, even when a directory happens to
+        # carry the server-prefixed name: the left boundary excludes `/` and `.`
+        # exactly as the blocked-tool pattern's own does.
+        ("cat /tmp/kirocrew-core_send_message", False),
+        ("Reading ./kirocrew-core_send_message.log", False),
     ],
 )
 def test_blocked_tool_matcher_precision(rendered, expected):

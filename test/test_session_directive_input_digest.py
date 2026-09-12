@@ -180,12 +180,25 @@ def _opencode_events(
     result_text: str = "Monitor loop requested.",
     tool_call_id: str = "tc-oc",
 ):
-    """An opencode turn: no ``_meta.kiro`` identity anywhere, the tool named ONLY
-    by a single-underscore ``<server>_<tool>`` wire title, and a result carrying no
-    marker -- the shape measured on 1.18.30."""
+    """An opencode turn, in the shape CAPTURED off 1.18.30
+    (``test/fixtures/acp_frames/opencode/mcp-directive-call-live.jsonl``): no
+    ``_meta.kiro`` identity anywhere, the tool named ONLY by a single-underscore
+    ``<server>_<tool>`` wire title, ``rawInput`` EMPTY on the ``tool_call`` and
+    complete on the following refinement -- so the digest can only be recorded on
+    the refinement -- and a result carrying no marker at all."""
     return [
         AcpEvent(
             kind=EVENT_TOOL_CALL,
+            tool_call_id=tool_call_id,
+            title=wire_title,
+            wire_title=wire_title,
+            tool_kind="other",
+            tool_name="",
+            mcp_server_name="",
+            raw_tool_params={},
+        ),
+        AcpEvent(
+            kind=EVENT_TOOL_CALL_UPDATE,
             tool_call_id=tool_call_id,
             title=wire_title,
             wire_title=wire_title,
@@ -1303,10 +1316,11 @@ class TestConcurrentDirectivesInOneSession:
 class TestOpenCodeBackendResolvesTheTool:
     """opencode names an MCP tool ``<server>_<tool>`` -- ONE underscore -- and emits
     no ``_meta.kiro`` at all, so the wire title is the only channel that names the
-    tool it called. Measured on 1.18.30: a stub Crew MCP server mounted through the
-    ``session/new`` ``mcpServers`` array came back as
-    ``{"sessionUpdate":"tool_call","title":"kirocrew-core_spike_marker_tool",...}``
-    (``test/fixtures/acp_frames/opencode/mcp-directive-call-synthesized.jsonl``).
+    tool it called. CAPTURED off 1.18.30 with a Crew MCP server (``kirocrew-core``,
+    exposing ``monitor_start``) riding the ``session/new`` ``mcpServers`` array:
+    ``{"sessionUpdate":"tool_call","toolCallId":"call_live_1",``
+    ``"title":"kirocrew-core_monitor_start","kind":"other",...}``
+    (``test/fixtures/acp_frames/opencode/mcp-directive-call-live.jsonl``).
     Every recogniser returned ``""`` for that spelling, so a session with Crew's
     control plane mounted would answer every directive tool and apply none of them.
     """
@@ -1348,9 +1362,11 @@ class TestOpenCodeBackendResolvesTheTool:
 
     @pytest.mark.asyncio
     async def test_the_directive_lands_out_of_band_on_an_opencode_turn(self, tmp_path, monkeypatch):
-        """End to end through the REAL consumer: the opencode-spelled title is what
-        records the input digest, and the digest is what claims the parked record.
-        The result text is not consulted -- this turn carries no marker at all."""
+        """End to end through the REAL consumer, on the captured frame shape: the
+        opencode-spelled title is what records the input digest, the REFINEMENT is
+        where the complete arguments arrive (the ``tool_call`` carried ``{}``), and
+        the digest is what claims the parked record. The result text is not
+        consulted -- this turn carries no marker at all."""
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("opencode-directive")
         slot._titled = True

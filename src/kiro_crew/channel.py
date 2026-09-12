@@ -105,7 +105,12 @@ _MCP_SEPARATOR_RE = re.compile(r"_{2,}")
 # name too many can only ever BLOCK more, which is the safe direction for a
 # containment list — unlike the grant in ``session_directive``, which is why
 # that one matches the server name exactly.
-_CREW_MCP_SERVER_PREFIX_RE = re.compile(r"\bkirocrew-[A-Za-z0-9-]+_")
+# Left boundary is the same class ``_BLOCKED_TOOL_RE`` uses, NOT ``\b``: ``\b``
+# treats ``/`` and ``.`` as boundaries, so a rendered PATH
+# ("cat /tmp/kirocrew-core_send_message") normalized to " send_message" and
+# over-blocked -- the same filename-versus-tool confusion the negative cases
+# in ``test_channel_blocked_tools.py`` exist to catch.
+_CREW_MCP_SERVER_PREFIX_RE = re.compile(r"(?<![\w.\-/])kirocrew-[A-Za-z0-9-]+_")
 
 
 def _shell_base_binary(cmd: str) -> str | None:
