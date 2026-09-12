@@ -104,7 +104,8 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     subagents_attached,
 )
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.remote_relay import (
     RemoteTurnError,
     create_peer_slot,
@@ -114,6 +115,11 @@ from kiro_crew.dashboard.remote_relay import (
     redact_peer_text,
     relay_remote_turn,
     remote_bound_refusal,
+)
+from kiro_crew.dashboard.session_transfer import (
+    SnapshotUnstable,
+    build_transfer_bundle_async,
+    local_instance_label,
 )
 from kiro_crew.dashboard.slot_buffers import (
     MAX_DEFERRED_NOTE_CHARS,
@@ -319,6 +325,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     },
                     status=409,
                 )
+        # A migrated source must not be re-minted as a writable local fork by a
+        # message addressed to its old key.
+        _mig_refused = _migrated_key_mint_refusal(state, request, _requested_key, "chat_send")
+        if _mig_refused is not None:
+            return _mig_refused
 
     created_in_send = slot_name is None or _normalize_slot_key(slot_name) not in state._slots
     try:
@@ -2517,6 +2528,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+    # A migrated source must not be re-minted as a writable local fork by a
+    # create addressed to its old key. Decided BEFORE the peer mint below: the
+    # refusal depends only on the requested key and the caller, and a 409 that
+    # landed after `create_peer_slot` would leave a session on the crew that
+    # nothing local is bound to.
+    _mig_refused = _migrated_key_mint_refusal(
+        state, request, _normalize_slot_key(str(name)) if name else "", "chat_slot_create"
+    )
+    if _mig_refused is not None:
+        return _mig_refused
+
     remote_slot_key = ""
     if instance_id:
         try:
@@ -2930,6 +2952,535 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     return web.json_response(state.serialize_slot(slot))
 
 
+async def api_chat_slot_migrate_remote(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/migrate-remote — move a local session to a crew.
+
+    Body: ``{ "instance_id": "<crew>" }``.
+
+    v1 carries the FULL conversation through the shipped session-transfer
+    mechanism (``build_transfer_bundle_async`` → ``send_session_bundle`` → the
+    peer's import route): the peer imports the real transcript and returns its
+    new slot key, a new local slot is bound to it as a mirror, and the source
+    is archived read-only pointing at the new slot. The crew owns the actual
+    conversation; the archived local copy stays readable in History.
+
+    Failure ordering is deliberate: nothing destructive happens until the new
+    slot exists, its binding is durably persisted, AND the transfer succeeded —
+    the source is archived LAST, so a mid-flight failure leaves the original
+    intact. A duplicate new slot is cheap; a lost original is not.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    # App-token denial FIRST — before the slot lookup and before body
+    # validation. Ordering is the oracle: if validation ran first, an app token
+    # sending an empty body would read 400 on an existing slot and 404 on an
+    # absent one, and the difference enumerates slot names. Denying up front
+    # keeps the answer a single indistinguishable 404 regardless of existence
+    # or body shape.
+    request_app = request.get("app", "")
+    if request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.slot_migrate_remote",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app tokens cannot migrate a session to a remote crew",
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    if not is_owner_dashboard_request(request):
+        sel().log_api_access(
+            caller="non-owner",
+            operation="chat.slot_migrate_remote",
+            outcome="denied",
+            source="owner_only",
+            resources=f"slot={name}",
+            error="non-owner identity rejected",
+        )
+        return _owner_denial_response(request, "migrating a session to a remote crew is owner-only")
+
+    # Audit the GRANTED authorization decision here, not only on the success
+    # path at the end: every arm below (manager missing, snapshot unstable,
+    # peer refusal) can exit early, and a security review of the trail must
+    # be able to see that the owner gate passed for this request even when
+    # the migration itself then failed.
+    sel().log_api_access(
+        caller="owner",
+        operation="chat.slot_migrate_remote",
+        outcome="allowed",
+        source="owner_only",
+        resources=f"slot={name}",
+    )
+
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None
+    instance_id = str(body.get("instance_id") or "")
+    if not instance_id:
+        return web.json_response(
+            {"error": "instance_id is required", "code": "migrate_instance_required"},
+            status=400,
+        )
+
+    # State guards, all BEFORE the peer is touched so a refused migration never
+    # opens an orphaned crew session. Mirrors the create binding gates and the
+    # agent-switch endpoint's running/member checks. (The two authorization
+    # gates ran at the top of the handler, before the slot lookup, so an app
+    # token cannot use the guard responses as an existence oracle.)
+    if slot.executor == "remote":
+        # Already bound to (or running on) a crew: there is no local session to
+        # move. Keyed on the marker, not is_remote, so a half-open binding is
+        # refused here too rather than silently re-migrated.
+        return web.json_response(
+            {"error": "this session already runs on a crew", "code": "migrate_already_remote"},
+            status=409,
+        )
+    if slot.memory_mode != "persistent":
+        # A non-persistent (incognito/temporary) session keeps nothing on disk,
+        # so there is no durable conversation to carry or archive.
+        return web.json_response(
+            {"error": "cannot migrate a non-persistent session", "code": "migrate_not_persistent"},
+            status=400,
+        )
+    session_key = effective_session_key(slot)
+    # Every guard whose truth can CHANGE during the peer round-trips lives in
+    # ``_migrate_refusal`` and is evaluated twice: here, before the peer is
+    # touched (so a refused migration never opens an orphaned crew session),
+    # and again inside close_slot's pre-pop boundary — the last instant before
+    # the removal becomes visible. One function, two call sites, so no guard
+    # can be added to the entry check and forgotten at the commit point.
+    _refused = _migrate_refusal(state, slot, session_key)
+    if _refused is not None:
+        _msg, _code = _refused
+        return web.json_response({"error": _msg, "code": _code}, status=409)
+
+    # Reserve the migration BEFORE the first await. The guards above hold
+    # only until the next suspension point — the peer round-trips below are
+    # exactly where a new message can land and start a turn, and where a second
+    # concurrent migrate could interleave. The flag is check-and-set with no
+    # await in between (single event loop), so exactly one migration can hold
+    # it; the close step re-validates at close_slot's pre-pop boundary.
+    if getattr(slot, "_migrating", False):
+        return web.json_response(
+            {"error": "a migration is already in flight", "code": "migrate_in_flight"},
+            status=409,
+        )
+    _hold_migration(state, slot, name)
+    try:
+
+        # 1) Carry the FULL conversation to the peer through the shipped
+        #    session-transfer mechanism — the same bundle path the instances "send
+        #    session" action uses. The peer imports the real transcript (at bundle
+        #    v2 even the kiro-cli context for full-fidelity resume) and returns its
+        #    new slot key, which the mirror below binds to. Nothing destructive has
+        #    happened if any of this fails; the source is untouched and retryable.
+        mgr = getattr(state, "instances_manager", None)
+        if mgr is None:
+            return web.json_response(
+                {"error": "instances manager not running", "code": "instances_manager_down"},
+                status=503,
+            )
+        # The consistency anchors are taken BEFORE the bundle build, which is
+        # itself an await: a reset or a completed turn landing inside it would
+        # otherwise be captured as the baseline, and the pre-pop check below
+        # would see "no change" on a source whose live state already diverged
+        # from what the bundle carries. Snapshot first, build, then refuse if
+        # anything moved during the build; the same snapshot is re-checked at
+        # the commit point.
+        #  - transcript length and dirty generation: a turn completing after the
+        #    snapshot leaves the peer's copy stale; `_dirty_gen` bumps on every
+        #    in-place content mutation (a variant switch, an edit) without
+        #    necessarily changing the count.
+        #  - session identity: a reset-conversation clears the resumable sid
+        #    without touching the transcript or its generation, and archiving
+        #    would close a source whose live session is already gone while the
+        #    peer resumes the pre-reset context. Any path that swaps the sid is
+        #    the same case, so the check is on the sid, not the reset endpoint.
+        _bundled_message_count = len(slot.messages)
+        _bundled_dirty_gen = slot._dirty_gen
+        _bundled_sid = state.sessions.resumable_sid(session_key)
+
+        def _anchors_moved() -> bool:
+            return (
+                len(slot.messages) != _bundled_message_count
+                or slot._dirty_gen != _bundled_dirty_gen
+                or state.sessions.resumable_sid(session_key) != _bundled_sid
+            )
+
+        try:
+            bundle = await build_transfer_bundle_async(state, slot, origin=local_instance_label())
+        except SnapshotUnstable:
+            return web.json_response(
+                {
+                    "error": "the session could not be copied consistently right now; please retry",
+                    "code": "transfer_snapshot_unstable",
+                },
+                status=503,
+            )
+        # The build was an await. If the source moved while the bundle was being
+        # assembled, the bundle does not describe the source that will be
+        # archived: refuse now, before anything reaches the peer.
+        if _anchors_moved():
+            return web.json_response(
+                {
+                    "error": "the session changed while it was being copied; nothing was sent",
+                    "code": "turn_in_flight",
+                },
+                status=409,
+            )
+        # Sender-side fidelity. `layer_b_skipped` is the builder saying "this
+        # session HAD kiro-cli context and I am not carrying it" — over the size
+        # cap, files that would not read, or withheld from a destination that
+        # must not receive it. The mirror path ships that honestly with a live
+        # source and a "transcript only" title. A MIGRATION would archive the
+        # only copy of that context read-only, so it refuses here, before the
+        # send, for the same reason the post-import gate below refuses context
+        # that was sent and did not land. A session that never had a context
+        # sets neither flag and is not affected.
+        if bundle.get("layer_b_skipped"):
+            return web.json_response(
+                {
+                    "error": (
+                        "the session's context cannot be carried to the crew; "
+                        "nothing was sent and the source was not archived"
+                    ),
+                    "code": "migrate_degraded_import",
+                },
+                status=502,
+            )
+        if not bundle.get("messages"):
+            # A fresh session has nothing to carry, and the importer refuses an
+            # empty bundle (`transfer_bundle_empty`) by design — so mint the peer
+            # slot directly, exactly as the crew picker does at create time.
+            try:
+                remote_slot_key = await create_peer_slot(state, instance_id)
+            except RemoteTurnError as exc:
+                return web.json_response(
+                    {"error": str(exc), "code": "remote_bind_failed"}, status=502
+                )
+        else:
+            ok, payload = await mgr.send_session_bundle(instance_id, bundle)
+            if not ok:
+                # Peer-controlled strings: the same trust boundary as every other
+                # relayed refusal, so the same redaction sink before they render.
+                return web.json_response(
+                    {
+                        "error": redact_peer_text(str(payload.get("error", "the transfer failed"))),
+                        "code": redact_peer_text(str(payload.get("code", "transfer_peer_refused"))),
+                    },
+                    status=502,
+                )
+            remote_slot_key = str(payload.get("key", ""))
+            # Fidelity gate. The import reports `resume_mode`; "prefix" with a
+            # bundle that CARRIED kiro-cli context (`layer_b`) means the peer
+            # got the transcript and lost the native context — an ordinary IO
+            # fault on its side (unparseable events, a failed write, a failed
+            # join). The mirror path tolerates that: its source stays live and
+            # the row says "transcript only". A MIGRATION archives the source
+            # read-only, which would make the loss irreversible and silent, so
+            # a degraded import refuses here, before any local mirror exists.
+            # The peer keeps its transcript-only copy exactly as it does after
+            # `remote_bind_failed`; the source is untouched.
+            if bundle.get("layer_b") and str(payload.get("resume_mode", "")) != "session_load":
+                return web.json_response(
+                    {
+                        "error": (
+                            "the crew imported the transcript but not the session context; "
+                            "the source was not archived"
+                        ),
+                        "code": "migrate_degraded_import",
+                    },
+                    status=502,
+                )
+        if not remote_slot_key:
+            return web.json_response(
+                {
+                    "error": "the crew imported the session but did not name it",
+                    "code": "remote_bind_failed",
+                },
+                status=502,
+            )
+
+        # Deliberately NOT copying agent/workspace/model/reasoning to the mirror:
+        # the peer session runs the PEER's own defaults, so stamping this machine's
+        # values on the mirror would display execution settings that are not the
+        # ones actually running. Display-only continuity (title, tags, folder) is
+        # carried below. The source's own ORIGIN is preserved — stamping USER here
+        # would relabel an APP/CRON/SYSTEM-origin conversation into the class that
+        # `slots:user`-scoped apps can read, a cross-origin exposure the owner
+        # migrating it never asked for.
+        new_slot = state.get_or_create_slot(
+            name=None,
+            origin=slot._origin,
+            # Migration RE-HOMES an existing conversation rather than starting a
+            # new one, so it does not opt into the user-session pulse count — the
+            # human session being measured already exists as the source slot.
+            count_user_session=False,
+        )
+        # Stamp the binding after creation, exactly as the create path does: the
+        # binding is not part of a slot's identity, so every other creation path is
+        # untouched by remote execution.
+        new_slot.executor = "remote"
+        new_slot.instance_id = instance_id
+        new_slot.remote_slot = remote_slot_key
+        new_slot.folder_id = slot.folder_id
+        new_slot.tags = list(slot.tags)
+        source_title = slot.title if slot._titled else "Untitled"
+        # Fourth anchor: the display fields just copied. A rename, a tag edit or
+        # a folder move landing in the persist/archive awaits below mutates none
+        # of the transcript anchors, and the archive would strand the edit on
+        # the read-only source while the destination keeps the stale copy.
+        _bundled_display = (slot.folder_id, tuple(slot.tags), slot.title, slot._titled)
+        source_title, _ = redact_exfiltration_urls(source_title)
+        source_title, _ = redact_credentials(source_title)
+        new_slot.title = source_title
+        new_slot._titled = True
+
+        def _keep_split(reason: str, message: str) -> web.Response:
+            # EVERY rollback arm asks the same question before removing the
+            # destination — did work land on it while we were suspended? — and
+            # answers it the same way: keep the destination live and dirty (the
+            # periodic flush retries whatever write failed; the binding fields are
+            # on the slot), keep the source live, and report the split. One
+            # definition so no arm can drift back to an unguarded pop.
+            new_slot._dirty = True
+            logger.warning(
+                "migrate-remote: %s for %s; destination received work during the migration "
+                "and is kept live alongside source %s",
+                reason,
+                new_slot.key,
+                name,
+            )
+            sel().log_api_access(
+                caller="dashboard",
+                operation="chat.slot_migrate_remote",
+                outcome="error",
+                source="dashboard",
+                resources=f"from={name},to={new_slot.key},instance={instance_id}",
+                error=f"{reason}; destination kept (has work)",
+            )
+            return web.json_response(
+                {
+                    "error": f"{message}; the new crew session already received a turn and was "
+                    "kept — both sessions are live",
+                    "code": "migrate_split",
+                    "key": new_slot.key,
+                },
+                status=409,
+            )
+
+        # 2) Durably persist the DESTINATION before anything destructive. The
+        #    binding so far lives only in memory, and the empty mirror has no
+        #    metadata line for a windowed save to merge into — a gateway restart
+        #    between here and the archive would evaporate the destination while the
+        #    source is already (or about to be) locked read-only, leaving the
+        #    conversation no live home. ``update_metadata`` is an upsert (the same
+        #    write the peer agent-switch uses), so it materializes the line;
+        #    persist-then-archive means a crash at any point leaves at least one
+        #    addressable copy. The field names are the rehydrator's own.
+        _dest_persisted: dict[str, object] = {
+            "executor": "remote",
+            "instance_id": instance_id,
+            "remote_slot": remote_slot_key,
+            "title": new_slot.title,
+            "tags": list(new_slot.tags),
+            "folder_id": new_slot.folder_id,
+            "origin": new_slot._origin,
+        }
+        try:
+            if state.conversation_log is not None:
+                await asyncio.to_thread(
+                    state.conversation_log.update_metadata,
+                    _history_key_for(new_slot.key),
+                    _dest_persisted,
+                )
+        except Exception:
+            if _destination_received_work(new_slot):
+                logger.warning("migrate-remote: destination persist failed", exc_info=True)
+                return _keep_split(
+                    "destination persist failed",
+                    "could not persist the new session; the source was not archived",
+                )
+            state._slots.pop(new_slot.key, None)
+            # Creation published the destination to every client; the pop must
+            # be published too or the sidebar keeps a tab for a slot that is gone.
+            _sync_dashboard_slots(state)
+            state.push_slots_update()
+            logger.warning(
+                "migrate-remote: destination persist failed for %s; source %s left intact",
+                new_slot.key,
+                slot.key,
+                exc_info=True,
+            )
+            sel().log_api_access(
+                caller="dashboard",
+                operation="chat.slot_migrate_remote",
+                outcome="error",
+                source="dashboard",
+                resources=f"from={name},to={new_slot.key},instance={instance_id}",
+                error="destination persist failed",
+            )
+            return web.json_response(
+                {
+                    "error": "could not persist the new session; nothing was changed",
+                    "code": "migrate_persist_failed",
+                },
+                status=503,
+            )
+
+        # 4) Archive the source LAST. Stamp the migrated pointer so the read-only
+        #    archive shows where the work continues, then close it exactly as the tab
+        #    ✕ does — persisted closed (read-only in History), session torn down.
+        #    The pre-pop check re-validates the turn state at the LAST instant
+        #    before the removal becomes visible: the peer round-trips above are
+        #    suspension points where a new message can start a turn the earlier
+        #    busy check never saw, and archiving would cancel it uncarried.
+        def _refuse_if_turn_started(retired_loop: "NudgeLoop | None" = None) -> None:
+            # Identity first: the awaits above are windows where the source can be
+            # closed and its NAME reused by a replacement slot — archiving whatever
+            # holds the name now would close a conversation this migration never
+            # authorized. Then the transcript generation: a turn that started AND
+            # completed inside the peer round-trips leaves `running` false but the
+            # conversation longer than the bundle the peer imported — archiving
+            # would strand that content on the read-only source while the crew
+            # carries a stale copy forward. Then the session identity: a reset
+            # inside the round-trips swaps the resumable sid with no transcript
+            # mutation at all (see `_bundled_sid`).
+            if (
+                state._slots.get(name) is not slot
+                or _anchors_moved()
+                or (slot.folder_id, tuple(slot.tags), slot.title, slot._titled) != _bundled_display
+            ):
+                raise SlotCloseError(
+                    "the session changed during the migration; nothing was archived",
+                    code="turn_in_flight",
+                    status=409,
+                )
+            # Then EVERY dynamic guard, re-evaluated at the commit point through the
+            # same function the entry check used — a turn, a sub-agent, a workflow
+            # run, a channel link or a driver binding that landed inside the peer
+            # round-trips is refused here identically to how it would have been
+            # refused up front. The nudge loop `close_slot` retired a moment ago
+            # is handed in: a loop armed during the round-trips is refused, not
+            # silently retired.
+            _refused = _migrate_refusal(state, slot, session_key, retired_loop)
+            if _refused is not None:
+                _msg, _code = _refused
+                raise SlotCloseError(
+                    f"{_msg} during the migration; nothing was archived",
+                    code=_code,
+                    status=409,
+                )
+
+        # The migrated pointer travels INTO close_slot and is written only by its
+        # confirmed closed save. It is never set on the live slot first: `migrated`
+        # is carried-forward metadata, so a periodic flush landing during the close
+        # awaits would persist a speculative stamp that a memory-only rollback could
+        # not take back — and a still-live source would then refuse every resume.
+        _migrated_stamp = {"instance_id": instance_id, "remote_key": remote_slot_key}
+        try:
+            await close_slot(
+                state, slot, name, pre_pop_check=_refuse_if_turn_started, migrated=_migrated_stamp
+            )
+        except SlotCloseError as exc:
+            # The source could not be archived. The new crew-bound slot already
+            # exists and holds the context, but the source is still live — leaving
+            # BOTH addressable would be a duplicated session. Roll the new slot back
+            # and refuse; the source is untouched (close_slot unwinds its own partial
+            # steps, and nothing about the migration reached its disk record), so
+            # the user can retry.
+            # The destination was PUBLISHED at creation (get_or_create_slot
+            # broadcasts the slot list), so during the persist/archive awaits a
+            # user can open its tab and send a turn. If it received ANY work —
+            # a message, a running turn, a queued prompt — it is not a
+            # disposable duplicate: closing it would silently discard that output.
+            # Leave BOTH slots live and say so; an honest duplicate the user can
+            # see and merge beats a turn that vanished.
+            if _destination_received_work(new_slot):
+                return _keep_split(f"source archive failed: {exc.code}", exc.message)
+            # The destination was already durably persisted (persist-then-archive),
+            # so it must not be popped until its closed state is CONFIRMED on disk:
+            # a best-effort save after the pop would be swallowed on exactly the
+            # correlated fault (disk full, lock contention) that just failed the
+            # archive, and the popped slot's dirty-flag retry could never reach it —
+            # the persisted line would revive it as a live duplicate on the next
+            # restart. Confirm first; on failure keep the slot LIVE and dirty, so it
+            # stays a visible tab the user can close and the periodic flush retries
+            # the write — an honest duplicate beats a self-reviving hidden one.
+            _dest_closed = False
+            try:
+                _dest_closed = await save_slot_off_loop(
+                    state, new_slot, closed=True, best_effort=False
+                )
+            except Exception:  # noqa: BLE001 - correlated-fault path, keep the slot live
+                logger.warning(
+                    "migrate-remote: closing the persisted destination %s failed; leaving it live",
+                    new_slot.key,
+                    exc_info=True,
+                )
+            if _dest_closed and _destination_received_work(new_slot):
+                # The closed save is an await too: a turn that landed during it
+                # is real work, and a slot persisted closed WITH work must not be
+                # popped as a disposable duplicate. Un-close it (dirty; the flush
+                # rewrites it open) and report the split.
+                return _keep_split(f"source archive failed: {exc.code}", exc.message)
+            if _dest_closed:
+                state._slots.pop(new_slot.key, None)
+                # Published at creation, so the removal is published too.
+                _sync_dashboard_slots(state)
+                state.push_slots_update()
+                # The peer's imported copy is deliberately left alone: an orphaned
+                # idle session there costs nothing, its own idle archival reaps it,
+                # and the create path's collision arm makes the same choice.
+            else:
+                new_slot._dirty = True
+            logger.warning(
+                "migrate-remote: archiving source %s failed (%s); rolled back new slot %s",
+                name,
+                exc.code,
+                new_slot.key,
+            )
+            sel().log_api_access(
+                caller="dashboard",
+                operation="chat.slot_migrate_remote",
+                outcome="error",
+                source="dashboard",
+                resources=f"from={name},to={new_slot.key},instance={instance_id}",
+                error=f"source archive failed: {exc.code}",
+            )
+            # A pre-pop refusal from ``_migrate_refusal`` carries its own 4xx
+            # status (state moved during the window — retryable); every other close
+            # failure is a 500 server fault, which is SlotCloseError's default.
+            if exc.status == 409:
+                return web.json_response({"error": exc.message, "code": exc.code}, status=409)
+            return web.json_response({"error": exc.message, "code": exc.code}, status=500)
+
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.slot_migrate_remote",
+            outcome="allowed",
+            source="dashboard",
+            resources=(
+                f"from={name},to={new_slot.key},instance={instance_id},"
+                f"messages={_bundled_message_count}"
+            ),
+        )
+        _sync_dashboard_slots(state)
+        state.push_slots_update()
+        return web.json_response({"ok": True, "key": new_slot.key, "instance_id": instance_id})
+    finally:
+        # Released on EVERY exit — success (the closed+migrated stamp is durable),
+        # rollback, and an unexpected exception — so a key can never stay
+        # reserved after the migration that held it is gone.
+        _release_migration(state, slot, name)
+
+
 def _reject_pending_approvals(slot: _ChatSlot) -> None:
     """Reject all pending approval futures so the chat runner unblocks.
 
@@ -3188,6 +3739,361 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
     cancelled = state.cancel_questions_for_slot(slot.key)
     if cancelled:
         logger.info("Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key)
+
+
+def _destination_received_work(dest: _ChatSlot) -> bool:
+    """Did the PUBLISHED migration destination take real work while the handler
+    was suspended? ``get_or_create_slot`` broadcasts the slot list, so from the
+    moment the destination exists a user can open its tab and send; a message,
+    a running turn or a queued prompt makes it a conversation, not a disposable
+    duplicate. So does ACCEPTED context: ``/context`` and ``/note`` answer
+    ``{"ok": true}`` for any live key and park their payload in
+    ``_pending_context`` / ``_deferred_notes`` for the next turn — popping the
+    slot would silently discard an acknowledged delivery. Same arm the source
+    guard (``_migrate_refusal``) applies. Every rollback arm asks this
+    immediately before it would pop the destination, and keeps it live when the
+    answer is yes."""
+    return (
+        bool(dest.messages)
+        or dest.running
+        or dest.queue_depth > 0
+        or bool(dest._pending_context)
+        or bool(dest._deferred_notes)
+    )
+
+
+def _hold_migration(state: DashboardState, slot: _ChatSlot, name: str) -> None:
+    """Admit a migration of *slot*: flag the slot and RESERVE its key.
+
+    The flag stops a second concurrent migrate of the same slot. The key
+    reservation (``state._migrating_keys``) is what closes the mint window:
+    ``close_slot`` pops the source from ``_slots`` before its closed+migrated
+    stamp is durably committed, and in that window the key is neither live nor
+    stamped — an ordinary concurrent send or create addressed to it would mint
+    a writable local fork. ``_migrated_key_mint_refusal`` reads the reservation
+    first, so the whole window (admission → durable stamp) refuses mints the
+    same way the stamp does afterwards. Check-and-set with no await in between.
+    """
+    slot._migrating = True
+    state._migrating_keys[name] = str(getattr(slot, "_app", "") or "")
+
+
+def _release_migration(state: DashboardState, slot: _ChatSlot, name: str) -> None:
+    """Undo :func:`_hold_migration` — on success (stamp durable) or any failure."""
+    slot._migrating = False
+    state._migrating_keys.pop(name, None)
+
+
+def migrated_key_mint_decision(
+    state: DashboardState, request_app: str, requested_key: str
+) -> tuple[str, str, dict[str, str] | None] | None:
+    """The ONE decision behind every request-named slot mint: may a live slot be
+    minted on *requested_key* right now, given the caller's app label?
+
+    Returns None (allowed) or ``(code, sel_error, migrated)``:
+
+    - ``("slot_not_found", …, None)`` — the key is migrated/migrating and the
+      caller is a non-owning app token: the oracle-free 404 an unknown key gets.
+    - ``("migrate_in_flight", …, None)`` — a migration holds the key
+      (admission → durable stamp; between the pop and the commit the key is
+      neither live nor stamped, so the reservation is checked FIRST).
+    - ``("resume_migrated", …, {instance_id, remote_key})`` — the persisted
+      conversation was migrated; the pointer is disclosed to the owner only.
+    - ``("history_unreadable", …, None)`` — the persisted record exists but
+      could not be read, so whether it was migrated is unknown; the mint is
+      refused as retryable rather than decided from an empty answer.
+
+    A live key (``in state._slots``) is not a mint and is always allowed here.
+    Callers render the tuple in their own wire shape (dashboard JSON, the
+    OpenAI error envelope, a ``SessionControlError``) — the shape varies, the
+    decision must not. Every endpoint that lets its caller NAME the key goes
+    through this: chat send, slot create, resume (via its history key) and the
+    OpenAI-compatible ``id``.
+    """
+    if not requested_key:
+        return None
+    held_app = state._migrating_keys.get(requested_key)
+    if held_app is not None:
+        if request_app and request_app != held_app:
+            return ("slot_not_found", "app does not own this migrating conversation", None)
+        return ("migrate_in_flight", "session is being migrated to a remote crew", None)
+    if requested_key in state._slots or state.conversation_log is None:
+        return None
+    # Fail CLOSED on an unreadable record. `get_metadata` folds "the file exists
+    # but could not be read" (a Windows sharing violation, a torn write) into
+    # "no metadata", and a migrated stamp that reads as absent would mint a
+    # silent writable local fork of a session that lives on the crew. The
+    # status form tells the two apart; an unreadable file refuses the mint as
+    # retryable rather than deciding anything from an empty answer.
+    meta, readable = state.conversation_log.get_metadata_status(_history_key_for(requested_key))
+    meta = meta or {}
+    if not readable:
+        if request_app:
+            # Ownership cannot be verified either, and an app token must not
+            # learn from this path that a key it does not own exists.
+            return ("slot_not_found", "app ownership of this conversation is unreadable", None)
+        return ("history_unreadable", "conversation metadata could not be read", None)
+    migrated = meta.get("migrated")
+    if not (isinstance(migrated, dict) and migrated.get("instance_id")):
+        return None
+    if request_app and request_app != str(meta.get("app") or ""):
+        return ("slot_not_found", "app does not own this migrated conversation", None)
+    return (
+        "resume_migrated",
+        "session was migrated to a remote crew",
+        {
+            "instance_id": str(migrated.get("instance_id", "")),
+            "remote_key": str(migrated.get("remote_key", "")),
+        },
+    )
+
+
+_MINT_REFUSAL_MESSAGES = {
+    "slot_not_found": "not found",
+    "migrate_in_flight": "a migration of this session is in flight",
+    "resume_migrated": "this session was migrated to a remote crew and is read-only",
+    "history_unreadable": "the conversation record could not be read; retry",
+}
+
+
+def _mint_refusal_response(code: str, migrated: dict[str, str] | None = None) -> web.Response:
+    """One renderer for the four refusal codes in the dashboard shape. Body and
+    HTTP status are LITERAL per branch: the error-code contract reads both
+    statically, so a table lookup here would read as an opaque response."""
+    if code == "slot_not_found":
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if code == "migrate_in_flight":
+        return web.json_response(
+            {"error": "a migration of this session is in flight", "code": "migrate_in_flight"},
+            status=409,
+        )
+    if code == "history_unreadable":
+        return web.json_response(
+            {
+                "error": "the conversation record could not be read; retry",
+                "code": "history_unreadable",
+            },
+            status=503,
+        )
+    return web.json_response(
+        {
+            "error": "this session was migrated to a remote crew and is read-only",
+            "code": "resume_migrated",
+            "migrated": migrated or {},
+        },
+        status=409,
+    )
+
+
+def _audit_mint_refusal(
+    request: web.Request, requested_key: str, operation: str, code: str, sel_error: str
+) -> None:
+    request_app = request.get("app", "")
+    if code == "slot_not_found":
+        source = "app_isolation"
+    elif code == "history_unreadable":
+        source = "history_unreadable"
+    else:
+        source = "migrated_archive"
+    sel().log_api_access(
+        caller=request_app if code == "slot_not_found" else (request.remote or ""),
+        operation=operation,
+        outcome="denied",
+        source=source,
+        resources=f"slot={requested_key}",
+        error=sel_error,
+    )
+
+
+def _migrated_key_mint_refusal(
+    state: DashboardState, request: web.Request, requested_key: str, operation: str
+) -> web.Response | None:
+    """:func:`migrated_key_mint_decision` rendered in the dashboard JSON shape
+    (chat send, slot create)."""
+    decision = migrated_key_mint_decision(state, request.get("app", ""), requested_key)
+    if decision is None:
+        return None
+    code, sel_error, migrated = decision
+    _audit_mint_refusal(request, requested_key, operation, code, sel_error)
+    return _mint_refusal_response(code, migrated)
+
+
+def _resume_mint_refusal(
+    state: DashboardState, request: web.Request, name: str, history_key: str
+) -> web.Response | None:
+    """The resume handler's copy of the mint gate, through the SAME decision.
+
+    A resume names two keys: the slot it rehydrates INTO (``name``) and the
+    conversation it rehydrates FROM (``history_key``). Either can be the
+    migrated source — an aliased resume (``POST /slots/s2/resume {key:
+    dashboard:s1}``) would otherwise fork ``s1``'s transcript into a writable
+    ``s2`` while ``s1`` lives on the crew — so the decision runs for both, and
+    it fails closed on an unreadable record like every other mint path. Only a
+    dashboard history key folds back to a slot key; a channel conversation is
+    not a dashboard mint and is left to the handler's own checks. The fold is
+    `_normalize_slot_key`, which strips BOTH transport spellings — the
+    ``dashboard:`` session key and the ``dashboard_`` filename stem — because
+    the history layer reads the same transcript for either; a hand-rolled
+    prefix check here would guard one spelling and fork through the other.
+    """
+    candidates = [name]
+    if history_key.startswith(("dashboard:", "dashboard_")):
+        source_key = _normalize_slot_key(history_key)
+        if source_key and source_key != name:
+            candidates.append(source_key)
+    for key in candidates:
+        decision = migrated_key_mint_decision(state, request.get("app", ""), key)
+        if decision is not None:
+            code, sel_error, migrated = decision
+            _audit_mint_refusal(request, key, "chat_resume", code, sel_error)
+            return _mint_refusal_response(code, migrated)
+    return None
+
+
+def _migrate_refusal(
+    state: DashboardState,
+    slot: _ChatSlot,
+    session_key: str,
+    retired_loop: "NudgeLoop | None" = None,
+) -> tuple[str, str] | None:
+    """Every reason a migration must NOT archive *slot* right now, or None.
+
+    Returns ``(message, code)``; every refusal is a retryable 409. This is the one place the migrate
+    endpoint's dynamic guards live: it is evaluated at ENTRY (before the peer
+    is touched, so a refused migration never opens an orphaned crew session)
+    and again inside close_slot's pre-pop boundary, because every condition
+    below can become true during the peer round-trips. Two hand-written copies
+    of this list is how the entry check and the commit check drifted apart.
+
+    The class these guards cover: *anything that can address this session by
+    key after the archive without passing through an endpoint*. Archiving under
+    one of them forks the conversation — the crew carries its copy forward while
+    the actor keeps writing into the archived (or re-created) local one.
+    """
+    # Mode: only a PLAIN chat session can be migrated. Every non-empty mode
+    # carries state outside the transcript — a member pin, an orchestrator
+    # stage loop, a crew store — that the destination cannot run, so
+    # migrating one strands that state on an unresumable archive. Matches
+    # remote slot creation, which also mints only plain sessions. ``mode`` is a
+    # live attribute (``chat.slot_mode`` flips it on a non-running slot and
+    # bumps neither the message count nor the dirty generation), so it is a
+    # DYNAMIC guard: a switch landing inside the peer round-trips must be
+    # refused at the commit point, not only at entry.
+    if slot.mode:
+        code = "migrate_member_pinned" if slot.mode == "member" else "migrate_mode_unsupported"
+        return (f"a {slot.mode} session cannot be migrated", code)
+    # A private V2 memory binding is a per-gateway authority record, and an
+    # ordinary chat (`mode == ""`) can carry one: the owner-selected member pin
+    # writes it on the first turn. The bundle cannot carry the binding (the
+    # peer has no record for it), so an import would either resume against the
+    # wrong store or refuse its next turn — with the source archived read-only.
+    # The fork path treats the binding the same way. `read_private_session_store`
+    # raises for a binding record that exists but cannot be read; that is the
+    # same refusal, not permission. The read is a small file probe; it runs
+    # synchronously because the pre-pop re-check must not await.
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    try:
+        _private_store = read_private_session_store(session_key)
+    except ValueError:
+        return (
+            "the session's private memory binding is unreadable",
+            "migrate_private_memory_bound",
+        )
+    if _private_store:
+        return (
+            "the session is bound to a member's private memory",
+            "migrate_private_memory_bound",
+        )
+    # Channel-backed / channel-linked: the channel keeps addressing the key
+    # after the archive (nudge fire adopts closed transcripts, channel
+    # reconciliation re-homes activity onto the transcript key). Slack links
+    # and non-Slack mirrors (Discord/Telegram/...) are SEPARATE bindings; an
+    # inbound-accepting mirror on a dashboard-shaped key passes every other arm.
+    _slack_thread, _slack_channel = (None, None)
+    _get_link = getattr(state.sessions, "get_slack_link", None)
+    if callable(_get_link):
+        _slack_thread, _slack_channel = _get_link(session_key)
+    _get_mirror = getattr(state.sessions, "get_mirror_link", None)
+    _mirror_link = _get_mirror(session_key) if callable(_get_mirror) else None
+    if (
+        slot.channel_origin
+        or is_channel_session_key(session_key)
+        or _slack_thread
+        or _slack_channel
+        or _mirror_link is not None
+    ):
+        return (
+            "a channel-linked session cannot be migrated to a crew",
+            "migrate_channel_linked",
+        )
+    # External driver binding (a persistent cron job's "cron:{id}", or any
+    # other linked key): the driver re-creates the slot on its next run through
+    # get_or_create_slot without consulting the migrated stamp.
+    if slot.linked_session_key:
+        return (
+            "a session bound to an external driver cannot be migrated to a crew",
+            "migrate_linked_session",
+        )
+    # App-owned slot: the app's runtime (spec builder, issue radar, auto
+    # research, ...) addresses its slot BY KEY and re-creates it when the key
+    # is gone — the same re-creation fork as a cron binding, and the
+    # conversation belongs to that runtime, not to the human migrating it.
+    if slot._app:
+        return (
+            "an app-owned session cannot be migrated to a crew",
+            "migrate_app_owned",
+        )
+    # Accepted-but-undelivered context: ``append_pending_context`` and a held
+    # note (``_deferred_notes``) are acknowledged deliveries that ride into the
+    # NEXT turn on this key. Neither touches the message count or the dirty
+    # generation, so the bundle would omit them and the consistency check would
+    # not notice; a deferred note's durable copy replays only onto THIS key,
+    # which the archive makes read-only. Refuse until the next turn drains them.
+    if slot._pending_context or slot._deferred_notes:
+        return (
+            "accepted context is waiting for the next turn",
+            "migrate_pending_context",
+        )
+    # In-flight or queued turn: a queued prompt is ACCEPTED work whose answer
+    # would land on a source the archive just locked read-only.
+    busy_provider = state.sessions.get_provider(session_key)
+    if (
+        slot.running
+        or slot.queue_depth > 0
+        or (isinstance(busy_provider, LLMProvider) and busy_provider.has_active_turn())
+    ):
+        return ("a turn is in flight", "turn_in_flight")
+    # Attached sub-agent children complete INTO this session by key.
+    if subagents_attached(state, slot, session_key, "migrate_remote"):
+        return ("sub-agents are running", "slot_subagents_running")
+    # An armed auto-nudge / monitor loop idles between cycles with `running`
+    # False and an empty queue, so the turn guard above cannot see it — and
+    # `close_slot` retires the loop as part of archiving the source, while the
+    # destination carries no execution settings. The scheduled work would stop
+    # with no notice and no way back. Refuse; the user stops the loop first.
+    # At the pre-pop re-check the registry is already empty — `close_slot`
+    # retires before it re-checks — so the loop it just took is passed in as
+    # `retired_loop` and counts as armed; the refusal makes `close_slot` put it
+    # back.
+    if retired_loop is not None or _slot_nudge_loop(slot.key) is not None:
+        return (
+            "an auto-nudge or monitor loop is armed on this session",
+            "migrate_nudge_loop_armed",
+        )
+    # A RUNNING background workflow injects its result back by session_key.
+    _wf_registry = getattr(getattr(state, "workflow_service", None), "registry", None)
+    if _wf_registry is not None:
+        for _wf_run in getattr(_wf_registry, "_runs", {}).values():
+            if (
+                getattr(_wf_run, "session_key", "") == session_key
+                and getattr(_wf_run, "status", "") == "running"
+            ):
+                return (
+                    "a workflow run is still targeting this session",
+                    "migrate_workflow_active",
+                )
+    return None
 
 
 def _subagents_attached_response(
@@ -4677,6 +5583,28 @@ class _NudgeRetireFailed(Exception):
         self.loop = loop
 
 
+def _slot_nudge_loop(name: str) -> "NudgeLoop | None":
+    """The auto-nudge / monitor loop armed on slot *name*, or None.
+
+    Read-only twin of :func:`_retire_slot_nudge_loop` for guards that must
+    refuse while a loop is armed rather than retire it. A lookup failure
+    answers None: a guard must not turn a registry hiccup into a refusal of an
+    unrelated action, and the close path re-checks with its own failure mode.
+    """
+    try:
+        from kiro_crew.autonudge import (
+            get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_handlers
+        )
+
+        svc = _autonudge_get()
+        if svc is None:
+            return None
+        return svc.get_by_slot(name)
+    except Exception:
+        logger.warning("autonudge loop lookup failed", exc_info=True)
+        return None
+
+
 async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
     """Retire *name*'s auto-nudge loop and return it (None if it had none).
 
@@ -5012,11 +5940,20 @@ async def close_slot(
     slot: "_ChatSlot",
     name: str,
     *,
-    pre_pop_check: Callable[[], None] | None = None,
+    pre_pop_check: "Callable[[NudgeLoop | None], None] | None" = None,
+    migrated: dict | None = None,
 ) -> None:
     """Close (archive) one live slot the way the tab ✕ does: tombstone it, retire
     its auto-nudge loop, notify its owning app, persist it as closed, and tear
     down the per-tab session.
+
+    ``migrated`` (the migrate-remote endpoint's ``{"instance_id", "remote_key"}``
+    pointer) is written ONLY as part of the confirmed ``closed=True`` save below
+    — never onto the live slot beforehand — so an abort at any earlier step
+    leaves nothing on disk to clear. The archive-yield exit (a replacement owns
+    the transcript) deliberately does not stamp it: that write is an OPEN-key
+    save of the original's tail, and the replacement's conversation is not the
+    one that moved.
 
     Non-destructive: the conversation is saved to history (``closed=True``) and
     recreated from the warm pool if the tab is resumed later — nothing is
@@ -5034,6 +5971,9 @@ async def close_slot(
 
     ``pre_pop_check`` runs SYNCHRONOUSLY at the point of no return — immediately
     before the slot is popped, after the nudge-retirement and app-hook awaits. It
+    receives the auto-nudge loop retired by this close (or None), because the
+    registry it might consult is already empty by then and a caller whose
+    admission refuses an armed loop has to see the one that was just taken. It
     exists for a caller (``close_target``) that authorized the target BEFORE this
     coroutine and must re-assert that authorization against state those awaits
     could have changed: a target unmirrored/unlinked at admission can gain a
@@ -5155,8 +6095,13 @@ async def close_slot(
         # the retirement stays adjacent to the removal. A raised SlotCloseError
         # unwinds the teardown so far — restore the retired nudge loop, take back
         # an app notification — and re-raises, exactly like a failed persist.
+        #
+        # The check receives the loop retired above: a caller whose admission
+        # REFUSES an armed loop (migrate) cannot re-derive that from the
+        # registry here, because the retirement just emptied it — the loop it
+        # must see is the one in our hand. A refusal restores it.
         try:
-            pre_pop_check()
+            pre_pop_check(retired_loop)
         except SlotCloseError:
             await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
             if slot._app:
@@ -5275,7 +6220,9 @@ async def close_slot(
         # handler and session-control's close_target — must read this as success.
         return
     try:
-        await save_slot_off_loop(state, slot, closed=True, closed_at=closed_at, best_effort=False)
+        await save_slot_off_loop(
+            state, slot, closed=True, closed_at=closed_at, best_effort=False, migrated=migrated
+        )
     except Exception:
         # Save failed — restore slot so data isn't lost
         logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
@@ -8990,6 +9937,28 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
 
+    # ── Migrated-archive refusal, BEFORE any persistent mutation ───────────
+    # A migration in flight on this slot key is refused first: between
+    # close_slot's pop and its durable stamp the key is neither live nor
+    # stamped, and a resume landing there would mint the fork the stamp exists
+    # to prevent.
+    # This must precede ``clear_closed`` below: a migrated source is persisted
+    # closed, and a resume attempt on one is the exact ordinary input this
+    # guard exists for. If the clear ran first it would durably drop the
+    # archive flag before the refusal, and the next gateway restart would
+    # reanimate a writable local fork of a conversation that lives on the
+    # crew. The transcript stays readable through the History detail view;
+    # only reanimation is refused. The gate is the centralized mint decision
+    # applied to BOTH keys a resume names (target slot and source
+    # conversation), fail-closed on an unreadable record — not a local
+    # re-derivation from ``meta``, which `get_metadata` reports empty when the
+    # file exists but would not read. (A second copy runs on the post-await
+    # metadata re-read further down, so a migration landing while this handler
+    # is suspended is refused there.)
+    _held = _resume_mint_refusal(state, request, name, history_key)
+    if _held is not None:
+        return _held
+
     # ── Member-thread EARLY refusal, before any persistent mutation ────────
     # ``_unhide_folder`` and ``clear_closed`` below write durable state. A
     # resume the member guard is going to 409 anyway must not leave those
@@ -9298,6 +10267,12 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    # A migration admitted while this handler was suspended holds the key now,
+    # or landed its stamp: refuse before the mint exactly as the early gate
+    # does, through the same decision, fail-closed on an unreadable re-read.
+    _held = _resume_mint_refusal(state, request, name, history_key)
+    if _held is not None:
+        return _held
 
     slot = state.get_or_create_slot(
         name,

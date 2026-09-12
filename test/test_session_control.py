@@ -3990,7 +3990,7 @@ def test_close_slot_pre_pop_abort_rolls_back_and_does_not_pop(tmp_path):
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
 
-    def _abort():
+    def _abort(_retired_loop=None):
         raise chat_handlers.SlotCloseError(
             "target became unreachable", code="mirrored_target", status=403
         )
@@ -4055,7 +4055,7 @@ def test_close_slot_runs_the_pre_pop_check_synchronously_after_retirement(tmp_pa
         order.append("retire")
         return None
 
-    def _check():  # synchronous by contract — no await before the pop
+    def _check(_retired_loop=None):  # synchronous by contract — no await before the pop
         order.append("check")
 
     assert not inspect.iscoroutinefunction(_check)

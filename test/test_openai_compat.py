@@ -123,6 +123,10 @@ def _make_state(slot):
     state = MagicMock()
     state.get_or_create_slot = MagicMock(return_value=slot)
     state._slots = {slot.key: slot}
+    # Real state attributes the mint decision reads: no migration holds any
+    # key, and no conversation log (so no persisted `migrated` stamp exists).
+    state._migrating_keys = {}
+    state.conversation_log = None
     state._background_tasks = set()
     return state
 

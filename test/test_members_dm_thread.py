@@ -1140,6 +1140,8 @@ class TestOpenAiCompatPin:
         state = MagicMock()
         state.get_or_create_slot = MagicMock(return_value=slot)
         state._slots = {slot.key: slot}
+        # Real state attributes the mint decision reads: no migration holds a key.
+        state._migrating_keys = {}
         state._background_tasks = set()
 
         request = MagicMock()
@@ -1197,6 +1199,7 @@ class TestOpenAiCompatPin:
         state = MagicMock()
         state.get_or_create_slot = MagicMock(return_value=slot)
         state._slots = {slot.key: slot}
+        state._migrating_keys = {}
         state._background_tasks = set()
 
         request = MagicMock()

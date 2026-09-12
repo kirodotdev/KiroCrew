@@ -159,6 +159,12 @@ _CAP_REASONS = {
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
+    # The migrate body is one short crew identifier, so the shared ceiling is
+    # right and the bounded read's default applies unchanged.
+    "chat_handlers.py::api_chat_slot_migrate_remote": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     # Voice config is a flat set of short scalars (provider name, voice name,
     # rate, paths) and voice synthesis takes one reply's text, which the panel
     # already truncates well below the shared default. Neither has a legitimate

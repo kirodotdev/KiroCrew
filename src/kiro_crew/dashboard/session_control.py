@@ -1828,7 +1828,7 @@ async def close_target(
     # Deferred for the same import cycle `stop_target` documents.
     from kiro_crew.dashboard.chat_handlers import SlotCloseError, close_slot
 
-    def _reassert_closeable() -> None:
+    def _reassert_closeable(_retired_loop: object = None) -> None:
         # Re-run the SAME target gate at close_slot's point of no return —
         # SYNCHRONOUSLY, so there is NO event-loop suspension between it and the
         # pop and nothing can change between the final authorization and the

@@ -81,6 +81,7 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/reset-conversation", chat.api_chat_slot_reset_conversation
     )
     app.router.add_post("/api/chat/slots/{slot}/agent", chat.api_chat_slot_agent)
+    app.router.add_post("/api/chat/slots/{slot}/migrate-remote", chat.api_chat_slot_migrate_remote)
 
     # Optimizer
     app.router.add_post("/api/optimizer/optimize", handlers.handle_optimize)

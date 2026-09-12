@@ -3561,6 +3561,8 @@ class _ChatSlot:
         "executor",
         "instance_id",
         "remote_slot",
+        "migrated",
+        "_migrating",
         "_relay_in_flight",
         "_active_turn_session_key",
         "_side",
@@ -3638,6 +3640,18 @@ class _ChatSlot:
         self.executor: str = "local"
         self.instance_id: str = ""
         self.remote_slot: str = ""
+        # Set on a session archived by the migrate-remote endpoint: the crew the
+        # session moved to and the new local slot bound to it, so the read-only
+        # archive can point a reader at where the work continues. ``None`` on
+        # every other slot. Its target keys are for display and navigation, not
+        # for a local lookup — ``remote_key`` is a peer-side id.
+        self.migrated: dict[str, str] | None = None
+        # True while a migrate-remote request holds this slot between its guard
+        # pass and its archive step. Set with no await in between (single event
+        # loop), so exactly one migration can reserve a slot; a second request
+        # and a close-time revalidation both read it. Never persisted — a
+        # crashed migration must not leave a slot permanently reserved.
+        self._migrating: bool = False
         # True only while a remote turn is executing on the peer. Persisted (with
         # the binding) so a gateway crash mid-turn is detectable on reload: a slot
         # that comes back still carrying it lost its relay reader to the restart,
@@ -5357,6 +5371,16 @@ class DashboardState:
         # lifecycle matches the gateway instance.
         self.resource_pressure_notifier = ResourcePressureNotifier(self.notification_bus)
         self._slots: dict[str, _ChatSlot] = {}
+        # Slot keys a migrate-remote call currently holds, from the moment the
+        # migration is admitted until the source's closed+migrated stamp is
+        # durably committed (or the migration rolls back). The source is POPPED
+        # from ``_slots`` before that commit lands, so for that window the key is
+        # neither live nor stamped — this map is what keeps a request-named mint
+        # (chat send, slot create, resume) from re-creating the key as a
+        # writable local fork while the crew carries the conversation. Value is
+        # the owning app label ("" for none), so the refusal keeps the same
+        # oracle discipline as the persisted stamp.
+        self._migrating_keys: dict[str, str] = {}
         self._slot_registry = SlotRegistry()
         # Process-local Spec Builder outbox claims, keyed by directory + delivery.
         # Directory scope matters because aliases use different slots for the same

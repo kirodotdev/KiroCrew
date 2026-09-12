@@ -2579,12 +2579,15 @@ class TestUntaggedOriginIsNotUser:
     def test_every_handler_slot_creation_declares_an_origin(self):
         """No slot-creation path in the handlers may fall through to the default.
 
-        Two legitimate sources, and the distinction matters: a NEW slot's origin
+        Three legitimate sources, and the distinction matters: a NEW slot's origin
         comes from the request (an app token means APP, its absence means the
-        dashboard user), while RESUMING a persisted conversation must take the
+        dashboard user); RESUMING a persisted conversation must take the
         origin that conversation was stored with -- deriving it from the resumer
-        relabels a cron slot as USER. Counting both together is the invariant;
-        pinning one of them everywhere is what got the resume path wrong.
+        relabels a cron slot as USER; and MIGRATING a live session must carry the
+        SOURCE SLOT's own origin -- stamping the requester's would relabel an
+        APP/CRON conversation into the class `slots:user`-scoped apps can read.
+        Counting all together is the invariant; pinning one of them
+        everywhere is what got the resume path wrong.
         """
         import kiro_crew.dashboard.chat_handlers as _ch
 
@@ -2592,9 +2595,11 @@ class TestUntaggedOriginIsNotUser:
         creates = src.count("state.get_or_create_slot(")
         from_request = src.count("origin=request_slot_origin(")
         from_persisted = src.count('origin=str(meta.get("origin", ""))')
-        assert creates == from_request + from_persisted, (
+        from_source_slot = src.count("origin=slot._origin")
+        assert creates == from_request + from_persisted + from_source_slot, (
             f"{creates} slot creations but only {from_request} declare a "
-            f"request-derived origin and {from_persisted} a persisted one"
+            f"request-derived origin, {from_persisted} a persisted one and "
+            f"{from_source_slot} a source-slot carry"
         )
 
     def test_resume_takes_the_persisted_origin_not_the_resumer(self):

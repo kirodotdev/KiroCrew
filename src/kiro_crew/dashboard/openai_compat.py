@@ -293,7 +293,79 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
         # Membership must be checked on the canonical (filename-charset) key —
         # get_or_create_slot folds unsafe chars, so a raw slot_id may map to an
         # existing slot even when the raw string is absent from _slots.
-        freshly_created = _normalize_slot_key(slot_id) not in state._slots
+        canonical_id = _normalize_slot_key(slot_id)
+        # A key whose conversation was migrated to a remote crew (or is being
+        # migrated right now) must not be re-minted as a writable local fork by
+        # an `id` addressed at it — the same decision chat send / slot create /
+        # resume apply, rendered in this endpoint's error envelope.
+        from kiro_crew.dashboard.chat_handlers import (  # circular via artifacts
+            _MINT_REFUSAL_MESSAGES,
+            migrated_key_mint_decision,
+        )
+
+        _mint = migrated_key_mint_decision(state, request.get("app", ""), canonical_id)
+        if _mint is not None:
+            _code, _sel_error, _migrated = _mint
+            sel().log_api_access(
+                caller=(
+                    request.get("app", "") if _code == "slot_not_found" else (request.remote or "")
+                ),
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="app_isolation" if _code == "slot_not_found" else "migrated_archive",
+                resources=f"slot={slot_id}",
+                error=_sel_error,
+            )
+            _message = _MINT_REFUSAL_MESSAGES[_code]
+            if _code == "slot_not_found":
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": _message,
+                            "type": "invalid_request_error",
+                            "code": "slot_not_found",
+                        },
+                        "code": "slot_not_found",
+                    },
+                    status=404,
+                )
+            if _code == "migrate_in_flight":
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": _message,
+                            "type": "invalid_request_error",
+                            "code": "migrate_in_flight",
+                        },
+                        "code": "migrate_in_flight",
+                    },
+                    status=409,
+                )
+            if _code == "history_unreadable":
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": _message,
+                            "type": "service_unavailable_error",
+                            "code": "history_unreadable",
+                        },
+                        "code": "history_unreadable",
+                    },
+                    status=503,
+                )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": _message,
+                        "type": "invalid_request_error",
+                        "code": "resume_migrated",
+                    },
+                    "code": "resume_migrated",
+                    "migrated": _migrated or {},
+                },
+                status=409,
+            )
+        freshly_created = canonical_id not in state._slots
         try:
             slot = state.get_or_create_slot(slot_id)
         except ValueError as exc:
