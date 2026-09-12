@@ -1047,7 +1047,18 @@ specified compatibility change.
   edit-resend, rewind) have already rewritten durable history by the time a turn
   could fail; and `POST /v1/chat/completions` has no transcript, so an error card
   would surface as a successful empty completion. A missing or invalid service
-  fails closed in all three.
+  fails closed in all three. **All three apply only while the selected harness
+  signs in through kiro-cli**: the guard reads `agent.acp_backend` first and
+  stands aside — returning `None` without consulting the service — unless the
+  backend is a member of `backends_retired_by_host_logout()`, because the latch
+  describes a kiro-cli sign-in and says nothing about a claude-agent-acp or
+  codex-acp session (see `modules/acp-client.md` § "The latch governs only a
+  harness that signs in through kiro-cli"). "Selected" means the backend the
+  turn will run on: plain regenerate continues the slot's live session, which
+  keeps its backend across a hot switch, so it gates on
+  `live_session_signs_in_via_kiro_cli()` (the provider's own
+  `uses_kiro_identity_store` declaration) and falls back to the configured
+  default only with no session live.
   **These callers authorize on a FRESH probe, not the latch**
   (`kiro_verified_ready` → `KiroPrerequisiteService.verified_ready`, re-probing
   when the latch is older than `_VERIFY_MAX_AGE_SECS` = 30s). The latch is
@@ -1954,7 +1965,21 @@ roles, so the `error` card an `AcpAuthRequired` turn appends is invisible and th
 request would return **HTTP 200 with empty content** — an OpenAI SDK client
 cannot distinguish that from a model that legitimately said nothing. It returns
 the `kiro_prerequisite_required` 503 in OpenAI error shape until the endpoint
-learns to translate `AcpAuthRequired` itself.
+learns to translate `AcpAuthRequired` itself. That 503 exists only for a
+kiro-cli-authenticated harness; on any other selected backend the guard stands
+aside and the empty-200 case stays open there, which is the smaller defect next
+to a permanent 503 on a working install.
+
+**Decision: no harness-side readiness probe for the foreign harnesses.** On
+claude-agent-acp and codex-acp the destructive reruns run with no pre-flight
+check, and the turn's own ACP attempt is the authority — the same rule an
+ordinary send already follows. A Claude-side or Codex-side probe would have to
+spawn that harness's CLI on a timer to ask whether it is signed in, which is
+the browser-storm shape the kiro-cli gate exists to contain, and neither
+adapter offers a cheaper sign-in query. The cost accepted is that a
+signed-out foreign harness rewrites history on regenerate/rewind before its
+error card lands; revisit only if an adapter grows a side-effect-free
+sign-in check (a credentials-file read, not a spawn).
 
 **An unresolved check is never rendered as "setup required."** The cold probe
 spawns two sandboxed `kiro-cli` subprocesses (`--version`, then `whoami`), which

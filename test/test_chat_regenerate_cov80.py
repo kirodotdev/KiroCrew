@@ -1791,3 +1791,46 @@ async def test_no_variants_refusal_carries_its_own_code(state) -> None:
         payload = await resp.json()
         assert payload["code"] == "no_variants"
         assert payload["error"] == "no variants"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_gates_on_the_live_sessions_backend_after_a_hot_switch(state) -> None:
+    """A live session keeps its backend across a PATCH of agent.acp_backend.
+
+    Regenerate continues that session rather than discarding it, so with the
+    default switched to Claude Code and the slot still on a signed-out kiro-cli,
+    the configured default would let the truncation through and the auth failure
+    would land only after the history was rewritten.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+    class _SignedOut(KiroPrerequisiteService):
+        async def session_ready(self) -> bool:
+            return False
+
+        async def verified_ready(self, *, max_age_secs: float) -> bool:
+            del max_age_secs
+            return False
+
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    state.kiro_prerequisite_service = object.__new__(_SignedOut)
+    state.sessions._sessions = {
+        effective_session_key(slot): SimpleNamespace(
+            provider=SimpleNamespace(uses_kiro_identity_store=True)
+        )
+    }
+    configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+    with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "kiro_prerequisite_required"
+
+    assert [m["role"] for m in slot.messages] == ["user", "assistant"]

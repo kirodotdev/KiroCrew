@@ -66,6 +66,16 @@ which of the two is absent (`COMPONENT_CLAUDE_ACP_ADAPTER`,
 half-install does not read as a total one. A probe that itself fails reads
 `UNKNOWN`, never `MISSING`.
 
+A Claude Code deployment does **not** need kiro-cli installed or signed in. The
+dashboard's kiro-cli readiness guard (`dashboard/kiro_readiness.py`) reads
+`agent.acp_backend` and applies only to members of
+`backends_retired_by_host_logout()`, so regenerate, rewind, edit-resend and
+`/v1/chat/completions` run on this harness with no kiro-cli present;
+`/api/models` answers from the registry (`_cc_models`) and
+`/api/sessions/usage` hides the kiro credit pill without spawning anything. Both
+are spelled out in `modules/acp-client.md` § "Poll-driven spawn sites are
+readiness-gated".
+
 Both operator-facing surfaces read that one verdict:
 
 - `kirocrew doctor` prints Claude Code as an optional backend — present, absent
