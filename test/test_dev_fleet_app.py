@@ -4873,10 +4873,11 @@ def _stage_a_cutover(monkeypatch, tmp_path):
 async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
     """The rollback must not block the loop.
 
-    restore() ends in restrict_to_owner, which shells out to icacls on Windows,
-    and svc.rollback() rewrites the service definition. Run inline, an unwind
-    would stall every other gateway request for the duration of a subprocess, so
-    it has to reach the executor like the write it is undoing.
+    restore() ends in restrict_to_owner, whose Windows DACL write can block on
+    a network volume round-trip, and svc.rollback() rewrites the service
+    definition. Run inline, an unwind would stall every other gateway request
+    for the duration of that blocking file IO, so it has to reach the executor
+    like the write it is undoing.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"

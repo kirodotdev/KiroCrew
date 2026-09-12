@@ -700,10 +700,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``). These four TEST functions drive Code Review
         # Sage's ``_save_runs`` coroutine to completion without a running loop --
-        # the registry write is a coroutine because its owner-only lockdown spawns
-        # ``icacls`` on Windows and so must be offloaded off the event loop (that
-        # real spawn is ``platform_compat.py::restrict_to_owner``, allowlisted
-        # below). No child process is created here and nothing is
+        # the registry write is a coroutine because it is blocking file IO that
+        # must be offloaded off the event loop (see the offload rationale on
+        # ``_write_runs``). No child process is created here and nothing is
         # agent-influenced: every run record in these tests is a literal dict.
         # Same classification as the other ``asyncio.run`` sites in this list.
         "apps/builtins/code_review_sage/tests/test_backend_routes.py"

@@ -176,7 +176,7 @@ class TestSyncBuiltinConfig:
         assert cfg.read_text(encoding="utf-8") == before
 
     def test_async_call_sites_offload_off_the_event_loop(self):
-        """The helper does file I/O and, on Windows, spawns icacls via
+        """The helper does file I/O and, on Windows, a DACL write via
         restrict_to_owner — its async callers must never run it on the loop
         (no-blocking-call-on-event-loop). Any bare direct call (statement,
         assignment, or nested argument) is a violation; a dispatched form never

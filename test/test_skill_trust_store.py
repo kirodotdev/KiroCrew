@@ -1080,7 +1080,7 @@ class TestCachedPathsCannotEscapeAfterVetting:
 
     @pytest.mark.skipif(
         platform_compat.IS_WINDOWS,
-        reason="POSIX mode bits; the Windows ACL path needs icacls and is asserted there",
+        reason="POSIX mode bits; the Windows ACL path applies a DACL in-process and is asserted there",
     )
     def test_the_trust_dir_is_owner_only_on_posix(self, project):
         """The directory, not just the store file, must be owner-only.

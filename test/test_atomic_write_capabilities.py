@@ -183,7 +183,7 @@ def test_a_failing_lockdown_leaves_no_temp_and_no_target(tmp_path, monkeypatch):
 
 
 def _failing_restrict(monkeypatch):
-    """Make the owner-only lockdown fail the way a read-only FS or icacls would."""
+    """Make the owner-only lockdown fail the way a read-only FS or a DACL write failure would."""
 
     def _boom(path, **_kw):
         raise OSError("cannot set DACL")

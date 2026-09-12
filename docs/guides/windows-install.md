@@ -386,13 +386,19 @@ It runs **twice**, once before `sqlite3.connect` and once after. The first call
 is what stops the schema migrations running against a file another local user
 can still write; the second covers whatever SQLite has just created.
 
-The Windows cost is up to 11 `icacls` spawns per init — one for the directory
-plus one per file on each of the two passes, and a file that does not exist
-still spawns (icacls exits non-zero and the caller warns). That is more than it
-sounds and still cheap in context: once per workspace per process, beside the
-`sqlite3.connect`, the migrations and the FAISS index load already in that
-function — and `context.get_memory_for` caches the store and is reached from a
-worker thread, not the gateway event loop.
+The Windows cost is up to 11 in-process DACL operations per init — one for the
+directory plus one per file on each of the two passes; a file that does not
+exist is skipped by an existence check rather than paid for. Each per-file
+write costs roughly 0.24 ms. The directory write is priced differently: its
+inheritable grants propagate to every descendant object, so a directory whose
+DACL does not yet match pays about 0.24 ms per object in the tree — seconds on
+a large data home — once, to repair it. On every later boot the descriptor
+already matches and the write is skipped after an O(1) probe
+(`windows_acl.owner_only_dacl_matches`). That is cheap in context: once per
+workspace per process, beside the `sqlite3.connect`, the migrations and the
+FAISS index load already in that function — and `context.get_memory_for`
+caches the store and is reached from a worker thread, not the gateway event
+loop.
 
 It is fail-soft (warn, keep going), which is the contract `restrict_to_owner`
 documents for its callers: memory being unavailable is a supported degraded

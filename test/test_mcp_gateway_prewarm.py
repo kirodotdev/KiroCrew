@@ -72,7 +72,8 @@ def test_flush_persists_when_os_fchmod_is_absent(
     The attribute is deleted rather than the test being run on Windows, so the
     guard executes on the matrix that actually runs it. ``IS_POSIX`` is flipped
     too so the Windows DACL branch is taken, and ``restrict_to_owner`` is stubbed
-    because the real one shells out to ``icacls``, which cannot succeed here --
+    because the real one applies a Windows ACL through ``advapi32``, which cannot
+    succeed here --
     the stub doubles as the assertion that the DACL is applied to the TEMP file,
     before any content is written.
     """

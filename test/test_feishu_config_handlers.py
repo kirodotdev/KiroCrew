@@ -100,7 +100,7 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
     assert f"FEISHU_APP_SECRET={APP_SECRET}" in env_text
     if os.name != "nt":
         # POSIX-only: group/other must hold no bits on a file carrying secrets.
-        # Windows locks the same file down with an ACL (icacls) instead, where
+        # Windows locks the same file down with an owner-only ACL instead, where
         # st_mode reports 0o666 no matter what the ACL says -- so asserting mode
         # bits there tests a mechanism the platform does not use.
         assert (env.stat().st_mode & 0o077) == 0

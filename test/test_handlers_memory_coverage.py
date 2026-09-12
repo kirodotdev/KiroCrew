@@ -667,8 +667,9 @@ class TestRedactAndStoreResolution:
 
 # ---------------------------------------------------------------------------
 # _get_vector_store_async — the standalone fallback's ``init()`` must
-# never run on the event loop (VectorMemoryStore's caller contract: the
-# Windows path shells out to icacls and would freeze the loop for seconds).
+# never run on the event loop (VectorMemoryStore's caller contract: init is
+# blocking file IO whose Windows DACL writes can block on a network volume
+# round-trip and would freeze the loop).
 # ---------------------------------------------------------------------------
 
 

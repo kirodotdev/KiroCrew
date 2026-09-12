@@ -883,8 +883,9 @@ def test_installing_the_pipe_factory_twice_is_a_noop(
 
 # --- prepare_dir must not run on the event loop -------------------------------
 
-# ``prepare_dir`` -> ``platform_compat.make_owner_only_dir`` shells out to
-# ``icacls`` on Windows with a multi-second timeout. Both call sites are
+# ``prepare_dir`` -> ``platform_compat.make_owner_only_dir`` is blocking file
+# IO whose Windows DACL write can block on a network volume round-trip. Both
+# call sites are
 # coroutines, so an inline call stalls the loop it runs on -- for the manager
 # that is the live gateway's loop (a dashboard toggle freezes chat turns and the
 # liveness heartbeat), and for the daemon it is the loop already serving its
