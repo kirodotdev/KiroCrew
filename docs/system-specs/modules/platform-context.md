@@ -92,6 +92,8 @@ interface, the public edition is complete standalone.
 > is added here; the existing EC2 lane carries none today, and a
 > `capabilities.remote_provisioners` row mirroring `capabilities.mobile_connect`
 > is the natural follow-up once a second lane exists to narrow on.
+>
+> Contributor walkthrough: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md).
 
 > `external_access` note — three surfaces the core offers unconditionally, none of
 > which had a composition point. Two are installable-content registries: skill
