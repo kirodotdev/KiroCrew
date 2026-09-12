@@ -739,6 +739,63 @@ export function RemoteCrewPanel() {
   // to the first renderable row below.
   const [persistedProvisioner, setProvisionerId] = usePersistedString(CLOUD_PROVISIONER_KEY, '')
   const [copied, setCopied] = useState<'command' | 'policy' | null>(null)
+  // The Kiro identity the crew signs in as. Preselected from the launching
+  // machine's own sign-in (an Identity Center user gets their organization's
+  // portal, not the Builder ID one) and overridable; the server re-validates.
+  // `identity_region` is the IAM Identity Center region — NOT the EC2 region.
+  const [identityMode, setIdentityMode] = useState<'builder_id' | 'identity_center'>('builder_id')
+  const [identityStartUrl, setIdentityStartUrl] = useState('')
+  const [identityRegion, setIdentityRegion] = useState('')
+  const identityTouched = useRef(false)
+  // Render-visible twin of the ref: an explicit choice must re-render the
+  // Launch gate even when it re-selects the already-checked default.
+  const [identityChosen, setIdentityChosen] = useState(false)
+  const identityQuery = useQuery({
+    queryKey: ['cloud-identity'],
+    queryFn: api.cloudIdentity,
+    staleTime: 60_000,
+    retry: false,
+  })
+  useEffect(() => {
+    // Seed ONCE from the inherited identity; never overwrite a user's edits.
+    if (identityTouched.current) return
+    const suggested = identityQuery.data?.suggested_target
+    if (suggested?.start_url) {
+      setIdentityMode('identity_center')
+      setIdentityStartUrl(suggested.start_url)
+    }
+  }, [identityQuery.data])
+  // Mirrors normalize_start_url on the backend, which is the authority: the
+  // scheme may be omitted (https is assumed), the host is any valid DNS name
+  // (Identity Center portals live in other partitions and on custom domains,
+  // not only <org>.awsapps.com), and characters that would be unsafe on the
+  // remote shell are refused. The form only decides whether Launch is enabled.
+  const identityStartUrlOk = (() => {
+    const v = identityStartUrl.trim()
+    if (!v || /[\s"'`$\\;&|<>(){}[\]*?!~#]/.test(v)) return false
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v) && !/^https:\/\//i.test(v)) return false // http:, ftp:, ...
+    const bare = v.replace(/^https:\/\//i, '')
+    return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(\/[^?#]*)?$/i.test(bare)
+  })()
+  const identityRegionOk = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/.test(identityRegion.trim())
+  // Until the launching computer's identity has been READ (or the user has
+  // made a choice themselves), the Builder ID default is a placeholder, not a
+  // decision: a returning operator with satisfied prerequisites could click
+  // Launch inside that window and send no target, and an Identity Center
+  // preselection that lands a moment later would have been ignored. A read
+  // that could not answer -- the server reports `discovery: 'unknown'`, or the
+  // request itself failed -- is the same placeholder: nothing is known about
+  // this computer's sign-in, so the inline notice explains it and Launch waits
+  // for the user to pick by hand. An Identity Center user whose whoami timed
+  // out must not be launched as Builder ID by a preselection they never saw
+  // was a guess.
+  const identityUnknown = identityQuery.isError || identityQuery.data?.discovery === 'unknown'
+  const identityResolving = (identityQuery.isPending || identityUnknown) && !identityChosen
+  const identityOk =
+    !identityResolving && (identityMode === 'builder_id' || (identityStartUrlOk && identityRegionOk))
+  const loginTargetBody = identityMode === 'identity_center'
+    ? { login_target: { license: 'pro', start_url: identityStartUrl.trim(), region: identityRegion.trim() } }
+    : {}
   /** A failed copy, pinned to the checklist row whose button was pressed. */
   const [copyErr, setCopyErr] = useState<{ target: 'command' | 'policy'; message: string } | null>(null)
   const [activeLaunchId, setActiveLaunchId] = useState<string | null>(null)
@@ -1627,6 +1684,110 @@ export function RemoteCrewPanel() {
               )}
             </div>
 
+            <div className="mt-4">
+              <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
+              {identityQuery.isError ? (
+                <>
+                  {/* No hand-off: this notice sits beside the unsaved Identity Center
+                      start-URL and region draft, and the hand-off navigates to chat,
+                      which would unmount the form and discard that draft. The failure is
+                      non-blocking — the only consequence is that the launching computer's
+                      identity could not be read to preselect the radios; the user can
+                      still pick and type the target below. */}
+                  <ErrorNotice
+                    variant="inline"
+                    className="mb-2"
+                    message={i18nT('pages.settings.remoteCrewPanel.identity_lookup_failed', {
+                      detail: identityQuery.error instanceof Error ? identityQuery.error.message : String(identityQuery.error),
+                    })}
+                  />
+                </>
+              ) : identityQuery.data?.discovery === 'unknown' ? (
+                <>
+                  {/* No hand-off: like the notice above, this sits beside the unsaved
+                      Identity Center start-URL and region draft, and a hand-off navigates
+                      to chat, unmounting the form and discarding that draft. whoami on
+                      the launching computer could not answer, so the server suggests
+                      nothing: the Builder ID radio below is a placeholder until the user
+                      picks, and Launch waits for that pick. */}
+                  <ErrorNotice
+                    variant="inline"
+                    className="mb-2"
+                    message={i18nT('pages.settings.remoteCrewPanel.identity_unknown')}
+                  />
+                </>
+              ) : null}
+              <div className="space-y-2">
+                <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+                  <input
+                    type="radio"
+                    name="kiro-identity"
+                    className="mt-0.5"
+                    checked={identityMode === 'builder_id'}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+                    onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
+                    // Re-selecting the already-checked default fires no change
+                    // event, but it IS the user's explicit choice, and that
+                    // choice ends the wait for the inherited identity.
+                    onClick={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
+                  />
+                  <span>
+                    {i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+                    <span className="block text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.identity_builder_id_hint')}</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+                  <input
+                    type="radio"
+                    name="kiro-identity"
+                    className="mt-0.5"
+                    checked={identityMode === 'identity_center'}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_center')}
+                    onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('identity_center') }}
+                  />
+                  <span>
+                    {i18nT('pages.settings.remoteCrewPanel.identity_center')}
+                    <span className="block text-[12px] text-muted">
+                      {identityQuery.data?.identity?.account_type === 'IamIdentityCenter'
+                        ? i18nT('pages.settings.remoteCrewPanel.identity_center_inherited')
+                        : i18nT('pages.settings.remoteCrewPanel.identity_center_hint')}
+                    </span>
+                  </span>
+                </label>
+                {identityMode === 'identity_center' && (
+                  <div className="ml-6 space-y-2">
+                    <label className="block text-[12px] text-muted">
+                      {i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                      <input
+                        type="url"
+                        value={identityStartUrl}
+                        aria-label={i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                        onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityStartUrl(e.target.value) }}
+                        placeholder="https://example.awsapps.com/start"
+                        spellCheck={false}
+                        aria-invalid={identityStartUrl !== '' && !identityStartUrlOk}
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-none focus-visible:border-accent"
+                      />
+                    </label>
+                    <label className="block text-[12px] text-muted">
+                      {i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                      <input
+                        type="text"
+                        value={identityRegion}
+                        aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                        onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityRegion(e.target.value) }}
+                        placeholder="us-east-1"
+                        spellCheck={false}
+                        aria-invalid={identityRegion !== '' && !identityRegionOk}
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-none focus-visible:border-accent"
+                      />
+                      <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5">
               <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" />
               <div className="text-[12px] text-text">
@@ -1643,10 +1804,18 @@ export function RemoteCrewPanel() {
                   behind a different engine; omitting the id would let the server
                   default to the built-in and provision on the wrong lane. Only
                   an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey })} disabled={!blockingOk || launchMutation.isPending}>
+              <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...loginTargetBody })} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
-              <span className="text-[12px] text-muted">{blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}</span>
+              <span className="text-[12px] text-muted">
+                {identityResolving
+                  ? identityUnknown
+                    ? i18nT('pages.settings.remoteCrewPanel.identity_choose')
+                    : i18nT('pages.settings.remoteCrewPanel.identity_resolving')
+                  : !identityOk
+                    ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
+                    : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
+              </span>
             </div>
           </Card>
           </>

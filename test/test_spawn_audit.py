@@ -1186,6 +1186,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/ssm.py::_kill_tree_windows",
         "cloud/ssm.py::_run_install_command",
         "cloud/ssm.py::open_port_forward",
+        # Local identity probe: `<resolved kiro-cli> whoami --format json`, a
+        # fixed argv with no shell and no agent-reachable input — the binary
+        # comes from `kiro_cli.resolve_kiro_cli` (the same resolution every
+        # other kiro-cli spawn uses), stdin is DEVNULL and the output is only
+        # parsed, never executed. Same classification as the whoami probes
+        # in `cloud/ssm.py` above.
+        "cloud/login_target.py::discover_local_identity",
         "dashboard/chat_voice.py::api_voice_voices",
         # Computer-use permission probe: `<our own kirocrew binary> computer
         # doctor --json`, a fixed argv (module constants) with no shell and no

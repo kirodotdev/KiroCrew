@@ -39,6 +39,7 @@ vi.mock('../api/client', () => {
       cloudProvisioners: vi.fn(),
       cloudIamPolicy: vi.fn(),
       cloudLaunch: vi.fn(),
+      cloudIdentity: vi.fn(),
       cloudLaunchStatus: vi.fn(),
       cloudLaunchCancel: vi.fn(),
       cloudLaunchSignin: vi.fn(),
@@ -141,6 +142,7 @@ beforeEach(() => {
   // selected provisioner is known to be the built-in one). The stock single-row
   // answer is the default; a test that cares overrides it.
   vi.mocked(api.cloudProvisioners).mockResolvedValue({ provisioners: [AWS_EC2_ROW] })
+  vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: { account_type: "BuilderId" }, suggested_target: { license: "", start_url: "", region: "" } })
 })
 
 describe('RemoteCrewPanel', () => {
@@ -624,6 +626,203 @@ describe('RemoteCrewPanel', () => {
     await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }))
     // Progress card polls the job and renders its steps.
     expect(await screen.findByText('Installing Kiro Crew')).toBeInTheDocument()
+  })
+
+  it('preselects the inherited Identity Center sign-in, gates launch on the region, and sends the target', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+    // The organization's portal is preselected and named; the form asks only for the region.
+    const idc = await screen.findByRole('radio', { name: /Company SSO/i })
+    await waitFor(() => expect(idc).toBeChecked())
+    expect(screen.getByText(/Preselected from this computer's Kiro sign-in/)).toBeInTheDocument()
+    const url = screen.getByRole('textbox', { name: /Identity Center start URL/i })
+    expect(url).toHaveValue('https://example.awsapps.com/start')
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    // Region missing: the launch is refused up front, never sent as Builder ID.
+    expect(launch).toBeDisabled()
+    expect(screen.getByText(/Enter the Identity Center start URL and region/)).toBeInTheDocument()
+
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-east-1')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({
+        provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced',
+        login_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: 'us-east-1' },
+      }),
+    )
+  })
+
+  it('accepts any safe portal URL the backend accepts, scheme-less or on another domain', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
+    await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-gov-west-1')
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+
+    // The form mirrors normalize_start_url: a GovCloud portal pasted without a
+    // scheme is a valid target, not a format the user has to guess at.
+    await u.clear(url)
+    await u.type(url, 'example.awsapps-us-gov.com/start')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    // A shell metacharacter is the one shape the form does refuse up front.
+    await u.type(url, ';id')
+    await waitFor(() => expect(launch).toBeDisabled())
+  })
+
+  it('lets the user override the inherited identity back to Builder ID, which sends no target', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked())
+    await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }),
+    )
+  })
+
+  it('keeps Launch disabled while the inherited identity is still being read', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    let resolveIdentity: (v: Awaited<ReturnType<typeof api.cloudIdentity>>) => void = () => {}
+    vi.mocked(api.cloudIdentity).mockReturnValue(new Promise((r) => { resolveIdentity = r }))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    // Prerequisites are satisfied, but the identity read is pending: the
+    // Builder ID default is a placeholder, so Launch must NOT be clickable —
+    // a click here would send no target and ignore the preselection that
+    // lands a moment later.
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    await screen.findByText(/Reading this computer's Kiro sign-in/i)
+    expect(launch).toBeDisabled()
+    resolveIdentity({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    // Resolved: the preselection landed, and the gate is now the region field.
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked())
+    expect(launch).toBeDisabled()
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-east-1')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+  })
+
+  it('lets an explicit user choice override the wait for the inherited identity', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockReturnValue(new Promise(() => {})) // never resolves
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    expect(launch).toBeDisabled()
+    await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }),
+    )
+  })
+
+  it('surfaces an identity lookup failure inline and waits for an explicit choice before launch', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockRejectedValue(new Error('kiro-cli whoami timed out'))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    // The failure is shown, names its cause, and offers NO agent hand-off: a
+    // hand-off would unmount the form the user is about to submit.
+    const notice = await screen.findByText(/Could not read this computer's Kiro sign-in/i)
+    expect(notice.textContent).toMatch(/whoami timed out/)
+    expect(screen.queryByRole('button', { name: /Ask the agent/i })).toBeNull()
+    // Nothing is known about this computer's sign-in, so the checked Builder ID
+    // radio is a placeholder, not a read value: Launch waits for the user to
+    // pick. An Identity Center user whose whoami failed must not be launched
+    // as Builder ID by a default they never confirmed.
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    expect(launch).toBeDisabled()
+    expect(screen.getByText(/Choose the crew's Kiro identity to launch/i)).toBeInTheDocument()
+    await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }),
+    )
+  })
+
+  it('treats a server-reported unknown discovery as no preselection and waits for a choice', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    // whoami on the launching computer could not answer: the server suggests
+    // nothing rather than a Builder ID default that would read as a fact.
+    vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: null, suggested_target: null, discovery: 'unknown' })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await screen.findByText(/kiro-cli whoami did not answer/i)
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    expect(launch).toBeDisabled()
+    expect(screen.getByText(/Choose the crew's Kiro identity to launch/i)).toBeInTheDocument()
+    // The user picks Identity Center by hand: the usual field gate applies.
+    await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
+    expect(launch).toBeDisabled()
+    await u.type(screen.getByRole('textbox', { name: /start URL/i }), 'https://example.awsapps.com/start')
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-east-1')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({
+        provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced',
+        login_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: 'us-east-1' },
+      }),
+    )
   })
 
   describe('agent hand-off from the diagnosis note', () => {

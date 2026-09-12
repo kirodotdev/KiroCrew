@@ -30,6 +30,7 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 
 # The migration module owns the pre-migration leftover-tab spelling.
 from kiro_crew.channel_transcript_migration import _orphan_target_stem
+from kiro_crew.cloud.login_target import parse_whoami_output
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
 from kiro_crew.dashboard import directive_queue
@@ -614,10 +615,22 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
     only local source of the account email.
 
     Returns a dict with any of ``email`` / ``account_type`` / ``start_url``, or
-    ``{}`` on any failure — identity is decorative, so it must never break the
-    credit readout. stdout is untrusted: only the LEADING JSON object is parsed
-    (kiro-cli appends a non-JSON "Profile:" block after it), values must be
-    strings, and each is length-bounded before it can reach the cache/UI.
+    ``{}`` on any failure — identity is decorative here, so it must never break
+    the credit readout. A caller that must tell "could not read" apart from
+    "no identity" uses :func:`_fetch_whoami_or_none`.
+    """
+    return (await _fetch_whoami_or_none(kiro_bin)) or {}
+
+
+async def _fetch_whoami_or_none(kiro_bin: str) -> dict[str, object] | None:
+    """Run ``kiro-cli whoami --format json`` and parse it, keeping failure distinct.
+
+    Returns the parsed identity when whoami answered (``{}`` when it exited
+    cleanly reporting none), and ``None`` when nothing is known — it timed out,
+    could not start, or exited nonzero without printing an identity. stdout is
+    untrusted: only the LEADING JSON object is parsed (kiro-cli appends a
+    non-JSON "Profile:" block after it), values must be strings, and each is
+    length-bounded before it can reach the cache/UI.
     """
     proc = None
     cleanup = None
@@ -642,48 +655,28 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         raw = (out or err or b"").decode(errors="replace")
-        full = raw  # keep the whole output; the ARN lives AFTER the JSON object
-        # Take only the first {...} block; trailing "Profile:\n<name>" is not JSON.
-        depth = 0
-        start = raw.find("{")
-        if start < 0:
-            return {}
-        for i in range(start, len(raw)):
-            if raw[i] == "{":
-                depth += 1
-            elif raw[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    raw = raw[start : i + 1]
-                    break
-        else:
-            return {}
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            return {}
-        out_map: dict[str, object] = {}
-        for src, dst, cap in (
-            ("email", "email", 254),
-            ("accountType", "account_type", 60),
-            ("startUrl", "start_url", 200),
-        ):
-            v = data.get(src)
-            if isinstance(v, str) and v:
-                out_map[dst] = v[:cap]
+        # The JSON scrape is shared with the cloud launch paths
+        # (cloud/login_target.parse_whoami_output): leading object only, string
+        # values, length-bounded. The ARN lives AFTER the JSON object.
+        out_map: dict[str, object] = dict(parse_whoami_output(raw))
+        if not out_map:
+            # Nonzero without an identity: an expired or broken session, a CLI
+            # fault -- nothing is known. A clean exit with no identity is known.
+            return None if proc.returncode else {}
         # whoami's own profile ARN, printed in the trailing (non-JSON) "Profile:"
         # block. Private (leading underscore): used only to prove this identity
         # belongs to the same account the credit numbers came from, and stripped
         # before anything is cached or served.
-        m = re.search(r"arn:aws:codewhisperer:[^\s\"']+", full)
+        m = re.search(r"arn:aws:codewhisperer:[^\s\"']+", raw)
         if m:
             out_map["_profile_arn"] = m.group(0)[:200]
         return out_map
     except (asyncio.TimeoutError, ValueError, OSError):
         logger.debug("whoami identity fetch failed", exc_info=True)
-        return {}
+        return None
     except Exception:
         logger.debug("whoami identity fetch failed (unexpected)", exc_info=True)
-        return {}
+        return None
     finally:
         if proc is not None and proc.returncode is None:
             try:
@@ -696,6 +689,25 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
                 os.remove(cleanup)
             except OSError:
                 pass
+
+
+async def fetch_local_identity() -> dict[str, object] | None:
+    """Return this machine's signed-in Kiro identity, ``{}`` or ``None``.
+
+    The one dashboard-side door to ``kiro-cli whoami``: it resolves the same
+    binary chat spawns and runs :func:`_fetch_whoami_or_none` at the configured
+    sandbox tier. Other handlers (the Remote Crew launch form's identity
+    preselect) call this instead of reaching into the ACP layer themselves, so
+    the agent-backend boundary stays where this module already crosses it.
+    ``{}`` when kiro-cli is absent (non-Kiro provider) or whoami answered with
+    no identity -- this machine has no sign-in to inherit; ``None`` when whoami
+    could not answer -- the identity is unknown, and a caller must not present
+    the default as if it had been read.
+    """
+    kiro_bin = await _resolve_kiro_bin_for_spawn()
+    if not kiro_bin:
+        return {}
+    return await _fetch_whoami_or_none(kiro_bin)
 
 
 def _identity_matches_account(api_arn: object, identity: dict[str, object]) -> bool:

@@ -339,6 +339,7 @@ class TestCloudLogin:
             ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
         )
         monkeypatch.setattr(cli_cloud.login_mod, "is_logged_in", lambda *a, **k: False)
+        monkeypatch.setattr(cli_cloud.login_mod, "remote_identity_state", lambda *a, **k: "absent")
         monkeypatch.setattr(
             cli_cloud.login_mod,
             "start_device_login",
@@ -366,6 +367,7 @@ class TestCloudLogin:
             ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
         )
         monkeypatch.setattr(cli_cloud.login_mod, "is_logged_in", lambda *a, **k: False)
+        monkeypatch.setattr(cli_cloud.login_mod, "remote_identity_state", lambda *a, **k: "absent")
         monkeypatch.setattr(
             cli_cloud.login_mod,
             "start_device_login",
@@ -376,6 +378,39 @@ class TestCloudLogin:
         rc = cli_cloud._cloud_login(_args(profile="", region="", tag="kc-1", no_browser=True))
         assert rc == 1
         assert "not detected yet" in capsys.readouterr().out
+
+    def test_flagless_login_over_an_identity_center_session_is_a_mismatch(
+        self, monkeypatch, capsys
+    ):
+        """A flagless ``cloud login`` asks for Builder ID. On an instance that
+        holds an Identity Center session that is a wrong-identity mismatch, not
+        "not signed in": kiro-cli ignores a login over a live session, so
+        starting one would do nothing and report nothing. The command names the
+        target it was asked for, points at logout, exits 1, and never starts a
+        sign-in."""
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+        monkeypatch.setattr(cli_cloud, "_resolve_tag", lambda _a: "kc-1")
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(cli_cloud.login_mod, "is_logged_in", lambda *a, **k: False)
+        seen: list[object] = []
+
+        def state(*a, **k):
+            seen.append(k["target"])
+            return "mismatch"
+
+        monkeypatch.setattr(cli_cloud.login_mod, "remote_identity_state", state)
+        monkeypatch.setattr(
+            cli_cloud.login_mod,
+            "start_device_login",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sign-in over a mismatch")),
+        )
+        rc = cli_cloud._cloud_login(_args(profile="", region="", tag="kc-1", no_browser=True))
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert seen and seen[0].is_default
+        assert "DIFFERENT Kiro identity than Builder ID" in out and "cloud logout" in out
 
     def test_logout_signs_out_and_points_at_login(self, monkeypatch, capsys):
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))

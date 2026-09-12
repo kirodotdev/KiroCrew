@@ -142,6 +142,7 @@ def register(app: web.Application) -> None:
     # The lanes the Set-up tab may offer (CPP remote_provisioners seam); the
     # built-in EC2 lane plus whatever the edition composes in.
     app.router.add_get("/api/cloud/provisioners", handlers_cloud.api_cloud_provisioners)
+    app.router.add_get("/api/cloud/identity", handlers_cloud.api_cloud_identity)
     app.router.add_get("/api/cloud/launch", handlers_cloud.api_cloud_launch_list)
     app.router.add_post("/api/cloud/launch", handlers_cloud.api_cloud_launch_create)
     app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)

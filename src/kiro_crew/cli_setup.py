@@ -447,6 +447,14 @@ def _maybe_setup_cloud() -> None:
             size="",
             yes=False,
             hold_tunnel=False,
+            # Same identity behaviour as `kirocrew cloud launch` with no flags:
+            # inherit this machine's kiro-cli sign-in (Identity Center users get
+            # their organization's sign-in, not the Builder ID portal). The wizard
+            # asks for the Identity Center region interactively when needed.
+            identity_provider="",
+            license="",
+            idp_region="",
+            no_inherit_identity=False,
         )
         handle_cloud(args)
     except Exception as exc:  # pragma: no cover - non-fatal, informative

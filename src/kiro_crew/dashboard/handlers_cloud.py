@@ -36,7 +36,9 @@ from kiro_crew.cloud import source as source_mod
 from kiro_crew.cloud import ssm
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
 from kiro_crew.cloud.launch_engine import RealLaunchEngine
+from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError, target_from_whoami
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+from kiro_crew.dashboard.handlers.sessions import fetch_local_identity
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
 )
@@ -283,7 +285,11 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
     plugin_cmd = "" if plugin else await _in_executor(ssm.session_manager_plugin_install_command)
     _audit("preflight", "success")
     return web.json_response(
-        {**reach, "session_manager_plugin": bool(plugin), "session_manager_plugin_command": plugin_cmd}
+        {
+            **reach,
+            "session_manager_plugin": bool(plugin),
+            "session_manager_plugin_command": plugin_cmd,
+        }
     )
 
 
@@ -294,6 +300,60 @@ async def api_cloud_iam_policy(request: web.Request) -> web.Response:
         return denied
     _audit("iam_policy", "success")
     return web.json_response({"policy": iam.policy_json()})
+
+
+async def api_cloud_identity(request: web.Request) -> web.Response:
+    """GET /api/cloud/identity — the launching machine's own Kiro sign-in.
+
+    What the Remote Crew launch form preselects: an Identity Center user gets
+    their organization's start URL as the crew's default sign-in target instead
+    of the Builder ID portal. Owner-only like every cloud route (it names the
+    operator's account type and SSO portal). Reuses the dashboard's existing
+    sandbox-tiered ``kiro-cli whoami --format json`` fetch; the result is a
+    SUGGESTION the form can override — never a credential, and never the
+    launch's authority (that is the validated body of ``POST /api/cloud/launch``).
+
+    ``{"identity": {account_type?, start_url?}, "suggested_target": {...},
+    "discovery": "read"}`` when whoami answered (an empty identity is a real
+    answer: this machine has no sign-in to inherit, and the default target is
+    the suggestion). ``{"identity": null, "suggested_target": null,
+    "discovery": "unknown"}`` when it could not answer -- timed out, failed to
+    start, exited with an error -- and ``{"identity": {...}, "suggested_target":
+    null, "discovery": "unknown"}`` when it named Identity Center without a
+    readable start URL (which organization is unknown), so the form does not
+    present the Builder ID default as though it had been read; the user chooses
+    by hand. The Identity
+    Center REGION is not something whoami reports, so the suggested target
+    carries it empty for the form to complete.
+    """
+    denied = _guard(request, "identity", posix_only=False)
+    if denied is not None:
+        return denied
+
+    identity: dict[str, object] | None
+    try:
+        identity = await fetch_local_identity()
+    except Exception:  # noqa: BLE001 - discovery is advisory
+        logger.debug("cloud identity discovery failed", exc_info=True)
+        identity = None
+    if identity is None:
+        _audit("identity", "success")
+        return web.json_response(
+            {"identity": None, "suggested_target": None, "discovery": "unknown"}
+        )
+    public = {k: v for k, v in identity.items() if k in ("account_type", "start_url")}
+    suggested = target_from_whoami(identity)
+    if suggested is None:
+        # Identity Center, but WHICH organization is not readable: suggesting the
+        # Builder ID default here would be the silent downgrade; the form asks.
+        _audit("identity", "success")
+        return web.json_response(
+            {"identity": public, "suggested_target": None, "discovery": "unknown"}
+        )
+    _audit("identity", "success")
+    return web.json_response(
+        {"identity": public, "suggested_target": suggested.to_dict(), "discovery": "read"}
+    )
 
 
 async def api_cloud_provisioners(request: web.Request) -> web.Response:
@@ -347,9 +407,12 @@ async def api_cloud_launch_get(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: ``{provider_id?, profile, region, size_key}``. ``provider_id`` names a
+    Body: ``{provider_id?, profile, region, size_key, login_target?}``. ``provider_id`` names a
     row of ``GET /api/cloud/provisioners`` and defaults to the built-in EC2 lane,
-    so a pre-seam client body launches exactly what it always did. The POSIX gate
+    so a pre-seam client body launches exactly what it always did. ``login_target``
+    is ``{license, start_url, region}`` — the Kiro identity the crew signs in as
+    (``region`` here is the IAM Identity Center region, NOT the EC2 ``region``
+    above); absent means Builder ID. The POSIX gate
     is per descriptor: the built-in shells to ``bash``/``aws`` and needs one, an
     edition's provisioner says for itself.
     """
@@ -368,9 +431,27 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
         )
     size_key = str(body.get("size_key") or "").strip()
     provider_id = str(body.get("provider_id") or BUILTIN_PROVISIONER_ID).strip()
-    provisioner = next(
-        (p for p in await _in_executor(_provisioners) if p.id == provider_id), None
-    )
+    # The Kiro identity the crew signs in as — validated HERE, at the owner-only
+    # HTTP boundary, before anything is persisted or reaches a remote shell.
+    # An absent block is the Builder ID default (a pre-seam client body launches
+    # exactly what it always did); a present-but-invalid one is a coded 400,
+    # never a silent fall-back to the wrong identity.
+    raw_target = body.get("login_target")
+    if raw_target is not None and not isinstance(raw_target, dict):
+        _audit("launch_create", "denied", error="invalid login target: not an object")
+        return web.json_response(
+            {"error": "login_target must be an object", "code": "invalid_login_target"}, status=400
+        )
+    try:
+        login_target = KiroLoginTarget.from_fields(
+            license=str((raw_target or {}).get("license") or ""),
+            start_url=str((raw_target or {}).get("start_url") or ""),
+            region=str((raw_target or {}).get("region") or ""),
+        )
+    except LoginTargetError as e:
+        _audit("launch_create", "denied", error=f"invalid login target: {e}")
+        return web.json_response({"error": str(e), "code": "invalid_login_target"}, status=400)
+    provisioner = next((p for p in await _in_executor(_provisioners) if p.id == provider_id), None)
     if provisioner is None:
         _audit("launch_create", "denied", error=f"unknown provisioner {provider_id!r}")
         return web.json_response(
@@ -434,6 +515,7 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                     size_key=size_key,
                     provider_id=provider_id,
                     step_labels=dict(provisioner.step_labels or ()),
+                    login_target=login_target,
                 )
             )
         except KeyError as e:  # unknown size
@@ -600,9 +682,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
             # as a no-op, resolves no id, and skips the unregister AGAIN, so the row can
             # never be cleared from this panel. The launch job that created this tag
             # persists its instance id: still server-owned state, never caller input.
-            iid = next(
-                (j.instance_id for j in store.list() if j.tag == tag and j.instance_id), ""
-            )
+            iid = next((j.instance_id for j in store.list() if j.tag == tag and j.instance_id), "")
         # destroy: issue the delete and return; do not block the request on
         # DELETE_COMPLETE (minutes). A later status / the reaper reflects it.
         out = ec2.destroy(tag, profile, region, wait=False)
@@ -623,9 +703,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # without this arm a malformed tag in the URL path becomes a 500 instead of
         # telling the caller what was wrong with their input.
         _audit(op, "denied", request_id=tag, error=str(e))
-        return web.json_response(
-            {"error": str(e), "code": "invalid_cloud_parameter"}, status=400
-        )
+        return web.json_response({"error": str(e), "code": "invalid_cloud_parameter"}, status=400)
     except CloudActionDenied as e:
         _audit(op, "denied", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "cloud_action_denied"}, status=403)

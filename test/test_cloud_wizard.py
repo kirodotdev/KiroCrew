@@ -185,6 +185,215 @@ class TestLaunchResume:
         assert save_calls == []
         assert "Resuming existing CloudFormation stack" in capsys.readouterr().out
 
+    def test_resume_onto_a_wrong_identity_session_registers_but_exits_1(self, monkeypatch, capsys):
+        """A resumed instance can hold a valid session for a DIFFERENT identity
+        than the pinned target. The wizard already detects it and prints the
+        logout recovery; the exit code must say the same thing. The dashboard is
+        still opened and the crew registered (the recovery needs both), but a
+        launch that did not deliver the identity it was asked for is not 0.
+        Contrast: a merely NOT-signed-in box stays a warning and exits 0."""
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+
+        target = KiroLoginTarget(
+            license="pro", start_url="https://example.awsapps.com/start", region="us-east-1"
+        )
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        calls = _patch_post_launch(monkeypatch, logged_in=False)
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(
+            ec2,
+            "describe",
+            lambda tag, *_a, **_k: {
+                "tag": tag,
+                "exists": True,
+                "stack_name": "kirocrew-kc-old",
+                "stack_status": "CREATE_COMPLETE",
+                "instance_id": "i-old",
+                "public_dns": "",
+                "region": "us-west-2",
+                "instance_state": "running",
+            },
+        )
+        monkeypatch.setattr(
+            ec2, "deploy", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not deploy"))
+        )
+        started = []
+        monkeypatch.setattr(
+            login, "start_device_login", lambda *a, **k: started.append(1) or login.LoginPrompt()
+        )
+
+        monkeypatch.setattr(login, "remote_identity_state", lambda *a, **k: "mismatch")
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, login_target=target)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert calls["connect"] == ["i-old"] and calls["register"] == ["i-old"]
+        assert started == []  # a login over a live session is not attempted
+        assert "DIFFERENT Kiro identity" in out and "kirocrew cloud logout" in out
+        assert "is live on AWS" not in out
+
+        # Same resume, no session at all: a warning, and the launch still succeeds.
+        monkeypatch.setattr(login, "remote_identity_state", lambda *a, **k: "absent")
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, login_target=target)
+        assert rc == 0
+        assert "is live on AWS" in capsys.readouterr().out
+
+    def test_mismatch_verified_by_the_signin_attempt_is_sticky_too(self, monkeypatch, capsys):
+        """Both identity probes are transiently unknown, so the sign-in step
+        falls through to ``start_device_login`` -- and kiro-cli refuses it over
+        a live session for the WRONG identity (``prompt.identity_mismatch``).
+        That verdict is recorded like the probe's would have been: the
+        operational recheck, still unknown, cannot read it down to an exit-0
+        "not signed in" warning."""
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+
+        target = KiroLoginTarget(
+            license="pro", start_url="https://example.awsapps.com/start", region="us-east-1"
+        )
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        calls = _patch_post_launch(monkeypatch, logged_in=False)
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(
+            ec2,
+            "describe",
+            lambda tag, *_a, **_k: {
+                "tag": tag,
+                "exists": True,
+                "stack_name": "kirocrew-kc-old",
+                "stack_status": "CREATE_COMPLETE",
+                "instance_id": "i-old",
+                "public_dns": "",
+                "region": "us-west-2",
+                "instance_state": "running",
+            },
+        )
+        monkeypatch.setattr(login, "remote_identity_state", lambda *a, **k: "unknown")
+        started: list[int] = []
+
+        def refused_over_wrong_session(*a, **k):
+            started.append(1)
+            return login.LoginPrompt(identity_mismatch=True, error="already logged in")
+
+        monkeypatch.setattr(login, "start_device_login", refused_over_wrong_session)
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, login_target=target)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert started  # the sign-in step did try, and kiro-cli refused
+        assert calls["connect"] == ["i-old"] and calls["register"] == ["i-old"]
+        assert "different Kiro identity" in out and "kirocrew cloud logout" in out
+        assert "is live on AWS" not in out
+
+    def test_verified_mismatch_survives_a_transient_recheck_failure(self, monkeypatch, capsys):
+        """The sign-in step verifies a wrong-identity session; the operational
+        recheck then hits a transient SSM fault and can only say "could not
+        check". That does not un-verify the mismatch: the launch still exits 1
+        with the logout recovery, instead of degrading to the exit-0 "not signed
+        in" warning under the wrong identity."""
+        from kiro_crew.cloud.aws import AWSError
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+
+        target = KiroLoginTarget(
+            license="pro", start_url="https://example.awsapps.com/start", region="us-east-1"
+        )
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        calls = _patch_post_launch(monkeypatch, logged_in=False)
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(
+            ec2,
+            "describe",
+            lambda tag, *_a, **_k: {
+                "tag": tag,
+                "exists": True,
+                "stack_name": "kirocrew-kc-old",
+                "stack_status": "CREATE_COMPLETE",
+                "instance_id": "i-old",
+                "public_dns": "",
+                "region": "us-west-2",
+                "instance_state": "running",
+            },
+        )
+        monkeypatch.setattr(
+            login,
+            "start_device_login",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("no login")),
+        )
+        probes: list[int] = []
+
+        def flaky_identity_state(*a, **k):
+            probes.append(1)
+            if len(probes) == 1:
+                return "mismatch"  # the sign-in step's verified verdict
+            raise AWSError("SSM SendCommand throttled")  # the recheck cannot look
+
+        monkeypatch.setattr(login, "remote_identity_state", flaky_identity_state)
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, login_target=target)
+        out = capsys.readouterr().out
+        assert len(probes) == 2
+        assert rc == 1
+        assert calls["connect"] == ["i-old"] and calls["register"] == ["i-old"]
+        assert "DIFFERENT Kiro identity" in out and "kirocrew cloud logout" in out
+        assert "is live on AWS" not in out
+
+    def test_builder_id_launch_onto_an_identity_center_session_is_a_mismatch(
+        self, monkeypatch, capsys
+    ):
+        """The default (Builder ID) target is checked for a wrong-identity
+        session like any other: a resumed instance holding an Identity Center
+        session is a mismatch for it (wrong license, wrong models), so the
+        launch exits 1 with the flagless recovery -- including when the human
+        declines the interactive re-login, the path that otherwise reads
+        as an exit-0 "not signed in" warning."""
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        calls = _patch_post_launch(monkeypatch, logged_in=False)
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(
+            ec2,
+            "describe",
+            lambda tag, *_a, **_k: {
+                "tag": tag,
+                "exists": True,
+                "stack_name": "kirocrew-kc-old",
+                "stack_status": "CREATE_COMPLETE",
+                "instance_id": "i-old",
+                "public_dns": "",
+                "region": "us-west-2",
+                "instance_state": "running",
+            },
+        )
+        monkeypatch.setattr(
+            login,
+            "start_device_login",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("no login")),
+        )
+        targets: list[KiroLoginTarget] = []
+
+        def idc_session(*a, **k):
+            targets.append(k["target"])
+            return "mismatch"
+
+        monkeypatch.setattr(login, "remote_identity_state", idc_session)
+        # Interactive: the human keeps the existing instance, then declines the
+        # re-login prompt.
+        monkeypatch.setattr(wizard.ui, "choose", lambda *a, **k: 0)
+        monkeypatch.setattr(wizard.ui, "confirm", lambda *a, **k: False)
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=False, login_target=None)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert targets and all(t.is_default for t in targets)
+        assert calls["connect"] == ["i-old"] and calls["register"] == ["i-old"]
+        assert "DIFFERENT Kiro identity than Builder ID" in out
+        recovery = [ln for ln in out.splitlines() if "kirocrew cloud logout && " in ln]
+        assert recovery and all(
+            ln.rstrip().endswith("kirocrew cloud login") and "--identity-provider" not in ln
+            for ln in recovery
+        )
+        assert "is live on AWS" not in out
+
     def test_stale_saved_tag_failed_stack_is_not_resumed(self, monkeypatch):
         # Defense in depth for a cloud.json written by an OLD build that saved
         # last_tag before the deploy confirmed: if the saved tag points at a

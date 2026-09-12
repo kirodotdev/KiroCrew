@@ -2188,6 +2188,28 @@ Examples:
         _cloud_creds_opts(p)
         p.add_argument("--tag", default="", help="Instance tag (default: last launched)")
 
+    def _cloud_identity_opts(p: "argparse.ArgumentParser") -> None:
+        # ONE definition for every command that signs kiro-cli in on the crew.
+        # `cloud login`, `cloud launch` and `kirocrew setup` (which delegates to
+        # launch) all accept the same identity flags, so a managed launch can
+        # name an Identity Center identity instead of defaulting to Builder ID.
+        p.add_argument(
+            "--identity-provider",
+            default="",
+            help="IAM Identity Center start URL (your organization's access portal) for enterprise SSO",
+        )
+        p.add_argument(
+            "--license",
+            default="",
+            choices=["", "free", "pro"],
+            help="Kiro license tier (pro for Identity Center, free for Builder ID/social)",
+        )
+        p.add_argument(
+            "--idp-region",
+            default="",
+            help="IAM Identity Center region (e.g. us-east-1), NOT the EC2 instance region",
+        )
+
     cloud_sub = cloud_parser.add_subparsers(dest="cloud_action")
     _c_launch = cloud_sub.add_parser("launch", help="Provision + configure an instance")
     _cloud_creds_opts(_c_launch)
@@ -2216,6 +2238,13 @@ Examples:
         "--keep-on-failure",
         action="store_true",
         help="On bootstrap failure, keep the instance (disable rollback) for inspection",
+    )
+    _cloud_identity_opts(_c_launch)
+    _c_launch.add_argument(
+        "--no-inherit-identity",
+        action="store_true",
+        help="Do not inherit this machine's Kiro sign-in (kiro-cli whoami) as the "
+        "crew's identity; sign the crew in with Builder ID unless --identity-provider is given",
     )
 
     _c_list = cloud_sub.add_parser("list", help="List your Kiro Crew cloud instances")
@@ -2253,22 +2282,7 @@ Examples:
     _c_login.add_argument(
         "--no-browser", action="store_true", help="Print the device URL but don't open a browser"
     )
-    _c_login.add_argument(
-        "--identity-provider",
-        default="",
-        help="IAM Identity Center start URL (for enterprise SSO login)",
-    )
-    _c_login.add_argument(
-        "--license",
-        default="",
-        choices=["", "free", "pro"],
-        help="Kiro license tier (pro for Identity Center, free for Builder ID/social)",
-    )
-    _c_login.add_argument(
-        "--idp-region",
-        default="",
-        help="IAM Identity Center region (e.g. us-east-1), NOT the EC2 instance region",
-    )
+    _cloud_identity_opts(_c_login)
     _c_logout = cloud_sub.add_parser(
         "logout", help="Sign kiro-cli out on the instance (to switch Kiro account)"
     )

@@ -21,6 +21,12 @@ from kiro_crew.cloud import login as login_mod
 from kiro_crew.cloud import sizes, ssm, ui, wizard
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
+from kiro_crew.cloud.login_target import (
+    KiroLoginTarget,
+    LoginTargetError,
+    discover_local_identity,
+    target_from_whoami,
+)
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.validation import ValidationError
 
@@ -46,8 +52,73 @@ def _resolve_tag(args: argparse.Namespace) -> str:
     return cfg.last_tag
 
 
+def _resolve_login_target(args: argparse.Namespace, *, inherit: bool) -> "KiroLoginTarget":
+    """The Kiro identity a cloud command signs the crew in as.
+
+    Precedence: explicit ``--identity-provider`` / ``--license`` / ``--idp-region``
+    flags; else (when *inherit*) the launching machine's own ``kiro-cli whoami``
+    identity — an Identity Center user launching a crew almost always wants the
+    crew signed in as the same organization; else the Builder ID default.
+
+    Inheriting an Identity Center identity needs the Identity Center REGION,
+    which ``whoami`` does not report. ``--idp-region`` supplies it; without one
+    the target is returned with an empty region and the wizard completes it —
+    interactively by asking, or under ``--yes`` by refusing with the flag to pass.
+    A target is never silently downgraded to Builder ID because a field was missing,
+    and never because discovery FAILED: when ``whoami`` could not run, or exited
+    nonzero without an identity, the identity is unknown, and the command refuses
+    until the caller names the target (``--identity-provider`` + ``--idp-region``)
+    or opts out of inheritance with ``--no-inherit-identity``. Only a ``whoami``
+    that ran cleanly and reported no Identity Center sign-in falls through to the
+    Builder ID default.
+    """
+    explicit_url = getattr(args, "identity_provider", "") or ""
+    explicit_lic = getattr(args, "license", "") or ""
+    explicit_reg = getattr(args, "idp_region", "") or ""
+    if explicit_url or explicit_lic:
+        return KiroLoginTarget.from_fields(
+            license=explicit_lic, start_url=explicit_url, region=explicit_reg
+        )
+    # ``--idp-region`` alone is a COMPLETION of the inherited target, not a
+    # replacement: it is the one field ``whoami`` cannot report. It falls
+    # through to inheritance and is merged into the result below.
+    inherited = KiroLoginTarget()
+    if inherit:
+        ident = discover_local_identity()
+        if ident is None:
+            raise LoginTargetError(
+                "could not read this computer's Kiro sign-in (kiro-cli whoami did not run "
+                "or reported an error), so the crew's identity cannot be inherited; pass "
+                "--identity-provider URL --idp-region REGION to name it, or "
+                "--no-inherit-identity to sign the crew in as Builder ID"
+            )
+        inherited_target = target_from_whoami(ident)
+        if inherited_target is None:
+            raise LoginTargetError(
+                "this computer is signed in to IAM Identity Center but kiro-cli whoami reported "
+                "no readable start URL, so the crew's identity cannot be inherited; pass "
+                "--identity-provider URL --idp-region REGION to name it, or "
+                "--no-inherit-identity to sign the crew in as Builder ID"
+            )
+        inherited = inherited_target
+    if not explicit_reg:
+        return inherited
+    # A region with nothing to attach it to is still refused (strictly) — the
+    # same validation the explicit branch applies.
+    return KiroLoginTarget.from_fields(
+        license=inherited.license, start_url=inherited.start_url, region=explicit_reg
+    )
+
+
 def _cloud_launch(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
+    try:
+        login_target = _resolve_login_target(
+            args, inherit=not getattr(args, "no_inherit_identity", False)
+        )
+    except LoginTargetError as exc:
+        ui.fail(f"Kiro identity target rejected: {exc}")
+        return 2
     return wizard.launch(
         profile=profile,
         region=region,
@@ -57,6 +128,7 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         force_new=getattr(args, "new", False),
         keep_on_failure=getattr(args, "keep_on_failure", False),
         hold_tunnel=getattr(args, "hold_tunnel", True),
+        login_target=login_target,
     )
 
 
@@ -161,20 +233,37 @@ def _cloud_login(args: argparse.Namespace) -> int:
         return 1
     instance_id = st["instance_id"]
 
-    if login_mod.is_logged_in(instance_id, profile, region):
-        ui.ok("kiro-cli is already signed in on the instance. Chats should work.")
-        return 0
+    try:
+        target = _resolve_login_target(args, inherit=False)
+    except LoginTargetError as exc:
+        ui.fail(f"Kiro identity target rejected: {exc}")
+        return 2
 
-    ui.info("Starting Kiro sign-in on the instance…")
+    if login_mod.is_logged_in(instance_id, profile, region, target=target):
+        ui.ok(
+            f"kiro-cli is already signed in on the instance as {target.describe()}. Chats should work."
+        )
+        return 0
+    # Every target, the Builder ID default included: kiro-cli ignores a login
+    # over a live session, so a flagless login onto an Identity Center session
+    # would do nothing and report nothing.
+    state = login_mod.remote_identity_state(instance_id, profile, region, target=target)
+    if state == "mismatch":
+        ui.warn(
+            f"The instance is signed in to a DIFFERENT Kiro identity than {target.describe()}. "
+            "Run `kirocrew cloud logout` first, then repeat this command — a "
+            "login attempt against an existing session is ignored by kiro-cli."
+        )
+        return 1
+
+    ui.info(f"Starting Kiro sign-in on the instance as {target.describe()}…")
     try:
         prompt = login_mod.start_device_login(
             instance_id,
             profile,
             region,
             open_browser=not getattr(args, "no_browser", False),
-            identity_provider=getattr(args, "identity_provider", "") or "",
-            license_=getattr(args, "license", "") or "",
-            idp_region=getattr(args, "idp_region", "") or "",
+            target=target,
         )
     except AWSError as exc:
         ui.fail(str(exc))
@@ -184,23 +273,16 @@ def _cloud_login(args: argparse.Namespace) -> int:
         return 0
     if not prompt.url:
         ui.fail("Could not start device sign-in on the instance.")
-        ui.detail(login_mod.social_login_hint(prompt))
+        ui.detail(prompt.error or login_mod.social_login_hint(prompt))
         return 1
 
     ui.note(f"Open this URL and approve the code:\n    {ui.CYAN}{prompt.url}{ui.RESET}")
     if prompt.code:
         ui.detail(f"Verification code: {prompt.code}")
     # Keep the login daemon polling on the box so approval completes, then wait.
-    login_mod.resume_login_daemon(
-        instance_id,
-        profile,
-        region,
-        identity_provider=getattr(args, "identity_provider", "") or "",
-        license_=getattr(args, "license", "") or "",
-        idp_region=getattr(args, "idp_region", "") or "",
-    )
+    login_mod.resume_login_daemon(instance_id, profile, region, target=target)
     with ui.Spinner("Waiting for sign-in approval…"):
-        signed = login_mod.wait_until_logged_in(instance_id, profile, region)
+        signed = login_mod.wait_until_logged_in(instance_id, profile, region, target=target)
     if signed:
         ui.ok(
             "Signed in. New chats will work now — restart the gateway if a chat "
@@ -235,7 +317,9 @@ def _cloud_logout(args: argparse.Namespace) -> int:
         ui.detail("The session may still be active — retry, or check with: kirocrew cloud connect")
         return 1
     ui.ok("Signed out on the instance.")
-    ui.detail("Any in-flight chats/cron sessions were stopped (their kiro-cli runtimes were killed).")
+    ui.detail(
+        "Any in-flight chats/cron sessions were stopped (their kiro-cli runtimes were killed)."
+    )
     ui.detail("Sign in with another account: kirocrew cloud login")
     return 0
 
