@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 def _sel():
     """Late-binding _sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
+
     return _pkg.sel()
 
 
@@ -63,6 +64,7 @@ def _store_failure_guard(handler):
     reads to the operator as a gateway fault rather than "your store needs
     repair" — becomes the shared, machine-readable response.
     """
+
     @functools.wraps(handler)
     async def _guarded(request: web.Request) -> web.Response:
         try:
@@ -147,11 +149,13 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
                 # Context-aware redact(): runs the exfil-URL + credential passes
                 # and applies a loaded companion's extra regexes (so an internal
                 # token in a hook command is scrubbed on this egress surface too).
-                tagged.append({
-                    "command": redact(e.get("command") or ""),
-                    "matcher": redact(e.get("matcher") or ""),
-                    "source": "bundled" if key in bundled_keys else "user",
-                })
+                tagged.append(
+                    {
+                        "command": redact(e.get("command") or ""),
+                        "matcher": redact(e.get("matcher") or ""),
+                        "source": "bundled" if key in bundled_keys else "user",
+                    }
+                )
         if tagged:
             result[event] = tagged
     return web.json_response({"hooks": result})
@@ -512,9 +516,7 @@ def _verify_hook_token(request: web.Request) -> str | None:
     )
 
 
-def _verify_hook_signature(
-    request: web.Request, token_id: str, raw_body: bytes
-) -> str | None:
+def _verify_hook_signature(request: web.Request, token_id: str, raw_body: bytes) -> str | None:
     """Verify the request signature for *token_id*. ``None`` means accepted.
 
     Any other return value is the ``SIG_ERR_*`` string naming the cause, used
@@ -557,9 +559,7 @@ def _installed_agent_names() -> set[str]:
     return {agent.name for agent in list_agents()}
 
 
-async def _json_object(
-    request: web.Request, *, default_empty: bool = False
-) -> dict | None:
+async def _json_object(request: web.Request, *, default_empty: bool = False) -> dict | None:
     """Parse a JSON **object** body. ``None`` means answer 400.
 
     ``await request.json()`` happily returns a list, string or number for a body
@@ -629,7 +629,8 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             error="webhook store unreadable",
         )
         return web.json_response(
-            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"}, status=503
+            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+            status=503,
         )
     if not switch_on:
         _sel().log_api_access(
@@ -661,7 +662,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             source="webhook",
             error="auth failures throttled",
         )
-        return web.json_response({"error": "too many failed attempts", "code": "auth_throttled"}, status=429)
+        return web.json_response(
+            {"error": "too many failed attempts", "code": "auth_throttled"}, status=429
+        )
 
     # Identify the bearer before reading a body. This route bypasses dashboard
     # auth, so an unknown caller must not be able to allocate even the bounded
@@ -683,7 +686,8 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             error="webhook store unreadable",
         )
         return web.json_response(
-            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"}, status=503
+            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+            status=503,
         )
     if not token_id:
         throttled = webhooks.record_auth_failure(source)
@@ -710,9 +714,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     source_entry: dict[str, object] | None = None
     if token_id != webhooks.LEGACY_TOKEN_ID:
         try:
-            source_entry = await asyncio.to_thread(
-                webhooks.token_store().entry_for, token_id
-            )
+            source_entry = await asyncio.to_thread(webhooks.token_store().entry_for, token_id)
         except webhooks.WebhookStoreUnreadable:
             return web.json_response(
                 {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
@@ -729,9 +731,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
                 resources=f"token:{token_id}",
                 error="webhook source revoked during admission",
             )
-            return web.json_response(
-                {"error": "unauthorized", "code": "unauthorized"}, status=401
-            )
+            return web.json_response({"error": "unauthorized", "code": "unauthorized"}, status=401)
         if source_entry.get("enabled", True) is False:
             _sel().log_api_access(
                 caller=source,
@@ -762,17 +762,21 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         raw_body = await _read_hook_body(request)
     except _HookBodyTooLarge:
         return web.json_response(
-            {"error": f"request body exceeds {_HOOK_BODY_MAX_BYTES} bytes", "code": "body_too_large"}, status=413
+            {
+                "error": f"request body exceeds {_HOOK_BODY_MAX_BYTES} bytes",
+                "code": "body_too_large",
+            },
+            status=413,
         )
     except Exception:
-        return web.json_response({"error": "could not read request body", "code": "body_unreadable"}, status=400)
+        return web.json_response(
+            {"error": "could not read request body", "code": "body_unreadable"}, status=400
+        )
 
     # A valid bearer proves who; the signature proves the body and defeats
     # replay. Failures feed the SAME per-source throttle as a bad bearer — a
     # signature-guessing flood is the same abuse shape as a token-guessing one.
-    sig_error = await asyncio.to_thread(
-        _verify_hook_signature, request, token_id, raw_body
-    )
+    sig_error = await asyncio.to_thread(_verify_hook_signature, request, token_id, raw_body)
     if sig_error:
         throttled = webhooks.record_auth_failure(source)
         _sel().log_api_access(
@@ -819,23 +823,34 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     # mistake into a 500. Same for sessionKey and its .startswith() below.
     raw_message = body.get("message", "")
     if not isinstance(raw_message, str):
-        return web.json_response({"error": "message must be a string", "code": "message_not_a_string"}, status=400)
+        return web.json_response(
+            {"error": "message must be a string", "code": "message_not_a_string"}, status=400
+        )
     message = raw_message.strip()
     if not message:
-        return web.json_response({"error": "message required", "code": "message_required"}, status=400)
+        return web.json_response(
+            {"error": "message required", "code": "message_required"}, status=400
+        )
     if len(message) > _HOOK_MESSAGE_MAX_LEN:
         return web.json_response(
-            {"error": f"message exceeds {_HOOK_MESSAGE_MAX_LEN} chars", "code": "message_too_long"}, status=400
+            {"error": f"message exceeds {_HOOK_MESSAGE_MAX_LEN} chars", "code": "message_too_long"},
+            status=400,
         )
 
     session_key = body.get("sessionKey", "")
     if not isinstance(session_key, str):
-        return web.json_response({"error": "sessionKey must be a string", "code": "session_key_not_a_string"}, status=400)
+        return web.json_response(
+            {"error": "sessionKey must be a string", "code": "session_key_not_a_string"}, status=400
+        )
     if not session_key:
         session_key = f"hook:default:{int(time.time())}"
     if not session_key.startswith(_HOOK_SESSION_PREFIX):
         return web.json_response(
-            {"error": f"sessionKey must start with '{_HOOK_SESSION_PREFIX}'", "code": "session_key_prefix_invalid"}, status=400
+            {
+                "error": f"sessionKey must start with '{_HOOK_SESSION_PREFIX}'",
+                "code": "session_key_prefix_invalid",
+            },
+            status=400,
         )
 
     name = body.get("name", "Webhook")
@@ -845,10 +860,14 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         # non-string raises there, the notification and Slack DM never run, and
         # the ephemeral session is already reset — the turn's output is gone
         # while the run history says it was delivered.
-        return web.json_response({"error": "name must be a string", "code": "name_not_a_string"}, status=400)
+        return web.json_response(
+            {"error": "name must be a string", "code": "name_not_a_string"}, status=400
+        )
     requested_agent = body.get("agent", "") or None
     if requested_agent is not None and not isinstance(requested_agent, str):
-        return web.json_response({"error": "agent must be a string", "code": "agent_not_a_string"}, status=400)
+        return web.json_response(
+            {"error": "agent must be a string", "code": "agent_not_a_string"}, status=400
+        )
     deliver = body.get("deliver", True)
     try:
         timeout_secs = max(
@@ -856,7 +875,10 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             min(int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
         )
     except (ValueError, TypeError):
-        return web.json_response({"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"}, status=400)
+        return web.json_response(
+            {"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"},
+            status=400,
+        )
 
     mapped_agent = str(source_entry.get("agent") or "") if source_entry else ""
     if mapped_agent and requested_agent and requested_agent != mapped_agent:
@@ -974,7 +996,10 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             detail=f"Rejected: {_HOOK_MAX_CONCURRENT} concurrent runs already in flight",
         )
         return web.json_response(
-            {"error": f"hook capacity reached ({_HOOK_MAX_CONCURRENT})", "code": "capacity_reached"},
+            {
+                "error": f"hook capacity reached ({_HOOK_MAX_CONCURRENT})",
+                "code": "capacity_reached",
+            },
             status=429,
         )
 
@@ -1017,11 +1042,26 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     return web.json_response({"status": "accepted", "sessionKey": session_key})
 
 
+# The permission-request event kind, spelled locally: the agent-sdk-boundary
+# gate forbids ADDING an ACP/providers import edge in application code, and
+# kiro_crew.agent_sdk does not re-export the event vocabulary yet, so naming
+# the wire constant here would grow exactly the edge the gate ratchets down.
+# The spelling is pinned against the source of truth by the regression tests,
+# which compare it to the real event object's kind.
+_EVENT_PERMISSION_REQUEST_KIND = "permission_request"
+
+
 async def _run_hook_inner(
     state: DashboardState, session_key: str, message: str, agent: str | None
 ) -> str:
     """Inner agent turn — called within timeout wrapper."""
+    from kiro_crew import name_grant
     from kiro_crew.context import _neutralize_structural_markers, session_store_for_turn
+    from kiro_crew.hooks import (  # noqa: F811  # circular import
+        TOOL_AUTO_APPROVE,
+        TOOL_DENY,
+        identity_grant_covers_child,
+    )
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
 
     memory_store = await session_store_for_turn(state.context_builder, session_key)
@@ -1036,7 +1076,11 @@ async def _run_hook_inner(
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             state.context_builder.build_message,
-            message, is_new, session_key, agent=agent, resumed=resumed,
+            message,
+            is_new,
+            session_key,
+            agent=agent,
+            resumed=resumed,
             provider_type=KiroCrewConfig.load().agent.provider,
             memory_store=memory_store,
         )
@@ -1061,6 +1105,139 @@ async def _run_hook_inner(
     async for event in client.stream(full_message):
         if event.kind == EVENT_TEXT_CHUNK:
             result_text += event.text
+        elif event.kind == _EVENT_PERMISSION_REQUEST_KIND:
+            # Webhook turns are headless and their payload is untrusted
+            # external input, so the default is DENY. An unanswered request
+            # stalls the provider until the _run_hook_agent timeout fires and
+            # the watchdog reports the turn as cancelled by the user. Route
+            # the request through the same hook gate every other headless
+            # runner uses (task_planner, llm_helpers, subagent_manager) and
+            # approve ONLY on the gate's affirmative TOOL_AUTO_APPROVE:
+            # TOOL_ALLOW means "ask the user" on interactive surfaces, and
+            # with no approver here it fails closed.
+            decision = None
+            deny_error = "no_hook_store"
+            hooks_gate = getattr(state.context_builder, "hooks", None)
+            if hooks_gate is not None:
+                try:
+                    decision = hooks_gate.on_tool_call(
+                        event.title,
+                        session_key=session_key,
+                        agent=agent or "",
+                        tool_kind=event.tool_kind,
+                        raw_params=event.raw_tool_params,
+                        diff_path=event.diff_path,
+                        command=event.shell_command,
+                        is_shell=event.is_shell,
+                        mcp_server_name=event.mcp_server_name,
+                        mcp_tool_name=event.tool_name,
+                        mcp_identity_trusted=event.mcp_identity_trusted,
+                    )
+                except Exception:
+                    # A raising gate must not leave the request unanswered --
+                    # an unanswered request is the exact stall this branch
+                    # exists to fix. No verdict is no positive authorization.
+                    logger.exception("webhook hook gate failed for %s", session_key)
+                    decision = None
+                    deny_error = "gate_error"
+                else:
+                    deny_error = (
+                        "hook_deny" if decision.action == TOOL_DENY else "no_interactive_approver"
+                    )
+            approve = False
+            if decision is not None and decision.action == TOOL_AUTO_APPROVE:
+                approve = True
+                if event.child_low_fidelity and not identity_grant_covers_child(decision, event):
+                    # A backend-child request whose security context is
+                    # unverified: every hook auto-approve except the
+                    # identity-keyed grant read the forgeable, agent-authored
+                    # title, so the dashboard runner and the subagent manager
+                    # both downgrade it. Headless there is no approval card to
+                    # downgrade to, so the downgrade is deny.
+                    approve = False
+                    deny_error = "child_low_fidelity"
+            if approve:
+                # An auto-approve tier is a statement about a PROGRAM name,
+                # and the shell re-resolves that name through a PATH that can
+                # lead with agent-writable directories. Verify it
+                # unconditionally, as every name-grant surface does at the
+                # point of honour; with no approver to downgrade to, a
+                # withheld grant denies (same as llm_helpers headless).
+                _ng_refusal = await name_grant.refusal_for_event(event)
+                if _ng_refusal is not None:
+                    logger.warning(
+                        "declining a webhook hook auto-approve: %s",
+                        _ng_refusal.log_text,
+                    )
+                    name_grant.log_decline(
+                        source="webhook",
+                        session_key=session_key,
+                        agent=agent or "kirocrew",
+                        event=event,
+                        refusal=_ng_refusal,
+                        tier="hook_auto_approve",
+                        sel_factory=_sel,
+                    )
+                    approve = False
+                    deny_error = "name_grant_headless_reject"
+            if approve:
+                # Audit-or-deny: this surface runs unattended, so an
+                # auto-approve that cannot be audited must not run.
+                # critical=True writes synchronously and re-raises on a
+                # filesystem failure; audit BEFORE the wire call so a
+                # transport failure cannot skip the audit either (the stated
+                # invariant in llm_helpers / backend-security-controls).
+                try:
+                    # critical=True writes synchronously (open/write/flush)
+                    # and this is the branch's common path: off-loop it so an
+                    # SEL disk stall cannot pause every gateway task.
+                    await asyncio.to_thread(
+                        functools.partial(
+                            _sel().log_tool_invocation,
+                            session_key=session_key,
+                            agent=agent or "kirocrew",
+                            tool_name=event.title or "unknown",
+                            tool_kind=event.tool_kind,
+                            outcome="auto_approved",
+                            source="webhook",
+                            request_id=str(event.request_id),
+                            critical=True,
+                        )
+                    )
+                except Exception:
+                    logger.exception("webhook auto-approve audit failed; denying %s", session_key)
+                    # The decision itself must not vanish from SEL: hand the
+                    # denial to the ordinary (batched) writer best-effort,
+                    # naming the audit failure as the reason.
+                    try:
+                        _sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=agent or "kirocrew",
+                            tool_name=event.title or "unknown",
+                            tool_kind=event.tool_kind,
+                            outcome="denied",
+                            source="webhook",
+                            request_id=str(event.request_id),
+                            error="audit_write_failed",
+                        )
+                    except Exception:
+                        logger.debug("denial record after audit failure also failed", exc_info=True)
+                    await client.reject_tool(event.request_id)
+                else:
+                    await client.approve_tool(event.request_id)
+            else:
+                # Audit the denial BEFORE rejecting, for the same reason.
+                _sel().log_tool_invocation(
+                    session_key=session_key,
+                    agent=agent or "kirocrew",
+                    tool_name=event.title or "unknown",
+                    tool_kind=event.tool_kind,
+                    outcome="denied",
+                    source="webhook",
+                    request_id=str(event.request_id),
+                    error=deny_error,
+                )
+                await client.reject_tool(event.request_id)
         elif event.kind == EVENT_COMPLETE:
             _complete_event = event
             break
@@ -1177,9 +1354,7 @@ async def _run_hook_agent(
             # with no handler, so a raising notifier lost the result AND skipped
             # the Slack attempt that might still have succeeded.
             try:
-                state.notify(
-                    "hook", title, result_text[:2000], meta={"session_key": session_key}
-                )
+                state.notify("hook", title, result_text[:2000], meta={"session_key": session_key})
                 destinations.append("notifications")
             except Exception:
                 logger.exception("Hook agent: notification delivery failed")
@@ -1359,9 +1534,9 @@ def _delete_hook_context(hook_id: str) -> bool:
         target = hook_id
         if target not in raw:
             matches = [
-                k for k in raw
-                if _is_context_registration(raw[k])
-                and _redact_hook_identifier(k) == hook_id
+                k
+                for k in raw
+                if _is_context_registration(raw[k]) and _redact_hook_identifier(k) == hook_id
             ]
             if len(matches) != 1:
                 return False
@@ -1388,7 +1563,9 @@ async def api_webhooks_switch(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
-        return web.json_response({"error": "enabled must be a boolean", "code": "enabled_not_a_boolean"}, status=400)
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "enabled_not_a_boolean"}, status=400
+        )
 
     try:
         stored = await asyncio.to_thread(webhooks.token_store().set_switch, enabled)
@@ -1445,9 +1622,7 @@ async def api_webhooks(request: web.Request) -> web.Response:
     # would each be a context switch, and a snapshot taken under one call is also
     # internally consistent rather than interleaved with a concurrent token edit.
     try:
-        tokens, switch_on, contexts, runs = await asyncio.to_thread(
-            _webhooks_snapshot
-        )
+        tokens, switch_on, contexts, runs = await asyncio.to_thread(_webhooks_snapshot)
     except webhooks.WebhookStoreUnreadable as exc:
         # Reads refuse rather than reporting an empty store, so the page gets a
         # named error it can show instead of an unhandled 500 that looks like a
@@ -1496,7 +1671,11 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
     require_signature = body.get("require_signature", True)
     if not isinstance(require_signature, bool):
         return web.json_response(
-            {"error": "require_signature must be a boolean", "code": "require_signature_not_a_boolean"}, status=400
+            {
+                "error": "require_signature must be a boolean",
+                "code": "require_signature_not_a_boolean",
+            },
+            status=400,
         )
     agent = body.get("agent")
     if not isinstance(agent, str) or not agent.strip():
@@ -1509,12 +1688,18 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
     except Exception:
         logger.warning("webhook destination-agent discovery failed", exc_info=True)
         return web.json_response(
-            {"error": "destination agent could not be verified", "code": "agent_discovery_unavailable"},
+            {
+                "error": "destination agent could not be verified",
+                "code": "agent_discovery_unavailable",
+            },
             status=503,
         )
     if agent not in installed_agents:
         return web.json_response(
-            {"error": "destination agent is not installed", "code": "destination_agent_unavailable"},
+            {
+                "error": "destination agent is not installed",
+                "code": "destination_agent_unavailable",
+            },
             status=400,
         )
     try:
@@ -1562,7 +1747,10 @@ async def api_webhook_token_update(request: web.Request) -> web.Response:
             error="legacy credential is config-managed",
         )
         return web.json_response(
-            {"error": "the legacy credential is config-managed", "code": "legacy_credential_in_config"},
+            {
+                "error": "the legacy credential is config-managed",
+                "code": "legacy_credential_in_config",
+            },
             status=400,
         )
     body = await _json_object(request)
@@ -1572,25 +1760,36 @@ async def api_webhook_token_update(request: web.Request) -> web.Response:
     unknown = sorted(set(body) - allowed)
     if unknown or not body:
         return web.json_response(
-            {"error": "patch may only contain agent, enabled, or label", "code": "invalid_source_patch"},
+            {
+                "error": "patch may only contain agent, enabled, or label",
+                "code": "invalid_source_patch",
+            },
             status=400,
         )
     if "agent" in body:
         agent = body["agent"]
         if not isinstance(agent, str) or not agent.strip():
-            return web.json_response({"error": "agent is required", "code": "agent_required"}, status=400)
+            return web.json_response(
+                {"error": "agent is required", "code": "agent_required"}, status=400
+            )
         agent = agent.strip()
         try:
             installed_agents = await asyncio.to_thread(_installed_agent_names)
         except Exception:
             logger.warning("webhook destination-agent discovery failed", exc_info=True)
             return web.json_response(
-                {"error": "destination agent could not be verified", "code": "agent_discovery_unavailable"},
+                {
+                    "error": "destination agent could not be verified",
+                    "code": "agent_discovery_unavailable",
+                },
                 status=503,
             )
         if agent not in installed_agents:
             return web.json_response(
-                {"error": "destination agent is not installed", "code": "destination_agent_unavailable"},
+                {
+                    "error": "destination agent is not installed",
+                    "code": "destination_agent_unavailable",
+                },
                 status=400,
             )
     else:
@@ -1740,8 +1939,7 @@ async def api_webhook_test(request: web.Request) -> web.Response:
             {
                 "ok": False,
                 "error": (
-                    f"Cannot mint a probe token ({exc}). Revoke an unused "
-                    "token and try again."
+                    f"Cannot mint a probe token ({exc}). Revoke an unused " "token and try again."
                 ),
                 "code": "probe_credential_mint_failed",
             },
@@ -1774,9 +1972,7 @@ async def api_webhook_test(request: web.Request) -> web.Response:
         "Authorization": f"Bearer {raw}",
         "Content-Type": "application/json",
         webhooks.TIMESTAMP_HEADER: str(timestamp),
-        webhooks.SIGNATURE_HEADER: webhooks.sign_payload(
-            signing_secret, timestamp, body_bytes
-        ),
+        webhooks.SIGNATURE_HEADER: webhooks.sign_payload(signing_secret, timestamp, body_bytes),
     }
     status = 0
     error = ""
