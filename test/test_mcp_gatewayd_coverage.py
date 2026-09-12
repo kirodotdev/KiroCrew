@@ -2112,10 +2112,34 @@ class TestZombieDiagnostic:
             return real_open(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", sharing_violation_open)
-        await asyncio.wait_for(
-            gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop),
-            timeout=5,
+        # Wait on the watchdog's own completion signal, not the coroutine: the
+        # watchdog swallows CancelledError, so on Python 3.11+ a timed-out
+        # ``asyncio.wait_for(coro, ...)`` cannot raise TimeoutError -- the
+        # cancellation never propagates, wait_for returns None, and the later
+        # assertions fail in misleading ways (FileNotFoundError on diag.jsonl
+        # or an unset stop event, depending on where the cancel landed). A
+        # genuinely slow runner now fails legibly at the bounded wait below.
+        task = asyncio.create_task(
+            gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop)
         )
+        stop_wait = asyncio.create_task(stop.wait())
+        try:
+            # Waiting on BOTH means a watchdog that raises before setting stop
+            # surfaces its exception immediately instead of hiding behind the
+            # full 30s budget.
+            done, _ = await asyncio.wait(
+                {task, stop_wait}, timeout=30, return_when=asyncio.FIRST_COMPLETED
+            )
+            assert done, "watchdog neither set stop nor finished within 30s"
+            if task in done:
+                await task  # surface any exception the watchdog raised
+        finally:
+            # Never leak the watchdog past monkeypatch teardown: cancel and
+            # drain whatever is still pending (the watchdog swallows
+            # CancelledError, so the drain terminates promptly).
+            task.cancel()
+            stop_wait.cancel()
+            await asyncio.gather(task, stop_wait, return_exceptions=True)
 
         records = [json.loads(line) for line in diag.read_text().strip().splitlines()]
         tags = [record["tag"] for record in records]
