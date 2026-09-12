@@ -838,14 +838,14 @@ class TestRotationSplitting:
         r._buf = [source]
         offloads: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
 
-        def _capture(text: str, limit: int) -> list[str]:
-            return [text]
+        def _capture(text: str, limit: int) -> tuple[list[str], bool]:
+            return [text], False
 
         async def _offload(func: Any, /, *args: Any, **kwargs: Any) -> Any:
             offloads.append((func, args, kwargs))
             return func(*args, **kwargs)
 
-        monkeypatch.setattr(renderer_module, "split_markdown_safe", _capture)
+        monkeypatch.setattr(renderer_module, "split_markdown_safe_with_tier", _capture)
         monkeypatch.setattr(renderer_module.asyncio, "to_thread", _offload)
 
         await r._rotate_on_length()
@@ -910,6 +910,34 @@ class TestRotationSplitting:
         assert tail.startswith("```py\n")  # the authored opener, not a bare ```
         assert not tail.rstrip().endswith("```")
         assert src.endswith(tail[len("```py\n") :])  # the tail IS the source's own tail
+
+    @pytest.mark.asyncio
+    async def test_a_seal_ending_in_escape_degrades_uploads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sealed prefix ending in an odd backslash run escapes the tail's
+        first character in the full text (GPT security finding).
+
+        A tail that scans markup-bearing alone -- e.g. an image reference
+        whose guarding backslash sealed away -- would otherwise upload a
+        source-literal file at the semantic seal. The rotation must fail
+        closed.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        r._buf = ["x" * 58 + "\\ short tail here"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is False
+
+    @pytest.mark.asyncio
+    async def test_a_clean_seal_keeps_uploads_eligible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The escape-debt rule fires only on a real trailing escape."""
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        r._buf = ["x" * 58 + " short tail here"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
 
     @pytest.mark.asyncio
     async def test_fence_grammar_seams_survive_a_rotation(
