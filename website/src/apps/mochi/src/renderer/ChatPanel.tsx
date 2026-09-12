@@ -32,6 +32,9 @@ import {
   X,
 } from 'lucide-react'
 import Clickable from '../../../../components/Clickable'
+import ErrorNotice from '../../../../components/ErrorNotice'
+import { SEND_REFUSED, SEND_UNCONFIRMED } from '../../../../chat-core/transport/sendTurn'
+import { mergeRecoveredDraft } from '../../../../utils/chatDrafts'
 import { familyGrantIsDistinct, trustBasePattern, truncateCommandLabel } from '../shared/trustPatterns'
 import Markdown from 'react-markdown'
 import type { Components } from 'react-markdown'
@@ -387,6 +390,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
   // against the original.
   const [dropActive, setDropActive] = useState(false)
   const [dropError, setDropError] = useState('')
+  // ADDED (not upstream): a send the gateway did not take. Kept apart from
+  // `dropError`, which is a validation hint about a file, not a failure.
+  const [sendError, setSendError] = useState('')
+  // ADDED (not upstream): a send with NO receipt -- delivery indeterminate, not
+  // failed. A status, never an ErrorNotice (errors-use-error-notice): the send
+  // may well have landed, and announcing it as a failure invites the duplicate
+  // the copy tells the user to check for.
+  const [sendNotice, setSendNotice] = useState('')
   // Queued attachments live HERE, not in the composer text: the reference
   // markdown is composed only at send time so the box the user types in is
   // never filled with plumbing.
@@ -912,17 +923,48 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     try {
       await api?.sendMessage?.(text, screenshotRef.current || undefined)
       setScreenshot(null)
-    } catch {
+      setSendError('')
+      setSendNotice('')
+    } catch (e) {
       // Send failed. handleSend already cleared the composer before awaiting, so
       // without this the typed text is lost, no error shows, and the spinner
-      // sticks forever. Restore the text (composer is empty on this path), clear
-      // the stuck waiting state, and surface the failure via the existing
-      // error banner — the dashboard AddWatchForm "your input is still here,
-      // try again" recovery.
+      // sticks forever. Restore the text, clear the stuck waiting state, and
+      // surface the failure -- the dashboard AddWatchForm "your input is still
+      // here, try again" recovery. The composer is usually empty on this path,
+      // but the user may have typed a second draft while the send was in
+      // flight: `mergeRecoveredDraft` (the rule every recovery site in the app
+      // uses) keeps BOTH rather than choosing one, so neither the submitted
+      // text nor the new draft is silently dropped. Only a
+      // rejection the bridge flags `SEND_REFUSED` carries the SERVER's own reason
+      // and is shown verbatim, so a refusal names its cause instead of sending
+      // the user to debug a connection that is fine; every other rejection (no
+      // receipt, a slot-bind failure, a browser TypeError) is developer-voice
+      // and gets the localized connection copy.
       setIsWaiting(false)
       setTurnActive(false)
-      setInput((prev) => (prev ? prev : text))
-      setDropError(i18nT('apps.mochi.chat.send_failed'))
+      setInput((prev) => mergeRecoveredDraft(prev, text))
+      const name = e instanceof Error ? e.name : ''
+      const reason = e instanceof Error ? e.message : ''
+      if (name === SEND_UNCONFIRMED) {
+        // No receipt: the send MAY have landed, so "try again" would invite a
+        // duplicate -- the core's unconfirmed copy says to check first. Not a
+        // failure, so it goes to the status line, not the error notice.
+        setSendError('')
+        setSendNotice(i18nT('pages.chatPage.delivery_unconfirmed') as string)
+        return
+      }
+      setSendNotice('')
+      setSendError(
+        name === SEND_REFUSED
+          // The server said no. FRAMED as a failed send (the same core entry
+          // design-tweak and the feature-request path use) with the server's
+          // reason when it gave one; a bodyless refusal is still "Send failed",
+          // never the connection copy -- the network is fine.
+          ? (reason
+            ? i18nT('pages.chatPage.send_failed_with_error', { error: reason })
+            : i18nT('pages.chatPage.send_failed'))
+          : i18nT('apps.mochi.chat.send_failed'),
+      )
     }
   }, [])
 
@@ -1007,10 +1049,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       wasNearBottomRef.current = true
       const result = await api?.editResend?.(text, editTsStr)
       if (!result?.ok) {
-        // Fallback: send as normal message — don't add user msg locally,
-        // sendMessage will trigger chat:message event which adds it
-        setIsWaiting(true)
-        await api?.sendMessage?.(text, screenshot || undefined)
+        // Fallback: send as a normal message through the same path the composer
+        // uses -- don't add the user msg locally, sendMessage echoes it on an
+        // accepted receipt. `sendText` also owns the failure branch: a refused or
+        // unconfirmed send restores the text and shows `chat.send_failed` instead
+        // of leaving an unhandled rejection and a stuck spinner here.
+        await sendText(text)
       }
       return
     }
@@ -1405,6 +1449,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
           120px. Measuring the stack is what makes the gap real in every state
           (upstream's fixed 52 was tuned for its own single layout). */}
       <div ref={composerRef}>
+      {/* ADDED (not upstream): a send the gateway did not take. */}
+      {/* No hand-off: the composer below holds the text this failure handed
+          back — navigating to the chat would discard it. */}
+      {sendError !== '' && (
+        <ErrorNotice
+          variant="inline"
+          message={sendError}
+          onDismiss={() => setSendError('')}
+          className="w-full px-2.5 py-1 border-t border-border text-[11px]"
+        />
+      )}
+      {/* ADDED (not upstream): delivery unconfirmed -- a status the next send
+          clears, at body weight because it carries a decision (check before
+          sending again); never an alert, the send may have landed. */}
+      {sendError === '' && sendNotice !== '' && (
+        <div role="status" className="w-full px-2.5 py-1 border-t border-border text-[11px] text-text">{sendNotice}</div>
+      )}
+
       {/* ADDED (not upstream): why a dropped file was refused. Reporting it is
           the point — the fork discarded such files silently, which reads as the
           app being broken rather than the file being unsupported. */}

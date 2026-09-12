@@ -23,6 +23,7 @@ import {
 } from '../api'
 import { approvalRoute } from './approvalActions'
 import { noteStaleOwnerResponse } from '../../../api/staleOwnerSignal'
+import { SEND_REFUSED, SEND_UNCONFIRMED, sendTurn } from '../../../chat-core/transport/sendTurn'
 import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import type { NotificationPayload, PetMood, PetState } from '../src/shared/types'
 import type { PackManifest, PackMeta } from '../src/shared/appearanceTypes'
@@ -762,25 +763,49 @@ function echoOwnMessage(text: string, screenshot?: string): void {
 }
 
 export async function sendMessage(text: string, screenshot?: string): Promise<void> {
-  echoOwnMessage(text, screenshot)
   // Bind the slot to the mochi agent before the first turn (idempotent).
   await ensureSlot()
   // The pet must react to the SEND, not to the first token: `thinking` is
   // precisely the gap between the two. Reported after the bind so a turn that
   // never gets a slot does not leave the pet thinking about nothing.
   reportPetEvent('user_input')
-  // `ws=1` tells the gateway to fan the turn out over the WebSocket instead of
-  // holding an SSE response open (matching how the dashboard chat works).
-  await fetch('/api/chat?ws=1', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      message: text,
-      slot: MOCHI_SLOT,
-      ...(screenshot ? { meta: { screenshot } } : {}),
-    }),
+  // The chat-core transport owns `?ws=1` (the JSON receipt instead of a held
+  // SSE response), the deadline and the receipt contract; this app runs in the
+  // dashboard bundle and sends over the dashboard's own wire.
+  const receipt = await sendTurn({
+    message: text,
+    slot: MOCHI_SLOT,
+    ...(screenshot ? { meta: { screenshot } } : {}),
   })
+  // The receipt decides whether the bubble exists. The old send echoed BEFORE
+  // the POST and never read the reply, so a `{ok:false}` refusal (or a 4xx/5xx)
+  // left a user bubble on screen that the server never took and no error
+  // anywhere. Now everything short of a CONFIRMED acceptance REJECTS -- and the
+  // vendored ChatPanel's send paths handle a rejected sendMessage by restoring
+  // the typed text, clearing the waiting state and showing `chat.send_failed`:
+  // `refused` (the server said no), `transport-error` (no response; the one
+  // case the old code did surface) and `response-late` (the deadline passed
+  // with no receipt, so the POST may never have reached the gateway -- echoing
+  // would paint a bubble that vanishes on reload with the draft gone, while a
+  // restored draft is at worst a visible duplicate). Only `dispatched`,
+  // `queued` and `unknown` (a 2xx, so the server took it and only the reply is
+  // mangled) echo, because the panel appends nothing optimistically (upstream
+  // Mochi's main process did this echo) and core does not echo a normal send
+  // over the socket.
+  if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
+    // A refusal is flagged by name, with the SERVER's own reason as the message
+    // when it gave one (the one text fit to show verbatim) and an empty message
+    // otherwise -- so ChatPanel can say "send failed" for a bodyless 4xx/5xx
+    // instead of blaming a healthy connection. A late receipt is flagged too:
+    // the send MAY have landed, so the panel must not tell the user to simply
+    // try again. Everything else (a bind failure from ensureSlot, a browser
+    // TypeError) is developer-voice and unflagged: the connection copy applies.
+    const err = new Error(receipt.reason ?? '')
+    if (receipt.status === 'refused') err.name = SEND_REFUSED
+    if (receipt.status === 'response-late') err.name = SEND_UNCONFIRMED
+    throw err
+  }
+  echoOwnMessage(text, screenshot)
 }
 
 // Whether the slot is currently known to be bound to the mochi agent. NOT a

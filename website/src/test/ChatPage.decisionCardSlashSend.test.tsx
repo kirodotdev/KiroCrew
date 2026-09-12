@@ -36,7 +36,12 @@ const { mockSendTurn, mockSideOpen, mockSideTurn } = vi.hoisted(() => ({
   mockSideTurn: vi.fn().mockResolvedValue({ ok: true, run_id: 'r1', messages: 1 }),
 }))
 
-vi.mock('../chat-core/transport/sendTurn', () => ({ sendTurn: mockSendTurn }))
+// Keep the module's other exports real (`mintSendId` stamps every ChatPage
+// send before `sendTurn` runs); only the wire call is replaced.
+vi.mock('../chat-core/transport/sendTurn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../chat-core/transport/sendTurn')>()),
+  sendTurn: mockSendTurn,
+}))
 
 vi.mock('../api/client', () => ({
   api: {

@@ -166,8 +166,11 @@ describe('mochi panelBridge chat transport', () => {
     expect(chunks).toEqual(['a'])
   })
 
+  // One body serves both fetches: `agent` is what ensureSlot reads, `ok: true`
+  // is the acceptance receipt `sendTurn` requires -- a 2xx whose body lacks
+  // `ok`/`queued` is classified refused and sendMessage rejects.
   it('sendMessage posts to the mochi slot with ws fan-out', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
 
     await bridge.sendMessage('hi')
@@ -179,7 +182,7 @@ describe('mochi panelBridge chat transport', () => {
   })
 
   it('sendMessage carries a screenshot as meta when present', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
 
     await bridge.sendMessage('look', 'data:image/png;base64,AAA')
@@ -203,7 +206,7 @@ describe('mochi panelBridge chat transport', () => {
   })
 
   it('sendMessage binds the slot to the mochi agent before the first send', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
     await bridge.sendMessage('hi')
     const createCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/slots')!
@@ -216,7 +219,7 @@ describe('mochi panelBridge chat transport', () => {
     // Closing the slot from the dashboard used to leave this page latched, so the
     // next send created a slot with the DEFAULT agent -- taking the pet's prompt,
     // skills, MCP and context-usage reporting with it, silently.
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
     await bridge.sendMessage('first')
     const binds = () => fetchMock.mock.calls.filter((c) => c[0] === '/api/chat/slots').length
@@ -250,7 +253,7 @@ describe('mochi panelBridge chat transport', () => {
   })
 
   it('binds the slot only once across sends (idempotent)', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
     await bridge.sendMessage('one')
     await bridge.sendMessage('two')
@@ -262,7 +265,7 @@ describe('mochi panelBridge chat transport', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 }) // ensureSlot fails
-      .mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+      .mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
     await bridge.sendMessage('one')
     await bridge.sendMessage('two')
@@ -283,7 +286,7 @@ describe('mochi panelBridge chat transport', () => {
   })
 
   it('stopGeneration targets the mochi slot', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
 
     await bridge.stopGeneration()
@@ -324,7 +327,7 @@ describe('mochi panelBridge chat transport', () => {
   })
 
   it('newSession deletes the slot and tolerates a missing one', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi', ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
     await bridge.newSession()
     const [url, init] = fetchMock.mock.calls[0]

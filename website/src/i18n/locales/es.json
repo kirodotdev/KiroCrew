@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "El servidor aceptó la solicitud, pero no se pudo leer la respuesta.",
       "paste_token_url_or_raw_token": "Pega la URL del token o el token sin procesar…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
       "session_expired": "La sesión ha caducado.",
@@ -129,6 +130,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "El agente está trabajando…",
+      "app_not_allowed_to_send_named": "{{app}} no tiene permiso para enviar mensajes de chat: no declara acceso al chat en sus permisos.",
+      "server_refused_with_status": "El servidor lo rechazó (HTTP {{status}}): inténtalo de nuevo en un momento.",
       "chat_message": "Mensaje de chat",
       "message": "Mensaje…",
       "send": "Enviar",
@@ -10147,7 +10150,8 @@
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
-      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral"
+      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
+      "delivery_unconfirmed_option": "Entrega sin confirmar: revisa la conversación y vuelve a elegir la opción si no aparece."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",

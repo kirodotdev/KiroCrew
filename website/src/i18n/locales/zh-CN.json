@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "服务器已接受请求，但无法读取其响应。",
       "paste_token_url_or_raw_token": "粘贴令牌 URL 或原始令牌…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
       "session_expired": "会话已过期。",
@@ -123,6 +124,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "代理正在工作…",
+      "app_not_allowed_to_send_named": "{{app}} 无权发送聊天消息：该应用未在其权限中声明聊天访问。",
+      "server_refused_with_status": "服务器拒绝了它（HTTP {{status}}），请稍后再试。",
       "chat_message": "聊天消息",
       "message": "输入消息…",
       "send": "发送",
@@ -9861,7 +9864,8 @@
       "could_not_generate_title": "无法生成标题",
       "could_not_open_side_chat": "无法打开随手问",
       "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",
-      "could_not_send_to_side_chat": "无法发送到随手问"
+      "could_not_send_to_side_chat": "无法发送到随手问",
+      "delivery_unconfirmed_option": "尚未确认送达——请先查看对话记录，若未出现再重新选择该选项。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
