@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from kiro_crew.hooks import HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_PRE_TOOL_USE, _should_block_results
+from kiro_crew.sel import sel
+
 from ..subagent_persistence import (
     publish_live_cleanup_identity,
     remember_live_cleanup_identity,
@@ -29,7 +32,6 @@ if TYPE_CHECKING:
         EVENT_TOOL_RESULT,
         FALLBACK_CANDIDATE_ATTEMPTS,
         FALLBACK_STORY_ATTR,
-        HOOK_EVENT_POST_TOOL_USE,
         PROVIDER_LABEL_DEFAULT,
         TOOL_AUTO_APPROVE,
         TOOL_DENY,
@@ -67,7 +69,6 @@ if TYPE_CHECKING:
         name_grant,
         provider_fallback_active,
         run_in_embed_pool,
-        sel,
         time,
         transient_retry_delay,
         update_state,
@@ -1396,6 +1397,57 @@ class RunEventCoordinator(ManagerComponent):
                         client, event.request_id, session_key, event, error="hook_deny"
                     )
                     continue
+                # PreToolUse script-hook gate (autonomous, fail-closed).
+                # Uses the shared 0/2 verdict predicate (has_verdict) from
+                # hooks.ScriptHookResult so dashboard and autonomous gates
+                # apply the same rule. Tightest-wins with the
+                # HookManager governance above (effective = POLICY ∩ PROFILE,
+                # no new scope, H13). No fail-open escape hatch: a gate that
+                # did not decide blocks, matching the dashboard.
+                if self._manager.hook_store is not None:
+                    try:
+                        _hook_results = await self._manager.hook_store.fire(
+                            HOOK_EVENT_PRE_TOOL_USE,
+                            tool_name=event.title or "",
+                            tool_input=event.raw_tool_params,
+                            subagent_id=info.id,
+                            parent_session_key=info.parent_session_key or None,
+                            agent_role=info.agent or None,
+                        )
+                        _blocked, _detail = _should_block_results(
+                            _hook_results,
+                            event=HOOK_EVENT_PRE_TOOL_USE,
+                        )
+                        if _blocked:
+                            await self._manager._reject_and_log(
+                                client, event.request_id, session_key, event, error="hook_blocked"
+                            )
+                            sel().log_tool_invocation(
+                                session_key=session_key,
+                                source="subagent",
+                                tool_name=event.title or "",
+                                tool_kind=event.tool_kind,
+                                outcome="hook_blocked",
+                                request_id=event.request_id,
+                                error=_detail,
+                                metadata={"subagent_id": info.id},
+                            )
+                            continue
+                    except Exception as exc:  # noqa: BLE001 - fail-closed
+                        await self._manager._reject_and_log(
+                            client, event.request_id, session_key, event, error="hook_error"
+                        )
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            source="subagent",
+                            tool_name=event.title or "",
+                            tool_kind=event.tool_kind,
+                            outcome="hook_error",
+                            request_id=event.request_id,
+                            error=str(exc)[:200],
+                            metadata={"subagent_id": info.id},
+                        )
+                        continue
                 if event.child_low_fidelity:
                     # UNCONDITIONAL parent grant: parent_policy=auto approves
                     # regardless of event content, so it may honor a request
@@ -1630,6 +1682,9 @@ class RunEventCoordinator(ManagerComponent):
                 # is the only progress signal a simple/read-only subagent task emits.
                 # Count it, record it, and broadcast the same subagent_tool event
                 # the permission path uses so the running-card shows live activity.
+                # A deny hook cannot veto here: the tool is already running
+                # (auto-approved by kiro-cli), so hook results stay informational
+                # and audit as auto_approved, never hook_blocked.
                 info.tool_count += 1
                 info.last_tool = event.title or info.last_tool
                 self._manager._note_tool_dispatch(info, event)

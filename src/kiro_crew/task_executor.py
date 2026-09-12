@@ -16,7 +16,14 @@ from kiro_crew import git_coord, name_grant, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, fire_tool_hooks, get_global_hook_store
+from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    _should_block_results,
+    fire_tool_hooks,
+    get_global_hook_store,
+)
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.providers.base import (
@@ -403,6 +410,51 @@ async def execute_task(
                                 error="hook_deny",
                             )
                             continue
+                        # PreToolUse script-hook gate (autonomous, fail-closed).
+                        # Shared has_verdict predicate with dashboard so the two
+                        # surfaces apply the same verdict rule. No fail-open
+                        # escape hatch: a gate that did not decide blocks,
+                        # matching the dashboard.
+                        _store = get_global_hook_store()
+                        if _store is not None:
+                            try:
+                                _hook_results = await _store.fire(
+                                    HOOK_EVENT_PRE_TOOL_USE,
+                                    tool_name=event.title or "",
+                                    tool_input=event.raw_tool_params,
+                                    parent_session_key=session_key or None,
+                                    agent_role=agent or None,
+                                )
+                                _blocked, _detail = _should_block_results(
+                                    _hook_results,
+                                    event=HOOK_EVENT_PRE_TOOL_USE,
+                                )
+                                if _blocked:
+                                    await client.reject_tool(event.request_id)
+                                    sel().log_tool_invocation(
+                                        session_key=session_key,
+                                        agent=agent or "kirocrew",
+                                        source="taskrunner",
+                                        tool_name=event.title,
+                                        tool_kind=event.tool_kind,
+                                        outcome="hook_blocked",
+                                        request_id=event.request_id,
+                                        error=_detail,
+                                    )
+                                    continue
+                            except Exception as exc:  # noqa: BLE001 - fail-closed
+                                await client.reject_tool(event.request_id)
+                                sel().log_tool_invocation(
+                                    session_key=session_key,
+                                    agent=agent or "kirocrew",
+                                    source="taskrunner",
+                                    tool_name=event.title,
+                                    tool_kind=event.tool_kind,
+                                    outcome="hook_error",
+                                    request_id=event.request_id,
+                                    error=str(exc)[:200],
+                                )
+                                continue
                         if tool_result.action == TOOL_AUTO_APPROVE:
                             # The hook granted this by NAME (its
                             # `auto_approve_tools` globs, or the read-only
@@ -544,7 +596,10 @@ async def execute_task(
                         },
                     )
                 elif event.kind == EVENT_TOOL_CALL:
-                    # Fire PreToolUse hooks for auto-approved tools (informational only)
+                    # Fire PreToolUse hooks for auto-approved tools (informational only).
+                    # A deny hook cannot veto here: the tool is already running
+                    # (auto-approved by kiro-cli), so hook results stay
+                    # informational and audit as auto_approved, never hook_blocked.
                     sel().log_tool_invocation(
                         session_key=session_key,
                         agent=agent or "kirocrew",

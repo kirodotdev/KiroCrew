@@ -4325,6 +4325,69 @@ class ScriptHookResult:
     def succeeded(self) -> bool:
         return self.exit_code == 0
 
+    # Shared 0/2-verdict predicate: one definition serves the dashboard
+    # chat gate and the autonomous paths. A PreToolUse hook
+    # has a two-valued contract — 0 allow, 2 deny — every other code means
+    # the gate did not decide.
+    @property
+    def has_verdict(self) -> bool:
+        """True when the hook delivered a verdict (exit 0 allow or 2 deny)."""
+        return self.exit_code in (0, 2)
+
+
+def pretooluse_should_block(
+    result: "ScriptHookResult",
+    *,
+    event: str,
+) -> bool:
+    """Shared PreToolUse deny predicate (tightest-wins, fail-closed).
+
+    A PreToolUse hook has a two-valued contract — exit 0 allow, exit 2 deny
+    (``ScriptHookResult.has_verdict``). Any other exit means the gate did not
+    decide (timeout, crash, missing binary → -1/126/127/1) and — for a gating
+    event — resolves to deny. There is no fail-open escape hatch: the base
+    recorded the deliberate no-escape-hatch decision, and every surface
+    applies this one predicate. Other events never block on a non-verdict
+    (warn-only).
+
+    Single definition for the dashboard chat gate and the autonomous
+    subagent/task-runner gates (H13 harness-parity: no new scope).
+    """
+    if result.blocked:
+        return True
+    if result.has_verdict:
+        return False
+    return event == HOOK_EVENT_PRE_TOOL_USE
+
+
+def _pretooluse_block_reason(result: "ScriptHookResult") -> str:
+    """Preferred block detail for a non-verdict PreToolUse result (redacted)."""
+    return (result.error or result.stderr or f"exited with code {result.exit_code}")[:200]
+
+
+def _should_block_results(
+    results: list["ScriptHookResult"],
+    *,
+    event: str,
+) -> tuple[bool, str]:
+    """Evaluate a batch of hook results with the shared predicate.
+
+    Returns (should_block, detail) where detail is the first blocking reason.
+    Used by the autonomous gates (subagent, task-runner) so the verdict logic
+    has one definition (tightest-wins, fail-closed PreToolUse); the dashboard
+    chat gate shares the single-result predicate underneath.
+    """
+    for r in results:
+        if pretooluse_should_block(r, event=event):
+            # Prefer the hook-authored message, falling back to exit code.
+            detail = (
+                _pretooluse_block_reason(r)
+                if not r.blocked
+                else (r.stderr[:200] if r.stderr else "hook denied")
+            )
+            return True, detail
+    return False, ""
+
 
 def _script_hooks_capability_denied(session_key: str = "") -> str | None:
     """Return a denial reason if governance disables ``capabilities.script_hooks``.
@@ -4780,7 +4843,15 @@ class ScriptHookStore:
             hook = self._hooks.get(hook_id)
             if not hook:
                 return None
-            for k in ("name", "event", "matcher", "matcher_mode", "command", "timeout", "enabled"):
+            for k in (
+                "name",
+                "event",
+                "matcher",
+                "matcher_mode",
+                "command",
+                "timeout",
+                "enabled",
+            ):
                 if k in data:
                     setattr(hook, k, data[k])
             if "skills" in data:

@@ -202,6 +202,7 @@ from kiro_crew.hooks import (
     ToolHookResult,
     fire_tool_hooks,
     identity_grant_covers_child,
+    pretooluse_should_block,
     safe_read_file,
     safe_read_file_bytes_nolink,
     validate_file_path,
@@ -6495,48 +6496,47 @@ async def _run_chat(
                             "text": f"Hook {r.hook_name} BLOCKED: {r.stderr[:100] if r.stderr else 'denied'}",
                         },
                     )
-                elif r.exit_code not in (0, 2):
+                elif pretooluse_should_block(r, event=event):
                     detail = (r.error or r.stderr or f"exited with code {r.exit_code}")[:200]
-                    if event == HOOK_EVENT_PRE_TOOL_USE:
-                        # Fail closed. A PreToolUse hook has a two-valued
-                        # contract — exit 0 is a delivered allow, exit 2 a
-                        # delivered deny — so every other code means the gate
-                        # did not decide, and for a gate that resolves to deny.
-                        # Treating it as a pass would mean breaking, slowing, or
-                        # deleting the deny hook silently disables the policy it
-                        # enforces. Same shape as the hook-store and
-                        # fire()-raised denials on this path.
-                        #
-                        # This deliberately covers more than the undelivered
-                        # shapes (timeout and crash → -1, unexecutable → 126/127):
-                        # a hook that runs to completion and exits 1 also blocks
-                        # here. A hook's own uncaught error surfaces as exit 1
-                        # too and is
-                        # indistinguishable from a deliberate one, and the exit
-                        # code a failed exec produces is shell- and
-                        # platform-specific (cmd /c yields 9009 or 1 where
-                        # /bin/sh yields 127), so an allowlist of "real" failure
-                        # codes would fail open on Windows for exactly this
-                        # class. The hook store already calls every nonzero
-                        # non-2 exit an error (``last_status = "error"``); this
-                        # branch gives the gate the matching direction.
-                        injected.append(f"BLOCKED:{r.hook_name}:{detail}")
-                        logger.error(
-                            "Hook %s could not deliver a verdict (%s) - blocking tool",
-                            r.hook_name,
-                            detail,
-                        )
-                        state.broadcast_ws(
-                            "activity_event",
-                            {
-                                "slot": slot.key,
-                                "kind": "hook",
-                                "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
-                            },
-                        )
-                    elif r.stderr:
-                        # Non-zero, non-block on a non-gating event: warn only.
-                        logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[:200])
+                    # Fail closed. A PreToolUse hook has a two-valued
+                    # contract — exit 0 is a delivered allow, exit 2 a
+                    # delivered deny — so every other code means the gate
+                    # did not decide, and for a gate that resolves to deny.
+                    # Treating it as a pass would mean breaking, slowing, or
+                    # deleting the deny hook silently disables the policy it
+                    # enforces. Same shape as the hook-store and
+                    # fire()-raised denials on this path.
+                    #
+                    # This deliberately covers more than the undelivered
+                    # shapes (timeout and crash → -1, unexecutable → 126/127):
+                    # a hook that runs to completion and exits 1 also blocks
+                    # here. A hook's own uncaught error surfaces as exit 1
+                    # too and is
+                    # indistinguishable from a deliberate one, and the exit
+                    # code a failed exec produces is shell- and
+                    # platform-specific (cmd /c yields 9009 or 1 where
+                    # /bin/sh yields 127), so an allowlist of "real" failure
+                    # codes would fail open on Windows for exactly this
+                    # class. The hook store already calls every nonzero
+                    # non-2 exit an error (``last_status = "error"``); this
+                    # branch gives the gate the matching direction.
+                    injected.append(f"BLOCKED:{r.hook_name}:{detail}")
+                    logger.error(
+                        "Hook %s could not deliver a verdict (%s) - blocking tool",
+                        r.hook_name,
+                        detail,
+                    )
+                    state.broadcast_ws(
+                        "activity_event",
+                        {
+                            "slot": slot.key,
+                            "kind": "hook",
+                            "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
+                        },
+                    )
+                elif r.stderr:
+                    # Non-zero, non-block on a non-gating event: warn only.
+                    logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[:200])
         except Exception as exc:
             if event == HOOK_EVENT_PRE_TOOL_USE:
                 logger.warning("Hook fire error during blocking event %s: %s", event, exc)

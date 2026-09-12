@@ -2308,3 +2308,84 @@ class TestChildEscalationLimit:
         answered = {c.args[0] for c in provider.reject_tool.await_args_list}
         assert 1000 + 60 in answered, "triggering request was not answered"
         assert len(answered) == 61
+
+
+class TestSubagentPreToolUseHookGate:
+    """A PreToolUse script-hook deny on EVENT_PERMISSION_REQUEST rejects the
+    tool on autonomous paths.
+
+    Regression pin for the shared 0/2-verdict gate: the acquired hook verdict
+    must reach the provider as a rejection, not dissolve into an approval.
+    The event shape below is one the base code approves (verified identity +
+    parent_policy=auto unconditional grant), so the rejection proves the hook
+    gate ran -- on unpatched code this test fails at the approve assertion.
+    """
+
+    @pytest.mark.asyncio
+    async def test_permission_request_hook_deny_rejects(self) -> None:
+        from kiro_crew.hooks import (
+            HOOK_EVENT_PRE_TOOL_USE,
+            TOOL_AUTO_APPROVE,
+            ScriptHookResult,
+            ToolHookResult,
+        )
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        sessions = _mock_sessions()
+        sessions.get_approval_policy = MagicMock(return_value="auto")
+        provider = sessions.get_or_create.return_value[0]
+        provider.approve_tool = AsyncMock()
+        provider.reject_tool = AsyncMock()
+
+        async def _stream(*_a, **_kw):
+            yield LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="@example-server/get-item",
+                request_id=9101,
+                sub_session_id="child-a",
+                shell_classified=True,
+                is_shell=False,
+                mcp_server_name="example-server",
+                tool_name="get-item",
+                mcp_identity_trusted=True,
+            )
+
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("msg", None))
+        ctx.hooks.on_tool_call = MagicMock(
+            return_value=ToolHookResult(action=TOOL_AUTO_APPROVE)
+        )
+        ctx.hooks.auto_approve_subagent_spawn = True
+
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=ctx, default_turn_limit=1
+        )
+        manager.hook_store = MagicMock()
+        manager.hook_store.fire = AsyncMock(
+            return_value=[
+                ScriptHookResult(
+                    hook_id="h1",
+                    hook_name="deny",
+                    event=HOOK_EVENT_PRE_TOOL_USE,
+                    exit_code=2,
+                    stderr="nope",
+                )
+            ]
+        )
+        info = SubagentInfo(
+            id="deny01", task="t", parent_session_key="dashboard:default"
+        )
+        manager._agents["deny01"] = info
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent.update_state"),
+            patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True),
+        ):
+            await manager._run_inner(info, "subagent:deny01")
+
+        provider.reject_tool.assert_awaited_once_with(9101)
+        provider.approve_tool.assert_not_awaited()
