@@ -278,7 +278,10 @@ a refused name never reaches `gitops` or the compiler.
 5. Without a bibliography, re-run once if the log says "Rerun to get…" — how a
    table of contents or a `\ref` settles. Not retried when the pass **failed**: a
    failing pass that also asks to rerun is broken, not merely unsettled.
-6. `ok` requires exit 0 **and** a PDF on disk — `pdflatex` can exit 0 having
+6. Both compilers write output in the project root, including when the main
+   document is in a subdirectory. Tectonic receives `--outdir` explicitly so
+   compilation and the PDF-serving path resolve the same file.
+7. `ok` requires exit 0 **and** a PDF on disk — `pdflatex` can exit 0 having
    produced nothing usable.
 
 ### Log parsing

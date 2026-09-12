@@ -450,6 +450,35 @@ class TestCompileProject:
         assert result.ok is True
         assert recorder.operations == ["compile"]
 
+    @pytest.mark.parametrize("existing_pdf", [False, True])
+    async def test_tectonic_nested_main_updates_the_served_pdf(
+        self, project: Path, existing_pdf: bool
+    ) -> None:
+        nested = project / "chapters" / "paper.tex"
+        nested.parent.mkdir()
+        nested.write_text(r"\documentclass{article}", encoding="utf-8")
+        served = project / "paper.pdf"
+        if existing_pdf:
+            served.write_bytes(b"%PDF-stale")
+
+        async def compile_output(argv, **kwargs):
+            # Tectonic's V1 CLI defaults to the input file's directory.
+            output_dir = (
+                Path(argv[argv.index("--outdir") + 1])
+                if "--outdir" in argv else Path(argv[-1]).parent
+            )
+            (output_dir / "paper.pdf").write_bytes(b"%PDF-current")
+            return 0, ""
+
+        with mock.patch.object(
+            latex, "find_compiler", mock.AsyncMock(return_value="/usr/local/bin/tectonic")
+        ), mock.patch.object(latex, "_run", compile_output):
+            result = await latex.compile_project(project, "chapters/paper.tex")
+
+        assert result.ok is True
+        assert store.pdf_path(project, "chapters/paper.tex") == served
+        assert served.read_bytes() == b"%PDF-current"
+
     async def test_a_missing_pdf_means_failure_even_on_exit_zero(self, project: Path) -> None:
         """pdflatex can exit 0 having produced nothing usable."""
         recorder = _RunRecorder(code=0)
