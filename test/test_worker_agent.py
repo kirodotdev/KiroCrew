@@ -242,8 +242,7 @@ def test_a_ledger_conductor_mounts_the_server_and_grants_only_its_own_half(specs
     assert "@kirocrew-work" not in allowed
 
 
-@pytest.mark.parametrize("filename", [PIPELINE_CONDUCTOR_AGENT_FILENAME])
-def test_a_conductor_with_another_procedure_does_not_mount_the_server(specs, filename):
+def test_a_conductor_with_another_procedure_does_not_mount_the_server(specs):
     """The pipeline conductor mounted this server briefly, and the mount is retracted.
 
     The tools alone do not describe the procedure they came with: the ledger flow
@@ -252,11 +251,8 @@ def test_a_conductor_with_another_procedure_does_not_mount_the_server(specs, fil
     they did not choose. Asserted negatively, on every surface a mount can survive
     on, so it cannot return unnoticed — the KAS rule especially, since nothing
     reads ``allowedTools`` on that backend.
-
-    Parametrized over one filename rather than inlined, because the shape is what
-    a second such conductor joins.
     """
-    spec = specs[filename]
+    spec = specs[PIPELINE_CONDUCTOR_AGENT_FILENAME]
     assert "@kirocrew-work" not in spec["tools"]
     assert "kirocrew-work" not in spec["mcpServers"]
     assert not [ref for ref in spec["allowedTools"] if "kirocrew-work" in ref]

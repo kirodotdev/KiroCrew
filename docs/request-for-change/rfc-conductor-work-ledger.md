@@ -852,7 +852,7 @@ Exit criteria:
 
 ### Phase 4 — the surfaces
 
-Scope: the Crew page item table and event list, including the open channels with their expiry and remaining budget and any outstanding `request` awaiting a conductor's answer; the `goal-conductor/SKILL.md` rewrite replacing the transcript-reading patrol with a ledger read and adding the dispatch rule (leaf → `kirocrew-worker`, decomposable → `kirocrew-conductor` under the depth cap, specialist crew → that crew, with the transcript fallback named for a crew that does not mount `@kirocrew-work`); deletion of `ledger_entry.py` and its tests; a module spec in `docs/system-specs/modules/`, added to that directory's index.
+Scope: the Crew page item table and event list, including the open channels with their expiry and remaining budget and any outstanding `request` awaiting a conductor's answer; the `goal-conductor/SKILL.md` rewrite replacing the transcript-reading patrol with a ledger read and adding the dispatch rule (leaf → `kirocrew-worker`, decomposable → `kirocrew-conductor` under the depth cap, specialist crew → that crew, with the transcript fallback named for a crew that does not mount `@kirocrew-work`); a module spec in `docs/system-specs/modules/`, added to that directory's index. The deletion of `ledger_entry.py` and its tests rides with the alias's removal instead (§Rollout note — swap done).
 
 Exit criteria:
 - The Crew page renders items and events from the same endpoint the conductor reads, asserted by a test that the payload shapes match.
@@ -869,7 +869,7 @@ Additive at every layer, and Phase 2.5 made that stricter than v2 promised: the 
 
 Phases 3b and 5 keep that shape. `siblings` and `inbox` are new keys on a payload only a bound worker reads, and a worker prompt that never mentions them ignores them. `work_request` and `work_message` are new tools on the opt-in server, so a session that does not mount it cannot call them, and a worker that mounts it but has no channel gets a refusal naming why. The four new event kinds are additive to `EVENT_KINDS`, and `WorkEvent.from_dict` already drops a line whose `kind` it does not know — so an older reader against a newer store degrades to ignoring the traffic rather than failing on it.
 
-The one breaking step is Phase 4's deletion of `ledger_entry.py`, and it breaks only a bundled skill that ships in the same commit as its replacement.
+The one breaking step is the deletion of `ledger_entry.py`, which rides with the alias's removal next release (§Rollout note — swap done), and it breaks only a bundled skill whose replacement already shipped.
 
 ## Alternatives considered
 
@@ -918,9 +918,10 @@ possible. What it buys is that Phase 3 and Phase 4 can land without any existing
 conductor session changing behaviour, and that a defect in the flow is contained to
 users who asked for it.
 
-**Merge criteria.** Both were judged met and the merge is done — see §Rollout note —
-swap done below. The criteria are kept as written, because they are what the decision was
-taken against. The two agents fold back into one — `kirocrew-ledger-conductor` retired,
+**Merge criteria.** The merge is done — see §Rollout note — swap done below, which
+records criterion 1 as met on the evidence it names and criterion 2 as **waived**, not
+met. The criteria are kept as written, because they are what the decision was taken
+against. The two agents fold back into one — `kirocrew-ledger-conductor` retired,
 `kirocrew-work` restored on `kirocrew-conductor`, `goal-conductor/SKILL.md` rewritten to
 the ledger procedure and `ledger_entry.py` deleted — when BOTH hold:
 
@@ -944,28 +945,63 @@ merged agent, not a `Mode not found` failure.
 
 ## Rollout note — swap done
 
-The merge criteria above are met and the swap has landed. `kirocrew-conductor` **is**
+The swap has landed: criterion 1 met, criterion 2 waived. `kirocrew-conductor` **is**
 the ledger conductor: `_conductor_spec` mounts `kirocrew-work`, grants
 `work_ledger_read` / `work_ledger_record` / `work_brief` and not `work_report`, and
 carries the ledger prompt; `goal-conductor/SKILL.md` is the ledger procedure.
 `kirocrew-ledger-conductor` stays for **one release** as a deprecated alias emitting
 that same spec under the old name, and `goal-ledger-conductor/SKILL.md` is a
 one-paragraph pointer to `goal-conductor` with a byte-identical `accept_eval.py` beside
-it. Both are removed next release; nothing new should name either.
+it. Both are removed next release, **gated on the doctor notice below** — a removal that
+lands without it deletes the name having warned nobody who still uses it. Nothing new
+should name either.
 
-Against criterion 1: a multi-item goal ran end to end on the ledger — 7 items across 3
-rounds, created, bound, seeded, reported, settled by `accept_eval.py` rather than by a
-transcript read, and closed. Against criterion 2: the `watch: "work-ledger"` gate is
-still not merged, and the per-quiet-tick turn was accepted as the cost of the timer
-rather than treated as a blocker — the prompt says so where it describes patrol, so a
-conductor sizes its interval against the real cost. Phase 3 remains worth doing and is
-now an optimisation of the shipped conductor rather than of a variant of it.
+**Criterion 1 — met, on this evidence.** A multi-item goal ran end to end on the
+ledger: 7 items across 3 rounds, created, bound, seeded, reported, settled by
+`accept_eval.py` rather than by a transcript read, and closed. Those are the grounds the
+decision was taken on. The criterion's two sub-clauses — at least one `blocked` or
+`question`, and one second-level conductor — have no linkable record, so this note does
+not claim them; a reader auditing the decision should read criterion 1 as met on the
+item lifecycle and unevidenced on those two.
 
-What the swap does NOT do: `ledger_entry.py` is still shipped in
-`goal-conductor/scripts/`, because deleting it and its tests is Phase 4's scope and the
-skill body no longer sends a reader to it. `kirocrew-pipeline-conductor` and
-`kirocrew-security-conductor` still mount nothing, for the reason §Agent spec changes
-gives — their children report through their own skills' scripts.
+**Criterion 2 — waived, not met.** Phase 3's `watch: "work-ledger"` gate is not merged,
+so the patrol loop still pays a turn per quiet interval. The criterion existed because
+"not yet cheaper than the agent it would replace" is a fair objection; re-judged against
+the agent actually being replaced, the old procedure's per-item transcript read per
+cycle is not cheaper than one `work_ledger_read`, so the objection does not hold and the
+timer's cost was accepted rather than treated as a blocker. The prompt says so where it
+describes patrol, so a conductor sizes its interval against the real cost. Phase 3
+remains worth doing and is now an optimisation of the shipped conductor rather than of a
+variant of it.
+
+**Still owed before the alias is deleted.** The retirement spec above requires a
+`kirocrew doctor` notice for any config that still names `kirocrew-ledger-conductor`,
+and no doctor change ships with the swap. Nothing tells a cron owner or a crew binding
+that its agent name is going away — the deprecated `description` is read by an operator
+looking at the roster, not by a config file — so without the notice the one-release
+window warns nobody and the name's deletion is a `Mode not found` at the far end. The
+notice is a **precondition for deleting the alias**, not for the swap: while the alias
+exists, an unmigrated config keeps working. Tracked as
+[#10268](https://github.com/kirodotdev/KiroCrew/issues/10268).
+
+**Mid-goal behaviour.** A `kirocrew-conductor` session that was mid-goal under the old
+procedure wakes into the ledger prompt with its item state still in `session_ledger`
+`artifacts`. That is soft rather than breaking, and deliberately so: every tool the old
+procedure used is still mounted, `session_ledger_read` still returns those artifacts, and
+`ledger_entry.py` is still shipped, so the session can finish the round it is in. What it
+must not do is keep both records — the prompt says the ledger is the item store, so a
+mid-goal session should stop writing items into `artifacts` and open ledger items for
+whatever is still open.
+
+**`ledger_entry.py`.** Still shipped in `goal-conductor/scripts/`, now referenced by
+nothing an agent reads. Its only remaining consumers are the mid-goal sessions above,
+which expire on the same schedule as the alias, so its deletion — with
+`test_conductor_ledger_entry.py` — moves out of Phase 4 and rides with the alias's
+removal next release. Phase 4 keeps the Crew page surfaces.
+
+`kirocrew-pipeline-conductor` and `kirocrew-security-conductor` still mount nothing, for
+the reason §Agent spec changes gives — their children report through their own skills'
+scripts.
 
 ## Open questions
 
