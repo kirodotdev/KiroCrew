@@ -505,8 +505,13 @@ LAUNCH
   fi
 
   # Self-containment gate: the full import chain must resolve with no user-site.
+  # Bare `--version` is a pre-dispatch fast-path that skips `kiro_crew.cli`'s
+  # heavy imports, so it cannot prove the chain alone: the import probe below
+  # restores the gate's meaning.
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/bin/python3.12" -m kiro_crew --version >/dev/null \
+    || { echo "ERROR: bundled backend is NOT self-contained (missing dep under PYTHONNOUSERSITE=1)" >&2; exit 1; }
+  PYTHONNOUSERSITE=1 "$out/bin/python3.12" -c 'import kiro_crew.cli' \
     || { echo "ERROR: bundled backend is NOT self-contained (missing dep under PYTHONNOUSERSITE=1)" >&2; exit 1; }
 
   # Prune to shrink the bundle.
@@ -663,6 +668,8 @@ build_backend_windows() {
 
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/python.exe" -s -m kiro_crew --version >/dev/null \
+    || { echo "ERROR: bundled backend is NOT self-contained (missing dep under PYTHONNOUSERSITE=1)" >&2; exit 1; }
+  PYTHONNOUSERSITE=1 "$out/python.exe" -s -c 'import kiro_crew.cli' \
     || { echo "ERROR: bundled backend is NOT self-contained (missing dep under PYTHONNOUSERSITE=1)" >&2; exit 1; }
 
   log "Pruning bundle ($(basename "$out"))…"

@@ -40,11 +40,12 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-# Module scope, not function-local: this is the one package import this file can
-# safely make at import time, because dep_sync imports the standard library only
-# (asserted by a test) and so cannot raise the ModuleNotFoundError this file
-# exists to heal. `kiro_crew.__init__` itself imports nothing but asyncio.
-from kiro_crew import dep_sync
+# Module scope, not function-local: these are the only package imports this file
+# can safely make at import time. dep_sync imports the standard library only
+# (asserted by a test) and `__version__` needs nothing beyond the package
+# itself (`kiro_crew.__init__` imports nothing but asyncio), so neither can
+# raise the ModuleNotFoundError this file exists to heal.
+from kiro_crew import __version__, dep_sync
 
 _PIP_TIMEOUT_SECS = 300
 
@@ -108,6 +109,14 @@ def _self_heal(missing: str) -> bool:
 
 def main() -> None:
     """Import the real CLI, self-healing a stale editable install once."""
+    # Fast-path for bare `--version`: skip importing `kiro_crew.cli` (~250ms
+    # of module-scope imports `--version` never uses) on the console-script
+    # path. Mirrored by the `__main__` guard for `python -m`; only the bare
+    # form fast-paths so `artifact show --version N` keeps its argparse
+    # semantics.
+    if len(sys.argv) == 2 and sys.argv[1] == "--version":
+        print(f"kirocrew {__version__}")
+        return
     try:
         cli_main = _import_cli()
     except ModuleNotFoundError as exc:

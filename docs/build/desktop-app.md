@@ -108,7 +108,9 @@ Two properties are load-bearing and worth knowing before you touch that lane:
 
 - **Linux is built natively per arch, never cross-compiled.** `build-desktop.sh`
   provisions a python-build-standalone interpreter and then *runs* it (pip
-  install, plus the `python -m kiro_crew --version` self-containment gate), so a
+  install, plus the `python -m kiro_crew --version` self-containment gate and
+  its companion `import kiro_crew.cli` chain probe — bare `--version` answers
+  before the heavy imports, so the probe carries the gate's meaning), so a
   host that cannot execute the target architecture cannot build it. macOS gets
   away with one host only because Rosetta 2 executes the x86_64 slice.
 - **The runner's glibc is the ceiling on what the artifacts may require.** The
