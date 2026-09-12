@@ -14,6 +14,14 @@ Two tests pin an answer the project intends to revisit -- how a signal joining a
 open coalescing window is aged, and which entries ride along on a wake they could
 not have triggered. Pinning today's answer is what makes a future change to it a
 visible diff rather than a silent one.
+
+Three more tests pin behaviours the rest of this file leaves uncovered: the hard
+cap fires on its own schedule regardless of the floor, an epoch change preserves
+an open sticky window's ``opened_at``, and a cleared epoch-scoped entry is pruned
+before the window extends. Three related behaviours are covered elsewhere and are
+out of scope here: the ``blind`` consecutive-error backstop, the sticky-key
+garbage collection past the re-alert window, and the hostile-input hardening in
+``_coerce_ts`` / ``_usable_bound``.
 """
 
 from __future__ import annotations
@@ -307,6 +315,119 @@ def test_an_admitted_entry_rides_along_on_a_wake_it_could_not_have_triggered():
     assert "the early red" in body, "the aged entry triggers the wake"
     assert "the late red" in body, "the young entry rides along rather than buying a second wake"
     assert _window() == {}, "a full fire leaves nothing behind to wake again"
+
+
+def test_the_hard_cap_is_not_gated_behind_the_floor():
+    """The absolute wall flushes even when the floor is never reached.
+
+    ``coalesce_max_secs`` is a wall-clock bound measured from the oldest entry,
+    independent of the floor and of ``pending``. With a floor set above the cap
+    (both finite and positive, which ``run`` accepts) and a ``pending`` that
+    never drains, the floor is never reached, yet the window still flushes once
+    the oldest entry's age passes the cap. The other tests here use the default
+    ordering where the floor is below the cap, so this is the only case that
+    exercises the cap on its own.
+    """
+    probe = _ScriptedProbe(
+        [
+            Tick(epoch="e1", observations=[_wake("red:a", "stuck red")], pending=1),
+            Tick(epoch="e1", observations=[_wake("red:a", "stuck red")], pending=1),
+        ]
+    )
+    # Floor deliberately ABOVE the cap: both legal, and the cap is what must
+    # still fire while the floor stays unreached.
+    floor = 100.0
+    cap = 5.0
+
+    assert isinstance(_verdict(probe, coalesce_secs=floor, coalesce_max_secs=cap), Skip)
+
+    # Past the cap but nowhere near the floor, and pending never drained.
+    _clock.advance(cap * 2)
+    verdict = _verdict(probe, coalesce_secs=floor, coalesce_max_secs=cap)
+    assert isinstance(
+        verdict, Report
+    ), "the hard cap flushes on its own even when the floor is unreached and pending never drains"
+    assert "stuck red" in str(verdict)
+    assert _window() == {}, "a cap flush delivers the whole window"
+
+
+def test_an_epoch_change_carries_an_open_sticky_window_with_its_stamp():
+    """A sticky entry open but undelivered survives an epoch change, aged from
+    when it opened.
+
+    A sticky signal (a comment) is a property of the subject, not of the epoch,
+    so an epoch change keeps an open sticky window entry and keeps the
+    ``opened_at`` it already holds. The carried entry therefore fires on the age
+    it has already served rather than starting a fresh floor after the change.
+
+    ``test_a_signal_joining_an_open_window_serves_its_own_full_floor`` pins
+    sticky admission WITHIN one epoch; this pins that an open sticky window
+    survives the epoch boundary.
+    """
+    comment = _sticky("comment:1", "a review comment")
+    red = _wake("red:a", "an epoch-scoped red")
+    probe = _ScriptedProbe(
+        [
+            # e1: the comment opens the window; the red keeps pending non-zero
+            # so nothing fires yet.
+            Tick(epoch="e1", observations=[comment, red], pending=2),
+            # e2: force-push. The red belongs to the old commit and is absent;
+            # the comment is re-observed. The comment's original stamp is
+            # retained, so it is already past its floor and fires now.
+            Tick(epoch="e2", observations=[comment], pending=0),
+        ]
+    )
+
+    assert isinstance(_verdict(probe, coalesce_secs=_FLOOR), Skip)
+
+    # Advance past the floor, THEN change epoch. The carried entry fires
+    # immediately because the age it served survives the reset. The delivered
+    # wake is the property; how the age is stored is not asserted, so a design
+    # that keeps the stamp elsewhere passes too.
+    _clock.advance(_FLOOR * 1.5)
+    verdict = _verdict(probe, coalesce_secs=_FLOOR)
+    assert isinstance(
+        verdict, Report
+    ), "an open sticky window survives the epoch change carrying the age it served"
+    assert "a review comment" in str(verdict)
+    assert "an epoch-scoped red" not in str(verdict), "the epoch-scoped entry is dropped"
+
+
+def test_a_cleared_epoch_scoped_entry_is_pruned_before_the_window_extends():
+    """An anomaly that cleared while the window was open is not delivered.
+
+    Before the window extends, an epoch-scoped entry the probe does not report
+    this tick is dropped from it. So a check that reads green again is gone from
+    the window by the time it fires, and the wake carries only checks still
+    failing -- never a cleared check announced as failing beside the observation
+    that replaced it.
+
+    The prune is epoch-scoped only: a sticky entry stays (a probe that stops
+    reporting a comment has stopped LOOKING, not seen it clear), which the
+    sticky tests cover.
+    """
+    stale = _wake("red:a", "check A is failing")
+    fresh = _wake("red:b", "check B is failing")
+    probe = _ScriptedProbe(
+        [
+            # Both reds open the window together, so both age from the same
+            # instant. This keeps the case about the prune rather than the
+            # joiner-serves-its-own-floor rule, which needs an entry aged from 0.
+            Tick(epoch="e1", observations=[stale, fresh], pending=1),
+            # red:a is absent this tick; red:b is still failing.
+            Tick(epoch="e1", observations=[fresh], pending=0),
+        ]
+    )
+    assert isinstance(_verdict(probe, coalesce_secs=_FLOOR), Skip)
+
+    _clock.advance(_FLOOR * 1.2)
+    verdict = _verdict(probe, coalesce_secs=_FLOOR)
+    assert isinstance(verdict, Report)
+    body = str(verdict)
+    assert "check B is failing" in body, "the still-failing check wakes"
+    assert (
+        "check A is failing" not in body
+    ), "a check absent this tick is pruned, not delivered as still failing"
 
 
 # ------------------------------------------------------------------- the probe
