@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime
 
 from .connectors.base import BaseConnector
-from .ingestion import ImportChunkBudgetError
+from .ingestion import ImportChunkBudgetError, run_to_completion
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,17 @@ class SyncScheduler:
         self.store = store
         self.pipeline = pipeline
         self.connectors = connectors
+        # Serialises recording a sync OUTCOME -- success reset or failure
+        # increment -- which is a read-modify-write of the source row. On the
+        # loop each pair was atomic for free (no await between the read and the
+        # write); on worker threads the interleavings corrupt the counter both
+        # ways: two failures both read N and write N+1 (a dead source never
+        # reaches MAX_FAILURES), and a failure that reads before a success's
+        # reset writes its stale increment -- or a premature 'error' -- after it
+        # (a healthy source is quiesced with no automatic recovery). One lock
+        # over both writers restores the atomicity without touching the store;
+        # it only ever blocks a worker thread, never the loop.
+        self._sync_outcome_lock = threading.Lock()
 
     def _get_source(self, source_id: str) -> dict | None:
         row = self.store.db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
@@ -36,7 +48,12 @@ class SyncScheduler:
             # terminal status is reclaimable by the orphan sweep for that
             # stretch unless the sweep is waiting on this hold.
             async with self.pipeline.ingestion_in_flight():
-                source = self._get_source(source_id)
+                # Off the loop: _get_source takes the guarded knowledge
+                # connection, and a contended take here busy-waits every task
+                # for the whole busy timeout. The lookup deliberately stays
+                # INSIDE the gate (see the comment above); only the connection
+                # take moves to a worker thread.
+                source = await asyncio.to_thread(self._get_source, source_id)
                 if not source:
                     result["error"] = f"Source {source_id} not found"
                     return result
@@ -54,13 +71,24 @@ class SyncScheduler:
                                                          source_id=source_id)
             if not job_id:
                 return result  # unchanged, nothing to do
-            job = self.pipeline.get_job_status(job_id)
-            items_created = job["items_processed"] if job else 0
-            now = datetime.now().isoformat()
-            props["consecutive_failures"] = 0
-            if meta:
-                props["metadata"] = meta
-            self.store.update_source(source_id, last_synced=now, properties=props)
+
+            def _settle_success() -> int:
+                # One worker unit: the status read decides whether the outcome
+                # write may stamp 'synced'. The ingest's own finalize stamps
+                # 'error' on a partial or failed ingest and still hands back a
+                # job id, so an unconditional 'synced' here would mask that.
+                job = self.pipeline.get_job_status(job_id)
+                self._record_success(
+                    source_id, meta,
+                    completed=(job or {}).get("status") == "completed")
+                return job["items_processed"] if job else 0
+
+            # run_to_completion, not a bare to_thread: a cancellation landing
+            # while the worker item is still queued would drop the outcome
+            # write entirely, leaving a stale counter that prematurely
+            # quiesces a healthy source. The unit is drained even under
+            # cancellation, the way the ingestion finalizers are run.
+            items_created = await run_to_completion(_settle_success)
             result.update(synced=True, items_created=items_created)
         except ImportChunkBudgetError as e:
             # A budget deferral is transient, not a sync failure: surface the
@@ -72,23 +100,60 @@ class SyncScheduler:
         except Exception as e:
             logger.exception("Sync failed for source %s", source_id)
             result["error"] = str(e)
-            self._record_failure(source_id)
+            # run_to_completion for the same reason as the success unit: a
+            # cancellation that drops this write lets a dead source keep its
+            # old count and never reach MAX_FAILURES.
+            await run_to_completion(lambda: self._record_failure(source_id))
         return result
 
+    def _record_success(self, source_id: str, meta: dict | None, *,
+                        completed: bool):
+        # Runs on a worker thread (sync_source offloads it). The row is re-read
+        # UNDER the lock rather than reusing the pre-sync snapshot, so the reset
+        # lands on the row's current blob and cannot resurrect a stale one. A
+        # COMPLETED sync is current information: writing sync_status='synced'
+        # clears an 'error' an overlapping failure stamped, so this outcome
+        # supersedes it instead of leaving the row quiesced. A partial, failed
+        # or duplicate job keeps its hands off the column -- the ingest's own
+        # finalize already stamped the truth there.
+        #
+        # Residual, deliberately out of scope here: ingestion's finalize hop
+        # rewrites the properties blob from a snapshot taken at ingest start on
+        # its own worker thread, outside this lock. That writer pre-dates this
+        # change and its serialization is tracked as a follow-up.
+        with self._sync_outcome_lock:
+            source = self._get_source(source_id)
+            if not source:
+                return
+            props = json.loads(source.get("properties") or "{}")
+            props["consecutive_failures"] = 0
+            if meta:
+                props["metadata"] = meta
+            updates: dict = {
+                "last_synced": datetime.now().isoformat(), "properties": props}
+            if completed:
+                updates["sync_status"] = "synced"
+            self.store.update_source(source_id, **updates)
+
     def _record_failure(self, source_id: str):
-        source = self._get_source(source_id)
-        if not source:
-            return
-        props = json.loads(source.get("properties") or "{}")
-        failures = props.get("consecutive_failures", 0) + 1
-        props["consecutive_failures"] = failures
-        updates = {"properties": props}
-        if failures >= MAX_FAILURES:
-            # The column is the single source of truth: the dashboard, the
-            # watcher's pre-scan skip and sync_all below all read it.
-            updates["sync_status"] = "error"
-            logger.warning("Source %s reached %d failures, marking as error", source_id, failures)
-        self.store.update_source(source_id, **updates)
+        # Runs on a worker thread (sync_source offloads it); the shared outcome
+        # lock keeps the counter read and its write one atomic unit across
+        # threads, on this path and the success path alike.
+        with self._sync_outcome_lock:
+            source = self._get_source(source_id)
+            if not source:
+                return
+            props = json.loads(source.get("properties") or "{}")
+            failures = props.get("consecutive_failures", 0) + 1
+            props["consecutive_failures"] = failures
+            updates = {"properties": props}
+            if failures >= MAX_FAILURES:
+                # The column is the single source of truth: the dashboard, the
+                # watcher's pre-scan skip and sync_all below all read it.
+                updates["sync_status"] = "error"
+                logger.warning(
+                    "Source %s reached %d failures, marking as error", source_id, failures)
+            self.store.update_source(source_id, **updates)
 
     async def sync_all(self) -> list[dict]:
         # Off the loop: this is a background coroutine and a contended sqlite

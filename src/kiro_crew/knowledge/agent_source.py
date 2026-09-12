@@ -310,7 +310,10 @@ async def _add_agent_document(
     if not text.strip():
         return {"status": "error", "error": "content is required"}
 
-    source_id, _created = ensure_agent_source(store)
+    # Off the loop: the get-or-create takes the guarded knowledge connection,
+    # and a contended take here busy-waits every task for the whole busy
+    # timeout (the watchdog heartbeat included).
+    source_id, _created = await asyncio.to_thread(ensure_agent_source, store)
 
     text = _redact_for_ingest(text)
     title = _redact_for_ingest(title)
@@ -329,7 +332,8 @@ async def _add_agent_document(
                          "overwrite each other"}
     source_uri = _redact_for_ingest(raw_uri)
     slug = document_slug(raw_uri)
-    prev_hash, old_item_ids = get_state(store, source_id, slug)
+    # Off the loop: the state read takes the guarded connection.
+    prev_hash, old_item_ids = await asyncio.to_thread(get_state, store, source_id, slug)
     content_hash = hashlib.sha256(text.encode()).hexdigest()
     # The shortcut needs a LIVE item group, not just a matching hash. A row left
     # by a refused write records the hash with an empty group, so hash alone would
@@ -359,7 +363,7 @@ async def _add_agent_document(
     # row behind and deleting the holder later lets this document be added
     # normally. A ``deduped`` marker here would outlive the holder and suppress
     # every future add, losing the content while its origin still exists.
-    twin = find_document_by_hash(store, source_id, content_hash, slug)
+    twin = await asyncio.to_thread(find_document_by_hash, store, source_id, content_hash, slug)
     if twin:
         return {"status": "duplicate",
                 "reason": f"identical content is already stored as {twin[1]!r}",
@@ -367,7 +371,9 @@ async def _add_agent_document(
 
     # Same rule as the folder and artifact paths: a row that owned nothing holds a
     # claim for its previous content, and this document's text has changed.
-    store.release_stale_claim(source_id, prev_hash, content_hash, old_item_ids)
+    # Off the loop: it takes the write lock through the guarded connection.
+    await asyncio.to_thread(
+        store.release_stale_claim, source_id, prev_hash, content_hash, old_item_ids)
 
     # Ownership is recorded from inside the ingest's finalize hop rather than
     # after it returns. The items become durable during the ingest, and every
@@ -425,7 +431,13 @@ async def _add_agent_document(
             except OSError:
                 pass
 
-    job = pipeline.get_job_status(job_id) if job_id else None
+    # Off the loop: the status read takes the guarded connection. A bare
+    # to_thread suffices -- unlike the artifact path there is no fallback
+    # ownership write paired with this read (ownership is persisted inside the
+    # ingest's own finalize hop via _record_ownership, and a hop failure
+    # propagates rather than being swallowed), so a cancellation that drops
+    # the read strands nothing.
+    job = (await asyncio.to_thread(pipeline.get_job_status, job_id)) if job_id else None
     status = (job or {}).get("status")
     if status == DUPLICATE_JOB_STATUS:
         # The gate refused the write and recorded the terminal state through the
