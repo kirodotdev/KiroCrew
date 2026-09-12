@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from typing import Callable, NamedTuple
 
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -629,6 +631,63 @@ def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
     return parts
 
 
+_SLACK_PAKO_LINK_RE = re.compile(r"<(?P<url>https://mermaid\.live/edit#pako:[A-Za-z0-9_-]+)\|")
+
+
+def _redact_slack_pako_links(
+    text: str,
+    redactor: Callable[[str], str],
+    *,
+    probe_redactor: Callable[[str], str] | None = None,
+) -> str:
+    """Redact Slack mrkdwn while preserving validated ``<pako-url|label>`` links."""
+    if "https://mermaid.live/edit#pako:" not in text or "|" not in text:
+        return redactor(text)
+    probe_redactor = probe_redactor or redactor
+
+    sentinel_prefix = f"\x00slack-pako-{secrets.token_hex(16)}-"
+    while sentinel_prefix in text:
+        sentinel_prefix = f"\x00slack-pako-{secrets.token_hex(16)}-"
+    restorations: list[tuple[str, str]] = []
+
+    def _protect(match: re.Match[str]) -> str:
+        url = match.group("url")
+        probe = f"<{url}>"
+        if probe_redactor(probe) != probe:
+            return match.group(0)
+        sentinel = f"{sentinel_prefix}{len(restorations)}\x00"
+        restorations.append((sentinel, url))
+        return f"<{sentinel}|"
+
+    protected = _SLACK_PAKO_LINK_RE.sub(_protect, text)
+    result = redactor(protected)
+    for sentinel, url in restorations:
+        result = result.replace(sentinel, url, 1)
+    return result
+
+
+def _redact_slack_mrkdwn_with_findings(
+    text: str,
+) -> tuple[str, list[str], list[str]]:
+    """Return Slack-safe text, exfil warnings, then credential warnings."""
+    exfil_warnings: list[str] = []
+    credential_warnings: list[str] = []
+
+    def _apply(value: str) -> str:
+        result, found_exfil = redact_exfiltration_urls(value)
+        result, found_credentials = redact_credentials(result)
+        exfil_warnings.extend(found_exfil)
+        credential_warnings.extend(found_credentials)
+        return redact_via_context(result)
+
+    result = _redact_slack_pako_links(
+        text,
+        _apply,
+        probe_redactor=redact_via_context,
+    )
+    return result, exfil_warnings, credential_warnings
+
+
 def _render_blocks(
     text: str,
     *,
@@ -694,7 +753,10 @@ def _render_blocks(
     in_code = False
     for block in blocks:
         out.append(
-            _redact(to_slack_mrkdwn(block, keep_tables=resolved_keep_tables, in_code=in_code))
+            _redact_slack_pako_links(
+                to_slack_mrkdwn(block, keep_tables=resolved_keep_tables, in_code=in_code),
+                _redact,
+            )
         )
         in_code = ends_inside_code_fence(block, in_code)
     return out, changed
@@ -836,6 +898,46 @@ def _lossless_blocks(text: str, limit: int) -> list[str]:
     return blocks
 
 
+_SLACK_MARKDOWN_PAKO_LINK_RE = re.compile(
+    r"\[[^\]\n]*\]\(https://mermaid\.live/edit#pako:[A-Za-z0-9_-]+\)"
+)
+
+
+def _lossless_blocks_preserving_pako_links(text: str, limit: int) -> list[str]:
+    """Split losslessly without bisecting a complete convertible pako link."""
+    spans = [
+        match.span()
+        for match in _SLACK_MARKDOWN_PAKO_LINK_RE.finditer(text)
+        if len(match.group(0)) < SLACK_MAX_TEXT
+    ]
+    if not spans:
+        return _lossless_blocks(text, limit)
+
+    blocks: list[str] = []
+    start = 0
+    while len(text) - start > limit:
+        target = start + limit
+        crossing = next(
+            (
+                (span_start, span_end)
+                for span_start, span_end in spans
+                if span_start < target < span_end
+            ),
+            None,
+        )
+        if crossing is not None:
+            span_start, span_end = crossing
+            cut = span_start if span_start > start else span_end
+        else:
+            newline = text.rfind("\n", start, target)
+            cut = newline + 1 if newline > start else target
+        blocks.append(text[start:cut])
+        start = cut
+    if start < len(text):
+        blocks.append(text[start:])
+    return blocks
+
+
 class SlackRender(NamedTuple):
     """One rendered Slack message, plus whether redaction changed anything.
 
@@ -900,7 +1002,7 @@ def render_one_for_slack(
     # and no invented or swallowed newline at a boundary.
     converted_blocks, changed = _render_blocks(
         text,
-        presplit=_lossless_blocks,
+        presplit=_lossless_blocks_preserving_pako_links,
         keep_tables=keep_tables,
         redactor=redactor,
     )

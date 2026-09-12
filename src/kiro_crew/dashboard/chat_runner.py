@@ -275,6 +275,7 @@ from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
+    redact_with_findings,
     sanitized_oauth_endpoint,
 )
 from kiro_crew.sel import sel
@@ -615,9 +616,7 @@ def _redact_display_text(text: str) -> str:
     redactors return their input unchanged when nothing matches, so clean
     titles pass through byte-identical.
     """
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
+    return redact_via_context(text)
 
 
 def _redacted_hook_block(event: Any, pre_hook_results: Any) -> tuple[str, str]:
@@ -3475,6 +3474,14 @@ def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
         slot.append("notice", _redaction_notice(cred_count, url_count), "msg msg-info")
 
 
+def _redact_assistant_text_with_findings(
+    text: str,
+) -> tuple[str, list[str], list[str]]:
+    """Apply the complete host-aware assistant egress policy once."""
+    redacted, cred_warnings, exfil_warnings = redact_with_findings(text)
+    return redact_via_context(redacted), cred_warnings, exfil_warnings
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -3529,11 +3536,11 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
-    # Redact the accumulated text
-    redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
+    # Redact the accumulated text through one pako-aware boundary. Validated
+    # compressed bytes stay hidden until baseline and active host policies finish.
+    redacted, cred_warnings, exfil_warnings = _redact_assistant_text_with_findings(assistant_text)
     for w in exfil_warnings:
         logger.warning("Exfiltration URL redacted in chat segment: %s", w)
-    redacted, cred_warnings = redact_credentials(redacted)
     for w in cred_warnings:
         logger.warning("Credential redacted in chat segment: %s", w)
     # Persist as assistant message. Broadcast is kept enabled so that
@@ -3547,7 +3554,7 @@ def _flush_segment(
         pending_list = [
             {
                 **v,
-                "content": redact_credentials(redact_exfiltration_urls(v.get("content", ""))[0])[0],
+                "content": redact_via_context(v.get("content", "")),
             }
             for v in slot._pending_variants
             if isinstance(v, dict)
@@ -6481,7 +6488,7 @@ async def _run_chat(
     # so raw fragments never reach WS/SSE consumers. assistant_text (the source
     # for the final _flush_segment redaction) is accumulated independently and is
     # unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
-    _wsred = StreamRedactor()
+    _wsred = StreamRedactor(redact_via_context)
 
     def _flush_text_stream() -> None:
         """Emit the redactor's withheld tail as a final chat_chunk before a
@@ -6497,7 +6504,7 @@ async def _run_chat(
 
     # Same rolling-buffer protection for the separate chat_thinking wire stream
     # (thinking is broadcast-only / ephemeral, but still real-time on the WS).
-    _thinkred = StreamRedactor()
+    _thinkred = StreamRedactor(redact_via_context)
 
     def _flush_thinking_stream() -> None:
         """Emit the thinking redactor's withheld tail when the thinking phase
@@ -6505,6 +6512,21 @@ async def _run_chat(
         wire = _thinkred.flush()
         if wire:
             state.broadcast_ws("chat_thinking", {"slot": slot.key, "content": wire})
+
+    def _persist_terminal_assistant_text() -> None:
+        """Persist partial output after a terminal failure through all policies."""
+        if not assistant_text:
+            return
+        slot.purge_chunks()
+        redacted, cred_warnings, exfil_warnings = _redact_assistant_text_with_findings(
+            assistant_text
+        )
+        for warning in exfil_warnings:
+            logger.warning("Exfiltration URL redacted in terminal chat output: %s", warning)
+        for warning in cred_warnings:
+            logger.warning("Output redaction applied in terminal chat output: %s", warning)
+        slot.append("assistant", redacted, "msg msg-a")
+        _append_redaction_notice(slot, redacted)
 
     def _steer_segment_cut() -> None:
         """Finalize the accumulated text as a segment at a mid-turn steer.
@@ -8266,9 +8288,13 @@ async def _run_chat(
                 _tcid, _ = redact_credentials(_tcid)
                 event.tool_call_id = _tcid
 
-            # Leaving the thinking phase → flush any withheld thinking tail so a
-            # credential split across thinking chunks can't cross the wire raw.
-            if event.kind != EVENT_THINKING_CHUNK:
+            # The browser creates one reasoning block per burst. Answer text,
+            # a tool row, and terminal completion end that block; permission,
+            # compaction, and lifecycle frames do not. Flush at exactly those
+            # renderer boundaries so separate benign bursts are not joined, while
+            # out-of-band frames still cannot split a credential inside one block.
+            # Abnormal stream exhaustion is covered by the final flush below.
+            if event.kind in (EVENT_TEXT_CHUNK, EVENT_TOOL_CALL, EVENT_COMPLETE):
                 _flush_thinking_stream()
 
             # The model produced new output, so the tool group the user denied is
@@ -8312,9 +8338,12 @@ async def _run_chat(
                         elif m.get("role") not in ("tool", "permission", "chunk"):
                             break
                 in_tool_group = False
-                safe_chunk, _ = redact_exfiltration_urls(event.text)
-                safe_chunk, _ = redact_credentials(safe_chunk)
-                assistant_text += safe_chunk
+                # Keep the authoritative segment byte-identical until its boundary.
+                # `_flush_segment` redacts the joined text before persistence, while
+                # `_wsred` below protects each live wire emission. Redacting each
+                # token chunk here destroyed valid compressed pako state before
+                # either boundary could validate the complete fragment.
+                assistant_text += event.text
                 if event.control_notice:
                     # A backend control notice that arrived as assistant text
                     # (the claude adapter's "Compacting..."). It accumulates,
@@ -8326,12 +8355,14 @@ async def _run_chat(
                     # counted as an answer would shadow the continuation branch
                     # and leave the request unanswered — the exact hang this PR
                     # exists to fix.
-                    _compaction_notice_chunks.append(safe_chunk)
+                    _compaction_notice_chunks.append(event.text)
                 # Mirror into the never-reset whole-turn buffer so a plan
                 # emitted before later tool calls survives the tool-boundary
-                # reset of assistant_text above (planning turn only).
+                # reset of assistant_text above (planning turn only). This buffer
+                # is internal; any metadata extracted from it is redacted at the
+                # owning extraction boundary.
                 if _orch_planning:
-                    _orch_plan_buf += safe_chunk
+                    _orch_plan_buf += event.text
                 # Set BEFORE the `_turn_emitted` flip: the consumption report
                 # below must stay adjacent to that flip (pinned by
                 # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes
@@ -11324,6 +11355,7 @@ async def _run_chat(
             # `_orch_planning` excludes stage-execution turns, so a stage turn
             # whose output contains plan-like text can never re-arm/re-count.
             if _orch_planning:
+                plan_rephrase_text = redact_via_context(assistant_text)
 
                 has_plan, valid, issues = validate_plan_format(assistant_text)
                 if not has_plan and looks_like_plan(assistant_text):
@@ -11338,7 +11370,7 @@ async def _run_chat(
                     ]
                     rephrased = await _rephrase_plan_lite(
                         state,
-                        assistant_text,
+                        plan_rephrase_text,
                         issues,
                         might_not_be_plan=True,
                     )
@@ -11350,7 +11382,7 @@ async def _run_chat(
                             assistant_text = rephrased
                 if has_plan and not valid:
                     logger.info("Plan format invalid (%s), attempting rephrase", issues)
-                    rephrased = await _rephrase_plan_lite(state, assistant_text, issues)
+                    rephrased = await _rephrase_plan_lite(state, plan_rephrase_text, issues)
                     if rephrased:
                         _, valid2, issues2 = validate_plan_format(rephrased)
                         if valid2:
@@ -12115,7 +12147,7 @@ async def _run_chat(
         # env var (ARG_MAX safety). The full segment is passed (not sliced to
         # [:500]) so the tail — e.g. the harness [OPTIONS:] line — reaches both
         # the matcher and the hook body.
-        _final = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+        _final, _, _ = _redact_assistant_text_with_findings(assistant_text)
         # Report how deep this hook-continuation run is so a gate hook can
         # diagnose or apply a stricter limit than the configurable backstop.
         _stop_hook_out = await _fire(
@@ -12357,11 +12389,7 @@ async def _run_chat(
         if not is_slash:
             await _deliver_cross_surface_reply(state, session_key, assistant_text)
     except asyncio.CancelledError:
-        if assistant_text:
-            slot.purge_chunks()
-            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
-            slot.append("assistant", _redacted, "msg msg-a")
-            _append_redaction_notice(slot, _redacted)
+        _persist_terminal_assistant_text()
     except AcpAuthRequired as exc:
         # The signed-out CLI is discovered HERE, not by a probe: this is the
         # authoritative logout signal now that readiness is latched at boot.
@@ -12374,11 +12402,7 @@ async def _run_chat(
         # resume after the user signs in — so hold the queue intact instead.
         _auth_required = True
         needs_session_reset = True
-        if assistant_text:
-            slot.purge_chunks()
-            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
-            slot.append("assistant", _redacted, "msg msg-a")
-            _append_redaction_notice(slot, _redacted)
+        _persist_terminal_assistant_text()
         _auth_msg = str(exc)
         # Stamped with a kind (live broadcast `kind`, rebuilt transcript
         # `meta.kind`) so the frontend can offer the fix -- a deep link to the
@@ -12392,11 +12416,7 @@ async def _run_chat(
     except AcpProcessDied as exc:
         logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
         needs_session_reset = True
-        if assistant_text:
-            slot.purge_chunks()
-            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
-            slot.append("assistant", _redacted, "msg msg-a")
-            _append_redaction_notice(slot, _redacted)
+        _persist_terminal_assistant_text()
         slot._acp_pipe_death_retries += 1
         if _should_suppress_requeue(slot):
             pass
@@ -12430,11 +12450,7 @@ async def _run_chat(
         # re-queue only when retry-eligible; see per-branch handling below).
         logger.info("Prompt busy exhausted in slot %s — resetting session", slot.key)
         needs_session_reset = True  # checked in finally block
-        if assistant_text:
-            slot.purge_chunks()
-            _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
-            slot.append("assistant", _redacted, "msg msg-a")
-            _append_redaction_notice(slot, _redacted)
+        _persist_terminal_assistant_text()
         slot._prompt_busy_retries += 1
         if _should_suppress_requeue(slot):
             pass
@@ -12504,12 +12520,7 @@ async def _run_chat(
             # the generic else: no reset (the next turn hits the dead process)
             # and the failure never counting toward the exhaustion threshold.
             needs_session_reset = True  # checked in finally block
-            if assistant_text:
-                _safe, _ = redact_exfiltration_urls(assistant_text)
-                _safe, _ = redact_credentials(_safe)
-                slot.purge_chunks()
-                slot.append("assistant", _safe, "msg msg-a")
-                _append_redaction_notice(slot, _safe)
+            _persist_terminal_assistant_text()
             # Option Y: pipe-death ("process exited"/"not running") shares the
             # _acp_pipe_death_retries counter with the AcpProcessDied handler;
             # genuine "already in progress" busy uses _prompt_busy_retries.
@@ -12784,12 +12795,7 @@ async def _run_chat(
             # Persist the streamed partial as a real assistant message (copy of
             # the terminal else: persist pattern): redact, strip the live chunk
             # messages, then append the finalized assistant bubble.
-            if assistant_text:
-                _safe, _ = redact_exfiltration_urls(assistant_text)
-                _safe, _ = redact_credentials(_safe)
-                slot.purge_chunks()
-                slot.append("assistant", _safe, "msg msg-a")
-                _append_redaction_notice(slot, _safe)
+            _persist_terminal_assistant_text()
             # Surface a brief recovery notice (one append). Only when the requeue
             # below will actually happen is the row a PENDING one (retry kind +
             # resuming token); otherwise nothing resumes — Stop is active or this
@@ -12842,12 +12848,7 @@ async def _run_chat(
             # shown, so the streamed answer survives in the transcript. The
             # allowance is left UNconsumed so a later turn can still recover once.
         else:
-            if assistant_text:
-                _safe, _ = redact_exfiltration_urls(assistant_text)
-                _safe, _ = redact_credentials(_safe)
-                slot.purge_chunks()
-                slot.append("assistant", _safe, "msg msg-a")
-                _append_redaction_notice(slot, _safe)
+            _persist_terminal_assistant_text()
             # ── Poisoned-conversation escalation ────────────────────────────
             # A transient-classified error that reaches this terminal branch
             # with ZERO output means a full retry ladder was exhausted

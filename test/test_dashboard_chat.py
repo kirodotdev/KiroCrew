@@ -5515,6 +5515,63 @@ class TestRunChatSegmentFlush:
         assert "[REDACTED: credential]" in wire
 
     @pytest.mark.asyncio
+    async def test_tool_event_terminates_dashboard_thinking_redaction_state(
+        self, tmp_path, monkeypatch
+    ):
+        """A tool row starts a new browser reasoning block and policy segment."""
+        import dataclasses
+
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_THINKING_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    "SSO-COOKIE", "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        events = [
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text="SSO-"),
+            LLMEvent(kind=EVENT_TOOL_CALL, title="lookup", tool_kind="read"),
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text="COOKIE"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            await _run_chat(state, slot, "think about it")
+        finally:
+            reset_context()
+
+        thinking = [
+            call.args[1]["content"]
+            for call in state.broadcast_ws.call_args_list
+            if call.args[0] == "chat_thinking"
+        ]
+        assert thinking == ["SSO-", "COOKIE"]
+        assert all("REDACTED" not in frame for frame in thinking)
+
+    @pytest.mark.asyncio
     async def test_text_tool_text_complete_produces_two_segments(self, tmp_path, monkeypatch):
         """Mock event stream: text → tool_call → text → complete produces
         two assistant messages and one tool message.
@@ -16242,6 +16299,68 @@ class TestAcpProcessDiedRecovery:
                 "meta": slot._queue[0]["meta"],
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_partial_pako_uses_active_policy_before_terminal_persistence(
+        self, tmp_path: Path
+    ) -> None:
+        """A mid-stream provider death cannot persist companion-only pako state."""
+        import base64
+        import dataclasses
+        import zlib
+
+        from kiro_crew import security
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        companion_token = "SSO-COOKIE"
+        encoded_state = json.dumps(
+            {"code": f"flowchart TD\n  A[{companion_token}] --> B"},
+            separators=(",", ":"),
+        ).encode()
+        payload = base64.urlsafe_b64encode(zlib.compress(encoded_state, 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._titled = True
+
+        async def _stream_then_die(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=url)
+            raise AcpProcessDied("pipe broken")
+
+        client.stream = _stream_then_die
+        client.stream_command = _stream_then_die
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            with patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
+                await _run_chat(state, slot, "test message")
+        finally:
+            reset_context()
+
+        persisted = "".join(
+            message.get("content", "")
+            for message in slot.messages
+            if message.get("role") == "assistant"
+        )
+        assert payload not in persisted
+        assert "[REDACTED: encoded credential]" in persisted
 
     @pytest.mark.asyncio
     async def test_prompt_busy_requeue_does_not_claim_a_lost_connection(

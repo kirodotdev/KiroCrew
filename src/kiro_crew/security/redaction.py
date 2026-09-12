@@ -22,12 +22,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
+import json
 import math
 import posixpath
 import re
 import secrets
+import string
+import zlib
 from collections import Counter
 from collections.abc import Callable
+from urllib.parse import unquote, urlsplit
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
 
@@ -412,6 +417,432 @@ _PREFILTER_MIN_LEN = 16
 
 # Base64 alphabet: at least 40 chars of [A-Za-z0-9+/] ending with optional =
 _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
+
+# Mermaid Live's exact HTTPS editor URL stores its state as a zlib stream in a
+# base64url ``#pako:`` fragment. Standard-base64 scans split that one stream at
+# every ``-``/``_`` and then mistake random 40-character windows for bare AWS
+# secrets. The marker earns no exemption by itself: only this reviewed destination
+# plus a complete bounded zlib stream is protected, and its decoded text is scanned
+# before protection. HTTP, alternate paths/queries, and every other origin remain
+# under the raw scanners; validating compressed bytes does not make an arbitrary
+# destination trustworthy.
+_PAKO_FRAGMENT_PREFIX = "https://mermaid.live/edit#pako:"
+_NESTED_PAKO_URL_START_RE = re.compile(r"(?<![A-Za-z0-9_+.-])(?i:https:)")
+_NESTED_PAKO_URL_END_RE = re.compile(r"[\x00\s\"'<>]")
+_NESTED_PAKO_IGNORED_CONTROLS = str.maketrans("", "", "\t\r\n")
+_NESTED_PAKO_URL_MAX_CANDIDATES = 1024
+_NESTED_PAKO_URL_SCAN_MAX_CHARS = 4 * 1024 * 1024
+_NESTED_PAKO_HOST_MAX_CHARS = 1024
+_NESTED_PAKO_SINGLE_DOT_SEGMENTS = frozenset((".", "%2e"))
+_NESTED_PAKO_DOUBLE_DOT_SEGMENTS = frozenset(("..", ".%2e", "%2e.", "%2e%2e"))
+_PAKO_FRAGMENT_RE = re.compile(
+    rf"(?P<prefix>{re.escape(_PAKO_FRAGMENT_PREFIX)})(?P<payload>[A-Za-z0-9_-]{{1,}})"
+)
+# Protection is an exemption from raw scans, so an exact prefix embedded in a
+# containing URL token must not qualify. Ownership advances from each real
+# delimiter while tracking raw-HTML tag and quoted-attribute state; the same state
+# is carried across stream chunks, so characters that only LOOK like delimiters
+# inside an open attribute cannot reset an attacker-owned URL.
+_PAKO_FRAGMENT_LEFT_CONTEXT_DELIMITERS = frozenset(string.whitespace + "\"'<>`)")
+_PAKO_FRAGMENT_RIGHT_BOUNDARY_CHARS = frozenset(" \t\r\n)]}>\"',.;!:?")
+_PAKO_URL_TRAILING_WHITESPACE = frozenset(" \t\r\n")
+_PAKO_URL_TRAILING_WHITESPACE_MAX = 1024
+_HTML_ASCII_WHITESPACE = frozenset(" \t\n\f\r")
+_CJK_AUTOLINK_PUNCT_RE = re.compile(
+    r"[\u00b7\u2018\u2019\u201c\u201d\u2026\u3000-\u303f\u30fb"
+    r"\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]"
+)
+_CJK_AUTOLINK_SENTENCE_ENDERS = frozenset("\u3002\uff0e\uff01\uff1f\u2026\uff61")
+_CJK_OPEN_BRACKETS = (
+    "\u3008\u300a\u300c\u300e\u3010\u3014\u3016\u3018\u301a\uff08\uff3b\uff5b\uff5f\uff62"
+)
+_CJK_CLOSE_BRACKETS = (
+    "\u3009\u300b\u300d\u300f\u3011\u3015\u3017\u3019\u301b\uff09\uff3d\uff5d\uff60\uff63"
+)
+_CJK_ZERO_BRACKET_COUNTS = (0,) * len(_CJK_OPEN_BRACKETS)
+
+
+def _canonicalize_nested_pako_hostname(hostname: str) -> str | None:
+    decoded = unquote(hostname).rstrip(".")
+    if len(decoded) > _NESTED_PAKO_HOST_MAX_CHARS:
+        return None
+    try:
+        return decoded.encode("idna").decode("ascii").rstrip(".").casefold()
+    except UnicodeError:
+        return None
+
+
+def _normalize_nested_pako_path(path: str) -> str:
+    """Resolve WHATWG dot segments without decoding `%2F` into separators."""
+    output: list[str] = []
+    segments = path.split(posixpath.sep)
+    last_index = len(segments) - 1
+    for index, segment in enumerate(segments):
+        folded = segment.casefold()
+        if folded in _NESTED_PAKO_SINGLE_DOT_SEGMENTS:
+            if index == last_index:
+                output.append("")
+            continue
+        if folded in _NESTED_PAKO_DOUBLE_DOT_SEGMENTS:
+            if len(output) > 1 or (output and output[0]):
+                output.pop()
+            if index == last_index:
+                output.append("")
+            continue
+        output.append(segment)
+    return posixpath.sep.join(output)
+
+
+def _contains_browser_equivalent_nested_pako_url(text: str) -> bool:
+    """Find nested Mermaid editor URLs after browser-equivalent normalization."""
+    browser_text = text.translate(_NESTED_PAKO_IGNORED_CONTROLS)
+    candidates_remaining = _NESTED_PAKO_URL_MAX_CANDIDATES
+    scanned_chars_remaining = _NESTED_PAKO_URL_SCAN_MAX_CHARS
+    for start_match in _NESTED_PAKO_URL_START_RE.finditer(browser_text):
+        if candidates_remaining <= 0:
+            return True
+        candidates_remaining -= 1
+        end_match = _NESTED_PAKO_URL_END_RE.search(browser_text, start_match.start())
+        end = end_match.start() if end_match is not None else len(browser_text)
+        candidate_chars = end - start_match.start()
+        if candidate_chars > scanned_chars_remaining:
+            return True
+        scanned_chars_remaining -= candidate_chars
+
+        # WHATWG special URLs ignore TAB/LF/CR and treat any leading slash or
+        # backslash count after `https:` as the authority introducer. Each
+        # anchored start gets its own suffix, so an earlier URL cannot consume a
+        # later nested candidate. The cumulative budget keeps overlap bounded.
+        raw_candidate = browser_text[start_match.start() : end].replace("\\", "/")
+        candidate = "https://" + raw_candidate.split(":", 1)[1].lstrip("/")
+        try:
+            parsed = urlsplit(candidate)
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            continue
+        if parsed.scheme.casefold() != "https" or hostname is None:
+            continue
+        if (443 if port is None else port) != 443:
+            continue
+        normalized_path = _normalize_nested_pako_path(parsed.path)
+        if normalized_path != "/edit" or not parsed.fragment.startswith("pako:"):
+            continue
+        normalized_host = _canonicalize_nested_pako_hostname(hostname)
+        if normalized_host is None or normalized_host == "mermaid.live":
+            return True
+    return False
+
+
+def _advance_pako_cjk_bracket_counts(text: str, counts: tuple[int, ...]) -> tuple[int, ...]:
+    """Carry same-line CJK opener evidence for renderer-compatible boundaries."""
+    current = list(counts)
+    for char in text:
+        if char in "\r\n":
+            current = [0] * len(current)
+            continue
+        opener = _CJK_OPEN_BRACKETS.find(char)
+        if opener >= 0:
+            current[opener] += 1
+            continue
+        closer = _CJK_CLOSE_BRACKETS.find(char)
+        if closer >= 0 and current[closer] > 0:
+            current[closer] -= 1
+    return tuple(current)
+
+
+def _pako_pending_cjk_closers(counts: tuple[int, ...]) -> frozenset[str]:
+    return frozenset(_CJK_CLOSE_BRACKETS[index] for index, count in enumerate(counts) if count > 0)
+
+
+def _pako_is_cjk_autolink_punct(char: str) -> bool:
+    return _CJK_AUTOLINK_PUNCT_RE.fullmatch(char) is not None
+
+
+def _pako_has_cjk_separator_backtick_boundary(text: str, end: int) -> bool:
+    first = text[end]
+    if first in _CJK_AUTOLINK_SENTENCE_ENDERS or not _pako_is_cjk_autolink_punct(first):
+        return False
+    cursor = end
+    while cursor < len(text) and _pako_is_cjk_autolink_punct(text[cursor]):
+        cursor += 1
+    return cursor < len(text) and text[cursor] == "`"
+
+
+def _pako_has_plain_text_cjk_boundary(text: str, end: int, cjk_closers: frozenset[str]) -> bool:
+    """Return whether the renderer proves a plain-text boundary at ``end``."""
+    return end < len(text) and (
+        text[end] in cjk_closers or _pako_has_cjk_separator_backtick_boundary(text, end)
+    )
+
+
+def _pako_url_trailing_whitespace_is_safe(text: str) -> bool:
+    if not text or len(text) > _PAKO_URL_TRAILING_WHITESPACE_MAX:
+        return False
+    decoded = html.unescape(text)
+    return bool(decoded) and all(char in _PAKO_URL_TRAILING_WHITESPACE for char in decoded)
+
+
+_PAKO_OUTER_ABSOLUTE_URI_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:(?=[^\s)\]}])"
+)
+_PAKO_OUTER_GFM_WWW_RE = re.compile(r"(?i:(?<![A-Za-z0-9.-])www\.[A-Za-z0-9])")
+
+
+def _pako_token_has_outer_url(text: str) -> bool:
+    # The dashboard parses assistant markdown through rehypeRaw before its sanitize
+    # pass. HTML character references therefore become literal URL bytes, and the
+    # browser URL parser treats backslashes as slashes for special URLs. Judge the
+    # same view here rather than the pre-render source. A raw ``&`` also fails
+    # closed: it may start a numeric reference with arbitrarily many leading zeroes
+    # or be split across StreamRedactor feeds, and the exact Mermaid URL needs no
+    # preceding character reference inside its token.
+    renderer_text = html.unescape(text).replace("\\", "/")
+    return (
+        "&" in text
+        or "//" in renderer_text
+        or _PAKO_OUTER_ABSOLUTE_URI_RE.search(renderer_text) is not None
+        or _PAKO_OUTER_GFM_WWW_RE.search(renderer_text) is not None
+    )
+
+
+def _advance_pako_outer_url_context(
+    text: str,
+    has_outer_url: bool = False,
+    prefix_tail: str = "",
+    html_tag_open: bool = False,
+    html_attr_quote: str = "",
+    html_unquoted_attr_state: int = 0,
+    outer_url_parenthesis_depth: int = 0,
+    markdown_destination_depth: int = 0,
+    markdown_escape: bool = False,
+) -> tuple[bool, str, bool, str, int, int, int, bool]:
+    """Advance renderer-equivalent URL and delimiter state exactly once."""
+
+    def _advance_token(char: str) -> None:
+        nonlocal has_outer_url, prefix_tail
+        joined = prefix_tail + char
+        if not has_outer_url and (
+            char in "/&\\" or prefix_tail.endswith(":") or prefix_tail.lower().endswith("www.")
+        ):
+            has_outer_url = _pako_token_has_outer_url(joined)
+        prefix_tail = joined[-4:]
+
+    def _reset_token() -> None:
+        nonlocal has_outer_url, outer_url_parenthesis_depth, prefix_tail
+        has_outer_url = False
+        outer_url_parenthesis_depth = 0
+        prefix_tail = ""
+
+    for char in text:
+        if html_attr_quote:
+            markdown_escape = False
+            if char == html_attr_quote:
+                html_attr_quote = ""
+                html_unquoted_attr_state = 0
+                _reset_token()
+            elif char in "\t\r\n":
+                # The browser URL parser removes ASCII tab/newline bytes before
+                # parsing. Do not let one separate ``/`` from ``/`` or a scheme
+                # colon from its lookahead in the ownership view.
+                continue
+            else:
+                # Whitespace, the opposite quote, angle brackets, ``)`` and
+                # backticks are all DATA until the matching attribute quote.
+                _advance_token(char)
+            continue
+
+        if char == "\\":
+            # CommonMark removes one backslash before escapable punctuation.
+            # Track parity across chunks while still feeding the raw backslash to
+            # browser-equivalent URL ownership (``\\\\host`` is ``//host``).
+            markdown_escape = not markdown_escape
+            _advance_token(char)
+            continue
+
+        escaped_punctuation = markdown_escape and char in string.punctuation
+        markdown_escape = False
+
+        if markdown_destination_depth:
+            if escaped_punctuation:
+                _advance_token(char)
+            elif char == "(":
+                markdown_destination_depth += 1
+                _advance_token(char)
+            elif char == ")":
+                markdown_destination_depth -= 1
+                if markdown_destination_depth:
+                    _advance_token(char)
+                else:
+                    _reset_token()
+            else:
+                # CommonMark raw destinations keep every non-closing byte in the
+                # same destination. Invalid whitespace remains conservative data:
+                # it cannot erase already-established outer ownership.
+                _advance_token(char)
+            continue
+
+        if html_unquoted_attr_state:
+            markdown_escape = False
+            if char == ">":
+                html_unquoted_attr_state = 0
+                html_tag_open = False
+                _reset_token()
+            elif html_unquoted_attr_state == 1:
+                # HTML's before-attribute-value state ignores whitespace, opens
+                # a quoted value on a quote, and otherwise starts an unquoted
+                # value with the current character.
+                if char in _HTML_ASCII_WHITESPACE:
+                    continue
+                if char in "\"'":
+                    html_unquoted_attr_state = 0
+                    html_attr_quote = char
+                    _reset_token()
+                else:
+                    html_unquoted_attr_state = 2
+                    _advance_token(char)
+            elif char in _HTML_ASCII_WHITESPACE:
+                html_unquoted_attr_state = 0
+                _reset_token()
+            else:
+                # Quotes, ``<``, ``=``, and backticks are parse errors in an
+                # unquoted value, but the HTML tokenizer keeps them as DATA.
+                _advance_token(char)
+            continue
+
+        if html_tag_open:
+            if char == ">":
+                # Top-level CommonMark autolinks always close at ``>``; unlike an
+                # explicit ``[x](<...>)`` destination, a preceding backslash does
+                # not keep this context open. Quoted raw-HTML attributes were
+                # handled above and therefore still keep ``>`` as value data.
+                html_tag_open = False
+                html_unquoted_attr_state = 0
+                _reset_token()
+            elif escaped_punctuation:
+                _advance_token(char)
+            elif char in "\"'":
+                if has_outer_url:
+                    # In a CommonMark ``<scheme:...>`` autolink this is URL
+                    # data, not an HTML attribute opener. A real quoted raw-HTML
+                    # attribute reaches this branch before it has URL ownership.
+                    _advance_token(char)
+                else:
+                    html_unquoted_attr_state = 0
+                    html_attr_quote = char
+                    _reset_token()
+            elif char == "=" and not has_outer_url:
+                html_unquoted_attr_state = 1
+                _reset_token()
+            elif char == "<":
+                # Malformed nested tag start: restart conservatively rather than
+                # carrying a token from before the parser's new tag boundary.
+                _reset_token()
+            elif char in _HTML_ASCII_WHITESPACE:
+                _reset_token()
+            else:
+                _advance_token(char)
+            continue
+
+        if escaped_punctuation:
+            _advance_token(char)
+        elif not has_outer_url and char == "(" and prefix_tail.endswith("]"):
+            markdown_destination_depth = 1
+            _reset_token()
+        elif char == "(" and has_outer_url:
+            outer_url_parenthesis_depth += 1
+            _advance_token(char)
+        elif char == ")" and outer_url_parenthesis_depth:
+            outer_url_parenthesis_depth -= 1
+            _advance_token(char)
+        elif has_outer_url and char in "\"'`>":
+            _advance_token(char)
+        elif char == "<":
+            html_tag_open = True
+            _reset_token()
+        elif char in _PAKO_FRAGMENT_LEFT_CONTEXT_DELIMITERS:
+            _reset_token()
+        else:
+            _advance_token(char)
+
+    return (
+        has_outer_url,
+        prefix_tail,
+        html_tag_open,
+        html_attr_quote,
+        html_unquoted_attr_state,
+        outer_url_parenthesis_depth,
+        markdown_destination_depth,
+        markdown_escape,
+    )
+
+
+def _pako_fragment_has_right_boundary(
+    text: str,
+    end: int,
+    *,
+    html_tag_open: bool = False,
+    html_attr_quote: str = "",
+    html_unquoted_attr_state: int = 0,
+    markdown_destination_depth: int = 0,
+    plain_text_cjk_closers: frozenset[str] = frozenset(),
+) -> bool:
+    if end == len(text):
+        return True
+    if html_attr_quote:
+        if text[end] == html_attr_quote:
+            return True
+        if text[end] not in _PAKO_URL_TRAILING_WHITESPACE and text[end] != "&":
+            return False
+        ceiling = min(len(text), end + _PAKO_URL_TRAILING_WHITESPACE_MAX + 1)
+        boundary = text.find(html_attr_quote, end, ceiling)
+        return boundary >= 0 and _pako_url_trailing_whitespace_is_safe(text[end:boundary])
+    if html_unquoted_attr_state:
+        return text[end] == ">" or text[end] in _HTML_ASCII_WHITESPACE
+    if html_tag_open:
+        return text[end] == ">" or text[end] in _HTML_ASCII_WHITESPACE
+    if markdown_destination_depth:
+        if text[end] == ")":
+            return markdown_destination_depth == 1
+        return text[end] == ">" or text[end] in string.whitespace
+    if _pako_has_plain_text_cjk_boundary(text, end, plain_text_cjk_closers):
+        return True
+    return text[end] in _PAKO_FRAGMENT_RIGHT_BOUNDARY_CHARS
+
+
+_PAKO_FRAGMENT_MAX_ENCODED_CHARS = 256 * 1024
+_PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES = 1024 * 1024
+_PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES = 2 * _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES
+# A provider field can contain thousands of tiny valid streams without reaching
+# the aggregate byte ceiling. Bound decompressor invocations as a separate unit
+# of work so fragment count cannot turn one synchronous redaction into a loop stall.
+_PAKO_FRAGMENT_MAX_COUNT = 1024
+# One 40-character entropy candidate can traverse several Python-level gates.
+# Bound those candidates ACROSS one redact_credentials call rather than per
+# fragment so several valid links cannot multiply synchronous event-loop work.
+_PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS = 16 * 1024
+
+
+class _PakoScanState:
+    """Mutable candidate budget shared by one batch or streaming segment."""
+
+    __slots__ = (
+        "bare_secret_budget_exhausted",
+        "bare_secret_windows_remaining",
+        "decompression_budget_exhausted",
+        "decompressed_bytes_remaining",
+        "fragments_remaining",
+    )
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.bare_secret_windows_remaining = _PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS
+        self.bare_secret_budget_exhausted = False
+        self.decompressed_bytes_remaining = _PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES
+        self.decompression_budget_exhausted = False
+        self.fragments_remaining = _PAKO_FRAGMENT_MAX_COUNT
 
 
 # ── Label-independent bare-secret detection ──
@@ -885,8 +1316,9 @@ _REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
 #: HERE beside the passes that emit them rather than enumerated by each caller.
 #: A consumer that needs to answer "did the CREDENTIAL redactor replace something
 #: in this text" must check all of them: pass 1 (plaintext patterns) and pass 3
-#: (bare secret runs) write ``_REDACTED_CREDENTIAL_TAG``, pass 2 (base64-encoded)
-#: writes ``_REDACTED_ENCODED_CREDENTIAL_TAG``.
+#: (bare secret runs) write ``_REDACTED_CREDENTIAL_TAG``; the validated pako
+#: pre-pass and pass 2 (base64-encoded credentials) write
+#: ``_REDACTED_ENCODED_CREDENTIAL_TAG``.
 #:
 #: Scope is deliberately CREDENTIALS ONLY, and a consumer must not read it as "was
 #: this text rewritten at all". :func:`redact_exfiltration_urls` is a separate
@@ -909,13 +1341,336 @@ _REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
 CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG)
 
 
-def redact_credentials(text: str) -> tuple[str, list[str]]:
+def _decode_pako_fragment(payload: str) -> tuple[str, int] | None:
+    """Return one bounded UTF-8 zlib stream and byte length, or ``None``."""
+    if len(payload) > _PAKO_FRAGMENT_MAX_ENCODED_CHARS:
+        return None
+    try:
+        compressed = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        decoder = zlib.decompressobj()
+        decoded = decoder.decompress(compressed, _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES + 1)
+    except (ValueError, zlib.error):
+        return None
+    if (
+        len(decoded) > _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES
+        or not decoder.eof
+        or decoder.unconsumed_tail
+        or decoder.unused_data
+    ):
+        return None
+    try:
+        return decoded.decode("utf-8"), len(decoded)
+    except UnicodeDecodeError:
+        return None
+
+
+def _canonicalize_pako_state(decoded: str) -> tuple[str, str] | None:
+    """Return canonical state plus parsed-string scan text, or ``None``."""
+
+    def _reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        state = json.loads(
+            decoded,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        if not isinstance(state, dict) or not isinstance(state.get("code"), str):
+            return None
+        canonical = json.dumps(
+            state,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if len(canonical.encode("utf-8", "surrogatepass")) > _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES:
+        return None
+
+    semantic_records: list[str] = []
+    pending: list[object] = [state]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            semantic_records.append(value)
+        elif isinstance(value, dict):
+            for key, nested_value in value.items():
+                if isinstance(key, str):
+                    semantic_records.append(key)
+                    if isinstance(nested_value, str):
+                        semantic_records.append(f"{key}:{nested_value}")
+                pending.append(nested_value)
+        elif isinstance(value, list):
+            pending.extend(value)
+    return canonical, "\x00".join(semantic_records)
+
+
+def _pako_decoded_contains_exfiltration(text: str) -> bool:
+    """Apply the URL policy lazily without creating an import cycle."""
+    # circular import: exfil imports the pako protection helpers from this module.
+    from .exfil import scan_exfiltration_urls
+
+    return bool(scan_exfiltration_urls(text))
+
+
+def _protect_pako_fragments(
+    text: str,
+    warnings: list[str],
+    scan_state: _PakoScanState,
+    *,
+    decoded_text_is_unsafe: Callable[[str], bool] | None = None,
+    decoded_text_redactor: Callable[[str], str] | None = None,
+) -> tuple[str, list[tuple[str, str]]]:
+    """Hide clean compressed state from raw scans and return restorations."""
+    if "#pako:" not in text:
+        return text, []
+
+    restorations: list[tuple[str, str]] = []
+    sentinel_prefix = f"\x00pako-fragment-{secrets.token_hex(16)}-"
+    while sentinel_prefix in text:
+        sentinel_prefix = f"\x00pako-fragment-{secrets.token_hex(16)}-"
+
+    candidate_contexts: dict[int, tuple[bool, bool, str, int, int, frozenset[str]]] = {}
+    context_cursor = 0
+    cjk_bracket_counts = _CJK_ZERO_BRACKET_COUNTS
+    has_outer_url = False
+    prefix_tail = ""
+    html_tag_open = False
+    html_attr_quote = ""
+    html_unquoted_attr_state = 0
+    outer_url_parenthesis_depth = 0
+    markdown_destination_depth = 0
+    markdown_escape = False
+    for candidate in _PAKO_FRAGMENT_RE.finditer(text):
+        context_text = text[context_cursor : candidate.start()]
+        cjk_bracket_counts = _advance_pako_cjk_bracket_counts(context_text, cjk_bracket_counts)
+        (
+            has_outer_url,
+            prefix_tail,
+            html_tag_open,
+            html_attr_quote,
+            html_unquoted_attr_state,
+            outer_url_parenthesis_depth,
+            markdown_destination_depth,
+            markdown_escape,
+        ) = _advance_pako_outer_url_context(
+            context_text,
+            has_outer_url,
+            prefix_tail,
+            html_tag_open,
+            html_attr_quote,
+            html_unquoted_attr_state,
+            outer_url_parenthesis_depth,
+            markdown_destination_depth,
+            markdown_escape,
+        )
+        candidate_top_level = not has_outer_url
+        candidate_cjk_closers = _pako_pending_cjk_closers(cjk_bracket_counts)
+        candidate_contexts[candidate.start()] = (
+            candidate_top_level,
+            html_tag_open,
+            html_attr_quote,
+            html_unquoted_attr_state,
+            markdown_destination_depth,
+            candidate_cjk_closers,
+        )
+        # The candidate itself starts with an absolute HTTPS URI. A
+        # renderer-proven plain-text CJK boundary ends that ownership just as an
+        # ASCII delimiter does; reset before scanning the inter-candidate text so
+        # a following clean link starts a new token.
+        cjk_boundary = (
+            candidate_top_level
+            and not html_tag_open
+            and not html_attr_quote
+            and not html_unquoted_attr_state
+            and not markdown_destination_depth
+            and _pako_has_plain_text_cjk_boundary(text, candidate.end(), candidate_cjk_closers)
+        )
+        has_outer_url = not cjk_boundary
+        prefix_tail = "" if cjk_boundary else candidate.group(0)[-4:]
+        if cjk_boundary:
+            outer_url_parenthesis_depth = 0
+        markdown_escape = False
+        context_cursor = candidate.end()
+
+    def _sub(match: re.Match[str]) -> str:
+        (
+            top_level,
+            candidate_tag_open,
+            candidate_attr_quote,
+            candidate_unquoted_attr_state,
+            candidate_destination_depth,
+            candidate_cjk_closers,
+        ) = candidate_contexts[match.start()]
+        if not top_level:
+            payload = match.group("payload")
+            warnings.append(f"Redacted compressed payload inside URL token ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        if not _pako_fragment_has_right_boundary(
+            text,
+            match.end(),
+            html_tag_open=candidate_tag_open,
+            html_attr_quote=candidate_attr_quote,
+            html_unquoted_attr_state=candidate_unquoted_attr_state,
+            markdown_destination_depth=candidate_destination_depth,
+            plain_text_cjk_closers=candidate_cjk_closers,
+        ):
+            payload = match.group("payload")
+            warnings.append(f"Redacted compressed payload outside URL token ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        payload = match.group("payload")
+        if scan_state.fragments_remaining <= 0:
+            warnings.append(
+                f"Redacted compressed payload after fragment budget ({len(payload)} chars)"
+            )
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        scan_state.fragments_remaining -= 1
+        if scan_state.decompression_budget_exhausted:
+            warnings.append(
+                f"Redacted compressed payload after decompression budget ({len(payload)} chars)"
+            )
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+
+        decoded_result = _decode_pako_fragment(payload)
+        if decoded_result is None:
+            charge = min(
+                _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES,
+                scan_state.decompressed_bytes_remaining,
+            )
+            scan_state.decompressed_bytes_remaining -= charge
+            if scan_state.decompressed_bytes_remaining == 0:
+                scan_state.decompression_budget_exhausted = True
+            return match.group(0)
+        decoded, decoded_bytes = decoded_result
+        if decoded_bytes > scan_state.decompressed_bytes_remaining:
+            scan_state.decompressed_bytes_remaining = 0
+            scan_state.decompression_budget_exhausted = True
+            warnings.append(
+                f"Redacted compressed payload after decompression budget ({len(payload)} chars)"
+            )
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        scan_state.decompressed_bytes_remaining -= decoded_bytes
+        if scan_state.decompressed_bytes_remaining == 0:
+            scan_state.decompression_budget_exhausted = True
+
+        semantic_state = _canonicalize_pako_state(decoded)
+        if semantic_state is None:
+            warnings.append(f"Redacted invalid compressed state payload ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        semantic_decoded, semantic_records = semantic_state
+
+        # A nested pako URL would require another decode-and-policy cycle. Rather
+        # than let attacker-authored state hide a credential one compression
+        # level deeper, reject the outer exemption under the existing bounds.
+        if _contains_browser_equivalent_nested_pako_url(
+            semantic_decoded
+        ) or _contains_browser_equivalent_nested_pako_url(semantic_records):
+            warnings.append(f"Redacted nested compressed state payload ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+
+        if scan_state.bare_secret_budget_exhausted:
+            warnings.append(f"Redacted compressed payload after scan budget ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        if _contains_fixed_credential(semantic_decoded) or _contains_fixed_credential(
+            semantic_records
+        ):
+            warnings.append(f"Redacted compressed credential payload ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        if decoded_text_redactor is not None and (
+            decoded_text_redactor(semantic_decoded) != semantic_decoded
+            or decoded_text_redactor(semantic_records) != semantic_records
+        ):
+            warnings.append(f"Redacted compressed credential payload ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+        if decoded_text_is_unsafe is not None and (
+            decoded_text_is_unsafe(semantic_decoded) or decoded_text_is_unsafe(semantic_records)
+        ):
+            warnings.append(f"Redacted compressed exfiltration payload ({len(payload)} chars)")
+            return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+
+        for bare_match in _BARE_SECRET_RUN_RE.finditer(semantic_decoded):
+            run = bare_match.group()
+            candidate_windows = len(run) - _SECRET_KEY_LEN + 1
+            if candidate_windows > scan_state.bare_secret_windows_remaining:
+                scan_state.bare_secret_budget_exhausted = True
+                warnings.append(
+                    f"Redacted compressed payload after scan budget ({len(payload)} chars)"
+                )
+                return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+            scan_state.bare_secret_windows_remaining -= candidate_windows
+            if _contains_bare_secret(run):
+                warnings.append(f"Redacted compressed credential payload ({len(payload)} chars)")
+                return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+
+        sentinel = f"{sentinel_prefix}{len(restorations)}\x00"
+        restorations.append((sentinel, payload))
+        return match.group("prefix") + sentinel
+
+    return _PAKO_FRAGMENT_RE.sub(_sub, text), restorations
+
+
+def _restore_pako_fragments(text: str, restorations: list[tuple[str, str]]) -> str:
+    """Restore validated payload bytes in one forward pass."""
+    if not restorations:
+        return text
+
+    lookup = dict(restorations)
+    first_sentinel = restorations[0][0]
+    digit_end = len(first_sentinel) - 1  # final byte is the NUL terminator
+    digit_start = digit_end
+    while digit_start > 0 and first_sentinel[digit_start - 1].isdigit():
+        digit_start -= 1
+    sentinel_prefix = first_sentinel[:digit_start]
+    sentinel_re = re.compile(re.escape(sentinel_prefix) + r"[0-9]+\x00")
+
+    parts: list[str] = []
+    cursor = 0
+    restored: set[str] = set()
+    for match in sentinel_re.finditer(text):
+        sentinel = match.group(0)
+        if sentinel not in lookup or sentinel in restored:
+            continue
+        parts.append(text[cursor : match.start()])
+        parts.append(lookup[sentinel])
+        cursor = match.end()
+        restored.add(sentinel)
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def redact_credentials(
+    text: str,
+    *,
+    _pako_scan_state: _PakoScanState | None = None,
+    _pako_already_protected: bool = False,
+) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
     Returns (cleaned_text, list_of_warnings).
     """
     warnings: list[str] = []
-    result = text
+    scan_state = _pako_scan_state if _pako_scan_state is not None else _PakoScanState()
+    pako_restorations: list[tuple[str, str]]
+    if _pako_already_protected:
+        result, pako_restorations = text, []
+    else:
+        result, pako_restorations = _protect_pako_fragments(
+            text,
+            warnings,
+            scan_state,
+            decoded_text_is_unsafe=_pako_decoded_contains_exfiltration,
+        )
+    scan_text = result
 
     # 1. Redact plaintext credential patterns
     #
@@ -949,7 +1704,7 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
         # exact.
         result = _CREDENTIAL_PATTERNS.sub(_redact_one, result)
 
-    # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
+    # Passes 2 and 3 both scan the protected `scan_text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
     # leftmost, so it yields exactly the maximal runs of length >= 40 — which is
     # also precisely what `_BARE_SECRET_RUN_RE`'s `(?<![A-Za-z0-9+/])` /
@@ -964,7 +1719,7 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # `str.replace(…, 1)` — which occurrence each replacement lands on, and
     # whether pass 3's `run not in result` guard sees pass 2's edits. Sharing the
     # scan while keeping the loops ordered is what makes this byte-identical.
-    b64_chunks = [m.group() for m in _B64_CHUNK_RE.finditer(text)]
+    b64_chunks = [m.group() for m in _B64_CHUNK_RE.finditer(scan_text)]
 
     # 2. Detect and redact base64-encoded credentials
     for chunk in b64_chunks:
@@ -976,9 +1731,9 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # 3. Detect and redact BARE 40-char AWS secret keys with no label/prefix
     # These carry no distinctive marker for _CREDENTIAL_PATTERNS
     # to anchor on, so an entropy + structural heuristic is the only way to catch
-    # a standalone secret value. Scan the ORIGINAL text (not the already-mutated
-    # result) so match offsets are stable; skip any run whose text has already
-    # been redacted away by an earlier pass.
+    # a standalone secret value. Scan the protected snapshot (not the
+    # already-mutated result) so match offsets are stable; skip any run whose
+    # text has already been redacted away by an earlier pass.
     for chunk in b64_chunks:
         run = chunk.rstrip("=")
         # Slide a 40-char window across the run rather than gating the whole run
@@ -995,7 +1750,7 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
         result = result.replace(run, _REDACTED_CREDENTIAL_TAG, 1)
         warnings.append(f"Redacted bare secret key ({len(run)} chars)")
 
-    return result, warnings
+    return _restore_pako_fragments(result, pako_restorations), warnings
 
 
 # Absolute filesystem paths, POSIX and Windows. Deliberately narrow: anchored to

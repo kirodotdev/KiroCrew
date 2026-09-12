@@ -345,6 +345,11 @@ class TurnDriver:
         transports. Injected by the caller with its own session key bound, so
         the driver stays channel-neutral. When omitted, directive markers are
         ignored exactly as before.
+    redactor:
+        Optional host-aware text redactor. Channel owners pass
+        ``redact_via_context`` so companion-only policies run inside live pako
+        validation without making this channel-neutral module import platform
+        code. ``None`` keeps the standalone baseline for isolated callers.
     closing_gate:
         Optional synchronous gate invoked immediately before the provider stream
         starts. Callers use it to reject a lease that shutdown cannot
@@ -369,6 +374,7 @@ class TurnDriver:
         audit_agent: str = "kirocrew",
         closing_gate: Callable[[], None] | None = None,
         monitor_completion: MonitorCompletionHook | None = None,
+        redactor: Callable[[str], str] | None = None,
     ) -> None:
         self.provider = provider
         self.renderer = renderer
@@ -396,6 +402,11 @@ class TurnDriver:
         # identity was recorded at EVENT_TOOL_CALL — the forgery gate.
         self.directive_consumer = directive_consumer
         self.monitor_completion = monitor_completion
+        # Optional host-aware egress policy, injected by channel owners so this
+        # channel-neutral module stays off the platform import graph. The rolling
+        # stream passes it inside pako validation; other event fields use it as
+        # their complete redaction boundary.
+        self.redactor = redactor
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
@@ -408,6 +419,11 @@ class TurnDriver:
         # behaviour, so a stand-in predating the parameter still works.
         self.closing_gate = closing_gate
 
+    def _redact_text(self, text: str | None) -> str:
+        if self.redactor is not None:
+            return self.redactor(text or "")
+        return _redact(text)
+
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
         accumulated = ""
@@ -417,7 +433,8 @@ class TurnDriver:
         # security redactor then keeps its existing rolling credential boundary.
         compaction_filter = _CompactionNoticeFilter()
         steering_filter = _SteeringMarkerFilter()
-        stream_redactor = StreamRedactor(_redact)
+        stream_redactor = StreamRedactor(self.redactor)
+        thinking_redactor = StreamRedactor(self.redactor)
         pending_steer_events = 0
         unmatched_marker_events = 0
         # tool_call_id -> canonical directive-tool name, recorded at
@@ -470,6 +487,16 @@ class TurnDriver:
                 accumulated += tail
                 await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=tail))
 
+        async def emit_thinking(text: str) -> None:
+            safe = thinking_redactor.feed(text)
+            if safe:
+                await self.renderer.dispatch(OutputEvent(kind=THINKING, text=safe))
+
+        async def flush_thinking_redactor() -> None:
+            tail = thinking_redactor.flush()
+            if tail:
+                await self.renderer.dispatch(OutputEvent(kind=THINKING, text=tail))
+
         async def dispatch_frames(frames: list[tuple[str, str]]) -> None:
             nonlocal pending_steer_events, unmatched_marker_events
             for frame_kind, payload in frames:
@@ -489,7 +516,7 @@ class TurnDriver:
                 else:
                     unmatched_marker_events += 1
                 await self.renderer.dispatch(
-                    OutputEvent(kind=STEER_CONSUMED, text=_redact(payload))
+                    OutputEvent(kind=STEER_CONSUMED, text=self._redact_text(payload))
                 )
 
         await self.renderer.on_turn_start()
@@ -504,12 +531,20 @@ class TurnDriver:
             self.monitor_completion.mark_accepted()
         async for event in self.provider.stream(message):
             kind = event.kind
+            # Channel renderers concatenate thinking updates across tool,
+            # permission, compaction, and lifecycle events. Preserve rolling
+            # state across those frames so they cannot split a companion
+            # credential. Answer text is a real rendered boundary, and COMPLETE
+            # is terminal, so those are the only in-loop flush points; abnormal
+            # stream exhaustion is covered by the final flush below.
+            if kind in (EVENT_TEXT_CHUNK, EVENT_COMPLETE):
+                await flush_thinking_redactor()
             if kind == EVENT_TEXT_CHUNK:
                 filtered = compaction_filter.feed(event.text or "")
                 if filtered:
                     await dispatch_frames(steering_filter.feed(filtered))
             elif kind == EVENT_THINKING_CHUNK:
-                await self.renderer.dispatch(OutputEvent(kind=THINKING, text=_redact(event.text)))
+                await emit_thinking(event.text or "")
             elif kind == EVENT_STEER_CONSUMED:
                 # kiro-cli emits both a typed lifecycle event and an inline
                 # marker, in either order. Pair them so renderers receive one
@@ -523,14 +558,14 @@ class TurnDriver:
                 # Native handle_message treats every EVENT_TOOL_CALL uniformly
                 # (complete previous task + start new), regardless of tool_final;
                 # emit a single tool_call event so the renderer matches it.
-                _purpose = _redact(getattr(event, "tool_purpose", ""))
+                _purpose = self._redact_text(getattr(event, "tool_purpose", ""))
                 if event.tool_call_id and _purpose:
                     tool_purposes[str(event.tool_call_id)] = _purpose
                 await self.renderer.dispatch(
                     OutputEvent(
                         kind=TOOL_CALL,
                         tool_call_id=event.tool_call_id,
-                        title=_redact(event.title),
+                        title=self._redact_text(event.title),
                         tool_kind=getattr(event, "tool_kind", ""),
                         tool_purpose=_purpose,
                     )
@@ -718,17 +753,20 @@ class TurnDriver:
                         OutputEvent(
                             kind=PROMPT_CHOICE,
                             options=[
-                                {k: _redact(v) if isinstance(v, str) else v for k, v in o.items()}
+                                {
+                                    k: self._redact_text(v) if isinstance(v, str) else v
+                                    for k, v in o.items()
+                                }
                                 for o in (event.options or [])
                             ],
                             request_id=event.request_id,
-                            title=_redact(getattr(event, "title", "") or ""),
+                            title=self._redact_text(getattr(event, "title", "") or ""),
                             tool_purpose=tool_purposes.get(_tool_call_id, ""),
                             # The tool's own arguments, so a renderer can show what
                             # is being approved. Provider-authored text reaching a
                             # channel, so it takes the same redaction as everything
                             # else on this path.
-                            tool_input=_redact(getattr(event, "tool_input", "") or ""),
+                            tool_input=self._redact_text(getattr(event, "tool_input", "") or ""),
                         )
                     )
                 approved = await self._approve(event)
@@ -776,6 +814,7 @@ class TurnDriver:
                     await self.renderer.dispatch(OutputEvent(kind=STEER_CONSUMED))
                 pending_steer_events = 0
                 await self.renderer.dispatch(OutputEvent(kind=DONE, stop_reason=event.stop_reason))
+        await flush_thinking_redactor()
         return accumulated
 
     async def _consume_directive(

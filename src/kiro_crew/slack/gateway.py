@@ -6016,6 +6016,7 @@ class GatewayOrchestrator:
                         if _completion_hook is not None
                         else None
                     ),
+                    redactor=redact_via_context,
                     closing_gate=lambda: sessions.begin_turn(key),
                 )
                 response = await asyncio.wait_for(

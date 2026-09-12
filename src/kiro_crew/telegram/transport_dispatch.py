@@ -95,6 +95,7 @@ from kiro_crew.messaging.upload_gate import (
     session_is_restricted,
     uploads_restricted,
 )
+from kiro_crew.platform import redact_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
@@ -1065,6 +1066,7 @@ class TelegramDispatcher:
                 ),
                 audit_session_key=session_key,
                 audit_agent=agent or "kirocrew",
+                redactor=redact_via_context,
                 closing_gate=lambda: self.sessions.begin_turn(session_key),
             )
             accumulated = await driver.run(full_message)

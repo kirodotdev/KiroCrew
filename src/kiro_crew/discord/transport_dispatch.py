@@ -92,6 +92,7 @@ from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
+from kiro_crew.platform import redact_via_context
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import (
     redact,
@@ -883,6 +884,7 @@ class DiscordDispatcher:
                 ),
                 audit_session_key=session_key,
                 audit_agent=agent or "kirocrew",
+                redactor=redact_via_context,
                 closing_gate=(
                     _begin_monitor_turn
                     if monitor_completion is not None

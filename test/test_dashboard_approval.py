@@ -2076,6 +2076,41 @@ class TestDenyRowTitleRedaction:
         assert recs, f"expected a {outcome} audit record"
         assert all("[REDACTED: credential]" in c.get("tool_name", "") for c in recs), recs
 
+    def test_display_helper_enforces_active_policy_inside_pako_state(self) -> None:
+        import base64
+        import dataclasses
+        import json
+        import zlib
+
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        state = json.dumps({"code": f"flowchart TD\n  A[{companion_token}] --> B"})
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        title = f"Open https://mermaid.live/edit#pako:{payload}"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                return frozenset()
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            result = chat_runner._redact_display_text(title)
+        finally:
+            reset_context()
+
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
     @pytest.mark.asyncio
     async def test_auto_approve_invalid_name_redacts(self, tmp_path):
         state, client = _make_state(

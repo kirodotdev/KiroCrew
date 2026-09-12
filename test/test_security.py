@@ -13,6 +13,7 @@ import re
 import string
 import struct
 import sys
+import zlib
 from collections import Counter
 from pathlib import Path
 
@@ -810,6 +811,782 @@ class TestRedactCredentialsBase64:
         text = "SGVsbG8="  # "Hello" — too short to trigger (< 40 chars)
         result, warnings = redact_credentials(text)
         assert result == text
+
+
+class TestPakoFragmentRedaction:
+    """Credential redaction understands valid compressed ``#pako:`` state."""
+
+    @staticmethod
+    def _mermaid_url(code: str) -> tuple[str, str]:
+        state = json.dumps(
+            {
+                "code": code,
+                "mermaid": '{"theme":"default"}',
+                "autoSync": True,
+                "updateDiagram": True,
+            },
+            separators=(",", ":"),
+        )
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        return f"https://mermaid.live/edit#pako:{payload}", payload
+
+    def test_valid_mermaid_state_is_preserved_byte_for_byte(self) -> None:
+        code = "flowchart TD\n" + "\n".join(
+            f"  N{i}[Step {i}: reconcile draft {i * 7919}] --> N{i + 1}" for i in range(240)
+        )
+        url, payload = self._mermaid_url(code)
+        assert len(payload) > 1000
+
+        result, warnings = redact_credentials(f"[Open diagram]({url})")
+
+        assert result == f"[Open diagram]({url})"
+        assert warnings == []
+        assert security.redact(f"diagram={url}") == f"diagram={url}"
+
+    def test_clean_state_is_hidden_from_raw_url_scans(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[clean diagram] --> B")
+        real_redactor = security.redact_exfiltration_urls
+
+        def _raw_collision(text: str) -> tuple[str, list[str]]:
+            if payload in text:
+                return "[REDACTED: raw compressed collision]", ["raw collision"]
+            return real_redactor(text)
+
+        monkeypatch.setattr(security, "redact_exfiltration_urls", _raw_collision)
+
+        assert security.redact(url) == url
+        stream = security.StreamRedactor()
+        assert stream.feed(url + ")") + stream.flush() == url + ")"
+
+        monkeypatch.undo()
+        real_scan = security.exfil.scan_exfiltration_urls
+        monkeypatch.setattr(
+            security.exfil,
+            "scan_exfiltration_urls",
+            lambda text: ["raw collision"] if payload in text else real_scan(text),
+        )
+        assert security.exfil.redact_exfiltration_urls(url)[0] == url
+
+    def test_exfiltration_url_inside_valid_state_redacts_the_whole_payload(self) -> None:
+        suspicious = "https://example.com/?data=" + "A" * 200
+        url, payload = self._mermaid_url(f'flowchart TD\n  A --> B\n  click A "{suspicious}"')
+
+        result = security.redact(url)
+        standalone_credentials, _ = redact_credentials(url)
+        standalone_urls, _ = redact_exfiltration_urls(url)
+
+        for redacted in (result, standalone_credentials, standalone_urls):
+            assert payload not in redacted
+            assert redacted == "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+
+    def test_active_credential_policy_scans_decoded_pako_state(self) -> None:
+        import dataclasses
+
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import redact_via_context, reset_context, set_context
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        url, payload = self._mermaid_url(f"flowchart TD\n  A[{companion_token}] --> B")
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                return frozenset()
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            result = redact_via_context(url)
+        finally:
+            reset_context()
+
+        assert payload not in result
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+
+    def test_stream_custom_policy_scans_decoded_pako_state(self) -> None:
+        companion_token = "COMPANION-COOKIE-SECRET"
+        url, payload = self._mermaid_url(f"flowchart TD\n  A[{companion_token}] --> B")
+        redactor = security.StreamRedactor(
+            lambda text: text.replace(companion_token, "[REDACTED: companion credential]")
+        )
+
+        result = redactor.feed(url + ")") + redactor.flush()
+
+        assert payload not in result
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: encoded credential])"
+
+    def test_nested_pako_state_fails_closed_before_inner_credential_can_hide(
+        self,
+    ) -> None:
+        inner_url, inner_payload = self._mermaid_url(
+            "flowchart TD\n"
+            "  A[aws_secret_access_key=EXAMPLESECRET] --> B\n"
+            "  C[padding-203] --> D"
+        )
+        outer_url, outer_payload = self._mermaid_url(f"flowchart TD\n  A[{inner_url}] --> B")
+
+        result = security.redact(outer_url)
+
+        assert outer_payload not in result
+        assert inner_payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_case_variant_nested_pako_state_fails_closed(self) -> None:
+        inner_url, inner_payload = self._mermaid_url(
+            "flowchart TD\n"
+            "  A[aws_secret_access_key=EXAMPLESECRET] --> B\n"
+            "  C[padding-203] --> D"
+        )
+        inner_url = inner_url.replace("https://mermaid.live/", "HTTPS://MERMAID.LIVE/", 1)
+        outer_url, outer_payload = self._mermaid_url(f"flowchart TD\n  A[{inner_url}] --> B")
+
+        result = security.redact(outer_url)
+
+        assert outer_payload not in result
+        assert inner_payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    @pytest.mark.parametrize(
+        "inner_prefix",
+        [
+            "https://mermaid.live:443/edit#pako:",
+            "https://mermaid.live:0443/edit#pako:",
+            "https://%6dermaid.live/edit#pako:",
+            "https://ｍｅｒｍａｉｄ．ｌｉｖｅ/edit#pako:",
+            "https://mermaid。live/edit#pako:",
+            "https://bad\ud800host/edit#pako:",
+            "https://mermaid.live./edit#pako:",
+            "https://user@mermaid.live/edit#pako:",
+            "https://mermaid.live/diagram/../edit#pako:",
+            "https://mermaid.live/%2e%2e/edit#pako:",
+            r"https:\\mermaid.live\edit#pako:",
+            "https:mermaid.live/edit#pako:",
+            "https:/mermaid.live/edit#pako:",
+            "https:///mermaid.live/edit#pako:",
+            "ht\ttps://mermaid.live/edit#pako:",
+            "https://merm\naid.live/edit#pako:",
+            "https://mermaid.live/\redit#pako:",
+            "https://example.com/https://mermaid.live/edit#pako:",
+        ],
+    )
+    def test_browser_equivalent_nested_pako_state_fails_closed(self, inner_prefix: str) -> None:
+        _, inner_payload = self._mermaid_url(
+            "flowchart TD\n"
+            "  A[aws_secret_access_key=EXAMPLESECRET] --> B\n"
+            "  C[padding-203] --> D"
+        )
+        inner_url = inner_prefix + inner_payload
+        outer_url, outer_payload = self._mermaid_url(f"flowchart TD\n  A[{inner_url}] --> B")
+
+        result = security.redact(outer_url)
+
+        assert outer_payload not in result
+        assert inner_payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    @pytest.mark.parametrize(
+        "inner_url",
+        [
+            "https://mermaid.live:444/edit#pako:AAAA",
+            "https://mermaid.live/EDIT#pako:AAAA",
+            "https://mermaid.live/a%2F..%2Fedit#pako:AAAA",
+            "https://mermaid.live/edit/.#pako:AAAA",
+            "nothttps:mermaid.live/edit#pako:AAAA",
+        ],
+    )
+    def test_non_equivalent_nested_pako_spelling_does_not_fail_closed(self, inner_url: str) -> None:
+        outer_url, _ = self._mermaid_url(f"flowchart TD\n  A[{inner_url}] --> B")
+
+        assert security.redact(outer_url) == outer_url
+
+    @pytest.mark.parametrize(
+        "outer_prefix",
+        [
+            "https://evil.example/?next=",
+            "//evil.example/?next=",
+            "https:evil.example/?next=",
+        ],
+    )
+    def test_nested_pako_url_does_not_hide_an_outer_exfiltration_url(
+        self, outer_prefix: str
+    ) -> None:
+        code = "flowchart TD\n" + "\n".join(
+            f"  N{i}[Private note {i}: value {i * 7919}] --> N{i + 1}" for i in range(240)
+        )
+        url, payload = self._mermaid_url(code)
+        assert len(payload) > 200
+        outer = f"[click]({outer_prefix}{url})"
+
+        result = security.redact(outer)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize(
+        "outer_prefix",
+        [
+            "&#47;&#47;evil.example/?next=",
+            "&#x2f;&#x2F;evil.example/?next=",
+            "&#00047;&#00047;evil.example/?next=",
+            "&sol;&sol;evil.example/?next=",
+            r"\\evil.example/?next=",
+            r"\/evil.example/?next=",
+        ],
+    )
+    def test_renderer_normalized_outer_url_does_not_hide_pako_payload(
+        self, outer_prefix: str
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        outer = f'<a href="{outer_prefix}{url}">click</a>'
+
+        result = security.redact(outer)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize("internal_punctuation", ['"', "'", "`", ">"])
+    def test_gfm_internal_punctuation_does_not_reset_outer_url_ownership(
+        self, internal_punctuation: str
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f"https://evil.example/{internal_punctuation}{url}"
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_gfm_destination_marker_inside_outer_url_does_not_reset_ownership(
+        self,
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f"https://evil.example/?next=]({url})"
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize(
+        "trailing",
+        ["&#32;", "&#x20;", "&#9;", "&Tab;", "&NewLine;", " &#32;\t"],
+    )
+    def test_quoted_html_href_decodes_safe_trailing_whitespace_references(
+        self, trailing: str
+    ) -> None:
+        url, _ = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = f'<a href="{url}{trailing}">click</a>'
+
+        assert security.redact(text) == text
+
+    def test_quoted_html_href_rejects_non_whitespace_character_reference(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f'<a href="{url}&#47;">click</a>'
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_gfm_sentence_final_question_mark_preserves_exact_pako_link(self) -> None:
+        url, _ = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = f"Open {url}?"
+
+        assert security.redact(text) == text
+
+    @pytest.mark.parametrize(
+        "text_template",
+        [
+            "{url}，`rev`",
+            "{url}、，`rev`",
+            "（{url}）",
+            "【see {url}】",
+        ],
+    )
+    def test_renderer_proven_cjk_plain_text_boundaries_are_preserved(
+        self, text_template: str
+    ) -> None:
+        url, _ = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = text_template.format(url=url)
+
+        assert security.redact(text) == text
+
+    @pytest.mark.parametrize(
+        "text_template",
+        [
+            "（{first}）以及{second}",
+            "{first}，`rev`以及{second}",
+        ],
+    )
+    def test_renderer_proven_cjk_boundary_releases_following_pako_link(
+        self, text_template: str
+    ) -> None:
+        first, _ = self._mermaid_url("flowchart TD\n  A[first clean state] --> B")
+        second, _ = self._mermaid_url("flowchart TD\n  C[second clean state] --> D")
+        text = text_template.format(first=first, second=second)
+
+        assert security.redact(text) == text
+
+    @pytest.mark.parametrize("suffix", ["。`rev`", "，title", "）"])
+    def test_ambiguous_cjk_plain_text_suffixes_fail_closed(self, suffix: str) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+
+        result = security.redact(url + suffix)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_question_mark_inside_markdown_destination_is_not_a_boundary(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f"[Open]({url}?)"
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_escaped_angle_autolink_close_does_not_poison_following_link(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = f"<https://evil.example/\\> [Open]({url})"
+
+        result = security.redact(text)
+
+        assert payload in result
+        assert "[REDACTED:" not in result
+
+    @pytest.mark.parametrize("inner_quote", ['"', "'"])
+    def test_commonmark_angle_autolink_quotes_do_not_reset_outer_ownership(
+        self, inner_quote: str
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f"<https://evil.example/?next={inner_quote}{url}{inner_quote}>"
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_exact_pako_commonmark_angle_autolink_is_preserved(self) -> None:
+        url, _ = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = f"<{url}>"
+
+        assert security.redact(text) == text
+
+    @pytest.mark.parametrize(
+        "outer",
+        [
+            "www.evil.example/?next={url}",
+            "[destination]: https://evil.example/?next=(x){url}",
+        ],
+    )
+    def test_gfm_and_reference_link_ownership_cannot_launder_pako(self, outer: str) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+
+        result = security.redact(outer.format(url=url))
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize("trailing", [" ", "\t", "\r", "\n", " \t\r\n"])
+    def test_quoted_html_href_trims_safe_trailing_url_whitespace(self, trailing: str) -> None:
+        url, _ = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = f'<a href="{url}{trailing}">click</a>'
+
+        assert security.redact(text) == text
+
+    def test_quoted_html_href_rejects_oversized_trailing_whitespace(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        trailing = " " * (security._PAKO_URL_TRAILING_WHITESPACE_MAX + 1)
+        text = f'<a href="{url}{trailing}">click</a>'
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_quoted_html_href_rejects_nontrimmed_suffix_after_whitespace(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f'<a href="{url} suffix">click</a>'
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize("nested", ["(x)", "((x))"])
+    def test_balanced_markdown_destination_parentheses_keep_outer_ownership(
+        self, nested: str
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        outer = f"[click](https://evil.example/?next={nested}{url})"
+
+        result = security.redact(outer)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_inner_markdown_parenthesis_is_not_a_pako_right_boundary(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f"[click](({url})suffix)"
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize("ignored_control", ["\t", "\r", "\n"])
+    def test_browser_ignored_controls_cannot_hide_outer_url_slashes(
+        self, ignored_control: str
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        outer = f'<a href="/{ignored_control}/evil.example/?next={url}">click</a>'
+
+        result = security.redact(outer)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize(
+        "outer",
+        [
+            r"[click](//evil.example/?next=\){url})",
+            r"[click](<//evil.example/?next=\>{url}>)",
+        ],
+    )
+    def test_markdown_escaped_delimiter_cannot_reset_outer_url_ownership(self, outer: str) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+
+        result = security.redact(outer.format(url=url))
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize(
+        ("attribute_quote", "inner_delimiter"),
+        [
+            ('"', "'"),
+            ("'", '"'),
+            ('"', " "),
+            ("'", "\t"),
+            ('"', ")"),
+            ('"', "`"),
+            ('"', ">"),
+            ('"', "<"),
+        ],
+    )
+    def test_open_html_attribute_delimiters_do_not_reset_outer_url_ownership(
+        self, attribute_quote: str, inner_delimiter: str
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        outer = (
+            f"<a href={attribute_quote}https://evil.example/?next={inner_delimiter}"
+            f"{url}{attribute_quote}>click</a>"
+        )
+
+        result = security.redact(outer)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize("inner_data", ["<", "\x0b"])
+    def test_unquoted_html_attribute_parse_error_data_keeps_outer_ownership(
+        self, inner_data: str
+    ) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f"<a href=https://evil.example/?next={inner_data}{url}>click</a>"
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize("attribute_quote", ['"', "'"])
+    def test_exact_pako_url_at_quoted_html_attribute_start_is_preserved(
+        self, attribute_quote: str
+    ) -> None:
+        url, _ = self._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = f"<a href={attribute_quote}{url}{attribute_quote}>click</a>"
+
+        assert security.redact(text) == text
+
+    def test_opposite_quote_inside_html_attribute_is_not_a_right_boundary(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        text = f'<a href="{url}\'suffix">click</a>'
+
+        result = security.redact(text)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    def test_long_outer_url_cannot_outgrow_ownership_detection(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[private state] --> B")
+        outer = f"[click](//evil.example/{'x' * 5000}{url})"
+
+        result = security.redact(outer)
+
+        assert payload not in result
+        assert "[REDACTED:" in result
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "http://mermaid.live/edit#pako:",
+            "https://attacker.example/edit#pako:",
+            "https://mermaid.live/view#pako:",
+            "https://mermaid.live/edit?share=1#pako:",
+        ],
+    )
+    def test_only_exact_https_mermaid_editor_url_earns_protection(self, prefix: str) -> None:
+        code = "flowchart TD\n" + "\n".join(
+            f"  N{i}[Step {i}: reconcile draft {i * 7919}] --> N{i + 1}" for i in range(240)
+        )
+        _, payload = self._mermaid_url(code)
+        url = prefix + payload
+
+        result, warnings = redact_credentials(url)
+
+        assert result != url
+        assert warnings
+
+    def test_bare_secret_scan_budget_is_aggregate_and_fails_closed(self) -> None:
+        budget = security.redaction._PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS
+        late_failing_run = "Zz9/" * ((budget + _SECRET_KEY_LEN + 3) // 4)
+        first_url, first_payload = self._mermaid_url(late_failing_run)
+        second_url, second_payload = self._mermaid_url("flowchart TD\n  A --> B")
+
+        result, warnings = redact_credentials(f"{first_url}\n{second_url}")
+
+        tag = "[REDACTED: encoded credential]"
+        assert result == (
+            f"https://mermaid.live/edit#pako:{tag}\n" f"https://mermaid.live/edit#pako:{tag}"
+        )
+        assert warnings == [
+            f"Redacted compressed payload after scan budget ({len(first_payload)} chars)",
+            f"Redacted compressed payload after scan budget ({len(second_payload)} chars)",
+        ]
+
+    def test_decompression_budget_is_aggregate_and_skips_later_decodes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_prefix = b'{"code":"'
+        state_suffix = b'"}'
+        decoded = (
+            state_prefix
+            + b"!"
+            * (
+                security.redaction._PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES
+                - len(state_prefix)
+                - len(state_suffix)
+            )
+            + state_suffix
+        )
+        payload = base64.urlsafe_b64encode(zlib.compress(decoded, 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        real_decode = security.redaction._decode_pako_fragment
+        calls = 0
+
+        def _tracked_decode(encoded: str):
+            nonlocal calls
+            calls += 1
+            return real_decode(encoded)
+
+        monkeypatch.setattr(security.redaction, "_decode_pako_fragment", _tracked_decode)
+
+        result, warnings = redact_credentials(" ".join([url] * 4))
+
+        tag = "[REDACTED: encoded credential]"
+        assert calls == 2
+        assert result.count(payload) == 2
+        assert result.count(tag) == 2
+        assert warnings == [
+            f"Redacted compressed payload after decompression budget ({len(payload)} chars)",
+            f"Redacted compressed payload after decompression budget ({len(payload)} chars)",
+        ]
+
+    def test_fragment_count_budget_precedes_decompression(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        budget = security.redaction._PAKO_FRAGMENT_MAX_COUNT
+        url, payload = self._mermaid_url("flowchart TD\n  A --> B")
+        real_decode = security.redaction._decode_pako_fragment
+        calls = 0
+
+        def _tracked_decode(encoded: str):
+            nonlocal calls
+            calls += 1
+            return real_decode(encoded)
+
+        monkeypatch.setattr(security.redaction, "_decode_pako_fragment", _tracked_decode)
+
+        result, warnings = redact_credentials(" ".join([url] * (budget + 2)))
+
+        tag = "[REDACTED: encoded credential]"
+        assert calls == budget
+        assert result.count(payload) == budget
+        assert result.count(tag) == 2
+        assert warnings == [
+            f"Redacted compressed payload after fragment budget ({len(payload)} chars)",
+            f"Redacted compressed payload after fragment budget ({len(payload)} chars)",
+        ]
+
+    def test_restoration_does_not_repeatedly_replace_the_full_text(self) -> None:
+        class _NoReplace(str):
+            def replace(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                raise AssertionError("restoration rescanned the full string")
+
+        prefix = "\x00pako-fragment-test-"
+        restorations = [
+            (f"{prefix}0\x00", "payload-a"),
+            (f"{prefix}1\x00", "payload-b"),
+        ]
+        protected = _NoReplace(f"before {prefix}0\x00 middle {prefix}1\x00 after")
+
+        assert security._restore_pako_fragments(protected, restorations) == (
+            "before payload-a middle payload-b after"
+        )
+
+    def test_invalid_streams_also_consume_decompression_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        invalid_utf8 = b"\xff" * security.redaction._PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES
+        payload = base64.urlsafe_b64encode(zlib.compress(invalid_utf8, 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        real_decode = security.redaction._decode_pako_fragment
+        calls = 0
+
+        def _tracked_decode(encoded: str):
+            nonlocal calls
+            calls += 1
+            return real_decode(encoded)
+
+        monkeypatch.setattr(security.redaction, "_decode_pako_fragment", _tracked_decode)
+
+        result, warnings = redact_credentials(" ".join([url] * 4))
+
+        assert calls == 2
+        assert result.count("[REDACTED: encoded credential]") == 2
+        assert sum("decompression budget" in warning for warning in warnings) == 2
+
+    def test_credential_inside_valid_mermaid_state_redacts_the_whole_payload(self) -> None:
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        url, payload = self._mermaid_url(f"flowchart TD\n  A[{secret}] --> B")
+
+        result, warnings = redact_credentials(url)
+
+        assert payload not in result
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+        assert warnings == [f"Redacted compressed credential payload ({len(payload)} chars)"]
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            '{"code":"\\u0041KIAIOSFODNN7EXAMPLE","mermaid":"{}"}',
+            '{"code":"click A \\"https:\\u002f\\u002fexample.com\\u002f?data='
+            + "A" * 200
+            + '\\"","mermaid":"{}"}',
+        ],
+    )
+    def test_json_escaped_semantic_content_is_scanned(self, state: str) -> None:
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        result = security.redact(url)
+
+        assert payload not in result
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            '{"code":"AKIAIOSFODNN7EXAMPLE","code":"flowchart TD"}',
+            (
+                '{"code":"flowchart TD","nested":'
+                '{"token":"AKIAIOSFODNN7EXAMPLE","token":"clean"}}'
+            ),
+        ],
+    )
+    def test_duplicate_json_keys_fail_closed(self, state: str) -> None:
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        result, warnings = redact_credentials(url)
+
+        assert payload not in result
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+        assert warnings == [f"Redacted invalid compressed state payload ({len(payload)} chars)"]
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            {
+                "code": (
+                    "flowchart TD\n" "  A[Authorization\t:\tBearer\topaque-token-0123456789] --> B"
+                )
+            },
+            {
+                "code": "flowchart TD\n  A --> B",
+                "nested": {"Authorization\t:\tBearer\topaque-token-0123456789": "clean"},
+            },
+            {
+                "code": "flowchart TD\n  A --> B",
+                "nested": {"header": "Authorization\t:\tBearer\topaque-token-0123456789"},
+            },
+            {
+                "code": "flowchart TD\n  A --> B",
+                "nested": {"Authorization": "Bearer\topaque-token-0123456789"},
+            },
+        ],
+    )
+    def test_json_control_characters_do_not_hide_compressed_credentials(
+        self, state: dict[str, object]
+    ) -> None:
+        decoded = json.dumps(state, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(decoded.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        result = security.redact(url)
+
+        assert payload not in result
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+
+    def test_short_valid_compressed_credential_payload_is_redacted(self) -> None:
+        credential = "AKIAIOSFODNN7EXAMPLE"
+        payload = (
+            base64.urlsafe_b64encode(zlib.compress(credential.encode(), 9)).decode().rstrip("=")
+        )
+        assert 0 < len(payload) < 40
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        result = security.redact(url)
+
+        assert payload not in result
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+
+    def test_suffix_extended_pako_candidate_fails_closed(self) -> None:
+        url, payload = self._mermaid_url("flowchart TD\n  A[clean diagram] --> B")
+
+        result = security.redact(url + "&next=attacker")
+
+        assert payload not in result
+        assert result == (
+            "https://mermaid.live/edit#pako:[REDACTED: encoded credential]&next=attacker"
+        )
+
+    def test_invalid_pako_fragment_does_not_create_a_credential_bypass(self) -> None:
+        secret = "Kx3Q51tPusVkD0URlGfMmNbVc7Z8yJhLpQrStUwZ"
+        text = f"https://mermaid.live/edit#pako:{secret}"
+
+        result, warnings = redact_credentials(text)
+
+        assert result == "https://mermaid.live/edit#pako:[REDACTED: credential]"
+        assert warnings == [f"Redacted bare secret key ({len(secret)} chars)"]
 
 
 class TestBareSecretKeyRedaction:
@@ -5592,6 +6369,507 @@ class TestStreamRedactor:
     def test_no_data_loss_benign(self) -> None:
         joined = "".join(self._run(["Hello ", "world, ", "this is ", "fine."]))
         assert joined == "Hello world, this is fine."
+
+    def test_pako_url_split_across_many_chunks_is_preserved(self) -> None:
+        code = "flowchart TD\n" + "\n".join(
+            f"  N{i}[Step {i}: reconcile draft {i * 7919}] --> N{i + 1}" for i in range(240)
+        )
+        url, payload = TestPakoFragmentRedaction._mermaid_url(code)
+        assert len(payload) > 1000
+        text = f"[Open diagram]({url})"
+        chunks = [text[start : start + 73] for start in range(0, len(text), 73)]
+
+        joined = "".join(self._run(chunks))
+
+        assert joined == text
+
+    def test_nested_pako_url_is_not_preserved_across_stream_chunks(self) -> None:
+        code = "flowchart TD\n" + "\n".join(
+            f"  N{i}[Private note {i}: value {i * 7919}] --> N{i + 1}" for i in range(240)
+        )
+        url, payload = TestPakoFragmentRedaction._mermaid_url(code)
+        text = f"https://evil.example/?next={url})"
+        chunks = [text[start : start + 73] for start in range(0, len(text), 73)]
+
+        joined = "".join(self._run(chunks))
+
+        assert payload not in joined
+        assert "[REDACTED:" in joined
+
+    @pytest.mark.parametrize(
+        "outer_prefix",
+        ["https://evil.example", "//evil.example", "https:evil.example"],
+    )
+    def test_outer_url_context_survives_a_chunk_boundary_before_pako(
+        self, outer_prefix: str
+    ) -> None:
+        code = "flowchart TD\n" + "\n".join(
+            f"  N{i}[Private note {i}: value {i * 7919}] --> N{i + 1}" for i in range(240)
+        )
+        url, payload = TestPakoFragmentRedaction._mermaid_url(code)
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed(f"{outer_prefix}/?pad=(")
+        joined += redactor.feed(url + ")")
+        joined += redactor.flush()
+
+        assert payload not in joined
+        assert "[REDACTED:" in joined
+
+    def test_renderer_normalized_outer_url_survives_every_stream_split(self) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        outer_prefix = '<a href="&#00047;&#x2f;evil.example/?next='
+
+        for split in range(len(outer_prefix) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(outer_prefix[:split])
+            joined += redactor.feed(outer_prefix[split:])
+            joined += redactor.feed(url + '">click</a>')
+            joined += redactor.flush()
+
+            assert payload not in joined, split
+            assert "[REDACTED:" in joined, split
+
+    def test_gfm_punctuation_and_encoded_whitespace_survive_stream_splits(self) -> None:
+        clean_url, clean_payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[clean state] --> B"
+        )
+        unsafe_url, unsafe_payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        text = f"https://evil.example/'{unsafe_url} " f'<a href="{clean_url} &#32;&Tab;">click</a>'
+
+        for split in range(len(text) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(text[:split])
+            joined += redactor.feed(text[split:])
+            joined += redactor.flush()
+
+            assert unsafe_payload not in joined, split
+            assert clean_payload in joined, split
+
+    def test_gfm_question_boundary_and_autolink_close_survive_stream_splits(self) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[clean state] --> B"
+        )
+        text = f"<https://evil.example/\\> [Open]({url})?"
+
+        for split in range(len(text) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(text[:split])
+            joined += redactor.feed(text[split:])
+            joined += redactor.flush()
+
+            assert payload in joined, split
+            assert "[REDACTED:" not in joined, split
+
+    def test_commonmark_angle_autolink_ownership_survives_every_stream_split(
+        self,
+    ) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        outer_prefix = "<https://evil.example/?next='"
+
+        for split in range(len(outer_prefix) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(outer_prefix[:split])
+            joined += redactor.feed(outer_prefix[split:])
+            joined += redactor.feed(url + "'>")
+            joined += redactor.flush()
+
+            assert payload not in joined, split
+            assert "[REDACTED:" in joined, split
+
+    @pytest.mark.parametrize(
+        "outer_prefix",
+        [
+            "www.evil.example/?next=",
+            "[destination]: https://evil.example/?next=(x)",
+        ],
+    )
+    def test_gfm_and_reference_ownership_survives_every_stream_split(
+        self, outer_prefix: str
+    ) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+
+        for split in range(len(outer_prefix) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(outer_prefix[:split])
+            joined += redactor.feed(outer_prefix[split:])
+            joined += redactor.feed(url + " ")
+            joined += redactor.flush()
+
+            assert payload not in joined, (outer_prefix, split)
+            assert "[REDACTED:" in joined, (outer_prefix, split)
+
+    def test_quoted_href_trailing_whitespace_boundary_survives_every_stream_split(
+        self,
+    ) -> None:
+        url, _ = TestPakoFragmentRedaction._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = f'<a href="{url} \t\r\n">click</a>'
+
+        for split in range(len(text) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(text[:split])
+            joined += redactor.feed(text[split:])
+            joined += redactor.flush()
+
+            assert joined == text, split
+
+    def test_rejected_pako_suffix_ceiling_cannot_bisect_a_credential(self) -> None:
+        url, _ = TestPakoFragmentRedaction._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        suffix = " " * security._PAKO_URL_TRAILING_WHITESPACE_MAX + secret
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed(f'<a href="{url}{suffix}">click</a>')
+        joined += redactor.flush()
+
+        assert secret not in joined
+        assert "[REDACTED: credential]" in joined
+
+    def test_connection_uri_credential_cannot_split_at_parentheses(self) -> None:
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed("postgres://user:pa(")
+        joined += redactor.feed("ss@host/db ")
+        joined += redactor.flush()
+
+        assert "postgres://user:pa(ss@host/db" not in joined
+        assert "[REDACTED: credential]" in joined
+
+    def test_generic_holdback_ceiling_cannot_bisect_a_fixed_credential(self) -> None:
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        run = secret + ";" * (security._STREAM_HOLDBACK_MAX + 1 - len(secret))
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed(run) + redactor.flush()
+
+        assert secret not in joined
+        assert "[REDACTED: credential]" in joined
+
+    def test_redacted_oversized_run_cannot_emit_a_trailing_partial_credential(
+        self,
+    ) -> None:
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        first = secret + ";" * security._STREAM_HOLDBACK_MAX + "AKIA"
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed(first)
+        joined += redactor.feed("IOSFODNN7EXAMPLE ")
+        joined += redactor.flush()
+
+        assert secret not in joined
+        assert "[REDACTED: credential]" in joined
+
+    @pytest.mark.parametrize("finish_with_quote", [True, False])
+    def test_rejected_pako_suffix_runs_through_stream_policies(
+        self, finish_with_quote: bool
+    ) -> None:
+        url, _ = TestPakoFragmentRedaction._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed(f'<a href="{url} suffix-{secret}')
+        if finish_with_quote:
+            joined += redactor.feed('">click</a>')
+        joined += redactor.flush()
+
+        assert secret not in joined
+        assert "[REDACTED: credential]" in joined
+
+    def test_rejected_pako_suffix_runs_through_custom_final_redactor(self) -> None:
+        url, _ = TestPakoFragmentRedaction._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        redactor = security.StreamRedactor(lambda text: text.replace("private-tail", "[CUSTOM]"))
+
+        joined = redactor.feed(f'<a href="{url} private-tail">click</a>')
+        joined += redactor.flush()
+
+        assert "private-tail" not in joined
+        assert "[CUSTOM]" in joined
+
+    def test_quoted_href_pending_whitespace_ceiling_fails_closed(self) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        redactor = security.StreamRedactor()
+        half = " " * (security._PAKO_URL_TRAILING_WHITESPACE_MAX // 2 + 1)
+
+        joined = redactor.feed(f'<a href="{url}')
+        joined += redactor.feed(half)
+        joined += redactor.feed(half)
+        joined += redactor.feed('">click</a>')
+        joined += redactor.flush()
+
+        assert payload not in joined
+        assert "[REDACTED:" in joined
+        assert redactor._pako_boundary_parts == []
+
+    def test_quoted_href_pending_whitespace_rejects_later_suffix(self) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed(f'<a href="{url} ')
+        joined += redactor.feed('suffix">click</a>')
+        joined += redactor.flush()
+
+        assert payload not in joined
+        assert "[REDACTED:" in joined
+
+    def test_gfm_destination_marker_inside_outer_url_survives_every_stream_split(
+        self,
+    ) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        outer_prefix = "https://evil.example/?next=]("
+
+        for split in range(len(outer_prefix) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(outer_prefix[:split])
+            joined += redactor.feed(outer_prefix[split:])
+            joined += redactor.feed(url + ")")
+            joined += redactor.flush()
+
+            assert payload not in joined, split
+            assert "[REDACTED:" in joined, split
+
+    def test_balanced_markdown_destination_depth_survives_every_stream_split(self) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        outer_prefix = "[click](https://evil.example/?next=((x))"
+
+        for split in range(len(outer_prefix) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(outer_prefix[:split])
+            joined += redactor.feed(outer_prefix[split:])
+            joined += redactor.feed(url + ")")
+            joined += redactor.flush()
+
+            assert payload not in joined, split
+            assert "[REDACTED:" in joined, split
+
+    @pytest.mark.parametrize(
+        "outer_prefix",
+        [
+            '<a href="/\t/evil.example/?next=',
+            r"[click](//evil.example/?next=\)",
+            r"[click](<//evil.example/?next=\>",
+        ],
+    )
+    def test_renderer_normalized_ownership_survives_every_stream_split(
+        self, outer_prefix: str
+    ) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+
+        for split in range(len(outer_prefix) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(outer_prefix[:split])
+            joined += redactor.feed(outer_prefix[split:])
+            joined += redactor.feed(url + '">click</a>)')
+            joined += redactor.flush()
+
+            assert payload not in joined, (outer_prefix, split)
+            assert "[REDACTED:" in joined, (outer_prefix, split)
+
+    def test_open_html_attribute_ownership_survives_every_stream_split(self) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        outer_prefix = "<a href=\"https://evil.example/?next=' )` "
+
+        for split in range(len(outer_prefix) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(outer_prefix[:split])
+            joined += redactor.feed(outer_prefix[split:])
+            joined += redactor.feed(url + '">click</a>')
+            joined += redactor.flush()
+
+            assert payload not in joined, split
+            assert "[REDACTED:" in joined, split
+
+    @pytest.mark.parametrize("inner_data", ["<", "\x0b"])
+    def test_unquoted_html_attribute_ownership_survives_every_stream_split(
+        self, inner_data: str
+    ) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        text = f"<a href=https://evil.example/?next={inner_data}{url}>click</a>"
+
+        for split in range(len(text) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(text[:split])
+            joined += redactor.feed(text[split:])
+            joined += redactor.flush()
+
+            assert payload not in joined, split
+            assert "[REDACTED:" in joined, split
+
+    @pytest.mark.parametrize("text_template", ["{url}，`rev`", "（{url}）"])
+    def test_renderer_proven_cjk_boundaries_survive_every_stream_split(
+        self, text_template: str
+    ) -> None:
+        url, _ = TestPakoFragmentRedaction._mermaid_url("flowchart TD\n  A[clean state] --> B")
+        text = text_template.format(url=url)
+
+        for split in range(len(text) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(text[:split])
+            joined += redactor.feed(text[split:])
+            joined += redactor.flush()
+
+            assert joined == text, split
+
+    @pytest.mark.parametrize(
+        "text_template",
+        [
+            "（{first}）以及{second}",
+            "{first}，`rev`以及{second}",
+        ],
+    )
+    def test_cjk_boundary_releases_following_pako_link_at_every_stream_split(
+        self, text_template: str
+    ) -> None:
+        first, _ = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[first clean state] --> B"
+        )
+        second, _ = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  C[second clean state] --> D"
+        )
+        text = text_template.format(first=first, second=second)
+
+        for split in range(len(text) + 1):
+            redactor = security.StreamRedactor()
+            joined = redactor.feed(text[:split])
+            joined += redactor.feed(text[split:])
+            joined += redactor.flush()
+
+            assert joined == text, split
+
+    def test_long_same_chunk_outer_url_keeps_ownership(self) -> None:
+        url, payload = TestPakoFragmentRedaction._mermaid_url(
+            "flowchart TD\n  A[private state] --> B"
+        )
+        text = f"//evil.example/{'x' * 5000}{url})"
+        redactor = security.StreamRedactor()
+
+        joined = redactor.feed(text) + redactor.flush()
+
+        assert payload not in joined
+        assert "[REDACTED:" in joined
+
+    def test_split_pako_payload_is_inspected_once_not_per_accumulated_chunk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security as security_module
+        from kiro_crew.security import _PAKO_FRAGMENT_PREFIX, StreamRedactor
+
+        class _CountingAlphabet:
+            def __init__(self) -> None:
+                self.count = 0
+
+            def __contains__(self, char: str) -> bool:
+                self.count += 1
+                return char in string.ascii_letters + string.digits + "-_"
+
+        alphabet = _CountingAlphabet()
+        monkeypatch.setattr(security_module, "_PAKO_PAYLOAD_CHARS", alphabet)
+        payload = "A" * 16384
+        redactor = StreamRedactor()
+
+        emitted = redactor.feed(_PAKO_FRAGMENT_PREFIX)
+        for start in range(0, len(payload), 257):
+            emitted += redactor.feed(payload[start : start + 257])
+        emitted += redactor.feed(")")
+        emitted += redactor.flush()
+
+        assert emitted == _PAKO_FRAGMENT_PREFIX + payload + ")"
+        assert alphabet.count <= len(payload) + 1
+
+    def test_many_same_chunk_pako_candidates_do_not_recurse(self) -> None:
+        from kiro_crew.security import _PAKO_FRAGMENT_PREFIX, StreamRedactor
+
+        candidate = _PAKO_FRAGMENT_PREFIX + "A" * 40 + ")"
+        text = candidate * 1200
+        redactor = StreamRedactor()
+
+        emitted = redactor.feed(text) + redactor.flush()
+
+        assert emitted.count(")") == 1200
+        assert emitted.startswith(_PAKO_FRAGMENT_PREFIX)
+
+    def test_pako_scan_budget_spans_separately_terminated_links(self) -> None:
+        from kiro_crew.security import StreamRedactor
+
+        budget = security.redaction._PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS
+        run_chars = budget // 2 + _SECRET_KEY_LEN
+        first_url, first_payload = TestPakoFragmentRedaction._mermaid_url(
+            "Zz9/" * ((run_chars + 3) // 4) + "A"
+        )
+        second_url, second_payload = TestPakoFragmentRedaction._mermaid_url(
+            "Zz9/" * ((run_chars + 3) // 4) + "B"
+        )
+        redactor = StreamRedactor(lambda text: security.redact(text))
+
+        joined = redactor.feed(first_url + " ")
+        joined += redactor.feed(second_url + " ")
+        joined += redactor.flush()
+
+        tag = "[REDACTED: encoded credential]"
+        assert joined == f"{first_url} https://mermaid.live/edit#pako:{tag} "
+        assert first_payload in joined
+        assert second_payload not in joined
+
+        # flush() ended that segment and reset its exhausted budget.
+        third_url, _ = TestPakoFragmentRedaction._mermaid_url("flowchart TD\n  A --> B")
+        assert redactor.feed(third_url + " ") + redactor.flush() == third_url + " "
+
+    def test_oversized_pako_stream_tail_discards_continuation_until_delimiter(self) -> None:
+        from kiro_crew.security import (
+            _PAKO_FRAGMENT_MAX_ENCODED_CHARS,
+            _PAKO_FRAGMENT_PREFIX,
+            _REDACTED_ENCODED_CREDENTIAL_TAG,
+            StreamRedactor,
+        )
+
+        redactor = StreamRedactor()
+        payload = "A" * (_PAKO_FRAGMENT_MAX_ENCODED_CHARS + 1)
+
+        emitted = redactor.feed(_PAKO_FRAGMENT_PREFIX + payload)
+        emitted += redactor.feed("B" * 200)
+        emitted += redactor.feed(") safe tail")
+        emitted += redactor.flush()
+
+        assert emitted == _PAKO_FRAGMENT_PREFIX + _REDACTED_ENCODED_CREDENTIAL_TAG + ") safe tail"
+        assert "B" * 40 not in emitted
+        assert redactor._buf == ""
+
+    def test_oversized_pako_with_same_chunk_delimiter_discards_payload(self) -> None:
+        from kiro_crew.security import (
+            _PAKO_FRAGMENT_MAX_ENCODED_CHARS,
+            _PAKO_FRAGMENT_PREFIX,
+            _REDACTED_ENCODED_CREDENTIAL_TAG,
+            StreamRedactor,
+        )
+
+        payload = "A" * (_PAKO_FRAGMENT_MAX_ENCODED_CHARS + 1)
+        redactor = StreamRedactor()
+
+        emitted = redactor.feed(_PAKO_FRAGMENT_PREFIX + payload + ") safe tail")
+        emitted += redactor.flush()
+
+        assert emitted == _PAKO_FRAGMENT_PREFIX + _REDACTED_ENCODED_CREDENTIAL_TAG + ") safe tail"
 
     def test_single_chunk_credential(self) -> None:
         joined = "".join(self._run(["key=AKIAIOSFODNN7EXAMPLE done"]))
