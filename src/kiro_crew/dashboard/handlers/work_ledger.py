@@ -84,6 +84,13 @@ _CODE_STATUS: dict[str, int] = {
     work_ledger.CODE_INVALID_ACTION: 400,
     work_ledger.CODE_INVALID_STATUS: 400,
     work_ledger.CODE_INVALID_VALUE: 400,
+    # Raised only by ``work_ledger.purge_conductor``, the maintenance primitive
+    # behind ``kirocrew doctor --ledger-sweep``, which no route calls. Mapped
+    # anyway because this map is asserted EXHAUSTIVE over the store's ``CODE_*``
+    # constants, and that property is what stops a code the store gains later
+    # from degrading to 400 unnoticed. 409 is its class: the ledger is not in a
+    # state where the operation is allowed, exactly like ``item_closed``.
+    work_ledger.CODE_LEDGER_NOT_FINISHED: 409,
 }
 
 #: Codes this LAYER owns, above the store's own. Each names a condition the store

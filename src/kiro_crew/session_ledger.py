@@ -558,12 +558,33 @@ def purge(slot_key: str) -> None:
     shutil.rmtree(dir_path, ignore_errors=True)
 
 
-def purge_matching(exact_keys: set[str], folded_keys: set[str], fold: Any) -> int:
+def purge_matching(
+    exact_keys: set[str],
+    folded_keys: set[str],
+    fold: Any,
+    *,
+    guard: Any = None,
+) -> int:
     """Purge ledgers matching exact keys or a caller-supplied fold.
 
     This is an explicit best-effort maintenance API. The fold selects targets;
     it is never a storage identity. Callers must establish that every matching
     exact key is safe to remove before invoking it.
+
+    *guard*, when given, is called as ``guard(dir_path)`` INSIDE that ledger's
+    own :func:`_locked` hold, and the store is removed only if it answers true.
+    That is what lets a caller re-read the record and stand down on one that
+    came back to life: a selection made outside the lock is a snapshot, and
+    between the snapshot and the delete a session can be resumed and write a
+    live phase into the very record the caller decided was finished. Selecting
+    under the lock is not enough on its own -- the removal has to happen in the
+    same hold, which is why the guard is a callback rather than a filter the
+    caller applies first.
+
+    With a guard the removal is also two-phase: the contents go under the hold
+    and the lock file itself only after release, because it is the inode the
+    lock is taken on and Windows refuses to unlink a file an open handle still
+    holds. Without a guard the unlocked whole-tree removal is unchanged.
     """
     removed = 0
     try:
@@ -580,12 +601,48 @@ def purge_matching(exact_keys: set[str], folded_keys: set[str], fold: Any) -> in
             key = (child / _KEY_FILE).read_text(encoding="utf-8").strip()
             if not key:
                 continue
-            if key in exact_keys or fold(key) in folded_keys:
+            if not (key in exact_keys or fold(key) in folded_keys):
+                continue
+            if guard is None:
                 shutil.rmtree(child, ignore_errors=True)
                 removed += 1
+                continue
+            with _locked(child):
+                if not guard(child):
+                    continue
+                _remove_store_contents(child)
+            _remove_store_shell(child)
+            removed += 1
         except Exception:
             continue
     return removed
+
+
+def _remove_store_contents(dir_path: Path) -> None:
+    """Delete everything in *dir_path* except the lock file. Call under the hold."""
+    try:
+        children = list(dir_path.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child.name == _LOCK_FILE:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            try:
+                child.unlink()
+            except OSError:
+                logger.debug("ledger purge: could not remove %s", child.name)
+
+
+def _remove_store_shell(dir_path: Path) -> None:
+    """Delete the lock file and the now-empty directory. Call AFTER releasing."""
+    try:
+        (dir_path / _LOCK_FILE).unlink(missing_ok=True)
+        dir_path.rmdir()
+    except OSError:
+        logger.debug("ledger purge: ledger directory not fully removed")
 
 
 #: Ceiling for the injected snapshot block. A nudge turn carries this every
