@@ -109,6 +109,11 @@ with no row here.
      - driver-internal (which wire request switches the model)
    * - ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``
      - semantic question (``SessionCapabilities.effort_via_config_option``)
+   * - ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``
+     - driver-internal (whether an advertised ``<model>[<effort>]`` id is applied
+       as two config-option writes)
+   * - ``effort_config_option_id``
+     - driver-internal (which ``configId`` carries the reasoning effort)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -142,7 +147,7 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import FrozenSet, Set
+from typing import FrozenSet, Mapping, Set
 
 from kiro_crew.constants import env_flag_enabled
 
@@ -767,6 +772,53 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
 # for: the same ``session/new`` result that advertises its ``model`` select
 # advertises a ``mode`` select beside it and no ``effort`` option at all.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+
+# Backends whose ADVERTISED model ids are ``<model>[<effort>]`` pairs that the
+# ``model`` config option does not accept whole. codex-acp is the member: its
+# ``models.availableModels`` is one entry per model x reasoning effort (the
+# legacy ``session/set_model`` vocabulary, and what the picker shows), while its
+# ``model`` select takes only the bare model and the effort travels down the
+# separate ``reasoning_effort`` option. A member's exhausted spelling ladder falls
+# through to that two-write split; a non-member's refused bracketed id stays
+# refused. Opt-in (harness-parity H13): claude-agent-acp's ``[1m]`` suffix is a
+# context window and must reach the wire intact, and opencode's ``provider/model``
+# ids carry no suffix at all -- neither may inherit a split it never advertised.
+ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
+
+# The ``configId`` each backend spells its reasoning-effort option with. One home
+# for a fact that is per-harness vocabulary, not a constant: claude-agent-acp
+# advertises ``effort`` and codex-acp advertises ``reasoning_effort``, and a
+# session that writes the other one's spelling is answered with "unknown config
+# option" and silently keeps whatever effort it already had.
+#
+# Opt-in by exception (harness-parity H13): the default is the ``effort`` spelling
+# every existing member of ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` runs through,
+# and a backend only appears here to name a different one.
+#
+# The table and the default are read ONLY by :func:`effort_config_option_id`, and
+# neither crosses a facade: a consumer indexing the mapping gets a ``KeyError`` for
+# every backend without a row, which is the whole failure the resolver exists to
+# prevent. The function is the export.
+EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {ACP_BACKEND_CODEX: "reasoning_effort"}
+
+#: The spelling used by every backend without a row in
+#: ``EFFORT_CONFIG_OPTION_IDS``.
+DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
+
+
+def effort_config_option_id(backend: str) -> str:
+    """The ``configId`` *backend* exposes its reasoning effort under.
+
+    Every effort site -- the dashboard's live change, the startup application of
+    a persisted slot level, the knowledge pool's apply, the level reader that
+    fills the dropdown, and the effort half of a ``<model>[<effort>]`` pick --
+    resolves the id here. Two spellings of the same option in one tree diverge
+    silently: a write to the wrong id draws "unknown config option", which every
+    one of those callers treats as "this adapter has no effort selector" and
+    skips, so the session runs an effort the UI does not report.
+    """
+    return EFFORT_CONFIG_OPTION_IDS.get(backend, DEFAULT_EFFORT_CONFIG_OPTION_ID)
+
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list
 # (captured from ``session/new`` and cached across sessions) rather than trusting

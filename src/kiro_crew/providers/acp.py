@@ -15,6 +15,7 @@ from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpClient,
     AcpError,
+    _is_config_value_rejection,
     advertised_model_ids,
     model_is_unusable,
     resolve_pin_spelling,
@@ -42,6 +43,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
     acp_runtime_backends,
+    effort_config_option_id,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk import host_auth
@@ -1126,7 +1128,18 @@ class AcpProvider(LLMProvider):
         return model_supports_effort(self._client._model)
 
     def _resolve_effort(self) -> str | None:
-        """Resolve effort for the current model via the shared priority chain."""
+        """Resolve effort for the current model via the shared priority chain.
+
+        Both the slot overrides and the workspace defaults key on the model id as
+        RECORDED, which on an ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` harness is the
+        advertised suffixed spelling (``openai.gpt-6-astra[max]``). So a default
+        stored under the bare ``openai.gpt-6-astra`` does not answer for a session
+        that picked the ``[max]`` row, and the row's own effort stands. That is the
+        intended precedence -- an explicit pick of one advertised row is more
+        specific than a per-model default -- and not an aliasing gap to close.
+        ``change_effort`` writes the override under the same recorded spelling
+        this reads, so the override path matches by construction.
+        """
         return resolve_effort_for_model(
             self._client._model,
             slot_overrides=self._effort_per_model,
@@ -1201,6 +1214,14 @@ class AcpProvider(LLMProvider):
         ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` arrives here, and the
         adapter-behaviour notes below are what that channel does in practice.
 
+        WHICH option id carries the effort is resolved per backend through
+        ``effort_config_option_id``: claude-agent-acp spells it ``effort`` and
+        codex-acp spells it ``reasoning_effort``. Naming one spelling here writes
+        an id the other adapter does not know, which comes back as "unknown
+        config option" -- and the branch below reads that as "no effort selector"
+        and skips, so the session keeps whatever effort it already had while the
+        dashboard reports the level the user picked.
+
         claude-agent-acp validates the value against the *current model's*
         ``supportedEffortLevels`` and throws ``Invalid value for config option
         effort: <level>`` (surfaced as an ``AcpError``) for anything the model
@@ -1209,29 +1230,33 @@ class AcpProvider(LLMProvider):
         dashboard reset the whole session and silently drop to the adapter
         default), fall back down the effort ladder so the model still lands at
         the highest level it actually supports. Only the value-rejection error
-        is retried; any other failure (transport, timeout) propagates.
+        is retried; any other failure (transport, timeout) propagates. codex-acp
+        refuses a value with a bare ``-32602`` and no message instead of naming
+        the option, so the shared ``_is_config_value_rejection`` reader answers
+        for both shapes.
 
-        Older claude-agent-acp builds expose no ``effort`` config option at all
-        and reject the push with ``Unknown config option: effort`` (a -32603
-        Internal error). When the session advertises no effort selector, skip
-        the push entirely — there is nothing to set, and attempting it would
-        spam errors and trigger a session reset on every turn.
+        An adapter build may expose no effort config option at all and reject the
+        push with ``Unknown config option: <id>`` (a -32603 Internal error). When
+        the session advertises no effort selector, skip the push entirely — there
+        is nothing to set, and attempting it would spam errors and trigger a
+        session reset on every turn.
         """
-        if not self._client.supports_config_option("effort"):
-            logger.debug("adapter exposes no 'effort' config option; skipping effort push")
+        effort_option = effort_config_option_id(self._client.backend)
+        if not self._client.supports_config_option(effort_option):
+            logger.debug("adapter exposes no %r config option; skipping effort push", effort_option)
             return
         # Descend from the requested level through lower levels (e.g.
         # max → xhigh → high). Never escalate above what was asked.
         try:
             start = EFFORT_LEVELS.index(level)
         except ValueError:
-            await self._client.set_config_option("effort", level)
+            await self._client.set_config_option(effort_option, level)
             return
         ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
         last_exc: Exception | None = None
         for candidate in ladder:
             try:
-                await self._client.set_config_option("effort", candidate)
+                await self._client.set_config_option(effort_option, candidate)
                 if candidate != level:
                     logger.info(
                         "CC effort %r unsupported by model %s — applied %r instead",
@@ -1241,13 +1266,12 @@ class AcpProvider(LLMProvider):
                     )
                 return
             except AcpError as exc:
-                msg = str(exc)
-                if "unknown config option" in msg.lower():
-                    # Adapter has no 'effort' option at all (older build) —
+                if "unknown config option" in str(exc).lower():
+                    # Adapter has no effort option at all (older build) —
                     # nothing to set; skip silently rather than reset.
-                    logger.debug("claude-agent-acp rejected 'effort' as unknown; skipping")
+                    logger.debug("adapter rejected %r as unknown; skipping", effort_option)
                     return
-                if "config option effort" not in msg:
+                if not _is_config_value_rejection(exc, effort_option):
                     raise  # not a value-rejection — a real failure
                 last_exc = exc
                 continue
@@ -1284,8 +1308,11 @@ class AcpProvider(LLMProvider):
         # An adapter build may advertise no 'effort' config option; attempting to
         # push would fail with 'Unknown config option' and reset the session.
         # Report unsupported so the dashboard leaves the UI as-is.
-        if via_config_option and not self._client.supports_config_option("effort"):
-            logger.info("change_effort skipped — adapter build exposes no 'effort' option")
+        _effort_option = effort_config_option_id(self._client.backend)
+        if via_config_option and not self._client.supports_config_option(_effort_option):
+            logger.info(
+                "change_effort skipped — adapter build exposes no %r option", _effort_option
+            )
             return False
         # Accept any level the dynamic validation set knows about — ACP backends
         # can report levels beyond the canonical five (effort.py), and those are

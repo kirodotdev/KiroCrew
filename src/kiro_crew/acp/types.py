@@ -31,6 +31,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MEMBER_DISPATCH,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -39,6 +40,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     acp_runtime_backends,
+    effort_config_option_id,
     model_registry_namespace,
     selectable_backends,
 )
@@ -113,6 +115,11 @@ METHOD_SET_CONFIG_OPTION = "session/set_config_option"
 #: ``configId`` under which KAS exposes the session model. KAS implements no
 #: ``session/set_model``, so this is the only way to switch a model on it.
 MODEL_CONFIG_ID = "model"
+# The reasoning-effort ``configId`` is per harness, so it is resolved through
+# ``effort_config_option_id`` (re-exported above) rather than named by a constant
+# here: codex-acp spells it ``reasoning_effort`` and claude-agent-acp spells it
+# ``effort``, and a single constant beside ``MODEL_CONFIG_ID`` would read as one
+# shared spelling and be written to the wrong adapter.
 
 #: JSON-RPC 2.0 reserved error code for an unrecognized method.
 JSONRPC_METHOD_NOT_FOUND = -32601

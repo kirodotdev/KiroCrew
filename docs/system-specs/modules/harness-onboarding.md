@@ -71,6 +71,7 @@ vocabulary.
 | `ACP_BACKENDS_ACP_RUNTIME` | Driven through `AcpRuntime` rather than its own spawn branch. The FOREGROUND start path reads it through `acp_runtime_backends()`, which returns this set verbatim unless the `KIROCREW_CODEX_ACP_RUNTIME` preview switch (default off) adds codex for one process; the background `_bg` path reads the set itself, so a preview never reaches high-churn handles. The set is the shipped answer either way, so a new harness declares membership here. |
 | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
 | `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` | Reasoning-effort push, same channel shape. |
+| `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` | The ids the harness ADVERTISES are `<model>[<effort>]` pairs its `model` option does not accept whole, so an exhausted spelling ladder falls through to two writes (bare model, then the effort). A non-member's refused bracketed id stays refused: claude's `[1m]` is a context WINDOW that must reach the wire intact, and opencode's `provider/model` ids carry no suffix at all, so neither may inherit a split it never advertised. Membership also gates the "adapter mismatch, not an account restriction" wording in `AcpModelUnavailable`, because "advertised implies entitled" is established only for a harness whose advertised list IS its entitlement. |
 | `ACP_BACKENDS_KIRO_SLASH_COMMANDS` | Receives `_kiro.dev/commands/execute`, **and** gets the workspace `cli.json` overlay written for it. Membership decides both, so a non-member must not collect an overlay it never reads and the membership-gated clear can never remove. |
 | `ACP_BACKENDS_SESSION_MCP_ARRAY` | The harness reads its MCP surface from the `session/new` array rather than from Crew's agent spec. A non-member that is added here gets an empty array and works with every Crew tool silently absent. |
 | `ACP_BACKENDS_MEMBER_DISPATCH` | Crew's member-dispatch tools are mounted into a channel-member session, with the auto-approve grant that goes with them. A harness with no per-session mount to ride is excluded, which withholds only the extra grant. |
@@ -80,6 +81,22 @@ vocabulary.
 | `ACP_BACKENDS_SEED_LOCAL_SETTINGS` | A local settings file is seeded at spawn **and re-seeded on `set_model`**, so a warm-pool claim does not leave a stale model or allowlist behind. A harness with no such file is not a member. |
 | `ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD` | The dashboard's MCP sync leaves running sessions alone after a config write, because the harness reconciles the agent file itself. Membership is version-gated per process by `mcp_hot_reload_supported`, not granted by the harness name alone. |
 | `ACP_BACKENDS_STRUCTURED_REFUSAL` | The harness reports a model-side refusal with a **reason** — on the Kiro path a `_kiro.dev/metadata` frame with `stopReason: CONTENT_FILTERED` and a `refusal {category, explanation, recommendedModel}` object — and `acp/_dispatch.parse_refusal` is consulted on that frame. Every harness still lands on the same `RefusalInfo` and the same dashboard card; a non-member's card just has no category line. A harness whose refusal wire carries a reason in a different shape adds a parser and joins here — it must not widen the metadata reader to guess. |
+
+Not every per-harness fact is a membership SET. Which `configId` carries the
+reasoning effort is a per-harness *spelling* -- `effort` for claude-agent-acp,
+`reasoning_effort` for codex-acp -- and it is answered by
+`effort_config_option_id(backend)` in the vocabulary module, defaulting to
+`effort` with a row only for the exception. A new harness that spells it
+differently adds one row there and needs no call-site change, because every
+effort site reads the resolver: the dashboard's live change and the startup
+application of a persisted slot level, the knowledge pool's apply, both
+`get_valid_effort_levels` readers, and the pair split above. Getting this wrong
+fails toward silence rather than an error -- an adapter answering "unknown
+config option" is indistinguishable from one with no effort selector, so every
+one of those callers skips and the session runs an effort the UI does not
+report. Only the function is exported; the table behind it is not, because a
+caller indexing it takes a `KeyError` for exactly the harnesses the default
+exists to serve.
 
 The tuning channels are one set each rather than one "tuning" set, because a
 harness can implement one and not another. If your harness needs a tuning

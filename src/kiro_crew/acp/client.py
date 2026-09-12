@@ -89,6 +89,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_MEMBER_DISPATCH,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -131,6 +132,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
     METHOD_SUBAGENT_LIST_UPDATE,
+    MODEL_CONFIG_ID,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
@@ -146,6 +148,7 @@ from kiro_crew.acp.types import (
     AcpPromptStats,
     JsonRpcMessage,
     JsonRpcRequest,
+    effort_config_option_id,
     model_registry_namespace,
 )
 from kiro_crew.agent import (
@@ -2027,7 +2030,13 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
     entitlement.
     """
 
-    def __init__(self, model_id: str, advertised: Sequence[str] | None = None) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        advertised: Sequence[str] | None = None,
+        *,
+        advertised_but_refused: bool = False,
+    ) -> None:
         self.model_id = model_id
         self.advertised = list(advertised or [])
         usable = ", ".join(self.advertised) if self.advertised else "none advertised"
@@ -2037,6 +2046,28 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
         # re-authenticating, so this must never read as an instruction to log out:
         # `whoami` answers "which tier am I actually on" for the user who signed in
         # to the wrong one, and merely confirms the situation for everyone else.
+        if advertised_but_refused:
+            # The adapter ADVERTISED this id and then refused it, on a harness
+            # whose advertised list IS its entitlement: that is a spelling gap
+            # between the list and the switch channel (a codex
+            # ``<model>[<effort>]`` pair its ``model`` option does not take), not
+            # an entitlement verdict. Pointing the user at their sign-in here
+            # would send them to fix an account that is fine.
+            #
+            # The CALLER decides, because "advertised implies entitled" is a
+            # per-harness fact that holds only for
+            # ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` members. Read off
+            # ``model_id in advertised`` alone it also fires for a harness that
+            # advertises models an account cannot run, and tells a user on the
+            # wrong tier their account is fine.
+            super().__init__(
+                f"The adapter advertised the model {model_id!r} but refused to "
+                f"switch to it. This is a mismatch inside the adapter, not an "
+                f"account restriction; try another entry from the list or restart "
+                f"the session. Available models: {usable}.",
+                transient=False,
+            )
+            return
         super().__init__(
             f"The model {model_id!r} is not available on your account. "
             f"Available models: {usable}. "
@@ -2658,6 +2689,107 @@ def _jsonrpc_error_code(error: object) -> int | None:
 #: adapter refused the value it was handed — the frame a stale codex model pin
 #: draws, carrying no ``data`` to match on.
 _JSONRPC_INVALID_PARAMS = -32602
+
+
+def _is_config_value_rejection(exc: AcpError, config_id: str) -> bool:
+    """Whether *exc* is the adapter refusing a config option VALUE.
+
+    Two shapes count. claude-agent-acp names the option in its message
+    (``Invalid value for config option <id>: ...``); codex-acp answers with a
+    bare JSON-RPC ``-32602`` and no detail -- the request shape is fixed, so the
+    code is the verdict on the value. ``unknown config option`` is NOT a value
+    rejection (the option itself is missing) and is left to the caller.
+
+    The bare-code half rests on "the request shape is fixed, so only the value can
+    be invalid", which is a per-adapter fact and not a protocol guarantee. A
+    harness joining ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` or
+    ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`` must therefore have its own -32602
+    semantics checked before it is added: an adapter that also answers -32602 for a
+    genuinely malformed request would have that read here as a value refusal and
+    silently descend the effort ladder instead of surfacing the fault. Revisit the
+    classifier -- do not widen it -- when a member does not fit.
+    """
+    lowered = str(exc).lower()
+    return (
+        f"config option {config_id}" in lowered
+        or getattr(exc, "code", None) == _JSONRPC_INVALID_PARAMS
+    )
+
+
+async def _push_model_via_effort_split(driver: Any, backend: str, model_id: str) -> str:
+    """Apply a ``<model>[<effort>]`` id as two config-option writes.
+
+    Gated on ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` membership (harness-parity
+    H13): only a harness that ADVERTISES pair ids takes the split. For any other
+    backend a refused bracketed id stays refused, exactly as before this seam.
+
+    codex-acp keeps two spellings of one selection. Its ``models.availableModels``
+    (what ``_capture_available_models`` advertises to the picker) is one entry per
+    model x reasoning effort, ``gpt-6-astra[max]``. Its ``model`` config option --
+    the channel ``set_model`` switches on -- accepts only the bare ``gpt-6-astra``
+    and refuses the pair with a bare ``-32602``; the effort travels down the
+    separate ``reasoning_effort`` option. Before this seam existed, every pick
+    from the advertised list was refused and surfaced as "not available on your
+    account", with the very list it was picked from quoted as proof.
+
+    Shared by ``AcpClient`` and ``AcpSessionHandle``: *driver* supplies
+    ``_push_model_config_option`` (the spelling ladder, run non-strict on the
+    bare half), ``supports_config_option`` and ``set_config_option``.
+
+    Returns the spelling to record: *model_id* itself when both halves landed
+    (so the picker highlights the advertised row), the bare model when it landed
+    but the effort was refused or unadvertised (the adapter then chose its own
+    effort, which this id does not overclaim), and ``""`` when the model half was
+    refused too -- the caller's exhaustion path then decides. Ids without an
+    effort suffix (and ``[1m]`` window ids) return ``""`` without a write.
+    """
+    if backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+        return ""
+    base, effort = model_registry.split_effort_suffix(model_id)
+    if not effort:
+        return ""
+    applied_base = await driver._push_model_config_option(base, strict=False)
+    if not applied_base:
+        return ""
+    # Through the platform context, not the baseline pair: these are log lines on a
+    # process that can compose a companion redactor, so the baseline pass would be
+    # the weaker scan (the gate-side census in test_security_posture pins this).
+    _model_log = redact_log_via_context(str(model_id))
+    _base_log = redact_log_via_context(str(applied_base))
+    # The effort is a SLICE of the same caller-supplied id, so it carries whatever
+    # the id carried: redacting the whole and then logging the half raw puts the
+    # bracketed text straight back in the log and defeats the two lines above.
+    _effort_log = redact_log_via_context(str(effort))
+    # The same resolver every other effort site reads, so the split and the slot
+    # override write ONE option: two spellings on one backend leave the override
+    # writing an id the adapter does not know, which it reports as "no effort
+    # selector" and skips -- the session then runs the suffix's effort while the
+    # UI reports the slot's.
+    effort_option = effort_config_option_id(backend)
+    if not driver.supports_config_option(effort_option):
+        logger.warning(
+            "ACP model %s applied as %s; adapter exposes no %r option, effort %s not applied",
+            _model_log,
+            _base_log,
+            effort_option,
+            _effort_log,
+        )
+        return applied_base
+    try:
+        await driver.set_config_option(effort_option, effort)
+    except AcpError as exc:
+        if "unknown config option" not in str(exc).lower() and not _is_config_value_rejection(
+            exc, effort_option
+        ):
+            raise  # transport/protocol failure -- the model DID switch, but do not hide this
+        logger.warning(
+            "ACP model %s applied as %s; adapter refused effort %s, keeping its default",
+            _model_log,
+            _base_log,
+            _effort_log,
+        )
+        return applied_base
+    return model_id
 
 
 def _format_acp_error(
@@ -5314,11 +5446,7 @@ class AcpClient:
                         raise
                     logger.debug("adapter exposes no 'model' config option; skipping model push")
                     return ""
-                value_rejected = (
-                    "config option model" in lowered
-                    or getattr(exc, "code", None) == _JSONRPC_INVALID_PARAMS
-                )
-                if not value_rejected:
+                if not _is_config_value_rejection(exc, MODEL_CONFIG_ID):
                     raise  # transport/protocol failure — not a value rejection
                 last_exc = exc
                 continue
@@ -5329,16 +5457,35 @@ class AcpClient:
                     cand,
                 )
             return cand
+        # Every spelling refused as one value. A ``<model>[<effort>]`` pair --
+        # the shape codex-acp advertises but its ``model`` option does not take --
+        # is applied as its two halves instead.
+        split_applied = await _push_model_via_effort_split(self, self.backend, model_id)
+        if split_applied:
+            return split_applied
         _rejected_log, _ = redact_exfiltration_urls(str(model_id))
         _rejected_log, _ = redact_credentials(_rejected_log)
+        advertised_ids = self._advertised_model_ids()
         if strict:
-            raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids()) from last_exc
+            raise AcpModelUnavailable(
+                _rejected_log,
+                advertised_ids,
+                # Only a pair-id harness earns the adapter-mismatch wording: on
+                # those the advertised list IS the entitlement, so refusing
+                # something on it is the adapter contradicting itself. Elsewhere an
+                # advertised id may simply be out of the account's reach, and the
+                # entitlement wording plus the `whoami` hint is the true answer.
+                advertised_but_refused=(
+                    model_id in advertised_ids
+                    and self.backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                ),
+            ) from last_exc
         logger.warning(
             "ACP model %s rejected by the adapter; staying on the backend default %s "
             "(advertised: %s)",
             _rejected_log,
             self._resolved_model_id or DEFAULT_MODEL,
-            ", ".join(self._advertised_model_ids()) or "none",
+            ", ".join(advertised_ids) or "none",
         )
         return ""
 
@@ -5667,13 +5814,18 @@ class AcpClient:
     def get_valid_effort_levels(self) -> list[str]:
         """Return valid effort levels from ACP config, preserving ACP order.
 
-        Parses configOptions for the entry with id="effort" and extracts its
-        options[].value list in the order ACP reported them.
+        Parses configOptions for the entry whose id is this backend's effort
+        option -- ``effort`` for most, ``reasoning_effort`` for codex-acp -- and
+        extracts its ``options[].value`` list in the order ACP reported them.
+        Resolving the id here is what fills the dropdown on a backend that spells
+        it differently; a hard-coded spelling returns an empty list there, which
+        every caller reads as "this model has no effort levels".
         """
+        effort_option = effort_config_option_id(self.backend)
         for opt in self._acp_config_options:
             if not isinstance(opt, dict):
                 continue
-            if opt.get("id") == "effort":
+            if opt.get("id") == effort_option:
                 options = opt.get("options", [])
                 if isinstance(options, list):
                     return [o["value"] for o in options if isinstance(o, dict) and "value" in o]

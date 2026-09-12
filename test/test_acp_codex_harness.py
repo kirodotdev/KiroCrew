@@ -67,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ENV_CODEX_ACP_RUNTIME,
     acp_runtime_backends,
     codex_runs_on_acp_runtime,
+    effort_config_option_id,
 )
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.mirrors.registry import has_mirror
@@ -961,7 +962,14 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
         # runtime, so a runtime-membership gate would return here.
         assert provider.is_acp_runtime_backend is True
         await provider._apply_initial_effort()
-        provider._client.set_config_option.assert_awaited_once_with("effort", "high")
+        # The option ID is codex's own spelling, resolved through
+        # ``effort_config_option_id``: the startup application of a persisted
+        # level is one of the effort sites that reads it, and writing ``effort``
+        # here draws "unknown config option", which the push reads as "no effort
+        # selector" and skips.
+        provider._client.set_config_option.assert_awaited_once_with(
+            effort_config_option_id(ACP_BACKEND_CODEX), "high"
+        )
 
     @pytest.mark.asyncio
     async def test_the_kiro_family_still_takes_effort_from_its_overlay(self, monkeypatch):

@@ -720,7 +720,11 @@ class TestAcpWorker:
 
 
 def _mock_effort_client(
-    levels: list[str], *, supports: bool = True, claude: bool = False
+    levels: list[str],
+    *,
+    supports: bool = True,
+    claude: bool = False,
+    backend: str | None = None,
 ) -> AsyncMock:
     """An AcpClient double whose BACKEND decides the effort channel.
 
@@ -733,7 +737,9 @@ def _mock_effort_client(
     client = AsyncMock()
     client.is_ready = True
     client._pid = None
-    client.backend = ACP_BACKEND_CLAUDE if claude else ACP_BACKEND_KIRO
+    if backend is None:
+        backend = ACP_BACKEND_CLAUDE if claude else ACP_BACKEND_KIRO
+    client.backend = backend
     client.is_process_alive = lambda: True
     client.supports_config_option = MagicMock(return_value=supports)
     client.get_valid_effort_levels = MagicMock(return_value=levels)
@@ -770,6 +776,42 @@ class TestAcpWorkerEffort:
         client.set_config_option.assert_awaited_once_with("effort", "high")
         client.send_command.assert_not_awaited()
         assert worker._effective_effort == "high"
+
+    @pytest.mark.asyncio
+    async def test_applies_codex_effort_under_the_codex_option_id(self, tmp_path):
+        """codex-acp spells the effort option ``reasoning_effort``. Writing
+        ``effort`` there draws "unknown config option", which the except below the
+        push turns into "using provider default" -- so the pool silently runs at
+        whatever effort the adapter chose."""
+        from kiro_crew.acp.types import ACP_BACKEND_CODEX, effort_config_option_id
+
+        client = _mock_effort_client(["low", "medium", "high"],
+                                     backend=ACP_BACKEND_CODEX)
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        option = effort_config_option_id(ACP_BACKEND_CODEX)
+        client.set_config_option.assert_awaited_once_with(option, "high")
+        client.send_command.assert_not_awaited()
+        assert worker._effective_effort == "high"
+
+    @pytest.mark.asyncio
+    async def test_codex_support_precheck_asks_about_the_codex_option(self, tmp_path):
+        """The precheck must ask about the id it is about to write; asking about
+        ``effort`` on codex answers False and skips a push that would land."""
+        from kiro_crew.acp.types import ACP_BACKEND_CODEX, effort_config_option_id
+
+        client = _mock_effort_client(["low", "medium", "high"],
+                                     backend=ACP_BACKEND_CODEX)
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        client.supports_config_option.assert_called_with(
+            effort_config_option_id(ACP_BACKEND_CODEX))
 
     @pytest.mark.asyncio
     async def test_reapplies_effort_after_respawn(self, tmp_path):
