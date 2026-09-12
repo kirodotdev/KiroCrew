@@ -37,6 +37,13 @@ _REVIEW_THREAD_MAX_PAGES = 10
 _MERGEABLE_SETTLED_STATES = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE"})
 _PR_FIELDS = "number,state,isDraft,headRefOid,mergeable,mergeStateStatus,reviewDecision"
 _CHECK_FIELDS = "statusCheckRollup,headRefOid"
+# The aggregate readiness StatusContext this repository publishes. When present
+# it is authoritative over the individual check rows, so its verdict -- not a
+# hand-rolled fold over the rows -- decides whether the checks half is failing.
+# This mirrors the ``PR Readiness`` default the prepare-pr skill's pr_status.py
+# already treats as authoritative, and the surrounding babysit tooling already
+# names the same three-state distinction (running / failing / unpublished).
+_DEFAULT_READINESS_CONTEXT = "PR Readiness"
 _MAX_PULL_REQUEST_NUMBER = 2_147_483_647
 _MAX_CHECK_ROWS = MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET * 4
 _REVIEW_THREADS_QUERY = """
@@ -91,12 +98,37 @@ class GitHubCheck:
 
     identity: str
     state: str
+    #: Whether this row is a StatusContext, as opposed to a CheckRun. The
+    #: aggregate readiness authority is a StatusContext, so this is the fact that
+    #: match must test -- an identity string is a display artifact a CheckRun can
+    #: forge (a workflowless CheckRun has a bare, unqualified identity), while the
+    #: row type is not forgeable across the union boundary.
+    is_status_context: bool = False
+    #: The row's completion time as the host's raw ISO-8601 string, or "" when
+    #: the host gave none. This is the freshness key for a FAILING row under
+    #: aggregate suppression: a failure is suppressed by a green aggregate only
+    #: when the failure RESULT is known no later than the aggregate. Completion,
+    #: not start, is what the aggregate could have seen -- a run can start before
+    #: the aggregate and fail after it. An empty value means "cannot prove the
+    #: aggregate saw this result", which fails closed (the failure is not
+    #: suppressed).
+    completed_at: str = ""
+    #: The row's start time as the host's raw ISO-8601 string, or "" when the
+    #: host gave none. Used ONLY as the aggregate StatusContext's own reference
+    #: time: a StatusContext carries no completion time, so its start time is
+    #: when it was published. It is never consulted for a failing row -- a
+    #: failure's start cannot bound when its result became known.
+    started_at: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, str) or not self.identity:
             raise ValueError("GitHub check identity must be non-empty")
         if self.state not in {"failed", "passed", "pending", "unknown"}:
             raise ValueError("GitHub check state is malformed")
+        if not isinstance(self.completed_at, str):
+            raise ValueError("GitHub check completed_at must be a string")
+        if not isinstance(self.started_at, str):
+            raise ValueError("GitHub check started_at must be a string")
 
 
 @dataclass(frozen=True)
@@ -462,20 +494,103 @@ def _normalize_response(
 def _normalize_checks(raw: object) -> tuple[GitHubCheck, ...]:
     if not isinstance(raw, list):
         raise ValueError("GitHub check rollup is malformed")
-    grouped: dict[tuple[str, ...], tuple[str, list[str]]] = {}
+    grouped: dict[tuple[str, ...], tuple[str, list[str], list[str | None], list[str | None]]] = {}
     for row_index, item in enumerate(raw):
         if not isinstance(item, Mapping):
             raise ValueError("GitHub check rollup is malformed")
         identity, state, group_key = _normalize_check(item)
         if group_key is None:
             group_key = ("independent_check_run", str(row_index))
-        _, candidates = grouped.setdefault(group_key, (identity, []))
+        completed = item.get("completedAt")
+        started = item.get("startedAt")
+        _, candidates, completed_values, started_values = grouped.setdefault(
+            group_key, (identity, [], [], [])
+        )
         candidates.append(state)
+        completed_values.append(completed if isinstance(completed, str) and completed else None)
+        started_values.append(started if isinstance(started, str) and started else None)
     normalized: list[GitHubCheck] = []
-    for identity, candidates in grouped.values():
+    for group_key, (identity, candidates, completed_values, started_values) in grouped.items():
         state = min(candidates, key=("failed", "pending", "unknown", "passed").index)
-        normalized.append(GitHubCheck(_sanitize_check_identity(identity), state))
+        # Fail closed per field: a group's time is usable only when EVERY row in
+        # it carries that field; a single missing one makes it unknown (""). When
+        # usable the LATEST wins, so if any attempt of a grouped identity finished
+        # after the aggregate the failure is not accounted for and stays live.
+        # completed_at gates a failing row; started_at is the aggregate
+        # StatusContext's own reference time (it has no completion).
+        if completed_values and all(value is not None for value in completed_values):
+            completed_at = max(value for value in completed_values if value is not None)
+        else:
+            completed_at = ""
+        if started_values and all(value is not None for value in started_values):
+            started_at = max(value for value in started_values if value is not None)
+        else:
+            started_at = ""
+        normalized.append(
+            GitHubCheck(
+                _sanitize_check_identity(identity),
+                state,
+                is_status_context=group_key[0] == "status_context",
+                completed_at=completed_at,
+                started_at=started_at,
+            )
+        )
     return tuple(sorted(normalized, key=lambda item: item.identity))
+
+
+def _readiness_suppresses_failures(checks: tuple[GitHubCheck, ...]) -> bool:
+    """Whether a passed aggregate is fresh enough to supersede the failing rows.
+
+    The host publishes one aggregate StatusContext whose verdict already
+    reconciles the individual rows. When it is present and passed it is
+    authoritative over them: a row still showing red beneath it is stale and
+    superseded, so classification must not read it as a live failure -- otherwise
+    a superseded red row wakes a session the gate has already cleared. This
+    reports the fact; the rows themselves are left verbatim so the canonical
+    output never disagrees with what the host reported.
+
+    Authority is bounded by freshness, because a green aggregate can outlive its
+    own validity: a check that STARTED before the aggregate can COMPLETE with a
+    failure after it, and trusting the older green would go silent on a failure
+    the aggregate never saw. So a failing row is suppressed only when its result
+    was known no later than the aggregate -- its ``completed_at`` is not later
+    than the aggregate's own time. Start time cannot bound this, so it is not
+    consulted for a failing row. Freshness fails closed: if the aggregate has no
+    usable time, or ANY failing row has no completion time, or ANY failing row
+    completed after the aggregate, nothing is suppressed -- "cannot prove it is
+    stale" is not "it is stale", the same posture ``collapse_superseded`` takes
+    for entries it cannot strictly order. The aggregate is a StatusContext, which
+    carries no completion time, so its own reference is its publish (start) time.
+    ISO-8601 UTC strings order correctly by string comparison.
+
+    A red aggregate is not reported here and stays a failing row: the host
+    publishes a distinct state for an unfinished lane (checking, not red), so a
+    red aggregate genuinely means action required -- a blocking check or a
+    condition such as a disposition violation that waiting cannot clear.
+
+    Only the StatusContext named ``PR Readiness`` is the aggregate, and the match
+    tests the row TYPE, not the shape of its identity string. A CheckRun is a
+    different, independently writable namespace: an external app can post one
+    with that name and no workflow, whose identity is then the bare string and
+    would match a name-only test. Matching on the union member closes that -- a
+    CheckRun can forge the display name but not the row type, so it cannot pass
+    for the aggregate and suppress a real failure.
+    """
+    aggregate_time: str | None = None
+    for check in checks:
+        if check.is_status_context and check.identity == _DEFAULT_READINESS_CONTEXT:
+            if check.state != "passed":
+                return False
+            aggregate_time = check.started_at
+            break
+    if not aggregate_time:
+        return False
+    for check in checks:
+        if check.state != "failed":
+            continue
+        if not check.completed_at or check.completed_at > aggregate_time:
+            return False
+    return True
 
 
 def _bounded_checks(checks: tuple[GitHubCheck, ...]) -> tuple[tuple[GitHubCheck, ...], bool]:
@@ -661,7 +776,14 @@ def _classify_response(
     if response.draft:
         return MonitorObservationStatus.PENDING, "pull_request_draft"
     check_states = {check.state for check in response.checks}
-    if "failed" in check_states:
+    # A passed aggregate readiness context is authoritative over the rows, so a
+    # row still showing red beneath it is stale and superseded and must not read
+    # as a live failure -- but only when the aggregate is fresh enough to have
+    # superseded that row (see _readiness_suppresses_failures). The rows keep the
+    # state the host reported; only the verdict defers. This suppresses `failed`
+    # only: a pending row still means checks are running, so a passed aggregate
+    # over a pending row stays pending below.
+    if "failed" in check_states and not _readiness_suppresses_failures(response.checks):
         return MonitorObservationStatus.ACTIONABLE, "checks_failed"
     if response.review_decision == "changes_requested":
         return MonitorObservationStatus.ACTIONABLE, "changes_requested"

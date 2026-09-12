@@ -423,9 +423,32 @@ leaves it enforced nowhere:
   reader that only enumerates rows can report green while the aggregate is
   pending, which is not a hypothetical: a subject has been observed with every
   individual check complete and green while the aggregate context still read
-  pending. Enforced today only in the status tool, which resolves the aggregate
-  through `resolve_readiness_context`; the structured provider has no aggregate
-  notion at all (`target`).
+  pending. Enforced in both implementations: the status tool resolves the
+  aggregate through `resolve_readiness_context`, and the structured provider,
+  in `_classify_response`, treats a `failed` row as not a live failure when the
+  `PR Readiness` StatusContext is present, passed, and fresh
+  (`_readiness_suppresses_failures`).
+  The rows keep the state the host reported -- only the verdict defers to the
+  aggregate, so the canonical output never disagrees with the host. Authority is
+  bounded by freshness: a failing row is suppressed only when its RESULT was
+  known no later than the aggregate -- its completion time is not later than the
+  aggregate's own time -- because a run can start before the aggregate and fail
+  after it, so start time cannot bound what the aggregate saw. The comparison
+  fails closed -- a failing row with no completion time, or an aggregate with no
+  time, is not suppressed, the same posture `collapse_superseded` takes for
+  entries it cannot strictly order. The aggregate is matched by row TYPE, not by identity-string shape, so a `CheckRun` sharing
+  the name (including a workflowless one with a bare identity) cannot forge it. A
+  red aggregate is left as a failing row: the host publishes a distinct state for
+  an unfinished lane, so a red aggregate means action required, not
+  not-yet-finished. Scoping question for this authority: the aggregate name is a
+  constant (`PR Readiness`), so a foreign repository publishing a same-named
+  green StatusContext with different semantics would have its genuinely failing
+  rows suppressed, and because a suppressed failure lets `_classify_response`
+  reach `review_ready`, the decision layer returns `STOP_SUCCESS` and the monitor
+  stops permanently rather than merely skipping one wake. The structured provider
+  has no per-target configuration path today, so this is a stated limitation
+  rather than a knob; making the name configurable belongs with whatever
+  introduces per-target monitor config.
 - A stale reviewer stamp is an entry (`stale:<name>`), not a paragraph.
 - An un-dispositioned finding is an entry, so readiness cannot be declared over
   one.

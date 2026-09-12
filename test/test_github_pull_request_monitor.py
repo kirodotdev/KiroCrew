@@ -621,6 +621,300 @@ def test_same_dispatch_queued_attempt_cannot_hide_an_older_completion() -> None:
     assert result.observation.reason_code == "checks_pending"
 
 
+def _readiness_ctx(state: str) -> dict[str, object]:
+    return {
+        "__typename": "StatusContext",
+        "context": "PR Readiness",
+        "state": state,
+        "startedAt": "2026-08-22T00:02:00Z",
+        "targetUrl": "https://github.com/owner/repo/statuses/sha",
+    }
+
+
+def test_passing_readiness_aggregate_suppresses_a_stale_failing_row() -> None:
+    """A published aggregate that passed is authoritative over a superseded red row.
+
+    A green ``PR Readiness`` reconciles the rows, so a red row beneath it is stale
+    and must not wake a session the gate has cleared: the observation is SUCCESS,
+    not ACTIONABLE. The row keeps the state the host reported -- the canonical
+    output never disagrees with GitHub -- so the failing row is still present in
+    the canonical checks; only the verdict defers to the aggregate.
+    """
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                _check_run(conclusion="FAILURE"),
+                _readiness_ctx("SUCCESS"),
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"] == {
+        "failed": ["CI / test"],
+        "passed": ["PR Readiness"],
+        "pending": [],
+        "unknown": [],
+    }
+    assert result.observation.status is MonitorObservationStatus.SUCCESS
+    assert result.observation.reason_code == "review_ready"
+
+
+def test_red_readiness_with_no_failing_row_stays_failed() -> None:
+    """A red aggregate over no failing row is action required, not pending.
+
+    The aggregate publishes a distinct state for an unfinished lane (checking),
+    so a red aggregate means a blocking condition -- a disposition violation
+    produces exactly this shape: the aggregate red with no failing row beneath
+    it. Only a human can clear it, so a monitor must surface it rather than stay
+    silent; the aggregate row governs and the observation is a failure.
+    """
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                _check_run(conclusion="SUCCESS"),
+                _readiness_ctx("FAILURE"),
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["failed"] == ["PR Readiness"]
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "checks_failed"
+
+
+def test_red_readiness_with_a_real_failing_row_stays_failed() -> None:
+    """A red aggregate over a genuinely failing row is a real subject failure."""
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                _check_run(conclusion="FAILURE"),
+                _readiness_ctx("FAILURE"),
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["failed"] == ["CI / test", "PR Readiness"]
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "checks_failed"
+
+
+def test_absent_readiness_aggregate_leaves_the_rows_governing() -> None:
+    """Legacy pull requests without the aggregate keep the full-rollup behaviour."""
+    provider, _ = _provider(
+        _primary(statusCheckRollup=[_check_run(conclusion="FAILURE")]),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["failed"] == ["CI / test"]
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "checks_failed"
+
+
+def test_a_check_run_sharing_the_readiness_name_is_not_the_aggregate() -> None:
+    """Only the StatusContext is the aggregate; a same-named CheckRun is a row.
+
+    The match tests the row type, so a CheckRun named ``PR Readiness`` -- even a
+    passing one -- is an ordinary row and cannot suppress a real failure.
+    """
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                _check_run(conclusion="FAILURE"),
+                {
+                    "__typename": "CheckRun",
+                    "name": "PR Readiness",
+                    "workflowName": "CI",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-08-22T00:00:00Z",
+                    "completedAt": "2026-08-22T00:01:00Z",
+                },
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["failed"] == ["CI / test"]
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "checks_failed"
+
+
+def test_a_workflowless_check_run_cannot_forge_the_readiness_aggregate() -> None:
+    """A bare-identity CheckRun named ``PR Readiness`` cannot silence a failure.
+
+    An external app can post a CheckRun with no workflow name, whose identity is
+    then the bare string ``PR Readiness`` -- indistinguishable by identity alone
+    from the aggregate StatusContext. A passing one sitting above a genuinely
+    failing row must not be accepted as authoritative, or it rewrites the failure
+    to passed and the monitor reports success on a failing pull request. The
+    match tests the row type, not the identity string, so this stays a failure.
+    """
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                _check_run(conclusion="FAILURE"),
+                {
+                    "__typename": "CheckRun",
+                    "name": "PR Readiness",
+                    "workflowName": "",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-08-22T00:00:00Z",
+                    "completedAt": "2026-08-22T00:01:00Z",
+                },
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["failed"] == ["CI / test"]
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "checks_failed"
+
+
+def test_passing_aggregate_over_a_pending_row_stays_pending() -> None:
+    """A green aggregate suppresses a stale failure, not a still-running lane.
+
+    The aggregate's authority reaches only a `failed` row: a pending row means a
+    lane is still running, so a passing aggregate above it does not make the
+    subject ready. Suppressing pending too would report success while checks are
+    in flight.
+    """
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                _check_run(status="IN_PROGRESS", conclusion=""),
+                _readiness_ctx("SUCCESS"),
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["pending"] == ["CI / test"]
+    assert result.observation.status is MonitorObservationStatus.PENDING
+    assert result.observation.reason_code == "checks_pending"
+
+
+def test_failure_completing_after_the_green_aggregate_is_not_suppressed() -> None:
+    """A failure the aggregate could not have seen stays live.
+
+    A check can START before the green aggregate and COMPLETE with a failure
+    after it. The aggregate could not have seen that result, so it must not be
+    suppressed: the observation stays failed rather than reaching review_ready.
+    The failing row starts at 2026-08-22T00:00:00Z, before the aggregate's
+    2026-08-22T00:02:00Z, but completes at 2026-08-22T00:03:00Z, after it.
+    """
+    late_completing_failure = {
+        "__typename": "CheckRun",
+        "name": "test",
+        "workflowName": "CI",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE",
+        "startedAt": "2026-08-22T00:00:00Z",
+        "completedAt": "2026-08-22T00:03:00Z",
+    }
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                late_completing_failure,
+                _readiness_ctx("SUCCESS"),  # startedAt 2026-08-22T00:02:00Z
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["failed"] == ["CI / test"]
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "checks_failed"
+
+
+def test_failure_completing_before_the_green_aggregate_is_suppressed() -> None:
+    """The mirror: a failure the aggregate saw is superseded.
+
+    A failure that completed before the aggregate published green is one the
+    aggregate reconciled, so it is suppressed and the observation is
+    review_ready. This is the other side of the boundary from
+    ``test_failure_completing_after_the_green_aggregate_is_not_suppressed``. The
+    failing row completes at 2026-08-22T00:01:00Z, before the aggregate's
+    2026-08-22T00:02:00Z.
+    """
+    early_completing_failure = {
+        "__typename": "CheckRun",
+        "name": "test",
+        "workflowName": "CI",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE",
+        "startedAt": "2026-08-22T00:00:00Z",
+        "completedAt": "2026-08-22T00:01:00Z",
+    }
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                early_completing_failure,
+                _readiness_ctx("SUCCESS"),  # startedAt 2026-08-22T00:02:00Z
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.observation.status is MonitorObservationStatus.SUCCESS
+    assert result.observation.reason_code == "review_ready"
+
+
+def test_failure_with_no_completion_time_is_not_suppressed() -> None:
+    """Freshness fails closed: a failure with no completion time cannot be proven seen.
+
+    Without a completion time on the failing row, whether the aggregate saw the
+    result cannot be established, so the failure is not suppressed even under a
+    passing aggregate.
+    """
+    uncompleted_failure = {
+        "__typename": "CheckRun",
+        "name": "test",
+        "workflowName": "CI",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE",
+        "startedAt": "2026-08-22T00:00:00Z",
+        "completedAt": None,
+    }
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                uncompleted_failure,
+                _readiness_ctx("SUCCESS"),
+            ]
+        ),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    assert result.canonical["checks"]["failed"] == ["CI / test"]
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "checks_failed"
+
+
 def _check_run(*, status: str = "COMPLETED", conclusion: str = "SUCCESS") -> dict[str, object]:
     return {
         "__typename": "CheckRun",
