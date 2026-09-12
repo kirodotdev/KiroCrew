@@ -5,7 +5,7 @@
 # Sets up KiroCrew using only public tooling:
 #   1. Node.js (via ensure-node.sh)
 #   2. Optional tools (git-lfs, ffmpeg for voice)
-#   3. Agent backend: claude-agent-acp (npm i -g)
+#   3. Kiro CLI prerequisite check (installed and signed in separately)
 #   4. Build frontend (npm/vite) + backend (pip)
 #   5. PATH config
 #   6. Agent config (kirocrew setup --agent-only)
@@ -19,8 +19,6 @@ else
     _kirocrew_dir="$(pwd)"
 fi
 cd "$_kirocrew_dir" || return 1
-
-ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
 
 echo "👻 KiroCrew Setup"
 echo ""
@@ -151,23 +149,17 @@ if ! _check ffmpeg; then
 fi
 echo ""
 
-# ── 3. Agent backend (claude-agent-acp) ──
+# ── 3. Kiro CLI prerequisite ──
 
-echo "── Step 3: Agent Backend ──"
-if _check claude-agent-acp; then
-    echo "  ✅ claude-agent-acp ($(which claude-agent-acp))"
-elif _check npm; then
-    echo "  → Installing $ACP_NPM_PKG via npm..."
-    if npm install -g "$ACP_NPM_PKG" >/dev/null 2>&1; then
-        echo "  ✅ claude-agent-acp installed"
-    else
-        echo "  ⚠️  npm i -g $ACP_NPM_PKG failed — install it manually before first run"
-    fi
+echo "── Step 3: Kiro CLI Prerequisite ──"
+if _check kiro-cli; then
+    echo "  ✅ kiro-cli ($(which kiro-cli))"
 else
-    echo "  ⚠️  npm not found — install the agent backend later:"
-    echo "       npm i -g $ACP_NPM_PKG"
+    echo "  ⚠️  Kiro CLI is required for the default agent."
+    echo "       Install it separately from https://kiro.dev/cli/"
 fi
-echo "  (kiro-cli is an optional alternative backend: https://kiro.dev/docs/cli/installation)"
+echo "  Sign in separately with: kiro-cli login"
+echo "  This script does not install Kiro CLI or handle sign-in."
 echo ""
 
 # ── 4. Build (npm/vite frontend + pip backend) ──
