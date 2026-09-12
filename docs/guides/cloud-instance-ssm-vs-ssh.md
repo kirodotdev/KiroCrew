@@ -11,6 +11,9 @@ older SSH-over-`ProxyCommand` workaround.
 > inbound port, and no `~/.ssh/config` edits**. Reachability is an IAM decision
 > (grant/revoke `ssm:StartSession`, CloudTrail-audited), not a networking decision
 > gated by a key someone holds.
+>
+> New here? [remote-crew-on-ec2.md](remote-crew-on-ec2.md#deploy-your-first-kiro-crew-on-ec2-step-by-step)
+> is the step-by-step first-launch walkthrough; this page is the transport deep-dive.
 
 ## The two transports
 
