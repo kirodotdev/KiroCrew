@@ -6055,6 +6055,13 @@
       "close": "बंद करें"
     },
     "diffBlock": {
+      "comment_add": "टिप्पणी जोड़ें",
+      "comment_cancel": "रद्द करें",
+      "comment_edit": "टिप्पणी संपादित करें",
+      "comment_keys": "रद्द करने के लिए Esc · सहेजने के लिए {{save}}",
+      "comment_placeholder": "एजेंट के लिए टिप्पणी…",
+      "comment_remove": "टिप्पणी हटाएं",
+      "comment_save": "टिप्पणी सहेजो",
       "copied": "कॉपी हो गया!",
       "copy_patch": "पैच कॉपी करें",
       "generating_diff": "डिफ़ बनाया जा रहा है…",
@@ -8220,6 +8227,12 @@
     "fileMenuContributions": {
       "app_actions": "ऐप कार्रवाइयाँ",
       "contributed_by": "ऐप: {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "पुरानी",
+      "pending_label_one": "{{count}} समीक्षा टिप्पणी तुम्हारे अगले टाइप किए गए संदेश के साथ भेजी जाएगी",
+      "pending_label_other": "{{count}} समीक्षा टिप्पणियां तुम्हारे अगले टाइप किए गए संदेश के साथ भेजी जाएंगी",
+      "remove": "टिप्पणी हटाएं"
     },
     "featurePreviewIntro": {
       "learn_more": "देखो यह कैसा दिखता है",

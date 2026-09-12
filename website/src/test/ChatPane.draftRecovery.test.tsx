@@ -165,7 +165,7 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     const box = await composer()
     fireEvent.change(box, { target: { value: 'park me if you must' } })
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
-    await waitFor(() => expect(queuedSendStash.get('q-demoted')).toEqual({ raw: 'park me if you must', files: [], sent: 'park me if you must' }))
+    await waitFor(() => expect(queuedSendStash.get('q-demoted')).toEqual({ raw: 'park me if you must', files: [], sent: 'park me if you must', typed: 'park me if you must' }))
     await waitFor(() => expect(selectSlotMessages(store.getState() as RootState, 'member-demoted').some(m => m.role === 'user' && m.meta?.steer)).toBe(false))
     queuedSendStash.delete('q-demoted')
   })
@@ -210,7 +210,7 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     expect(lastSendTurnOpts!.message).toBe('read this\n[attached_file 1] /tmp/uploads/report.pdf')
     expect((lastSendTurnOpts!.meta as { files?: string[] }).files).toEqual(['/tmp/uploads/report.pdf'])
     // The queue card's cancel restores the typed text and re-stages the chip.
-    await waitFor(() => expect(queuedSendStash.get('q-inlined')).toEqual({ raw: 'read this', files: ['/tmp/uploads/report.pdf'], sent: 'read this\n[attached_file 1] /tmp/uploads/report.pdf' }))
+    await waitFor(() => expect(queuedSendStash.get('q-inlined')).toEqual({ raw: 'read this', files: ['/tmp/uploads/report.pdf'], sent: 'read this\n[attached_file 1] /tmp/uploads/report.pdf', typed: 'read this\n[attached_file 1] /tmp/uploads/report.pdf' }))
     queuedSendStash.delete('q-inlined')
   })
 

@@ -42,3 +42,42 @@ export function useSlotId(): string | null {
 export function useIsPaneScoped(): boolean {
   return useContext(SlotContext) !== undefined
 }
+
+/**
+ * Slot id from context ONLY, with no Redux fallback. For leaf renderers that
+ * must stay mountable outside the app shell (DiffBlock renders in bare unit
+ * tests and could be embedded elsewhere): with a provider they get the slot,
+ * without one they get null and degrade gracefully. ChatPage provides the
+ * slot at its root, deriving the value through useSlotId so an enclosing
+ * pane's provider is respected rather than shadowed.
+ */
+export function useContextSlotId(): string | null {
+  return useContext(SlotContext) ?? null
+}
+
+/**
+ * Marks a subtree whose COMPOSER drains inline review-comment drafts (renders
+ * the pending bar and attaches drafts to the next send). DiffBlock offers the
+ * drafting gutter only inside such a subtree: a surface with its own send
+ * path that does not drain (ChatPane's split-view panes, SideChat) would
+ * otherwise let drafts accumulate invisibly and never send. Default false, so
+ * a new chat-like surface has to opt in by wiring the drain first.
+ */
+const ReviewSurfaceContext = createContext<boolean>(false)
+
+/** Marks a subtree as a review surface (`value` defaults to true). A host
+ * whose composer DRAINS review drafts provides `true` at its root, then
+ * re-provides `value={false}` around any nested chat surface whose composer
+ * does NOT drain — split-view panes, the side chat — because a plain boolean
+ * context can only be overridden, never scoped, and those hosts mount inside
+ * the draining page's tree. One owner for "is this a review surface": every
+ * gutter, chip, bar and send-enablement decision reads this context and
+ * nothing else. */
+export function ReviewSurfaceProvider({ children, value = true }: { children: ReactNode; value?: boolean }) {
+  return <ReviewSurfaceContext.Provider value={value}>{children}</ReviewSurfaceContext.Provider>
+}
+
+/** True when the nearest chat surface drains review-comment drafts. */
+export function useReviewSurface(): boolean {
+  return useContext(ReviewSurfaceContext)
+}

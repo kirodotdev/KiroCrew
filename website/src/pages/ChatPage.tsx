@@ -261,6 +261,10 @@ import InboundLinkChip from '../components/InboundLinkChip'
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
 
 import ChatInput from '../components/ChatInput'
+import ReviewCommentBar from '../components/ReviewCommentBar'
+import { SlotProvider, ReviewSurfaceProvider, useSlotId } from '../providers/SlotContext'
+import { peekReviewComments, clearReviewComments, restoreReviewComments } from '../store/reviewComments'
+import { formatReviewComments } from '../store/reviewComments.prompt'
 import SessionControlHost from '../components/SessionControlHost'
 import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
 import type { ChatFolder } from '../types'
@@ -535,6 +539,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Reveal eligible completed replies while recovery is offered, including an
   // older reply the user chose to read aloud. Slot identity prevents bleed-over.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
+  // The slot this page serves: an enclosing pane's provider wins, the global
+  // focused slot otherwise. Re-provided at the root so context-only leaf
+  // consumers (DiffBlock's review-comment gutter) see it without Redux.
+  // Mirrored into a ref for the send path, which reads slots through refs.
+  const pageSlot = useSlotId()
+  const pageSlotRef = useRef(pageSlot); pageSlotRef.current = pageSlot
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
   // fold into a collapsible pane — collapsing hides the app, and re-expanding
@@ -2212,7 +2222,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // widget action pre-filled. Cleared on every send so it can't go stale.
     const widgetOrigin = !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     widgetPrefillRef.current = null
-    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length) return false
+    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length && peekReviewComments(pageSlotRef.current ?? '').length === 0) return false
 
     // Sending while STREAMING dictation is live ends the dictation (see
     // `useComposerVoice.disarmForSend` for the full rationale — streaming only,
@@ -2303,6 +2313,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // server answers `queued`, this send's pre-serialization composer state
     // is stashed so a cancel can restore it losslessly (see queuedSendStash).
     const stagedFilesAtSend = [...new Set(pendingFilesRef.current)]
+    // Inline review comments drafted on diff blocks ride along with the next
+    // normal send and clear with it, mirroring the composer-draft lifecycle.
+    // Option sends (follow-up chips) deliberately skip them: they carry text
+    // the user aimed at something else. Steer sends never reach here.
+    // Keyed to the PAGE slot — the same slot DiffBlock's context-only gutter
+    // drafts under — so the drain and the affordance can never disagree in a
+    // pane. Snapshotted (not just cleared) so the failed-send restore and the
+    // queued-send cancel can put the drafts back: clearing alone would make a
+    // transport failure silently destroy them.
+    const reviewSlot = optionText ? null : pageSlotRef.current
+    const sentReviewComments = reviewSlot ? peekReviewComments(reviewSlot) : []
+    if (reviewSlot && sentReviewComments.length) clearReviewComments(reviewSlot)
     const { txt: typedTxt, displayTxt: typedDisplayTxt, filePaths } = prepareSendPayload(raw, pendingFilesRef.current)
     // Folder references serialize like files but from the text alone: each
     // `@rel/` token becomes `[attached_dir N] /abs/path` in the LLM-facing
@@ -2329,7 +2351,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // exactly what was sent. Appending (never splicing) also means paste-token
     // ranges found earlier in the string are untouched.
     const txt = appendSessionRefLinks(typedTxtDirs, sentSessionRefs)
-    const displayTxt = appendSessionRefLinks(typedDisplayTxt, sentSessionRefs)
+    let displayTxt = appendSessionRefLinks(typedDisplayTxt, sentSessionRefs)
     // Expand paste tokens for the LLM; UI-facing displayTxt keeps the tokens
     // intact so the user bubble can render them as clickable chips.
     const activePastes = pasteBlocksRef.current
@@ -2341,6 +2363,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       llmTxt = expandKnowledgeBlock(knowledgeBlock) + '\n' + llmTxt
     }
     knowledgeFetchRef.current.clearPending()
+    // Inline review comments ride the send as a PREPENDED literal block —
+    // added after every serializer has run (file/dir tokens, session refs,
+    // paste expansion, knowledge), because the block quotes code verbatim and
+    // an `@docs/`-shaped string inside it must reach the agent as authored,
+    // not as an attachment marker. Identical block on both texts: what the
+    // user sees in the bubble is exactly what was sent.
+    const reviewBlock = reviewSlot && sentReviewComments.length ? formatReviewComments(sentReviewComments) : ''
+    if (reviewBlock) {
+      llmTxt = reviewBlock + (llmTxt ? '\n\n' + llmTxt : '')
+      displayTxt = reviewBlock + (displayTxt ? '\n\n' + displayTxt : '')
+    }
     const bubblePastes = pruneBlocksUtil(displayTxt, activePastes)
     if (bubblePastes.length) saveStoredPaste(llmTxt, displayTxt, bubblePastes, filePaths)
 
@@ -2588,6 +2621,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
      * rule so a reference staged while the send was in flight is not clobbered.
      */
     const restoreComposerAfterFailedSend = () => {
+      // Review drafts go back first: their slot is the page slot captured at
+      // drain time, independent of the composer-ownership question below.
+      // Merge semantics live in the store (a draft re-made in flight wins).
+      if (reviewSlot && sentReviewComments.length) restoreReviewComments(reviewSlot, sentReviewComments)
       if (!slot) return
       // Ownership of the live composer state, not the active tab: see the
       // steer receipt's `onScreenNow` for the mid-switch window this closes.
@@ -2670,36 +2707,37 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // Keep the pending-send verdict while WS delivery settles.
     if (receipt.status === 'response-late') return true
-    if (body.queued && llmTxt === typedTxtDirs) {
-      // The server queued this send and its receipt names the entry:
-      // `queue_id` is the same id `queue_push` broadcasts and the card's
-      // cancel button carries, so the pre-send composer state binds to
-      // exactly this card — content plays no part in the key, which is what
-      // makes duplicate texts, serialization-colliding captions, and other
-      // tabs' cards structurally unable to consume someone else's record.
-      // A receipt without `queue_id` (an older gateway, a requeued steer)
-      // simply doesn't stash — the parser fallback covers those cards.
-      //
-      // Eligibility is DERIVED, not enumerated: stash only when the POSTed
-      // text is exactly what {raw, staged files} alone explain
-      // (`typedTxtDirs` — prepareSendPayload + dir-token serialization).
-      // Expanded paste blocks, appended session-ref links, a prepended
-      // knowledge block, and ANY FUTURE feature that diverges `llmTxt`
-      // from the composer state all fail this equality and fall to the
-      // parser — a stash hit for such a send would restore `raw` WITHOUT
-      // the context the user staged, silently dropping it, so the failure
-      // mode of forgetting is a conservative fallback, not silent loss.
-      //
-      // No size bound on purpose: an entry is deleted on the cancel that
-      // consumes it, and evicting a live entry would degrade that queued
-      // card's cancel to the parser fallback — for a spaced attachment path
-      // that is exactly the marker-in-composer data loss this PR exists to
-      // fix. Entries orphaned by normal delivery are three small strings
-      // and are bounded by how many sends a single tab queues in one
-      // session.
-      if (typeof body.queue_id === 'string' && body.queue_id) {
-        queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: llmTxt })
-      }
+    // Stash UNCONDITIONALLY for any queued receipt that names its entry: the
+    // record IS the pre-send composer state — raw text, staged files, drained
+    // review drafts — and `queue_id` binds it to exactly this card, so a
+    // restore can never hand back someone else's state (duplicate texts,
+    // serialization-colliding captions, and other tabs' cards are keyed
+    // apart by construction). The cancel side's `sent === msg.content` guard
+    // (useQueuedMessageActions) already rejects the one same-id hazard — a
+    // card edited after send — so no wire-text eligibility gate is needed
+    // here. Earlier revisions derived eligibility from `llmTxt` equality
+    // against what the composer alone explains; every rich-content feature
+    // (review drafts, pastes, knowledge blocks) then needed the equality
+    // widened or its cancel silently degraded to the flattening parser —
+    // the record-holds-composer-state invariant replaces that whole class.
+    //
+    // A receipt without `queue_id` (an older gateway, a requeued steer)
+    // simply doesn't stash — the parser fallback covers those cards.
+    //
+    // No size bound on purpose: an entry is deleted on the cancel that
+    // consumes it, and evicting a live entry would degrade that queued
+    // card's cancel to the parser fallback — for a spaced attachment path
+    // that is exactly the marker-in-composer data loss this PR exists to
+    // fix. Entries orphaned by normal delivery are a few small strings
+    // bounded by how many sends a single tab queues in one session.
+    if (body.queued && typeof body.queue_id === 'string' && body.queue_id) {
+      queuedSendStash.set(body.queue_id, {
+        raw,
+        files: stagedFilesAtSend,
+        sent: llmTxt,
+        typed: typedTxtDirs,
+        ...(reviewSlot && sentReviewComments.length ? { reviews: sentReviewComments, reviewSlot } : {}),
+      })
     }
     if (receipt.status === 'refused') {
       // FRAMED like the steer's refusal (and ChatEmbed's): a raw backend reason
@@ -6128,6 +6166,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   return (
+    <SlotProvider slotId={pageSlot}>
+    {/* ChatPage's composer renders the pending bar and drains drafts on send,
+        so it marks the review surface; ChatPane's panes deliberately do not. */}
+    <ReviewSurfaceProvider>
     <RowDisclosureProvider resetKey={activeSlot}>
     <TagPopoverProvider>
     {/* Self-hosted Jira allowlist for every markdown anchor in the page --
@@ -6446,18 +6488,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           </div>
         )}
         {splitMode && splitFeatureEnabled ? (
-          <SessionGridView
-            seedSlot={splitAnchor ?? activeSlot}
-            openSideChat={connected ? openSideChatForPane : undefined}
-            onClose={() => setSplitMode(false)}
-            onCollapse={(slot, anchorTs, anchorMid) => {
-              dispatch(switchSlot(slot))
-              setSplitMode(false)
-              // switchSlot.pending sets activeSlot synchronously, so the pending-jump
-              // effect pages back to the anchor instead of landing on the newest turn.
-              if (anchorTs) setPendingPinnedJump({ slotKey: slot, messageTs: anchorTs, mid: anchorMid, origin: 'earlier' })
-            }}
-          />
+          /* Split panes run their own ChatInput/doSend and never drain review
+             drafts: re-provide false so pane diffs render no drafting gutter
+             and pane composers never count drafts as sendable. */
+          <ReviewSurfaceProvider value={false}>
+            <SessionGridView
+              seedSlot={splitAnchor ?? activeSlot}
+              openSideChat={connected ? openSideChatForPane : undefined}
+              onClose={() => setSplitMode(false)}
+              onCollapse={(slot, anchorTs, anchorMid) => {
+                dispatch(switchSlot(slot))
+                setSplitMode(false)
+                // switchSlot.pending sets activeSlot synchronously, so the pending-jump
+                // effect pages back to the anchor instead of landing on the newest turn.
+                if (anchorTs) setPendingPinnedJump({ slotKey: slot, messageTs: anchorTs, mid: anchorMid, origin: 'earlier' })
+              }}
+            />
+          </ReviewSurfaceProvider>
         ) : !activeSlot ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8">
             <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.chatPage.what_can_i_do_for_you')} subtitle={i18nT('pages.chatPage.start_a_new_chat_to_begin')} />
@@ -7069,6 +7116,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <ChatInput
               aboveComposer={
                 <>
+                  <ReviewCommentBar slotId={pageSlot} />
                   {/* Session-control failures surface HERE, beside the chips they
                       are about, rather than on the chat. Both hooks fail closed —
                       a failed `/api/apps` renders no chips, a failed status probe
@@ -7570,6 +7618,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   : { x: sideOverlayX })
               : (isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined)}
           >
+            {/* The side chat inside this panel has its own composer that never
+                drains review drafts: re-provide false (same reasoning as the
+                split grid). */}
+            <ReviewSurfaceProvider value={false}>
             <SidePanel
               tabsCtl={tabsCtl}
               slot={activeSlot || ''}
@@ -7588,6 +7640,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               fillWidth={panelFillWidth}
               canDockBottom={false}
             />
+            </ReviewSurfaceProvider>
           </motion.div>
         )}
       </AnimatePresence>
@@ -7610,6 +7663,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
               style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
             >
+              {/* Same false override as the docked mount above: this portaled
+                  side chat never drains review drafts. */}
+              <ReviewSurfaceProvider value={false}>
               <SidePanel
                 tabsCtl={tabsCtl}
                 slot={activeSlot || ''}
@@ -7627,6 +7683,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}
               />
+              </ReviewSurfaceProvider>
             </motion.div>
           )}
         </AnimatePresence>,
@@ -7636,5 +7693,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </JiraHostsCtx.Provider>
     </TagPopoverProvider>
     </RowDisclosureProvider>
+    </ReviewSurfaceProvider>
+    </SlotProvider>
   )
 }

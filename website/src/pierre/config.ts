@@ -10,12 +10,18 @@
  * Type-only imports keep this module out of the heavy lazy chunk: the actual
  * `@pierre/diffs` runtime is only reachable through `./PierreImpl`.
  */
-import type { BaseCodeOptions, BaseDiffOptions, HunkSeparators, ThemesType, ThemeTypes } from '@pierre/diffs'
+import type { BaseCodeOptions, BaseDiffOptions, HunkSeparators, InteractionManagerBaseOptions, ThemesType, ThemeTypes } from '@pierre/diffs'
 
 /** Diff options as our surfaces use them: the deprecated `custom` hunk
  *  separator (a function renderer) is excluded so the shape stays assignable
- *  to Pierre's component-level `FileDiffOptions`. */
-export type PierreDiffOptions = Omit<BaseDiffOptions, 'hunkSeparators'> & {
+ *  to Pierre's component-level `FileDiffOptions`.
+ *
+ *  The interaction subset is included because chat diff blocks drive Pierre's
+ *  gutter utility (the hover "+" button) for inline review comments — those
+ *  callbacks live on the options object, not on the React component props
+ *  (`FileDiffOptions extends InteractionManagerBaseOptions<'diff'>`). */
+export type PierreDiffOptions = Omit<BaseDiffOptions, 'hunkSeparators'> &
+  Pick<InteractionManagerBaseOptions<'diff'>, 'enableGutterUtility' | 'onGutterUtilityClick' | 'lineHoverHighlight'> & {
   hunkSeparators?: Exclude<HunkSeparators, 'custom'>
 }
 

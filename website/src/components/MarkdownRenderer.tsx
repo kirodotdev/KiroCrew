@@ -3917,7 +3917,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
         : undefined
       const node = collapseDiffs
         ? <FoldableDiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} streaming={!!smooth && !block.complete} foldKey={foldKey} />
-        : <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} streaming={!!smooth && !block.complete} />
+        : <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} streaming={!!smooth && !block.complete} reviewAnchor={foldKey} />
       // Smooth mode: wrap so the block height eases as lines arrive. The wrapper
       // is mounted for the whole message lifecycle (smooth is constant) so the
       // child never remounts when streaming flips to complete.

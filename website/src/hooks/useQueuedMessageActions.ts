@@ -3,7 +3,21 @@ import { api } from '../api/client'
 import { useAppDispatch } from '../store'
 import { cancelQueuedMessage, editQueuedMessage } from '../store/chatSlice'
 import { restoreQueuedContent } from '../utils/fileTokens'
+import { restoreReviewComments, type ReviewCommentDraft } from '../store/reviewComments'
+import { formatReviewComments } from '../store/reviewComments.prompt'
 import type { ChatMessage } from '../types'
+
+/** Remove the record's own review block from its wire text. Exact-prefix
+ *  only: the block is prepended deterministically at send time (see the
+ *  host's send path), so anything other than a byte-exact leading match
+ *  means the text is not the shape this record serialized — return the
+ *  input unchanged and let the caller's equality decide the parser path. */
+function stripReviewBlock(sent: string, block: string): string {
+  if (!block) return sent
+  if (sent === block) return ''
+  const prefixed = block + '\n\n'
+  return sent.startsWith(prefixed) ? sent.slice(prefixed.length) : sent
+}
 
 /** Pre-serialization composer state of a send the server QUEUED, written by the
  *  host's send path when the `queued: true` receipt names the entry. */
@@ -16,6 +30,17 @@ export interface QueuedSendRecord {
    *  send keeps its queue id but fails this equality, so an edited card falls
    *  to the parser instead of clobbering the edit with pre-edit state. */
   sent: string
+  /** What {raw, files} alone serialize to (`prepareSendPayload` + dir-token
+   *  form, before rich extras are appended). The cancel side compares the
+   *  review-stripped wire text against this to decide between the verbatim
+   *  composer restore and the parser path that preserves appended extras
+   *  (paste blocks, session refs, knowledge) as text. */
+  typed: string
+  /** Inline review-comment drafts drained into this send, and the slot they
+   *  were drained from — restored on cancel so cancelling a queued send never
+   *  destroys them. Absent when the send carried none. */
+  reviews?: ReviewCommentDraft[]
+  reviewSlot?: string
 }
 
 /** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
@@ -188,15 +213,30 @@ export function useQueuedMessageActions({
       // hit is this card's own pre-send state by construction, whatever its
       // content collides with (duplicate texts, erased-image-token captions,
       // other tabs). The record is consumed either way; `sent` guards the one
-      // same-id hazard (see QueuedSendRecord). No stash hit — a reload,
-      // another tab's card, an edited entry — falls to the strict parser,
-      // which claims only byte-exact round-trippable shapes and is never
-      // worse than the verbatim restore this replaced.
+      // same-id hazard (see QueuedSendRecord) — an entry edited after send
+      // fails it and falls to the strict parser on the card's live content.
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
-      const { text, files } = stashed && stashed.sent === msg.content
-        ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(msg.content)
+      const hit = stashed && stashed.sent === msg.content ? stashed : undefined
+      // Review drafts come back as CHIPS whenever the record is this card's
+      // own (the `sent` guard above) — never re-serialized into text, whatever
+      // shape the rest of the send had. Recency merge lives in the store, so
+      // out-of-order cancellations cannot resurrect older wording.
+      if (hit?.reviews?.length && hit.reviewSlot) {
+        restoreReviewComments(hit.reviewSlot, hit.reviews)
+      }
+      // Text + files: the review block is the record's to strip — its drafts
+      // just went back as chips — and what remains decides the path. When it
+      // is exactly what {raw, files} serialize to, the composer state comes
+      // back verbatim; when rich extras were appended (paste blocks, session
+      // refs, knowledge), the parser keeps them as text, preserving staged
+      // context the pre-append `raw` does not carry.
+      const sentSansReviews = hit
+        ? stripReviewBlock(hit.sent, hit.reviews?.length ? formatReviewComments(hit.reviews) : '')
+        : msg.content
+      const { text, files } = hit && sentSansReviews === hit.typed
+        ? { text: hit.raw, files: hit.files }
+        : restoreQueuedContent(hit ? sentSansReviews : msg.content)
       restoreDraftRef.current?.(text, files)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.

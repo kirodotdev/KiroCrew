@@ -33,6 +33,8 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { prepareSendPayload } from '../utils/fileTokens'
 import { appendSessionRefLinks } from '../utils/sessionRefs'
+import { addReviewComment, peekReviewComments, clearReviewComments } from '../store/reviewComments'
+import { formatReviewComments } from '../store/reviewComments.prompt'
 import { ThemeProvider } from '../hooks/useTheme'
 import { i18nT } from '../i18n/t'
 import { store as appStore } from '../store'
@@ -598,7 +600,7 @@ describe('ChatPage — queued message actions', () => {
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
   })
 
-  it('a queued send carrying a session ref skips the stash so cancel keeps the link text', async () => {
+  it('a queued send carrying a session ref restores the link text on cancel', async () => {
     // `raw` predates the appended ref link, so a stash hit would restore the
     // typed text WITHOUT the context the user staged. Ref-carrying sends must
     // fall through to the parser, which keeps the link line verbatim — same
@@ -621,6 +623,82 @@ describe('ChatPage — queued message actions', () => {
     act(() => { queueProps!.onCancel('q1') })
     await waitFor(() => expect(inputProps!.value).toContain('continue from there'))
     expect(inputProps!.value).toContain('[My other session](')
+  })
+
+  it('a queued review-bearing send stashes, and cancel restores the drafts to the bar — never as composer text', async () => {
+    // The review block is prepended deterministically, so a review-bearing
+    // send stays STASH-ELIGIBLE (the eligibility equality accounts for it):
+    // cancel puts the typed text back in the composer and the drafts back in
+    // the store, instead of flattening the serialized block into the
+    // composer via the parser fallback. Send-variant branch table for
+    // drafts: typed send drains them (this test); option-chip and steer
+    // sends never read the store (reviewSlot is null / steer path); a failed
+    // send restores via restoreComposerAfterFailedSend; a queued send + a
+    // cancel restores via this stash record.
+    const draft = { blockId: 'db-test', file: 'src/a.ts', side: 'new' as const, line: 3, lineText: 'const x = 1', text: 'why not const y?' }
+    clearReviewComments('chat-1')
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    apiSpy('sendChat').mockResolvedValue({ ok: true, json: async () => ({ queued: true, queue_id: 'q1' }) })
+    act(() => { addReviewComment('chat-1', draft) })
+    const drainedDrafts = peekReviewComments('chat-1')
+    act(() => { inputProps!.onChange('also check naming') })
+    await waitFor(() => expect(inputProps!.value).toBe('also check naming'))
+    await act(async () => { inputProps!.onSend() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalled())
+    // Drained at send: the bar empties and the wire text carries the block.
+    expect(peekReviewComments('chat-1')).toHaveLength(0)
+    const serialized = formatReviewComments(drainedDrafts) + '\n\n' + 'also check naming'
+    act(() => {
+      store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: serialized, ts: 'q-ts', queueId: 'q1' } })
+    })
+    await waitFor(() => expect(queueProps?.messages?.length).toBe(1))
+    act(() => { queueProps!.onCancel('q1') })
+    // Composer gets the TYPED text only; the drafts return to the store.
+    await waitFor(() => expect(inputProps!.value).toBe('also check naming'))
+    expect(inputProps!.value).not.toContain('Review comments')
+    const restored = peekReviewComments('chat-1')
+    expect(restored).toHaveLength(1)
+    expect(restored[0].text).toBe('why not const y?')
+    expect(restored[0].file).toBe('src/a.ts')
+    clearReviewComments('chat-1')
+  })
+
+  it('a queued send carrying drafts AND a session ref restores chips and keeps the link text', async () => {
+    // The rich-mix case the wire-text eligibility gate used to starve: with
+    // reviews riding the record unconditionally, cancel restores them as
+    // CHIPS while the appended ref link — which `raw` predates — survives via
+    // the parser on the review-stripped remainder. Neither flattened drafts
+    // nor a dropped ref.
+    const draft = { blockId: 'db-mix', file: 'src/b.ts', side: 'new' as const, line: 1, lineText: 'let z', text: 'rename z' }
+    const ref = { key: 'log-mix', title: 'Mixed session' }
+    clearReviewComments('chat-1')
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    await waitFor(() => expect(sidebarProps).not.toBeNull())
+    apiSpy('sendChat').mockResolvedValue({ ok: true, json: async () => ({ queued: true, queue_id: 'qmix' }) })
+    act(() => { addReviewComment('chat-1', draft) })
+    const drainedDrafts = peekReviewComments('chat-1')
+    act(() => { sidebarProps!.onDropSessionRef!(ref) })
+    act(() => { inputProps!.onChange('and follow up') })
+    await waitFor(() => expect(inputProps!.value).toBe('and follow up'))
+    await act(async () => { inputProps!.onSend() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalled())
+    expect(peekReviewComments('chat-1')).toHaveLength(0)
+    const serialized = formatReviewComments(drainedDrafts) + '\n\n' + appendSessionRefLinks('and follow up', [ref])
+    act(() => {
+      store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: serialized, ts: 'q-ts', queueId: 'qmix' } })
+    })
+    await waitFor(() => expect(queueProps?.messages?.length).toBe(1))
+    act(() => { queueProps!.onCancel('qmix') })
+    await waitFor(() => expect(inputProps!.value).toContain('and follow up'))
+    // The ref link survives as text; the review block does NOT flatten in.
+    expect(inputProps!.value).toContain('[Mixed session](')
+    expect(inputProps!.value).not.toContain('Review comments')
+    const back = peekReviewComments('chat-1')
+    expect(back).toHaveLength(1)
+    expect(back[0].text).toBe('rename z')
+    clearReviewComments('chat-1')
   })
 
   it('a stash entry survives any number of later queued sends (no eviction)', async () => {

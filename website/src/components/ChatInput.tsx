@@ -15,7 +15,8 @@ import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
 import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone, setAgentSwitchNotice, switchSlot } from '../store/chatSlice'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
-import { useSlotId } from '../providers/SlotContext'
+import { useSlotId, useReviewSurface } from '../providers/SlotContext'
+import { useReviewComments } from '../store/reviewComments'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
@@ -992,6 +993,16 @@ function ChatInput({
   const disabled = disabledProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  // Pending inline review comments count as sendable content: they enable the
+  // send button like staged files, so a comments-only send needs no
+  // placeholder prompt. ONLY on a review surface — a composer whose send path
+  // never drains drafts (split panes, side chat) must not arm its button from
+  // drafts it cannot deliver (that is a dead send button). And EXCEPT while
+  // steer is the active busy-send mode: steer() reads only the composer text
+  // and silently no-ops on empty, so drafts alone would render a dead button.
+  // Drafts wait for the turn to end, as the pending bar says.
+  const reviewSurface = useReviewSurface()
+  const pendingReviewComments = useReviewComments(reviewSurface ? slotId : null)
   const pendingApprovalRaw = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
   // Suppressed at the READ so every consumer (bar, ghost, pill, rounded-corner
   // class) follows one judgment instead of each render site re-deciding.
@@ -4473,7 +4484,7 @@ function ChatInput({
               // unreachable before session refs existed, since an empty composer
               // mid-turn rendered the stop button instead. A bare ref therefore
               // waits for the turn to end and rides the idle send button.
-              composerHasDraft ? (
+              composerHasDraft || (pendingReviewComments.length > 0 && !steerActive) ? (
                 canSteer && onSteer ? (
                   steerOnly ? (
                     // No queue concept on this surface: the busy send is the
@@ -4574,7 +4585,7 @@ function ChatInput({
                 WCAG 2.5.3 (Label in Name). `title` carries the longer
                 explanation for hover.
               */}
-              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs ? (
+              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs && !pendingReviewComments.length ? (
                 <button
                   className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
@@ -4590,7 +4601,7 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !pendingReviewComments.length) || disabled || optimizing || !connected}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >

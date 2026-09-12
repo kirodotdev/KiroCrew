@@ -4373,6 +4373,13 @@
       "close": "Close"
     },
     "diffBlock": {
+      "comment_add": "Add comment",
+      "comment_cancel": "Cancel",
+      "comment_edit": "Edit comment",
+      "comment_keys": "Esc to cancel · {{save}} to save",
+      "comment_placeholder": "Comment for the agent…",
+      "comment_remove": "Remove comment",
+      "comment_save": "Save comment",
       "generating_diff": "generating diff…",
       "open": "Open"
     },
@@ -4938,6 +4945,12 @@
       "run": "Run",
       "run_anyway": "Run anyway",
       "title": "Run in terminal"
+    },
+    "reviewCommentBar": {
+      "old_side": "old",
+      "pending_label_one": "{{count}} review comment will be sent with your next typed message",
+      "pending_label_other": "{{count}} review comments will be sent with your next typed message",
+      "remove": "Remove comment"
     },
     "searchBar": {
       "case_sensitive": "Case sensitive",

@@ -816,7 +816,7 @@ export default function ChatPane({
       // wire text can never reach here (sendTurn classifies it `refused`),
       // and the guard requires the receipt's `queue_id`.
       if (receipt.status === 'queued' && typeof receipt.body.queue_id === 'string' && receipt.body.queue_id && !optionText) {
-        queuedSendStash.set(receipt.body.queue_id, { raw: text, files, sent: llm })
+        queuedSendStash.set(receipt.body.queue_id, { raw: text, files, sent: llm, typed: llm })
       }
       // The response is the delivery receipt for this pane's optimistic bubble
       // independently of when its correlated user echo arrives. Only
@@ -931,7 +931,7 @@ export default function ChatPane({
       //   markers, so cancelling it must restore the typed text and re-stage
       //   the files, not hand back `[attached_file N]` with the chip gone.
       if (receipt.status === 'queued' && typeof receipt.body.queue_id === 'string' && receipt.body.queue_id) {
-        queuedSendStash.set(receipt.body.queue_id, { raw, files, sent: txt })
+        queuedSendStash.set(receipt.body.queue_id, { raw, files, sent: txt, typed: txt })
       }
       dispatch(resolveOptimisticSteer({ slot: slotKey, sendId, outcome: receipt.status === 'queued' ? 'queued' : 'turn' }))
     })

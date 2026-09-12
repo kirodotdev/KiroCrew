@@ -13,7 +13,7 @@
  * fallback component is a real surface here rather than a loading state.
  */
 import { Suspense, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useRef, useState } from 'react'
-import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
+import type { BaseCodeOptions, DiffLineAnnotation, FileContents, SelectedLineRange } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
 import { PlainCodeFallback, PlainFilePairFallback } from './PlainCodeFallback'
@@ -27,6 +27,45 @@ const FilePairImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.P
 const EditorImpl = lazy(() => import('./PierreEditorImpl').then(m => ({ default: m.PierreEditorImpl })))
 
 export type { EditorMarker, PierreEditorHandle }
+
+/** Identity + services for one file entry of a parsed patch, produced by the
+ *  SAME `parsePatchFiles` call Pierre renders from — the single source of
+ *  truth for file identity on a review surface. There is deliberately no
+ *  second patch parser anywhere in the review path: every earlier identity
+ *  scheme (basename keys, header-pair counting) eventually disagreed with
+ *  Pierre's own file enumeration on some patch shape (renames, binary or
+ *  headerless entries), and two parsers that must agree is the invariant
+ *  that kept breaking.
+ *
+ *  - `path` is the file's full path from the parse (new-side name, else the
+ *    old side for deletions), before any display basenaming.
+ *  - `index` is the file's position in Pierre's enumeration — ephemeral UI
+ *    state (which form is open) may key on it; persisted drafts key on
+ *    `path` + the block anchor.
+ *  - `lineTextAt` resolves a display line number on one side to that line's
+ *    text from the parsed hunks (null when the line is not in the patch). */
+export interface ReviewFileRef {
+  path: string
+  index: number
+  lineTextAt: (side: 'old' | 'new', line: number) => string | null
+}
+
+/** Hooks a patch surface supplies to host inline review comments on diff
+ *  lines. Each callback receives the `ReviewFileRef` of the file entry it
+ *  fires for.
+ *
+ *  - `annotationsFor` returns the lines to decorate (side is Pierre's
+ *    vocabulary: 'deletions' | 'additions').
+ *  - `renderAnnotation` renders the light-DOM widget under one such line —
+ *    a pending-draft chip or the open comment form.
+ *  - `onGutterUtilityClick` fires when the hover gutter "+" button is
+ *    clicked (or a gutter drag-selection completes); the range is the
+ *    selected span on one side of the diff. */
+export interface PatchReviewHooks {
+  annotationsFor: (file: ReviewFileRef) => DiffLineAnnotation<unknown>[] | undefined
+  renderAnnotation: (annotation: DiffLineAnnotation<unknown>, file: ReviewFileRef) => React.ReactNode
+  onGutterUtilityClick: (file: ReviewFileRef, range: SelectedLineRange) => void
+}
 
 /** A one-shot line-reveal request: `nonce` distinguishes repeat clicks on the
  *  same `file.py:447` chip, which would otherwise be `===` and re-fire nothing. */
@@ -218,13 +257,21 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
   return <WarmSwap warmKey={warmKeyOf(file.contents)} fallback={<PlainCodeFallback text={file.contents} />}>{impl}</WarmSwap>
 })
 
-export const PierrePatch = memo(function PierrePatch({ patch, options, className, renderHeaderMetadata }: {
+export const PierrePatch = memo(function PierrePatch({ patch, options, className, renderHeaderMetadata, review, displayBasenames }: {
   patch: string
   options?: PierreDiffOptions
   className?: string
   /** Injected into the FIRST file header's metadata slot (patch-level
    *  controls). Only rendered when the file header is enabled. */
   renderHeaderMetadata?: () => React.ReactNode
+  /** Inline review-comment hooks (see PatchReviewHooks). Plain mode renders
+   *  raw text and deliberately carries no commenting affordance. */
+  review?: PatchReviewHooks
+  /** Render file headers as basenames. Applied POST-parse so full paths stay
+   *  available to the review hooks (`ReviewFileRef.path`) — the pre-parse
+   *  header rewrite this replaces destroyed them before Pierre ever saw the
+   *  patch. Display-only; off keeps the parsed names verbatim. */
+  displayBasenames?: boolean
 }) {
   // Plain-diff preference (Settings → Display): render the raw patch text and
   // never request the Pierre chunk at all. This is the seam for EVERY unified-
@@ -246,7 +293,7 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   return (
     <WarmSwap warmKey={warmKeyOf(patch)} fallback={<PlainCodeFallback text={patch} />}>
       <Suspense fallback={<PlainCodeFallback text={patch} />}>
-        <PatchImpl patch={patch} options={options} className={className} renderHeaderMetadata={renderHeaderMetadata} />
+        <PatchImpl patch={patch} options={options} className={className} renderHeaderMetadata={renderHeaderMetadata} review={review} displayBasenames={displayBasenames} />
       </Suspense>
     </WarmSwap>
   )
@@ -323,4 +370,4 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   )
 })
 
-export type { BaseCodeOptions, PierreDiffOptions, FileContents }
+export type { BaseCodeOptions, PierreDiffOptions, FileContents, DiffLineAnnotation, SelectedLineRange }

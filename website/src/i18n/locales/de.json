@@ -6055,6 +6055,13 @@
       "close": "Schließen"
     },
     "diffBlock": {
+      "comment_add": "Kommentar hinzufügen",
+      "comment_cancel": "Abbrechen",
+      "comment_edit": "Kommentar bearbeiten",
+      "comment_keys": "Esc zum Abbrechen · {{save}} zum Speichern",
+      "comment_placeholder": "Kommentar für den Agenten…",
+      "comment_remove": "Kommentar entfernen",
+      "comment_save": "Kommentar speichern",
       "copied": "Kopiert!",
       "copy_patch": "Patch kopieren",
       "generating_diff": "Diff wird erstellt…",
@@ -8220,6 +8227,12 @@
     "fileMenuContributions": {
       "app_actions": "App-Aktionen",
       "contributed_by": "App: {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "alt",
+      "pending_label_one": "{{count}} Review-Kommentar wird mit deiner nächsten getippten Nachricht gesendet",
+      "pending_label_other": "{{count}} Review-Kommentare werden mit deiner nächsten getippten Nachricht gesendet",
+      "remove": "Kommentar entfernen"
     },
     "featurePreviewIntro": {
       "learn_more": "Ansehen, wie es aussieht",

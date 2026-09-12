@@ -119,7 +119,7 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
       )}
       <div id={regionId}>
         {expanded && (
-          <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} streaming={streaming} onFold={toggle} />
+          <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} streaming={streaming} onFold={toggle} reviewAnchor={foldKey} />
         )}
       </div>
     </div>

@@ -6245,6 +6245,13 @@
       "close": "Закрыть"
     },
     "diffBlock": {
+      "comment_add": "Добавить комментарий",
+      "comment_cancel": "Отмена",
+      "comment_edit": "Изменить комментарий",
+      "comment_keys": "Esc — отмена · {{save}} — сохранить",
+      "comment_placeholder": "Комментарий для агента…",
+      "comment_remove": "Удалить комментарий",
+      "comment_save": "Сохранить комментарий",
       "copied": "Скопировано!",
       "copy_patch": "Копировать патч",
       "generating_diff": "создание diff…",
@@ -8448,6 +8455,14 @@
     "fileMenuContributions": {
       "app_actions": "Действия приложения",
       "contributed_by": "Приложение: {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "старая",
+      "pending_label_few": "{{count}} комментария ревью будут отправлены со следующим набранным сообщением",
+      "pending_label_many": "{{count}} комментариев ревью будут отправлены со следующим набранным сообщением",
+      "pending_label_one": "{{count}} комментарий ревью будет отправлен со следующим набранным сообщением",
+      "pending_label_other": "{{count}} комментария ревью будет отправлено со следующим набранным сообщением",
+      "remove": "Удалить комментарий"
     },
     "featurePreviewIntro": {
       "learn_more": "Посмотреть, как это выглядит",

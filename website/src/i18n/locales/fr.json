@@ -6150,6 +6150,13 @@
       "close": "Fermer"
     },
     "diffBlock": {
+      "comment_add": "Ajouter le commentaire",
+      "comment_cancel": "Annuler",
+      "comment_edit": "Modifier le commentaire",
+      "comment_keys": "Échap pour annuler · {{save}} pour enregistrer",
+      "comment_placeholder": "Commentaire pour l'agent…",
+      "comment_remove": "Supprimer le commentaire",
+      "comment_save": "Enregistrer le commentaire",
       "copied": "Copié !",
       "copy_patch": "Copier le correctif",
       "generating_diff": "génération du diff…",
@@ -8334,6 +8341,13 @@
     "fileMenuContributions": {
       "app_actions": "Actions de l'application",
       "contributed_by": "Application : {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "ancienne",
+      "pending_label_many": "{{count}} commentaires de révision seront envoyés avec votre prochain message saisi",
+      "pending_label_one": "{{count}} commentaire de révision sera envoyé avec votre prochain message saisi",
+      "pending_label_other": "{{count}} commentaires de révision seront envoyés avec votre prochain message saisi",
+      "remove": "Supprimer le commentaire"
     },
     "featurePreviewIntro": {
       "learn_more": "Voir à quoi ça ressemble",

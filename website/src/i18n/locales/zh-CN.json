@@ -5960,6 +5960,13 @@
       "close": "关闭"
     },
     "diffBlock": {
+      "comment_add": "添加评论",
+      "comment_cancel": "取消",
+      "comment_edit": "编辑评论",
+      "comment_keys": "Esc 取消 · {{save}} 保存",
+      "comment_placeholder": "给代理的评论…",
+      "comment_remove": "移除评论",
+      "comment_save": "保存评论",
       "copied": "已复制！",
       "copy_patch": "复制补丁",
       "generating_diff": "正在生成差异…",
@@ -8106,6 +8113,11 @@
     "fileMenuContributions": {
       "app_actions": "应用操作",
       "contributed_by": "应用：{{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "旧",
+      "pending_label_other": "{{count}} 条评审评论将随你输入的下一条消息发送",
+      "remove": "移除评论"
     },
     "featurePreviewIntro": {
       "learn_more": "看看它长什么样",

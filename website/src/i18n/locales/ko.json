@@ -5960,6 +5960,13 @@
       "close": "닫기"
     },
     "diffBlock": {
+      "comment_add": "댓글 추가",
+      "comment_cancel": "취소",
+      "comment_edit": "댓글 편집",
+      "comment_keys": "Esc 취소 · {{save}} 저장",
+      "comment_placeholder": "에이전트에게 보내는 댓글…",
+      "comment_remove": "댓글 삭제",
+      "comment_save": "댓글 저장",
       "copied": "복사했습니다!",
       "copy_patch": "패치 복사",
       "generating_diff": "diff 생성 중…",
@@ -8106,6 +8113,11 @@
     "fileMenuContributions": {
       "app_actions": "앱 작업",
       "contributed_by": "앱: {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "이전",
+      "pending_label_other": "{{count}}개의 리뷰 댓글이 다음에 입력하는 메시지와 함께 전송됩니다",
+      "remove": "댓글 삭제"
     },
     "featurePreviewIntro": {
       "learn_more": "어떻게 보이는지 보기",

@@ -986,7 +986,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           collapsed-group wrapper. */}
       {showCard && diffView?.mode === 'card' && (
         <div className="mt-1.5" role="presentation" onClick={e => e.stopPropagation()}>
-          <DiffBlock code={diffView.code} complete onFileOpen={onFileOpen} onFold={toggleCardFolded} />
+          <DiffBlock code={diffView.code} complete onFileOpen={onFileOpen} onFold={toggleCardFolded} reviewAnchor={toolCallId ? `tc:${slot ?? ''}:${toolCallId}` : undefined} />
         </div>
       )}
 

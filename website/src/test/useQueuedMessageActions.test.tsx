@@ -119,7 +119,7 @@ describe('useQueuedMessageActions — cancel', () => {
     const sent = 'summarize this\n[attached_file 1] /Users/me/Desktop/My Report.pdf'
     const restoreDraft = vi.fn()
     const rows = [queued('q1', sent)]
-    queuedSendStash.set('q1', { raw: 'summarize this', files: [spaced], sent })
+    queuedSendStash.set('q1', { raw: 'summarize this', files: [spaced], sent, typed: sent })
     const { get } = renderActions({ rows, restoreDraft })
     act(() => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced])
@@ -132,7 +132,7 @@ describe('useQueuedMessageActions — cancel', () => {
     // silently discard the edit, so the edited text must win.
     const restoreDraft = vi.fn()
     const rows = [queued('q1', 'actually, deploy instead')]
-    queuedSendStash.set('q1', { raw: 'summarize this', files: ['/tmp/a.pdf'], sent: 'summarize this\n[attached_file 1] /tmp/a.pdf' })
+    queuedSendStash.set('q1', { raw: 'summarize this', files: ['/tmp/a.pdf'], sent: 'summarize this\n[attached_file 1] /tmp/a.pdf', typed: 'summarize this\n[attached_file 1] /tmp/a.pdf' })
     const { get } = renderActions({ rows, restoreDraft })
     act(() => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('actually, deploy instead', [])
