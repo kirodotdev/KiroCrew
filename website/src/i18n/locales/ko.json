@@ -14623,7 +14623,7 @@
       "wakatime_api_key_label": "WakaTime API 키",
       "wakatime_api_key_description": "WakaTime이 활성화된 경우 코딩 활동 동기화를 인증합니다.",
       "custom_title": "사용자 지정 보안 비밀",
-      "custom_description": "사용자 지정 보안 비밀은 MCP 서버와 .env 자격 증명 설정에서 사용할 수 있도록 암호화되어 저장됩니다. MCP 서버의 환경 또는 .env 자격 증명 설정에서 secret://YOUR_KEY로 참조하면 게이트웨이가 시작 시 값을 주입하며, 채팅에는 절대 노출되지 않습니다.",
+      "custom_description": "사용자 지정 보안 비밀은 암호화되어 저장되며 값이 채팅에 표시되지 않는 세 가지 방식으로 사용됩니다. MCP 서버의 환경 또는 .env 자격 증명 설정에서 secret://YOUR_KEY로 참조하여 시작 시 주입하고, 소유자가 secret_request_policy.json에서 보안 비밀을 정확한 https 원본에 대해 승인하면 에이전트가 채팅에서 해당 API를 호출할 때 {{productName}}이(가) 값을 요청에 주입하고 응답만 반환합니다.",
       "custom_empty": "아직 저장된 사용자 지정 보안 비밀이 없습니다. 하나를 추가하면 MCP 서버에서 secret://YOUR_KEY로 참조할 수 있습니다.",
       "managed_config_error": "$KIROCREW_HOME/config.json(기본값: ~/.kiro/crew/config.json)을 읽을 수 없어 일부 자동 자격 증명이 숨겨졌습니다.",
       "managed_name_hint": "여기에 저장하면 자동 자격 증명 섹션의 {{name}} 항목이 업데이트됩니다. — {{productName}}",

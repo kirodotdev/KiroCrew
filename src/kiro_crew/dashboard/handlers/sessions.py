@@ -30,6 +30,7 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 
 # The migration module owns the pre-migration leftover-tab spelling.
 from kiro_crew.channel_transcript_migration import _orphan_target_stem
+from kiro_crew.config.loader import config_dir as config_dir
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
 from kiro_crew.dashboard import directive_queue
@@ -67,6 +68,13 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.secrets_mediation.dispatch import (
+    MediatedRequest,
+    MediationError,
+    perform_mediated_request,
+)
+from kiro_crew.secrets_mediation.policy import PolicyError as _MediationPolicyError
+from kiro_crew.secrets_mediation.ssrf import SsrfError as _MediationSsrfError
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
 
@@ -2955,6 +2963,112 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         resources=f"agent={agent_name}",
     )
     return web.json_response(policy)
+
+
+async def api_mediated_secret_request(request: web.Request) -> web.Response:
+    """POST /api/mediated-secret-request — perform an owner-authorized outbound
+    HTTPS request that carries a Custom secret, WITHOUT the secret ever leaving
+    this host process.
+
+    The in-sandbox ``kirocrew-secrets`` MCP tool cannot read the vault: managed
+    MCP servers share the agent's mount namespace, where ``.vault`` is
+    bind-mount-hidden. So the tool forwards the non-secret request intent here,
+    to the unsandboxed dashboard process, which is the same trust boundary that
+    already resolves ``secret://`` env references. Only here is the vault
+    readable and ``secret_request_policy.json`` protected by the OS sandbox from
+    the agent. The response body returned to the caller is sanitized by
+    :func:`perform_mediated_request` and never contains the secret.
+
+    Authenticated via X-Internal-Secret + X-Session-Key, exactly like
+    ``/api/session-tool-policy``: only a same-host MCP subprocess can reach it.
+    """
+    # Machines only. A credential-bearing egress must never be reachable through
+    # the browser cookie fall-through: require the proven internal-secret
+    # authority (``request["internal_auth"]``) before doing any work, so a
+    # dashboard bearer that slipped past the strict-path routing still cannot
+    # drive a mediated request that skips the MCP approval gate.
+    if request.get("internal_auth") is not True:
+        _sel().log_api_access(
+            caller=request.headers.get("X-Session-Key", "unknown"),
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="not an internal-secret caller",
+        )
+        return web.json_response(
+            {"error": "internal authority required", "code": "internal_auth_required"},
+            status=403,
+        )
+    _, refusal = await internal_memory_scope(
+        request,
+        "api_mediated_secret_request",
+        claimed_session=request.headers.get("X-Session-Key", ""),
+    )
+    if refusal is not None:
+        return refusal
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    if not session_key:
+        _sel().log_api_access(
+            caller="unknown",
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="missing X-Session-Key",
+        )
+        return web.json_response({"error": "X-Session-Key required"}, status=400)
+
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+    if not isinstance(payload, dict):
+        return web.json_response({"error": "invalid request shape"}, status=400)
+
+    secret_name = payload.get("secret_name")
+    if not isinstance(secret_name, str) or not secret_name:
+        return web.json_response({"error": "secret_name is required"}, status=400)
+
+    req = MediatedRequest(
+        secret_name=secret_name,
+        method=str(payload.get("method", "")),
+        url=str(payload.get("url", "")),
+        headers=payload.get("headers") or {},
+        query=payload.get("query") or {},
+        json_body=payload.get("json_body"),
+        timeout_s=float(payload.get("timeout_s") or 20.0),
+    )
+
+    try:
+        # Vault read + SSRF-checked dispatch, OFF the event loop (blocking I/O).
+        result = await asyncio.to_thread(perform_mediated_request, req, config_dir())
+    except (_MediationPolicyError, _MediationSsrfError, MediationError) as exc:
+        # Safe, secret-free message. Fail-closed outcomes are audited, but the
+        # secret NAME only — never the value, which these messages never carry.
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources=f"secret={secret_name}",
+        )
+        return web.json_response({"error": str(exc), "code": "mediation_refused"}, status=400)
+
+    _sel().log_api_access(
+        caller=session_key,
+        operation="mediated_secret_request",
+        outcome="ok",
+        source="dashboard",
+        resources=f"secret={secret_name} status={result.status}",
+    )
+    return web.json_response(
+        {
+            "status": result.status,
+            "headers": result.headers,
+            "body": result.body,
+            "truncated": result.truncated,
+            "final_url_origin": result.final_url_origin,
+        }
+    )
 
 
 async def _reset_all_sessions(request: web.Request) -> int:

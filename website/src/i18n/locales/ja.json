@@ -14623,7 +14623,7 @@
       "wakatime_api_key_label": "WakaTime API キー",
       "wakatime_api_key_description": "WakaTime が有効な場合にコーディングアクティビティの同期を認証します。",
       "custom_title": "カスタムシークレット",
-      "custom_description": "カスタムシークレットは MCP サーバーおよび .env 認証情報設定で使用するために暗号化して保存されます。MCP サーバーの環境または .env 認証情報設定から secret://YOUR_KEY として参照すると、ゲートウェイが起動時に値を挿入します。チャットに公開されることはありません。",
+      "custom_description": "カスタムシークレットは暗号化して保存され、値がチャットに現れることなく 3 つの方法で使用されます。MCP サーバーの環境または .env 認証情報設定から secret://YOUR_KEY として参照して起動時に注入するほか、所有者がシークレットを正確な https オリジンに対して secret_request_policy.json で認可すると、エージェントがその API をチャットから呼び出す際に {{productName}} が値をリクエストに注入し、レスポンスのみを返します。",
       "custom_empty": "カスタムシークレットはまだ保存されていません。追加すると、MCP サーバーから secret://YOUR_KEY として参照できます。",
       "managed_config_error": "$KIROCREW_HOME/config.json（既定: ~/.kiro/crew/config.json）を読み取れなかったため、一部の自動認証情報が非表示です。",
       "managed_name_hint": "ここに保存すると、自動認証情報セクションの {{name}} が更新されます。 — {{productName}}",

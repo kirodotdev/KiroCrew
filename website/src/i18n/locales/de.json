@@ -14814,7 +14814,7 @@
       "wakatime_api_key_label": "WakaTime-API-Schlüssel",
       "wakatime_api_key_description": "Authentifiziert die Synchronisierung der Programmieraktivität, wenn WakaTime aktiviert ist.",
       "custom_title": "Benutzerdefinierte Geheimnisse",
-      "custom_description": "Benutzerdefinierte Geheimnisse werden verschlüsselt zur Verwendung durch MCP-Server und .env-Anmeldedateneinstellungen gespeichert. Referenzieren Sie eines als secret://YOUR_KEY aus der Umgebung eines MCP-Servers oder einer .env-Anmeldedateneinstellung, und das Gateway fügt den Wert beim Start ein — er wird niemals im Chat offengelegt.",
+      "custom_description": "Benutzerdefinierte Geheimnisse werden verschlüsselt gespeichert und auf drei Arten verwendet, ohne dass der Wert jemals im Chat erscheint: referenziert als secret://YOUR_KEY aus der Umgebung eines MCP-Servers oder einer .env-Anmeldedateneinstellung (beim Start eingefügt) und — sobald der Eigentümer ein Geheimnis für einen exakten https-Origin in secret_request_policy.json autorisiert — vom Agenten verwendet, um diese API aus dem Chat aufzurufen, wobei {{productName}} den Wert in die Anfrage einfügt und nur die Antwort zurückgibt.",
       "custom_empty": "Noch keine benutzerdefinierten Geheimnisse gespeichert. Fügen Sie eines hinzu, um es von einem MCP-Server aus als secret://YOUR_KEY zu referenzieren.",
       "managed_config_error": "Einige automatisch verwendeten Anmeldedaten sind ausgeblendet, weil $KIROCREW_HOME/config.json (Standard: ~/.kiro/crew/config.json) nicht gelesen werden konnte.",
       "managed_name_hint": "Beim Speichern hier wird {{name}} im Bereich für automatische Anmeldedaten aktualisiert. — {{productName}}",

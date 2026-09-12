@@ -412,6 +412,12 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
         "/api/session-tool-policy",
+        # The mediated-secret request endpoint. Its only legitimate caller is the
+        # in-sandbox kirocrew-secrets MCP subprocess forwarding a request over
+        # loopback with the gateway IPC secret; no browser ever posts to it, and
+        # keeping it strict means a dashboard cookie cannot reach the handler that
+        # resolves a vault secret and performs a credential-bearing egress.
+        "/api/mediated-secret-request",
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no
         # dashboard cookie and no gateway IPC secret, so a strict-internal entry
@@ -1576,6 +1582,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/session-keepalive", handlers.api_session_keepalive)
     app.router.add_post("/api/session-directive", handlers.api_session_directive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
+    app.router.add_post("/api/mediated-secret-request", handlers.api_mediated_secret_request)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)

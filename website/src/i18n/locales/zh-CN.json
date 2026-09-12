@@ -14623,7 +14623,7 @@
       "wakatime_api_key_label": "WakaTime API 密钥",
       "wakatime_api_key_description": "启用 WakaTime 时用于编码活动同步的身份验证。",
       "custom_title": "自定义密钥",
-      "custom_description": "自定义密钥以加密形式存储，供 MCP 服务器和 .env 凭据设置使用。在 MCP 服务器的环境或 .env 凭据设置中以 secret://YOUR_KEY 引用某个密钥，网关会在启动时注入该值——它绝不会在聊天中暴露。",
+      "custom_description": "自定义密钥以加密形式存储，可通过三种方式使用，且其值绝不会出现在聊天中：在 MCP 服务器的环境或 .env 凭据设置中以 secret://YOUR_KEY 引用（启动时注入）；以及在所有者于 secret_request_policy.json 中将某个密钥授权给某个确切的 https 源之后，由代理在聊天中调用该 API 时使用，此时 {{productName}} 会将该值注入请求并仅返回响应。",
       "custom_empty": "尚未存储任何自定义密钥。添加一个即可从 MCP 服务器以 secret://YOUR_KEY 引用它。",
       "managed_config_error": "无法读取 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json），因此部分自动凭证已隐藏。",
       "managed_name_hint": "在此保存会更新自动凭证部分中的 {{name}}。 — {{productName}}",

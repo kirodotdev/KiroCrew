@@ -160,7 +160,7 @@ describe('SecretsPanel', () => {
     expect(await screen.findByText('MY_API_KEY')).toBeInTheDocument()
     expect(screen.getByText('DB_PASSWORD')).toBeInTheDocument()
     expect(screen.getByText('Custom secrets')).toBeInTheDocument()
-    expect(screen.getByText(/Reference one as secret:\/\/YOUR_KEY from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
+    expect(screen.getByText(/referenced as secret:\/\/YOUR_KEY from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
     // The plaintext is never rendered — only the mask is.
     expect(screen.getAllByText('••••••••')).toHaveLength(2)
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
@@ -677,12 +677,13 @@ describe('SecretsPanel custom secrets card', () => {
     expect(await screen.findByText('Custom secrets')).toBeInTheDocument()
     // The disclaimer names BOTH supported consumers — MCP server env AND .env
     // credential settings — so an owner whose entry came from `secrets import`
-    // is not told it is MCP-only.
-    expect(screen.getByText(/stored encrypted for use by MCP servers and \.env credential settings/)).toBeInTheDocument()
+    // is not told it is MCP-only — AND the mediated chat route (#8628).
+    expect(screen.getByText(/stored encrypted and used three ways/)).toBeInTheDocument()
     expect(screen.getByText(/from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
+    expect(screen.getByText(/the owner authorizes a secret for an exact https origin in secret_request_policy\.json/)).toBeInTheDocument()
     // The token appears in both the disclaimer and the empty-state line.
     expect(screen.getAllByText(/secret:\/\/YOUR_KEY/).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText(/it is never exposed in chat/)).toBeInTheDocument()
+    expect(screen.getByText(/without the value ever appearing in chat/)).toBeInTheDocument()
     // Empty state, not a row.
     expect(screen.getByText(/No custom secrets stored yet/)).toBeInTheDocument()
     expect(screen.queryByText('••••••••')).not.toBeInTheDocument()
@@ -693,7 +694,7 @@ describe('SecretsPanel custom secrets card', () => {
     mount()
     expect(await screen.findByText('WEATHER_API_KEY')).toBeInTheDocument()
     // Disclaimer persists alongside populated rows, and the empty line is gone.
-    expect(screen.getByText(/stored encrypted for use by MCP servers/)).toBeInTheDocument()
+    expect(screen.getByText(/stored encrypted and used three ways/)).toBeInTheDocument()
     expect(screen.queryByText(/No custom secrets stored yet/)).not.toBeInTheDocument()
     // Value is masked, never rendered in plaintext.
     expect(screen.getByText('••••••••')).toBeInTheDocument()

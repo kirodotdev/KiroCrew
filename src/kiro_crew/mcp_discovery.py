@@ -1014,6 +1014,7 @@ _MANAGED_SERVER_SUBCOMMANDS = {
     "kirocrew-computer": "mcp-computer",
     "kirocrew-dashboard": "mcp-dashboard",
     "kirocrew-work": "mcp-work",
+    "kirocrew-secrets": "mcp-secrets",
 }
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
 
@@ -1026,6 +1027,7 @@ _MANAGED_SERVER_TOOL_MODULES = {
     "kirocrew-computer": "kiro_crew.mcp_computer",
     "kirocrew-dashboard": "kiro_crew.mcp_dashboard",
     "kirocrew-work": "kiro_crew.mcp_work",
+    "kirocrew-secrets": "kiro_crew.mcp_secrets",
 }
 
 

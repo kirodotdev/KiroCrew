@@ -6132,7 +6132,7 @@
       "wakatime_api_key_label": "WakaTime API key",
       "wakatime_api_key_description": "Authenticates coding-activity sync when WakaTime is enabled.",
       "custom_title": "Custom secrets",
-      "custom_description": "Custom secrets are stored encrypted for use by MCP servers and .env credential settings. Reference one as secret://YOUR_KEY from an MCP server's environment or a .env credential setting and the gateway injects the value at launch — it is never exposed in chat.",
+      "custom_description": "Custom secrets are stored encrypted and used three ways, without the value ever appearing in chat: referenced as secret://YOUR_KEY from an MCP server's environment or a .env credential setting (injected at launch), and — once the owner authorizes a secret for an exact https origin in secret_request_policy.json — used by the agent to call that API from chat, where {{productName}} injects the value into the request and returns only the response.",
       "custom_empty": "No custom secrets stored yet. Add one to reference it from an MCP server as secret://YOUR_KEY.",
       "managed_config_error": "Some automatic credentials are hidden because $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json) could not be read.",
       "wakatime_unused_hint": "Not used while WakaTime is disabled. Enable WakaTime or delete this entry.",

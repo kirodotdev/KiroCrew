@@ -2384,6 +2384,11 @@ Examples:
     # session that is neither a conductor nor a worker spends nothing on it.
     sub.add_parser("mcp-work")
 
+    # mcp-secrets (MCP server — the trusted mediated-secret request tool).
+    # Always-on like mcp-core: an agent may use an owner-authorized Custom secret
+    # to call its bound API without the value ever reaching the model.
+    sub.add_parser("mcp-secrets")
+
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
     # ``_BUILTIN_NAMES`` is load-bearing for HTTP route registration and lists
@@ -3063,6 +3068,11 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # Same importlib form and the same reason as mcp-dashboard above: a
         # default-off optional subsystem must not be imported to start the gateway.
         importlib.import_module("kiro_crew.mcp_work").run_mcp_server()
+    elif args.command == "mcp-secrets":
+        # Same importlib form as the other optional core servers: the mediation
+        # module imports requests + the vault, which the gateway boot path must
+        # not pull in just to exist.
+        importlib.import_module("kiro_crew.mcp_secrets").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the

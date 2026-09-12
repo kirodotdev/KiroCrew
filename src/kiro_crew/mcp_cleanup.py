@@ -52,6 +52,7 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
     "kirocrew-cron",
     "kirocrew-core",
     "kirocrew-computer",
+    "kirocrew-secrets",
 )
 OPT_IN_BIN_MCP_SERVERS = ("kirocrew-dashboard", "kirocrew-work")
 
@@ -225,10 +226,7 @@ def purge_deleted_proxy_from_config(config: dict) -> list[str]:
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         return []
-    to_remove = [
-        name for name, spec in servers.items()
-        if _invokes_deleted_playwright_proxy(spec)
-    ]
+    to_remove = [name for name, spec in servers.items() if _invokes_deleted_playwright_proxy(spec)]
     for name in to_remove:
         del servers[name]
     if to_remove:

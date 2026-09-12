@@ -260,7 +260,6 @@ src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
 src/kiro_crew/mcp_apps_render.py
 src/kiro_crew/mcp_caller.py
-src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py

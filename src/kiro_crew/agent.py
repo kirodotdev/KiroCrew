@@ -1181,6 +1181,19 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-work"),
         "opt_in": True,
     },
+    # Mediated secret requests: the ONE trusted tool that lets an agent
+    # call an owner-authorized API with a Custom secret without ever seeing the
+    # value. Always-on (no spec_gate / opt_in) so the capability cannot be
+    # toggled away from the trust boundary it enforces.
+    #
+    # DELIBERATELY NO ``autoApprove`` — like kirocrew-computer/-dashboard: an
+    # autoApproved MCP tool is approved inside kiro-cli and never reaches
+    # ``hooks.on_tool_call``, so the governance ceiling and approval gate would
+    # be bypassed for a credential-bearing egress. Injecting a stored secret into
+    # an outbound request is exactly the action that must stay gated.
+    "kirocrew-secrets": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-secrets"),
+    },
 }
 
 
@@ -4764,6 +4777,35 @@ def rebuild_agent_config(
                 outcome="ok",
                 source="install_agent",
                 resources=f"{cu_ref} added to tools (existing config upgrade)",
+            )
+
+    # Same narrow ADD-only migration for the always-on mediated-secret server:
+    # an UPGRADING install gains its ``mcpServers`` entry but never the
+    # ``@kirocrew-secrets`` tools ref (the fresh-install loop above is the only
+    # other place a ref is added), so kiro-cli would expose the server and none
+    # of its tools — the mediated-secret feature silently absent for every
+    # pre-existing user. DELIBERATELY tools-only, never ``allowedTools``: this
+    # server has no autoApprove precisely so ``call_api_with_secret`` reaches
+    # ``hooks.on_tool_call`` (the credential-egress approval gate); adding it to
+    # the blanket auto-approve list would delete that plane. Gated on the shipped
+    # template granting the ref and on the server having resolved, scoped to this
+    # one server so no other managed ref is re-added behind the user's back.
+    if not fresh_install and "kirocrew-secrets" in valid_servers:
+        sec_ref = "@kirocrew-secrets"
+        shipped_tools = get_shipped_tools().get("tools", [])
+        existing_tools = config.get("tools")
+        if (
+            isinstance(existing_tools, list)
+            and sec_ref in shipped_tools
+            and sec_ref not in existing_tools
+        ):
+            existing_tools.append(sec_ref)
+            sel().log_api_access(
+                caller="system",
+                operation="mcp_tools_added",
+                outcome="ok",
+                source="install_agent",
+                resources=f"{sec_ref} added to tools (existing config upgrade)",
             )
 
     # Audit the DECISION, not a config delta. Nothing in the spec changes shape

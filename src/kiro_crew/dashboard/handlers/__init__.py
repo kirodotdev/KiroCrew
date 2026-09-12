@@ -414,6 +414,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     _reset_all_sessions,
     api_approval_resolve,
     api_approvals,
+    api_mediated_secret_request,
     api_session_archive_list,
     api_session_archive_read,
     api_session_delete,
