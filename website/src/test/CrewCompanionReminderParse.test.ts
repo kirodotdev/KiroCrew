@@ -245,3 +245,16 @@ describe('known limitation: "in half an hour" is not recognised', () => {
     expect(p('coffee in half hour').fireAt).toBe(inMin(30).toISOString())
   })
 })
+
+describe('a count that overflows Date asks instead of crashing', () => {
+  it.each([
+    'drink water in 99999999999999999999 minutes',
+    'stretch every 99999999999999999999 minutes',
+  ])('%s -> needsSchedule', (input) => {
+    // Unbounded, the computed instant was an Invalid Date and toISOString() threw
+    // out of the submit handler.
+    const r = p(input as string)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.fireAt).toBeNull()
+  })
+})

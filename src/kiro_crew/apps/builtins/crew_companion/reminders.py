@@ -22,10 +22,11 @@ business knowing what a row looks like.
 
 The natural-language parser also stays in TypeScript. It already lives at
 ``website/src/apps/crew-companion/reminderParse.ts`` (+ ``reminderParseZh``,
-``reminderText``), hardened over ten review rounds, and the page POSTs an
-already-resolved ``{text, fireAt, everyMinutes}``. Re-implementing 900 lines of
-span-alignment and day-part rules in a second language would re-earn every one of
-those bugs for no gain.
+``reminderParseKo``, ``reminderParseParts``, ``reminderText``), hardened over ten
+review rounds, and the page POSTs an already-resolved
+``{text, fireAt, everyMinutes}``. Re-implementing 900 lines of span-alignment and
+day-part rules in a second language would re-earn every one of those bugs for no
+gain.
 """
 
 from __future__ import annotations
