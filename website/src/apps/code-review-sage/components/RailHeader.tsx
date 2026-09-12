@@ -13,7 +13,7 @@
 // back-to-list button while the bar is up, the collapse button while the rail
 // owns the screen. It is a slot rather than a prop pair because only the shell
 // knows which state it is in.
-import { Brain, ListChecks, ScanSearch, Settings } from 'lucide-react'
+import { Brain, GitBranch, ListChecks, ScanSearch, Settings } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { useSage } from '../context'
@@ -53,6 +53,12 @@ const SECTIONS: readonly {
     // the section and the list it opens now look like the same thing.
     icon: ListChecks,
     hasList: true,
+  },
+  {
+    view: 'local',
+    labelKey: 'apps.codeReviewSage.components.localReview.local',
+    icon: GitBranch,
+    hasList: false,
   },
   {
     view: 'learning',

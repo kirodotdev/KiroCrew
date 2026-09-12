@@ -92,7 +92,7 @@ export interface PersistedUiState {
   detailTab: string | null
 }
 
-const MAIN_VIEWS: readonly string[] = ['reviews', 'learning', 'settings']
+const MAIN_VIEWS: readonly string[] = ['reviews', 'local', 'learning', 'settings']
 const LIST_TABS: readonly string[] = ['pulls', 'reviews']
 
 /** Coerce a persisted view back to one that still exists. A view removed since

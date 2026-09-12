@@ -8,6 +8,7 @@ gateway subprocess; this file locks the JSON-RPC frame shapes fast, in-process.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import queue
@@ -383,6 +384,93 @@ def test_slow_lateack_acks_even_if_the_stream_ends_first(monkeypatch):
     assert _messages(buf)[-1]["result"]["stopReason"] == "cancelled"
 
 
+def _review_fix_marker(path: str, content: bytes) -> str:
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"{fake.REVIEW_FIX_EDIT_PREFIX}{path}|{encoded}{fake.REVIEW_FIX_EDIT_SUFFIX}"
+
+
+def test_review_fix_edit_writes_exact_bytes_in_candidate_cwd(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    target = candidate / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_bytes(b"before\n")
+    monkeypatch.chdir(candidate)
+    content = "line 1\nภาษาไทย — café\n".encode("utf-8")
+    buf = _capture(monkeypatch)
+
+    fake._handle(_prompt(_review_fix_marker("src/example.py", content)))
+
+    assert target.read_bytes() == content
+    updates = [
+        m["params"]["update"]
+        for m in _messages(buf)
+        if m.get("method") == "session/update"
+    ]
+    assert [update["sessionUpdate"] for update in updates] == [
+        "tool_call",
+        "tool_call_update",
+        "agent_message_chunk",
+    ]
+    assert updates[1]["status"] == "completed"
+
+
+def test_review_fix_edit_rejects_absolute_path(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    outside = tmp_path / "outside.py"
+    monkeypatch.chdir(candidate)
+    buf = _capture(monkeypatch)
+
+    fake._handle(_prompt(_review_fix_marker(str(outside), b"must not write")))
+
+    assert not outside.exists()
+    msgs = _messages(buf)
+    update = next(
+        m["params"]["update"]
+        for m in msgs
+        if m.get("method") == "session/update"
+        and m["params"]["update"]["sessionUpdate"] == "tool_call_update"
+    )
+    assert update["status"] == "failed"
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_review_fix_edit_rejects_parent_traversal(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    outside = tmp_path / "outside.py"
+    monkeypatch.chdir(candidate)
+    buf = _capture(monkeypatch)
+
+    fake._handle(_prompt(_review_fix_marker("../outside.py", b"must not write")))
+
+    assert not outside.exists()
+    updates = [
+        m["params"]["update"]
+        for m in _messages(buf)
+        if m.get("method") == "session/update"
+    ]
+    assert updates[1]["status"] == "failed"
+
+
+def test_malformed_review_fix_edit_marker_finishes_without_hanging(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    buf = _capture(monkeypatch)
+    marker = f"{fake.REVIEW_FIX_EDIT_PREFIX}src/example.py|not-base64{fake.REVIEW_FIX_EDIT_SUFFIX}"
+
+    fake._handle(_prompt(marker))
+
+    msgs = _messages(buf)
+    updates = [
+        m["params"]["update"]
+        for m in msgs
+        if m.get("method") == "session/update"
+    ]
+    assert updates[1]["status"] == "failed"
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
 def _permission_answer(option_id: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -471,5 +559,7 @@ def test_pump_stdin_forwards_messages_then_the_eof_sentinel(monkeypatch):
         io.StringIO('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n'),
     )
     fake._pump_stdin()
-    assert fake._INBOX.get_nowait()["id"] == 1
+    message = fake._INBOX.get_nowait()
+    assert message is not None
+    assert message["id"] == 1
     assert fake._INBOX.get_nowait() is None

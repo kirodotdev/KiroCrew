@@ -16,12 +16,22 @@ import type {
   Run,
   RunReport,
   RunsResponse,
+  LocalReviewSession,
   Settings,
   SettingsResponse,
   UserReposResponse,
+  ReviewFixActionRequest,
+  ReviewFixCreateInput,
+  ReviewFixTaskResponse,
 } from './lib/types'
+import { REVIEW_MODEL_AUTO } from './lib/types'
 
 const API = '/api/apps/code-review-sage'
+
+function reviewModelBody(model?: string | null): { model?: string } {
+  const selected = model?.trim()
+  return selected && selected !== REVIEW_MODEL_AUTO ? { model: selected } : {}
+}
 
 interface ApiError {
   error?: string
@@ -136,17 +146,71 @@ export const sageApi = {
 
   // --- Starting reviews ---
   /** Review specific PRs (the picker's path, and the pasted-links escape hatch). */
-  review: (changes: string[]): Promise<{ run_id: string; changes: string[] }> =>
-    sendJSON('/review', 'POST', { changes }),
+  review: (changes: string[], model?: string | null): Promise<{
+    run_id: string; changes: string[]; model?: string | null
+  }> =>
+    sendJSON('/review', 'POST', { changes, ...reviewModelBody(model) }),
 
-  reviewLinks: (links: string): Promise<{ run_id: string; changes: string[] }> =>
-    sendJSON('/review', 'POST', { links }),
+  reviewLinks: (links: string, model?: string | null): Promise<{
+    run_id: string; changes: string[]; model?: string | null
+  }> =>
+    sendJSON('/review', 'POST', { links, ...reviewModelBody(model) }),
 
   reviewRepo: (
     repo: string,
     force = false,
-  ): Promise<{ run_id?: string; repo: string; changes: string[]; skipped: number; status: string; message?: string }> =>
-    sendJSON('/review-repo', 'POST', { repo, force }),
+    model?: string | null,
+  ): Promise<{
+    run_id?: string; repo: string; changes: string[]; skipped: number; status: string
+    message?: string; model?: string | null
+  }> =>
+    sendJSON('/review-repo', 'POST', { repo, force, ...reviewModelBody(model) }),
+
+  // --- Review Fix tasks -----------------------------------------------------
+  createFixTask: (input: ReviewFixCreateInput): Promise<ReviewFixTaskResponse> => {
+    const { model, ...rest } = input
+    return sendJSON('/fix-tasks', 'POST', { ...rest, ...reviewModelBody(model) })
+  },
+
+  fixTask: (taskId: string): Promise<ReviewFixTaskResponse> =>
+    getJSON(`/fix-tasks/${encodeURIComponent(taskId)}`),
+
+  reviewAgain: (
+    taskId: string,
+    input: Pick<ReviewFixActionRequest, 'expected_revision' | 'target_fingerprint'>,
+  ): Promise<ReviewFixTaskResponse> =>
+    sendJSON(`/fix-tasks/${encodeURIComponent(taskId)}/review-again`, 'POST', input),
+
+  localSessions: (): Promise<{ sessions: LocalReviewSession[] }> =>
+    getJSON('/local/sessions'),
+
+  localReview: (repository: string, mode = 'all-working-tree', previousSessionId?: string):
+  Promise<{ session: LocalReviewSession }> =>
+    sendJSON('/local/review', 'POST', {
+      repository, mode, ...(previousSessionId ? { previous_session_id: previousSessionId } : {}),
+    }),
+
+  localSession: (id: string): Promise<{ session: LocalReviewSession }> =>
+    getJSON(`/local/sessions/${encodeURIComponent(id)}`),
+
+  localDisposition: (
+    id: string,
+    findingId: string,
+    status: string,
+    userInstruction?: string,
+  ): Promise<{ finding: LocalReviewSession['findings'][number] }> =>
+    sendJSON(`/local/sessions/${encodeURIComponent(id)}/disposition`, 'POST', {
+      finding_id: findingId, status, user_instruction: userInstruction,
+    }),
+
+  localFix: (
+    sessionId: string,
+    findingIds: string[],
+    instruction: string,
+  ): Promise<{ fix_id: string; status: string; finding_ids: string[] }> =>
+    sendJSON('/local/fix', 'POST', {
+      session_id: sessionId, finding_ids: findingIds, instruction,
+    }),
 
   // --- Repo + PR discovery ---
   recentRepos: (days?: number): Promise<RecentReposResponse> =>

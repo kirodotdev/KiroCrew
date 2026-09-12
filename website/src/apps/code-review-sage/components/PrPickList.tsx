@@ -22,6 +22,7 @@ import { changeKey, relativeAge } from '../lib/format'
 import type { RepoPr } from '../lib/types'
 import EmptyState from './EmptyState'
 import ListSkeleton from './ListSkeleton'
+import ReviewModelPicker from './ReviewModelPicker'
 
 // `compareText` collates in the APP's language; a bare `localeCompare` reads the
 // host locale, so it would order labels by the browser's language rather than the
@@ -138,7 +139,7 @@ export default function PrPickList() {
   const {
     activeRepo, prs, prsLoading, prsError, refreshPrs,
     startReview, startRepoReview, openAddRepos, selectedPr, selectPr,
-    reviewingChangeUrls,
+    reviewingChangeUrls, reviewModel, setReviewModel,
   } = useSage()
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
@@ -406,6 +407,12 @@ export default function PrPickList() {
           </button>
           )}
         </div>
+
+        <ReviewModelPicker
+          value={reviewModel}
+          onChange={setReviewModel}
+          disabled={busy}
+        />
 
         <PasteLinks />
 
