@@ -119,6 +119,52 @@ class TerminalCoordinator(ManagerComponent):
         # exclusive report task owns the terminal transition; flipping here
         # means only the last sibling can observe the batch as fully settled.
         info.done = True
+        # Arm the done-but-unreported hold in the same synchronous block as
+        # the flip, so the hold and the flip can never be observed apart: from
+        # this line until the completion consumer lands the member's
+        # contribution, `batch_reports_in_flight` holds the wave-close
+        # fallback open (issue #8554).
+        self._manager.arm_report_in_flight(info)
+        try:
+            await self._report_terminal_guarded_impl(
+                info,
+                source=source,
+                injection_timeout_reason=injection_timeout_reason,
+                mark_delivered_on_success=mark_delivered_on_success,
+                settle_digest=settle_digest,
+                teardown_done=teardown_done,
+            )
+        finally:
+            # ONE structural release replacing the former per-arm clears: by
+            # the time the report coroutine ends — success (the consumer
+            # already released the hold inside its accounting block; this is
+            # an idempotent no-op), injection timeout, announce failure,
+            # cancellation, or the no-consumer early return — the report is no
+            # longer in flight. A hold that outlived its report would strand
+            # the wave-close fallback forever; releasing here keeps the wave's
+            # degraded a-sibling-can-close liveness instead (issue #8554).
+            self._manager.consume_report_hold(info.batch_id, info.id)
+
+    async def _report_terminal_guarded_impl(
+        self,
+        info: SubagentInfo,
+        *,
+        source: str,
+        injection_timeout_reason: str,
+        mark_delivered_on_success: bool,
+        settle_digest: bool = False,
+        teardown_done: "asyncio.Event | None" = None,
+    ) -> None:
+        """Body of :meth:`_report_terminal_impl` past the terminal transition.
+
+        Split out so the done-flip + hold-arm above can wrap the ENTIRE
+        remainder — every await, every failure arm, every early return — in
+        one structural ``try/finally`` release without re-indenting the report
+        machinery. Only :meth:`_report_terminal_impl` may call this. (The
+        ``_impl`` suffix keeps it inside ``bind_component_globals``' rebind
+        set, like every other coordinator body that touches ``subagent``
+        module globals.)
+        """
         await self._manager._fire_event(
             "subagent_done",
             info,
@@ -219,6 +265,14 @@ class TerminalCoordinator(ManagerComponent):
                 except Exception:
                     logger.debug("Failed to clean workspace result for %s", info.id, exc_info=True)
         except asyncio.TimeoutError:
+            # The report is terminally over — nothing further will reach the
+            # completion consumer for this member. The structural ``finally``
+            # in `_report_terminal_impl` releases the done-but-unreported hold
+            # (usually already released: the consumer's accounting runs before
+            # the injection await this timeout interrupts), so
+            # `batch_reports_in_flight` cannot strand the wave; a sibling
+            # completion keeps its degraded ability to close the wave with
+            # this member's line missing (issue #8554).
             logger.error(
                 "%s: completion injection timed out for %s after %.0fs",
                 source,
@@ -238,6 +292,10 @@ class TerminalCoordinator(ManagerComponent):
                 )
             self._manager.notify_injection_failed(info, reason=injection_timeout_reason)
         except Exception:
+            # Same liveness backstop as the timeout arm, owned by the same
+            # structural ``finally``: a report whose announce raised will
+            # never reach the consumer, so it must not hold
+            # `batch_reports_in_flight` open forever (issue #8554).
             logger.exception("%s: announce failed for %s", source, info.id)
 
     async def _run_terminal_report_impl(
@@ -311,6 +369,14 @@ class TerminalCoordinator(ManagerComponent):
         def _forget(t: "asyncio.Task") -> None:  # type: ignore[type-arg]
             self._manager._report_tasks.discard(t)
             self._manager._report_owners.pop(t, None)
+            # Strand-guard for the flip-site arms (issue #8554): a report task
+            # cancelled BEFORE its first execution step never runs its body's
+            # structural release, and a hold that nothing releases pins
+            # `batch_reports_in_flight` — making even the reaper's deadline
+            # sweep skip the wave forever. By task-done time the report is not
+            # in flight on ANY path, so this release is always correct (and an
+            # idempotent no-op when the body or consumer already released).
+            self._manager.consume_report_hold(info.batch_id, info.id)
 
         task.add_done_callback(_forget)
         return task
@@ -442,6 +508,11 @@ class TerminalCoordinator(ManagerComponent):
         # first-arrival-wins on `info.done`, so it is never written twice.
         if not info.done:
             info.done = True
+            # Terminal done transition: arm with the flip. The reap's own
+            # report is awaited below, but the award of the finalize claim and
+            # the SEL/teardown bookkeeping sit between — keep the hold and the
+            # flip observable only together (issue #8554).
+            self._manager.arm_report_in_flight(info)
             if not info.error and not info.user_stopped:
                 # A user stop is neutral — never synthesize a reap error for it.
                 if approval_parked:

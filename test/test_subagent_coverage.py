@@ -1748,15 +1748,39 @@ class TestSweepDigestHolds:
         flush.assert_not_called()
 
     def test_closing_wave_not_forced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No pending members + a report in flight = the wave is closing on its
+        own; the real wave-close flush lands when the consumer runs. Forcing a
+        partial digest here would race it and could duplicate a chunk."""
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
         mgr = _manager(on_done=AsyncMock())
         held = _info("a", batch_id="w1", batch_total=1, done=True)
         held._digest_held_at = 1.0
         mgr._agents["a"] = held
         mgr._batch_submitted["w1"] = [1, 1]
+        mgr.arm_report_in_flight(held)
         with patch.object(mgr, "force_digest_flush") as flush:
             mgr._sweep_digest_holds(now=1e6)
         flush.assert_not_called()
+
+    def test_stranded_hold_past_deadline_is_forced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No pending members AND no report in flight, yet a hold aged past the
+        deadline: the wave-close flush is never coming (a terminal report ended
+        without reaching the consumer — injection-timeout / announce-failure
+        arms release the hold but land no accounting). The sweep is the only
+        remaining exit; before the in-flight-aware guard this state was
+        unsweepable and the held sibling results stranded until restart."""
+        monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
+        mgr = _manager(on_done=AsyncMock())
+        held = _info("a", batch_id="w1", batch_total=1, done=True, parent_session_key="dash:1")
+        held._digest_held_at = 1.0
+        mgr._agents["a"] = held
+        mgr._batch_submitted["w1"] = [1, 1]  # no pending members
+        # No arm: the member's report ended without reaching the consumer.
+        with patch.object(mgr, "force_digest_flush") as flush:
+            mgr._sweep_digest_holds(now=1e6)
+        assert flush.call_count == 1
+        assert flush.call_args[0][0] == "w1"
+        assert flush.call_args[0][1] == "dash:1"
 
     def test_expired_hold_forces_partial_flush(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
@@ -2171,3 +2195,227 @@ class TestPlatformConstants:
         back to 100 there."""
         assert isinstance(sa._CLK_TCK, int)
         assert sa._CLK_TCK > 0
+
+
+# ── Manager: done-but-unreported wave accounting (issue #8554) ────────────
+
+
+class TestBatchReportsInFlight:
+    """``batch_reports_in_flight`` holds the wave-close fallback open across the
+    done-but-unreported window: ``info.done`` has flipped (so
+    ``batch_members_pending`` no longer counts the member) but its terminal
+    report has not yet been consumed, so the wave's done-count does not include
+    it either. Without the hold, a sibling completion landing in that window
+    finalizes the wave early and the in-flight report finalizes it again."""
+
+    def test_no_batch_id_is_never_in_flight(self) -> None:
+        assert _manager().batch_reports_in_flight("") is False
+
+    def test_done_but_unreported_member_is_in_flight(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        assert mgr.batch_reports_in_flight("w1") is True
+
+    def test_consumed_report_is_not_in_flight(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        mgr.consume_report_hold("w1", "a")
+        assert mgr.batch_reports_in_flight("w1") is False
+        # The consumed wave's registry entry is pruned, not left empty.
+        assert "w1" not in mgr._reports_in_flight
+
+    def test_operator_clear_cannot_drop_the_hold(self) -> None:
+        """THE #8554 fix-round conviction (GPT 5.6 F1): the hold lives in the
+        manager-level registry, NOT on `_agents` membership. An operator
+        clear-completed (DELETE /api/spawn) pops every done member — landing
+        inside the done-but-unreported window it must NOT release the hold, or
+        a sibling completion would finalize the wave early and the in-flight
+        report would finalize it a second time."""
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        # What the DELETE /api/spawn handler does to done members:
+        mgr._agents.pop("a")
+        assert mgr.batch_reports_in_flight("w1") is True
+        # The consumer still holds `info` by reference and releases on landing.
+        mgr.consume_report_hold("w1", "a")
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_flush_only_records_never_arm(self) -> None:
+        """Flush-only synthetics skip the consumer's accounting block, so a
+        hold would only ever be released structurally — transiently pinning
+        the wave open for no accounting reason."""
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        info._digest_flush_only = True
+        mgr.arm_report_in_flight(info)
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_consume_is_idempotent_and_unarmed_release_is_a_noop(self) -> None:
+        mgr = _manager()
+        mgr.consume_report_hold("w1", "never-armed")
+        assert mgr.batch_reports_in_flight("w1") is False
+        info = _info("a", batch_id="w1", done=True)
+        mgr.arm_report_in_flight(info)
+        mgr.consume_report_hold("w1", "a")
+        mgr.consume_report_hold("w1", "a")
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_finalize_batch_prunes_the_hold_registry(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr.arm_report_in_flight(info)
+        mgr.finalize_batch("w1")
+        assert mgr.batch_reports_in_flight("w1") is False
+        assert "w1" not in mgr._reports_in_flight
+
+    def test_live_member_is_not_in_flight(self) -> None:
+        """A member still RUNNING is `batch_members_pending`'s job — the arm
+        happens only at the report's done-flip, so a live member never holds
+        here and the two predicates stay complementary, not redundant."""
+        mgr = _manager()
+        mgr._agents["a"] = _info("a", batch_id="w1", done=False)
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_other_waves_members_do_not_count(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w2", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        assert mgr.batch_reports_in_flight("w1") is False
+
+
+class TestReportsInFlightStrandBackstops:
+    """Every terminal arm that can end a member's report WITHOUT reaching the
+    completion consumer must clear the hold, or `batch_reports_in_flight`
+    would strand the wave-close fallback forever. The wave keeps its degraded
+    a-sibling-can-close liveness instead (issue #8554)."""
+
+    @pytest.mark.asyncio
+    async def test_report_injection_timeout_clears_the_hold(self) -> None:
+        """`asyncio.wait_for(self._on_done(info), …)` timing out is terminal for
+        the report: nothing further reaches the consumer for this member. The
+        structural `finally` must release the hold the report armed."""
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+            raise asyncio.TimeoutError
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._run_terminal_report(
+            info,
+            source="Test",
+            injection_timeout_reason="delivery timed out (test)",
+            mark_delivered_on_success=False,
+        )
+
+        # The report armed the hold at its done-flip (visible mid-announce)…
+        assert seen == [True]
+        # …and the structural `finally` released it when the report ended.
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_report_announce_failure_clears_the_hold(self) -> None:
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+            raise RuntimeError("boom")
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._run_terminal_report(
+            info,
+            source="Test",
+            injection_timeout_reason="delivery timed out (test)",
+            mark_delivered_on_success=False,
+        )
+
+        assert seen == [True]
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_safe_announce_failure_clears_the_hold(self) -> None:
+        """The registered approval-parked rejection announces through
+        `_safe_announce`; it must arm before the announce (its done-flip
+        equivalent) and a raising consumer must not leave it holding."""
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+            raise RuntimeError("boom")
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._safe_announce(info)
+
+        assert seen == [True]
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_hold_is_visible_to_the_consumer_and_released_after(self) -> None:
+        """On the happy path the hold is armed BEFORE the announce and the
+        CONSUMER owns the release (same synchronous block as the done-count
+        increment) — so the wave-close fallback stays held open for exactly
+        the window between the done-flip and the count landing. The report's
+        structural `finally` then re-releases as an idempotent no-op."""
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._run_terminal_report(
+            info,
+            source="Test",
+            injection_timeout_reason="delivery timed out (test)",
+            mark_delivered_on_success=False,
+        )
+
+        assert seen == [True]
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_cancelled_recovery_arm_never_strands_the_wave(self) -> None:
+        """The cancelled-recovery arm is deliberately report-free (limbo
+        avoidance — no finalize claim, no terminal report ever runs). Holds are
+        armed only at a report's done-flip, so a record terminalized here never
+        carries one — the wave must read as hold-free throughout."""
+        mgr = _manager()
+        info = _info("a", batch_id="w1")
+        info.started = 1.0
+        mgr._agents["a"] = info
+
+        with patch.object(mgr, "_write_tombstone"):
+            # From the test task, `_resume` awaits the ORIGINAL task — this
+            # test's own — which never finishes first: a deterministic block
+            # point with no timing dependence.
+            mgr._schedule_cancel_recovery(info)
+            recovery = mgr._tasks["a:recovery"]
+            await asyncio.sleep(0)  # let _resume start and park on the wait
+            recovery.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await recovery
+
+        assert info.done is True
+        assert mgr.batch_reports_in_flight("w1") is False

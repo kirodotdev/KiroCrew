@@ -1715,6 +1715,16 @@ class SubagentManager:
         # submissions and no progress is force-reconciled). Pruned by
         # finalize_batch alongside _batch_submitted.
         self._batch_progress_ts: dict[str, float] = {}
+        # Done-but-unreported holds per wave: batch_id -> agent ids whose
+        # ``done`` has flipped but whose terminal report the completion
+        # consumer has not yet consumed. Held OUTSIDE the agent records
+        # because ``_agents`` membership is operator-mutable (DELETE
+        # /api/spawn pops done members) — the wave-close fallback must not
+        # lose its hold to a concurrent clear (issue #8554). Armed by the
+        # report machinery at the done-flip, disarmed by the consumer when
+        # the contribution lands or structurally when a report ends without
+        # reaching the consumer. Pruned by finalize_batch.
+        self._reports_in_flight: dict[str, set[str]] = {}
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Cache global approval_mode at init to avoid disk I/O on every
         # parentless spawn (cron, webhooks).
@@ -2163,6 +2173,25 @@ class SubagentManager:
             teardown_done=teardown_done,
         )
 
+    async def _report_terminal_guarded(
+        self,
+        info: SubagentInfo,
+        *,
+        source: str,
+        injection_timeout_reason: str,
+        mark_delivered_on_success: bool,
+        settle_digest: bool = False,
+        teardown_done: "asyncio.Event | None" = None,
+    ) -> None:
+        return await self._terminal._report_terminal_guarded_impl(
+            info,
+            source=source,
+            injection_timeout_reason=injection_timeout_reason,
+            mark_delivered_on_success=mark_delivered_on_success,
+            settle_digest=settle_digest,
+            teardown_done=teardown_done,
+        )
+
     async def _run_terminal_report(
         self,
         info: SubagentInfo,
@@ -2407,6 +2436,15 @@ class SubagentManager:
 
     def batch_members_pending(self, batch_id: str) -> bool:
         return self._waves.batch_members_pending_impl(batch_id)
+
+    def batch_reports_in_flight(self, batch_id: str) -> bool:
+        return self._waves.batch_reports_in_flight_impl(batch_id)
+
+    def arm_report_in_flight(self, info: SubagentInfo) -> None:
+        return self._waves.arm_report_in_flight_impl(info)
+
+    def consume_report_hold(self, batch_id: str, agent_id: str) -> None:
+        return self._waves.consume_report_hold_impl(batch_id, agent_id)
 
     def finalize_batch(self, batch_id: str) -> None:
         return self._waves.finalize_batch_impl(batch_id)

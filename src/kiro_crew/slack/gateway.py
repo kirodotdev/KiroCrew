@@ -8013,6 +8013,17 @@ class GatewayOrchestrator:
                         },
                     )
             if _batch_id and not _flush_only:
+                # This member's report has been consumed: its contribution is
+                # about to land in the wave's done-count, so it no longer holds
+                # the wave-close fallback open (batch_reports_in_flight, issue
+                # #8554). Release in the same synchronous block as the
+                # increment so the hold and the count can never be observed
+                # apart. The release goes to the manager-level registry — NOT
+                # an agent-record flag — so an operator clear (DELETE
+                # /api/spawn) popping this member from `_agents` mid-flight
+                # cannot have dropped the hold before this line lands it.
+                if self.subagent_mgr is not None:
+                    self.subagent_mgr.consume_report_hold(_batch_id, info.id)
                 bp["done"] += 1
                 # Fold EVERY member's orchestration escalation into the wave
                 # digest — held members return before the announce is sent, so
@@ -8072,10 +8083,19 @@ class GatewayOrchestrator:
                     # stagger gate) — an unrelated agent under the same
                     # parent must neither hold the digest hostage nor
                     # release it early.
+                    #
+                    # A member whose `done` flag has flipped but whose terminal
+                    # report has not reached this consumer yet is OUTSTANDING
+                    # too: `batch_members_pending` no longer counts it while
+                    # its contribution to bp["done"] is still in flight, so
+                    # without the reports-in-flight check a sibling landing in
+                    # that window finalizes the wave early and the in-flight
+                    # report then finalizes it again (issue #8554).
                     try:
                         _last = bool(
                             self.subagent_mgr
                             and not self.subagent_mgr.batch_members_pending(_batch_id)
+                            and not self.subagent_mgr.batch_reports_in_flight(_batch_id)
                         )
                     except Exception:
                         _last = False
