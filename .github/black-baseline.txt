@@ -165,9 +165,7 @@ src/kiro_crew/config/paths.py
 src/kiro_crew/config/schema.py
 src/kiro_crew/config/validation.py
 src/kiro_crew/connections/alias_record.py
-src/kiro_crew/connections/l0_probe.py
 src/kiro_crew/connections/l0_record.py
-src/kiro_crew/connections/registry.py
 src/kiro_crew/connections/tool_aliases.py
 src/kiro_crew/cron_history.py
 src/kiro_crew/dashboard/cautious_boot.py
@@ -186,7 +184,6 @@ src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/hooks.py
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py
 src/kiro_crew/dashboard/handlers/knowledge.py
-src/kiro_crew/dashboard/handlers/mcp.py
 src/kiro_crew/dashboard/handlers/mcp_apps.py
 src/kiro_crew/dashboard/handlers/mcp_custom.py
 src/kiro_crew/dashboard/handlers/memory.py

@@ -103,9 +103,16 @@ def test_probe_accessor_includes_every_entry_even_when_launch_gated():
     assert pending == VENDOR_APPROVAL_PENDING
 
 
+# Pre-registered providers (registry ``auth.mode``) are visible REGARDLESS of the
+# launch gate: their card renders an operator instruction until a client is
+# configured, and hiding an instruction is how the step never gets done. The gate
+# still governs the entry's own quality claims, so they stay in LAUNCH_GATED.
+PREREGISTERED = {"github", "asana"}
+
+
 def test_only_gated_launch_services_are_visible():
     assert {provider["slug"] for provider in get_visible_providers()} == (
-        EXPECTED_LAUNCH_REGISTRY - LAUNCH_GATED
+        (EXPECTED_LAUNCH_REGISTRY - LAUNCH_GATED) | PREREGISTERED
     )
 
 
@@ -435,8 +442,9 @@ def test_the_hard_tier_cannot_fire_on_a_dark_provider():
 
     The remedy for a stale baseline is ``l0_probe --record``, which needs live
     network that CI does not have, so the hard tier is deliberately narrow: only
-    providers actually shipped to users. GitHub is launch-gated today, so it must
-    appear in the all-entries view and NOT in the visible one.
+    providers actually shipped to users. Superhuman is launch-gated today (and,
+    unlike GitHub, not pre-registered, so the gate really does hide it), so it
+    must appear in the all-entries view and NOT in the visible one.
     """
     far_future = utc_today() + timedelta(days=10_000)
 
@@ -447,8 +455,8 @@ def test_the_hard_tier_cannot_fire_on_a_dark_provider():
         get_visible_providers(), as_of=far_future, max_age_days=1
     )
 
-    assert "github" in everything
-    assert "github" not in visible_only
+    assert "superhuman" in everything
+    assert "superhuman" not in visible_only
     assert set(visible_only) < set(everything)
 
 

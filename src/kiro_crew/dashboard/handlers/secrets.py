@@ -41,6 +41,35 @@ def _sel():
 
 
 _MANAGED_KIND_JIRA_HOST_TOKEN = "jira_host_token"
+# A Connections pre-registered OAuth client secret (``connections/oauth_clients``).
+_MANAGED_KIND_CONNECTIONS_CLIENT_SECRET = "connections_client_secret"
+
+
+def _connections_client_secret_owned(name: str) -> web.Response | None:
+    """Refuse a generic vault write to a Connections client secret.
+
+    Those entries are one half of a two-store record whose other half lives in
+    ``config.json``, and every change to them must also rebuild the agent spec
+    and withdraw the slug's in-flight mint -- the OAuth-client routes do all of
+    that under one lock. A write through this generic route would change the
+    vault half alone and leave the runtime projection on the old credential, so
+    the panel lists these entries but does not edit them. Returns the 409 to
+    send, or ``None`` when the name is not one of ours.
+    """
+    from kiro_crew.connections.oauth_clients import managed_client_secret_names
+
+    slug = managed_client_secret_names().get(name)
+    if slug is None:
+        return None
+    return web.json_response(
+        {
+            "error": "this secret belongs to a Connections OAuth app; change it under "
+            "Settings → OAuth Apps",
+            "code": "managed_by_connections",
+            "slug": slug,
+        },
+        status=409,
+    )
 
 
 def _managed_secret_config() -> tuple[list[str], bool, bool, bool]:
@@ -107,6 +136,18 @@ def _managed_secret_catalog(
                     "kind": _MANAGED_KIND_JIRA_HOST_TOKEN,
                     "host": host,
                 }
+            )
+    # Connections OAuth client secrets. Listed only when STORED: the entry field
+    # lives on Settings → OAuth Apps, so the Secrets panel's job is to label an
+    # existing entry with its owner (not offer an empty slot), and keep a cleanup
+    # from reading it as a stray user secret. ``host`` carries the provider slug,
+    # the same way the Jira rows carry their host.
+    from kiro_crew.connections.oauth_clients import managed_client_secret_names
+
+    for name, slug in sorted(managed_client_secret_names().items()):
+        if name in name_set:
+            catalog.append(
+                {"name": name, "kind": _MANAGED_KIND_CONNECTIONS_CLIENT_SECRET, "host": slug}
             )
     return catalog
 
@@ -282,6 +323,9 @@ async def api_secrets_set(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Secret value is required", "code": "missing_value"}, status=400
         )
+    owned = _connections_client_secret_owned(name)
+    if owned is not None:
+        return owned
 
     vault = SecretVault(config_dir())
     await vault.set(name, value)
@@ -299,6 +343,9 @@ async def api_secrets_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Secret name is required", "code": "missing_name"}, status=400
         )
+    owned = _connections_client_secret_owned(name)
+    if owned is not None:
+        return owned
 
     vault = SecretVault(config_dir())
     # `vault.delete` is a no-op when the name is absent, so an unconditional

@@ -10162,7 +10162,12 @@
       "value_prop_stripe": "查询 Stripe 客户、付款和发票。",
       "value_prop_vercel": "查看你的 Vercel 项目和部署。",
       "waiting_for_approval": "等待授权",
-      "waiting_for_approval_address": "正在等待授权地址……代理下次连接时将在此显示——发送任意聊天消息即可立即开始授权。"
+      "waiting_for_approval_address": "正在等待授权地址……代理下次连接时将在此显示——发送任意聊天消息即可立即开始授权。",
+      "needs_configuration": "需要配置",
+      "needs_configuration_help": "{{provider}} 需要一次性设置。点击“配置 OAuth 应用”会打开引导式设置页面；在那里保存之前不会有任何变化，之后也可以随时移除。页面会引导你在 {{provider}} 注册应用并填写客户端 ID 和密钥。",
+      "configure_oauth_app": "配置 OAuth 应用",
+      "prerequisite_github": "GitHub 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 GitHub OAuth 应用。GitHub 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_asana": "Asana 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Asana MCP 应用。Asana 授权页面显示的是此应用；同意后即可继续。"
     },
     "contextBreakdown": {
       "axis_bar": "条形长度 ∝ √字符数 · 分段 = 该轮的构成",
@@ -14081,6 +14086,41 @@
         "manage_webhooks": "管理 webhook",
         "tokens_count_other": "{{count}} 个访问令牌",
         "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
+      },
+      "connectionsPanel": {
+        "title": "用于“连接”的 OAuth 应用",
+        "intro": "部分提供方不允许自动注册 OAuth 客户端。按下方各提供方设置指南在其控制台注册应用，把此处显示的重定向 URI 原样粘贴到此应用，然后填写应用客户端 ID 和密钥。通过环境变量设置时，会覆盖此处保存的内容。",
+        "loading": "加载中…",
+        "none": "此安装中的所有提供方都会自行注册 OAuth 客户端，因此这里无需配置。",
+        "load_failed": "无法加载 OAuth 应用",
+        "configured": "已配置",
+        "not_configured": "需要配置",
+        "card_intro": "在 {{provider}} 开发者控制台中注册一个应用，然后在下方填入其凭据。",
+        "open_runbook": "打开 {{provider}} 设置指南",
+        "redirect_uri": "重定向 URI",
+        "redirect_uri_help": "在厂商控制台中精确注册此值。",
+        "copy_redirect_uri": "复制重定向 URI",
+        "copy": "复制",
+        "copied": "已复制",
+        "client_id": "客户端 ID",
+        "client_id_help": "已注册应用的公开标识符。存储在 config.json 中。",
+        "client_id_placeholder": "粘贴客户端 ID",
+        "client_secret": "客户端密钥",
+        "client_secret_required": "{{provider}} 在令牌端点要求提供客户端密钥。该密钥会加密存储在密钥保险库中，且不会再次显示。",
+        "client_secret_optional": "{{provider}} 接受公开客户端，因此密钥为可选项。该密钥会加密存储在密钥保险库中，且不会再次显示。",
+        "client_secret_placeholder": "粘贴客户端密钥",
+        "set_by_environment": "由环境变量 {{name}} 设置，它会覆盖此处保存的任何值。",
+        "save": "保存",
+        "saving": "保存中…",
+        "save_failed": "无法保存 OAuth 应用",
+        "remove": "移除 OAuth 应用",
+        "remove_client": "移除 {{provider}} OAuth 应用",
+        "oauth_app": "OAuth 应用",
+        "oauth_app_search_description": "需要预注册 OAuth 应用的提供方的 Client ID、客户端密钥和重定向 URI",
+        "copy_failed": "无法复制到剪贴板。请手动选中重定向 URI 后复制。",
+        "remove_confirm": "移除 {{provider}} 的 OAuth 应用？客户端 ID 和已保存的密钥会被删除，重新填写之前 {{provider}} 无法连接。",
+        "remove_confirm_action": "移除 OAuth 应用",
+        "cancel": "取消"
       }
     },
     "settingsPage": {
@@ -14604,6 +14644,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "安全存储 API 密钥和凭据"
+      },
+      "connections": {
+        "label": "OAuth 应用",
+        "description": "为需要预先注册客户端的提供方配置 OAuth 应用"
       }
     },
     "secrets": {
@@ -14650,7 +14694,9 @@
       "save_error": "无法保存密钥：{{error}}",
       "delete_error": "无法删除密钥：{{error}}",
       "load_error": "无法加载密钥：{{error}}",
-      "wakatime_unused_hint": "WakaTime 禁用时不会使用。请启用 WakaTime 或删除此条目。"
+      "wakatime_unused_hint": "WakaTime 禁用时不会使用。请启用 WakaTime 或删除此条目。",
+      "connections_client_secret_description": "“连接”OAuth 应用的客户端密钥。在“设置 → OAuth 应用”中管理。",
+      "connections_client_secret_manage": "前往 OAuth 应用管理"
     }
   },
   "store": {

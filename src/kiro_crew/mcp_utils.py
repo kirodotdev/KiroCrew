@@ -333,3 +333,78 @@ def mcp_server_alias(name: str) -> str:
     slug = slug.lstrip("@").replace("/", "-").replace("@", "-")
     slug = re.sub(r"[^A-Za-z0-9_.-]", "-", slug).strip("-")
     return slug or "mcp-server"
+
+
+#: Marker that replaces an ``oauth.clientSecret`` on every dashboard READ of an
+#: agent spec. Same string the MCP header redaction uses, so a client that already
+#: knows to treat that value as "present but hidden" needs no second rule.
+OAUTH_CLIENT_SECRET_REDACTED = "[REDACTED: credential]"
+
+
+def redact_oauth_client_secrets(spec: Any) -> Any:
+    """Return a copy of an agent spec with every ``oauth.clientSecret`` masked.
+
+    The installed spec is what kiro-cli reads, so a confidential pre-registered
+    client's secret is projected into it in plaintext (see
+    ``connections/oauth_clients``). The dashboard's spec READ is not kiro-cli: it
+    is reachable by any dashboard subject, and nothing on the read side needs the
+    value -- only the fact that one is set. Masking here keeps the projection
+    where it is needed and out of every response.
+    """
+
+    if not isinstance(spec, dict):
+        return spec
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return spec
+    out = dict(spec)
+    redacted_servers: dict[str, Any] = {}
+    for name, entry in servers.items():
+        if isinstance(entry, dict) and isinstance(entry.get(KIRO_OAUTH_KEY), dict):
+            oauth = dict(entry[KIRO_OAUTH_KEY])
+            if isinstance(oauth.get("clientSecret"), str) and oauth["clientSecret"]:
+                oauth["clientSecret"] = OAUTH_CLIENT_SECRET_REDACTED
+                entry = {**entry, KIRO_OAUTH_KEY: oauth}
+        redacted_servers[name] = entry
+    out["mcpServers"] = redacted_servers
+    return out
+
+
+def restore_redacted_oauth_client_secrets(spec: Any, on_disk: Any) -> Any:
+    """Undo :func:`redact_oauth_client_secrets` on a spec being written back.
+
+    The agent-config editor round-trips the whole spec: it reads the masked form
+    and PUTs it back, so without this the marker string would land on disk as the
+    secret and kiro-cli would present ``[REDACTED: credential]`` at the token
+    endpoint until the next rebuild. A marker is replaced with the value the
+    installed spec holds for the same server ONLY when the submitted entry still
+    points at the same ``url``: a secret is bound to the endpoint it was issued
+    for, and restoring it by name onto an entry whose URL was edited would hand
+    it to whatever now answers there. A marker with no on-disk value, or one
+    whose URL moved, is dropped rather than written.
+    """
+
+    if not isinstance(spec, dict) or not isinstance(spec.get("mcpServers"), dict):
+        return spec
+    disk_servers = on_disk.get("mcpServers") if isinstance(on_disk, dict) else None
+    disk_servers = disk_servers if isinstance(disk_servers, dict) else {}
+    out = dict(spec)
+    restored: dict[str, Any] = {}
+    for name, entry in spec["mcpServers"].items():
+        if isinstance(entry, dict) and isinstance(entry.get(KIRO_OAUTH_KEY), dict):
+            oauth = dict(entry[KIRO_OAUTH_KEY])
+            if oauth.get("clientSecret") == OAUTH_CLIENT_SECRET_REDACTED:
+                held = disk_servers.get(name)
+                held_oauth = held.get(KIRO_OAUTH_KEY) if isinstance(held, dict) else None
+                held_secret = (
+                    held_oauth.get("clientSecret") if isinstance(held_oauth, dict) else None
+                )
+                same_endpoint = isinstance(held, dict) and held.get("url") == entry.get("url")
+                if same_endpoint and isinstance(held_secret, str) and held_secret:
+                    oauth["clientSecret"] = held_secret
+                else:
+                    oauth.pop("clientSecret", None)
+                entry = {**entry, KIRO_OAUTH_KEY: oauth}
+        restored[name] = entry
+    out["mcpServers"] = restored
+    return out

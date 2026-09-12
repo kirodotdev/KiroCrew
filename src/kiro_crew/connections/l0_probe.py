@@ -58,6 +58,7 @@ from kiro_crew.connections.registry import (
     Provider,
     get_all_registry_providers,
     is_local_host,
+    is_preregistered,
     stale_l0_baselines,
     utc_today,
 )
@@ -128,13 +129,48 @@ def _validate_issuer(value: object, field: str = "issuer") -> str:
 
     The one transformation in the module is the single trailing slash removed
     when CONSTRUCTING the well-known URL (see ``_authorization_metadata_url``),
-    which is a path-insertion detail and never touches a compared value.
+    which is a path-insertion detail and never touches a compared value. The
+    COMPARISON itself is :func:`same_issuer`, which grants exactly one
+    equivalence (an empty path against ``/``) and is where the reasoning for it
+    lives.
     """
 
     url = _https_url(value, field)
     if urlsplit(url).query:
         raise ValueError(f"{field} must not carry a query string")
     return url
+
+
+def same_issuer(advertised: str, committed: str) -> bool:
+    """Whether two validated issuer strings name the same authorization server.
+
+    Exact code-point equality, with ONE sanctioned equivalence: an issuer whose
+    path is EMPTY equals the same issuer whose path is exactly ``/``. RFC 3986
+    §6.2.3 (scheme-based normalization) defines those two as equivalent for
+    ``https`` -- "an empty path component is equivalent to an absolute path of
+    '/'" -- and RFC 8414 §3.1 already treats the terminating slash as
+    insignificant when it builds the well-known URL, which is how
+    ``_authorization_metadata_url`` handles it. Several vendors publish exactly
+    this discrepancy between their protected-resource metadata and their
+    authorization-server metadata (Google: ``https://accounts.google.com/`` vs
+    ``https://accounts.google.com``; Box: ``https://api.box.com/`` vs
+    ``https://api.box.com``), and under a comparison that refuses it no single
+    committed string can satisfy both documents.
+
+    Everything else stays a mismatch on purpose, and the tests pin it. In
+    particular a trailing slash AFTER a non-empty path (``/tenant/`` vs
+    ``/tenant``) is NOT folded: the two are distinct resources under RFC 3986
+    and the difference is exactly the tenant / realm substitution the strict
+    comparison exists to catch. Host case, an explicit ``:443`` and any query
+    string remain mismatches too -- see :func:`_validate_issuer`.
+    """
+
+    if advertised == committed:
+        return True
+    a, c = urlsplit(advertised), urlsplit(committed)
+    if (a.scheme, a.netloc, a.query, a.fragment) != (c.scheme, c.netloc, c.query, c.fragment):
+        return False
+    return {a.path, c.path} == {"", "/"}
 
 
 def _resource_metadata_urls(mcp_url: str) -> list[str]:
@@ -248,14 +284,15 @@ def _read_authorization_metadata(
 ) -> tuple[bool, bool]:
     """Validate authorization-server metadata; return (DCR, PKCE-S256).
 
-    ``issuer`` is compared to ``requested_issuer`` by exact code-point equality
-    per RFC 8414 §2, so a tenant or realm path substitution on the same origin is
-    caught -- and so is a host-case or explicit-port variant, which a normalizing
-    comparison would wave through.
+    ``issuer`` is compared to ``requested_issuer`` by :func:`same_issuer`: exact
+    code-point equality per RFC 8414 §2 plus the single root-slash equivalence
+    RFC 3986 §6.2.3 grants, so a tenant or realm path substitution on the same
+    origin is caught -- and so is a host-case or explicit-port variant, which a
+    normalizing comparison would wave through.
     """
 
     issuer = _validate_issuer(document.get("issuer"), "issuer")
-    if issuer != requested_issuer:
+    if not same_issuer(issuer, requested_issuer):
         raise ValueError(
             f"authorization metadata issuer {issuer!r} is not the requested "
             f"issuer {requested_issuer!r}"
@@ -346,7 +383,7 @@ async def probe_provider(
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
             errors.append(f"protected resource discovery: {error}")
 
-    if advertised is not None and advertised != committed_issuer:
+    if advertised is not None and not same_issuer(advertised, committed_issuer):
         message = (
             f"advertised authorization server {advertised!r} differs from the "
             f"committed {committed_issuer!r}"
@@ -358,6 +395,14 @@ async def probe_provider(
         else:
             errors.append(message)
 
+    # A pre-registered provider (registry ``auth.mode``) is one the operator
+    # brings a client to, so whether the vendor ALSO advertises dynamic
+    # registration is information, not a contract: the value is still observed
+    # and recorded, but the nightly must not go red because a vendor added a
+    # registration endpoint nothing here would use. Metadata reachability and
+    # PKCE stay asserted -- the operator's client cannot work without either.
+    assert_dcr = not is_preregistered(provider)
+
     if checks["protected_resource_metadata"]:
         try:
             metadata = await _get_json(
@@ -366,7 +411,16 @@ async def probe_provider(
             dcr, pkce = _read_authorization_metadata(metadata, committed_issuer)
             checks["authorization_server_metadata"] = True
             observed = {
-                "authorization_server": advertised or committed_issuer,
+                # The committed spelling is kept whenever the advertised one is the
+                # same issuer under ``same_issuer``: a recorder that copied the
+                # vendor's root slash back into the file would churn the baseline
+                # on every run, and the recorder's own approval gate compares
+                # strings exactly.
+                "authorization_server": (
+                    committed_issuer
+                    if advertised is None or same_issuer(advertised, committed_issuer)
+                    else advertised
+                ),
                 "dcr": dcr,
                 "pkce": pkce,
             }
@@ -374,7 +428,7 @@ async def probe_provider(
                 checks["dcr_expectation"] = True
                 checks["pkce_expectation"] = True
             else:
-                checks["dcr_expectation"] = dcr == committed["dcr"]
+                checks["dcr_expectation"] = (not assert_dcr) or dcr == committed["dcr"]
                 checks["pkce_expectation"] = pkce == committed["pkce"]
                 if not checks["dcr_expectation"]:
                     errors.append(f"DCR advertised={dcr}, expected={committed['dcr']}")
@@ -594,9 +648,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(rendered, end="")
 
     try:
-        results = asyncio.run(
-            run_probe(concurrency=args.concurrency, timeout_seconds=args.timeout)
-        )
+        results = asyncio.run(run_probe(concurrency=args.concurrency, timeout_seconds=args.timeout))
     except Exception as error:
         # A fatal error stopped the probe before it reached any provider, so it
         # is evidence about the PROBE, not about the providers. Advancing seven
@@ -615,9 +667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.state is None:
         report["gate"] = "immediate"
     else:
-        prior = l0_drift.load_streaks(
-            args.state, prior_run_expected=args.prior_run_expected
-        )
+        prior = l0_drift.load_streaks(args.state, prior_run_expected=args.prior_run_expected)
         if prior.discarded is not None:
             # A dropped artifact resets streaks and would otherwise hide the
             # third failing night. Say so in the log AND in the report.
@@ -626,9 +676,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prior.streaks, {result["slug"]: result["ok"] for result in results}
         )
         report["gate"] = "drift"
-        report["drift"] = l0_drift.verdict(
-            streaks, threshold=args.drift_threshold, prior=prior
-        )
+        report["drift"] = l0_drift.verdict(streaks, threshold=args.drift_threshold, prior=prior)
         l0_drift.write_state(args.state, streaks)
         ok = bool(report["drift"]["ok"])
 

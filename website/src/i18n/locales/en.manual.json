@@ -4101,7 +4101,12 @@
       "value_prop_stripe": "Look up Stripe customers, payments, and invoices.",
       "value_prop_vercel": "Inspect your Vercel projects and deployments.",
       "waiting_for_approval": "Waiting for approval",
-      "waiting_for_approval_address": "Waiting for the approval address… it appears here when the agent next connects — send any chat message to start authorization now."
+      "waiting_for_approval_address": "Waiting for the approval address… it appears here when the agent next connects — send any chat message to start authorization now.",
+      "needs_configuration": "Needs configuration",
+      "needs_configuration_help": "{{provider}} needs a one-time setup. Configure OAuth app opens a guided settings page; nothing changes until you save there, and you can remove it later. It walks you through registering an app with {{provider}} and entering its client ID and secret.",
+      "configure_oauth_app": "Configure OAuth app",
+      "prerequisite_github": "GitHub does not support dynamic client registration, so Connect uses the GitHub OAuth App registered under Settings → OAuth Apps. The GitHub consent page names that app; approve it to continue.",
+      "prerequisite_asana": "Asana does not support dynamic client registration, so Connect uses the Asana MCP app registered under Settings → OAuth Apps. The Asana consent page names that app; approve it to continue."
     },
     "devFleetPage": {
       "applies_the_last_pull_build_the_dashboard_will_b": "Applies the last Pull+Build. The dashboard will briefly disconnect and reconnect on its own.",
@@ -6006,6 +6011,41 @@
         "engine_download_failed": "Could not start the browser download.",
         "install_request_failed": "Could not start the install.",
         "token_save_failed": "Could not save the extension token."
+      },
+      "connectionsPanel": {
+        "title": "OAuth apps for Connections",
+        "intro": "Some providers refuse to register an OAuth client automatically. For each one below, follow its setup guide to register an app in the vendor console, paste the exact redirect URI shown here into that app, then enter the app's client ID and secret. Values set through environment variables override what is saved here.",
+        "loading": "Loading…",
+        "none": "Every provider in this install registers its own OAuth client, so there is nothing to configure here.",
+        "load_failed": "Could not load OAuth apps",
+        "configured": "Configured",
+        "not_configured": "Needs configuration",
+        "card_intro": "Register an app in the {{provider}} developer console and enter its credentials below.",
+        "open_runbook": "Open the {{provider}} setup guide",
+        "redirect_uri": "Redirect URI",
+        "redirect_uri_help": "Register exactly this value in the vendor console.",
+        "copy_redirect_uri": "Copy redirect URI",
+        "copy": "Copy",
+        "copied": "Copied",
+        "client_id": "Client ID",
+        "client_id_help": "Public identifier of the registered app. Stored in config.json.",
+        "client_id_placeholder": "Paste the client ID",
+        "client_secret": "Client secret",
+        "client_secret_required": "{{provider}} requires a client secret at the token endpoint. Stored encrypted in the secrets vault and never shown again.",
+        "client_secret_optional": "{{provider}} accepts a public client, so the secret is optional. Stored encrypted in the secrets vault and never shown again.",
+        "client_secret_placeholder": "Paste the client secret",
+        "set_by_environment": "Set by the environment variable {{name}}, which overrides any value saved here.",
+        "save": "Save",
+        "saving": "Saving…",
+        "save_failed": "Could not save the OAuth app",
+        "remove": "Remove OAuth app",
+        "remove_client": "Remove the {{provider}} OAuth app",
+        "oauth_app": "OAuth app",
+        "oauth_app_search_description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app",
+        "copy_failed": "Could not copy to the clipboard. Select the redirect URI and copy it by hand.",
+        "remove_confirm": "Remove the {{provider}} OAuth app? The client ID and the stored secret are deleted, and {{provider}} cannot connect until you enter them again.",
+        "remove_confirm_action": "Remove OAuth app",
+        "cancel": "Cancel"
       }
     },
     "systemPage": {},
@@ -6144,7 +6184,9 @@
       "saved": "Saved",
       "name_placeholder": "MY_API_KEY",
       "value_placeholder": "sk-...",
-      "load_error": "Could not load secrets: {{error}}"
+      "load_error": "Could not load secrets: {{error}}",
+      "connections_client_secret_description": "Client secret of a Connections OAuth app. Managed under Settings → OAuth Apps.",
+      "connections_client_secret_manage": "Manage in OAuth Apps"
     },
     "tabs": {
       "about": {
@@ -6210,6 +6252,10 @@
       "voice": {
         "description": "Text-to-speech and speech-to-text (dictation) settings",
         "label": "Voice"
+      },
+      "connections": {
+        "label": "OAuth Apps",
+        "description": "OAuth apps for providers that need a registered client"
       }
     }
   },

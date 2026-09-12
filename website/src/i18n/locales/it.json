@@ -10470,7 +10470,12 @@
       "value_prop_stripe": "Consultare clienti, pagamenti e fatture Stripe.",
       "value_prop_vercel": "Ispezionare i tuoi progetti e deployment Vercel.",
       "waiting_for_approval": "In attesa di autorizzazione",
-      "waiting_for_approval_address": "In attesa dell’indirizzo di autorizzazione… Comparirà qui alla prossima connessione dell’agente: invia un messaggio in chat per avviare subito l’autorizzazione."
+      "waiting_for_approval_address": "In attesa dell’indirizzo di autorizzazione… Comparirà qui alla prossima connessione dell’agente: invia un messaggio in chat per avviare subito l’autorizzazione.",
+      "needs_configuration": "Configurazione richiesta",
+      "needs_configuration_help": "{{provider}} richiede una configurazione una tantum. \"Configura app OAuth\" apre una pagina di impostazioni guidata; nulla cambia finché non salvi lì, e potrai rimuoverla in seguito. Ti guida nella registrazione di un’app presso {{provider}} e nell’inserimento di client ID e secret.",
+      "configure_oauth_app": "Configura l’app OAuth",
+      "prerequisite_github": "GitHub non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth GitHub registrata in Impostazioni → App OAuth. La pagina di consenso di GitHub mostra quell’app; approvala per continuare.",
+      "prerequisite_asana": "Asana non supporta la registrazione dinamica dei client, quindi Connetti usa l’app MCP Asana registrata in Impostazioni → App OAuth. La pagina di consenso di Asana mostra quell’app; approvala per continuare."
     },
     "contextBreakdown": {
       "axis_bar": "lunghezza barra ∝ √caratteri · segmenti = composizione di quel turno",
@@ -14437,6 +14442,41 @@
         "tokens_count_other": "{{count}} token di accesso",
         "tokens_count_many": "{{count}} token di accesso",
         "could_not_read_webhook_status": "Impossibile leggere lo stato del webhook — verifica che il gateway sia in esecuzione"
+      },
+      "connectionsPanel": {
+        "title": "App OAuth per Connessioni",
+        "intro": "Alcuni provider non registrano automaticamente un client OAuth. Per ciascuno qui sotto, segui la guida di configurazione per registrare un’app nella console del vendor, incolla in quell’app esattamente l’URI di redirect mostrato qui, poi inserisci client ID e secret dell’app. I valori impostati tramite variabili d’ambiente prevalgono su quanto salvato qui.",
+        "loading": "Caricamento…",
+        "none": "Ogni provider di questa installazione registra da sé il proprio client OAuth, quindi qui non c’è nulla da configurare.",
+        "load_failed": "Impossibile caricare le app OAuth",
+        "configured": "Configurato",
+        "not_configured": "Configurazione necessaria",
+        "card_intro": "Registra un’app nella console per sviluppatori di {{provider}} e inserisci le sue credenziali qui sotto.",
+        "open_runbook": "Apri la guida di configurazione di {{provider}}",
+        "redirect_uri": "URI di reindirizzamento",
+        "redirect_uri_help": "Registra esattamente questo valore nella console del provider.",
+        "copy_redirect_uri": "Copia l’URI di reindirizzamento",
+        "copy": "Copia",
+        "copied": "Copiato",
+        "client_id": "Client ID",
+        "client_id_help": "Identificatore pubblico dell’app registrata. Salvato in config.json.",
+        "client_id_placeholder": "Incolla il client ID",
+        "client_secret": "Client secret",
+        "client_secret_required": "{{provider}} richiede un client secret all’endpoint dei token. Viene salvato cifrato nella cassaforte dei segreti e non viene più mostrato.",
+        "client_secret_optional": "{{provider}} accetta un client pubblico, quindi il secret è facoltativo. Viene salvato cifrato nella cassaforte dei segreti e non viene più mostrato.",
+        "client_secret_placeholder": "Incolla il client secret",
+        "set_by_environment": "Impostato dalla variabile d’ambiente {{name}}, che ha la precedenza su qualsiasi valore salvato qui.",
+        "save": "Salva",
+        "saving": "Salvataggio…",
+        "save_failed": "Impossibile salvare l’app OAuth",
+        "remove": "Rimuovi app OAuth",
+        "remove_client": "Rimuovi l’app OAuth di {{provider}}",
+        "oauth_app": "App OAuth",
+        "oauth_app_search_description": "Client ID, client secret e URI di reindirizzamento per un provider che richiede un'app OAuth registrata",
+        "copy_failed": "Impossibile copiare negli appunti. Seleziona l'URI di reindirizzamento e copialo a mano.",
+        "remove_confirm": "Rimuovere l’app OAuth di {{provider}}? Client ID e secret salvato vengono eliminati e {{provider}} non potrà connettersi finché non li inserisci di nuovo.",
+        "remove_confirm_action": "Rimuovi app OAuth",
+        "cancel": "Annulla"
       }
     },
     "settingsPage": {
@@ -14986,6 +15026,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "Archivia chiavi API e credenziali in modo sicuro"
+      },
+      "connections": {
+        "label": "App OAuth",
+        "description": "App OAuth per i provider che richiedono un client registrato"
       }
     },
     "secrets": {
@@ -15032,7 +15076,9 @@
       "save_error": "Impossibile salvare il segreto: {{error}}",
       "delete_error": "Impossibile eliminare il segreto: {{error}}",
       "load_error": "Impossibile caricare i segreti: {{error}}",
-      "wakatime_unused_hint": "Non viene usato mentre WakaTime è disabilitato. Abilita WakaTime o elimina questa voce."
+      "wakatime_unused_hint": "Non viene usato mentre WakaTime è disabilitato. Abilita WakaTime o elimina questa voce.",
+      "connections_client_secret_description": "Client secret di un'app OAuth delle Connessioni. Gestito in Impostazioni → App OAuth.",
+      "connections_client_secret_manage": "Gestisci in App OAuth"
     }
   },
   "store": {

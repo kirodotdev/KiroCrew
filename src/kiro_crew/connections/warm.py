@@ -165,7 +165,7 @@ from kiro_crew.connections.mint import (
     _mints_lock,
     _new_mint_token,
 )
-from kiro_crew.connections.registry import Provider, get_visible_providers
+from kiro_crew.connections.registry import Provider, get_visible_providers, is_preregistered
 from kiro_crew.connections.tool_aliases import declared_tool_aliases, resolve_tool_aliases
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.mcp_grant import grant_presence as grant_present
@@ -344,8 +344,35 @@ def _warm_spec_body(name: str, servers: dict[str, Any], description: str) -> dic
     return body
 
 
+def _operator_oauth_client(provider: Provider) -> Any:
+    """The operator's pre-registered client for ``provider``, or ``None``.
+
+    ``None`` both for a DCR provider (nothing to resolve) and for a pre-registered
+    one the operator has not configured. Reads config and the vault on every call:
+    the warm planner runs once per spawn, not per request, and a cached value would
+    outlive the Settings write that is the whole reason a re-plan happens.
+    """
+    if not is_preregistered(provider):
+        return None
+    from kiro_crew.config import config_dir
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.oauth_clients import resolve_oauth_client
+    from kiro_crew.secrets import SecretVault
+
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable config reads as "not configured"
+        config = {}
+    return resolve_oauth_client(provider, config=config, vault=SecretVault(config_dir()))
+
+
 def _registry_server_entry(provider: Provider) -> dict[str, Any] | None:
-    """The remote MCP entry the registry implies for ``provider``, in wire shape."""
+    """The remote MCP entry the registry implies for ``provider``, in wire shape.
+
+    A pre-registered provider's entry carries the operator's client as well, or
+    ``None`` when the operator has not configured one: there is nothing the warm
+    process could authorize against, and the card is already saying so.
+    """
     entry: dict[str, Any] = {"url": provider["mcp_url"]}
     scopes = provider.get("recommended_scopes") or []
     if scopes:
@@ -354,7 +381,15 @@ def _registry_server_entry(provider: Provider) -> dict[str, Any] | None:
     if client_id:
         entry["clientId"] = client_id
     # store_entry=None: registry-derived, so no store owns it.
-    return kiro_oauth_wire_entry(entry, store_entry=None, server=str(provider["slug"]))
+    wire = kiro_oauth_wire_entry(entry, store_entry=None, server=str(provider["slug"]))
+    if not is_preregistered(provider):
+        return wire
+    from kiro_crew.connections.oauth_clients import apply_preregistered_oauth_client
+
+    resolved = _operator_oauth_client(provider)
+    if resolved is None:
+        return None
+    return apply_preregistered_oauth_client(wire, resolved)
 
 
 def _disabled_provider_slugs() -> set[str]:
@@ -503,10 +538,11 @@ def _warm_mintable_entry(
     Registry-derived on purpose: a plan built from the user's config changed on every
     Connect click, respawning a process holding other cards' live listeners.
 
-    None in two cases: no usable auth configuration (no DCR and no pre-registered public
-    client id -- GitHub is the standing example), or a CONFIGURED entry asking for
-    something different from the registry, which only the cold path can honour without
-    handing back a grant the user did not ask for.
+    None in two cases: no usable auth configuration (a pre-registered provider whose
+    operator has not entered a client yet -- ``_registry_server_entry`` already answers
+    None for it -- or a non-DCR provider carrying no client id at all), or a CONFIGURED
+    entry asking for something different from the registry, which only the cold path
+    can honour without handing back a grant the user did not ask for.
     """
     entry = _registry_server_entry(provider)
     if entry is None:
@@ -516,8 +552,20 @@ def _warm_mintable_entry(
     # bare ``clientId`` lookup reads every registered non-DCR provider as unregistered.
     if not bool(expectations.get("dcr")) and not kiro_entry_client_id(entry):
         return None
-    if isinstance(configured, dict) and _auth_shape(configured) != _auth_shape(entry):
-        return None
+    if isinstance(configured, dict):
+        compared = configured
+        if is_preregistered(provider):
+            # The store entry a Connect click writes is ``{url}`` alone; the operator's
+            # client joins it only when the agent spec is emitted. Compare what the
+            # runtime will actually see, or every configured pre-registered provider
+            # reads as "asking for something different" and never warms.
+            from kiro_crew.connections.oauth_clients import apply_preregistered_oauth_client
+
+            resolved = _operator_oauth_client(provider)
+            if resolved is not None:
+                compared = apply_preregistered_oauth_client(configured, resolved)
+        if _auth_shape(compared) != _auth_shape(entry):
+            return None
     return entry
 
 
@@ -1676,7 +1724,12 @@ class _WarmMintRuntime:
                 )
                 if activated_provider is None:
                     continue
-                activated_entry = _registry_server_entry(activated_provider)
+                # Off the loop: for a pre-registered provider this reads
+                # config.json and decrypts the vault (`_operator_oauth_client`),
+                # the same file work the current-entry read above offloads.
+                activated_entry = await asyncio.to_thread(
+                    _registry_server_entry, activated_provider
+                )
                 if activated_entry is None or _auth_shape(activated_entry) != _auth_shape(
                     current_entry
                 ):

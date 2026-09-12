@@ -948,6 +948,20 @@ def _commit_agent_config_locked(
     # decides namespaced names PRESENT in a stale one. Their order is immaterial (see
     # :func:`_drop_unbacked_app_entries`).
     existing = _on_disk_mcp_servers(installed_path)
+    # The GET masks every ``oauth.clientSecret``; an editor round-trips the
+    # marker. Restore it from the SAME on-disk read the merge below uses, so the
+    # value written back is the one this locked unit observed -- a rotation
+    # that landed during the flock wait is what gets kept, never a snapshot
+    # taken in the handler before the lock. A marker with no on-disk value is
+    # dropped rather than written.
+    from kiro_crew.mcp_utils import restore_redacted_oauth_client_secrets
+
+    restored = restore_redacted_oauth_client_secrets(
+        config, {"mcpServers": existing} if isinstance(existing, dict) else {}
+    )
+    if isinstance(restored.get("mcpServers"), dict):
+        # In place: the caller and every step below hold THIS dict.
+        config["mcpServers"] = restored["mcpServers"]
     dropped = _drop_unbacked_app_entries(config, existing)
     if dropped:
         # WARNING, not info: the client submitted these and they are not being
@@ -1021,6 +1035,11 @@ async def api_agent_config(request: web.Request) -> web.Response:
         config = body.get("config")
         if not isinstance(config, dict):
             return web.json_response({"error": "config must be an object"}, status=400)
+        # The GET above masks every ``oauth.clientSecret``. The marker an editor
+        # sends back is restored inside the locked commit unit
+        # (``_commit_agent_config_locked``), adjacent to the on-disk read it
+        # feeds -- not here, where a read would both block the loop and take a
+        # baseline a concurrent rotation could make stale before the lock.
         try:
             # ── THE INVARIANT THIS BRANCH ENFORCES ────────────────────────────
             # Every validation completes BEFORE the first durable write, and the
@@ -1234,7 +1253,12 @@ async def api_agent_config(request: web.Request) -> web.Response:
         data = json.loads(agent_config_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         data = {}
-    return web.json_response(data)
+    # A pre-registered Connections client projects its secret into the installed
+    # spec for kiro-cli; this read is not kiro-cli, and any dashboard subject can
+    # make it. Mask the value (the PUT branch restores the marker from disk).
+    from kiro_crew.mcp_utils import redact_oauth_client_secrets
+
+    return web.json_response(redact_oauth_client_secrets(data))
 
 
 async def api_default_agent(request: web.Request) -> web.Response:
@@ -3476,9 +3500,14 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     state,
                     _read_session_key(request),
                 )
+                # The spec is otherwise passed through verbatim, so mask the one
+                # value in it that is a credential (a pre-registered Connections
+                # client's projected secret); this read is not owner-gated.
+                from kiro_crew.mcp_utils import redact_oauth_client_secrets
+
                 return web.json_response(
                     {
-                        **data,
+                        **redact_oauth_client_secrets(data),
                         # The rest of the spec is passed through verbatim, but
                         # these two are CONSUMED as display text by the detail
                         # panel. A foreign spec's structured value rendered as a
