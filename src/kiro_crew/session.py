@@ -89,6 +89,7 @@ import logging
 import os
 import re
 import time
+import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager
@@ -999,6 +1000,14 @@ def _unlink_session_queue(session: "_Session") -> None:
         unlink_queued_temp_paths(kwargs)
 
 
+_LIVE_SESSION_MANAGERS: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+def iter_live_session_managers() -> tuple[Any, ...]:
+    """SessionManager instances still reachable in this process."""
+    return tuple(_LIVE_SESSION_MANAGERS)
+
+
 class SessionManager:
     """Thread-keyed LLM provider pool with warm session pre-spawning."""
 
@@ -1681,6 +1690,7 @@ class SessionManager:
             callback=self._on_config_change,
             name="SessionManager",
         )
+        _LIVE_SESSION_MANAGERS.add(self)
 
     def _ensure_cleanup_task(self) -> None:
         """Start the one cleanup loop at the allocation registration point."""

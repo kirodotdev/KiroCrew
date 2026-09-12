@@ -85,6 +85,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_AGENTCORE_GATEWAY,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
@@ -3961,8 +3962,24 @@ class AcpClient:
         on the shared session/new / session/load composition: ``mirror_for``
         RAISES for a backend registered in neither map, and kiro's construction
         path must not gain a failure mode in service of an adapter (H13).
+
+        Workload-posture AgentCore Gateway injects the live loopback SigV4
+        listen URL so session/new outranks a stale agent-file port after a
+        gateway restart; the unsigned Gateway hostname is never injected.
+        Login sidecars are a later PR. HTTP elements are
+        ``{name, type: http, url, headers}`` so kiro-cli deserializes them.
         """
-        return [] if self.backend in MIRRORS else self._pooled_broker_stubs()
+        if self.backend in MIRRORS:
+            return []
+        servers = self._pooled_broker_stubs()
+        if self._session_key and self.backend in ACP_BACKENDS_AGENTCORE_GATEWAY:
+            from kiro_crew.platform.agentcore_gateway import session_gateway_servers
+
+            servers = [
+                *servers,
+                *session_gateway_servers(self._session_key, agent=self._agent or ""),
+            ]
+        return servers
 
     def _resolve_session_mcp_servers(self) -> list[dict[str, Any]]:
         """Translate the agent spec into this session's ``mcpServers`` array.

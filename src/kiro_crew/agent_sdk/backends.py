@@ -75,6 +75,8 @@ with no row here.
      - pre-session registry query (membership gate on the ``acp_backend`` kwarg)
    * - ``ACP_BACKENDS_SESSION_MCP_ARRAY``
      - driver-internal (which channel carries the MCP server list)
+   * - ``ACP_BACKENDS_AGENTCORE_GATEWAY``
+     - driver-internal (whether the per-session AgentCore Gateway inject is offered)
    * - ``ACP_BACKENDS_SESSION_SHARING``
      - pre-session registry query (subagent session allocation)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
@@ -209,6 +211,13 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE, 
 ACP_BACKENDS_PRIVATE_MEMORY_MCP: FrozenSet[str] = frozenset(
     {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS}
 )
+
+# Backends allowed to receive the AgentCore SigV4 Gateway inject on
+# session/new. Workload posture signs with the instance role; a harness
+# that is not a member must not inherit that bearer (harness-parity H6/H7/H8).
+# KAS and the dormant Claude seam are not members — they have no reviewed
+# inject path. Stated as opt-in membership, never ``not is_claude``.
+ACP_BACKENDS_AGENTCORE_GATEWAY: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO})
 
 # ── The selectable registry ──
 

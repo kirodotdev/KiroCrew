@@ -1842,6 +1842,8 @@ class RunEventCoordinator(ManagerComponent):
         handle = await runtime.create_session(
             cwd=cwd or None,
             agent=agent or None,
+            crew_agent=agent or "",
+            session_key=session_key,
         )
         provider = AcpSessionProvider(handle, runtime)
         # The handle exists now. Publish ownership before any cancellable await so

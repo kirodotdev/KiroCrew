@@ -1280,6 +1280,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "preference is not one the client can use, and the sync loop would "
         "write the sentinel back over the file.",
     ),
+    (
+        "AgentCore Gateway catalog",
+        "platform/agentcore_inspect.py",
+        "The Settings catalog snapshot (`inspect_snapshot`) is returned to the "
+        "operator dashboard. `_scrub` drops credential-shaped keys and runs "
+        "redact_exfiltration_urls then redact_credentials on every remaining "
+        "string before the payload leaves the module.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
