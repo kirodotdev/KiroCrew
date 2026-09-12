@@ -72,8 +72,6 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/voice/config", chat.api_voice_config)
     app.router.add_get("/api/voice/voices", chat.api_voice_voices)
     app.router.add_get("/api/voice/system-voices", chat.api_voice_system_voices)
-    app.router.add_post("/api/chat/slots/{slot}/handoff", chat.api_chat_slot_handoff)
-    app.router.add_get("/api/handoff-channels", chat.api_handoff_channels)
     app.router.add_post("/api/chat/slots/{slot}/slack-link", chat.api_chat_slot_slack_link)
     app.router.add_post("/api/chat/slots/{slot}/slack-unlink", chat.api_chat_slot_slack_unlink)
     app.router.add_post("/api/chat/slots/{slot}/slack-pause", chat.api_chat_slot_slack_pause)

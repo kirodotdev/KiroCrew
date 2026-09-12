@@ -1630,7 +1630,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/design_tweak/backend/http_api.py",
         "apps/builtins/design_tweak/backend/request_state.py",
         "apps/builtins/design_tweak/backend/server.py",
-        "sync_bridge.py",
         "suggestions.py",
         "tips.py",
         "task_executor.py",
