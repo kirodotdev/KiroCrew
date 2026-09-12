@@ -320,6 +320,9 @@ _TERMINATE_TIMEOUT = 5.0
 # cost across many background prompts.
 _DEFAULT_MAX_AGE_SECS = 6 * 3600  # 6 hours
 _DEFAULT_MAX_RSS_MB = 500.0  # 500 MiB
+# The Kiro CLI replaces its own executable in place during an update. A spawn
+# that lands in that short window can fail with OSError and succeeds after this delay.
+_ACP_RUNTIME_RESPAWN_BACKOFF_S = 2.0
 
 # Below this uptime the RSS staleness probe is skipped entirely (see
 # _is_stale()). A freshly-(re)used runtime has not had time to grow, so this
@@ -1253,6 +1256,7 @@ class AcpRuntime:
         try:
             await self._spawn_admitted()
             outcome = "ready"
+            return
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
@@ -1275,6 +1279,50 @@ class AcpRuntime:
                 process_state,
             )
             admission.release()
+
+    async def _create_subprocess_with_retry(
+        self, argv: list[str], env: dict[str, str]
+    ) -> asyncio.subprocess.Process:
+        """Retry only a creation failure, before this runtime records process state."""
+        for attempt in range(2):
+            try:
+                return await create_subprocess_limited(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    # POSIX: setsid so kill() can killpg the whole tree. Windows:
+                    # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
+                    # makes the child tree taskkill /T-reapable (see platform_compat
+                    # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
+                    # window Windows would otherwise pop for this console child spawned
+                    # from the windowless gateway (0 on POSIX, so no effect there).
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=(
+                        platform_compat.CREATE_NEW_PROCESS_GROUP
+                        | platform_compat._SUBPROCESS_NO_WINDOW
+                        | platform_compat.CREATE_SUSPENDED
+                    ),
+                    # None off macOS, where nothing binds. When set, the child enters
+                    # the workspace through this verified descriptor instead of
+                    # resolving ``cwd``'s pathname, which a same-UID symlink retarget
+                    # could aim elsewhere in between; ``cwd`` stays the same directory
+                    # by name so the spawn keeps reporting a real path.
+                    chdir_fd=self._bound_workspace_fd,
+                    env=env,
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
+                )
+            except OSError as exc:
+                if attempt:
+                    raise
+                logger.warning(
+                    "ACP runtime subprocess creation failed (%s), retrying after "
+                    "adapter replacement window...",
+                    exc,
+                )
+                await asyncio.sleep(_ACP_RUNTIME_RESPAWN_BACKOFF_S)
 
     async def _spawn_admitted(self) -> None:
         """Spawn and initialize after the caller has acquired cold-start admission."""
@@ -1476,34 +1524,7 @@ class AcpRuntime:
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
-            self._process = await create_subprocess_limited(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._spawn_work_dir,
-                limit=_STDOUT_BUFFER_LIMIT,
-                # POSIX: setsid so kill() can killpg the whole tree. Windows:
-                # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
-                # makes the child tree taskkill /T-reapable (see platform_compat
-                # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
-                # window Windows would otherwise pop for this console child spawned
-                # from the windowless gateway (0 on POSIX, so no effect there).
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=(
-                    platform_compat.CREATE_NEW_PROCESS_GROUP
-                    | platform_compat._SUBPROCESS_NO_WINDOW
-                    | platform_compat.CREATE_SUSPENDED
-                ),
-                # None off macOS, where nothing binds. When set, the child enters
-                # the workspace through this verified descriptor instead of
-                # resolving ``cwd``'s pathname, which a same-UID symlink retarget
-                # could aim elsewhere in between; ``cwd`` stays the same directory
-                # by name so the spawn keeps reporting a real path.
-                chdir_fd=self._bound_workspace_fd,
-                env=env,
-                profile=RLIMIT_PROFILE_SESSION_HOST,
-            )
+            self._process = await self._create_subprocess_with_retry(argv, env)
         except BaseException:
             await self._discard_bound_workspace()
             self._discard_sandbox_cleanup()
