@@ -6108,6 +6108,10 @@
       "plainDiff": {
         "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
         "label": "Plain diffs"
+      },
+      "diffLayout": {
+        "description": "Show old and new code in two columns; off shows one unified column. Changing it here or on any diff sets it everywhere.",
+        "label": "Split (side-by-side) diffs"
       }
     },
     "display": {

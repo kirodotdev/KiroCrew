@@ -14524,6 +14524,10 @@
       "plainDiff": {
         "description": "차이를 구문 강조 없이 일반 unified diff 텍스트로 표시합니다. 큰 diff에서 메모리를 덜 사용합니다.",
         "label": "일반 diff"
+      },
+      "diffLayout": {
+        "description": "이전 코드와 새 코드를 두 열로 표시합니다. 끄면 한 열의 통합 뷰로 표시합니다. 여기서 바꾸든 diff에서 바꾸든 어디에나 적용됩니다.",
+        "label": "분할(좌우 나란히) diff"
       }
     },
     "display": {

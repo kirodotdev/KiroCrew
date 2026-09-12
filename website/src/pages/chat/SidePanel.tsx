@@ -29,6 +29,7 @@ import AppHost from '../../components/AppHost'
 import { appIcon } from '../../apps/appIcons'
 import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { useSidePanelDock } from '../../hooks/useSidePanelDock'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator
@@ -591,7 +592,7 @@ export default function SidePanel({
   // Diff view preferences — persisted; 'mc-diff-split' is shared with the
   // file view's git-diff toggle so split/unified is one app-wide preference.
   const [diffLineNumbers, setDiffLineNumbers] = usePersistedBool('mc-diff-linenums', false)
-  const [diffSideBySide, setDiffSideBySide] = usePersistedBool('mc-diff-split', true)
+  const [diffSideBySide, setDiffSideBySide] = useDiffSplit()
 
   // Resizable width (the actbar grid column is auto-sized, so the panel owns
   // its own width).

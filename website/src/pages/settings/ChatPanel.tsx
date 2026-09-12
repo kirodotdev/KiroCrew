@@ -18,6 +18,7 @@ import { serializeDefaultMemoryModeUpdate } from '../../api/queryClient'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
+import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../../components/BusySendButton'
@@ -859,6 +860,10 @@ export function ChatPanel() {
   // section: the machine painting the diff is the one spending the CPU, so the
   // choice belongs to this client rather than to the whole instance.
   const [plainDiff, setPlainDiff] = usePlainDiff()
+  // Default layout every diff surface opens in (side-by-side vs unified),
+  // backed by the same client-local `mc-diff-split` preference the surfaces
+  // read. Browser-local for the same reason as plain diffs above.
+  const [diffSplit, setDiffSplit] = useDiffSplit()
 
   // ── Local chat config (localStorage) ──
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
@@ -1118,6 +1123,16 @@ export function ChatPanel() {
             description={i18nT('settings.chat.plainDiff.description')}
             checked={plainDiff}
             onChange={setPlainDiff}
+          />
+          {/* Sits beside Plain diffs because it governs the same surface -- how a
+              diff opens in the transcript. Phrased as "split ON" so the switch
+              position matches the stored value. Browser-local, hence no
+              `configKey`. */}
+          <SettingsToggle
+            label={i18nT('settings.chat.diffLayout.label')}
+            description={i18nT('settings.chat.diffLayout.description')}
+            checked={diffSplit}
+            onChange={setDiffSplit}
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
           <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} description={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} />

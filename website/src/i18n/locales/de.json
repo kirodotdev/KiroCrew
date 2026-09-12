@@ -14716,6 +14716,10 @@
       "plainDiff": {
         "description": "Diffs als einfachen Unified-Diff-Text ohne Syntaxhervorhebung anzeigen. Benötigt bei großen Diffs weniger Speicher.",
         "label": "Einfache Diffs"
+      },
+      "diffLayout": {
+        "description": "Zeigt alten und neuen Code in zwei Spalten; aus zeigt eine einzelne zusammengeführte Spalte. Hier oder an einem beliebigen Diff geändert, gilt es überall.",
+        "label": "Geteilte Diffs (nebeneinander)"
       }
     },
     "display": {

@@ -18,6 +18,7 @@ import MarkdownOutlineRail from './MarkdownToc'
 import { useFileWatch } from '../hooks/useFileWatch'
 import { useBranding } from '../hooks/useBranding'
 import { usePersistedBool } from '../hooks/usePersistedBool'
+import { useDiffSplit } from '../hooks/useDiffSplit'
 import { countLines } from './FileChangeChips'
 import { store } from '../store'
 import { findBestOccurrence } from '../hooks/useMarkdownCommentHighlights'
@@ -1001,7 +1002,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   }, [diffMode, onDiffModeChange])
   // Unified vs side-by-side diff rendering — persisted, and shares its key
   // with SidePanel's diff tabs so the preference is app-wide.
-  const [diffSplit, setDiffSplit] = usePersistedBool('mc-diff-split', true)
+  const [diffSplit, setDiffSplit] = useDiffSplit()
   const diffInitFileRef = useRef<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(() => savedBaseline != null && content !== savedBaseline)

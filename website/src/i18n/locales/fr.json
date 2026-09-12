@@ -14909,6 +14909,10 @@
       "plainDiff": {
         "description": "Affiche les diffs sous forme de texte unified diff sans coloration syntaxique. Consomme moins de mémoire sur les diffs volumineux.",
         "label": "Diffs en texte brut"
+      },
+      "diffLayout": {
+        "description": "Affiche l'ancien et le nouveau code sur deux colonnes ; désactivé, une seule colonne unifiée. Le changer ici ou sur n'importe quel diff l'applique partout.",
+        "label": "Diffs divisés (côte à côte)"
       }
     },
     "display": {

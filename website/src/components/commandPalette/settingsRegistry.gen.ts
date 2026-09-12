@@ -1142,6 +1142,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.split-side-by-side-diffs",
+    "label": "Split (side-by-side) diffs",
+    "labelKey": "settings.chat.diffLayout.label",
+    "description": "Show old and new code in two columns; off shows one unified column. Changing it here or on any diff sets it everywhere.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.split-view-session-grid",
     "label": "Split View (Session Grid)",
     "labelKey": "pages.settings.chatPanel.split_view_session_grid",

@@ -696,6 +696,13 @@
       "route": "/settings/chat?highlight=chat.soft-stop-budget-seconds"
     },
     {
+      "id": "chat.split-side-by-side-diffs",
+      "label": "Split (side-by-side) diffs",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.split-side-by-side-diffs",
+      "description": "Show old and new code in two columns; off shows one unified column. Changing it here or on any diff sets it everywhere."
+    },
+    {
       "id": "chat.split-view-session-grid",
       "label": "Split View (Session Grid)",
       "tab": "chat",

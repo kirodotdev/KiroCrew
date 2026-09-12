@@ -14908,6 +14908,10 @@
       "plainDiff": {
         "description": "Mostra i diff come testo unified diff senza evidenziazione della sintassi. Usa meno memoria sui diff di grandi dimensioni.",
         "label": "Diff in testo semplice"
+      },
+      "diffLayout": {
+        "description": "Mostra il codice vecchio e nuovo su due colonne; disattivato mostra un'unica colonna unificata. Cambiarlo qui o su un diff qualsiasi lo applica ovunque.",
+        "label": "Diff divisi (affiancati)"
       }
     },
     "display": {
