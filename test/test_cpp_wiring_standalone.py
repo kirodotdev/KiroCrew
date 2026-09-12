@@ -93,6 +93,18 @@ def test_extra_mcp_servers_empty_standalone() -> None:
     assert ctx.mcp_tooling.extra_mcp_servers() == {}
 
 
+def test_extra_heartbeat_mcp_servers_empty_standalone() -> None:
+    """No edition-contributed MCP servers reach the heartbeat agent in standalone.
+
+    This is the public-install guarantee for the ``extra_heartbeat_mcp_servers``
+    seam: the Default adapter contributes nothing, so a standalone
+    ``kirocrew-heartbeat`` spec stays exactly ``kirocrew-core`` and is
+    byte-identical to what it was before the seam existed.
+    """
+    ctx = current_context()
+    assert ctx.mcp_tooling.extra_heartbeat_mcp_servers() == {}
+
+
 # ── AgentRuntime.run_first_run_setup (newly wired) ──
 #
 # The gateway boot path must not call ``agent.run_first_run_setup()`` directly

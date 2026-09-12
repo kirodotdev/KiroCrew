@@ -40,6 +40,7 @@ from kiro_crew.mcp_utils import (
     KIRO_OAUTH_KEY,
     KIRO_SCOPES_KEY,
 )
+from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,9 @@ def _validate_spec(spec: object, carried_keys: frozenset[str] = frozenset()) -> 
                 if not isinstance(nested, list) or any(
                     not isinstance(scope, str) or not scope.strip() for scope in nested
                 ):
-                    return f"'{KIRO_OAUTH_KEY}.{KIRO_SCOPES_KEY}' must be a list of non-empty strings"
+                    return (
+                        f"'{KIRO_OAUTH_KEY}.{KIRO_SCOPES_KEY}' must be a list of non-empty strings"
+                    )
         if "headers" in spec:
             headers = spec["headers"]
             if not isinstance(headers, dict) or any(
@@ -303,12 +306,32 @@ def _load_kirocrew_config_strict() -> dict | None:
 
 
 async def _rebuild_agent_config() -> None:
-    """Best-effort agent-config rebuild so changes load on the next session."""
+    """Best-effort agent-config rebuild so changes load on the next session.
+
+    ``PlatformCompositionError`` is NOT swallowed here, unlike every other
+    exception: it is the fail-closed signal that ``_install_heartbeat_agent``
+    (inside ``rebuild_agent_config``) could not compose a non-standalone
+    host's context at all, which means the PRIOR on-disk heartbeat spec was
+    left in place with no rewrite -- and a prior spec can carry an
+    operator-set ``autoApprove`` that never reached the strip, bypassing
+    gateway approval and SEL audit on the unattended heartbeat session. The
+    boot-time caller of ``rebuild_agent_config`` has its OWN backstop
+    (``boot_platform`` aborts the whole process before that call site is
+    reachable on a composition failure), but THIS caller runs on a live
+    dashboard config-write endpoint, well after boot has already succeeded --
+    there is no equivalent abort available here, so the caller must be told
+    the write did not fully take effect rather than seeing a blanket
+    "rebuild_agent_config failed" log line for an error class that means
+    something categorically worse than every other rebuild failure this
+    function absorbs.
+    """
     try:
         # circular import: kiro_crew.agent imports dashboard handlers.
         from kiro_crew.agent import rebuild_agent_config
 
         await asyncio.to_thread(rebuild_agent_config)
+    except PlatformCompositionError:
+        raise
     except Exception:
         logger.warning("rebuild_agent_config failed after MCP custom write", exc_info=True)
 
@@ -402,7 +425,26 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         # Windows — blocking filesystem work kept off the event loop.
         await _mcp._offload_config_write(_mcp._atomic_write, _mcp._kirocrew_mcp_json(), data)
 
-    await _rebuild_agent_config()
+    try:
+        await _rebuild_agent_config()
+    except PlatformCompositionError:
+        # The server was written to disk (above), but the heartbeat/agent
+        # config that would have picked it up could not be rebuilt — a
+        # composition failure this deep means the PRIOR heartbeat spec is
+        # still in place, potentially carrying a stale autoApprove that
+        # bypasses gateway approval. Report this loudly rather than the
+        # "{"ok": True}" every other path on this endpoint returns: a caller
+        # that thinks the add fully succeeded has no reason to retry or to
+        # investigate why heartbeat behavior did not change.
+        return web.json_response(
+            {
+                "error": "server saved, but the agent config could not be"
+                " rebuilt (platform composition failed) — heartbeat may be"
+                " running a stale config until this is retried",
+                "code": "agent_config_rebuild_failed",
+            },
+            status=500,
+        )
 
     added = sorted(cleaned)
     sel().log_api_access(
@@ -569,7 +611,22 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
     if not replaced:
         return web.json_response({"error": f"server '{name}' not found"}, status=404)
 
-    await _rebuild_agent_config()
+    try:
+        await _rebuild_agent_config()
+    except PlatformCompositionError:
+        # Same rationale as the add path above: the spec was replaced on
+        # disk, but the agent config rebuild that would apply it failed
+        # closed, leaving a prior (possibly stale-autoApprove) heartbeat
+        # spec in place.
+        return web.json_response(
+            {
+                "error": "server updated, but the agent config could not be"
+                " rebuilt (platform composition failed) — heartbeat may be"
+                " running a stale config until this is retried",
+                "code": "agent_config_rebuild_failed",
+            },
+            status=500,
+        )
 
     sel().log_api_access(
         caller="dashboard",
