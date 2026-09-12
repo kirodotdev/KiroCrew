@@ -95,7 +95,11 @@ def verified_correction(
         return CorrectionEvidence(
             key,
             before["value_json"],
-            json.dumps(value),
+            # ensure_ascii=False matches the representation set_semantic
+            # persists and compares against when it verifies a correction; an
+            # escaped dump can never equal the raw value_json, so a non-ASCII
+            # correction would stall as a conflict proposal.
+            json.dumps(value, ensure_ascii=False),
             revision,
             f"{session_key}#message:{index}: {statement}",
             observed,
