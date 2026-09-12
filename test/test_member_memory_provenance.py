@@ -60,6 +60,48 @@ def test_unowned_host_keeps_v1_and_owner_bootstrap(provenance):
     assert auth.local_owner_bootstrap_allowed(provenance.request)
 
 
+def _register_spawned_backend(monkeypatch, pid, *, name="crew-tunnel", live=True, adopted=False):
+    """Make *pid* the gateway's own app-backend record for *name*."""
+    from kiro_crew.apps import backend as apps_backend
+
+    record = apps_backend.AppProcess(
+        app_name=name,
+        pid=pid,
+        proc=None if adopted else SimpleNamespace(poll=lambda: None if live else 0),
+        adopted_pids=[pid] if adopted else [],
+    )
+    monkeypatch.setattr(apps_backend, "_processes", {name: record})
+
+
+def test_a_sandboxed_app_backend_still_bootstraps_the_owner(provenance, monkeypatch):
+    """Every app backend gets its own namespace, so the match can never hold."""
+    assert auth._verified_host_process(45) is False
+    assert not auth.local_owner_bootstrap_allowed(provenance.request)
+
+    _register_spawned_backend(monkeypatch, 45)
+    assert auth.local_owner_bootstrap_allowed(provenance.request)
+
+
+def test_a_backend_record_cannot_promote_a_private_member(provenance, monkeypatch):
+    """The private-member leg outranks app-backend provenance."""
+    auth.publish_member_session_pid(42, "member:alice", memory_store="member-alice")
+    _register_spawned_backend(monkeypatch, 45)
+    assert auth.protected_member_session_for_pid(45) == "member:alice"
+    assert not auth.local_owner_bootstrap_allowed(provenance.request)
+
+
+def test_an_adopted_backend_is_not_owner_provenance(provenance, monkeypatch):
+    """We hold no handle, so that pid is another supervisor's to vouch for."""
+    _register_spawned_backend(monkeypatch, 45, adopted=True)
+    assert not auth.local_owner_bootstrap_allowed(provenance.request)
+
+
+def test_an_exited_backend_is_not_owner_provenance(provenance, monkeypatch):
+    """A reaped pid can already belong to something else."""
+    _register_spawned_backend(monkeypatch, 45, live=False)
+    assert not auth.local_owner_bootstrap_allowed(provenance.request)
+
+
 def test_published_v1_runtime_keeps_v1_without_owner_authority(provenance):
     auth.publish_member_session_pid(42, "dashboard:one", memory_store="")
     assert auth.protected_member_session_for_pid(45) is None

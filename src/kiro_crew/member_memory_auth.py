@@ -806,6 +806,30 @@ def private_memory_boundaries_active() -> bool:
         return True
 
 
+def _gateway_spawned_app_backend(pid: int) -> bool:
+    """Positive host provenance for an app backend this gateway spawned.
+
+    ``_verified_host_process`` reads provenance off namespace identity, which an
+    app backend cannot satisfy: ``apps.backend`` launches every one of them
+    through ``wrap_argv``, so a healthy backend sits in its own mount/user
+    namespace and compares unequal to the gateway. Namespace identity is the
+    wrong question to ask about a process the gateway itself started, and asking
+    it alone refuses every app backend on any host holding one V2 store.
+
+    The registry read here is not weaker evidence than the comparison it stands
+    in for. It is in-process gateway state no app can write, and only a record
+    whose ``Popen`` is still unreaped answers, which is what keeps the root pid
+    immune to reuse. It widens neither of the other two legs: a caller carrying a
+    private-member binding stays refused by ``protected_member_session_for_pid``,
+    so this cannot promote a private member into the owner.
+    """
+    try:
+        from kiro_crew.apps.backend import spawned_backend_owns_pid
+    except Exception:
+        return False
+    return spawned_backend_owns_pid(pid)
+
+
 def local_owner_bootstrap_allowed(request: Any) -> bool:
     """The shared local secret cannot promote a private member into the owner."""
     try:
@@ -816,7 +840,7 @@ def local_owner_bootstrap_allowed(request: Any) -> bool:
             isinstance(pid, int)
             and platform_compat.get_process_start_id(pid)
             and protected_member_session_for_pid(pid) is None
-            and _verified_host_process(pid)
+            and (_verified_host_process(pid) or _gateway_spawned_app_backend(pid))
         )
     except Exception:
         return False

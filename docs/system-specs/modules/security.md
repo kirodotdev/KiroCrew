@@ -71,10 +71,15 @@ private members exist. A private process, corrupt binding or unverifiable peer
 receives `403 member_owner_token_refused`; an actual unowned host app/CLI can
 still bootstrap the owner. Possession of `.local_secret` alone cannot promote
 a private agent into dashboard owner authority. A published V1 runtime only
-authorizes its Global V1 operations; owner bootstrap still requires host OS
-provenance. A sandboxed macOS app without a trusted runtime record cannot use
-this local-secret endpoint; use the host login-link CLI. An unavailable Seatbelt
-query likewise fails closed.
+authorizes its Global V1 operations. Owner bootstrap requires host OS provenance
+OR a caller the gateway's own app-backend registry vouches for: a backend this
+gateway spawned, or one of its descendants, matched only while the gateway still
+holds an unreaped process handle for that root. An adopted backend holds no such
+handle and is refused. That second leg reaches no private member, because the
+protected-binding check runs ahead of it and refuses a bound caller outright.
+A sandboxed macOS app this gateway did not spawn, carrying no trusted runtime
+record, cannot use this local-secret endpoint; use the host login-link CLI. An
+unavailable Seatbelt query likewise fails closed.
 Run the login-link CLI on the same host as the gateway so its process can be
 attributed. For a WSL gateway, mint the link from WSL; a Windows-side client
 cannot supply Linux kernel process identity. The resulting owner login link
@@ -182,7 +187,8 @@ helper checks the peer's process incarnation before and after querying the
 kernel. A denied or unknown result grants no Global authority. This preserves
 ordinary sandboxed V1 callers while refusing private descendants that encounter
 a Global ancestor's binding. Private bindings keep their existing protected
-identity checks; owner bootstrap still requires an unsandboxed process.
+identity checks; owner bootstrap requires an unsandboxed process or a backend the
+gateway's app-backend registry vouches for.
 
 Private members also hide the crew home's `snapshots` and `sessions` directories:
 snapshots can contain Global memory, and transcripts can contain other members'

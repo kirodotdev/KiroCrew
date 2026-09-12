@@ -410,6 +410,76 @@ class TestPidAncestry:
         assert bmod._spawn_owns_listener(9100, 43) is False
 
 
+class TestSpawnedBackendOwnsPid:
+    """Only a LIVE child of this gateway may be attributed to an app."""
+
+    @staticmethod
+    def _live(pid: int, name: str = "app") -> AppProcess:
+        return AppProcess(
+            app_name=name,
+            pid=pid,
+            proc=SimpleNamespace(poll=lambda: None),  # type: ignore[arg-type]
+        )
+
+    def test_the_spawn_root_itself_is_owned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bmod, "_processes", {"app": self._live(11)})
+        assert bmod.spawned_backend_owns_pid(11) is True
+
+    def test_a_launcher_descendant_is_owned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``wrap_argv`` puts a sandbox launcher between us and the real server."""
+        monkeypatch.setattr(bmod, "_processes", {"app": self._live(11)})
+        monkeypatch.setattr(bmod.platform_compat, "get_ppid", lambda _p: 11)
+        assert bmod.spawned_backend_owns_pid(22) is True
+
+    def test_an_unrelated_pid_is_not_owned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bmod, "_processes", {"app": self._live(11)})
+        monkeypatch.setattr(bmod.platform_compat, "get_ppid", lambda _p: 1)
+        assert bmod.spawned_backend_owns_pid(22) is False
+
+    def test_an_adopted_backend_is_never_owned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An adopted instance's pid belongs to a supervisor that is not us."""
+        adopted = AppProcess(app_name="app", pid=11, proc=None, adopted_pids=[11])
+        monkeypatch.setattr(bmod, "_processes", {"app": adopted})
+        assert bmod.spawned_backend_owns_pid(11) is False
+
+    def test_an_exited_child_is_never_owned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Once a child is reaped its pid is free for any process to take."""
+        dead = AppProcess(
+            app_name="app",
+            pid=11,
+            proc=SimpleNamespace(poll=lambda: 0),  # type: ignore[arg-type]
+        )
+        monkeypatch.setattr(bmod, "_processes", {"app": dead})
+        assert bmod.spawned_backend_owns_pid(11) is False
+
+    def test_a_record_with_no_pid_matches_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without the guard, pid 0 would be its own ancestor and match."""
+        blank = AppProcess(
+            app_name="app",
+            pid=0,
+            proc=SimpleNamespace(poll=lambda: None),  # type: ignore[arg-type]
+        )
+        monkeypatch.setattr(bmod, "_processes", {"app": blank})
+        assert bmod.spawned_backend_owns_pid(0) is False
+
+    def test_the_ancestry_walk_runs_outside_the_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A ``/proc`` read per candidate must not be serialised behind spawns."""
+        free: list[bool] = []
+
+        def _probe(pid: int, ancestor: int) -> bool:
+            # Non-reentrant lock, so a successful acquire proves it was released.
+            acquired = bmod._lock.acquire(blocking=False)
+            free.append(acquired)
+            if acquired:
+                bmod._lock.release()
+            return pid == ancestor
+
+        monkeypatch.setattr(bmod, "_processes", {"app": self._live(11)})
+        monkeypatch.setattr(bmod, "_pid_is_self_or_descendant_of", _probe)
+        assert bmod.spawned_backend_owns_pid(11) is True
+        assert free == [True]
+
+
 # ---------------------------------------------------------------------------
 # Node / npm binary resolution
 # ---------------------------------------------------------------------------
