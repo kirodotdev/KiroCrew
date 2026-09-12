@@ -3538,6 +3538,95 @@ async def test_dispatch_subagent_activity_text_is_redacted():
         await _stop_reader(task)
 
 
+@pytest.mark.asyncio
+async def test_dispatch_subagent_activity_ignores_this_session():
+    """The extension spelling naming THIS session yields no sub-agent activity.
+
+    kiro-cli carries the parent turn's own ``tool_call_chunk`` on
+    ``_kiro.dev/session/update`` with ``params.sessionId`` set to the parent's
+    session -- the same method a child's update arrives on -- so the sessionId is
+    the only thing separating the two. Treating the parent's frame as a child's
+    puts a sub-agent on the session the user is already watching, with that
+    session's own id, once per tool call. Recorded live in
+    ``test/fixtures/acp_frames/kiro/session.jsonl``.
+    """
+    from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
+
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    task = await _start_reader(rt)
+    try:
+        events = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        q["sA"].put_nowait(
+            JsonRpcMessage.from_dict(
+                {
+                    "method": METHOD_KIRO_SESSION_UPDATE,
+                    "params": {
+                        "sessionId": "sA",
+                        "update": {
+                            "sessionUpdate": "tool_call_chunk",
+                            "toolCallId": "tc-own",
+                            "title": "shell",
+                            "kind": "execute",
+                        },
+                    },
+                }
+            )
+        )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=3.0)
+        assert [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY] == []
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_subagent_activity_ignores_this_session_text():
+    """Same scoping for the text carrier, so one guard cannot cover half the shape."""
+    from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
+
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    task = await _start_reader(rt)
+    try:
+        events = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        q["sA"].put_nowait(
+            JsonRpcMessage.from_dict(
+                {
+                    "method": METHOD_KIRO_SESSION_UPDATE,
+                    "params": {
+                        "sessionId": "sA",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "text": "the parent's own streamed text",
+                        },
+                    },
+                }
+            )
+        )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=3.0)
+        assert [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY] == []
+    finally:
+        await _stop_reader(task)
+
+
 # ── Error during prompt turn ──
 
 
@@ -8528,18 +8617,27 @@ async def test_child_tool_call_chunk_stays_fail_closed_but_visible():
 
 
 @pytest.mark.asyncio
-async def test_own_session_kiro_session_update_keeps_activity_shape():
-    """A `_kiro.dev/session/update` frame naming THIS session is not a child
-    frame: it keeps the pre-existing hand-rolled activity shape and never
-    reaches the child-frame parser, so no cache writes occur."""
+async def test_own_session_kiro_session_update_is_not_child_activity():
+    """A `_kiro.dev/session/update` frame naming THIS session is not a child frame.
+
+    kiro-cli carries the parent turn's OWN tool-call chunk on the extension
+    method, under the parent's own sessionId and the parent's own toolCallId --
+    recorded live in ``test/fixtures/acp_frames/kiro/session.jsonl`` -- so the
+    sessionId is the only thing that separates it from a child's update. Two
+    consequences, both checked here: it must not reach the child-frame parser, so
+    the origin-scoped identity caches stay empty, and it must yield no
+    sub-agent activity, because ``messaging.driver`` puts every activity event's
+    toolCallId into the set that refuses session directives as
+    ``native_subagent_isolation``. Yielding one for the parent's own tool call
+    makes the parent's directives refuse themselves.
+    """
     handle, queue = _make_handle_for_child_frames()
     queue.put_nowait(_child_kiro_update_frame(session_id="parent-sid"))
     queue.put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
 
     events = [ev async for ev in handle._dispatch_events(1, 5.0)]
 
-    activity = [ev for ev in events if ev.kind == EVENT_SUBAGENT_ACTIVITY]
-    assert activity and activity[0].tool_call_id == "tc-child-1"
+    assert [ev for ev in events if ev.kind == EVENT_SUBAGENT_ACTIVITY] == []
     assert handle._tool_call_mcp_server == {}
     assert handle._tool_call_raw_params == {}
 

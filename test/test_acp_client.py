@@ -9784,6 +9784,78 @@ class TestDispatchSubagentEvents:
         assert len(txt) == 1 and txt[0].sub_session_id == "s1"
 
     @pytest.mark.asyncio
+    async def test_dispatch_ignores_activity_naming_this_session(self):
+        """A frame naming THIS session is the parent's own stream, not a child's.
+
+        kiro-cli carries the parent turn's own ``tool_call_chunk`` on
+        ``_kiro.dev/session/update`` with ``params.sessionId`` set to the
+        parent's session, the same method a child's update arrives on, so the
+        sessionId is the only separator. Recorded live in
+        ``test/fixtures/acp_frames/kiro/session.jsonl``. Both carriers are
+        checked so one guard cannot cover half the shape.
+        """
+        from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, JsonRpcMessage
+
+        client = AcpClient()
+        client._session_id = "own-1"
+
+        frames = [
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "own-1",
+                        "update": {
+                            "sessionUpdate": "tool_call_chunk",
+                            "toolCallId": "tc-own",
+                            "title": "shell",
+                        },
+                    }
+                ),
+            ),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "own-1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "text": "the parent's own streamed text",
+                        },
+                    }
+                ),
+            ),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "child-1",
+                        "update": {
+                            "sessionUpdate": "tool_call_chunk",
+                            "toolCallId": "tc-child",
+                            "title": "read",
+                        },
+                    }
+                ),
+            ),
+            ("complete", JsonRpcMessage(result={"stopReason": "end_turn"})),
+        ]
+
+        async def _fake_loop(req_id, timeout):
+            for f in frames:
+                yield f
+
+        client._prompt_loop = _fake_loop  # type: ignore[assignment]
+
+        events = []
+        async for ev in client._dispatch_events(req_id=1, timeout=1.0):
+            events.append(ev)
+
+        acts = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
+        assert [a.sub_session_id for a in acts] == ["child-1"]
+        assert acts[0].tool_call_id == "tc-child"
+
+    @pytest.mark.asyncio
     async def test_dispatch_redacts_and_extracts_subagent_output(self):
         """Sub-agent titles/text are LLM-influenced, so credentials + exfil URLs
         must be scrubbed before they surface as EVENT_SUBAGENT_ACTIVITY. Also

@@ -3060,6 +3060,17 @@ class AcpSessionHandle:
                     _su_text_val, _su_thinking = parse_text_chunk(upd)
                     su_text = _su_text_val or ""
                     su_kind = str(upd.get("sessionUpdate") or "")
+                    # A frame naming THIS session is this turn's own stream, not a
+                    # child's, so it yields no sub-agent activity. kiro-cli sends
+                    # the extension spelling for the parent's own tool-call chunk
+                    # as well as for a child's update, and the two are told apart
+                    # only by the sessionId -- the same discriminant the cache
+                    # scoping above uses. Without this the crew monitor shows a
+                    # sub-agent for every tool call of an ordinary turn, whose id
+                    # is the session the user is already looking at.
+                    own_session = bool(ssid) and ssid == self._session_id
+                    if own_session:
+                        continue
                     if ssid and tcid:
                         yield AcpEvent(
                             kind=EVENT_SUBAGENT_ACTIVITY,

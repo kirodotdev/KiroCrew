@@ -365,6 +365,30 @@ class TestNativeSubAgentIsolation:
         )
         assert spy.applied == [("autonudge_stop", {"reason": "done"})]
 
+    def test_parent_own_tool_call_is_not_isolated(self):
+        """The isolation set is fed by activity events, so a parent frame must yield none.
+
+        kiro-cli carries the parent turn's own tool-call chunk on
+        ``_kiro.dev/session/update`` under the parent's own sessionId and
+        toolCallId (recorded live in
+        ``test/fixtures/acp_frames/kiro/session.jsonl``). The handle answers that
+        frame with no activity event, which is what keeps the parent's own
+        toolCallId out of this set -- otherwise every directive tool in an
+        ordinary messaging turn refuses itself as native_subagent_isolation. This
+        pins the driver end of that contract: given no activity event, the same
+        call applies.
+        """
+        spy = _SpyConsumer()
+        _run(
+            [
+                _core_call("autonudge_stop", tcid="tc-parent-own"),
+                _result(_directive("autonudge_stop", {"reason": "done"}), tcid="tc-parent-own"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+            spy,
+        )
+        assert spy.applied == [("autonudge_stop", {"reason": "done"})]
+
 
 # ── Channel applier boundary (apply_session_directive with slot=None) ─────────
 

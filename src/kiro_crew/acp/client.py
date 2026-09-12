@@ -8507,6 +8507,14 @@ class AcpClient:
                 # does not shadow a populated flat ``text``.
                 _su_chunk, _su_thinking = self._extract_text_chunk(msg)
                 _su_text = str(_su_chunk or (_upd.get("text") or ""))
+                # A frame naming THIS session is this turn's own stream, not a
+                # child's. kiro-cli sends the extension spelling for the parent's
+                # own tool-call chunk as well as for a child's update, and the
+                # sessionId is what separates them; treating the parent's as a
+                # child would put a sub-agent card on the session the user is
+                # already looking at.
+                if _ssid and _ssid == (self._session_id or ""):
+                    continue
                 if _ssid and _tcid:
                     # Sub-agent output is LLM-influenced — redact the title before
                     # it reaches the dashboard/persisted message.
