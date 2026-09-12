@@ -67,6 +67,39 @@ parsers, formatters, logging, and atomic I/O remain ordinary module dependencies
 stable helpers still owned by the core facade are resolved lazily rather than
 injected into every component.
 
+### Bounded transcript pages
+
+`ConversationLog.read_messages_chained_page` serves dashboard pagination without
+materializing the complete parsed transcript. `TranscriptReadProjection` keeps a
+bounded in-memory sparse index per transcript revision, mapping every fixed row
+stride to a byte offset. Any file-stamp or invalidation-generation change rebuilds
+the index from byte zero; only an exact revision reuses checkpoints.
+Authoritative full reads performed off the event loop (including restore) warm
+the index so the first dashboard page does not repeat the scan. A page seeks to
+the nearest checkpoint and decodes only the intersecting range plus at most one
+stride. Tab-chain membership and ordering come from the same `_tab_id_index` as
+`read_messages_chained`; there is no second lineage model.
+
+The index stores counts and offsets only, never message content, and never crosses
+a process boundary or trusts agent-writable derived state. In-memory validity
+requires the full file stamp (`mtime_ns`, size, inode, device) and the process-wide
+history invalidation generation. A revision changing during a page read is
+retried; repeated churn falls back to the complete-reader oracle so the endpoint
+never returns a mixed revision. Indexed reads use the strict framing posture
+(`strict_raw_records_with_offsets`): a record over `RECORD_CAP` raises instead of
+being skipped, because a skipped row would shift every cursor above it; the
+endpoint then serves the request from the full reader, which has no per-record cap.
+
+Paginated slot detail composes an indexed durable prefix with the resident disk
+suffix and the existing unflushed/transient window reconciliation. The first
+range read returns an ordered chain revision (`key`, file stamp, invalidation
+generation); every later range in that response must match it, otherwise the
+whole composition retries and ultimately falls back to the full-reader oracle.
+It preserves the legacy exact `total`, `before`, `next_before`, and `has_more`
+fields. The no-limit route and callers requiring complete history remain on
+`read_messages_chained`. Display redaction remains at `_prepare_messages`; neither
+the sparse index nor page projection stores a redacted or alternate transcript.
+
 ## ConversationLog (`history.py` facade)
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).
