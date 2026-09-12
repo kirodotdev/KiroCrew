@@ -1481,6 +1481,64 @@ class TestLinkedSlotSessionKey:
             assert meta_call.args[0] == "dashboard:test"
 
     @pytest.mark.asyncio
+    async def test_rollback_restores_the_model_past_a_concurrent_normalize(self, monkeypatch):
+        # A concurrent turn rewrites slot.model without picking anything --
+        # chat_runner normalizes it and backfills its canonical id, replacing
+        # the token object while _model_pick_gen stands still. Authorizing the
+        # unwind on token identity read that as a concurrent pick and skipped
+        # it, so a 409'd switch kept its own cleared model and the slot lost
+        # the pin it had before the request.
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom)
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = "claude-opus-5"
+        state = _mock_state(slot, provider=None)
+
+        async def _normalize_then_rebind(*_a, **_k):
+            # What the runner does mid-turn: same value, new object, no pick.
+            slot.model = str(slot.model)
+            if not slot.linked_session_key:
+                slot.linked_session_key = "cron:job-1"
+            return True
+
+        state.sessions.reset = AsyncMock(side_effect=_normalize_then_rebind)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "session_rebound"
+            assert slot.agent == "old-agent"
+            assert slot.model == "claude-opus-5", "the rejected switch kept its cleared model"
+
+    @pytest.mark.asyncio
+    async def test_failed_agent_metadata_write_remarks_the_slot_dirty(self, monkeypatch):
+        # The switch stands in memory but never reached disk. The periodic
+        # flush writes the same agent/model fields, but only while _dirty is
+        # set -- so a swallowed write failure that leaves the flag clear loses
+        # the switch at the next restart, restoring the pair this request
+        # replaced for being incompatible.
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom)
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        state.conversation_log.update_metadata.side_effect = OSError("disk full")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            slot._dirty = False  # the periodic flush ran before the write failed
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 200
+            assert slot.agent == "new-agent"
+            assert slot._dirty is True
+
+    @pytest.mark.asyncio
     async def test_agent_switch_sees_the_linked_sessions_active_turn(self):
         # The busy probe lands on the live linked session: an in-flight
         # channel turn answers 409 instead of tearing the turn (or a

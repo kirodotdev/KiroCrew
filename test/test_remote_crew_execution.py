@@ -1293,7 +1293,89 @@ class TestRemotePickApplication:
         await _apply_remote_pick(_owner_request(state), state, slot, "agent", {"agent": "reviewer"})
 
         written = state.conversation_log.update_metadata.call_args.args[1]
-        assert written == {"agent": "reviewer", "workspace": "peer-ws"}
+        assert written == {"agent": "reviewer", "model": "", "workspace": "peer-ws"}
+
+    @pytest.mark.asyncio
+    async def test_an_agent_change_clears_and_persists_provider_bound_state(
+        self, tmp_path, monkeypatch
+    ):
+        """A peer switch must not leave its former provider binding in the mirror."""
+        from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.forward_peer_selection",
+            AsyncMock(return_value={"ok": True, "workspace": "peer-ws"}),
+        )
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+        slot.agent = "old-agent"
+        slot.model = "old-provider-model"
+        slot._model_pick_gen = 4
+        slot._fallback_candidate_idx = 2
+        slot._fallback_walked = ["old-fallback"]
+        slot._active_fallback_model = "old-fallback"
+        slot._fallback_primary_model = "old-provider-model"
+        slot._fallback_slot_model = "old-provider-model"
+        slot._fallback_pick_gen = 4
+
+        await _apply_remote_pick(_owner_request(state), state, slot, "agent", {"agent": "reviewer"})
+
+        assert slot.agent == "reviewer"
+        assert slot.workspace == "peer-ws"
+        assert slot.model == ""
+        assert slot._model_pick_gen == 5
+        assert slot._fallback_candidate_idx == 0
+        assert slot._fallback_walked == []
+        assert slot._active_fallback_model == ""
+        assert slot._fallback_primary_model == ""
+        assert slot._fallback_slot_model == ""
+        assert slot._fallback_pick_gen == 0
+        metadata = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert {key: metadata[key] for key in ("agent", "model", "workspace")} == {
+            "agent": "reviewer",
+            "model": "",
+            "workspace": "peer-ws",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_same_agent_pick_keeps_provider_bound_state(self, tmp_path, monkeypatch):
+        """An affirmed agent does not reset its current model or fallback recovery."""
+        from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.forward_peer_selection",
+            AsyncMock(return_value={"ok": True, "workspace": "peer-ws"}),
+        )
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+        slot.agent = "reviewer"
+        slot.model = "peer-model"
+        slot._model_pick_gen = 4
+        slot._fallback_candidate_idx = 2
+        slot._fallback_walked = ["peer-fallback"]
+        slot._active_fallback_model = "peer-fallback"
+        slot._fallback_primary_model = "peer-model"
+        slot._fallback_slot_model = "peer-model"
+        slot._fallback_pick_gen = 4
+        state.conversation_log.append("dashboard:chat-1", "user", "hi", agent="reviewer")
+        state.conversation_log.update_metadata("dashboard:chat-1", {"model": "peer-model"})
+
+        await _apply_remote_pick(_owner_request(state), state, slot, "agent", {"agent": "reviewer"})
+
+        assert slot.model == "peer-model"
+        assert slot._model_pick_gen == 4
+        assert slot._fallback_candidate_idx == 2
+        assert slot._fallback_walked == ["peer-fallback"]
+        assert slot._active_fallback_model == "peer-fallback"
+        assert slot._fallback_primary_model == "peer-model"
+        assert slot._fallback_slot_model == "peer-model"
+        assert slot._fallback_pick_gen == 4
+        metadata = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert {key: metadata[key] for key in ("agent", "model", "workspace")} == {
+            "agent": "reviewer",
+            "model": "peer-model",
+            "workspace": "peer-ws",
+        }
 
     @pytest.mark.asyncio
     async def test_an_accepted_pick_is_mirrored_on_the_slot(self, tmp_path, forward):
