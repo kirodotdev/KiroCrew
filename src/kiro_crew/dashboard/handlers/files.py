@@ -3851,6 +3851,17 @@ async def api_file_diff(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _browse_entry_is_dir(entry) -> bool:
+    # DirEntry.is_dir(follow_symlinks=True) stats the target, so one
+    # unreadable child (a TCC-protected dir, a permission-denied entry)
+    # raises instead of answering. Treat that as a non-dir so one bad
+    # sibling never aborts the sort or the listing loop.
+    try:
+        return bool(entry.is_dir(follow_symlinks=True))
+    except OSError:
+        return False
+
+
 def _browse_dirs_sync(base: str, skip: set[str]) -> list[dict]:
     """Walk *base* one level deep and return its visible subdirectories.
 
@@ -3863,12 +3874,15 @@ def _browse_dirs_sync(base: str, skip: set[str]) -> list[dict]:
     dirs: list[dict] = []
     try:
         for entry in sorted(os.scandir(base), key=lambda e: e.name.lower()):
-            if entry.is_dir(follow_symlinks=True) and entry.name not in skip and not entry.name.startswith("."):
-                # Resolve symlinks before the sensitivity check — a symlink in
-                # a benign dir pointing at ~/.aws would otherwise pass through.
-                if is_sensitive_path(os.path.realpath(entry.path)):
-                    continue
-                dirs.append({"name": entry.name, "path": entry.path})
+            if not _browse_entry_is_dir(entry):
+                continue
+            if entry.name in skip or entry.name.startswith("."):
+                continue
+            # Resolve symlinks before the sensitivity check — a symlink in
+            # a benign dir pointing at ~/.aws would otherwise pass through.
+            if is_sensitive_path(os.path.realpath(entry.path)):
+                continue
+            dirs.append({"name": entry.name, "path": entry.path})
     except PermissionError:
         pass
     return dirs
@@ -3883,9 +3897,19 @@ def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict
     dirs: list[dict] = []
     files: list[dict] = []
     try:
-        # Sort: dirs before files, then alphabetical
-        for entry in sorted(os.scandir(base), key=lambda e: (not e.is_dir(follow_symlinks=True), e.name.lower())):
+        # Sort: dirs before files, then alphabetical. The key must not raise
+        # on an unreadable child: DirEntry.is_dir stats the target, so one
+        # bad sibling would abort sorted() and empty the whole listing.
+        for entry in sorted(os.scandir(base), key=lambda e: (not _browse_entry_is_dir(e), e.name.lower())):
             if entry.name.startswith("."):
+                continue
+            # An entry that cannot even be classified is skipped, not fatal:
+            # without this, one unreadable child aborts the loop and drops
+            # every entry after it.
+            try:
+                is_dir = entry.is_dir(follow_symlinks=True)
+                is_file = False if is_dir else entry.is_file(follow_symlinks=True)
+            except OSError:
                 continue
             # Resolve symlinks before the sensitivity check — a symlink in a
             # benign dir pointing at ~/.aws would otherwise pass through.
@@ -3898,10 +3922,10 @@ def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict
                 mtime = int(entry.stat(follow_symlinks=True).st_mtime)
             except OSError:
                 mtime = 0
-            if entry.is_dir(follow_symlinks=True):
+            if is_dir:
                 if entry.name not in skip:
                     dirs.append({"name": entry.name, "path": entry.path, "mtime": mtime})
-            elif entry.is_file(follow_symlinks=True):
+            elif is_file:
                 files.append({"name": entry.name, "path": entry.path, "mtime": mtime})
     except PermissionError:
         pass
