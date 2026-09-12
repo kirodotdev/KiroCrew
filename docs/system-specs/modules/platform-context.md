@@ -986,10 +986,12 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   > `query` is an optional free-text filter HINT, sent only by MCP discovery
   > search (`mcp_providers/capability.py`); the browse endpoint
   > `GET /api/capability/mcp/registry` omits it and gets the full listing. The
-  > provider consumes at most `_LIST_LIMIT_GUARD` (500) rows, so a manager whose
-  > registry is larger MUST filter server-side or every row past that cap is
-  > unsearchable. Ignoring the hint stays correct — the provider filters again —
-  > it only costs reach. The hint is feature-detected on the signature
+  > provider hands on at most `_LIST_LIMIT_GUARD` (500) entries, and when a query
+  > is present that cap applies to the MATCHES: it bounds the fan-out, never the
+  > searchable window. So a manager whose registry is larger than the cap does NOT
+  > have to filter server-side to stay searchable, and ignoring the hint costs
+  > nothing but the work of returning its own catalog — it is a cost hint, not a
+  > correctness one. The hint is feature-detected on the signature
   > (`mcp_utils.registry_accepts_query`) and forwarded by
   > `BoundedCapabilityManager`, so an edition still on the zero-arg signature
   > keeps working.

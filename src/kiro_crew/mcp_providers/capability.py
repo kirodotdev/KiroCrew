@@ -33,17 +33,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _LIST_LIMIT_GUARD = 500
-"""Upper bound on registry rows consumed per call — a misbehaving edition
-manager can't flood the fan-out with an unbounded list.
+"""Upper bound on registry entries this provider hands on per call — a
+misbehaving edition manager can't flood the fan-out with an unbounded list.
 
-This bound is why :meth:`CapabilityProvider.search` passes the query DOWN to the
-manager (see :func:`_accepts_query`): a registry larger than the guard is
-truncated before any client-side filter runs, so without the hint the searchable
-window is the first 500 rows in whatever order the manager listed them, and every
-row past it is unreachable. Measured on an internal registry of 5612 servers: a
-search for a bundle sorted past the cap returned only substring noise from the
-rows inside it. The guard stays — a manager that IGNORES the hint is still
-bounded, it just keeps the old reach."""
+It caps MATCHES, not rows scanned. Capping the rows first made the guard bound
+the search WINDOW as well: a registry larger than it was truncated before any
+client-side filter ran, so the searchable set was the first 500 rows in whatever
+order the manager listed them and every row past it was unreachable. Measured on
+an internal registry of 5612 servers: a search for a bundle sorted past the cap
+returned only substring noise from the rows inside it.
+
+:meth:`CapabilityProvider.search` also passes the query DOWN to the manager (see
+:func:`registry_accepts_query`) so an edition that can filter server-side does
+not have to return its whole catalog. That hint is advisory, though — a manager
+may narrow its own truncation, or ignore the query entirely — and the reach of
+this provider must not depend on it. Matching before the cap is what makes the
+two independent: the hint saves the manager work, the local order fixes reach."""
 
 
 def _normalize_row(row: Any) -> dict[str, str | bool] | None:
@@ -68,6 +73,19 @@ def _normalize_row(row: Any) -> dict[str, str | bool] | None:
         # edition ("yes" / True) — collapse to bool here.
         "installed": bool(row.get("installed")),
     }
+
+
+def _matches(entry: dict[str, str | bool], needle: str) -> bool:
+    """Client-side match for one normalized entry against a lowercased needle.
+
+    One spelling, used by both the pre-cap filter in
+    :meth:`CapabilityProvider._list_entries` and :meth:`CapabilityProvider.search`.
+    They must agree: the cap is applied to what this returns, so a needle the
+    search would have accepted but this rejects is a row search can never see.
+    ``fetch_detail`` passes a server id, which is part of the haystack, so the
+    row it wants survives the same filter.
+    """
+    return needle in f"{entry['id']} {entry['title']} {entry['description']}".lower()
 
 
 class CapabilityProvider:
@@ -98,6 +116,16 @@ class CapabilityProvider:
         ``query`` is a HINT, not a contract: a manager may filter server-side,
         narrow its own truncation, or ignore it entirely. Callers must still
         filter the result themselves.
+
+        Which is why the guard caps MATCHES rather than rows scanned. The rows
+        are already materialized — the manager returned the whole list before
+        this coroutine resumed — so capping the list first bounded the search
+        window instead of the fan-out, and a manager that ignored the hint kept
+        the reach the hint was added to fix: on the internal 5612-server
+        registry, a bundle sorted past the cap stayed unfindable. Matching
+        first costs one :func:`_normalize_row` per row and leaves the guard
+        doing the job it is documented to do — bounding what this provider
+        hands on.
         """
         mgr = self._manager_factory()
         if not mgr.available():
@@ -108,18 +136,25 @@ class CapabilityProvider:
             rows = await mgr.registry()
         if not isinstance(rows, list):
             return []
+        needle = query.strip().lower() if query else ""
         entries: list[dict[str, str | bool]] = []
-        for row in rows[:_LIST_LIMIT_GUARD]:
+        for row in rows:
             entry = _normalize_row(row)
-            if entry is not None:
-                entries.append(entry)
-        if query and len(rows) > _LIST_LIMIT_GUARD:
-            # Reachable only when the manager ignored the hint or its filter still
-            # overflows the guard: results past the cap are invisible to search, so
-            # say so instead of reporting a silently partial catalog.
+            if entry is None:
+                continue
+            if needle and not _matches(entry, needle):
+                continue
+            entries.append(entry)
+            if len(entries) >= _LIST_LIMIT_GUARD:
+                break
+        if needle and len(entries) >= _LIST_LIMIT_GUARD:
+            # Now reachable only when the MATCHES overflow the guard, not merely
+            # the catalog: results past the cap are invisible to search, so say
+            # so instead of reporting a silently partial catalog.
             logger.info(
-                "capability registry returned %d rows for query %r; searching the " "first %d only",
-                len(rows),
+                "capability registry matched at least %d rows for query %r; "
+                "searching the first %d only",
+                _LIST_LIMIT_GUARD,
                 query,
                 _LIST_LIMIT_GUARD,
             )
@@ -129,17 +164,16 @@ class CapabilityProvider:
         """List the edition registry and filter client-side.
 
         The needle is also passed DOWN to the manager, which may filter
-        server-side — without that a registry larger than
-        :data:`_LIST_LIMIT_GUARD` is truncated before this filter ever runs. The
-        client-side pass stays regardless, so a manager that ignores the hint is
-        still correct."""
+        server-side. The client-side pass stays regardless, so a manager that
+        ignores the hint is still correct — and ``_list_entries`` applies the
+        same match before its guard, so an ignored hint no longer costs reach
+        either."""
         needle = query.strip().lower()
         if not needle:
             return []
         results: list[McpSearchResult] = []
         for entry in await self._list_entries(needle):
-            haystack = f"{entry['id']} {entry['title']} {entry['description']}".lower()
-            if needle not in haystack:
+            if not _matches(entry, needle):
                 continue
             results.append(
                 McpSearchResult(
