@@ -558,6 +558,53 @@ class TestStore:
         mcp_quarantine.clear("airbnb")
         assert held == [True, True], "a mutation reached its write without the lock"
 
+    def test_store_writes_are_fsynced(self, store, monkeypatch):
+        """The quarantine counter must survive a power loss between the atomic
+        rename and the directory sync.
+
+        The store gates repeated probe refusals, so losing the counter to a
+        crash silently re-arms a server the operator believed was quarantined.
+        ``atomic_write`` only carries that durability when the caller asks for
+        it — every durable store write in the tree opts in explicitly.
+        """
+        seen: list[bool] = []
+        real = mcp_quarantine.atomic_write
+
+        def watching(*a, **k):
+            seen.append(bool(k.get("fsync")))
+            return real(*a, **k)
+
+        monkeypatch.setattr(mcp_quarantine, "atomic_write", watching)
+        mcp_quarantine.record_verdicts(_fail("airbnb"))
+        assert seen == [True], "the quarantine store write did not request fsync"
+
+    def test_store_write_syncs_the_parent_directory(self, store, monkeypatch):
+        """The rename needs the directory entry durable, not just the content.
+
+        ``atomic_write(fsync=True)`` covers the file and never the parent
+        directory; a crash between the rename and the OS's own directory
+        flush reverts the store to the previous entry. ``fsync_dir`` closes
+        the gap, and it must run in strict mode: ``_save``'s contract is to
+        raise on failure so ``clear`` can never report a reset it did not
+        persist, so a genuine directory-sync failure has to propagate rather
+        than be swallowed as best-effort. Platforms with no directory fsync
+        at all are tolerated inside ``fsync_dir`` itself.
+        """
+        calls: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            mcp_quarantine,
+            "fsync_dir",
+            lambda path, **k: calls.append((str(path), k)),
+        )
+        mcp_quarantine.record_verdicts(_fail("airbnb"))
+        assert len(calls) == 1, "the store write did not sync its parent directory"
+        path, kwargs = calls[0]
+        assert path == str(mcp_quarantine.store_path().parent)
+        assert kwargs.get("best_effort") is not True, (
+            "a swallowed directory-sync failure would let clear report an "
+            "undurable reset as successful"
+        )
+
     def test_snapshot_reads_the_store_once_regardless_of_size(self, store, monkeypatch):
         """Pins the fix for a quadratic read on the event loop.
 
