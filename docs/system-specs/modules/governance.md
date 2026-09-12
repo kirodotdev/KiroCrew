@@ -2271,7 +2271,9 @@ see `platform-context.md`), and
 chokepoints — **policy layer only**, see below), and
 `capabilities.social_share` (the dashboard's "Share as image" entry — read
 through `GET /api/dashboard/config`, every layer honoured, every decision
-audited; see below). Only the live `approval_mode`
+audited; see below), and `capabilities.feature_videos_download` (fetching the
+signed feature-video manifest and its media from the vendor CDN — three
+chokepoints, every layer honoured; see below). Only the live `approval_mode`
 clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -2641,6 +2643,55 @@ distinct `pinned` state — the card must separate "off because the operator lef
 switch off" (flippable) from "off because an administrator pinned it" (a config
 write returns 403), since offering a working-looking toggle for the second is the
 half-control this row exists to avoid.
+
+### Hosted feature-video media — `capabilities.feature_videos_download`
+
+Feature-intro clips are hosted, not bundled: the gateway fetches a signed manifest
+from a vendor CloudFront distribution and downloads the media it lists into
+`~/.kiro/crew/feature-videos/<release>/` (`feature_videos_manifest.py`,
+`feature_videos_cache.py`; user-facing doc `feature-videos.md`). That is outbound
+traffic to a vendor endpoint plus third-party bytes landing on disk — two things a
+managed fleet frequently may not do at all. Governed by the
+`capabilities.feature_videos_download` `SCOPE_CATALOG` capability row
+(`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
+change, mirroring the rows above).
+
+**Three chokepoints, because any one alone is a half-control.** Each manifest
+request (the fallback walk re-asks before every candidate url, so no request is
+made after a withdrawal and nothing is learned), each clip request in the download pass
+(the poster and the clip each take their own audited answer, so no media lands on
+disk after a withdrawal), and `POST /api/feature-videos/fetch-all` (refused 403
+rather than accepted into a task that would deny itself). All three are server-side,
+and that is the whole surface: the BROWSER never reaches the CDN, because the server
+never hands it a CDN url. An uncached hosted clip is not offered at all — a remote
+`src` would have the browser play bytes the sha256 pin never checked and follow
+redirects the gateway's own opener refuses — so `feature_videos.validate_asset_path`
+admits only this origin, and the ceiling has no client-side leg to govern.
+
+**Already-cached clips keep playing under a denial.** Withdrawing bytes that are
+already on disk is a separate decision this row does not make; a denied install
+offers its local entries and nothing else.
+
+**Shape: the social-share read, not the startup probes.** `vet_and_audit` on the
+pinned `dashboard:ui` surface key — never a caller-controlled header — and every
+denied decision is honoured whichever layer produced it, so a Level-2 profile bound
+to the dashboard can withdraw the fetch. The frontend reads the answer as
+`download_enabled` on `GET /api/feature-videos/status` (the settings panel) and
+`/next` (the modal), so it never guesses and never has to discover the ceiling
+through a 403. It is deliberately NOT repeated on `GET /api/dashboard/config`: that
+route is fetched on every dashboard load by every install, and an audited
+`download_denied()` there would spend a governance decision — and a SEL row — on a
+readout nobody consumes.
+
+**Fails CLOSED** (`fail_closed=True`), joining `capabilities.publish` /
+`theme_install` / `telemetry` / `tailnet_origin` / `social_share`: a wrong-DENY
+withholds an intro clip, a wrong-PERMIT makes a vendor-CDN request on a fleet that
+forbade vendor egress. An unevaluable ceiling is audited as the denial it produces.
+
+**No CSP change.** `media-src` stays `'self' blob:`. Every clip the dashboard plays
+is served from this origin — a bundled asset or a downloaded, verified one — so the
+policy needs no off-origin media host, and a header that admitted one would be
+admitting a fetch the server never offers.
 
 ### "Share as image" — `capabilities.social_share`
 

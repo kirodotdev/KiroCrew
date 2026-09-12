@@ -57,7 +57,6 @@ import logging
 import os
 import platform
 import shutil
-import ssl
 import sys
 import tarfile
 import threading
@@ -69,8 +68,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kiro_crew import platform_compat
-from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
+from kiro_crew import asset_downloader, platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import store
 from kiro_crew.sel import sel
 
@@ -222,13 +220,6 @@ STATE_DONE = "done"
 STATE_ERROR = "error"
 
 _HTTPS_SCHEME = "https"
-
-_SSL_CA_PATHS = (
-    "/etc/pki/tls/certs/ca-bundle.crt",  # AL2, RHEL, CentOS
-    "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu
-    "/etc/ssl/cert.pem",  # macOS, Alpine
-    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # Fedora
-)
 
 
 class UnsupportedPlatform(Exception):
@@ -555,27 +546,6 @@ def _locate_binary(tree: Path) -> Path | None:
 # ── download ────────────────────────────────────────────────────────────────
 
 
-def _make_ssl_context() -> ssl.SSLContext:
-    """An SSL context that finds system CA certs on every supported platform.
-
-    Same shape and reason as :func:`kiro_crew.embeddings._make_ssl_context`: a
-    bundled Python runtime may not ship a CA bundle, and OpenSSL's compiled-in
-    path can miss on a cross-built interpreter.
-    """
-    ctx = ssl.create_default_context()
-    try:
-        ctx.load_default_certs()
-        if _ssl_context_has_ca_trust(ctx):
-            return ctx
-    except ssl.SSLError:
-        pass
-    for path in _SSL_CA_PATHS:
-        if os.path.isfile(path):
-            ctx.load_verify_locations(cafile=path)
-            return ctx
-    return ctx
-
-
 class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Refuse a redirect that leaves ``https``.
 
@@ -656,7 +626,8 @@ def _download_to(asset: TectonicAsset, staging: Path) -> tuple[bool, str]:
     # takes no `context=` (only the module-level urlopen does), so passing one there
     # would be silently dropped along with the CA-discovery fallback it carries.
     opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=_make_ssl_context()), _HttpsOnlyRedirectHandler
+        urllib.request.HTTPSHandler(context=asset_downloader.make_ssl_context()),
+        _HttpsOnlyRedirectHandler,
     )
     request = urllib.request.Request(url, method="GET")
     digest = hashlib.sha256()
@@ -772,7 +743,10 @@ def _provision_once(root: Path | None) -> tuple[bool, str]:
         if binary is None:
             return False, f"no {binary_name()} found inside {asset.name}"
         if binary.stat().st_size < _MIN_BINARY_BYTES:
-            return False, f"extracted {binary_name()} is implausibly small ({binary.stat().st_size} bytes)"
+            return (
+                False,
+                f"extracted {binary_name()} is implausibly small ({binary.stat().st_size} bytes)",
+            )
         _install_binary(binary, target)
         if not binary_installed(root):
             return False, "installed binary failed its post-install check"

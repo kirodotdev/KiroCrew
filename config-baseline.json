@@ -6026,6 +6026,7 @@
         "user_technical_level": "",
         "tips_enabled": true,
         "feature_videos_enabled": false,
+        "feature_videos_cache_max_mb": 500.0,
         "folder_suggestions_enabled": true,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
@@ -6859,6 +6860,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_videos_cache_max_mb",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature Videos Cache Size (MB)",
+      "help": "Disk budget for downloaded clips. Whole release folders are evicted oldest-first to fit; the running release is never evicted. 0 = no cap.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 500.0
     },
     {
       "path": "dashboard.folder_suggestions_enabled",

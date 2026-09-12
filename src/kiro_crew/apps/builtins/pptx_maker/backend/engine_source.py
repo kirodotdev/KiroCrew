@@ -42,7 +42,6 @@ import json
 import logging
 import os
 import shutil
-import ssl
 import tarfile
 import urllib.error
 import urllib.parse
@@ -50,7 +49,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
+from kiro_crew import asset_downloader
 from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
@@ -136,13 +135,6 @@ _DIR_MODE = 0o755
 #: a tarball install has no way to satisfy.
 SOURCE_MARKER_FILENAME = ".kirocrew-engine.json"
 
-_SSL_CA_PATHS = (
-    "/etc/pki/tls/certs/ca-bundle.crt",  # AL2, RHEL, CentOS
-    "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu
-    "/etc/ssl/cert.pem",  # macOS, Alpine
-    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # Fedora
-)
-
 
 class ArchiveRejected(Exception):
     """An archive member was refused as unsafe to extract."""
@@ -216,27 +208,6 @@ class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)  # type: ignore[arg-type]
 
 
-def _make_ssl_context() -> ssl.SSLContext:
-    """An SSL context that finds system CA certs on every supported platform.
-
-    Same shape and reason as :func:`kiro_crew.embeddings._make_ssl_context`: a
-    bundled Python runtime may not ship a CA bundle, and OpenSSL's compiled-in
-    path can miss on a cross-built interpreter.
-    """
-    ctx = ssl.create_default_context()
-    try:
-        ctx.load_default_certs()
-        if _ssl_context_has_ca_trust(ctx):
-            return ctx
-    except ssl.SSLError:
-        pass
-    for path in _SSL_CA_PATHS:
-        if os.path.isfile(path):
-            ctx.load_verify_locations(cafile=path)
-            return ctx
-    return ctx
-
-
 def download_archive(staging: Path) -> tuple[bool, str]:
     """Stream the pinned archive to *staging*, hashing as it goes.
 
@@ -254,7 +225,7 @@ def download_archive(staging: Path) -> tuple[bool, str]:
     # `urlopen` does), so passing one there raises TypeError at request time —
     # i.e. it would fail on every real download while every mocked test passed.
     opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=_make_ssl_context()),
+        urllib.request.HTTPSHandler(context=asset_downloader.make_ssl_context()),
         _HttpsOnlyRedirectHandler,
     )
     request = urllib.request.Request(url, method="GET")
@@ -622,9 +593,7 @@ def _swap_in(
             try:
                 finalized = finalize(engine_root)
             except BaseException:
-                logger.warning(
-                    "pptx-maker: engine finalize raised; restoring the previous tree"
-                )
+                logger.warning("pptx-maker: engine finalize raised; restoring the previous tree")
                 os.replace(engine_root, staging)
                 if moved_aside:
                     os.replace(retired, engine_root)

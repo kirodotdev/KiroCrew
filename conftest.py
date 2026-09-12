@@ -3347,9 +3347,16 @@ def _no_model_download(_floor_monkeypatch, _isolation_dirs):
     read the developer's real ``~/.ollama`` store — without this, download
     tests would pass/fail machine-dependently on hosts that ran the
     Ollama-era embeddings.
+
+    The same floor covers hosted feature-video media
+    (``KIROCREW_SKIP_FEATURE_VIDEO_DOWNLOAD``), honored by
+    ``feature_videos_cache.ensure_all`` and
+    ``start_background_feature_video_download``: the gateway boot path kicks that
+    transfer too, and a test that stands up the server must not reach a CDN.
     """
     monkeypatch = _floor_monkeypatch
     monkeypatch.setenv("KIROCREW_SKIP_MODEL_DOWNLOAD", "1")
+    monkeypatch.setenv("KIROCREW_SKIP_FEATURE_VIDEO_DOWNLOAD", "1")
     monkeypatch.setenv("OLLAMA_MODELS", str(_isolation_dirs("ollama-models")))
     # Force telemetry OFF for every test. `_consent_enabled` reads this env var BEFORE
     # the config flag, which is what makes it a reliable gate: ~15 tests patch

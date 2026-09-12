@@ -39,19 +39,16 @@ import os
 import platform
 import queue
 import shutil
-import ssl
 import sys
 import threading
 import time
 import types
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, NamedTuple, Protocol
 
-from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
+from kiro_crew import asset_downloader
 from kiro_crew.config.loader import config_path
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.provider import get_recorder
@@ -220,8 +217,9 @@ _MODEL_PATH_ENV = "KIROCREW_EMBED_MODEL_PATH"
 _DEFAULT_MODEL_URL = "https://d3j0sthz5doyui.cloudfront.net/models/qwen3-embedding-0.6b.gguf"
 _HTTP_TIMEOUT_SECS = 1800  # 610MB at >=340KB/s; slower links retry with backoff
 _HTTP_CHUNK_BYTES = 1 << 20
-# Written by the HTTP downloader every ~16MB so the status endpoint can report
-# byte-level progress; the dashboard renders a determinate progress bar from it.
+# Reported by the shared transfer engine every ~16MB so the status endpoint can
+# report byte-level progress; the dashboard renders a determinate progress bar
+# from it.
 _PROGRESS_EVERY_BYTES = 16 << 20
 
 # ── Vendored runtime loading ──
@@ -2069,36 +2067,10 @@ async def _run_download_on_daemon_thread(fn: "Callable[[], tuple[bool, str]]") -
     return result[0]
 
 
-_SSL_CA_PATHS = (
-    "/etc/pki/tls/certs/ca-bundle.crt",  # AL2, RHEL, CentOS
-    "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu
-    "/etc/ssl/cert.pem",  # macOS, Alpine
-    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # Fedora
-)
-
-
-def _make_ssl_context() -> ssl.SSLContext:
-    """Create an SSL context that finds system CA certs on all supported platforms.
-
-    Bundled Python runtimes (like the desktop backend's interpreter) may not ship
-    their own CA bundle and rely on ``ssl.SSLContext.load_default_certs()`` which
-    calls OpenSSL's defaults — those can miss when the compiled-in cert path
-    doesn't match the host OS (common on AL2 with cross-compiled Python).
-    """
-    ctx = ssl.create_default_context()
-    try:
-        ctx.load_default_certs()
-        if _ssl_context_has_ca_trust(ctx):
-            return ctx
-    except ssl.SSLError:
-        pass
-    # Fallback: try well-known system CA bundle paths
-    for path in _SSL_CA_PATHS:
-        if os.path.isfile(path):
-            ctx.load_verify_locations(cafile=path)
-            return ctx
-    # Last resort: honor SSL_CERT_FILE / SSL_CERT_DIR env if set
-    return ctx
+def _operator_env_model_url() -> str:
+    """The ``KIROCREW_EMBED_MODEL_URL`` override if set and https, else ``""``."""
+    env_url = os.environ.get(_MODEL_URL_ENV, "").strip()
+    return env_url if env_url.lower().startswith("https://") else ""
 
 
 def _resolve_model_url() -> str:
@@ -2139,6 +2111,11 @@ def redact_model_url(url: str) -> str:
     A private-mirror override may carry credentials in userinfo or a signed
     query string (e.g. presigned URLs). Only scheme + host + path are ever
     logged or printed; the full URL is used exclusively for the request.
+
+    Deliberately NOT :func:`asset_downloader.redact_url`, which drops the path
+    too: ``kirocrew doctor`` prints this to tell the operator WHICH model file
+    resolved, and the model url's path is the operator's own override or the
+    shipped default — never a value a remote party chose.
     """
     try:
         parts = urllib.parse.urlsplit(url)
@@ -2291,60 +2268,59 @@ class ModelDownloadManager:
         return self._download_via_https()
 
     def _download_via_https(self) -> tuple[bool, str]:
-        """Download the GGUF from the CDN via plain HTTPS with progress reporting."""
+        """Download the GGUF from the CDN through the shared transfer engine.
+
+        Everything about the transfer — streamed sha256, atomic install, the
+        wording of each failure — is :mod:`kiro_crew.asset_downloader`'s. What
+        stays here is the part that is about the MODEL: which url to resolve, the
+        sha and size pins, and turning byte counts into the ``status`` dict the
+        dashboard renders a progress bar from.
+
+        ``resume=False``: the staging name carries this process's pid so a
+        gateway and a one-shot CLI can never interleave writes into a shared
+        partial, and a resumable transfer needs the opposite (one stable name).
+        For a 610MB one-shot pull that a caller already retries for hours,
+        restarting is the simpler correct behaviour.
+        """
         url = _resolve_model_url()
-        self._target.parent.mkdir(parents=True, exist_ok=True)
-        staging = self._target.parent / f".{self._target.name}.http.{os.getpid()}.tmp"
-        try:
-            logger.info("Downloading embedding model from %s", redact_model_url(url))
-            req = urllib.request.Request(url, method="GET")
-            ctx = _make_ssl_context()
-            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- _resolve_model_url enforces https:// and the payload is sha256-pinned
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECS, context=ctx) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
-                downloaded = 0
-                h = hashlib.sha256()
-                with staging.open("wb") as out:
-                    while True:
-                        chunk = resp.read(_HTTP_CHUNK_BYTES)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        h.update(chunk)
-                        downloaded += len(chunk)
-                        if downloaded % _PROGRESS_EVERY_BYTES < _HTTP_CHUNK_BYTES:
-                            self.status = {
-                                "step": "downloading",
-                                "error": "",
-                                "attempt": self.status.get("attempt", 0),
-                                "bytes_downloaded": downloaded,
-                                "bytes_total": total,
-                            }
-            # Verify inline (we computed sha256 while streaming).
+        # Only the OPERATOR's env override may redirect across https hosts: it
+        # names their own mirror, and the common mirror shapes hop to a storage
+        # host. The config knob is agent-writable and the CDN default is not
+        # ours to trust, so both keep the host pin. The sha256 pin decides
+        # what is installed either way.
+        operator_mirror = url == _operator_env_model_url()
+
+        def _progress(done: int, total: int) -> None:
+            self.status = {
+                "step": "downloading",
+                "error": "",
+                "attempt": self.status.get("attempt", 0),
+                "bytes_downloaded": done,
+                "bytes_total": total,
+            }
+
+        def _verifying() -> None:
             self.status = {
                 "step": "verifying",
                 "error": "",
                 "attempt": self.status.get("attempt", 0),
             }
-            digest = h.hexdigest()
-            if digest != _GGUF_SHA256:
-                staging.unlink(missing_ok=True)
-                return False, (
-                    f"sha256 mismatch: got {digest[:16]}…, "
-                    f"expected {_GGUF_SHA256[:16]}… (corrupt download)"
-                )
-            if staging.stat().st_size < _GGUF_MIN_BYTES:
-                staging.unlink(missing_ok=True)
-                return False, f"downloaded file too small ({staging.stat().st_size} bytes)"
-            self._install_file(staging, copy=False)
-            return True, ""
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            staging.unlink(missing_ok=True)
-            return False, f"HTTPS download failed: {exc}"
-        except Exception as exc:
-            staging.unlink(missing_ok=True)
-            logger.warning("HTTPS model download failed", exc_info=True)
-            return False, f"HTTPS download failed: {exc}"
+
+        return asset_downloader.download_to(
+            self._target,
+            url,
+            sha256=_GGUF_SHA256,
+            min_bytes=_GGUF_MIN_BYTES,
+            resume=False,
+            staging=self._target.parent / f".{self._target.name}.http.{os.getpid()}.tmp",
+            timeout_secs=_HTTP_TIMEOUT_SECS,
+            chunk_bytes=_HTTP_CHUNK_BYTES,
+            progress_every_bytes=_PROGRESS_EVERY_BYTES,
+            on_progress=_progress,
+            on_verifying=_verifying,
+            allow_cross_host_redirects=operator_mirror,
+            label="embedding model",
+        )
 
 
 def _sha256_file(path: Path) -> str:

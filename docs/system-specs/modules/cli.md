@@ -80,7 +80,12 @@ and of macOS signing/notarization.
   REQUIRED when their own version sits below the floor — but only after
   `platform/feed_trust.py` verifies the manifest signature against the same
   pinned key, because the floor coerces the dashboard UI and an unverified
-  one must degrade to the ordinary dismissible prompt. Absent means no
+  one must degrade to the ordinary dismissible prompt. That module's
+  verification core is shared: the hosted feature-video manifest is signed by
+  the SAME offline key and verified through `verify_document_signature`, which
+  differs only in allowing a nested payload and its own size cap. One trust
+  root, and the two documents stay non-interchangeable because each carries a
+  distinct `schema` inside the signed payload that its consumer requires. Absent means no
   floor, and the canonical payload omits the key entirely so no-floor
   manifests stay byte-identical to the pre-floor format.
 - Signature field: base64 RSA signature over sorted, compact UTF-8 JSON of all

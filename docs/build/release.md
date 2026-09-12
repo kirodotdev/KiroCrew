@@ -595,6 +595,15 @@ Key provisioning, the `kms:GetPublicKey` + `kms:Sign` grant, and the rotation
 procedure (dual-trust, never an in-place swap, because schema v1 pins exactly
 one key) are in [../../packaging/signing/README.md](../../packaging/signing/README.md).
 
+**The pinned key has three consumers, not two.** `cli.sh` and the gateway's
+update-feed reader verify `cli-manifest.json` against it, and the gateway's
+feature-video manifest (`src/kiro_crew/platform/feed_trust.py`, schema
+`kirocrew-feature-videos/1`) verifies against the same key. A rotation therefore
+moves `cli.sh`, the feed publisher and the feature-video manifest publisher
+together, and every hosted manifest a release still reads back (this release,
+this minor's `.0`, and the `.0` of up to three earlier minors) must be re-signed
+under the new key, or those installs lose their clips until the next publish.
+
 `publish-installer.yml` mechanically enforces the rollout order rather than
 trusting it. It publishes only from `main` (checked explicitly, because
 `workflow_dispatch` lets a maintainer pick any ref and `environment: prod` does

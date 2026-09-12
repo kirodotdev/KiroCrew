@@ -127,4 +127,7 @@ therefore fail closed under the new installer unless an authorized backfill sign
 the already-published digest. Do not replace the KMS key in place: schema v1 pins
 one key. For rotation, first ship an installer revision that trusts both old and
 new public keys, then switch the publisher, and retire the old key only after the
-overlap window.
+overlap window. The same key also verifies the gateway's feature-video manifest
+(`src/kiro_crew/platform/feed_trust.py`), so the overlap window has a third
+party in it: the feature-video publisher re-signs every hosted manifest a
+shipped release still reads back before the old key is retired.
