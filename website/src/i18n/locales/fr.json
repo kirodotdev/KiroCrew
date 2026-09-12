@@ -13174,7 +13174,9 @@
         "feature_videos_downloads_disabled": "Le téléchargement des vidéos est désactivé. Seuls les clips déjà enregistrés seront lus.",
         "feature_videos_download_all": "Tout télécharger maintenant",
         "failed_to_load_feature_video_status": "Impossible de charger l’état du cache des vidéos de fonctionnalités",
-        "failed_to_start_feature_video_download": "Impossible de démarrer le téléchargement"
+        "failed_to_start_feature_video_download": "Impossible de démarrer le téléchargement",
+        "message_font_size": "Taille de police des messages",
+        "message_font_size_desc": "Taille de police du texte des messages, dans toutes les sessions. La barre latérale, la liste des sessions et le reste de l'interface ne sont pas affectés."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

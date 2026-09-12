@@ -12996,7 +12996,9 @@
         "feature_videos_downloads_disabled": "Video-Downloads sind ausgeschaltet. Es laufen nur bereits gespeicherte Clips.",
         "feature_videos_download_all": "Jetzt alle herunterladen",
         "failed_to_load_feature_video_status": "Cache-Status der Feature-Videos konnte nicht geladen werden",
-        "failed_to_start_feature_video_download": "Download konnte nicht gestartet werden"
+        "failed_to_start_feature_video_download": "Download konnte nicht gestartet werden",
+        "message_font_size": "Schriftgröße der Nachrichten",
+        "message_font_size_desc": "Schriftgröße für den Nachrichtentext, in jeder Sitzung. Seitenleiste, Sitzungsliste und der Rest der Oberfläche sind nicht betroffen."
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

@@ -5336,7 +5336,9 @@
         "feature_videos_downloads_disabled": "Video downloads are turned off. Only clips already saved will play.",
         "feature_videos_download_all": "Download all now",
         "failed_to_load_feature_video_status": "Failed to load feature-video cache status",
-        "failed_to_start_feature_video_download": "Failed to start the download"
+        "failed_to_start_feature_video_download": "Failed to start the download",
+        "message_font_size": "Message Font Size",
+        "message_font_size_desc": "Font size for message text, in every session. Sidebar, session list and the rest of the interface are unaffected."
       },
       "displayPanel": {
         "color": "Color {{n}}",

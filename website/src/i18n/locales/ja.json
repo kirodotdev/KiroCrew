@@ -12819,7 +12819,9 @@
         "feature_videos_downloads_disabled": "動画のダウンロードは無効です。保存済みのクリップのみ再生されます。",
         "feature_videos_download_all": "すべて今すぐダウンロード",
         "failed_to_load_feature_video_status": "機能紹介動画のキャッシュ状態を読み込めませんでした",
-        "failed_to_start_feature_video_download": "ダウンロードを開始できませんでした"
+        "failed_to_start_feature_video_download": "ダウンロードを開始できませんでした",
+        "message_font_size": "メッセージのフォントサイズ",
+        "message_font_size_desc": "メッセージ内のテキストのフォントサイズ（すべてのセッションに適用）。サイドバー、セッション一覧、その他のUIには影響しません。"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

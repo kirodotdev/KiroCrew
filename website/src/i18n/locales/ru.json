@@ -13351,7 +13351,9 @@
         "feature_videos_downloads_disabled": "Загрузка видео отключена. Будут воспроизводиться только уже сохранённые клипы.",
         "feature_videos_download_all": "Загрузить все сейчас",
         "failed_to_load_feature_video_status": "Не удалось загрузить состояние кэша видео о возможностях",
-        "failed_to_start_feature_video_download": "Не удалось начать загрузку"
+        "failed_to_start_feature_video_download": "Не удалось начать загрузку",
+        "message_font_size": "Размер шрифта сообщений",
+        "message_font_size_desc": "Размер шрифта текста сообщений во всех сессиях. Боковая панель, список сессий и остальной интерфейс не затрагиваются."
       },
       "computerUsePanel": {
         "accessibility": "Универсальный доступ",

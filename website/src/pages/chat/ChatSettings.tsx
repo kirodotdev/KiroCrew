@@ -7,6 +7,13 @@ import { safeSetItem } from '../../utils/safeStorage'
 
 export type ContentWidth = 'compact' | 'comfortable' | 'full'
 
+/** Chat message bubble font-size bounds, in px. Mirrors useTerminalFont's
+ *  MIN/MAX_TERMINAL_FONT_SIZE bracket — below 12 body text is unreadable,
+ *  above 22 a bubble wastes more width wrapping than it gains in legibility. */
+export const MIN_MESSAGE_FONT_SIZE = 12
+export const MAX_MESSAGE_FONT_SIZE = 22
+export const DEFAULT_MESSAGE_FONT_SIZE = 14
+
 /** Send-key mode: enter (Enter sends), ctrl-enter (Ctrl+Enter sends), enter-ctrl-newline (Enter sends, Ctrl+Enter = newline) */
 export type SendMode = 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
 
@@ -42,6 +49,11 @@ export interface ChatConfig {
   defaultAutopilot: boolean
   /** Pin the most recent prompt above the fold as a sticky banner. */
   pinLastPrompt: boolean
+  /** Font size in px for message bubble body text (paragraphs, list items),
+   *  clamped to [MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE]. Scoped to the
+   *  message content itself — sidebar, session list, and other chrome are
+   *  unaffected, same as `contentWidth`. */
+  messageFontSize: number
 }
 
 export type FileChipStyle = 'expanded' | 'minimal'
@@ -60,7 +72,10 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true, messageFontSize: DEFAULT_MESSAGE_FONT_SIZE }
+
+const clampMessageFontSize = (n: number): number =>
+  Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])
@@ -94,6 +109,7 @@ export function loadChatConfig(): ChatConfig {
     if (typeof cfg.showContextTokens !== 'boolean') cfg.showContextTokens = false
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
     if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
+    cfg.messageFontSize = typeof cfg.messageFontSize === 'number' ? clampMessageFontSize(cfg.messageFontSize) : DEFAULT_MESSAGE_FONT_SIZE
     return cfg
   }
   catch { return { ...DEFAULTS } }

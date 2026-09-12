@@ -991,6 +991,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.message-font-size",
+    "label": "Message Font Size",
+    "labelKey": "pages.settings.chatPanel.message_font_size",
+    "description": "Font size for message text, in every session. Sidebar, session list and the rest of the interface are unaffected.",
+    "tab": "chat",
+    "type": "stepper",
+    "occurrence": 1
+  },
+  {
     "id": "chat.pin-the-latest-turn",
     "label": "Pin the latest turn",
     "labelKey": "pages.settings.chatPanel.pin_last_prompt",

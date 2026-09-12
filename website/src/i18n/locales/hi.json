@@ -12997,7 +12997,9 @@
         "feature_videos_downloads_disabled": "वीडियो डाउनलोड बंद हैं। केवल पहले से सहेजे गए क्लिप चलेंगे।",
         "feature_videos_download_all": "सभी अभी डाउनलोड करें",
         "failed_to_load_feature_video_status": "फ़ीचर वीडियो कैश स्थिति लोड नहीं हो सकी",
-        "failed_to_start_feature_video_download": "डाउनलोड शुरू नहीं हो सका"
+        "failed_to_start_feature_video_download": "डाउनलोड शुरू नहीं हो सका",
+        "message_font_size": "संदेश फ़ॉन्ट आकार",
+        "message_font_size_desc": "हर सत्र में संदेश टेक्स्ट का फ़ॉन्ट आकार। साइडबार, सत्र सूची और बाकी इंटरफ़ेस पर कोई असर नहीं पड़ता।"
       },
       "computerUsePanel": {
         "accessibility": "सुगम्यता",

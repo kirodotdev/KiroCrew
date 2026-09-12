@@ -7,7 +7,7 @@
  * State management: polling via useQuery refetchInterval.
  * Poll faster during streaming (1s), slower when idle (5s).
  */
-import { useRef, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { useRef, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { ArrowUp, Loader2 } from 'lucide-react'
 import ChatMessageList from './ChatMessageList'
@@ -18,6 +18,7 @@ import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
 import { useAppApi } from './index'
 import type { ChatMessage } from '../types'
+import { loadChatConfig } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
 export interface ChatEmbedProps {
@@ -87,6 +88,17 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   // MESSAGE regardless of position.
   const follow = useChatScrollFollow({ resetKey: slotKey, enabled: !!startAtBottom })
   const scrollerRef = follow.scrollerRef
+
+  // An embed is as long-lived as a ChatPane, so a one-shot read would leave it
+  // on the old size after the user changes the setting elsewhere (ChatPane.tsx
+  // follows the same `mc-config-changed`/`focus` reload).
+  const [messageFontSize, setMessageFontSize] = useState(() => loadChatConfig().messageFontSize)
+  useEffect(() => {
+    const reload = () => setMessageFontSize(loadChatConfig().messageFontSize)
+    window.addEventListener('focus', reload)
+    window.addEventListener('mc-config-changed', reload)
+    return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
+  }, [])
 
   const { data: slotData, refetch } = useQuery({
     queryKey: ['app-sdk-embed', slotKey],
@@ -241,7 +253,10 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   )
 
   return (
-    <div className={`flex flex-col h-full min-h-0 overflow-hidden ${frameless ? '' : 'border border-border rounded-lg bg-bg'}`}>
+    <div
+      className={`flex flex-col h-full min-h-0 overflow-hidden ${frameless ? '' : 'border border-border rounded-lg bg-bg'}`}
+      style={{ '--mc-message-font-size': `${messageFontSize}px` } as React.CSSProperties}
+    >
       {!frameless && (
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />

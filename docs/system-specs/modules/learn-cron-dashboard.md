@@ -2121,6 +2121,12 @@ React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 
 - **Logs** (`/logs`) — live gateway log stream via WebSocket (subscribe/unsubscribe via `WsContext`), server-side log level control (DEBUG/INFO/WARNING/ERROR buttons). SSE (`/api/logs`) remains as a secondary transport.
 - **Worlds** (`/worlds`) — agent world scenes with themed 3D-style environments (neural, wizard, underwater). Decorative page for visual personality.
 
+### Chat Config (`mc-chat-config`)
+
+Browser-local chat preferences persisted in `localStorage` under the `mc-chat-config` key and managed by `ChatSettings.loadChatConfig` / `saveChatConfig`. The blob syncs for free via the existing `uiPrefs` mechanism.
+
+**Message font size** (`ChatConfig.messageFontSize`): integer pixel value clamped to 12–22, default 14. Applied through a `--mc-message-font-size` CSS variable set on each chat-pane host (`ChatPage`, `ChatPane`, `ChatEmbed`). Affects paragraphs, list items, and headings inside message bubbles; headings scale proportionally (em relative to the variable) so the hierarchy never inverts. Cron/steer notification rows and app-sdk inject messages carry the same `.mc-message-font-scope` class and scale identically. Code blocks, inline code (pinned to 13px via a specificity override in `message-font-size.css`), and table cells are unaffected. The message edit view (`UserMessage.tsx`) also respects the setting. Sidebar, session list, and all non-chat surfaces are unaffected. The stepper control lives in Settings → Chat (`ChatPanel.tsx`) and is indexed in the command-palette registry. Line spacing uses the unitless `leading-relaxed` (1.625) ratio so it scales with the variable font-size; at the 14px default this is ~22.75px, a ~1.25px tightening from the previous fixed `leading-6` (24px).
+
 ### Agent Selector Component
 
 Shared `AgentSelector` component (`website/src/components/AgentSelector.tsx`) used by Chat, Tasks, and Cron:

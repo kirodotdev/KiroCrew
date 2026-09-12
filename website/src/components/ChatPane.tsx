@@ -1160,6 +1160,9 @@ export default function ChatPane({
           // Split-view panes leave --mc-input-width UNSET so ChatInput keeps
           // its own fallback — byte-for-byte the pre-prop behavior.
           ...(followContentWidth ? { '--mc-input-width': CONTENT_WIDTH[chatConfig.contentWidth].input } : {}),
+          // Unlike content width, message font size is not a follow/independent
+          // choice per pane — it is one reading preference, so every pane gets it.
+          '--mc-message-font-size': `${chatConfig.messageFontSize}px`,
         } as React.CSSProperties}
       >
         {!frameless && (

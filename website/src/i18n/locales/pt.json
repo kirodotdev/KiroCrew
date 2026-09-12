@@ -13173,7 +13173,9 @@
         "feature_videos_downloads_disabled": "Os downloads de vídeo estão desativados. Só os clipes já salvos serão reproduzidos.",
         "feature_videos_download_all": "Baixar tudo agora",
         "failed_to_load_feature_video_status": "Não foi possível carregar o estado da cache de vídeos de recursos",
-        "failed_to_start_feature_video_download": "Não foi possível iniciar o download"
+        "failed_to_start_feature_video_download": "Não foi possível iniciar o download",
+        "message_font_size": "Tamanho da fonte das mensagens",
+        "message_font_size_desc": "Tamanho da fonte do texto das mensagens, em todas as sessões. A barra lateral, a lista de sessões e o restante da interface não são afetados."
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

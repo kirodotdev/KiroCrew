@@ -12997,7 +12997,9 @@
         "feature_videos_downloads_disabled": "ভিডিও ডাউনলোড বন্ধ আছে। শুধু আগে সংরক্ষিত ক্লিপগুলিই চলবে।",
         "feature_videos_download_all": "এখনই সব ডাউনলোড করুন",
         "failed_to_load_feature_video_status": "ফিচার ভিডিও ক্যাশের অবস্থা লোড করা যায়নি",
-        "failed_to_start_feature_video_download": "ডাউনলোড শুরু করা যায়নি"
+        "failed_to_start_feature_video_download": "ডাউনলোড শুরু করা যায়নি",
+        "message_font_size": "বার্তার ফন্টের আকার",
+        "message_font_size_desc": "প্রতিটি সেশনে বার্তার টেক্সটের ফন্টের আকার। সাইডবার, সেশন তালিকা এবং বাকি ইন্টারফেসে কোনো প্রভাব পড়ে না।"
       },
       "computerUsePanel": {
         "accessibility": "সহজগম্যতা",
