@@ -41,7 +41,7 @@ Cron jobs can specify an agent at creation time.
 
 Kiro Crew owns specs named `kirocrew`, `kirocrew-lite`, `kirocrew-conductor`, `kirocrew-pipeline-conductor`, `kirocrew-ledger-conductor`, `kirocrew-worker`, `kirocrew-knowledge`, `kirocrew-research`, and `kirocrew-heartbeat`. The primary and lite specs are required; the others support goal conducting, pipeline fleet supervision, knowledge extraction, research, and heartbeat features.
 
-`kirocrew-ledger-conductor` is the goal conductor's work-ledger variant, and it is separate rather than a setting on `kirocrew-conductor` on purpose: the ledger flow inverts the dispatch order and replaces the patrol cycle, so putting it on the shipped conductor would move every existing conductor user onto a different procedure without asking. `kirocrew-worker` is the agent a conductor names for a leaf item — the default toolset plus the two reporting tools.
+`kirocrew-conductor` tracks its goal in the work ledger: it mounts `kirocrew-work`, binds each item to a session before seeding it, and settles every completion claim with the acceptance evaluator instead of by reading a transcript. `kirocrew-ledger-conductor` is a deprecated alias of it — the same spec under the flow's old name, kept for one release so a session or cron that names the old string keeps resolving, and removed next release. `kirocrew-worker` is the agent a conductor names for a leaf item — the default toolset plus the two reporting tools.
 
 ## Custom Agents
 

@@ -1,8 +1,15 @@
-"""The ``kirocrew-worker`` agent spec, and the two conductors' work-ledger mounts.
+"""The ``kirocrew-worker`` agent spec, and the conductor side of the same server.
 
 Pins the Phase 2 exit criteria about specs: the worker spec is the default agent's
-SUPERSET plus ``@kirocrew-work``, and both conductor specs auto-approve the two
-conductor tools while auto-approving neither worker tool.
+SUPERSET plus ``@kirocrew-work``, and the conductor specs that mount the server
+auto-approve the two conductor tools while auto-approving neither worker tool.
+
+Which conductors those are is the other half. ``kirocrew-conductor`` mounts it —
+it IS the ledger conductor — and so does its deprecated ``kirocrew-ledger-conductor``
+alias, which emits the same spec under the old name for one release.
+``kirocrew-pipeline-conductor`` does not: its children report through the
+``pipeline-conductor`` skill's own scripts, so the mount would grant a flow whose
+procedure it does not run.
 """
 
 from __future__ import annotations
@@ -210,11 +217,16 @@ def test_every_boot_re_filters_the_worker_grants_through_the_ceiling(tmp_path, m
 # ── exactly ONE conductor mounts it, per tool ─────────────────────────────
 
 
-def test_the_ledger_conductor_mounts_the_server_and_grants_only_its_own_half(specs):
+@pytest.mark.parametrize("filename", [CONDUCTOR_AGENT_FILENAME, LEDGER_CONDUCTOR_AGENT_FILENAME])
+def test_a_ledger_conductor_mounts_the_server_and_grants_only_its_own_half(specs, filename):
     """Per tool rather than whole-server, because the worker half is mounted on the
     same server. Missing these is not an error but a silent approval prompt on every
-    patrol cycle, which is why they are asserted."""
-    spec = specs[LEDGER_CONDUCTOR_AGENT_FILENAME]
+    patrol cycle, which is why they are asserted.
+
+    Parametrized over the live spec AND its deprecated alias: a session still
+    running under the old name pays the same approval costs, so the alias losing a
+    grant would strand it on a prompt nobody is there to answer."""
+    spec = specs[filename]
     assert "@kirocrew-work" in spec["tools"]
     entry = spec["mcpServers"]["kirocrew-work"]
     assert entry["args"][-1] == "mcp-work"
@@ -230,18 +242,19 @@ def test_the_ledger_conductor_mounts_the_server_and_grants_only_its_own_half(spe
     assert "@kirocrew-work" not in allowed
 
 
-@pytest.mark.parametrize("filename", [CONDUCTOR_AGENT_FILENAME, PIPELINE_CONDUCTOR_AGENT_FILENAME])
-def test_a_shipped_conductor_does_not_mount_the_server(specs, filename):
-    """The two shipped conductors mounted this server briefly, and the mount is
-    retracted.
+@pytest.mark.parametrize("filename", [PIPELINE_CONDUCTOR_AGENT_FILENAME])
+def test_a_conductor_with_another_procedure_does_not_mount_the_server(specs, filename):
+    """The pipeline conductor mounted this server briefly, and the mount is retracted.
 
-    The tools alone do not describe the change they came with: the ledger flow
-    inverts the dispatch order (bind before seed) and replaces the patrol cycle (a
-    ledger read instead of a transcript read), so mounting them on an agent that
-    ships a different procedure hands its users a procedure they did not choose.
-    Asserted negatively, on every surface a mount can survive on, so it cannot
-    return unnoticed — the KAS rule especially, since nothing reads
-    ``allowedTools`` on that backend.
+    The tools alone do not describe the procedure they came with: the ledger flow
+    binds before it seeds and reads a record instead of a transcript, so mounting
+    them on an agent that ships a different procedure hands its users a procedure
+    they did not choose. Asserted negatively, on every surface a mount can survive
+    on, so it cannot return unnoticed — the KAS rule especially, since nothing
+    reads ``allowedTools`` on that backend.
+
+    Parametrized over one filename rather than inlined, because the shape is what
+    a second such conductor joins.
     """
     spec = specs[filename]
     assert "@kirocrew-work" not in spec["tools"]

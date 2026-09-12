@@ -156,7 +156,7 @@ class TestPipelineConductorInstaller:
         ``kirocrew-work`` is NOT among them. It was mounted here briefly and the
         mount is retracted, because the work-ledger flow is a different dispatch
         and patrol procedure and this agent ships its own — see
-        ``kirocrew-ledger-conductor``. Negative rather than deleted so the mount
+        ``kirocrew-conductor``. Negative rather than deleted so the mount
         cannot return unnoticed.
         """
         data = self._install(tmp_path, monkeypatch)

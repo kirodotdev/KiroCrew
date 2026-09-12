@@ -1,5 +1,11 @@
 """Conductor agent installer + bundled acceptance evaluator.
 
+``kirocrew-conductor`` IS the work-ledger conductor: it mounts ``kirocrew-work``,
+dispatches bind-before-seed, and settles every ``done`` claim with the bundled
+``scripts/accept_eval.py``. ``kirocrew-ledger-conductor`` is a deprecated alias
+emitting this same spec under its old name for one release, and the proof that
+the two cannot drift lives in ``test_ledger_conductor_agent.py``.
+
 The installer test mirrors the research-agent installer test's shape: stub the
 agents dir and ``build_agent_config``, run the installer, assert on the JSON it
 wrote. The evaluator tests run the real script over stdin/stdout — it is the
@@ -81,15 +87,18 @@ class TestConductorInstaller:
         """A patrol round outlives a turn, so the loop must own the turn boundary.
 
         An in-turn ``wait`` + re-poll loop spends the turn budget on latency and
-        dies at the turn cap mid-round, which loses the loop. Both halves of the
-        contract are pinned: ``monitor_start`` drives the round, and the
-        conductor knows the tool it needs to stop the loop it armed. Whitespace
-        is normalised so re-wrapping the prompt cannot fail this for a
-        formatting reason.
+        dies at the turn cap mid-round, which loses the loop. Three halves of the
+        contract are pinned: ``monitor_start`` arms the round, ``wait`` is the
+        single-round fallback for a refused arm rather than the primary
+        mechanism, and the conductor knows the tool it needs to stop the loop it
+        armed. Whitespace is normalised so re-wrapping the prompt cannot fail
+        this for a formatting reason.
         """
         data = self._install(tmp_path, monkeypatch)
         prompt = " ".join(data["prompt"].split())
-        assert "Patrol with `monitor_start`, never with `wait`" in prompt
+        assert "Arm a loop on your own session with `monitor_start`" in prompt
+        assert "If arming is refused outright" in prompt
+        assert "drive that one round with `wait`" in prompt
         assert "autonudge_stop" in prompt
 
     def test_prompt_names_the_tools_it_expects_to_be_used(self, tmp_path, monkeypatch):
@@ -334,34 +343,165 @@ class TestConductorInstaller:
         for writer in ("fs_write", "code"):
             assert writer not in data["tools"], writer
 
-    def test_mcp_surface_is_narrowed_to_core_plus_dashboard(self, tmp_path, monkeypatch):
-        """Inherited servers the conductor has no charter for are dropped.
+    def test_mcp_surface_is_core_plus_dashboard_plus_work(self, tmp_path, monkeypatch):
+        """Exactly three servers, and inherited ones the charter has no use for go.
 
-        Exactly two, and ``kirocrew-work`` is NOT one of them. It was mounted here
-        briefly and the mount is retracted: the work-ledger flow inverts this
-        agent's dispatch order and replaces its patrol cycle, so mounting the
-        tools here moved every existing conductor user onto a procedure they had
-        not chosen. The flow lives on ``kirocrew-ledger-conductor`` instead, and
-        this assertion is negative rather than deleted so the mount cannot come
-        back without someone deciding to bring it back.
+        ``kirocrew-work`` is one of them now: this spec IS the ledger conductor,
+        so the mount is the charter rather than an addition to it. Pinned
+        positively AND as an exact set, so a fourth inherited server cannot ride
+        in unnoticed.
         """
         data = self._install(tmp_path, monkeypatch)
-        assert set(data["mcpServers"]) == {"kirocrew-core", "kirocrew-dashboard"}
+        assert set(data["mcpServers"]) == {
+            "kirocrew-core",
+            "kirocrew-dashboard",
+            "kirocrew-work",
+        }
         assert data["mcpServers"]["kirocrew-dashboard"]["args"] == ["mcp-dashboard"]
-        assert "kirocrew-work" not in data["mcpServers"]
-        assert "@kirocrew-work" not in data["tools"]
+        assert data["mcpServers"]["kirocrew-work"]["args"] == ["mcp-work"]
+        assert "builder-mcp" not in data["mcpServers"]
+        # Never auto-approved at the SERVER level: an autoApproved MCP tool is
+        # approved inside kiro-cli and emits no permission request, so
+        # ``hooks.on_tool_call`` — the deny floor, the sensitive-path check, the
+        # governance ceiling — is never reached for it.
+        assert "autoApprove" not in data["mcpServers"]["kirocrew-work"]
 
-    def test_prompt_carries_no_work_ledger_procedure(self, tmp_path, monkeypatch):
-        """The shipped conductor's charter must not name the ledger it cannot reach.
+    def test_the_work_mount_lands_on_all_four_surfaces(self, tmp_path, monkeypatch):
+        """A mount is four separate facts, and only three of them are visible.
 
-        A prompt that describes ``work_ledger_record`` on a spec with no
-        ``kirocrew-work`` mount is worse than silent: the agent would try the call
-        and get a tool that does not exist. Pinned as the prompt-side half of the
-        retraction above.
+        ``tools`` mounts the server, ``mcpServers`` gives it a command to launch,
+        ``allowedTools`` decides which verbs skip the approval prompt, and
+        ``permissions.rules[].match`` is what the KAS backend reads INSTEAD of
+        ``allowedTools``. The last one is the one that silently survives an
+        incomplete edit: a spec can look correctly mounted on kiro-cli while the
+        KAS projection grants nothing, and every patrol cycle then stalls on an
+        approval nobody is there to give.
+        """
+        data = self._install(tmp_path, monkeypatch)
+        assert "@kirocrew-work" in data["tools"]
+        assert "kirocrew-work" in data["mcpServers"]
+        assert "@kirocrew-work/work_ledger_read" in data["allowedTools"]
+        assert "@kirocrew-work/work_ledger_record" in data["allowedTools"]
+        assert "@kirocrew-work/work_brief" in data["allowedTools"]
+        match = data["permissions"]["rules"][0]["match"]
+        assert "kirocrew-work/work_ledger_read" in match
+        assert "kirocrew-work/work_ledger_record" in match
+        assert "kirocrew-work/work_brief" in match
+        # ``work_report`` WRITES into a parent's record across a dispatch
+        # relationship, so it is mounted and gated on every surface that grants.
+        assert "@kirocrew-work/work_report" not in data["allowedTools"]
+        assert "kirocrew-work/work_report" not in match
+        # And never the whole server, which would hand over the worker half by
+        # the back door on either backend.
+        assert "@kirocrew-work" not in data["allowedTools"]
+        assert "kirocrew-work/*" not in match
+
+    def test_prompt_carries_the_work_ledger_procedure(self, tmp_path, monkeypatch):
+        """The charter has to describe the flow the mount makes reachable.
+
+        The four rules that make this procedure what it is: bind before seed, a
+        ``done`` is a claim the evaluator settles, the batch is filtered to
+        ``done`` before it is piped, and a claimed ``pr`` is promoted by an
+        explicit ``action=accept`` rather than read as the bar.
         """
         prompt = self._install(tmp_path, monkeypatch)["prompt"]
-        for token in ("work_ledger", "work_brief", "work_report", "kirocrew-work"):
-            assert token not in prompt, token
+        for token in (
+            "work_ledger_read",
+            "work_ledger_record",
+            "work_brief",
+            "work_report",
+            "@kirocrew-work",
+            "action=create",
+            "action=bind",
+            "action=verdict",
+            "action=accept",
+            "action=close",
+            "Bind before you seed",
+            "accept_batch",
+            "CLAIM",
+        ):
+            assert token in prompt, token
+        # In dispatch order, not merely all present.
+        assert prompt.index("action=create") < prompt.index("session_create")
+        assert prompt.index("session_create") < prompt.index("action=bind")
+        assert prompt.index("action=bind") < prompt.index("session_send")
+        # The codec this flow replaced must not be named: there is a store now,
+        # and two records that can disagree is what the ledger removed.
+        assert "ledger_entry" not in prompt
+
+    def test_prompt_and_skill_filter_the_batch_to_done_items(self, tmp_path, monkeypatch):
+        """``accept_batch`` is status-blind by design (it is the promotion seam), so
+        the procedure must filter it. Unfiltered, a ``progress`` worker whose stub
+        already satisfies a ``file`` condition earns a genuine ``pass`` and can be
+        closed under itself. Both the prompt and the skill have to state the
+        filter, because the agent copies whichever it read last.
+        """
+        prompt = self._install(tmp_path, monkeypatch)["prompt"]
+        assert "Filter the returned" in prompt
+        assert "whose status is `done`" in prompt
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "keep only the entries whose item is currently `status: done`" in body
+        assert "Never pipe the unfiltered document" in body
+
+    def test_prompt_and_skill_make_a_nested_conductor_report_upward(self, tmp_path, monkeypatch):
+        """A second-level conductor is bound as its parent's worker, and the parent
+        reads its OWN ledger — so a nested conductor that never calls
+        ``work_report`` leaves its parent's item statusless forever, which the
+        parent reads as a stall. The worker half is mounted on this spec for
+        exactly this caller; the text has to tell it to use it. The root case is
+        named too, so a root conductor does not read ``not_bound`` as a failure.
+        """
+        prompt = self._install(tmp_path, monkeypatch)["prompt"]
+        assert "If a conductor dispatched you" in prompt
+        assert "`work_brief` before you plan" in prompt
+        assert "`work_report` `status: progress`" in prompt
+        assert "not_bound" in prompt
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "When a conductor dispatched you" in body
+        assert "`work_brief` before Round 0" in body
+        assert "`work_report` at round boundaries" in body
+        assert "root conductor gets `not_bound`" in body
+
+    def test_prompt_notes_the_patrol_gate_is_still_a_timer(self, tmp_path, monkeypatch):
+        """``monitor_start`` gates on one pull-request URL and nothing else today, so
+        a cycle fires whether or not anything was reported. The prompt says so, and
+        says what to switch to, rather than implying a gate that does not exist.
+        """
+        prompt = self._install(tmp_path, monkeypatch)["prompt"]
+        assert "monitor_start" in prompt
+        assert 'watch: "work-ledger"' in prompt
+
+    def test_prompt_names_its_own_skill_and_not_the_deprecated_alias(self, tmp_path, monkeypatch):
+        """The procedure lives in ``goal-conductor``. ``goal-ledger-conductor`` is a
+        deprecation pointer kept for one release, so naming it here would send the
+        agent to a paragraph instead of to the procedure.
+        """
+        prompt = self._install(tmp_path, monkeypatch)["prompt"]
+        assert "`goal-conductor`" in prompt
+        assert "goal-ledger-conductor" not in prompt
+
+    def test_skill_body_matches_the_prompt_on_the_load_bearing_rules(self):
+        """The prompt is the summary and the skill is the procedure; a disagreement
+        between them is resolved nondeterministically by whichever the model weighs
+        more. These four are the rules that make this flow what it is.
+        """
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "Bind BEFORE you seed" in body
+        assert "Never leave `agent` unset" in body
+        assert "work_ledger_read` first, every cycle" in body
+        assert "action=accept" in body
+
+    def test_skill_feeds_the_evaluator_through_a_quoted_heredoc(self):
+        """The acceptance document is built from ingested text, and the skill's
+        example is what the agent copies. A ``printf '%s' '<json>'`` form ends its
+        string at the first single quote inside a path and hands the remainder to
+        the shell, which ``execute_bash`` then runs after one approval. A quoted
+        heredoc is the one form the shell copies to stdin without interpreting.
+        """
+        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        assert "<<'ACCEPT_BATCH'" in body
+        assert "printf '%s' '<" not in body
+        assert "printf '%s' '{" not in body
 
     def test_dashboard_entry_omits_managed_metadata_on_a_default_install(
         self, tmp_path, monkeypatch
@@ -436,6 +576,9 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
+            "@kirocrew-work/work_ledger_read",
+            "@kirocrew-work/work_ledger_record",
+            "@kirocrew-work/work_brief",
         ]
 
     def test_kas_permissions_are_derived_from_the_filtered_grants(self, tmp_path, monkeypatch):
@@ -472,21 +615,29 @@ class TestConductorInstaller:
             "kirocrew-dashboard/session_create",
             "kirocrew-dashboard/session_read_message",
         ]
+        work_resources = [
+            "kirocrew-work/work_brief",
+            "kirocrew-work/work_ledger_read",
+            "kirocrew-work/work_ledger_record",
+        ]
         data = self._install(tmp_path, monkeypatch)
         assert data["permissions"] == {
             "rules": [
                 {
                     "capability": "mcp",
-                    "match": [*core_resources, *dashboard_resources],
+                    "match": [*core_resources, *dashboard_resources, *work_resources],
                     "effect": "allow",
                 }
             ]
         }
         assert "kirocrew-core/*" not in data["permissions"]["rules"][0]["match"]
         assert "kirocrew-dashboard/*" not in data["permissions"]["rules"][0]["match"]
-        # No work-ledger resource at all, in any form. The retracted mount must not
-        # survive as a KAS rule on the backend where nobody reads ``allowedTools``.
-        assert not [m for m in data["permissions"]["rules"][0]["match"] if "kirocrew-work" in m]
+        # The work server is narrowed the same way, and for a sharper reason: a
+        # ``kirocrew-work/*`` wildcard would re-grant ``work_report`` — the one
+        # verb that writes across a dispatch relationship — on the backend where
+        # nobody reads ``allowedTools``.
+        assert "kirocrew-work/*" not in data["permissions"]["rules"][0]["match"]
+        assert "kirocrew-work/work_report" not in data["permissions"]["rules"][0]["match"]
 
         governed = self._install(
             tmp_path,
@@ -500,6 +651,7 @@ class TestConductorInstaller:
                     "match": [
                         *(r for r in core_resources if r != "kirocrew-core/monitor_start"),
                         *dashboard_resources,
+                        *work_resources,
                     ],
                     "effect": "allow",
                 }
@@ -589,6 +741,9 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
+            "@kirocrew-work/work_ledger_read",
+            "@kirocrew-work/work_ledger_record",
+            "@kirocrew-work/work_brief",
         ]
 
     def test_skill_gates_the_plan_once_instead_of_interrogating(self):
@@ -615,36 +770,28 @@ class TestConductorInstaller:
         prompts" or "nothing prompts" would have the conductor sizing its nudge
         interval around approvals it does not pay — or walking into ones it does.
         """
-        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Reads and creates do not prompt" in text
-        assert "`session_send`\n  and `session_stop` are deliberately NOT auto-approved" in text
+        assert "`session_send` and `session_stop` are deliberately NOT auto-approved" in text
         assert "accept_eval.py` invocation" in text
 
-    def test_skill_documents_artifacts_as_a_string_map(self):
-        """The ledger's ``artifacts`` values MUST be JSON-serialized strings.
+    def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
+        """One record per item, in the one place the evaluator batch reads.
 
-        ``session_ledger`` handler validation rejects a non-string value with
-        ``artifacts_not_string_map`` (HTTP 400), so a skill that told the
-        conductor to send a nested object would lose every dispatched item's
-        state — the exact durability this entry exists to provide. Pinned as a
-        doc ratchet because the instruction, not the code, is what would drift.
-
-        The format is owned by ``scripts/ledger_entry.py``, so
-        the skill must route encoding through the codec rather than carrying a
-        hand-written byte-format example for models to re-derive — the worked
-        example is easy for a model to copy wrong, which produces real
-        defects.
+        Encoding items into ``session_ledger`` ``artifacts`` as well would give
+        two records that can disagree, and the ledger is the one
+        ``work_ledger_read`` returns and the Crew page will render. The codec
+        that squeezed an item into a 2000-character ``artifacts`` value under an
+        entry cap belongs to a conductor with no item store, so the skill must
+        not send a reader to it. Pinned as a doc ratchet because the
+        instruction, not the code, is what would drift.
         """
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-        assert "artifacts_not_string_map" in text
-        assert "map of string to STRING" in text
-        # The codec is the format's one code owner: the skill must direct the
-        # conductor to it for encode/decode/validate/rotate...
-        assert "scripts/ledger_entry.py" in text
-        assert "ledger_entry.py encode" in text
-        # ...and must never show a bare `item-1 -> {` object literal, which is
-        # exactly the value shape the ledger rejects.
-        assert "item-1 -> {" not in text
+        assert "Do not encode items into `session_ledger` artifacts" in text
+        assert "ledger_entry" not in text
+        # ``session_ledger`` still holds the conductor's OWN goal/phase/next, so
+        # the skill has to keep naming it for that.
+        assert "session_ledger_record" in text
 
     def test_spec_is_registered_as_kirocrew_owned(self):
         """Every managed spec registers in ``OWNED_KIRO_AGENT_FILES``.
@@ -681,7 +828,7 @@ class TestConductorInstaller:
         drift back.
         """
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-        assert "1. `session_create`" in text, "dispatch must open with the atomic create"
+        assert "2. `session_create`" in text, "dispatch must reach the atomic create"
         assert "`folder`" in text, "dispatch must name the folder argument at create"
         assert "chat_folder_move_session" not in text, "the move workaround must stay deleted"
         # Scoped to the dispatch STEP, not the whole document: a future

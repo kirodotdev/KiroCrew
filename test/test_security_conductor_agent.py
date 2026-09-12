@@ -225,8 +225,8 @@ class TestSecurityConductorInstaller:
         assert data["mcpServers"]["kirocrew-dashboard"]["args"] == ["mcp-dashboard"]
 
     def test_the_work_server_is_not_mounted(self, tmp_path, monkeypatch):
-        """The work-ledger flow belongs to ``kirocrew-ledger-conductor``, and no
-        shipped conductor mounts it. This agent's children report through the
+        """The work-ledger flow belongs to ``kirocrew-conductor``, and no other
+        conductor mounts it. This agent's children report through the
         ``security-conductor`` skill's ledger scripts, not the work ledger, so the
         mount would grant a flow whose procedure this conductor does not run."""
         data = self._install(tmp_path, monkeypatch)

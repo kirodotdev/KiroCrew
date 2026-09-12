@@ -74,7 +74,7 @@ class TestRoutingDirectiveSurvivesIndexCut:
         [
             "kirocrew-dev/prepare-pr",
             "kirocrew-dev/babysit",
-            "goal-ledger-conductor",
+            "goal-conductor",
             "llm-council",
             "pipeline-conductor",
             "security-conductor",

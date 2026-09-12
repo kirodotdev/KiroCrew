@@ -474,20 +474,20 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
 
 
 def _ledger_conductor_accept_eval() -> Path:
-    """The evaluator copy the ledger conductor actually runs.
+    """The evaluator copy the conductor actually runs.
 
-    ``goal-ledger-conductor`` is the skill that consumes ``accept_batch``, so the mirror
-    in :func:`work_ledger.is_acceptance_concrete` has to be pinned against ITS copy —
-    pinning the sibling ``goal-conductor`` copy would be checking a script no ledger
-    conductor invokes. The two are separately shipped and held byte-identical by
-    ``test_ledger_conductor_agent.py``; this helper names the consumer regardless.
+    ``goal-conductor`` is the skill that consumes ``accept_batch``, so the mirror in
+    :func:`work_ledger.is_acceptance_concrete` is pinned against ITS copy. The
+    deprecated ``goal-ledger-conductor`` ships a byte-identical copy for one release
+    (held so by ``test_ledger_conductor_agent.py``), and this helper names the live
+    consumer rather than that one.
     """
     script = (
         Path(__file__).resolve().parents[1]
         / "src"
         / "kiro_crew"
         / "builtin_skills"
-        / "goal-ledger-conductor"
+        / "goal-conductor"
         / "scripts"
         / "accept_eval.py"
     )

@@ -1,17 +1,18 @@
-"""The ``kirocrew-ledger-conductor`` spec, and the isolation it exists to provide.
+"""The deprecated ``kirocrew-ledger-conductor`` alias spec.
 
-Two properties are pinned here, and they are separate claims:
+The work-ledger flow is ``kirocrew-conductor`` now, and this name is kept for one
+release because it is a public, user-facing string: it is what a running session
+records as its agent, what a seed prompt names for a second-level conductor, and
+what an operator typed into a cron. So one property carries this whole file:
+**the alias emits the SAME spec, differing in ``name`` and ``description`` and in
+nothing else.** An alias that emitted a different spec would silently change what
+an in-flight session can do, which is the one failure the alias exists to prevent.
 
-1. **The spec is a conductor.** It carries every property
-   ``_install_conductor_agent``'s docstring argues for — no file-writing tool, no
-   whole-server auto-approve, grants filtered through the governance ceiling, the
-   KAS block derived from the FILTERED list — because it is a copy of that
-   installer rather than of anything else. A copy is where those properties drift,
-   so they are re-asserted rather than assumed.
-2. **The work-ledger surface lives HERE and only here.** The mirror assertions —
-   that ``kirocrew-conductor`` and ``kirocrew-pipeline-conductor`` do NOT carry it
-   — live in ``test_conductor_agent.py``, ``test_pipeline_conductor_agent.py`` and
-   ``test_worker_agent.py``, next to the specs they constrain.
+Everything the spec itself has to be — no file-writing tool, no whole-server
+auto-approve, grants filtered through the governance ceiling, the KAS block
+derived from the FILTERED list, the work mount on all four surfaces — is asserted
+once in ``test_conductor_agent.py``, against the spec both installers share. It is
+not re-asserted here: the identity test below is what carries it across.
 
 The ceiling stub is the same shape as the sibling installer tests': the default is
 an ungoverned host, and the governed case gets its own test.
@@ -22,6 +23,7 @@ from pathlib import Path
 
 from kiro_crew import agent
 from kiro_crew.agent_files import (
+    CONDUCTOR_AGENT_FILENAME,
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
@@ -36,7 +38,7 @@ SKILL_DIR = (
 )
 
 
-def _install(tmp_path, monkeypatch, *, may_auto_approve=None):
+def _stub(tmp_path, monkeypatch, *, may_auto_approve=None):
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     monkeypatch.setattr(
         agent,
@@ -58,150 +60,63 @@ def _install(tmp_path, monkeypatch, *, may_auto_approve=None):
         lambda sub: ("/resolved/kirocrew", [sub]),
     )
     monkeypatch.setattr(agent, "_may_auto_approve", may_auto_approve or (lambda ref: True))
+
+
+def _install(tmp_path, monkeypatch, *, may_auto_approve=None):
+    _stub(tmp_path, monkeypatch, may_auto_approve=may_auto_approve)
     agent._install_ledger_conductor_agent()
     return json.loads((tmp_path / LEDGER_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8"))
 
 
-# ── identity and registration ─────────────────────────────────────────────
+# ── the one property: same spec, different name ───────────────────────────
 
 
-def test_identity_and_charter(tmp_path, monkeypatch):
-    data = _install(tmp_path, monkeypatch)
-    assert data["name"] == "kirocrew-ledger-conductor"
-    assert "work item" in data["prompt"]
+def test_the_alias_spec_is_identical_apart_from_name_and_description(tmp_path, monkeypatch):
+    """Both installers under one stub, then compare the emitted JSON.
+
+    Field by field rather than "both call the same helper", because a helper is
+    exactly what a later edit routes around: an installer that grew one extra
+    ``config[...] = ...`` line after the call would still share the helper and
+    still emit a different spec. Only ``name`` and ``description`` may differ,
+    and the description must SAY it is deprecated — an operator reading the
+    roster is the one person who cannot see the code.
+    """
+    _stub(tmp_path, monkeypatch)
+    agent._install_conductor_agent()
+    agent._install_ledger_conductor_agent()
+    live = json.loads((tmp_path / CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8"))
+    alias = json.loads((tmp_path / LEDGER_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8"))
+
+    assert live["name"] == "kirocrew-conductor"
+    assert alias["name"] == "kirocrew-ledger-conductor"
+    assert alias["description"].startswith(
+        "Deprecated alias of kirocrew-conductor (removed next release)."
+    )
+    assert alias["description"] != live["description"]
+    # The charter sentence survives the prefix, so the roster entry still says
+    # what the agent is and not only that it is going away.
+    assert live["description"] in alias["description"]
+
+    assert {k for k, v in live.items() if alias.get(k) != v} == {"name", "description"}
+    assert set(alias) == set(live)
+    # Spelled out for the surfaces a reader cares about most, so a failure names
+    # the drifted field instead of dumping two dicts.
+    for field in ("prompt", "tools", "allowedTools", "mcpServers", "permissions"):
+        assert alias[field] == live[field], field
 
 
-def test_spec_is_registered_as_kirocrew_owned_but_not_required(tmp_path, monkeypatch):
-    """Owned so the boot self-heal sweep and the Playwright convergence sweep see
-    it; NOT required, because its installer degrades to ``logger.debug`` and only
-    its own feature stops working — the same split as its six siblings."""
-    assert LEDGER_CONDUCTOR_AGENT_FILENAME == "kirocrew-ledger-conductor.json"
-    assert LEDGER_CONDUCTOR_AGENT_FILENAME in OWNED_KIRO_AGENT_FILES
-    assert LEDGER_CONDUCTOR_AGENT_FILENAME not in REQUIRED_KIRO_AGENT_FILES
-    _install(tmp_path, monkeypatch)
-    assert (tmp_path / LEDGER_CONDUCTOR_AGENT_FILENAME).is_file()
+def test_the_governance_ceiling_reaches_the_alias_the_same_way(tmp_path, monkeypatch):
+    """A ceiling is host state, not per-spec state, so it must strip the same ref
+    from both. Pinned on a work-ledger ref: the alias is the spec an unmigrated
+    session is running under, and a ceiling that reached only the new name would
+    leave that session auto-approving a verb the operator revoked."""
+    _stub(tmp_path, monkeypatch, may_auto_approve=lambda ref: ref != "@kirocrew-work/work_report")
+    agent._install_conductor_agent()
+    agent._install_ledger_conductor_agent()
+    live = json.loads((tmp_path / CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8"))
+    alias = json.loads((tmp_path / LEDGER_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert alias["allowedTools"] == live["allowedTools"]
 
-
-def test_the_boot_installer_writes_this_spec():
-    """``session_create`` refuses an agent it cannot resolve, and resolution reads a
-    boot-time in-memory snapshot that no spec write refreshes — so a lazily
-    materialized spec is invisible to the validation that runs ahead of the spawn.
-    A ledger conductor dispatching a second-level ledger conductor depends on its
-    own name resolving, which makes eager installation load-bearing rather than
-    tidy."""
-    source = Path(agent.__file__).read_text(encoding="utf-8")
-    assert "_install_ledger_conductor_agent()" in source
-
-
-# ── the work-ledger surface, which is the point of the spec ───────────────
-
-
-def test_the_work_server_is_mounted_without_auto_approve(tmp_path, monkeypatch):
-    """An autoApproved MCP tool is approved inside kiro-cli and emits no permission
-    request, so ``hooks.on_tool_call`` — the deny floor, the sensitive-path check
-    and the governance ceiling — is never reached for it. A store that writes
-    agent-authored text into a record the user reads is not the place to break
-    that."""
-    data = _install(tmp_path, monkeypatch)
-    assert "@kirocrew-work" in data["tools"]
-    entry = data["mcpServers"]["kirocrew-work"]
-    assert entry["args"] == ["mcp-work"]
-    assert "autoApprove" not in entry
-
-
-def test_mcp_surface_is_core_plus_dashboard_plus_work(tmp_path, monkeypatch):
-    """Inherited servers this charter has no use for are dropped, exactly as the
-    two sibling conductors drop them."""
-    data = _install(tmp_path, monkeypatch)
-    assert set(data["mcpServers"]) == {
-        "kirocrew-core",
-        "kirocrew-dashboard",
-        "kirocrew-work",
-    }
-    assert "builder-mcp" not in data["mcpServers"]
-
-
-def test_the_conductor_half_plus_the_read_only_worker_verb_are_granted(tmp_path, monkeypatch):
-    """Per tool rather than whole-server. ``work_brief`` is granted because it only
-    reads the caller's own bound item (or answers ``not_bound``) — the same rule
-    the two ledger verbs rest on — and it is a nested conductor's mandated first
-    call in a session nobody opened. ``work_report`` is NOT granted: it writes
-    into the parent's record across a dispatch relationship."""
-    allowed = _install(tmp_path, monkeypatch)["allowedTools"]
-    assert "@kirocrew-work/work_ledger_read" in allowed
-    assert "@kirocrew-work/work_ledger_record" in allowed
-    assert "@kirocrew-work/work_brief" in allowed
-    assert "@kirocrew-work/work_report" not in allowed
-    # A whole-server grant would hand over the worker half by the back door.
-    assert "@kirocrew-work" not in allowed
-
-
-def test_kas_permissions_name_exact_work_resources(tmp_path, monkeypatch):
-    """Derived from the FILTERED grant list, and projected to EXACT
-    ``server/tool`` resources: a ``kirocrew-work/*`` wildcard would re-grant the
-    worker half on the backend where nothing reads ``allowedTools``."""
-    match = _install(tmp_path, monkeypatch)["permissions"]["rules"][0]["match"]
-    assert "kirocrew-work/work_ledger_read" in match
-    assert "kirocrew-work/work_ledger_record" in match
-    assert "kirocrew-work/work_brief" in match
-    assert "kirocrew-work/*" not in match
-    assert "kirocrew-work/work_report" not in match
-
-
-# ── the conductor properties a copied installer could lose ────────────────
-
-
-def test_no_file_writing_tool_at_all(tmp_path, monkeypatch):
-    """What makes "never does a work item's work itself" a property of the SPEC
-    rather than of the prompt. ``code`` counts: governance classes it under
-    ``filesystem.write`` because it writes files and can shell out, so mounting it
-    would make the whole no-write property false."""
-    tools = _install(tmp_path, monkeypatch)["tools"]
-    for writer in ("fs_write", "code"):
-        assert writer not in tools, writer
-
-
-def test_mounts_no_tool_the_charter_never_names(tmp_path, monkeypatch):
-    """An unused grant is surface the charter cannot account for. Same omissions as
-    ``kirocrew-conductor``: nothing names ``web_search``, and ``fs_read`` covers
-    every read the charter describes, so ``grep`` / ``glob`` stay out."""
-    tools = _install(tmp_path, monkeypatch)["tools"]
-    for unmounted in ("web_search", "grep", "glob"):
-        assert unmounted not in tools, unmounted
-
-
-def test_execute_bash_is_mounted_and_never_granted(tmp_path, monkeypatch):
-    """The shell runs the bundled evaluator, and ``allowedTools`` is name-scoped
-    with no argument matching — so trusting that one script cannot be told apart
-    from trusting arbitrary shell. There is no per-argument form of the grant."""
-    data = _install(tmp_path, monkeypatch)
-    assert "execute_bash" in data["tools"]
-    assert "execute_bash" not in data["allowedTools"]
-
-
-def test_no_mutating_session_verb_is_granted(tmp_path, monkeypatch):
-    """The invariant on ``_CONDUCTOR_DASHBOARD_GRANTS``: a granted verb may CREATE
-    or READ, never MUTATE something that already exists and is not the agent's
-    own. This spec ingests untrusted content on nudge-driven cycles with nobody at
-    the keyboard, so the withholds carry the same weight here."""
-    allowed = _install(tmp_path, monkeypatch)["allowedTools"]
-    for withheld in (
-        "@kirocrew-dashboard/session_send",
-        "@kirocrew-dashboard/session_stop",
-        "@kirocrew-dashboard/chat_folder_move_session",
-        "@kirocrew-dashboard/chat_folder_move",
-        "@kirocrew-core/task_run",
-        "@kirocrew-core/workflow_run",
-        "@kirocrew-core/spawn_run",
-        "@kirocrew-core/spawn_sub_agents",
-    ):
-        assert withheld not in allowed, withheld
-
-
-def test_grants_pass_through_the_governance_ceiling(tmp_path, monkeypatch):
-    """``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so a
-    ceiling that refuses a ref must strip it here. Pinned on a work-ledger ref
-    specifically: a hand-written literal would have survived the filter."""
     governed = _install(
         tmp_path,
         monkeypatch,
@@ -217,10 +132,10 @@ def test_grants_pass_through_the_governance_ceiling(tmp_path, monkeypatch):
     assert "@kirocrew-work" in governed["tools"]
 
 
-def test_a_withheld_grant_leaves_an_audit_record_naming_this_installer(tmp_path, monkeypatch):
-    """Withholding a grant is a permission DECISION. Filtering silently would make
-    this the one withhold path with no audit trail, and an operator would have no
-    record of why the agent started prompting."""
+def test_a_withheld_grant_names_this_installer_in_the_audit(tmp_path, monkeypatch):
+    """Withholding a grant is a permission DECISION, and the two installers must be
+    tellable apart in the feed: an operator reading one event cannot otherwise know
+    whether the live spec or the alias lost the grant."""
     events: list[dict] = []
 
     class _Sel:
@@ -233,8 +148,8 @@ def test_a_withheld_grant_leaves_an_audit_record_naming_this_installer(tmp_path,
         monkeypatch,
         may_auto_approve=lambda ref: ref != "@kirocrew-work/work_ledger_read",
     )
-    assert [e for e in events if e["source"] == "_install_ledger_conductor_agent"]
     (event,) = [e for e in events if e["operation"] == "mcp_auto_approve_withheld"]
+    assert event["source"] == "_install_ledger_conductor_agent"
     assert "@kirocrew-work/work_ledger_read" in event["resources"]
 
 
@@ -250,138 +165,66 @@ def test_audit_failure_does_not_break_the_install(tmp_path, monkeypatch):
     assert data["allowedTools"] == []
 
 
-def test_prompt_carries_the_verbosity_placeholder(tmp_path, monkeypatch):
-    """A custom agent's prompt comes from its spec rather than ``config/prompt.md``,
-    and the token is only expanded where it appears — so without it the dashboard
-    verbosity setting never reaches this agent."""
-    assert "{{VERBOSITY_BLOCK}}" in _install(tmp_path, monkeypatch)["prompt"]
+# ── registration, which is what makes the old name still resolve ───────────
 
 
-# ── the procedure the prompt has to carry ─────────────────────────────────
+def test_spec_is_registered_as_kirocrew_owned_but_not_required(tmp_path, monkeypatch):
+    """Owned so the boot self-heal sweep and the Playwright convergence sweep see
+    it; NOT required, because its installer degrades to ``logger.debug`` and only
+    its own feature stops working — the same split as its siblings."""
+    assert LEDGER_CONDUCTOR_AGENT_FILENAME == "kirocrew-ledger-conductor.json"
+    assert LEDGER_CONDUCTOR_AGENT_FILENAME in OWNED_KIRO_AGENT_FILES
+    assert LEDGER_CONDUCTOR_AGENT_FILENAME not in REQUIRED_KIRO_AGENT_FILES
+    _install(tmp_path, monkeypatch)
+    assert (tmp_path / LEDGER_CONDUCTOR_AGENT_FILENAME).is_file()
 
 
-def test_prompt_names_the_ledger_tools(tmp_path, monkeypatch):
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "work_ledger_read" in prompt
-    assert "work_ledger_record" in prompt
+def test_the_boot_installer_writes_this_spec():
+    """``session_create`` refuses an agent it cannot resolve, and resolution reads a
+    boot-time in-memory snapshot that no spec write refreshes — so a lazily
+    materialized spec is invisible to the validation that runs ahead of the spawn.
+    A session already running under the old name resolves it on every dispatch,
+    which is exactly what the alias is for, so eager installation is load-bearing
+    rather than tidy."""
+    source = Path(agent.__file__).read_text(encoding="utf-8")
+    assert "_install_ledger_conductor_agent()" in source
 
 
-def test_prompt_fixes_the_dispatch_order_with_bind_before_seed(tmp_path, monkeypatch):
-    """A worker that runs before its binding exists gets ``not_bound`` and cannot
-    tell an early call from a broken one. The order is the whole reason this
-    procedure differs from ``goal-conductor``'s, so the prompt must state it."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "action=create" in prompt
-    assert "action=bind" in prompt
-    assert "session_create" in prompt
-    assert "session_send" in prompt
-    assert "Bind before you seed" in prompt
-    # And in that order, not merely all present.
-    assert prompt.index("action=create") < prompt.index("session_create")
-    assert prompt.index("session_create") < prompt.index("action=bind")
-    assert prompt.index("action=bind") < prompt.index("session_send")
+# ── the deprecated skill ──────────────────────────────────────────────────
 
 
-def test_prompt_states_the_per_item_agent_rule(tmp_path, monkeypatch):
-    """An omitted ``agent`` inherits the CALLER's, so the child comes up as a second
-    ledger conductor with no ``fs_write`` and the item looks stalled rather than
-    misconfigured."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "kirocrew-worker" in prompt
-    assert "kirocrew-ledger-conductor" in prompt
-    assert "select_crew" in prompt
-    assert "Never leave `agent` unset" in prompt
+def test_the_skill_is_a_pointer_and_not_a_second_procedure():
+    """Two copies of a procedure are two procedures the moment one is edited. The
+    body has to send the reader to ``goal-conductor`` and stop, and it must not
+    carry the dispatch steps that would let a model follow it instead."""
+    body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "name: goal-ledger-conductor" in body
+    assert "deprecated" in body.lower()
+    assert "`goal-conductor`" in body
+    # The procedure itself must be gone, not merely prefixed with a notice.
+    for step in ("action=bind", "action=verdict", "### Which agent", "## Patrol"):
+        assert step not in body, step
+    assert len(body.splitlines()) < 40
 
 
-def test_prompt_makes_done_a_claim_the_evaluator_settles(tmp_path, monkeypatch):
-    """Nothing a worker can write reaches ``verdict``. The prompt has to say that a
-    ``done`` triggers verification rather than substituting for it."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "accept_eval" in prompt
-    assert "accept_batch" in prompt
-    assert "action=verdict" in prompt
-    assert "CLAIM" in prompt
+def test_the_index_line_sends_a_reader_to_the_live_skill():
+    """Per-message trigger matching is off by default, so the ``## Available
+    Skills`` line is the only thing an agent reads before deciding to load a
+    skill. A deprecation that shows up as a normal-looking procedure summary gets
+    loaded; one whose first sentence says where the procedure went does not."""
+    from kiro_crew.skills import SkillsLoader
 
-
-def test_prompt_and_skill_filter_the_batch_to_done_items(tmp_path, monkeypatch):
-    """``accept_batch`` is status-blind by design (it is the promotion seam), so the
-    procedure must filter it. Unfiltered, a ``progress`` worker whose stub already
-    satisfies a ``file`` condition earns a genuine ``pass`` and can be closed under
-    itself. Both the prompt and the skill have to state the filter, because the
-    agent copies whichever it read last."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "Filter the returned" in prompt
-    assert "whose status is `done`" in prompt
-    body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
-    assert "keep only the entries whose item is currently `status: done`" in body
-    assert "Never pipe the unfiltered document" in body
-    # The old wording that told the reader to send everything is gone.
-    assert "every ready item" not in body
-
-
-def test_prompt_keeps_a_claimed_pr_out_of_the_acceptance_bar(tmp_path, monkeypatch):
-    """A worker that could fill in its own acceptance could point it at anybody's
-    already-green pull request, which is why promotion is an explicit
-    ``action=accept`` write."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "action=accept" in prompt
-
-
-def test_prompt_uses_close_for_state_and_not_the_item_codec(tmp_path, monkeypatch):
-    """The ledger is the item store now. Writing items into ``session_ledger``
-    artifacts as well would give two records that can disagree."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "action=close" in prompt
-    assert "ledger_entry" not in prompt
-    assert "session_ledger_read" in prompt
-
-
-def test_prompt_and_skill_make_a_nested_conductor_report_upward(tmp_path, monkeypatch):
-    """A second-level ledger conductor is bound as its parent's worker, and the
-    parent reads its OWN ledger — so a nested conductor that never calls
-    ``work_report`` leaves its parent's item statusless forever, which the parent
-    reads as a stall. The worker half is mounted on this spec for exactly this
-    caller; the text has to tell it to use it."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "If a conductor dispatched you" in prompt
-    assert "`work_brief` before you plan" in prompt
-    assert "`work_report` `status: progress`" in prompt
-    body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
-    assert "When a conductor dispatched you" in body
-    assert "`work_brief` before Round 0" in body
-    assert "`work_report` at round boundaries" in body
-    # And the root case is still named, so a root conductor does not treat
-    # ``not_bound`` as a failure.
-    assert "not_bound" in prompt
-    assert "root conductor gets `not_bound`" in body
-
-
-def test_prompt_notes_the_patrol_gate_is_still_a_timer(tmp_path, monkeypatch):
-    """``monitor_start`` gates on one pull-request URL and nothing else today, so a
-    cycle fires whether or not anything was reported. The prompt says so, and says
-    what to switch to, rather than implying a gate that does not exist."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "monitor_start" in prompt
-    assert 'watch: "work-ledger"' in prompt
-
-
-def test_prompt_points_at_its_own_skill_not_the_shipped_one(tmp_path, monkeypatch):
-    """``goal-conductor`` is frozen against this flow — it seeds before it records
-    and reads transcripts — so naming it here would send the agent to the wrong
-    procedure."""
-    prompt = _install(tmp_path, monkeypatch)["prompt"]
-    assert "goal-ledger-conductor" in prompt
-    assert "`goal-conductor`" not in prompt.replace("`goal-ledger-conductor`", "")
-
-
-# ── the bundled skill ─────────────────────────────────────────────────────
+    body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    desc = SkillsLoader._parse_frontmatter_text(body).get("description") or ""
+    line = SkillsLoader._short_desc(" ".join(desc.split()))
+    assert "Deprecated" in line
+    assert "goal-conductor" in line
 
 
 def test_the_skill_ships_only_the_evaluator():
-    """``ledger_entry.py`` exists to squeeze an item into a 2000-character
-    ``artifacts`` value under an entry cap. This flow has a store, so the codec has
-    no job here and shipping it would invite the double-bookkeeping the prompt
-    forbids."""
+    """The item-entry codec belongs to a conductor with no item store. This flow
+    has a store, so shipping the codec here would invite the double-bookkeeping
+    the procedure forbids."""
     scripts = {p.name for p in (SKILL_DIR / "scripts").glob("*.py")}
     assert scripts == {"accept_eval.py"}
 
@@ -397,45 +240,7 @@ def test_the_evaluator_is_a_regular_file_not_a_symlink():
 def test_the_evaluator_is_byte_identical_to_the_shipped_one():
     """Two copies that drift are two acceptance bars. The RFC's whole reason for
     storing ``acceptance`` verbatim is that ONE script parses it, so a divergence
-    here is a defect rather than a variant."""
+    here is a defect rather than a variant — and a session that loaded the old
+    skill name keeps a working evaluator until the name is removed."""
     shipped = SKILL_DIR.parent / "goal-conductor" / "scripts" / "accept_eval.py"
     assert (SKILL_DIR / "scripts" / "accept_eval.py").read_bytes() == shipped.read_bytes()
-
-
-def test_the_skill_body_matches_the_prompt_on_the_load_bearing_rules():
-    """The prompt is the summary and the skill is the procedure; a disagreement
-    between them is resolved nondeterministically by whichever the model weighs
-    more. These four are the rules that make this flow different."""
-    body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
-    assert "Bind BEFORE you seed" in body
-    assert "Never leave `agent` unset" in body
-    assert "work_ledger_read` first, every cycle" in body
-    assert "action=accept" in body
-    # And it must not send the reader to the codec this flow replaced.
-    assert "ledger_entry" not in body
-
-
-def test_the_skill_feeds_the_evaluator_through_a_quoted_heredoc():
-    """The acceptance document is built from ingested text, and the skill's example
-    is what the agent copies. A ``printf '%s' '<json>'`` form ends its string at
-    the first single quote inside a path and hands the remainder to the shell,
-    which ``execute_bash`` then runs after one approval. A quoted heredoc is the
-    one form the shell copies to stdin without interpreting."""
-    body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-    assert "<<'ACCEPT_BATCH'" in body
-    assert "printf '%s' '<" not in body
-    assert "printf '%s' '{" not in body
-
-
-def test_the_shipped_conductor_skill_is_untouched_by_this_flow():
-    """``goal-conductor`` runs the un-migrated procedure and keeps its codec. If this
-    assertion ever fails, the two flows have been merged — which is a decision with
-    its own criteria, recorded in the work-ledger RFC's rollout note."""
-    sibling = SKILL_DIR.parent / "goal-conductor"
-    assert {p.name for p in (sibling / "scripts").glob("*.py")} == {
-        "accept_eval.py",
-        "ledger_entry.py",
-    }
-    body = (sibling / "SKILL.md").read_text(encoding="utf-8")
-    assert "work_ledger" not in body
-    assert "kirocrew-work" not in body
