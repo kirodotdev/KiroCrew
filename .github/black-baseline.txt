@@ -183,7 +183,6 @@ src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
 src/kiro_crew/dashboard/handlers/discover.py
 src/kiro_crew/dashboard/handlers/files.py
-src/kiro_crew/dashboard/handlers/hooks.py
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py
 src/kiro_crew/dashboard/handlers/knowledge.py
 src/kiro_crew/dashboard/handlers/mcp.py
