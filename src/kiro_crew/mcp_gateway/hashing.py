@@ -12,6 +12,7 @@ those heavy submodules into CLI/test/MCP startup.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Collection, Mapping
 
 
@@ -33,6 +34,35 @@ def hash_command(command: str, args: list[str]) -> str:
         h.update(a.encode("utf-8"))
         h.update(b"\0")
     return h.hexdigest()
+
+
+def hash_config_snapshot(snapshot_json: str) -> str:
+    """SHA-256 hex digest of the preserved operator-config snapshot.
+
+    Single source of truth for the ``config_snapshot_hash`` dimension of
+    :class:`kiro_crew.mcp_gateway.pool.PoolKey`. The rewriter writes the
+    passthrough fields it preserves on the wrapper (``disabledTools`` tool
+    allowlist, ``timeout``, ``initializationOptions``, vendor keys — the
+    config no other PoolKey dimension represents) to a 0600 sidecar in the
+    owner-only sidecar directory, and the stub hashes the sidecar contents
+    with this function: free-form server config can carry secret-bearing
+    vendor keys, so neither the values nor their digest ever touch argv, which
+    is world-readable via /proc/<pid>/cmdline. An overlay without the sidecar
+    hashes the empty snapshot, so every register carries a deterministic
+    digest.
+
+    The input is a JSON encoding of the snapshot and is CANONICALIZED here —
+    parsed and re-dumped with sorted keys and tight separators — so equivalent
+    spellings hash equally. Non-JSON input is hashed as raw bytes, keeping the
+    digest deterministic for any spelling.
+    """
+    try:
+        canonical = json.dumps(
+            json.loads(snapshot_json), sort_keys=True, separators=(",", ":"), default=str
+        )
+    except (ValueError, TypeError):
+        canonical = snapshot_json
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 #: Env-key prefixes treated as ROTATING SECRETS and excluded from the

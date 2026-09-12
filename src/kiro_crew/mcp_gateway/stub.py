@@ -41,7 +41,7 @@ from kiro_crew.executors import configure_default_executor, subprocess_executor
 from kiro_crew.jsonl_util import bounded_records, rotate_jsonl_at
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
+from kiro_crew.mcp_gateway.hashing import hash_command, hash_config_snapshot, hash_effective_env
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 from kiro_crew.metrics.events import MCP_RECONNECTS, emit_counter
 
@@ -99,15 +99,14 @@ _ENSURE_BACKEND_TIMEOUT_SECS = 25.0
 # path — a 64 MiB hash blocked the stub event loop ~150-300 ms — they fall
 # back to a cheap (size, mtime) token, which is still a stable pool-split key.
 _BINARY_HASH_CAP_BYTES = 4 * 1024 * 1024
-# Placeholder: stub does not yet observe a config snapshot, so all
-# same-session stubs agree on this value (never a false split).
-# Safety note: approval_mode and sandbox_mode are already separate PoolKey
-# dimensions, so the dangerous config divergences (permission escalation,
-# sandbox escape) are already covered by distinct pool entries.
-# TODO: Hash relevant config fields (e.g. tool allowlists,
-# hook settings) in a future iteration to detect non-security config drift
-# that could cause subtle behavioral differences across pooled sessions.
-_CONFIG_SNAPSHOT_PLACEHOLDER = "0" * 64
+# ``config_snapshot_hash`` carries the digest of the preserved operator config
+# the rewriter writes to a 0600 sidecar and the stub reads via
+# ``--config-snapshot-file`` (see ``hashing.hash_config_snapshot``).
+# approval_mode and sandbox_mode are already separate PoolKey dimensions, so
+# the dangerous config divergences (permission escalation, sandbox escape) stay
+# covered by distinct pool entries; this dimension adds the non-security drift
+# (tool allowlists, timeouts, initializationOptions) that would otherwise pool
+# onto one backend silently.
 
 
 def _crew_home() -> Path:
@@ -217,6 +216,21 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--config-snapshot-file",
+        default=None,
+        dest="config_snapshot_file",
+        help=(
+            "Path to the 0600 sidecar holding the preserved operator config "
+            "(disabledTools allowlist, timeout, initializationOptions, vendor "
+            "keys) written by the rewriter. The contents are hashed with "
+            "hashing.hash_config_snapshot and registered as the "
+            "config_snapshot_hash PoolKey dimension, so sessions whose config "
+            "drifted pool onto separate backends. The path is all argv "
+            "carries: argv is world-readable via /proc/<pid>/cmdline, and the "
+            "sidecar lives in the owner-only sidecar directory."
+        ),
+    )
+    p.add_argument(
         "--socket",
         default=os.environ.get("KIROCREW_MCP_SOCKET") or os.environ.get("MC_MCP_SOCKET") or _default_socket_path(),
     )
@@ -279,6 +293,45 @@ def _parse_env_file(path: str) -> dict[str, str]:
         logger.warning("stub --env-file unreadable; dropping env block")
         return {}
     return _parse_env_json(raw)
+
+
+def _read_config_snapshot(args: argparse.Namespace) -> str | None:
+    """Read the config-snapshot sidecar the rewriter wrote, for hashing into
+    the ``config_snapshot_hash`` PoolKey dimension.
+
+    Returns the sidecar contents, or ``None`` when the sidecar exists but
+    cannot be read: the caller then registers a per-register digest so the
+    session pools onto nothing instead of reusing a partition that belongs to
+    some other config. A missing flag is a different case — the overlay has no
+    snapshot at all — and hashes to the empty-snapshot digest, which is
+    reserved for exactly that.
+    """
+    if not args.config_snapshot_file:
+        return ""
+    try:
+        return Path(args.config_snapshot_file).read_text(encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "stub --config-snapshot-file unreadable; registering a unique digest"
+        )
+        return None
+
+
+def _config_snapshot_digest(args: argparse.Namespace) -> str:
+    """Register digest for the ``config_snapshot_hash`` PoolKey dimension.
+
+    No sidecar means the config is genuinely absent, and the empty-snapshot
+    digest is reserved for that case. A readable sidecar hashes its contents.
+    A sidecar that exists but cannot be read leaves the config unknown, so the
+    digest is per-register and the session pools onto nothing instead of
+    inheriting a partition that belongs to some other config.
+    """
+    contents = _read_config_snapshot(args)
+    if contents is None:
+        # Two concatenated UUID hexes: 64-hex like every other digest on this
+        # dimension, unique per register.
+        return uuid.uuid4().hex + uuid.uuid4().hex
+    return hash_config_snapshot(contents)
 
 
 def _parse_auto_approve(raw: str) -> list[str]:
@@ -509,7 +562,13 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         # the key. Safe to drop once no daemon predating the key can be adopted.
         "user_identity": caller["principal_id"] or "unknown",
         "channel_id": channel_id,
-        "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
+        # The empty-snapshot digest is RESERVED for registers without a
+        # --config-snapshot-file: their config is genuinely absent, so they
+        # share one partition by construction. A sidecar that exists but
+        # cannot be read is a different case — the config is unknown, and an
+        # unknown config must not reuse any valid partition — so that register
+        # carries a per-register digest and pools onto nothing.
+        "config_snapshot_hash": _config_snapshot_digest(args),
         "caller": caller,
         # Claim-push (gateway → gatewayd ``claim`` frame): the ancestor PID
         # chain of this stub, nearest first. gatewayd indexes the connection

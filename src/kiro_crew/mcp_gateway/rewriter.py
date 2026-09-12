@@ -539,12 +539,65 @@ def _build_stub_entry(
     # honours; a fixed-shape return silently dropped them, so e.g. a declared
     # `timeout` was lost and a slow pooled backend timed out where the
     # un-pooled config did not. Override only the pooling-relevant keys below.
-    wrapped: dict[str, Any] = {
+    # This same set is the config_snapshot_hash PoolKey payload: it is exactly
+    # the operator config no other PoolKey dimension represents (command/args
+    # and env have their own hashes, autoApprove the permission-profile hash),
+    # so two agents whose allowlist/timeout/initializationOptions drifted land
+    # in separate pool partitions. The snapshot travels through a 0600 sidecar
+    # in the same owner-only directory as the declared-env sidecars and argv
+    # carries only the path: argv is world-readable via /proc/<pid>/cmdline and
+    # free-form server config can carry secret-bearing vendor keys. The stub
+    # hashes the sidecar contents with hashing.hash_config_snapshot, the shared
+    # leaf that also serves the other PoolKey hashes. Canonical JSON keeps the
+    # file stable across dict-insertion order, which also keeps the rewrite
+    # fingerprint's skip path byte-identical.
+    passthrough: dict[str, Any] = {
         k: v
         for k, v in original.items()
         if k not in ("command", "args", "env", "poolable", "autoApprove",
                      _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY)
     }
+    if passthrough:
+        snapshot_json = json.dumps(
+            passthrough, sort_keys=True, separators=(",", ":"), default=str
+        )
+        snapshot_dir = env_sidecar_dir_for_stubs(stubs_dir)
+        platform_compat.make_owner_only_dir(snapshot_dir)
+        cfg_file = snapshot_dir / config_sidecar_name(
+            agent_name, server_name, snapshot_json
+        )
+        if sidecars_written is not None:
+            # Registering before the write keeps the prune pass and the
+            # fingerprint's protect list aligned with the env sidecars; a
+            # failed write marks the pass uncacheable below, so the fingerprint
+            # is never stored with a vanished sidecar.
+            sidecars_written.add(cfg_file.name)
+        fd_owned = True
+        wrote_snapshot = False
+        try:
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{cfg_file.stem}-", suffix=".json", dir=str(snapshot_dir)
+            )
+            try:
+                platform_compat.fchmod_safe(fd, 0o600)
+                if not platform_compat.IS_POSIX:
+                    platform_compat.restrict_to_owner(tmp)
+                with os.fdopen(fd, "w") as fh:
+                    fd_owned = False
+                    fh.write(snapshot_json)
+                os.replace(tmp, cfg_file)
+                wrote_snapshot = True
+            finally:
+                if fd_owned:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+        except OSError:
+            logger.warning("rewriter: failed to write config sidecar %s", cfg_file)
+            if notes is not None:
+                notes.sidecar_write_failed = True
+        if wrote_snapshot:
+            stub_args.extend(["--config-snapshot-file", str(cfg_file)])
+    wrapped: dict[str, Any] = dict(passthrough)
     wrapped.update({
         _WRAPPER_MARKER: True,
         "command": sys.executable,
@@ -2196,6 +2249,24 @@ def env_sidecar_name(agent_name: str, server_name: str) -> str:
         f"{agent_name}\0{server_name}".encode("utf-8")
     ).hexdigest()[:12]
     return f"{_san(agent_name)}.{_san(server_name)}.{digest}.json"
+
+
+def config_sidecar_name(agent_name: str, server_name: str, snapshot_json: str) -> str:
+    """Return the config-snapshot sidecar FILE NAME for a snapshot.
+
+    Shape: ``cfg.<sanitized-agent>.<sanitized-server>.<content-digest>.json`` —
+    the declared-env name with a ``cfg.`` prefix, and a trailing digest of the
+    pair AND the snapshot content, so the name addresses what the file holds.
+    That keeps a retained overlay and its snapshot consistent through a
+    partial write failure: a config change publishes the new snapshot under a
+    NEW name while the retained overlay still points at the old file, instead
+    of both names resolving to whichever content landed last. The rewriter
+    writes the snapshot into this file inside the owner-only sidecar directory
+    and the stub reads it back from the ``--config-snapshot-file`` argv path;
+    the pruning and protection passes treat it like any other written sidecar.
+    """
+    content_digest = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()[:12]
+    return "cfg." + env_sidecar_name(agent_name, server_name)[:-5] + "." + content_digest + ".json"
 
 
 def forward_declared_env_enabled() -> bool:
