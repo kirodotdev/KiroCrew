@@ -1,26 +1,11 @@
-/**
- * The side panel's tab strip renders as BROWSER TABS: the active chip shares the
- * panel body's background (`--bg`), drops its bottom radius, and carries the
- * `side-tab-active` hook whose ::before/::after paint Chrome-style inverted
- * corners (index.css). Inactive chips are quiet text.
- *
- * Two of these pins guard clipping regressions that are invisible in jsdom and
- * were caught only by screenshot review:
- *  - the Reorder.Group scrolls (`overflow-x-auto`), so the FIRST tab's left
- *    corner piece (8px outside the chip) is clipped unless the group reserves
- *    room with padding (`px-2`) — and ONLY padding: a negative margin widens
- *    the clip box into the strip gaps, letting scrolled chips paint over the
- *    divider and the + button;
- *  - the corner pieces exist at all only through the index.css mask rules, so
- *    their presence is asserted against the stylesheet source.
- */
+/** Workspace tab navigation and caption clearance. Visual geometry is shared with terminal tabs. */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createTestStore } from './helpers'
 
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
@@ -48,6 +33,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel from '../pages/chat/SidePanel'
 import { usePanelTabs, openPanelView } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
+import { WorkspaceFullscreenContext } from '../components/WorkspacePanelContext'
 
 function Harness() {
   const tabsCtl = usePanelTabs('slot-tabs')
@@ -73,96 +59,28 @@ function renderPanel() {
   )
 }
 
-const cssSource = () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  return readFileSync(join(here, '..', 'index.css'), 'utf8')
+/** The panel inside the chat workspace, where fullscreen exists. */
+function renderWorkspacePanel(fullscreen = false) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const controls = { fullscreen, exit: vi.fn(), toggle: vi.fn() }
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Provider store={createTestStore()}>
+        <WorkspaceFullscreenContext.Provider value={controls}>
+          <Harness />
+        </WorkspaceFullscreenContext.Provider>
+      </Provider>
+    </QueryClientProvider>,
+  )
+  return { ...view, controls }
 }
 
-describe('side panel browser-tab strip', () => {
-  it('marks the active chip with side-tab-active + the body background, not inactive ones', () => {
-    renderPanel()
-    act(() => {
-      openPanelView('slot-tabs', 'issues')
-      openPanelView('slot-tabs', 'browser')
-    })
-    const tabs = screen.getAllByRole('tab')
-    const active = tabs.filter(t => t.getAttribute('aria-selected') === 'true')
-    const inactive = tabs.filter(t => t.getAttribute('aria-selected') !== 'true')
-    expect(active.length).toBeGreaterThan(0)
-    expect(inactive.length).toBeGreaterThan(0)
-    for (const t of active) {
-      expect(t.className).toContain('side-tab-active')
-      // Word-boundary match: inactive chips carry hover:bg-bg-hover, which a
-      // bare substring check would also match.
-      expect(t.className).toMatch(/(^|\s)bg-bg(\s|$)/)
-      // Browser-tab shape: top corners only. A bottom radius would re-open the
-      // seam between the tab and the panel body it fuses into.
-      expect(t.className).toContain('rounded-t-md')
-      expect(t.className).toContain('rounded-b-none')
-      // Theme-independent silhouette: a custom theme may set --bg equal to the
-      // strip's --bg-elevated, so the active tab carries a top/side hairline.
-      expect(t.className).toContain('border-t-border')
-      // Bottom edge is transparent, not width-0: a border-b-0 box is 1px
-      // asymmetric and sits the glyphs half a pixel low.
-      expect(t.className).toContain('border-b-transparent')
-    }
-    for (const t of inactive) {
-      expect(t.className).not.toContain('side-tab-active')
-      expect(t.className).not.toMatch(/(^|\s)bg-bg(\s|$)/)
-      // The inset hover wash depends on BOTH hooks: side-tab-inactive carries
-      // the :hover::before rule, and isolate keeps its z-index:-1 inside the
-      // chip's own stacking context (without it the wash paints behind the
-      // strip and silently disappears).
-      expect(t.className).toContain('side-tab-inactive')
-      expect(t.className).toContain('isolate')
-    }
-    // The fuse itself: every chip carries the 1px border width (bottom edge
-    // painted transparent on the active chip) and the strip bottom-aligns its
-    // chips with no bottom padding, so the active chip's background runs into
-    // the panel body. Restoring items-center or pb-2 re-opens the seam with
-    // every class-pin above still green.
-    for (const t of tabs) expect(t.className).toMatch(/(^|\s)border(\s|$)/)
-    const strip = document.querySelector('.side-panel-strip')
-    expect(strip).not.toBeNull()
-    expect(strip!.className).toContain('items-end')
-    expect(strip!.className).toContain('pb-0')
-  })
+const workspaceActions = () => document.querySelector('[data-panel-controls-host="workspace"]') as HTMLElement
+const actionButtons = () => Array.from(workspaceActions().querySelectorAll(':scope > button'))
 
-  it('reserves corner room inside the scrollable tab group (px-2, no -mx)', () => {
-    renderPanel()
-    act(() => {
-      openPanelView('slot-tabs', 'browser')
-    })
-    const group = screen.getByRole('tablist')
-    // overflow-x-auto clips the first tab's left corner piece (::before at
-    // left:-8px) without this padding/negative-margin pair.
-    expect(group.className).toContain('overflow-x-auto')
-    expect(group.className).toContain('px-2')
-    // Deliberately NO negative margin: the scrollport's clip box must not
-    // extend into the strip gaps, or scrolled chips paint over the divider
-    // and the + button.
-    expect(group.className).not.toContain('-mx-2')
-  })
+const source = (file: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', file), 'utf8')
 
-  it('draws the seam hairline the corner arcs land on (strip border-b, rows dropped 1px)', () => {
-    renderPanel()
-    act(() => {
-      openPanelView('slot-tabs', 'browser')
-    })
-    // The flare arc ends tangent-horizontal at the seam; without a line to
-    // continue into, the 1px stroke truncates mid-air. The strip's border-b is
-    // that line, and each chip row drops one pixel over the border row so the
-    // active chip's opaque background interrupts it across its own span.
-    const strip = document.querySelector('.side-panel-strip')!
-    expect(strip.className).toContain('border-b')
-    expect(strip.className).toContain('border-border')
-    const group = screen.getByRole('tablist')
-    expect(group.className).toContain('-mb-px')
-    // The drop lives on the GROUP containers, not the chips: the tablist
-    // scrolls, and a chip's own negative margin would be clipped away.
-    expect(group.parentElement!.querySelector(':scope > div.shrink-0')!.className).toContain('-mb-px')
-  })
-
+describe('side panel tab strip', () => {
   it('goes transparent on the pinned↔dynamic divider when an adjacent tab is active', () => {
     renderPanel()
     act(() => {
@@ -175,30 +93,11 @@ describe('side panel browser-tab strip', () => {
     expect(divider.className).toContain('bg-border')
     expect(divider.className).not.toContain('bg-transparent')
     // Activate the pinned Files tab (adjacent): the hairline goes transparent
-    // (never unmounted — removing its layout slot would shift the row), so the
-    // active chip's corner piece cannot be sliced by it.
+    // Its layout slot remains stable while the selection changes.
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     const after = screen.getByTestId('strip-divider')
     expect(after.className).toContain('bg-transparent')
     expect(after.className).not.toContain('bg-border')
-  })
-
-  it('index.css paints both inverted corner pieces for the active chip', () => {
-    const css = cssSource()
-    // Both sides, both mask spellings. The LEFT piece is the one a scroll
-    // container clipped in review — assert each side separately so losing one
-    // cannot pass.
-    expect(css).toMatch(/\.side-tab-active::before[\s\S]{0,600}left:-9px/)
-    expect(css).toMatch(/\.side-tab-active::after[\s\S]{0,600}right:-9px/)
-    // Each piece's gradient carries a 1px --border arc between the transparent
-    // concave region and the --bg wedge: it is what makes the side hairline
-    // FOLLOW the curve instead of ending in a straight stub. Assert per side —
-    // losing one arc leaves that side's outline broken with the other green.
-    expect(css).toMatch(/\.side-tab-active::before\{[\s\S]{0,300}var\(--border\) 7px 8px,var\(--bg\) 8px/)
-    expect(css).toMatch(/\.side-tab-active::after\{[\s\S]{0,300}var\(--border\) 7px 8px,var\(--bg\) 8px/)
-    // The inactive hover wash must stay behind the chip's children but above
-    // the strip: z-index:-1 paired with the chip's isolate class.
-    expect(css).toMatch(/\.side-tab-inactive:hover::before\{[\s\S]{0,300}z-index:-1/)
   })
 
   // Focus mode takes the dashboard header out of flow, and that header's own
@@ -225,5 +124,72 @@ describe('side panel browser-tab strip', () => {
     } finally {
       setSidePanelDock('right')
     }
+  })
+
+  it('keeps the shell first row above a fullscreen side panel and its controls', () => {
+    const css = source('index.css')
+    const app = source('App.tsx')
+    const fullscreenRule = css.match(/\[data-workspace-fullscreen\] #activity-bar-slot\s*\{[^}]+\}/)?.[0]
+    const fullscreenHostRule = css.match(/\[data-workspace-fullscreen\] #activity-bar-slot \[data-workspace-panel-host\]\s*\{[^}]+\}/)?.[0]
+    const fixedHostRule = css.match(/\[data-workspace-fullscreen\] \[data-workspace-panel-host\]\.fixed\s*\{[^}]+\}/)?.[0]
+    expect(fullscreenRule).toContain('grid-area: 2 / 1 / -1 / -1 !important')
+    expect(fullscreenRule).not.toContain('grid-area: auto')
+    expect(fullscreenHostRule).toContain('height: 100% !important')
+    expect(fixedHostRule).toContain('height: auto !important')
+    expect(fixedHostRule).not.toContain('top:')
+    expect(app).toContain("style={{ gridArea: '2 / 1 / 3 / -1' }}")
+    expect(app).not.toContain("panelFullscreen ? '1 / 1 / 2 / -1'")
+  })
+})
+
+// Fullscreen is the workspace panel's own action, so it renders in the panel's
+// action group rather than in the shell's fixed toggles. That group is capped
+// at two controls (`max-two-buttons-per-row`): the ⋯ menu plus either the
+// fullscreen button or the close X, never both.
+describe('workspace fullscreen control placement', () => {
+  it('right-docked: ⋯ + fullscreen button, and the X yields to the fixed toggles', () => {
+    setSidePanelDock('right')
+    const { controls } = renderWorkspacePanel()
+    const buttons = actionButtons()
+    expect(buttons).toHaveLength(2)
+    const fullscreen = screen.getByTestId('workspace-fullscreen-toggle')
+    expect(buttons[1]).toBe(fullscreen)
+    expect(fullscreen).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByRole('button', { name: 'Close panel' })).not.toBeInTheDocument()
+    fireEvent.click(fullscreen)
+    expect(controls.toggle).toHaveBeenCalledOnce()
+  })
+
+  it('fullscreen: the same slot shows the exit control, pressed', () => {
+    setSidePanelDock('right')
+    renderWorkspacePanel(true)
+    const fullscreen = screen.getByTestId('workspace-fullscreen-toggle')
+    expect(fullscreen).toHaveAttribute('aria-pressed', 'true')
+    expect(fullscreen).toHaveAccessibleName('Exit full screen')
+    expect(actionButtons()).toHaveLength(2)
+  })
+
+  it('bottom-docked: the X keeps its slot and fullscreen enters from the ⋯ menu', async () => {
+    setSidePanelDock('bottom')
+    try {
+      const { controls } = renderWorkspacePanel()
+      expect(actionButtons()).toHaveLength(2)
+      expect(screen.queryByTestId('workspace-fullscreen-toggle')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Close panel' })).toBeInTheDocument()
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'More options' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      const item = await screen.findByRole('menuitem', { name: 'Full screen' })
+      fireEvent.click(item)
+      expect(controls.toggle).toHaveBeenCalledOnce()
+    } finally {
+      setSidePanelDock('right')
+    }
+  })
+
+  it('outside the chat workspace there is no fullscreen control and the X stays', () => {
+    setSidePanelDock('right')
+    renderPanel()
+    expect(screen.queryByTestId('workspace-fullscreen-toggle')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close panel' })).toBeInTheDocument()
+    expect(actionButtons()).toHaveLength(2)
   })
 })

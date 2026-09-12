@@ -2,8 +2,6 @@ import { Fragment, useEffect, useRef, type ReactNode } from 'react'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import type { GridNode, GridLeaf, GridSplit } from '../hooks/useSessionGrid'
 
-const DIVIDER = 6 // px — draggable separator thickness between sibling panes
-
 /**
  * SessionGridLayout — recursive "terminal split" renderer.
  *
@@ -18,25 +16,31 @@ export default function SessionGridLayout({
   node,
   renderLeaf,
   onResize,
+  ownsTopRight = true,
 }: {
   node: GridNode
-  renderLeaf: (leaf: GridLeaf) => ReactNode
+  renderLeaf: (leaf: GridLeaf, ownsTopRight: boolean) => ReactNode
   onResize: (splitId: string, index: number, deltaFrac: number) => void
+  /** Whether this subtree reaches the workspace's top-right corner. Exactly one
+   *  leaf inherits it, so only that pane reserves the App-owned panel toggles. */
+  ownsTopRight?: boolean
 }) {
   if (node.type === 'leaf') {
-    return <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">{renderLeaf(node)}</div>
+    return <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">{renderLeaf(node, ownsTopRight)}</div>
   }
-  return <SplitContainer node={node} renderLeaf={renderLeaf} onResize={onResize} />
+  return <SplitContainer node={node} renderLeaf={renderLeaf} onResize={onResize} ownsTopRight={ownsTopRight} />
 }
 
 function SplitContainer({
   node,
   renderLeaf,
   onResize,
+  ownsTopRight,
 }: {
   node: GridSplit
-  renderLeaf: (leaf: GridLeaf) => ReactNode
+  renderLeaf: (leaf: GridLeaf, ownsTopRight: boolean) => ReactNode
   onResize: (splitId: string, index: number, deltaFrac: number) => void
+  ownsTopRight: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   // Teardown for an in-progress divider drag, invoked on unmount so closing a
@@ -89,26 +93,26 @@ function SplitContainer({
             className="min-w-0 min-h-0 overflow-hidden"
             style={{ flexGrow: node.sizes[i] ?? 1, flexBasis: 0, flexShrink: 1 }}
           >
-            <SessionGridLayout node={child} renderLeaf={renderLeaf} onResize={onResize} />
+            <SessionGridLayout
+              node={child}
+              renderLeaf={renderLeaf}
+              onResize={onResize}
+              ownsTopRight={ownsTopRight && (horizontal ? i === node.children.length - 1 : i === 0)}
+            />
           </div>
           {i < node.children.length - 1 && (
             <div
               {...gridResize}
               data-divider-index={i}
               onPointerDown={(e) => { e.stopPropagation(); gridResize.onPointerDown(e) }}
-              className={`shrink-0 flex items-center justify-center group/div ${horizontal ? 'cursor-col-resize' : 'cursor-row-resize'}`}
-              style={{ ...(horizontal ? { width: DIVIDER } : { height: DIVIDER }), touchAction: 'none' }}
+              className={`relative z-10 shrink-0 bg-border hover:bg-accent transition-colors ${horizontal ? 'w-px cursor-col-resize' : 'h-px cursor-row-resize'}`}
+              style={{ touchAction: 'none' }}
               role="separator"
               aria-orientation={horizontal ? 'vertical' : 'horizontal'}
             >
-              {/* Visual bar only — the 6px parent is the hit area and stays
-                  full-length. The bar's ends are inset by the panes' border
-                  radius (rounded-lg = 8px, so 16px total) so it spans exactly
-                  the straight segment of the adjacent pane borders instead of
-                  overshooting past where they curve away at the corners. */}
-              <div
-                className={`bg-border group-hover/div:bg-accent transition-colors rounded-full ${horizontal ? 'w-[2px] h-[calc(100%-16px)]' : 'h-[2px] w-[calc(100%-16px)]'}`}
-              />
+              {/* Keep a forgiving hit target without making the divider occupy
+                  more than its one visible pixel in layout. */}
+              <span aria-hidden="true" className={`absolute ${horizontal ? 'inset-y-0 left-1/2 w-[7px] -translate-x-1/2' : 'inset-x-0 top-1/2 h-[7px] -translate-y-1/2'}`} />
             </div>
           )}
         </Fragment>

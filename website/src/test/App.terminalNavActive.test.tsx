@@ -14,7 +14,7 @@
  * catches a regression back to a constant.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, act } from '@testing-library/react'
+import { screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
@@ -146,4 +146,30 @@ describe('App nav rail — Terminal row reflects the docked panel state', () => 
 
     await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
   })
+})
+
+
+it('keeps the same terminal toggle at the workspace edge through open and close', async () => {
+  setTerminalEnabledFlag(true)
+  __resetBottomTerminal()
+  server.use(http.get('/api/terminal/sessions', () => HttpResponse.json({ enabled: true, sessions: [] })))
+  renderWithProviders(<App />, { route: '/chat' })
+  const toggle = await screen.findByRole('button', { name: 'Toggle terminal' })
+  expect(toggle.closest('[data-workspace-panel-controls]')).not.toBeNull()
+  expect(toggle.closest('header')).toBeNull()
+  expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  const glyph = toggle.querySelector('svg')
+  expect(glyph).not.toBeNull()
+  expect(toggle).toHaveClass('text-muted')
+  fireEvent.click(toggle)
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-pressed', 'true'))
+  expect(screen.getByRole('button', { name: 'Toggle terminal' })).toBe(toggle)
+  expect(toggle.querySelector('svg')).toBe(glyph)
+  expect(toggle).toHaveClass('text-accent')
+  fireEvent.click(toggle)
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-pressed', 'false'))
+  expect(screen.getByRole('button', { name: 'Toggle terminal' })).toBe(toggle)
+  expect(toggle).toHaveClass('text-muted')
+  __resetBottomTerminal()
+  setTerminalEnabledFlag(false)
 })

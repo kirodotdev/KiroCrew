@@ -1,11 +1,12 @@
-import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
+import { useWorkspaceFullscreenPanel } from '../../hooks/useWorkspaceFullscreenPanel'
+import { panelTabClassName, PANEL_TAB_ICON_CLASS, PANEL_TAB_LIST_CLASS } from '../../components/panelTabStyles'
+import { useId, useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
-import { PanelRightLight } from '../../components/icons/panels'
+import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin, Maximize2, Minimize2 } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -466,6 +467,9 @@ export default function SidePanel({
   expanded, fillWidth, canDockBottom = true,
   leadingTab, extraReserveW = 0, hiddenViews, onActiveTabChange,
 }: SidePanelProps) {
+  const fullscreenOwnerId = useId()
+  const fullscreenRef = useRef<HTMLDivElement>(null)
+  const { fullscreen, onKeyDown: onFullscreenKeyDown, toggle: toggleFullscreen } = useWorkspaceFullscreenPanel(fullscreenRef)
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   // A permanent panel has no close control and answers Escape with nothing —
   // the views' `onToggle` still needs a function, so it gets a no-op.
@@ -623,6 +627,15 @@ export default function SidePanel({
   // Bottom dock only applies on desktop; mobile always renders as the
   // full-width inline panel regardless of the stored preference.
   const isBottom = canDockBottom && dock === 'bottom' && !isMobile
+  // Fullscreen is this panel's own action, so it lives in the panel's action
+  // group. That group holds at most two controls: the ⋯ menu plus ONE of the
+  // fullscreen button or the close X. Right-docked, fullscreen, and on mobile
+  // the shell's fixed toggles sit beside this group and already close the
+  // panel, so the X yields to the fullscreen button; bottom-docked the X stays
+  // (the fixed toggles are a row away) and fullscreen rides in the ⋯ menu.
+  // `toggleFullscreen` is undefined outside the chat workspace, where the X
+  // is the only way to close a docked panel.
+  const fullscreenButton = !!toggleFullscreen && (fullscreen || !isBottom)
   const [maxW, setMaxW] = useState(() => window.innerWidth - measureSidePanelReservedW() - extraReserveW)
   // Bottom-dock height cap: leave the topbar row + a usable chat minimum
   // visible above the panel. Re-measured on resize.
@@ -680,11 +693,19 @@ export default function SidePanel({
   })
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape belongs to the fullscreen workspace after nested controls handle it.
     <div
-      className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'}`}
-      style={isBottom ? { height: effectiveHeight, maxHeight: '85vh', width: '100%' } : { width: effectiveWidth, maxWidth: '100vw' }}
+      id={fullscreenOwnerId}
+      ref={fullscreenRef}
+      role="region"
+      aria-label={i18nT('pages.chat.activityViewer.activity')}
+      tabIndex={-1}
+      onKeyDown={onFullscreenKeyDown}
+      data-workspace-panel
+      className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : 'min-h-0 border-l border-border'}`}
+      style={fullscreen ? { width: '100%', height: '100%', maxWidth: '100%', maxHeight: '100%' } : isBottom ? { height: effectiveHeight, maxHeight: '85vh', width: '100%' } : { width: effectiveWidth, maxWidth: '100vw' }}
     >
-      {isBottom ? (
+      {fullscreen ? null : isBottom ? (
         /* Top-edge resize handle — drag up/down to size the bottom dock. */
         <div role="separator" aria-orientation="horizontal" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 right-0 top-0 h-[6px] cursor-row-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResizeV}>
           <div className="absolute left-0 right-0 top-0 h-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
@@ -695,32 +716,10 @@ export default function SidePanel({
           <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
         </div>
       ) : null}
-      {/* Tab strip — the row scrolls by touch/wheel; a chip is reordered by
-          dragging it (press and hold first on touch, see useLongPressReorder).
-          Browser-tab construction: the strip is an elevated band whose chips
-          BOTTOM-ALIGN (items-end, pb-0) so the active chip's background runs
-          straight into the panel body below — the strip/body seam is what the
-          tab shape fuses across, in both dock placements (right dock and
-          bottom dock render this same row above their content).
-          side-panel-strip punches the strip out of the Electron window-drag
-          region (see index.css) so chips receive events. */}
-      {/* border-b draws the seam hairline the corner arcs land on: the flare
-          curve ends tangent-horizontal, and without a line to continue into it
-          would truncate mid-air. The chip rows drop 1px over the border row
-          (-mb-px on the GROUPS, not the chips — the tablist scrolls and would
-          clip an overflowing chip) so the active chip's opaque background
-          covers the line across its own span, keeping the mouth open. */}
-      {/* focus-caption-reserve (right dock only): in focus mode this strip is
-          the surface at the window's top-trailing corner, where Windows and
-          frameless Linux paint their caption controls — the panel chrome below
-          would sit under them, covered and unclickable. Bottom-docked the strip
-          is nowhere near that corner, so it takes no reserve. */}
-      <div className={`side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
-        {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
-            the front, non-closable, not draggable, compact. The group's 8px gap
-            matches the active chip's corner-piece width, so a piece lands in the
-            gap instead of over a neighbour. */}
-        <div className="flex items-end gap-2 shrink-0 -mb-px">
+      {/* Shared terminal-style strip preserves mouse and touch tab reordering. The class also excludes Electron window dragging. */}
+      <div className={`side-panel-strip panel-toolbar flex items-center gap-1.5 shrink-0 px-2 bg-bg${isBottom ? '' : ' focus-caption-reserve'}`}>
+        {/* Fixed views retain their icon-only inactive labels. */}
+        <div className="flex items-center gap-2 shrink-0">
           {/* The host's leading tab, ahead of the pinned views: same pinned
               chip (icon-only when inactive, no close control), never a
               Reorder item — it is the strip's identity, not a document. */}
@@ -741,14 +740,8 @@ export default function SidePanel({
             <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => setActive(t.id)} onClose={() => {}} />
           ))}
         </div>
-        {/* Chrome's separator rule, extended to the pinned↔dynamic divider: a
-            hairline adjacent to the ACTIVE chip goes transparent. The active
-            chip's 8px corner piece travels across this 6px gap, and a divider
-            slicing through it reads as a detached blob on any theme where --bg
-            differs from --bg-elevated (glaring on light). Transparent rather
-            than unmounted, so activating an adjacent tab cannot shift the row
-            by the divider's layout width. The dynamic group's own separators
-            already follow the same suppression rule. */}
+        {/* Keep the divider's layout slot when an active tab already
+            visually separates the groups. */}
         {pinnedTabs.length > 0 && dynamicTabs.length > 0 && (
           <span
             aria-hidden="true"
@@ -765,7 +758,7 @@ export default function SidePanel({
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
-          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0 px-2 -mb-px"
+          className={PANEL_TAB_LIST_CLASS}
         >
           {dynamicTabs.map((t, i) => (
             <DraggableTabItem
@@ -790,7 +783,7 @@ export default function SidePanel({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
-              className="flex items-center justify-center w-7 h-7 shrink-0 self-center rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
+              className="panel-toolbar-action flex items-center justify-center w-7 h-7 shrink-0 self-center rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
               title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
               aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
             >
@@ -846,10 +839,10 @@ export default function SidePanel({
             panel-square glyphs are never adjacent look-alikes. A permanent
             panel (no onClose) that cannot dock has no chrome here at all — the
             divider goes with it rather than ruling off an empty group. */}
-        {(closable || (canDockBottom && !isMobile)) && (
+        {(closable || fullscreenButton || (canDockBottom && !isMobile)) && (
           <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 self-center relative z-10" />
         )}
-        <div className="flex items-center gap-0.5 shrink-0 self-center">
+        <div data-panel-controls-host="workspace" className="panel-toolbar-actions flex items-center gap-0.5 shrink-0 self-center">
         {canDockBottom && !isMobile && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -869,17 +862,36 @@ export default function SidePanel({
                 <span className="text-muted shrink-0">{isBottom ? <PanelRight size={16} /> : <PanelBottom size={16} />}</span>
                 <span className="flex-1">{isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}</span>
               </DropdownMenuItem>
+              {/* Bottom-docked, the X keeps the second button slot, so
+                  fullscreen enters from the menu; its exit button then shows. */}
+              {toggleFullscreen && !fullscreenButton && (
+                <DropdownMenuItem className="gap-2.5 py-2" onSelect={toggleFullscreen}>
+                  <span className="text-muted shrink-0"><Maximize2 size={16} /></span>
+                  <span className="flex-1">{i18nT('components.markdownPanel.full_screen')}</span>
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
-        {closable && (
-        <button
-          className="pi-morph flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+        {fullscreenButton && (
+        <button data-testid="workspace-fullscreen-toggle"
+          className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none cursor-pointer shrink-0 ${fullscreen ? 'text-accent bg-accent/10' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+          onClick={toggleFullscreen}
+          title={fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
+          aria-label={fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
+          aria-pressed={fullscreen}
+        >
+          {fullscreen ? <Minimize2 className="lucide-inline w-4 h-4" /> : <Maximize2 className="lucide-inline w-4 h-4" />}
+        </button>
+        )}
+        {closable && !fullscreenButton && (
+        <button data-panel-controls-local-close="workspace"
+          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
           onClick={closePanel}
           title={i18nT('pages.chat.sidePanel.close_panel')}
           aria-label={i18nT('pages.chat.sidePanel.close_panel')}
         >
-          <PanelRightLight size={15} />
+          <X className="lucide-inline w-4 h-4" />
         </button>
         )}
         </div>
@@ -1395,9 +1407,8 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
     <Reorder.Item
       value={tab}
       {...itemProps}
-      // The ring is the only feedback a press-and-hold gets before the finger
-      // moves; without it an armed drag looks identical to a missed one.
-      className={`relative shrink-0 list-none rounded-t-md rounded-b-none ${dragging ? 'ring-1 ring-accent' : ''}`}
+      // Distinguish the dragged tab from the selected tab.
+      className={`relative shrink-0 list-none rounded-full ${dragging ? 'ring-1 ring-accent' : ''}`}
       // Reorder.Item's layout prop can't be disabled (true | "position"
       // only) — instead make the layout correction instant while resizing so
       // chips track the panel edge 1:1. Otherwise use a tight spring (high
@@ -1448,25 +1459,11 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       aria-label={pinned ? tab.title : undefined}
       title={pinned && !showLabel ? tab.title : undefined}
       data-testid={testId}
-      // Browser-tab chip: 32px tall, top corners only (8px), bottom edge fused
-      // into the panel body. Active = the body's own background (--bg) plus a
-      // top/side hairline (--border, bottom open) so the silhouette survives a
-      // custom theme where --bg and --bg-elevated are equal; the ::before/::after
-      // corner pieces carry a matching 1px arc in their gradient, so the hairline
-      // FOLLOWS the outward curve instead of running straight through it (see
-      // .side-tab-active in index.css). Inactive = muted text with a hover wash.
-      // Icon-only (inactive pinned) collapses to a square (w-8, centered).
-      // This deliberately supersedes the earlier Figma "Side Navigation" pill
-      // spec (28px, 6px all-corner radius, --border active fill).
-      className={`group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors ${
-        showLabel ? `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}` : 'w-8 justify-center px-0'
-      } ${
-        active ? 'side-tab-active bg-bg text-accent border-x-border border-t-border border-b-transparent' : 'side-tab-inactive border-transparent text-muted hover:text-text'
-      }`}
+      className={panelTabClassName(active, { iconOnly: !showLabel, closable })}
     >
-      <span className="shrink-0">{glyph}</span>
+      <span className={PANEL_TAB_ICON_CLASS}>{glyph}</span>
       {showLabel && (
-        <span className="min-w-0 text-[12px] truncate text-left">
+        <span className="min-w-0 text-[12.5px] truncate text-left">
           {tab.kind === 'terminal' && tab.sessionId
             ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
             : tab.title}

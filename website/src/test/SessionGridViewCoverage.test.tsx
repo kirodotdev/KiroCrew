@@ -41,6 +41,7 @@ vi.mock('../components/ChatPane', () => ({
     onRemove,
     onSplitRight,
     onSplitDown,
+    hostsPanelControls,
   }: {
     slotKey: string
     focused?: boolean
@@ -48,8 +49,9 @@ vi.mock('../components/ChatPane', () => ({
     onRemove?: () => void
     onSplitRight?: () => void
     onSplitDown?: () => void
+    hostsPanelControls?: boolean
   }) => (
-    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'}>
+    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-hosts-panel-controls={hostsPanelControls ? 'yes' : 'no'}>
       <button type="button" aria-label={`focus ${slotKey}`} onClick={onFocus} />
       <button type="button" aria-label={`remove ${slotKey}`} onClick={onRemove} />
       <button type="button" aria-label={`right ${slotKey}`} onClick={onSplitRight} />
@@ -150,6 +152,55 @@ describe('SessionGridView — entry seeding', () => {
 
     const pane = await screen.findByTestId('pane-a')
     expect(pane.getAttribute('data-focused')).toBe('no')
+  })
+
+  it('reserves the App panel toggles in the top-right picker header', async () => {
+    renderGrid('a')
+
+    await screen.findByTestId('pane-a')
+    const pickerHeader = onlyPicker().firstElementChild
+    // The reservation belongs on the actions group so it stacks on the header's
+    // own trailing inset; on the header itself it would replace that inset.
+    expect(pickerHeader?.getAttribute('data-panel-controls-host')).toBeNull()
+    const controls = pickerHeader?.querySelector('[data-pane-controls]')
+    expect(controls?.getAttribute('data-panel-controls-host')).toBe('chat')
+    expect(controls?.className).not.toMatch(/\bmr-/)
+    expect(screen.getByTestId('pane-a').getAttribute('data-hosts-panel-controls')).toBe('no')
+  })
+
+  it('finds the geometric top-right pane through nested row and column splits', async () => {
+    seedStore('a', {
+      type: 'split',
+      id: 'root-row',
+      dir: 'row',
+      sizes: [0.5, 0.5],
+      children: [
+        {
+          type: 'split',
+          id: 'top-col',
+          dir: 'col',
+          sizes: [0.5, 0.5],
+          children: [leaf('l-a', 'a'), leaf('l-b', 'b')],
+        },
+        leaf('l-c', 'c'),
+      ],
+    })
+    seedApi([{ key: 'a' }, { key: 'b' }, { key: 'c' }])
+    renderGrid('a')
+
+    expect((await screen.findByTestId('pane-b')).getAttribute('data-hosts-panel-controls')).toBe('yes')
+    expect(screen.getByTestId('pane-a').getAttribute('data-hosts-panel-controls')).toBe('no')
+    expect(screen.getByTestId('pane-c').getAttribute('data-hosts-panel-controls')).toBe('no')
+  })
+
+  it('renders the empty pane without card chrome', () => {
+    renderGrid('a')
+
+    const picker = onlyPicker()
+    expect(picker.className.split(/\s+/)).not.toContain('border')
+    expect(picker.className).not.toContain('border-dashed')
+    expect(picker.className).not.toContain('rounded-lg')
+    expect(picker.className).not.toContain('m-1')
   })
 
   it('leaves split mode when there is no session to seed from', async () => {

@@ -2261,35 +2261,6 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    without fighting hover/active background states, which now use the standard
    neutral tokens (hover:bg-bg-hover, bg-accent-subtle when active). */
 .session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted);content-visibility:auto;contain-intrinsic-size:auto 60px}
-/* Browser-tab demo: the side panel's ACTIVE tab chip fuses with the panel body
-   below it — same background (--bg), no bottom radius, and Chrome's inverted
-   bottom corners painted in the body colour so the elevated strip appears to
-   curve into the tab. */
-.side-tab-active::before,.side-tab-active::after{
-  /* Offsets resolve against the chip's PADDING box, and the chip carries a 1px
-     border: bottom:-1px lands the pieces on the border-box bottom (the strip's
-     seam). Each piece is 9px wide so it also COVERS the chip's own side border
-     over the flare's height — otherwise the straight hairline runs down through
-     the curve as a visible stub. The radial gradient paints three bands: the
-     concave strip region (transparent), a 1px --border arc that CONTINUES the
-     side hairline around the curve, and the --bg wedge that fuses with the
-     panel body. The circle centre sits 1px in from the outer edge so the arc's
-     top lands exactly on the hairline's column — no jog at the junction. */
-  content:'';position:absolute;bottom:-1px;width:9px;height:8px;
-  pointer-events:none}
-.side-tab-active::before{
-  left:-9px;
-  background:radial-gradient(circle at 1px 0,transparent 7px,var(--border) 7px 8px,var(--bg) 8px)}
-.side-tab-active::after{
-  right:-9px;
-  background:radial-gradient(circle at calc(100% - 1px) 0,transparent 7px,var(--border) 7px 8px,var(--bg) 8px)}
-/* Inactive chips: the hover wash floats INSET from the body seam (Chrome-style)
-   so a hovered tab cannot read as fused/selected the way the active tab does.
-   The chip carries isolation:isolate, so z-index:-1 keeps the wash behind the
-   chip's icon/label but above the strip surface. */
-.side-tab-inactive:hover::before{
-  content:'';position:absolute;left:0;right:0;top:2px;bottom:4px;
-  border-radius:8px;background:var(--bg-hover);z-index:-1}
 /* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
    briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
    background, because the revealed row is usually the active one and already
@@ -2820,3 +2791,84 @@ html[data-font-family="opendyslexic"] .nav-item {
   background-position: 24px 12px, 24px 46px, 24px 80px;
   contain: layout paint style;
 }
+
+/* The controls occupy the workspace's top-right corner, independent of which
+   panel owns that edge. Reserve space only in that panel's title controls. */
+[data-panel-toggle-owner="chat"] [data-panel-controls-host="chat"],
+[data-panel-toggle-owner="workspace"] [data-panel-controls-host="workspace"],
+[data-panel-toggle-owner="terminal"] [data-panel-controls-host="terminal"] { padding-right: calc(var(--workspace-panel-control-count, 2) * (var(--panel-toolbar-button-size) + var(--panel-toolbar-gap))); }
+[data-panel-toggle-owner="workspace"] .panel-toolbar-actions > [data-panel-controls-local-close="workspace"],
+[data-panel-toggle-owner="terminal"] .panel-toolbar-actions > [data-panel-controls-local-close="terminal"] { display: none; }
+
+[data-panel-toggle-owner="search"] .workspace-search-header { padding-right: calc(var(--workspace-panel-control-count, 2) * (var(--panel-toolbar-button-size) + var(--panel-toolbar-gap)) + 16px); }
+
+/* Shared geometry for chat, workspace and terminal title actions. */
+:root {
+  --panel-toolbar-height: 44px;
+  --panel-toolbar-button-size: 28px;
+  --panel-toolbar-icon-size: 16px;
+  --panel-toolbar-gap: 6px;
+}
+[data-session-grid-view],
+[data-panel-toggle-owner="chat"]:has([data-session-grid-view]) [data-workspace-panel-controls] {
+  --panel-toolbar-height: 32px;
+  --panel-toolbar-button-size: 24px;
+  --panel-toolbar-icon-size: 14px;
+  --panel-toolbar-gap: 4px;
+}
+.panel-toolbar {
+  height: var(--panel-toolbar-height);
+  min-height: var(--panel-toolbar-height);
+  box-sizing: border-box;
+}
+.panel-toolbar-action,
+.panel-toolbar-actions > :is(button, [role="button"]) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--panel-toolbar-button-size);
+  min-width: var(--panel-toolbar-button-size);
+  flex-shrink: 0;
+}
+.panel-toolbar-action > svg,
+.panel-toolbar-actions > :is(button, [role="button"]) > svg {
+  width: var(--panel-toolbar-icon-size);
+  height: var(--panel-toolbar-icon-size);
+}
+
+.panel-tab-icon {
+  width: var(--panel-toolbar-icon-size);
+  height: var(--panel-toolbar-icon-size);
+}
+.panel-tab-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.panel-toolbar-actions { gap: var(--panel-toolbar-gap); }
+
+/* Fullscreen spans every content column but keeps the shell's first row. In
+   focus mode that row is the shared 8px edge inset; otherwise it is the 42px
+   title row. Keeping it makes the left, chat and side-panel toolbars align. */
+[data-workspace-fullscreen] #activity-bar-slot {
+  position: absolute;
+  inset: 0;
+  grid-area: 2 / 1 / -1 / -1 !important;
+  z-index: 65;
+  background: var(--bg);
+}
+[data-workspace-fullscreen] #activity-bar-slot [data-workspace-panel-host] {
+  width: 100% !important;
+  height: 100% !important;
+}
+[data-workspace-fullscreen] [data-workspace-panel-host].fixed {
+  height: auto !important;
+  z-index: 65;
+}
+[data-workspace-fullscreen] [data-workspace-panel-controls] { z-index: 66; padding-right: 0; }
+[data-workspace-fullscreen].mac-electron:not(.mac-fullscreen) .side-panel-strip { padding-left: 84px; }
+[data-workspace-fullscreen].win-electron .side-panel-strip { padding-right: 142px; }
+[data-workspace-fullscreen].linux-electron .side-panel-strip { padding-right: 112px; }
+[data-workspace-fullscreen].win-electron [data-workspace-panel-controls] { right: 142px; }
+[data-workspace-fullscreen].linux-electron [data-workspace-panel-controls] { right: 112px; }

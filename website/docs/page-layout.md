@@ -348,3 +348,40 @@ are Tailwind utilities defined in `tailwind.config.js`, and both use
 - Use raw status text. Use `Badge` or `SourceBadge`.
 - Use `text-xs`. Use `text-[13px]`.
 - Add a new CSS `@keyframes`. Use Framer Motion, or an existing utility.
+
+
+### Chat and panel title actions
+
+The chat title row, workspace tab strip and terminal tab strip share a 44px
+header, 28px action buttons and 16px action icons. The `--panel-toolbar-*`
+tokens in `index.css` own these sizes. Use `panel-toolbar` for the row and
+`panel-toolbar-actions` or `panel-toolbar-action` for its action controls.
+Both panels use the terminal-style 32px pill tabs centered in the row, with
+16px flex-centered icon containers. Their outer frames are square, separated
+from adjacent content by one divider, without a bottom gap or tab-strip seam.
+The terminal's sized inner frame uses `box-border` and owns the separator; the
+outer animation wrapper adds no border, so resizing counts that divider once.
+
+Action groups share a 6px gap and an 8px trailing inset. The fixed toggles are
+the workspace and terminal toggles, and reserve one button width plus one gap
+per rendered control, including the gap from the preceding action. Only the
+header owning the fixed controls reserves that space, and
+`data-panel-controls-host` goes on that header's action group, never on the
+header row itself: on the row the reserved padding replaces the 8px inset
+instead of stacking on it. The fixed toggles take both width and height from
+the button token, so the session grid's 24px variant keeps them the same size
+as the pane's own controls.
+
+Fullscreen is the workspace panel's own action and renders in that panel's
+action group, which holds at most two controls (`max-two-buttons-per-row`): the
+⋯ menu plus either the fullscreen button or the close X. Right-docked,
+fullscreen, and on mobile the fixed toggles sit beside the group and close the
+panel, so the fullscreen button takes the slot; bottom-docked the X keeps it and
+fullscreen enters from the ⋯ menu. The chat row adds 2px to its outer 6px scrollbar clearance to match
+the panels' 8px inset.
+
+A fullscreen workspace panel still begins below the shell's first row. That row
+is 42px normally and the shared 8px edge inset in focus mode. Fullscreen expands
+across the content columns and lower rows, not into that top clearance, so its
+tab strip and trailing controls keep the same vertical position as the chat and
+session title rows. Do not move the fullscreen host or controls to grid row 1.

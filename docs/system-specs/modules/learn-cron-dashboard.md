@@ -1819,6 +1819,39 @@ identity and selected knowledge copying.
 
 ### Frontend (React SPA)
 
+Workspace and terminal toggle buttons stay at the workspace top-right edge,
+below the app top bar, while either panel opens, closes, or changes dock
+position. The rightmost chat or panel header reserves their space; the controls
+and their stateful pane icons keep their render identity across transitions.
+Only the header owning that edge reserves space for the rendered control count;
+disabling terminals removes their button and reservation.
+When the workspace is open, its fullscreen control lives in the panel's own
+action group beside the ⋯ menu, never among the fixed toggles: right-docked, in
+fullscreen, and on mobile it is a button in the slot the close X vacates while
+the fixed toggles sit beside it; bottom-docked the X keeps that slot and
+fullscreen is an item in the ⋯ menu. Fullscreen fills the window
+with the entire SidePanel using its existing host and mounted children. Tabs,
+editor drafts and PTYs remain alive; exiting restores the saved dock and size.
+Escape exits fullscreen after nested menus, dialogs and editor controls have
+handled the key. A focused terminal keeps Escape: xterm forwards it to the
+PTY for the running program, and fullscreen exits from a terminal through the
+panel's exit control instead. Covered chrome is inert until exit. Native caption controls
+retain their clearance. Dashboard file menus omit file-only fullscreen;
+standalone file previews retain it. The terminal control exits workspace
+fullscreen before toggling the terminal or focusing its separate window.
+Hidden background tabs do not claim Escape. Annotation composers portaled to
+the document body carry their workspace owner ID, so they retain Escape even
+when focus returns to the panel before the draft is resolved.
+The terminal toggle preserves the chosen dock position and creates a
+terminal only when its panel has no tabs; the terminal strip + opens another
+terminal directly. Workspace tab defaults and both docking menus are unchanged.
+Chat, workspace and terminal headers share 44px rows, 28px action buttons and
+16px action icons so all three use the same vertical alignment. Both panels
+use an X for their local hide control, including when docked below the chat;
+hiding preserves their tabs and running terminals. Workspace and terminal
+frames use square corners and share centered pill tabs; tab icons sit in
+fixed-size flex containers rather than inline text baselines.
+
 `KiroPrerequisiteGate` wraps the main dashboard route (the independent
 `/worlds-popout` route is not gated). `DashboardBootstrap` mounts the proactive
 auth-cookie refresh scheduler outside this gate, so a stale access cookie can
