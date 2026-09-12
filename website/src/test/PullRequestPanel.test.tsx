@@ -233,6 +233,45 @@ describe('PullRequestPanel', () => {
     expect(within(githubTab).queryByLabelText('Checks running')).not.toBeInTheDocument()
   })
 
+  it('shows merge conflicts on selected and background source tabs instead of passing CI', async () => {
+    mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve(
+      new URL(url).hostname === 'gitlab.com'
+        ? gitlab
+        : { ...github, mergeable: 'conflicting', mergeStateStatus: 'dirty' },
+    ))
+    mockApi.pullRequestStatuses.mockResolvedValue({
+      statuses: {
+        [github.url]: { state: 'open', ci: 'passed', mergeable: 'conflicting', mergeStateStatus: 'dirty' },
+        [gitlab.url]: { state: 'open', ci: 'passed', mergeable: 'conflicting', mergeStateStatus: 'dirty' },
+      },
+    })
+
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    await waitFor(() => expect(mockApi.pullRequestStatuses).toHaveBeenCalled())
+
+    for (const name of [/PR #12/i, /MR !7/i]) {
+      const tab = screen.getByRole('tab', { name })
+      expect(await within(tab).findByLabelText('Merge conflicts')).toBeInTheDocument()
+      expect(within(tab).queryByLabelText('Checks passed')).not.toBeInTheDocument()
+    }
+  })
+
+  it('keeps failed CI as the source-tab status when a merge conflict also exists', async () => {
+    mockApi.pullRequestStatuses.mockResolvedValue({
+      statuses: {
+        [gitlab.url]: { state: 'open', ci: 'failed', mergeable: 'conflicting', mergeStateStatus: 'dirty' },
+      },
+    })
+
+    renderPanel()
+    await screen.findByText('Add source tabs')
+
+    const gitlabTab = screen.getByRole('tab', { name: /MR !7/i })
+    expect(await within(gitlabTab).findByLabelText('Checks failed')).toBeInTheDocument()
+    expect(within(gitlabTab).queryByLabelText('Merge conflicts')).not.toBeInTheDocument()
+  })
+
   it('leaves source tabs unmarked while no status is known yet', async () => {
     renderPanel()
     await screen.findByText('Add source tabs')
