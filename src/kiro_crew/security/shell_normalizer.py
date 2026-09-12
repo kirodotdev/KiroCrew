@@ -1825,7 +1825,10 @@ def _matching_close_backtick(text: str, start: int) -> "tuple[int, bool]":
     HARDENING, not a patched hole: no payload this module refuses was reachable
     through the pairwise version -- the strings it mis-read are ones bash itself
     rejects, because backticks do not nest unescaped. It is fixed so the two
-    closers cannot disagree, not because a bypass was measured.
+    closers cannot disagree, not because a bypass was measured.  Sibling
+    scanner: :func:`_backtick_closer` is the exact bash-faithful variant
+    (backslash-only, returns ``-1``) -- reach for it when the caller needs the
+    closer bash itself would pick rather than a fail-closed span.
     """
     for step in _iter_shell_chars(text[start:]):
         escaped = len(step.text) == 2
@@ -1833,6 +1836,47 @@ def _matching_close_backtick(text: str, start: int) -> "tuple[int, bool]":
         if not escaped and not in_single and step.char == "`":
             return (start + step.offset + len(step.text), True)
     return (len(text), False)
+
+
+def _backtick_closer(source: str, start: int) -> int:
+    """Index of the backtick that CLOSES a substitution opened before *start*.
+
+    Within backticks bash strips a backslash before ``$``, ``\\``` and ``\\\\``,
+    so an escaped backtick is data and must not be taken as the closer --
+    ``str.find`` did, and it truncated ``kill `printf '\\`' ; pgrep -f <name>```
+    one clause short of the target's name (found in pre-push review, bash-
+    measured: the inner command past the escaped backtick runs).  Quotes do NOT
+    protect a backtick from closing, so this scan honours backslashes only.
+
+    -1 when no unescaped closer exists before the text ends.  Sibling scanner:
+    :func:`_matching_close_backtick` is the quote-aware over-approximating
+    variant returning ``(index, proven)`` -- reach for that one when an
+    unproven span must fail closed rather than fall through.
+    """
+    j = start
+    n = len(source)
+    while j < n:
+        if source[j] == "\\":
+            j += 2
+            continue
+        if source[j] == "`":
+            return j
+        j += 1
+    return -1
+
+
+def _resolved_word_view(word: str) -> str:
+    """*word* with parameter defaults resolved, empty substitutions collapsed,
+    then one-character bracket classes removed -- the composed per-word
+    transform the bare-kill raw window searches each de-quoted word through.
+
+    Construct-span rewrites only: a pattern-position word is an ERE whose own
+    characters (``zz|kirocrew``, ``>kirocrew``) must never read as boundaries,
+    which is why this is not ``_normalize_operand``.  A rewrite can DESTROY a
+    de-quote-visible name (``${PATH/usr/|kirocrew|zz-}`` resolves to an empty
+    default), so callers search the BARE word too -- this view is additive.
+    """
+    return _debracket(_EMPTY_SUBST_RE.sub("", _resolve_param_defaults(word)))
 
 
 def _cut_at_operator(token: str) -> str:

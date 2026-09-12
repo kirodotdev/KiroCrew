@@ -3964,6 +3964,195 @@ class TestSelfKillArgvWindowIsQuoteAware:
         assert security._is_self_kill(cmd.format(n=_NAME).lower()) is False
 
 
+class TestSelfKillRawWindowSearchesDequotedView:
+    """The raw-window bodies are ALSO searched in a de-quoted, tokenized view.
+
+    Two windows scan a bare ``kill``'s substitution bodies, and each has a blind
+    spot the other covers -- until one spelling lands in the intersection.  The
+    TOKEN window bounds the argv with ``_substitution_depth_delta``, a character
+    counter that scores a ``case`` PATTERN's ``)`` (the token ``x)``) as a
+    substitution closer, so a lookup placed after ``case ... esac`` in the body's
+    command list falls outside its window.  The RAW window is immune to that --
+    it extracts the body whole through the quote-aware span scan -- but it
+    searched each body only as raw text and through ``_resolve_param_defaults``,
+    neither of which removes quotes, so an adjacent-quote concatenation of the
+    product name (``'kiro''crew'``) never read as the name there.  Either miss
+    alone is survivable (the unquoted ``esac``-tail spelling is denied by the
+    raw window; the quote-spliced name in a plain list is denied by the token
+    window); the combination returned ``None`` while bash ran the lookup
+    (measured).
+
+    The fix searches each raw body's words -- the ``_self_tokens`` view, which
+    folds a backslash-newline split whole and swallows an untokenizable body
+    instead of raising out of the gate -- each word BARE and through
+    ``_resolved_word_view`` (parameter defaults resolved, empty substitutions
+    collapsed, bracket classes removed), so quote removal composes with the
+    transforms the ``pkill`` leg gets from ``_normalize_operand``.  Single
+    transforms are not enough: a name needing two of them at once
+    (``'kiro''[c]rew'``, ``'kiro'${x:-crew}``, ``kiro$()crew``) sits in the
+    seam between any pair of single-transform searches.  Both members carry
+    weight in opposite directions: the composed transform reveals a name
+    de-quoting alone leaves hidden, and the bare search keeps a name the
+    transform DESTROYS -- a pattern-substitution expansion
+    (``${PATH/usr/|'kiro''crew'|zz-}``) de-quotes to a word carrying the name,
+    then resolves to an empty default, and bash runs it.  The transform is
+    deliberately NOT ``_normalize_operand``: a de-quoted pgrep pattern is an
+    ERE whose own characters (``'zz|kiro'crew``, ``'>kiro'crew``) an operand
+    view truncates at, discarding exactly the protected alternative.
+    Monotone in the deny direction: no search present on main is narrowed or
+    replaced.
+    """
+
+    # Two adjacent quoted fragments -- the spelling the issue measured.
+    _SPLICED = "'" + _NAME[:4] + "''" + _NAME[4:] + "'"
+    # The ANSI-C spelling of the same concatenation.
+    _ANSI = "$'" + _NAME[:4] + "'$'" + _NAME[4:] + "'"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the issue's spelling: lookup AFTER ``case ... esac``, spliced name
+            "kill $(case x in x) :;; esac; pgrep -f {q})",
+            # the same tail behind the other list operators
+            "kill $(case x in x) :;; esac && pgrep -f {q})",
+            "kill $(case x in x) :;; esac | pgrep -f {q})",
+            # a nested compound: the clause buried one level deeper
+            "kill $(if true; then case x in x) :;; esac; fi; pgrep -f {q})",
+            # the backtick spelling of the same substitution
+            "kill `case x in x) :;; esac; pgrep -f {q}`",
+            # the ANSI-C spelling of the name concatenation
+            "kill $(case x in x) :;; esac; pgrep -f {a})",
+            # COMPOSED transforms: a name needing quote removal AND parameter-
+            # default resolution, in tail and head position -- each transform
+            # alone leaves the name invisible, so per-word operand
+            # normalization is what reaches these
+            "kill $(case x in x) :;; esac; pgrep -f 'kiro'${{x:-crew}})",
+            "kill $(case x in x) :;; esac; pgrep -f ${{x:-kiro}}'crew')",
+            "kill $(case x in x) :;; esac; pgrep -f $'kiro'${{x:-crew}})",
+            # a statically EMPTY substitution splices the name (both spellings)
+            "kill $(case x in x) :;; esac; pgrep -f kiro$()crew)",
+            "kill $(case x in x) :;; esac; pgrep -f kiro``crew)",
+            # the [c] bracket-class trick composed with the quote splice --
+            # the de-quoted word still needs the bracket removal its two
+            # sibling searches already apply
+            "kill $(case x in x) :;; esac; pgrep -f 'kiro''[c]rew')",
+            "kill $(case x in x) :;; esac; pgrep -f '[k]iro''crew')",
+            # all three transforms at once: bracket class + empty substitution
+            # + parameter default
+            "kill $(case x in x) :;; esac; pgrep -f '[k]iro'$()${{x:-crew}})",
+            # a line continuation splits the name across raw lines; only the
+            # continuation-folded token view reads it whole
+            "kill $(case x in x) :;; esac; pgrep -f kiro\\\ncrew)",
+            # a quoted ERE alternation prefix: the pattern bash passes is
+            # zz|kirocrew, whose second alternative matches protected
+            # processes -- an operator-truncating transform discards exactly
+            # the protected half, so the per-word transform must resolve
+            # defaults, empty substitutions and bracket classes WITHOUT
+            # treating the de-quoted pattern's own characters as boundaries
+            "kill $(case x in x) :;; esac; pgrep -f 'zz|kiro'${{x:-crew}})",
+            "kill $(case x in x) :;; esac; pgrep -f 'zz|kiro'$()crew)",
+            "kill $(case x in x) :;; esac; pgrep -f 'zz|[k]iro'$()${{x:-crew}})",
+            # a redirect-prefixed ERE (the pkill leg's own documented case: a
+            # ``>`` inside a pattern is part of the TARGET) -- pins that the
+            # word search never routes through an operator-truncating view
+            "kill $(case x in x) :;; esac; pgrep -f '>kiro''crew')",
+            # a pattern-substitution expansion DESTROYS the de-quote-visible
+            # name (the ${{...}} name class swallows it and the resolved
+            # default is the empty tail), so the untransformed word view is
+            # what reaches it -- bash expands ${{PATH/usr/|<name>|zz-}} to an
+            # ERE carrying the name as its own alternative and runs the lookup
+            "kill $(case x in x) :;; esac; pgrep -f ${{PATH/usr/|{q}|zz-}})",
+            "kill `case x in x) :;; esac; pgrep -f ${{PATH/usr/|{q}|zz-}}`",
+        ],
+    )
+    def test_dequoted_search_reaches_the_esac_tail(self, cmd):
+        assert _denied_by(cmd.format(q=self._SPLICED, a=self._ANSI)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the load-bearing control: SAME esac-tail spelling, name unquoted --
+            # denied on main by the raw window's raw-text search, and it must
+            # stay denied (the case-pattern miss alone is survivable)
+            "kill $(case x in x) :;; esac; pgrep -f {n})",
+            # spliced name INSIDE the case clause: token window reaches it
+            "kill $(case x in x) pgrep -f {q};; esac)",
+            # spliced name in a plain list: token window reaches it
+            "kill $(:; pgrep -f {q})",
+            # ``;;`` inside quotes is data, not a clause terminator
+            "kill $(echo ';;'; pgrep -f {q})",
+        ],
+    )
+    def test_sibling_spellings_stay_denied(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A redirected mention INSIDE a kill-owned body is denied even
+            # though only the second printf's output reaches the outer kill.
+            # Deliberate fail-closed over-approximation, NOT a new class: no
+            # search in this module performs output-flow analysis on a body --
+            # the same command with the name unquoted is denied by the raw
+            # search, and the plain-list spelling of this very command is
+            # denied by the token window -- so the de-quoted leg matching here
+            # only removes quote-sensitivity from the existing posture.
+            "kill $(case x in x) :;; esac; printf {q} >/dev/null; printf 4242)",
+            "kill $(printf {q} >/dev/null; printf 4242)",
+            "kill $(case x in x) :;; esac; printf {n} >/dev/null; printf 4242)",
+        ],
+    )
+    def test_a_redirected_mention_in_a_kill_owned_body_stays_denied(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # QUOTED-LITERAL construct text: bash passes these patterns with
+            # the $()/backticks as literal ERE characters, so they cannot
+            # select a normally-named process -- but the module has never
+            # tracked quote provenance into a pattern operand: the pkill leg
+            # and the token window already deny every plain-list and pkill
+            # twin of these on the same collapsed view (measured), so the
+            # composed leg matching them only removes window-sensitivity from
+            # the existing fail-closed posture.
+            "kill $(case x in x) :;; esac; pgrep -f 'kiro$()crew')",
+            "kill $(case x in x) :;; esac; pgrep -f 'kiro``crew')",
+            "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
+            "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
+        ],
+    )
+    def test_a_quoted_literal_construct_pattern_stays_denied(self, cmd):
+        assert _denied_by(cmd) == _RULE_KILL
+
+    def test_a_nul_poisoned_body_returns_a_verdict_instead_of_raising(self):
+        # A literal NUL after a word-initial ``~`` inside the body made the
+        # tokenizing view raise (``expanduser``: embedded null byte) and the
+        # exception escaped through ``is_denied`` -- the gate returned neither
+        # allow nor deny.  The floor's contract for an untokenizable body is a
+        # swallowed view, never an escaping exception, so the verdict itself
+        # is not pinned here -- only that one is returned.
+        cmd = "kill `~\x00; pgrep -f " + self._SPLICED + "`"
+        assert _denied_by(cmd) in (None, _RULE_KILL)
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the module's own named allowances: a PID kill next to a command
+            # that merely mentions a product path ...
+            "kill 8123 && cp /tmp/{n}.json ~/",
+            # ... a substitution PRECEDING the kill (an environment word) ...
+            "LOG=$(ls /tmp/{n}.log) kill 4242",
+            # ... and a substitution belonging to a DIFFERENT command
+            "kill 123; echo $(cat /tmp/{n})",
+            # the esac-tail body with NO kill anywhere: not this rule's concern
+            "echo $(case x in x) :;; esac; pgrep -f {q})",
+        ],
+    )
+    def test_named_allowances_stay_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) is None
+
+
 class TestStdinProgramTextScoping:
     """A stdin-reading interpreter is judged on its PROGRAM, not on its neighbours.
 
