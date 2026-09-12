@@ -425,6 +425,16 @@ def _preview_offset(value: Any) -> int:
     return value
 
 
+def _operation_label(after: dict | None) -> str:
+    """Name what one change does: drop the record, review its pending proposals
+    without touching the content, or replace the content."""
+    if after is None:
+        return "forget"
+    if after.get("_resolution"):
+        return "resolve"
+    return "correct"
+
+
 def _preview_response(
     token: str,
     expires: int,
@@ -446,11 +456,7 @@ def _preview_response(
                     if after is not None
                     else None
                 ),
-                "operation": (
-                    "forget"
-                    if after is None
-                    else "resolve" if after.get("_resolution") else "correct"
-                ),
+                "operation": _operation_label(after),
             }
             for before, after in changes[offset : offset + PREVIEW_ROWS]
         ],
@@ -575,11 +581,15 @@ def _write(store: Any, before: dict, after: dict | None, now: str) -> None:
             f"updated_at = ?, embedding = NULL{extra} WHERE key = ?{guard}",
             params + (record_id,),
         )
+    operation = _operation_label(after)
+    # The events log spells a dropped record "delete"; the revision history
+    # spells the same change "forget".
+    event_type = "delete" if after is None else operation
     store.db.execute(
         "INSERT INTO memory_events (event_type, memory_type, memory_key, old_value, new_value, source, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
-            "delete" if after is None else "resolve" if resolving else "correct",
+            event_type,
             "episodic" if episode else "semantic",
             record_id,
             before["text"],
@@ -601,7 +611,7 @@ def _write(store: Any, before: dict, after: dict | None, now: str) -> None:
         after=physical_after,
         source="user_explicit",
         now=now,
-        operation="forget" if after is None else "resolve" if resolving else "correct",
+        operation=operation,
         force_revision=resolving,
         limit_v1_history=store.algorithm_version == "v1",
     )

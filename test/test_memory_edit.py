@@ -355,6 +355,13 @@ def test_forget_episode_and_semantic_is_reversible_history(store):
         >= 2
     )
     assert store.db.execute("SELECT count(*) FROM memory_revisions").fetchone()[0] >= 2
+    # The events log spells the same drop "delete"; the revision history says "forget".
+    assert (
+        store.db.execute(
+            "SELECT count(*) FROM memory_revisions WHERE operation = 'forget'"
+        ).fetchone()[0]
+        >= 2
+    )
 
 
 def test_retry_of_acknowledgement_lost_apply_is_idempotent(store):
@@ -489,6 +496,10 @@ def test_keep_current_value_resolves_only_pending_proposals_without_mutating_con
     current = memory_edit.list_records(store, {"q": "email000"})["entries"][0]
     assert current["metadata"]["pending_conflicts"] == 0
     assert current["metadata"]["revision"] == record["metadata"]["revision"] + int(private_policy)
+    events = store.db.execute(
+        "SELECT count(*) FROM memory_events WHERE event_type = 'resolve'"
+    ).fetchone()[0]
+    assert events == int(private_policy)
     history = memory_edit.record_history(store, {"kind": "fact", "id": record["id"]})
     if private_policy:
         assert history["entries"][0]["operation"] == "resolve"
