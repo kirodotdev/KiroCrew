@@ -203,8 +203,8 @@ describe('AppDetailPage — uncovered surfaces', () => {
     displayName: 'Ledger Lens',
     description: 'Reads your books and explains them.',
     author: 'zezhexu',
-    screenshots: ['/shots/light-one.png', '/shots/light-two.png', '/shots/light-three.png'],
-    screenshotsDark: ['/shots/dark-one.png', '/shots/dark-two.png'],
+    screenshots: ['/app-assets/shots/light-one.png', '/app-assets/shots/light-two.png', '/app-assets/shots/light-three.png'],
+    screenshotsDark: ['/app-assets/shots/dark-one.png', '/app-assets/shots/dark-two.png'],
   }
 
   it('steps through the lightbox with the next and previous controls', async () => {
@@ -293,7 +293,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await loaded()
 
     expect((screen.getByAltText('Screenshot 1') as HTMLImageElement).getAttribute('src'))
-      .toBe('/shots/dark-one.png')
+      .toBe('/app-assets/shots/dark-one.png')
     // The dark set is shorter, so the third light shot must not leak through.
     expect(screen.queryByAltText('Screenshot 3')).not.toBeInTheDocument()
   })
@@ -313,24 +313,24 @@ describe('AppDetailPage — uncovered surfaces', () => {
         description: 'Reads your books and explains them.',
         // The detail-ratio banner wins over the Browse hero and sizes its own
         // container, so both resolution arms are exercised here.
-        heroImageDetail: '/hero/detail-light.png',
-        heroImage: '/hero/browse-light.png',
+        heroImageDetail: '/app-assets/hero/detail-light.png',
+        heroImage: '/app-assets/hero/browse-light.png',
       },
     }))
     renderDetail()
     await loaded()
 
-    const hero = document.querySelector('img[src="/hero/detail-light.png"]') as HTMLImageElement
+    const hero = document.querySelector('img[src="/app-assets/hero/detail-light.png"]') as HTMLImageElement
     expect(hero).not.toBeNull()
     expect(hero.parentElement?.className).toContain('aspect-[25/6]')
-    expect(document.querySelector('img[src="/hero/browse-light.png"]')).toBeNull()
+    expect(document.querySelector('img[src="/app-assets/hero/browse-light.png"]')).toBeNull()
 
     fireEvent.error(hero)
     // #6864: the terminal state is now an UNMOUNTED banner. The fallback
     // candidate here is the identical URL (no registry row, so the local art
     // already won the precedence), nothing is retried, and no empty bordered
     // box is left where the banner was.
-    expect(document.querySelector('img[src="/hero/detail-light.png"]')).toBeNull()
+    expect(document.querySelector('img[src="/app-assets/hero/detail-light.png"]')).toBeNull()
     expect(document.querySelector('.aspect-\\[25\\/6\\]')).toBeNull()
   })
 

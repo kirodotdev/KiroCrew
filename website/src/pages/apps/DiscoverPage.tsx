@@ -264,6 +264,16 @@ function DiscoverPageBody() {
     }
   }
 
+  /* Installed-app lookup for the featured cards' local-art second chance
+     (#6887): a card whose LEAD app is installed hands its installed record to
+     FeaturedSpotlight, so a registry hero that fails to load swaps to the
+     app's own on-disk art instead of the gradient. `apps` is the normalized
+     installed list this page already holds via useAppsData — no extra fetch. */
+  const installedByName = useMemo(
+    () => new Map(apps.map(a => [a.name, a] as const)),
+    [apps],
+  )
+
   const filteredBrowse = useMemo(() => {
     const q = query.trim().toLowerCase()
     const list = browseApps.filter(a => {
@@ -558,6 +568,11 @@ function DiscoverPageBody() {
                        inline install rows per card made the row taller than
                        the lead above it, inverting the hierarchy. */
                     compact={block.form === 'row'}
+                    /* The local second-chance art source: present only when
+                       the lead app is installed, absent otherwise — which is
+                       what keeps a non-installed lead's card on the plain
+                       hide-to-gradient path. */
+                    leadInstalled={installedByName.get(section.apps[0]?.name ?? '')}
                     busyName={
                       featuredBusyName(actionLoading, section.apps)
                     }
