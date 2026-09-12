@@ -1021,12 +1021,17 @@ async def _run_hook_inner(
     state: DashboardState, session_key: str, message: str, agent: str | None
 ) -> str:
     """Inner agent turn — called within timeout wrapper."""
-    from kiro_crew.context import session_store_for_turn
+    from kiro_crew.context import _neutralize_structural_markers, session_store_for_turn
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
 
     memory_store = await session_store_for_turn(state.context_builder, session_key)
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
     full_message = message
+    # The ContextBuilder prompt is the only text on this path that legitimately
+    # MINTS structural boundary markers, so it is the one text the scrub below
+    # must leave byte-exact. Identity, not equality: a prompt rebuilt by any
+    # future step is a different object and is treated as untrusted.
+    trusted_prompt: str | None = None
     if is_new and state.context_builder:
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
@@ -1035,6 +1040,18 @@ async def _run_hook_inner(
             provider_type=KiroCrewConfig.load().agent.provider,
             memory_store=memory_store,
         )
+        trusted_prompt = full_message
+    if full_message is not trusted_prompt:
+        # ``message`` is supplied by an external caller of /api/hooks/agent, and
+        # ContextBuilder.build_message is the only code that neutralizes forgeable
+        # boundary markers in it. It runs on the new-session branch alone, so a
+        # reused session would hand a forged ``[END OF SESSION CONTEXT]`` /
+        # ``[CURRENT USER REQUEST ...]`` pair to the model verbatim. The scrub sits
+        # at the last statement before the stream, and covers everything the
+        # builder did not produce, so a branch added above cannot route around it.
+        # Off-loop like the dashboard's sibling seam: the restored-context prefix
+        # ``_run_hook_agent`` prepends is not bounded by _HOOK_MESSAGE_MAX_LEN.
+        full_message = await asyncio.to_thread(_neutralize_structural_markers, full_message)
     result_text = ""
     _complete_event: object | None = None
     # Wall clock for the webhook agent turn: acp leaves TurnUsage.duration_ms
