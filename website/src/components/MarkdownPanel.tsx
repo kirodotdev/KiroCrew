@@ -24,7 +24,7 @@ import { findBestOccurrence } from '../hooks/useMarkdownCommentHighlights'
 import { detectFileType } from './FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
 import { api } from '../api/client'
-import { fileReadUrl, fileDownloadUrl } from '../utils/fileReadUrl'
+import { fileReadUrl, downloadFileToDisk } from '../utils/fileReadUrl'
 import { loadCommentDrafts, saveCommentDrafts, setCommentsForFile } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -353,21 +353,7 @@ const HINT_KEY = 'kirocrew:comment-hint-dismissed'
 type ReportError = (message: string) => void
 
 async function downloadFile(filePath: string, onError: ReportError) {
-  try {
-    const res = await fetch(fileDownloadUrl(filePath))
-    // eslint-disable-next-line no-console -- surface download failures for diagnostics
-    if (!res.ok) { console.error('downloadFile failed', res.status, res.statusText); onError(i18nT('components.markdownPanel.download_failed')); return }
-    const blob = await res.blob()
-    const a = document.createElement('a')
-    const url = URL.createObjectURL(blob)
-    a.href = url
-    a.download = filePath.split('/').pop() || 'download'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(url), 2_000)
-    // eslint-disable-next-line no-console -- surface download failures for diagnostics
-  } catch (err) { console.error('downloadFile failed', err); onError(i18nT('components.markdownPanel.download_failed')) }
+  await downloadFileToDisk(filePath, onError)
 }
 
 /**

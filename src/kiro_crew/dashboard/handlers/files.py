@@ -2717,7 +2717,9 @@ async def api_file_download(request: web.Request) -> web.Response:
             outcome="denied", resources=path, error="content_redacted",
         )
         return web.json_response(
-            {"error": "file content was redacted; download aborted"}, status=400,
+            {"error": "file content was redacted; download aborted",
+             "code": "content_redacted"},
+            status=400,
         )
 
     safe_name = urllib.parse.quote(os.path.basename(path), safe="")
