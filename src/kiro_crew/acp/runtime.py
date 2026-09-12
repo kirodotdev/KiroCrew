@@ -48,6 +48,7 @@ from kiro_crew.acp.client import (
     _drain_oversize_line,
     _get_start_time,
     _KiroExecutableTrustError,
+    _witness_group_members,
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
     is_auth_failure_output,
@@ -816,6 +817,10 @@ class AcpRuntime:
         # Process state
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
+        # The POSIX process group this spawn was placed in, bound to the leader's
+        # start identity so a recycled pgid can never be signalled. None on
+        # Windows and whenever it could not be witnessed.
+        self._process_group: platform_compat.SpawnedProcessGroup | None = None
         self._start_time: int | None = None
         self._spawn_monotonic: float | None = None
         self._child_pids: dict[int, int | None] = {}
@@ -939,6 +944,18 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    def spawned_process_group(self) -> platform_compat.SpawnedProcessGroup | None:
+        """The incarnation-bound group captured at spawn, or ``None``.
+
+        A pure read: ``None`` means no group was ever captured, and any other
+        answer means one WAS. Teardown needs that distinction intact, because on
+        POSIX ``pgid == pid`` -- so a caller told "no group" for a group that
+        merely failed its gate would fall back to killing that same recyclable
+        number. Authorization belongs to the moment of the signal, where
+        ``platform_compat.pgroup_matches_incarnation`` runs before every one.
+        """
+        return self._process_group
 
     @property
     def process_instance(self) -> str:
@@ -1509,6 +1526,9 @@ class AcpRuntime:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Witness while the leader is provably alive: os.getpgid raises once it is
+        # reaped, and the group outlives it for as long as a descendant holds it.
+        self._process_group = platform_compat.capture_spawned_process_group(self._pid)
         # Minted with the process it names — random, not pid-derived, so it
         # cannot false-match a later spawn that the OS handed a recycled pid.
         self._process_instance = uuid.uuid4().hex[:16]
@@ -1662,6 +1682,27 @@ class AcpRuntime:
             self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
             self._agent_version = agent_version_from_init(init_resp)
             self._initialized = True
+            # Witness the spawn group's members now that kiro-cli has forked its
+            # MCP children: this runtime keeps no descendant records of its own,
+            # so without a witness recorded here a teardown that finds the leader
+            # already reaped cannot tell this group from a stranger that
+            # inherited its id, and refuses to signal it. Off-loop -- the scan
+            # reads /proc or spawns pgrep -- and best-effort, because an
+            # unwitnessed group only costs coverage where a refusal is the safe
+            # answer anyway.
+            try:
+                self._process_group = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    _witness_group_members,
+                    self._process_group,
+                    self._pid,
+                )
+            except Exception:
+                logger.debug(
+                    "AcpRuntime: could not witness spawn group members for PID %s",
+                    self._pid,
+                    exc_info=True,
+                )
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
             try:
@@ -1729,6 +1770,30 @@ class AcpRuntime:
 
         if self._process:
             pid = self._process.pid
+            loop = asyncio.get_running_loop()
+            # Last chance to witness this group's members: kiro-cli forks MCP
+            # children after the handshake, and one that appears later and ignores
+            # SIGTERM is absent from the set recorded at initialize -- so a pooled
+            # discard would find the group unauthorized and leave it running.
+            # Refresh HERE, before the signal below reaps the leader, because only
+            # a live leader can prove the group is still ours. Off-loop (the scan
+            # reads /proc or spawns pgrep) and best-effort: a failure costs the
+            # late witness, never the witnesses already held.
+            if self._process_group is not None:
+                try:
+                    self._process_group = await loop.run_in_executor(
+                        subprocess_executor(),
+                        _witness_group_members,
+                        self._process_group,
+                        pid,
+                    )
+                except Exception:
+                    logger.debug(
+                        "AcpRuntime: could not refresh spawn group members for PID %s before "
+                        "teardown",
+                        pid,
+                        exc_info=True,
+                    )
             # platform_compat.kill_process_tree: killpg on POSIX (the spawn
             # sets start_new_session=IS_POSIX, so the group is the tree);
             # taskkill /T on Windows, where os.getpgid/os.killpg do not exist
@@ -1738,7 +1803,6 @@ class AcpRuntime:
             # shim shells out to taskkill (a blocking subprocess.run), which
             # must not run on the event loop (no blocking call on the event
             # loop).
-            loop = asyncio.get_running_loop()
             try:
                 await loop.run_in_executor(
                     subprocess_executor(),

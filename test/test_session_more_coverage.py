@@ -81,6 +81,37 @@ def _provider(**attrs):
     return SimpleNamespace(**base)
 
 
+class _GroupProvider(SimpleNamespace):
+    """Provider double whose spawn-group capability is declared on the CLASS.
+
+    ``_provider_process_group`` resolves the capability from the provider's type,
+    never from the instance, so a lambda assigned onto a plain namespace (or an
+    attribute a bare ``MagicMock``/``AsyncMock`` synthesizes on access) is
+    deliberately invisible to it. A double that means to report a group has to
+    declare the method, exactly as a real provider does.
+    """
+
+    def spawned_process_group(self):
+        return self._group
+
+
+def _group_provider(group, **attrs):
+    """A ``_provider`` double reporting *group* through a class-declared method."""
+    return _GroupProvider(**vars(_provider(**attrs)), _group=group)
+
+
+def _provider_attrs_without_shutdown(**attrs):
+    """``_provider`` attributes minus ``shutdown``, for a subclass that defines it.
+
+    ``_provider`` seeds an ``AsyncMock`` shutdown, and an instance attribute
+    shadows a class method -- so a double whose whole point is what ``shutdown``
+    does must not inherit that seed.
+    """
+    fields = vars(_provider(**attrs))
+    fields.pop("shutdown", None)
+    return fields
+
+
 def _register(mgr: SessionManager, key: str, **kwargs) -> _Session:
     provider = kwargs.pop("provider", None) or _provider()
     sess = _Session(provider=provider, **kwargs)
@@ -290,8 +321,9 @@ class TestResolveAgentModel:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "researcher.json").write_text('{"name": "researcher"}', encoding="utf-8")
-        with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents), patch(
-            "kiro_crew.session._read_agent_spec", side_effect=RuntimeError("bad spec")
+        with (
+            patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents),
+            patch("kiro_crew.session._read_agent_spec", side_effect=RuntimeError("bad spec")),
         ):
             assert SessionManager._resolve_agent_model("researcher") == "auto"
 
@@ -301,9 +333,7 @@ class TestResolveAgentModel:
 
 class TestRuntimePidProbes:
     def test_a_runtime_reporting_a_nonpositive_pid_is_omitted(self, mgr) -> None:
-        mgr._bg_runtime = SimpleNamespace(
-            is_alive=lambda: True, pid=0, _spawn_monotonic=1.0
-        )
+        mgr._bg_runtime = SimpleNamespace(is_alive=lambda: True, pid=0, _spawn_monotonic=1.0)
         assert [r for r in mgr.runtime_pids() if r["key"] == "Background runtime"] == []
 
     def test_a_raising_liveness_probe_drops_only_that_row(self, mgr) -> None:
@@ -324,9 +354,7 @@ class TestRuntimePidProbes:
             raise RuntimeError("probe exploded")
 
         mgr._bg_runtime = SimpleNamespace(is_alive=boom, pid=42)
-        mgr._subagent_runtimes["dashboard:a"] = SimpleNamespace(
-            is_alive=lambda: True, pid=99
-        )
+        mgr._subagent_runtimes["dashboard:a"] = SimpleNamespace(is_alive=lambda: True, pid=99)
         assert mgr._companion_runtime_pids() == {99}
 
 
@@ -353,8 +381,9 @@ class TestWarmPoolQueueRaces:
     async def test_refresh_defaults_survives_a_lost_entry(self, mgr) -> None:
         mgr._warm_pool = _RacedQueue()
         mgr._discard_pool_provider = AsyncMock()
-        with patch.object(mgr, "start_pool", AsyncMock()), patch(
-            "kiro_crew.session.build_provider_factory", return_value=MagicMock()
+        with (
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
         ):
             await mgr.refresh_defaults()
         mgr._discard_pool_provider.assert_not_called()
@@ -364,8 +393,9 @@ class TestWarmPoolQueueRaces:
         mgr._warm_pool = _RacedQueue()
         mgr._discard_pool_provider = AsyncMock()
         stale = _register(mgr, "dashboard:a")
-        with patch.object(mgr, "start_pool", AsyncMock()), patch(
-            "kiro_crew.session.build_provider_factory", return_value=MagicMock()
+        with (
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
         ):
             await mgr.reload_provider_factory()
         assert mgr._sessions == {}
@@ -436,9 +466,7 @@ class TestPoolDecisionMetric:
 
 class TestDiscardPoolProvider:
     @pytest.mark.asyncio
-    async def test_a_base_exception_during_shutdown_still_dispatches_the_kill(
-        self, mgr
-    ) -> None:
+    async def test_a_base_exception_during_shutdown_still_dispatches_the_kill(self, mgr) -> None:
         """A non-``Exception`` BaseException (a cancellation-class escape) must
         not skip the hard kill — the provider would leak its whole process tree."""
 
@@ -469,6 +497,205 @@ class TestDiscardPoolProvider:
             await mgr._discard_pool_provider(provider, "unit")
         assert killer.call_count == 0
 
+    @pytest.mark.asyncio
+    async def test_a_dead_leader_with_a_live_group_still_hard_kills(self, mgr) -> None:
+        """``shutdown`` reaps the leader first, so the leader PID always reads
+        dead here. The group it led outlives it while a SIGTERM-resistant
+        descendant holds it, and returning on the leader alone is what leaks
+        that descendant."""
+        group = platform_compat.SpawnedProcessGroup(4242, "77123")
+        provider = _group_provider(group, _client=SimpleNamespace(_pid=4242))
+        with (
+            patch("kiro_crew.session.platform_compat.pid_exists", return_value=False),
+            patch(
+                "kiro_crew.session.platform_compat.pgroup_matches_incarnation",
+                return_value=True,
+            ) as gate,
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        gate.assert_called_once_with(group)
+        assert killer.call_args.args[0] is provider
+
+    @pytest.mark.asyncio
+    async def test_a_dead_leader_with_an_unauthorized_group_does_not_hard_kill(self, mgr) -> None:
+        """The group probe must not turn every clean recycle into a kill, and must
+        not act on a pgid the kernel handed to an unrelated session."""
+        provider = _group_provider(
+            platform_compat.SpawnedProcessGroup(4242, "77123"),
+            _client=SimpleNamespace(_pid=4242),
+        )
+        with (
+            patch("kiro_crew.session.platform_compat.pid_exists", return_value=False),
+            patch(
+                "kiro_crew.session.platform_compat.pgroup_matches_incarnation",
+                return_value=False,
+            ),
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        assert killer.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_recycled_leaderless_group_is_not_hard_killed(self, mgr) -> None:
+        """Through the REAL gate: an inherited leaderless group must be left alone.
+
+        The pool's liveness check cannot separate the two cases -- the leader
+        reads dead and the group reads populated whether the survivors are ours
+        or a stranger's -- so a surviving member witness is the only evidence
+        that authorizes the kill. Here every witness is gone.
+        """
+        provider = _group_provider(
+            platform_compat.SpawnedProcessGroup(
+                4242, "77123", (platform_compat.ProcessGroupMember(4300, "88456"),)
+            ),
+            _client=SimpleNamespace(_pid=4242),
+        )
+        with (
+            patch("kiro_crew.platform_compat.pgroup_exists", return_value=True),
+            patch("kiro_crew.platform_compat.pid_exists", return_value=False),
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        assert killer.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_leaderless_group_with_a_live_witness_is_hard_killed(self, mgr) -> None:
+        """The coverage the witness buys back: our own surviving tree still dies."""
+        provider = _group_provider(
+            platform_compat.SpawnedProcessGroup(
+                4242, "77123", (platform_compat.ProcessGroupMember(4300, "88456"),)
+            ),
+            _client=SimpleNamespace(_pid=4242),
+        )
+        with (
+            patch("kiro_crew.platform_compat.pgroup_exists", return_value=True),
+            patch("kiro_crew.platform_compat.pid_exists", side_effect=lambda pid: pid == 4300),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value="88456"),
+            patch("kiro_crew.platform_compat.pgroup_of", return_value=4242),
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        assert killer.call_args.args[0] is provider
+
+    @pytest.mark.asyncio
+    async def test_group_authorization_runs_off_the_event_loop(self, mgr) -> None:
+        """The gate re-reads every witness, so it may not run on the loop.
+
+        One ``/proc`` identity read per witness is unbounded in the size of the
+        tree, and this discard runs on the loop that serves every live session.
+        """
+
+        def _authorized(group):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return True
+            raise AssertionError("must not run on the event loop")
+
+        provider = _group_provider(
+            platform_compat.SpawnedProcessGroup(
+                4242, "77123", (platform_compat.ProcessGroupMember(4300, "88456"),)
+            ),
+            _client=SimpleNamespace(_pid=4242),
+        )
+        with (
+            patch("kiro_crew.session.platform_compat.pid_exists", return_value=False),
+            patch(
+                "kiro_crew.session.platform_compat.pgroup_matches_incarnation",
+                side_effect=_authorized,
+            ),
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        assert killer.call_args.args[0] is provider
+
+    @pytest.mark.asyncio
+    async def test_a_late_witness_recorded_during_shutdown_reaches_the_hard_kill(self, mgr) -> None:
+        """The whole path, in order: no witness, refresh, reap, authorize, kill.
+
+        The owner refreshes its witnesses inside teardown, while its leader is
+        still alive. Reading the group before shutdown gets a snapshot with no
+        member, which the gate refuses -- and the late child that ignores SIGTERM
+        then survives. This asserts the pool authorizes the value the provider
+        reports AFTER shutdown.
+        """
+        late = platform_compat.ProcessGroupMember(4300, "88456")
+
+        class _RefreshingProvider(_GroupProvider):
+            async def shutdown(self):
+                # What AcpRuntime._kill_inner does: witness the late child while
+                # the leader is alive, then reap the leader.
+                self._group = self._group._replace(members=(late,))
+                self._client._pid = None
+
+        provider = _RefreshingProvider(
+            **_provider_attrs_without_shutdown(_client=SimpleNamespace(_pid=4242)),
+            _group=platform_compat.SpawnedProcessGroup(4242, "77123"),
+        )
+        authorized: list[tuple[platform_compat.ProcessGroupMember, ...]] = []
+
+        def _gate(group):
+            authorized.append(group.members)
+            return bool(group.members)
+
+        with (
+            patch("kiro_crew.session.platform_compat.pid_exists", return_value=False),
+            patch(
+                "kiro_crew.session.platform_compat.pgroup_matches_incarnation",
+                side_effect=_gate,
+            ),
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        assert authorized == [(late,)], "the gate saw a pre-shutdown snapshot"
+        assert killer.call_args.args[0] is provider
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_drops_its_group_during_shutdown_fails_closed(self, mgr) -> None:
+        """A snapshot the provider does not claim is not evidence."""
+
+        class _ForgetfulProvider(_GroupProvider):
+            async def shutdown(self):
+                self._group = None
+                self._client._pid = None
+
+        provider = _ForgetfulProvider(
+            **_provider_attrs_without_shutdown(_client=SimpleNamespace(_pid=4242)),
+            _group=platform_compat.SpawnedProcessGroup(
+                4242, "77123", (platform_compat.ProcessGroupMember(4300, "88456"),)
+            ),
+        )
+        with (
+            patch("kiro_crew.session.platform_compat.pid_exists", return_value=False),
+            patch("kiro_crew.session.platform_compat.pgroup_matches_incarnation") as gate,
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        gate.assert_not_called()
+        assert killer.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_provider_with_no_group_never_probes_one(self, mgr) -> None:
+        """A harness that reports no group keeps the pid-only decision it had."""
+        provider = _group_provider(None, _client=SimpleNamespace(_pid=4242))
+        with (
+            patch("kiro_crew.session.platform_compat.pid_exists", return_value=False),
+            patch("kiro_crew.session.platform_compat.pgroup_matches_incarnation") as gate,
+            patch("kiro_crew.session._sync_kill_provider") as killer,
+        ):
+            await mgr._discard_pool_provider(provider, "unit")
+
+        gate.assert_not_called()
+        assert killer.call_count == 0
+
 
 # ── Stale-session eviction ───────────────────────────────────────────────────
 
@@ -476,7 +703,9 @@ class TestDiscardPoolProvider:
 class TestEvictStaleSession:
     @pytest.mark.asyncio
     async def test_a_failing_shutdown_still_leaves_the_entry_evicted(self, mgr) -> None:
-        sess = _register(mgr, "task:step1", provider=_provider(shutdown=AsyncMock(side_effect=OSError)))
+        sess = _register(
+            mgr, "task:step1", provider=_provider(shutdown=AsyncMock(side_effect=OSError))
+        )
         await mgr._evict_stale_session("task:step1", sess)
         assert "task:step1" not in mgr._sessions
 
@@ -667,9 +896,11 @@ def no_child_scan():
     They read ``/proc`` (or spawn ``ps``/``pgrep`` on macOS) and are the reason
     a naive reset test cannot run on a CI runner.
     """
-    with patch("kiro_crew.acp.client._get_child_pids", return_value=[]), patch(
-        "kiro_crew.acp.client._capture_child_records", return_value={}
-    ), patch("kiro_crew.acp.client._kill_escaped_children") as sweep:
+    with (
+        patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+        patch("kiro_crew.acp.client._capture_child_records", return_value={}),
+        patch("kiro_crew.acp.client._kill_escaped_children") as sweep,
+    ):
         yield sweep
 
 
@@ -682,9 +913,7 @@ class TestResetTeardown:
         ``_active_proc`` is the only handle to the process — reset must find it,
         or the post-shutdown liveness check silently probes nothing."""
         probed: list[int] = []
-        monkeypatch.setattr(
-            platform_compat, "pid_exists", lambda pid: probed.append(pid) or False
-        )
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: probed.append(pid) or False)
         provider = _provider(_active_proc=SimpleNamespace(returncode=None, pid=4242))
         _register(mgr, "dashboard:a", provider=provider)
 
@@ -771,9 +1000,7 @@ class TestDrainActiveTurns:
 
 class TestCloseAll:
     @pytest.mark.asyncio
-    async def test_every_teardown_step_can_fail_and_shutdown_still_completes(
-        self, mgr
-    ) -> None:
+    async def test_every_teardown_step_can_fail_and_shutdown_still_completes(self, mgr) -> None:
         """Shutdown is the last chance to release kiro-cli's native session
         locks, so no single failing step may abort the rest of it."""
         mgr.drain_active_turns = AsyncMock(side_effect=RuntimeError("drain exploded"))
@@ -835,9 +1062,7 @@ class TestStopTurnHooks:
         assert sess.prev_turn_cancelled is True
 
     @pytest.mark.asyncio
-    async def test_a_failing_hard_hook_still_reports_a_hard_stop(
-        self, mgr, no_child_scan
-    ) -> None:
+    async def test_a_failing_hard_hook_still_reports_a_hard_stop(self, mgr, no_child_scan) -> None:
         provider = _provider(
             cancel=AsyncMock(return_value="acked"),
             runtime_info=lambda: (None, None),
@@ -870,9 +1095,7 @@ class TestRecycleBackgroundRefusals:
         assert sess.semaphore._value == 1
 
     @pytest.mark.asyncio
-    async def test_a_full_background_session_with_no_factory_keeps_its_provider(
-        self, mgr
-    ) -> None:
+    async def test_a_full_background_session_with_no_factory_keeps_its_provider(self, mgr) -> None:
         provider = _provider(context_usage_pct=lambda: 88.0)
         sess = _register(mgr, BACKGROUND_KEY, provider=provider)
         await mgr.recycle_background()
@@ -881,9 +1104,7 @@ class TestRecycleBackgroundRefusals:
         assert sess.semaphore._value == 1
 
     @pytest.mark.asyncio
-    async def test_a_failing_shutdown_of_the_replaced_provider_is_swallowed(
-        self, cfg
-    ) -> None:
+    async def test_a_failing_shutdown_of_the_replaced_provider_is_swallowed(self, cfg) -> None:
         old = _provider(
             context_usage_pct=lambda: 88.0,
             shutdown=AsyncMock(side_effect=OSError("shutdown exploded")),
@@ -904,9 +1125,7 @@ class TestRecycleBackgroundRefusals:
 
 class TestOpenTaskSession:
     @pytest.mark.asyncio
-    async def test_reusing_a_live_session_adopts_the_callers_approval_policy(
-        self, mgr
-    ) -> None:
+    async def test_reusing_a_live_session_adopts_the_callers_approval_policy(self, mgr) -> None:
         """A later step of the same run may escalate to auto-approval; the
         reused session must adopt it rather than keep the first step's policy."""
         sess = _register(mgr, "taskrunner:run1:step2", approval_policy="")

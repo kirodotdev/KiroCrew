@@ -560,6 +560,112 @@ def _kill_confirmed_and_writeback(
     return orphan_killed
 
 
+def _provider_process_group(provider: object) -> "platform_compat.SpawnedProcessGroup | None":
+    """The incarnation-bound spawn group ``provider`` reports, if any.
+
+    Reads ONE public capability -- ``LLMProvider.spawned_process_group()``, whose
+    base returns ``None`` -- so every harness answers the same question and this
+    leaf never reaches into a provider's private client seam. A caller that does
+    not implement it at all, or that raises, is treated as having no group.
+
+    The method is looked up on the provider's CLASS, not on the instance. A
+    ``MagicMock``/``AsyncMock`` double synthesizes any attribute on ACCESS, so an
+    instance lookup would find a capability on a stand-in that declares none --
+    and an ``AsyncMock`` hands back a coroutine this synchronous resolver can only
+    leak unawaited. A class lookup answers the real question: does this provider's
+    type declare the capability.
+
+    The answer is still re-validated, because a declared capability can return
+    anything -- including a ``Mock`` whose ``pgid`` coerces to 1 via ``__index__``,
+    which would make ``killpg`` a signal to every process this uid owns.
+
+    A malformed member witness costs the group its witnesses, never the group
+    itself. Answering ``None`` for a group whose ``members`` slot is junk would
+    say "nothing was ever captured", and that is the one answer that licenses the
+    pid-scoped fallback -- against the recyclable number the group exists to keep
+    unsignalled. Dropping the junk instead leaves a group that
+    ``pgroup_matches_incarnation`` refuses while its leader is gone, which is the
+    safe verdict.
+    """
+    declared = getattr(type(provider), "spawned_process_group", None)
+    if not callable(declared):
+        return None
+    try:
+        group = declared(provider)
+    except Exception:
+        logger.debug("_provider_process_group: capability raised", exc_info=True)
+        return None
+    if not isinstance(group, platform_compat.SpawnedProcessGroup):
+        return None
+    # An unwitnessed group can never be authorized, so it is not a group at all:
+    # answering None here also keeps a caller from probing liveness on it.
+    if type(group.pgid) is not int or group.pgid <= 1 or not group.leader_start_id:
+        return None
+    if not isinstance(group.leader_start_id, str):
+        return None
+    members = group.members
+    if not isinstance(members, tuple):
+        return group._replace(members=())
+    typed = tuple(
+        member for member in members if isinstance(member, platform_compat.ProcessGroupMember)
+    )
+    if len(typed) != len(members):
+        return group._replace(members=typed)
+    return group
+
+
+def _signal_saved_group(group: "platform_compat.SpawnedProcessGroup", sig: int) -> bool:
+    """Deliver ``sig`` to a captured group, gated on its incarnation. False = nothing sent.
+
+    The gate runs HERE, immediately before the signal, rather than once when the
+    group was resolved: the leader can be reaped and its pgid handed to an
+    unrelated session leader while a SIGTERM grace window elapses, so an
+    authorization taken earlier can be stale by the time the escalation fires.
+
+    ``False`` means no signal happened and never licenses a pid-scoped retry --
+    see :func:`_signal_teardown_target` for why that fallback would reach the
+    exact process this refusal declined to trust.
+    """
+    if not platform_compat.pgroup_matches_incarnation(group):
+        logger.debug(
+            "_signal_saved_group: group %d failed the incarnation gate; refusing to signal "
+            "it, and refusing the leader pid it shares that recyclable number with",
+            group.pgid,
+        )
+        return False
+    try:
+        return bool(platform_compat.kill_pgroup(group.pgid, sig))
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def _signal_teardown_target(
+    pid: int, group: "platform_compat.SpawnedProcessGroup | None", sig: int
+) -> bool:
+    """Deliver ``sig`` to the saved group, else to ``pid``. False = nothing left.
+
+    ``group is None`` means no group was ever captured -- a non-POSIX spawn, or a
+    harness that reports none -- so the leader pid is the only handle and the
+    pid-scoped path is correct.
+
+    A captured group NEVER degrades to the pid. On POSIX the leader is its own
+    group leader, so ``pgid == pid``: a gate refusal means that very number no
+    longer names our incarnation, and ``kill_pid(pid)`` would signal whatever
+    replacement leader the kernel handed it. Refusing the group and then killing
+    the pid would therefore reach the exact stranger the gate just rejected. The
+    group half is :func:`_signal_saved_group`, which re-checks the incarnation
+    before EVERY signal because the leader can be reaped and its pgid recycled
+    while the SIGTERM grace window elapses.
+    """
+    if group is None:
+        try:
+            platform_compat.kill_pid(pid, sig)
+        except (ProcessLookupError, OSError):
+            return False
+        return True
+    return _signal_saved_group(group, sig)
+
+
 def _sync_kill_provider(provider: object) -> None:
     """Synchronously kill a provider's process.
 
@@ -567,8 +673,12 @@ def _sync_kill_provider(provider: object) -> None:
     (asyncio.shield + await raises CancelledError immediately, leaving
     shutdown fire-and-forget).  Falls back to SIGKILL if SIGTERM fails.
 
+    Two handles are resolved, and they are cleared INDEPENDENTLY: the leader pid,
+    and the process group captured at spawn. Either one alone is enough to run the
+    escalation, so a caller that still holds only the group is served.
+
     ``provider`` is deliberately ``object`` rather than ``LLMProvider``.  Every
-    read below goes through ``getattr(..., None)`` against a PRIVATE attribute
+    PID read below goes through ``getattr(..., None)`` against a PRIVATE attribute
     that the provider ABC does not declare, so the ABC never described this
     parameter -- and importing it here for the annotation alone closed a cycle:
     session_pid -> providers.base -> acp.types -> acp/__init__ -> acp.runtime ->
@@ -576,8 +686,19 @@ def _sync_kill_provider(provider: object) -> None:
     first raised ``ImportError`` on ``_track_pid``.  It is why sibling
     leaves carry ``LLMProvider = Any`` runtime stubs and why this module reaches
     acp.client through function-local imports.  ``test_agent_lifecycle_cycle.py``
-    pins the absence; keep this leaf ignorant of the agent layer.
+    pins the absence; keep this leaf ignorant of the agent layer.  The group is
+    the one exception: it is a declared capability, read through
+    :func:`_provider_process_group` off the provider's TYPE, so no harness needs
+    its private client seam probed.
     """
+    # Resolved BEFORE any pid guard below, because the two handles are cleared
+    # independently: ``AcpProvider.shutdown()`` -> ``AcpClient._reset_state()``
+    # sets ``_pid = None`` and leaves the group captured at spawn in place, and
+    # the warm-pool discard then dispatches this hard kill expecting exactly that
+    # group. Reading the group after a ``pid is None`` return is what leaks a
+    # descendant that ignored SIGTERM: the leader is already reaped, so the pid
+    # was never the handle that could still reach the tree.
+    group = _provider_process_group(provider)
     # ACP provider: long-lived process via client._pid
     client = getattr(provider, "_client", None)
     pid = getattr(client, "_pid", None) if client else None
@@ -591,6 +712,20 @@ def _sync_kill_provider(provider: object) -> None:
         if proc is not None and proc.returncode is None:
             pid = proc.pid
     if pid is None:
+        # No leader pid, but the group it led can still be populated. Windows
+        # returns as before: it captures no group, and ``taskkill /T`` walks its
+        # own tree. There is deliberately no ``os.waitpid`` here -- no pid is
+        # known, so there is no child of ours to reap and no number safe to wait
+        # on (the pgid is a recyclable pid).
+        if group is None or platform_compat.IS_WINDOWS:
+            return
+        for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
+            if not _signal_saved_group(group, sig):
+                return
+        logger.warning(
+            "_sync_kill_provider: killed group %d for leaked provider whose leader pid was cleared",
+            group.pgid,
+        )
         return
     # Only ever signal a real, positive, non-init PID. Test stand-ins are the
     # sharp edge: a Mock attribute passes the None check and coerces to 1 via
@@ -619,19 +754,20 @@ def _sync_kill_provider(provider: object) -> None:
         logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
         return
     for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
-        try:
-            platform_compat.kill_pid(pid, sig)
-        except ProcessLookupError:
-            return  # already dead
-        except OSError:
-            return
+        if not _signal_teardown_target(pid, group, sig):
+            return  # already gone, or unsignalable
         if sig == platform_compat.SIGTERM:
             # Brief wait for graceful exit before escalating (POSIX only)
             try:
                 os.waitpid(pid, os.WNOHANG)
             except ChildProcessError:
-                return
-    logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
+                # The leader is already reaped, or was never ours to reap. That
+                # says nothing about the group it led: a descendant that ignores
+                # SIGTERM is exactly what the escalation below exists for, so
+                # only a caller with no group at all can stop here.
+                if group is None:
+                    return
+    logger.warning("_sync_kill_provider: killed PID %d (group %s) for leaked provider", pid, group)
 
 
 def _cleanup_orphaned_mcp_servers() -> int:

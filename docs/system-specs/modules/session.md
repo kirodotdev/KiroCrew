@@ -1853,6 +1853,173 @@ guard reads the parent via `get_ppid`, the managed-agent check uses
 `platform_compat.file_lock` / `acquire_lock` / `try_acquire_lock` (POSIX `flock`
 vs Windows `msvcrt`). On POSIX the behavior is unchanged.
 
+#### The saved process group survives its leader
+
+A PID alone cannot address the tree once the leader is gone. Every ACP spawn sets
+`start_new_session=IS_POSIX`, so the leader's PID doubles as the group id, and
+`kill_process_tree` reaches the tree by calling `os.getpgid(pid)` at signal time.
+That derivation fails exactly when it matters: a reaped leader makes `os.getpgid`
+raise `ProcessLookupError`, and a descendant that installed `SIGTERM = SIG_IGN`
+then survives teardown unsignalled. `provider.shutdown()` reaps the leader first,
+so the pooled-discard path hits this state on every discard.
+
+Both spawn sites therefore record the group while the leader is provably alive —
+`AcpRuntime._process_group` and `AcpClient._process_group`, from
+`platform_compat.capture_spawned_process_group(pid)` — and expose it through one
+PUBLIC capability, `LLMProvider.spawned_process_group()`, whose base returns
+`None`. `AcpProvider` forwards its client seam and `AcpSessionProvider` forwards
+the shared runtime, so every harness answers the same question, a provider with no
+child process is safe by default, and no teardown path reaches into a private
+attribute. `None` on Windows, where `taskkill /T` keeps walking the tree itself.
+
+`_provider_process_group` resolves that method from the provider's **type**, never
+from the instance. A `MagicMock`/`AsyncMock` double synthesizes any attribute on
+access, so an instance lookup reports a capability on a stand-in that declares
+none — and an `AsyncMock` hands this synchronous resolver a coroutine it can only
+drop, which surfaced as `RuntimeWarning: coroutine ... was never awaited` in five
+unrelated warm-pool tests. A class lookup asks the real question: does this
+provider's type declare the capability. A test double that means to report a group
+therefore declares the method on a class, as `test_session_more_coverage`'s
+`_GroupProvider` does; assigning a lambda onto a namespace is deliberately
+invisible.
+
+**A pgid alone is not an identity.** It IS a pid, so once the original group
+empties the kernel may hand it to an unrelated session leader — and a
+liveness-only probe would then authorize `killpg` against that stranger's whole
+tree. `capture_spawned_process_group` therefore returns a
+`SpawnedProcessGroup(pgid, leader_start_id, members)`, binding the group to one
+spawn incarnation via `get_process_start_id`, and refuses to produce one at all
+when the leader is not its own group leader or its start identity is unreadable.
+Its own `os.getpgid` read sits BETWEEN two identity reads that must agree: a child
+that exits immediately can have its pid reaped and handed to a replacement leader
+between them, and a replacement of its own new session reads back `pgid == pid`
+exactly as ours does — so the shape alone cannot separate the two, and a single
+identity read would bind the stranger's group to our witness.
+
+**A LEADERLESS group needs an original member as well.** The leader's identity
+cannot settle that case, because it is gone in both readings: our group can empty,
+the kernel can hand the id to an unrelated session leader, and that leader can
+fork children and then exit itself — leaving a populated group with no leader,
+byte-for-byte the shape our own surviving tree has. So `members` carries
+`ProcessGroupMember(pid, start_id)` witnesses recorded by
+`platform_compat.record_process_group_members` while the group was provably ours.
+A member that is still alive, still the same incarnation and still in this group
+proves the group never emptied — and a pgid cannot be reallocated before it does.
+Witnesses accumulate rather than replace (the scans walk the LEADER's descendants,
+so a member reparented to init drops out of them, and that member is exactly the
+survivor teardown depends on), and a re-witnessed pid takes its current identity.
+There is deliberately **no cap** on the set: only one witness has to survive for
+the group to be authorized, and any fixed ceiling drops whichever descendant
+happens to sort past it — including the single one that ignores SIGTERM, which
+reinstates the leak. The owner already tracks its descendants unbounded in
+`_child_pids`, so the witness set costs nothing new to keep whole.
+
+**A refresh is only accepted while the leader is alive to vouch for it, and the
+proof is taken twice.** `record_process_group_members` requires the pid at `pgid`
+to exist, still lead this group, and read back the captured `leader_start_id`
+(`_group_leader_is_current`) both BEFORE and AFTER its scan. The pre-proof stops a
+group whose id the kernel already handed to an unrelated session leader from
+taking that stranger's descendants as witnesses. The post-proof covers the same
+swap landing DURING the walk: the scan is unbounded in the width of the tree, so
+the leader can be reaped, recycled or moved out of the group while it runs, and
+every pid read after that moment is the stranger's. A failed post-proof discards
+ALL fresh witnesses together, because the scan records no per-pid ordering that
+could separate the ones read early. Either failure records NOTHING and returns the
+group unchanged, so witnesses taken while the leader was provably alive keep their
+authority and a leaderless group simply stops accumulating.
+
+**Nothing on this path runs on the event loop.** Recording costs one identity read
+per descendant and authorization re-reads one per witness, both unbounded in the
+width of the tree, and discovering candidate pids reads `/proc` or spawns `pgrep`.
+Every async caller therefore hops through `subprocess_executor()`;
+`_sync_kill_provider` already runs in a worker and stays synchronous. Four owner
+call sites record, all while the leader is alive:
+
+| Owner | Where witnesses are recorded |
+|---|---|
+| `AcpClient` | `_spawn`'s early descendant scan; refreshed in `_snapshot_process_tree` once `_initialize_session` has let kiro-cli fork its MCP children; refreshed again in `_kill_process` from the merged fresh scan, before the signal that reaps the leader |
+| `AcpRuntime` | `_spawn_admitted`, after the initialize handshake, via `acp.client._witness_group_members`; refreshed again at the top of `_kill_inner`, before its SIGTERM. It needs its own scan because `AcpRuntime._child_pids` is declared and never populated, so `AcpSessionProvider._child_pids` is always empty and offers nothing to witness. Both are best-effort: a failure costs the late witness, never the witnesses already held |
+
+The teardown refreshes are what a child forked after initialize depends on. It is
+absent from the post-handshake set, so a pooled discard would find the group
+unauthorized and leave it running — and teardown is the last moment its leader is
+alive to prove the group is ours.
+
+`spawned_process_group()` stays a pure read of what was captured, so the accessor
+never blocks the loop and never discovers anything of its own. The pooled discard
+reads it AFTER `shutdown()` and authorizes that value: the pre-shutdown snapshot
+predates the owner's teardown refresh, so it can be missing the very descendant
+that outlives the leader. A provider that reported a group before shutdown and
+reports `None` after fails closed with a warning — no shipped provider transitions
+that way, since the field survives teardown, and a snapshot the provider does not
+claim is not evidence its group is still ours.
+
+`platform_compat.pgroup_matches_incarnation(group)` is the gate, and it fails
+closed in three cases checked in order:
+
+| State | Verdict | Why |
+|---|---|---|
+| Group empty | refuse | nothing of ours is left, and the id is now recyclable |
+| A process exists at `pid == pgid` | allow only if its start identity is READABLE and EQUAL to the witness | that process is either our leader or the stranger who inherited the id; an unreadable identity is refused exactly like a mismatch |
+| Leader gone, group still populated | allow only if one `members` witness is still alive, still the same incarnation and still in this group | that survivor is the only evidence the group never emptied. No witness recorded, no survivor, an unreadable identity or group, a witness that `setsid`'d out, and any shape that is not a `ProcessGroupMember` all refuse |
+
+`session_pid._provider_process_group` re-validates the answer, and a malformed
+`members` slot costs the group its witnesses rather than the group itself:
+answering `None` would say "nothing was ever captured", which is the one answer
+that licenses the pid-scoped fallback onto the recyclable number the group exists
+to keep unsignalled. What it keeps instead is a group that a reaped leader cannot
+authorize.
+
+Two teardown paths consume the gate, and only inside a bounded teardown:
+
+- `session_pid._sync_kill_provider` resolves the group with
+  `_provider_process_group` **before** any pid guard, then escalates SIGTERM →
+  SIGKILL against it via `platform_compat.kill_pgroup`. The two handles are
+  cleared independently, so the order is load-bearing: `AcpProvider.shutdown()` →
+  `AcpClient._reset_state()` sets `_pid = None` and leaves `_process_group` in
+  place, and the pooled discard then dispatches this hard kill expecting exactly
+  that group. Resolving the group after a `pid is None` return leaked every
+  descendant that ignored SIGTERM — the leader was already reaped, so the pid was
+  never the handle that could still reach the tree. A cleared pid over a live
+  group therefore runs the escalation **group-only**: no pid fallback, and no
+  `os.waitpid` (no pid is known, so there is no child of ours to reap and no
+  number safe to wait on — the pgid is itself a recyclable pid). Windows returns
+  on a cleared pid exactly as before, because it captures no group. When a pid IS
+  known the pid-present path is unchanged, and a `ChildProcessError` from
+  `os.waitpid` — the reaped leader — does not end the escalation while a group is
+  held.
+- `session_pool._discard_pool_provider` re-reads the group AFTER `shutdown()` and,
+  when the leader PID reads dead, requires the same authorization — run in
+  `subprocess_executor()` — before hard-killing. A dead leader over a live,
+  correctly-witnessed group reaches the hard kill; a recycled one does not.
+
+**A captured group never degrades to the leader PID.** `_signal_saved_group` is
+the shared per-signal gate — the incarnation is re-checked immediately before
+every signal, never once at resolve time, because the leader can be reaped and
+its pgid handed to an unrelated session leader while the SIGTERM grace window
+elapses. `_signal_teardown_target` picks the handle and delegates the group half
+to it, giving exactly three outcomes; the distinction between the first two is
+the whole safety property:
+
+| State | Action |
+|---|---|
+| `group is None` — nothing was ever captured (non-POSIX spawn, or a harness reporting none) | signal the leader PID; it is the only handle |
+| group captured, gate refuses — or `kill_pgroup` refuses or raises | signal NOTHING and return `False` |
+| group captured, gate accepts | signal the group |
+
+On POSIX the leader is its own group leader, so `pgid == pid`. A gate refusal
+therefore says that exact number does not name our incarnation — and a pid-scoped
+fallback would signal the replacement leader the gate just rejected, taking that
+unrelated session's whole tree with it. Refusing the group and then killing the pid
+reaches the same stranger by a different name.
+
+That is why `spawned_process_group()` is a **pure read** rather than
+self-releasing: `None` has to keep meaning "never captured". An accessor that
+answered `None` for a group that merely failed its gate would hand teardown the
+pid-fallback path for precisely the recycled number it must avoid. The identity is
+in-memory only and never persisted; authorization lives at the moment of the
+signal, where it can be correct, and the next spawn overwrites the field.
+
 ## Bytecode-Cache GC (periodic sweep hook)
 
 The desktop app launches the gateway with `PYTHONPYCACHEPREFIX` pointed at

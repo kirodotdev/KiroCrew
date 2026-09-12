@@ -41,6 +41,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.platform_compat import SpawnedProcessGroup
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -791,6 +792,10 @@ class AcpSessionProvider(LLMProvider):
     def _pid(self) -> int | None:
         """PID of the runtime process."""
         return self._runtime.pid
+
+    def spawned_process_group(self) -> SpawnedProcessGroup | None:
+        """Forward the shared runtime's group: it owns the child process."""
+        return self._runtime.spawned_process_group()
 
     @property
     def _child_pids(self) -> dict[int, Any]:

@@ -21,6 +21,9 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.platform_compat import SpawnedProcessGroup
+from kiro_crew.session_pid import _provider_process_group
+
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
 else:
@@ -94,6 +97,7 @@ class WarmPoolDeps:
     get_sync_kill_provider: Callable[[], KillProvider]
     get_subprocess_executor: Callable[[], Executor]
     get_pid_exists: Callable[[], Callable[[int], bool]]
+    get_pgroup_authorized: Callable[[], Callable[[SpawnedProcessGroup], bool]]
     get_identity_predicate: Callable[[], Callable[[LLMProvider], bool]]
     get_discard_timeout: Callable[[], float]
     get_health_interval: Callable[[], float]
@@ -314,6 +318,9 @@ class WarmSessionPool:
         """Bound, verify, and if necessary hard-kill a discarded provider."""
         client = getattr(provider, "_client", None) or getattr(provider, "client", None)
         pid = getattr(client, "_pid", None)
+        # Read before shutdown ONLY to decide whether this provider has a group at
+        # all; the value authorized below is re-read afterwards.
+        group_before = _provider_process_group(provider)
         try:
             await asyncio.wait_for(provider.shutdown(), timeout=self._deps.get_discard_timeout())
         except asyncio.CancelledError:
@@ -331,6 +338,23 @@ class WarmSessionPool:
             self._owner._dispatch_hard_kill(provider)
             raise
 
+        # Re-read AFTER shutdown. The owner refreshes its member witnesses during
+        # teardown, while its leader is still alive, so the pre-shutdown value is a
+        # snapshot that can be missing the very descendant that outlives the
+        # leader. A pure attribute read, so it stays on the loop.
+        group = _provider_process_group(provider)
+        if group is None and group_before is not None:
+            # The provider had a group and now reports none. Nothing shipped
+            # transitions that way -- the field survives teardown -- so this is a
+            # harness whose accessor stopped answering, and a snapshot the
+            # provider does not claim is not evidence its group is still ours.
+            self._deps.logger.warning(
+                "%s: provider stopped reporting its spawn group during shutdown (pid=%s); "
+                "refusing to authorize the group it reported earlier",
+                context,
+                pid,
+            )
+
         if isinstance(pid, int):
             still_alive = self._deps.get_pid_exists()(pid)
         else:
@@ -338,13 +362,26 @@ class WarmSessionPool:
                 still_alive = provider.is_process_alive()
             except Exception:
                 still_alive = False
+        if not still_alive and group is not None:
+            # A dead leader does not mean an empty tree: shutdown reaps the
+            # leader first, so a descendant that ignored SIGTERM is still in the
+            # group it inherited. Returning here on the leader alone is what
+            # leaks it. Authorized by incarnation, not by liveness alone -- a
+            # recycled pgid belongs to a stranger and must not trigger a kill.
+            # Off-loop: the gate re-reads an identity per witness, unbounded in
+            # the width of the tree.
+            authorized = self._deps.get_pgroup_authorized()
+            still_alive = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_subprocess_executor(), authorized, group
+            )
         if not still_alive:
             return
 
         self._deps.logger.warning(
-            "%s: provider process (pid=%s) still alive after shutdown — hard-killing",
+            "%s: provider process (pid=%s group=%s) still alive after shutdown — hard-killing",
             context,
             pid,
+            group.pgid if group else None,
         )
         try:
             await asyncio.get_running_loop().run_in_executor(

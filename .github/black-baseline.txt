@@ -865,7 +865,6 @@ test/test_prepare_pr_profiles.py
 test/test_prepare_pr_status.py
 test/test_previous_result_read_off_loop.py
 test/test_process_tree.py
-test/test_process_tree_kill.py
 test/test_project_alias.py
 test/test_project_git.py
 test/test_project_git_status_log.py
@@ -925,7 +924,6 @@ test/test_session_keepalive.py
 test/test_session_map_locking.py
 test/test_session_map_migration.py
 test/test_session_memory.py
-test/test_session_more_coverage.py
 test/test_session_mtime_ordering.py
 test/test_session_pid_sig.py
 test/test_session_pool.py

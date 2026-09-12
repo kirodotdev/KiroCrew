@@ -30,6 +30,7 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     r._reader_task = None
     r._stderr_task = None
     r._sandbox_cleanup = None
+    r._process_group = None
 
     proc = MagicMock()
     proc.pid = pid
@@ -89,3 +90,141 @@ async def test_kill_untracks_pid_when_process_died(monkeypatch):
 
     assert untracked_pids == [54321, 54321]
     assert r._process is None
+
+
+def test_spawned_process_group_returns_the_captured_group(monkeypatch):
+    """The captured group is the handle teardown escalates against."""
+    r = _bare_runtime()
+    group = rt.platform_compat.SpawnedProcessGroup(54321, "77123")
+    r._process_group = group
+
+    assert r.spawned_process_group() == group
+    assert r._process_group == group
+
+
+def test_spawned_process_group_is_a_pure_read(monkeypatch):
+    """It reports what was CAPTURED, and never gates or releases.
+
+    ``None`` has to keep meaning "no group was ever captured": on POSIX the leader
+    is its own group leader, so a caller told ``None`` for a group that merely
+    failed its gate would fall back to killing that same recyclable number.
+    Authorization is `_signal_teardown_target`'s job, immediately before each
+    signal."""
+    r = _bare_runtime()
+    group = rt.platform_compat.SpawnedProcessGroup(54321, "77123")
+    r._process_group = group
+
+    def _explode(_group):  # pragma: no cover — must never be reached
+        raise AssertionError("the accessor must not gate")
+
+    monkeypatch.setattr(rt.platform_compat, "pgroup_matches_incarnation", _explode)
+
+    assert r.spawned_process_group() == group
+    assert r._process_group == group
+
+
+def test_spawned_process_group_reports_none_only_when_nothing_was_captured():
+    """No capture at all is the one state that answers None."""
+    r = _bare_runtime()
+    r._process_group = None
+
+    assert r.spawned_process_group() is None
+
+
+def test_witness_group_members_records_the_runtime_tree(monkeypatch):
+    """The runtime keeps no descendant records, so this is its only witness source.
+
+    ``AcpRuntime._child_pids`` is declared and never populated, so the shared
+    runtime has nothing else to offer a teardown that finds the leader reaped --
+    and without a witness that group is refused rather than signalled.
+    """
+    from kiro_crew.acp.client import _witness_group_members
+
+    group = rt.platform_compat.SpawnedProcessGroup(54321, "77123")
+    monkeypatch.setattr("kiro_crew.acp.client._get_child_pids", lambda pid: [54400])
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(rt.platform_compat, "pgroup_of", lambda pid: 54321)
+    monkeypatch.setattr(
+        rt.platform_compat,
+        "get_process_start_id",
+        lambda pid: "77123" if pid == 54321 else "88456",
+    )
+
+    assert _witness_group_members(group, 54321) == rt.platform_compat.SpawnedProcessGroup(
+        54321, "77123", (rt.platform_compat.ProcessGroupMember(54400, "88456"),)
+    )
+
+
+def test_witness_group_members_leaves_an_uncaptured_group_alone(monkeypatch):
+    """``None`` means nothing was captured, and the scan must not invent one."""
+    from kiro_crew.acp.client import _witness_group_members
+
+    def _explode(pid):  # pragma: no cover — must never be reached
+        raise AssertionError("no scan without a captured group")
+
+    monkeypatch.setattr("kiro_crew.acp.client._get_child_pids", _explode)
+
+    assert _witness_group_members(None, 54321) is None
+
+
+@pytest.mark.asyncio
+async def test_kill_refreshes_group_witnesses_before_the_term(monkeypatch):
+    """A child forked after initialize is only witnessable during teardown.
+
+    The runtime records witnesses once, right after the handshake. A descendant
+    that appears later -- and ignores SIGTERM -- is not in that set, so a pool
+    discard would find the group unauthorized and leave it running. The refresh
+    happens here, while the leader is still alive to prove the group is ours, and
+    therefore strictly BEFORE the signal that reaps it.
+    """
+    r = _bare_runtime()
+    captured = rt.platform_compat.SpawnedProcessGroup(54321, "77123")
+    refreshed = captured._replace(members=(rt.platform_compat.ProcessGroupMember(54400, "88456"),))
+    r._process_group = captured
+    order: list[str] = []
+
+    def _witness(group, pid):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            order.append("witness")
+            return refreshed
+        raise AssertionError("must not run on the event loop")
+
+    monkeypatch.setattr(rt, "_witness_group_members", _witness)
+    monkeypatch.setattr(
+        rt.platform_compat,
+        "kill_process_tree",
+        lambda *a, **k: order.append("kill") or None,
+    )
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+    monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+
+    await r.kill()
+
+    assert order[:2] == ["witness", "kill"]
+    assert r.spawned_process_group() == refreshed
+
+
+@pytest.mark.asyncio
+async def test_kill_keeps_the_captured_group_when_the_refresh_fails(monkeypatch):
+    """A refresh that raises costs the late witness, never the whole group."""
+    r = _bare_runtime()
+    captured = rt.platform_compat.SpawnedProcessGroup(
+        54321, "77123", (rt.platform_compat.ProcessGroupMember(54400, "88456"),)
+    )
+    r._process_group = captured
+
+    def _boom(group, pid):
+        raise OSError("proc unreadable")
+
+    monkeypatch.setattr(rt, "_witness_group_members", _boom)
+    monkeypatch.setattr(rt.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+    monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+
+    await r.kill()
+
+    assert r.spawned_process_group() == captured

@@ -29,6 +29,7 @@ from kiro_crew.acp.types import (  # noqa: F401
 )
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
+from kiro_crew.platform_compat import SpawnedProcessGroup
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -229,6 +230,18 @@ class LLMProvider(ABC):
         override this to inspect the OS-level state directly.
         """
         return self.is_alive()
+
+    def spawned_process_group(self) -> SpawnedProcessGroup | None:
+        """The incarnation-bound POSIX process group backing this provider.
+
+        ``None`` for a provider with no child process of its own, on Windows, and
+        whenever the group cannot be witnessed -- so a teardown path asks every
+        provider the same question and falls back to its pid-scoped behaviour
+        without knowing which harness answered. Process-backed providers override
+        it; the ones that own a child answer from their own spawn, and the ones
+        that wrap another object forward to it.
+        """
+        return None
 
     @property
     def process_instance(self) -> str:

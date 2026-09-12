@@ -1,10 +1,12 @@
 """Tests for process tree tracking, recursive kill, and session cleanup."""
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.client import (
     AcpClient,
     _direct_children,
@@ -15,6 +17,25 @@ from kiro_crew.acp.client import (
 
 if sys.platform != "win32":
     import signal
+
+
+def _off_loop_only(answer):
+    """A stand-in that refuses to be called from a coroutine's own thread.
+
+    ``asyncio.get_running_loop()`` succeeds only on the loop thread, so raising
+    there and answering everywhere else pins the property (this work happens in a
+    worker) instead of the mechanism (which executor was used).
+    """
+
+    def _call(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return answer
+        raise AssertionError("must not run on the event loop")
+
+    return _call
+
 
 # ── 1. _get_child_pids: visited-set prevents infinite loops ──
 
@@ -196,6 +217,7 @@ class TestSnapshotProcessTree:
         client = AcpClient.__new__(AcpClient)
         client._pid = 100
         client._child_pids = {}
+        client._process_group = None
 
         with (
             patch("kiro_crew.acp.client._get_child_pids", return_value=[200, 300, 400]),
@@ -212,15 +234,78 @@ class TestSnapshotProcessTree:
         assert lines == {"200:100", "300:100", "400:100"}
 
     @pytest.mark.asyncio
+    async def test_witnesses_descendants_in_the_spawn_group(self, tmp_path):
+        """The snapshot is also the spawn group's member-witness refresh point.
+
+        Those long-lived MCP children are what a teardown has left to prove the
+        group is still ours once the leader has been reaped.
+        """
+        client = AcpClient.__new__(AcpClient)
+        client._pid = 100
+        client._child_pids = {}
+        client._process_group = platform_compat.SpawnedProcessGroup(100, "77123")
+
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[200]),
+            patch("kiro_crew.acp.client._get_start_time", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+            patch("kiro_crew.platform_compat.pid_exists", return_value=True),
+            patch("kiro_crew.platform_compat.pgroup_of", return_value=100),
+            patch(
+                "kiro_crew.platform_compat.get_process_start_id",
+                side_effect=lambda pid: "77123" if pid == 100 else "88456",
+            ),
+        ):
+            await client._snapshot_process_tree()
+
+        assert client._process_group == platform_compat.SpawnedProcessGroup(
+            100, "77123", (platform_compat.ProcessGroupMember(200, "88456"),)
+        )
+
+    @pytest.mark.asyncio
+    async def test_witness_recording_runs_off_the_event_loop(self, tmp_path):
+        """Recording is unbounded ``/proc`` work, so it may not run on the loop.
+
+        One identity read per descendant is cheap on its own and unbounded across a
+        wide tree, and this coroutine runs on the loop that serves every other
+        session. The recorder asserts the absence of a running loop, which is what
+        a worker thread gives it.
+        """
+        client = AcpClient.__new__(AcpClient)
+        client._pid = 100
+        client._child_pids = {}
+        client._process_group = platform_compat.SpawnedProcessGroup(100, "77123")
+        recorded = platform_compat.SpawnedProcessGroup(
+            100, "77123", (platform_compat.ProcessGroupMember(200, "88456"),)
+        )
+
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[200]),
+            patch("kiro_crew.acp.client._get_start_time", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+            patch(
+                "kiro_crew.platform_compat.record_process_group_members",
+                side_effect=_off_loop_only(recorded),
+            ),
+        ):
+            await client._snapshot_process_tree()
+
+        assert client._process_group == recorded
+
+    @pytest.mark.asyncio
     async def test_no_descendants_no_tracking(self):
         client = AcpClient.__new__(AcpClient)
         client._pid = 100
         client._child_pids = {}
+        client._process_group = None
 
         with patch("kiro_crew.acp.client._get_child_pids", return_value=[]):
             await client._snapshot_process_tree()
 
         assert client._child_pids == {}
+        assert client._process_group is None
 
     @pytest.mark.asyncio
     async def test_merges_early_and_late_snapshots(self, tmp_path):
@@ -229,6 +314,7 @@ class TestSnapshotProcessTree:
         client._pid = 100
         # Simulate early snapshot already captured PID 200
         client._child_pids = {200: (2000, b"node")}
+        client._process_group = None
 
         with (
             patch("kiro_crew.acp.client._get_child_pids", return_value=[200, 300]),
