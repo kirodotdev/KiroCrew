@@ -6,9 +6,12 @@ Hermes' ``guard_agent_created`` scans independently of the approval gate).
 
 This is a deterministic, LLM-free gate. It is intentionally conservative: it
 rejects destructive commands, credential/sensitive-path access, network egress,
-oversized files, non-Python scripts, and syntax errors. A candidate that fails
-here is not staged (or, on the auto-approve path, not published) — the advisory
-Haiku review is a separate, softer signal layered on top of this hard gate.
+oversized files, non-Python scripts, and syntax errors. At consolidation-time
+generation, a script that fails here is dropped and never reaches disk; its
+candidate proceeds with whatever scripts survive, prose-only when none do. At
+approval-time re-validation, a rejected script stays in the pending candidate
+on disk, untouched. The advisory Haiku review is a separate, softer signal
+layered on top of this hard gate.
 """
 
 from __future__ import annotations

@@ -2204,7 +2204,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Skill Approval Required",
-      "help": "When true, auto-generated skill candidates land in a pending queue for human review instead of going live. Prose-only skills may auto-publish when this is false; skills that bundle scripts ALWAYS require approval regardless of this flag.",
+      "help": "When true, auto-generated skill candidates land in a pending queue for human review instead of going live. Prose-only skills may auto-publish when this is false; skills that bundle a validated script ALWAYS require approval regardless of this flag.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -2274,7 +2274,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Generate Skill Scripts",
-      "help": "When true, deterministic procedures may generate a validated Python helper script alongside the SKILL.md. Script-bearing skills always require approval.",
+      "help": "When true, deterministic procedures may generate a validated Python helper script alongside the SKILL.md. Skills that bundle a validated script always require approval.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

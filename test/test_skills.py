@@ -1115,7 +1115,7 @@ class TestCreateAutoSkill:
             is None
         )
 
-    def test_refuses_duplicate(self, tmp_path):
+    def test_slug_collision_returns_none_and_leaves_existing_untouched(self, tmp_path):
         loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
         assert (
             loader.create_auto_skill(
@@ -1127,7 +1127,8 @@ class TestCreateAutoSkill:
             )
             == "auto/duplicate-name"
         )
-        # Second call with same slug is rejected
+        # A colliding create is detected (never written over) and reported to
+        # the caller, which resolves it by staging the candidate for review.
         assert (
             loader.create_auto_skill(
                 "duplicate-name",
@@ -1138,6 +1139,10 @@ class TestCreateAutoSkill:
             )
             is None
         )
+        original = tmp_path / "skills" / "auto" / "duplicate-name" / "SKILL.md"
+        assert "different body" not in original.read_text(encoding="utf-8")
+        auto_dir = tmp_path / "skills" / "auto"
+        assert sorted(p.name for p in auto_dir.iterdir()) == ["duplicate-name"]
 
 
 class TestUpdateAutoSkill:

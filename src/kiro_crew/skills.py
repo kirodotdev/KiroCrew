@@ -3135,7 +3135,13 @@ class SkillsLoader:
         """Write a new auto-generated skill under ``auto/<slug>/SKILL.md``.
 
         Returns the full skill name (``auto/<slug>``) on success, or
-        ``None`` if the slug is invalid or the skill already exists.
+        ``None`` when the slug is invalid, the procedure exceeds the size
+        cap, or ``auto/<slug>`` is already claimed. This method never
+        resolves a slug collision itself: the consolidation caller routes a
+        colliding candidate to the pending queue (``stage_skill_candidate``
+        allocates a review-gated sibling slug), so a distinct candidate is
+        never silently dropped and a live duplicate is never minted
+        unattended.
 
         Caller is responsible for:
         - Running ``find_similar()`` first to avoid near-duplicates.
@@ -3156,9 +3162,6 @@ class SkillsLoader:
             return None
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         skill_dir = self._dir / name
-        if skill_dir.exists():
-            logger.info("Auto skill %s already exists, skipping", name)
-            return None
         content = _build_auto_skill_content(
             slug=slug,
             description=description,
@@ -3166,7 +3169,16 @@ class SkillsLoader:
             procedure_md=procedure_md,
             provenance=provenance,
         )
-        skill_dir.mkdir(parents=True, exist_ok=True)
+        # Claim the directory atomically (mkdir(exist_ok=False) is the lock) so
+        # two concurrent creates cannot race between an exists() check and the
+        # write. A collision is detected here and resolved by the caller (see
+        # the docstring), never by writing into the existing skill.
+        skill_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            skill_dir.mkdir(exist_ok=False)
+        except FileExistsError:
+            logger.info("Auto skill %s already exists; caller resolves the collision", name)
+            return None
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
         self._invalidate_iter_cache()  # new skill visible to trigger matching now
         logger.info("Created auto skill: %s", name)
@@ -3628,6 +3640,7 @@ class SkillsLoader:
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         root = self._pending_root()
         root.mkdir(parents=True, exist_ok=True)
+
         # Atomically CLAIM a pending dir. mkdir(exist_ok=False) closes the TOCTOU
         # between an exists() check and the create. If the natural slug is already
         # awaiting review we must NOT overwrite it (the queued candidate is
@@ -3638,13 +3651,36 @@ class SkillsLoader:
         # slug (<slug>-2, -3, …) so it still gets queued. Genuine re-detections of
         # the SAME skill are suppressed upstream by the metadata dedupe before
         # staging, so this does not flood the queue with duplicates.
+        # A NEW candidate must also avoid a slug whose LIVE dir is occupied:
+        # approve_pending_skill refuses to promote onto an existing live skill,
+        # so staging there would queue an unapprovable candidate that pending
+        # TTL pruning eventually deletes. Update candidates deliberately name
+        # a live target and are exempt.
+        def _live_occupied(candidate_slug: str) -> bool:
+            if (kind or "new") != "new":
+                return False
+            return (self._dir / f"{AUTO_SKILL_NAMESPACE}/{candidate_slug}").exists()
+
         pdir = root / slug
         try:
+            if _live_occupied(slug):
+                raise FileExistsError(slug)
             pdir.mkdir(exist_ok=False)
         except FileExistsError:
             claimed: "Path | None" = None
             for _n in range(2, 51):
-                cand_dir = root / f"{slug}-{_n}"
+                # Reserve room for the suffix so the sibling still matches
+                # _AUTO_NAME_PATTERN (max 64 chars): an overlong dir would be
+                # skipped by the pending listing and the slug-keyed
+                # approve/dismiss handlers, leaving an invisible, unprunable
+                # candidate. Truncation cannot produce a trailing hyphen that
+                # the pattern rejects, so strip any before appending.
+                suffix = f"-{_n}"
+                base = slug[: 64 - len(suffix)].rstrip("-")
+                cand_slug = f"{base}{suffix}"
+                if _live_occupied(cand_slug):
+                    continue
+                cand_dir = root / cand_slug
                 try:
                     cand_dir.mkdir(exist_ok=False)
                 except FileExistsError:

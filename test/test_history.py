@@ -3582,6 +3582,156 @@ class TestProcessAutoSkillsIntegration:
         assert detail is not None  # skill still staged
         assert detail["scripts"] == []  # dangerous script dropped by validator
 
+    @pytest.mark.asyncio
+    async def test_all_rejected_scripts_auto_publish_prose_only(self, tmp_path):
+        """With approval_required=False, a candidate whose every generated script
+        is rejected by the static validator is prose-only on disk and publishes
+        live instead of staging."""
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        consolidator = HistoryConsolidator(
+            log=conv_log, memory=mem, skills_loader=skills,
+            auto_skills_enabled=True, auto_min_tool_calls=2,
+            approval_required=False,  # prose-only may auto-publish
+            generate_scripts=True,
+        )
+        for i in range(3):
+            conv_log.append("dashboard:chat-rej", "assistant", f"s{i}", tools=["fs_read"])
+
+        async def fake_llm(_p):
+            return {
+                "history_entry": "x",
+                "new_skill": {
+                    "slug": "rejected-scripts-skill",
+                    "description": "does a thing",
+                    "triggers": "thing",
+                    "procedure_md": "## Steps\n1. run\n",
+                    "scripts": [{"filename": "wipe.py", "language": "python",
+                                 "content": "import os\nos.system('rm -rf /')\n"}],
+                },
+            }
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            await consolidator._consolidate("dashboard:chat-rej", include_history=True)
+
+        # Published live, not staged: the rejected script never reaches disk.
+        assert skills.get_pending_skill("rejected-scripts-skill") is None
+        auto = skills.list_auto_skills()
+        assert [a["key"] for a in auto] == ["auto/rejected-scripts-skill"]
+        skill_dir = tmp_path / "skills" / "auto" / "rejected-scripts-skill"
+        assert (skill_dir / "SKILL.md").exists()
+        assert not (skill_dir / "wipe.py").exists()
+
+    @pytest.mark.asyncio
+    async def test_auto_publish_slug_collision_stages_for_review(self, tmp_path):
+        """A distinct candidate whose slug is already live is staged for
+        review on the auto-publish path, never silently dropped and never
+        published live under a synthetic sibling name."""
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        # Occupy the natural slug with an existing live skill.
+        (tmp_path / "skills" / "auto" / "grep-helper").mkdir(parents=True)
+        (tmp_path / "skills" / "auto" / "grep-helper" / "SKILL.md").write_text(
+            "---\nname: auto/grep-helper\ndescription: existing\nsource: auto\n---\n# body\n",
+            encoding="utf-8",
+        )
+        consolidator = HistoryConsolidator(
+            log=conv_log, memory=mem, skills_loader=skills,
+            auto_skills_enabled=True, auto_min_tool_calls=2,
+            approval_required=False,
+        )
+        for i in range(3):
+            conv_log.append("dashboard:chat-col", "assistant", f"s{i}", tools=["fs_read"])
+
+        async def fake_llm(_p):
+            return {
+                "history_entry": "x",
+                "new_skill": {
+                    "slug": "grep-helper",
+                    "description": "a distinct new helper",
+                    "triggers": "grep",
+                    "procedure_md": "## Steps\n1. run grep\n",
+                },
+            }
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            await consolidator._consolidate("dashboard:chat-col", include_history=True)
+
+        # Not published live and not dropped: staged for human review under a
+        # sibling slug whose live destination is free, so approval can promote.
+        pend = skills.list_pending_skills()
+        assert len(pend) == 1
+        assert pend[0]["slug"] == "grep-helper-2"
+        assert "a distinct new helper" in (pend[0].get("description") or "")
+        # The existing live skill is untouched and no sibling went live.
+        live = sorted(
+            p.name for p in (tmp_path / "skills" / "auto").iterdir() if not p.name.startswith(".")
+        )
+        assert live == ["grep-helper"]
+        # The staged candidate is approvable: promotion succeeds because its
+        # slug does not collide with the live skill.
+        assert skills.approve_pending_skill("grep-helper-2") == "auto/grep-helper-2"
+
+    @pytest.mark.asyncio
+    async def test_max_length_slug_collision_stages_visible_sibling(self, tmp_path):
+        """A 64-char slug colliding with a live skill stages a sibling that
+        still fits the 64-char slug pattern, so the pending listing shows it
+        and approval can promote it."""
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        long_slug = "a" * 64
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        (tmp_path / "skills" / "auto" / long_slug).mkdir(parents=True)
+        (tmp_path / "skills" / "auto" / long_slug / "SKILL.md").write_text(
+            f"---\nname: auto/{long_slug}\ndescription: existing\nsource: auto\n---\n# body\n",
+            encoding="utf-8",
+        )
+        consolidator = HistoryConsolidator(
+            log=conv_log, memory=mem, skills_loader=skills,
+            auto_skills_enabled=True, auto_min_tool_calls=2,
+            approval_required=False,
+        )
+        for i in range(3):
+            conv_log.append("dashboard:chat-long", "assistant", f"s{i}", tools=["fs_read"])
+
+        async def fake_llm(_p):
+            return {
+                "history_entry": "x",
+                "new_skill": {
+                    "slug": long_slug,
+                    "description": "a distinct new helper",
+                    "triggers": "t",
+                    "procedure_md": "## Steps\n1. run\n",
+                },
+            }
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            await consolidator._consolidate("dashboard:chat-long", include_history=True)
+
+        pend = skills.list_pending_skills()
+        assert len(pend) == 1  # visible in the listing, not an invisible dir
+        staged_slug = pend[0]["slug"]
+        assert len(staged_slug) <= 64
+        assert staged_slug == "a" * 62 + "-2"
+        assert skills.approve_pending_skill(staged_slug) == f"auto/{staged_slug}"
+
 
 class TestAutoSkillSELAudit:
     """Regression test for review-bot findings #1-4: SEL audit must fire on rejection paths."""
@@ -5139,45 +5289,6 @@ async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_script_bearing_candidate_stages_even_when_all_scripts_invalid(tmp_path):
-    """A candidate that SUPPLIED scripts must never auto-publish as prose-only,
-    even with approval disabled and every script rejected (GPT MEDIUM)."""
-    from kiro_crew.memory import MemoryStore
-    from kiro_crew.skills import SkillsLoader
-
-    conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-    conv_log.init()
-    mem = MemoryStore(workspace=tmp_path / "memory")
-    mem.init()
-    skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
-    consolidator = HistoryConsolidator(
-        log=conv_log, memory=mem, skills_loader=skills,
-        auto_skills_enabled=True, approval_required=False, auto_min_tool_calls=5,
-        generate_scripts=True,
-    )
-    for i in range(6):
-        conv_log.append("dashboard:chat-x", "assistant", f"step {i}", tools=["fs_read"])
-
-    async def fake_llm(_prompt):
-        return {
-            "history_entry": "did stuff",
-            "new_skill": {
-                "slug": "scripted-skill",
-                "description": "does a scripted thing",
-                "triggers": "t1, t2",
-                "procedure_md": "## Steps\n\nrun it",
-                "scripts": [{"filename": "run.py", "content": "import os\nos.system('rm -rf /')\n"}],
-            },
-        }
-
-    with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
-        await consolidator._consolidate("dashboard:chat-x", include_history=True)
-
-    # Not live (would be an auto-publish); staged for review instead.
-    assert skills.list_auto_skills() == []
-    assert any(s["slug"] == "scripted-skill" for s in skills.list_pending_skills())
-
-
 class TestMetadataReadSurvivesATransientSharingViolation:
     """A read that FAILED must not be reported as a session with no metadata.
 

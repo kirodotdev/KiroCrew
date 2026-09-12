@@ -3478,8 +3478,8 @@ class SkillsConfig:
             "Skill Approval Required",
             "When true, auto-generated skill candidates land in a pending queue for "
             "human review instead of going live. Prose-only skills may auto-publish "
-            "when this is false; skills that bundle scripts ALWAYS require approval "
-            "regardless of this flag.",
+            "when this is false; skills that bundle a validated script ALWAYS "
+            "require approval regardless of this flag.",
         ),
     )
     max_auto_skills: int = field(
@@ -3520,8 +3520,8 @@ class SkillsConfig:
         metadata=_meta(
             "Generate Skill Scripts",
             "When true, deterministic procedures may generate a validated Python "
-            "helper script alongside the SKILL.md. Script-bearing skills always "
-            "require approval.",
+            "helper script alongside the SKILL.md. Skills that bundle a validated "
+            "script always require approval.",
         ),
     )
     judge_model: str = field(
