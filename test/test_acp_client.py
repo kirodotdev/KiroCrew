@@ -4638,6 +4638,186 @@ class TestKillProcess:
         assert mock_async_kill.await_count == 1
         assert mock_async_kill.await_args.args == (42, platform_compat.SIGKILL)
 
+    @staticmethod
+    def _client_with_group(pid, group, returncode=None):
+        client = AcpClient()
+        proc = MagicMock()
+        proc.returncode = returncode
+        proc.pid = pid
+        proc.stdin = proc.stdout = proc.stderr = None
+        proc.wait = AsyncMock(return_value=0)
+        proc.kill = MagicMock()
+        client._process = proc
+        client._pid = pid
+        client._child_pids = {}
+        client._process_group = group
+        return client
+
+    @staticmethod
+    def _leaderless_group_world(monkeypatch, pgid, member):
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "pgroup_exists", lambda g: g == pgid)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda p: p == member.pid)
+        monkeypatch.setattr(
+            platform_compat,
+            "get_process_start_id",
+            lambda p: member.start_id if p == member.pid else "",
+        )
+        monkeypatch.setattr(
+            platform_compat, "pgroup_of", lambda p: pgid if p == member.pid else None
+        )
+        signalled = []
+        monkeypatch.setattr(
+            platform_compat,
+            "kill_pgroup",
+            lambda g, sig: signalled.append((g, sig)) or True,
+        )
+
+        def _no_pid_fallback(*_a, **_kw):
+            raise AssertionError("a captured group must never fall back to the pid tree")
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree", _no_pid_fallback)
+        return signalled
+
+    @pytest.mark.asyncio
+    async def test_sigterm_exit_still_kills_the_retained_group(self, monkeypatch):
+        from kiro_crew import platform_compat
+
+        member = platform_compat.ProcessGroupMember(4300, "88456")
+        group = platform_compat.SpawnedProcessGroup(42, "77123", (member,))
+        client = self._client_with_group(42, group)
+        signalled = self._leaderless_group_world(monkeypatch, group.pgid, member)
+
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+        ):
+            await client._kill_process()
+
+        assert signalled == [
+            (group.pgid, platform_compat.SIGTERM),
+            (group.pgid, platform_compat.SIGKILL),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_already_reaped_leader_still_kills_the_retained_group(self, monkeypatch):
+        from kiro_crew import platform_compat
+
+        member = platform_compat.ProcessGroupMember(4300, "88456")
+        group = platform_compat.SpawnedProcessGroup(42, "77123", (member,))
+        client = self._client_with_group(42, group, returncode=0)
+        signalled = self._leaderless_group_world(monkeypatch, group.pgid, member)
+
+        def _no_scan(*_a, **_kw):
+            raise AssertionError("the reaped-leader path must not rescan children")
+
+        with patch("kiro_crew.acp.client._get_child_pids", side_effect=_no_scan):
+            await client._kill_process()
+
+        assert signalled == [
+            (group.pgid, platform_compat.SIGTERM),
+            (group.pgid, platform_compat.SIGKILL),
+        ]
+        client._process.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_already_reaped_leader_without_a_group_signals_nothing(self, monkeypatch):
+        from kiro_crew import platform_compat
+
+        client = self._client_with_group(42, None, returncode=0)
+
+        def _forbidden(*_a, **_kw):
+            raise AssertionError("no group was captured, so nothing may be signalled")
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree", _forbidden)
+        monkeypatch.setattr(platform_compat, "kill_pgroup", _forbidden)
+
+        await client._kill_process()
+
+        client._process.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reaped_leader_refused_group_never_falls_back_to_the_pid(self, monkeypatch):
+        from kiro_crew import platform_compat
+
+        group = platform_compat.SpawnedProcessGroup(
+            42, "77123", (platform_compat.ProcessGroupMember(4300, "88456"),)
+        )
+        client = self._client_with_group(42, group, returncode=0)
+        client._child_pids = {4300: (77123, b"child")}
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "pgroup_matches_incarnation", lambda g: False)
+
+        def _forbidden(*_a, **_kw):
+            raise AssertionError("nothing may be signalled once the gate refuses")
+
+        monkeypatch.setattr(platform_compat, "kill_pgroup", _forbidden)
+        monkeypatch.setattr(platform_compat, "kill_process_tree", _forbidden)
+
+        with patch("kiro_crew.acp.client._kill_escaped_children") as sweep:
+            await client._kill_process()
+
+        client._process.kill.assert_not_called()
+        sweep.assert_called_once_with(client._child_pids)
+
+    @pytest.mark.asyncio
+    async def test_refused_group_never_falls_back_to_the_pid(self, monkeypatch):
+        from kiro_crew import platform_compat
+
+        group = platform_compat.SpawnedProcessGroup(
+            42, "77123", (platform_compat.ProcessGroupMember(4300, "88456"),)
+        )
+        client = self._client_with_group(42, group)
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "pgroup_matches_incarnation", lambda g: False)
+
+        def _forbidden(*_a, **_kw):
+            raise AssertionError("nothing may be signalled once the gate refuses")
+
+        monkeypatch.setattr(platform_compat, "kill_pgroup", _forbidden)
+        monkeypatch.setattr(platform_compat, "kill_process_tree", _forbidden)
+
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+        ):
+            await client._kill_process(force=True)
+
+        client._process.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_authorization_runs_off_the_event_loop(self, monkeypatch):
+        from kiro_crew import platform_compat
+
+        group = platform_compat.SpawnedProcessGroup(
+            42, "77123", (platform_compat.ProcessGroupMember(4300, "88456"),)
+        )
+        client = self._client_with_group(42, group)
+        checked = []
+
+        def _gate(g):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                checked.append(g.pgid)
+                return False
+            raise AssertionError("must not run on the event loop")
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(platform_compat, "pgroup_matches_incarnation", _gate)
+
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+        ):
+            await client._kill_process(force=True)
+
+        assert checked == [group.pgid]
+
 
 class TestResetStateExtended:
     """Extended _reset_state tests covering sandbox cleanup and PID untracking."""
