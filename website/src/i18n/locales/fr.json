@@ -5794,7 +5794,12 @@
       "move_panel_to_bottom": "Déplacer le panneau en bas",
       "more_actions": "Plus d'actions",
       "close_failed": "Impossible d'arrêter le shell de ce terminal sur le serveur. Il sera nettoyé automatiquement.",
-      "closing_terminal": "Fermeture du terminal…"
+      "closing_terminal": "Fermeture du terminal…",
+      "history_cleanup_failed": "La conversation « {{session}} » a été supprimée, mais le nettoyage des terminaux a échoué. Réessaie pour les supprimer.",
+      "history_delete_failed": "Impossible de supprimer la conversation « {{session}} ». Ses terminaux ont été conservés.",
+      "history_deletion_unconfirmed": "Cette fenêtre ne confirme pas la suppression de la conversation « {{session}} ». Tu peux fermer ses terminaux séparément.",
+      "close_terminals": "Fermer les terminaux",
+      "terminal_cleanup_failed": "Le nettoyage des terminaux de « {{session}} » a échoué. Réessaie pour les fermer."
     },
     "chatInput": {
       "approval_hint_adjust": "Régler le mode d'approbation",

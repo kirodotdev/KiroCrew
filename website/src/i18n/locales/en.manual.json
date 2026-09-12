@@ -1606,7 +1606,12 @@
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",
       "closing_terminal": "Closing terminal…",
       "maximum_terminals": "Maximum {{n}} terminals",
-      "terminal": "Terminal"
+      "terminal": "Terminal",
+      "history_cleanup_failed": "Chat “{{session}}” was deleted, but terminal cleanup failed. Retry to remove its terminals.",
+      "history_delete_failed": "Could not delete chat “{{session}}”. Its terminals were kept.",
+      "history_deletion_unconfirmed": "Chat deletion for “{{session}}” is unconfirmed in this window. You can close its terminals separately.",
+      "close_terminals": "Close terminals",
+      "terminal_cleanup_failed": "Terminal cleanup for “{{session}}” failed. Retry to close its terminals."
     },
     "chatInput": {
       "send_a_message_or_tap_the_mic_for_voice": "Send a message, or tap the mic for voice",

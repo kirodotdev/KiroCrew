@@ -5794,7 +5794,12 @@
       "move_panel_to_bottom": "Mover panel abajo",
       "more_actions": "Más acciones",
       "close_failed": "No se pudo detener el shell de este terminal en el servidor. Se limpiará automáticamente.",
-      "closing_terminal": "Cerrando terminal…"
+      "closing_terminal": "Cerrando terminal…",
+      "history_cleanup_failed": "Se eliminó el chat “{{session}}”, pero falló la limpieza de sus terminales. Reintenta para eliminarlas.",
+      "history_delete_failed": "No se pudo eliminar el chat “{{session}}”. Se conservaron sus terminales.",
+      "history_deletion_unconfirmed": "Esta ventana no ha confirmado la eliminación del chat “{{session}}”. Puedes cerrar sus terminales por separado.",
+      "close_terminals": "Cerrar terminales",
+      "terminal_cleanup_failed": "Falló la limpieza de terminales de “{{session}}”. Reintenta para cerrarlas."
     },
     "chatInput": {
       "approval_hint_adjust": "Ajustar el modo de aprobación",

@@ -13,7 +13,7 @@ import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useT
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
 import ErrorNotice from './ErrorNotice'
-import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
+import { setTerminalCloseFailed, subscribeTerminalRetirement, type TerminalSessionScope } from '../hooks/useBottomTerminal'
 
 import { i18nT } from '../i18n/t'
 /* ── Per-session xterm instance cache ──
@@ -198,17 +198,28 @@ export function disposeTerminalSession(sessionId: string): void {
  * A rejection is recorded in the shared close-failed flag (every consumer
  * reports it the same way), which the always-mounted panel root renders.
  */
-export function useDeleteTerminalSession() {
-  return useMutation({
-    mutationFn: async (sessionId: string) => {
-      const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
-      if (!res.ok) throw new Error(`Failed to delete terminal session (${res.status})`)
+subscribeTerminalRetirement(ids => ids.forEach(disposeTerminalSession))
+
+/** The retry path treats a definitely absent PTY as already cleaned up. */
+export async function deleteTerminalSessionRequest(sessionId: string, allowMissing = false): Promise<void> {
+  const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
+  if (!res.ok && !(allowMissing && res.status === 404)) throw new Error(`Failed to delete terminal session (${res.status})`)
+}
+
+export function useDeleteTerminalSession(scope: TerminalSessionScope = null) {
+  const mutation = useMutation({
+    mutationFn: async ({ sessionId }: { sessionId: string; scope: TerminalSessionScope }) => {
+      await deleteTerminalSessionRequest(sessionId)
     },
-    // Mutation-level (not per-`mutate`) so it still fires after the caller has
-    // unmounted — closing the LAST tab hides the strip that would otherwise
-    // render the failure.
-    onError: () => setTerminalCloseFailed(true),
+    // Variables capture the initiating chat even if the observer's options
+    // change after a session switch while DELETE is still pending.
+    onError: (_error, variables) => setTerminalCloseFailed(true, variables.scope),
   })
+  return {
+    ...mutation,
+    mutate: (sessionId: string) => mutation.mutate({ sessionId, scope }),
+    mutateAsync: (sessionId: string) => mutation.mutateAsync({ sessionId, scope }),
+  }
 }
 
 /**

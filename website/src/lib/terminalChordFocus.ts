@@ -1,4 +1,4 @@
-import { isBottomTerminalOpen, toggleBottomTerminal } from '../hooks/useBottomTerminal'
+import { isBottomTerminalOpen, toggleBottomTerminal, type TerminalSessionScope } from '../hooks/useBottomTerminal'
 
 /**
  * The KEYBOARD path for toggling the docked terminal — the nav rail's button
@@ -28,7 +28,7 @@ import { isBottomTerminalOpen, toggleBottomTerminal } from '../hooks/useBottomTe
 
 /** Where focus was when the chord opened the panel. Module scope, not React
  *  state: it is read once, in an event handler, and must not cause a render. */
-let openedFrom: Element | null = null
+const openedFrom = new Map<TerminalSessionScope, Element | null>()
 
 /** True when `el` is inside an xterm instance — the same predicate shape the
  *  keydown seams use to decide whether a keystroke belongs to a shell. */
@@ -36,25 +36,25 @@ function isInsideTerminal(el: Element | null): boolean {
   return !!el?.closest?.('.xterm')
 }
 
-export function toggleTerminalByChord(cwd?: string): void {
-  const wasOpen = isBottomTerminalOpen()
+export async function toggleTerminalByChord(cwd?: string, scope: TerminalSessionScope = null): Promise<void> {
+  const wasOpen = isBottomTerminalOpen(scope)
 
   if (!wasOpen) {
-    openedFrom = document.activeElement
-    toggleBottomTerminal(cwd)
+    openedFrom.set(scope, document.activeElement)
+    await toggleBottomTerminal(cwd, scope)
     return
   }
 
   // Read focus BEFORE the toggle: after it, the element is on its way out.
   const cameFromShell = isInsideTerminal(document.activeElement)
-  toggleBottomTerminal(cwd)
+  await toggleBottomTerminal(cwd, scope)
 
   // Closing with focus already outside the panel (the user clicked back into the
   // composer, say) leaves focus where they put it — nothing to restore.
-  if (!cameFromShell) { openedFrom = null; return }
+  if (!cameFromShell) { openedFrom.delete(scope); return }
 
-  const remembered = openedFrom
-  openedFrom = null
+  const remembered = openedFrom.get(scope)
+  openedFrom.delete(scope)
   const target = remembered?.isConnected ? remembered : document.getElementById('main-content')
   const focusTarget = target as HTMLElement | null
   if (!focusTarget) return
@@ -63,4 +63,4 @@ export function toggleTerminalByChord(cwd?: string): void {
 }
 
 /** Test-only: clear the remembered element between cases. */
-export function __resetTerminalChordFocus(): void { openedFrom = null }
+export function __resetTerminalChordFocus(): void { openedFrom.clear() }

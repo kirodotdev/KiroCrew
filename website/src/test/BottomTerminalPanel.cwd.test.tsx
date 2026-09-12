@@ -13,7 +13,7 @@
  *    omits it when no session is selected, so the backend default applies.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import { TerminalTabsView } from '../components/BottomTerminalPanel'
@@ -21,6 +21,8 @@ import { __resetBottomTerminal, openBottomTerminal, useBottomTerminal } from '..
 import { selectActiveSlotProject } from '../store/chatSlice'
 import { renderHook } from '@testing-library/react'
 import type { RootState } from '../store'
+
+
 
 vi.mock('../components/CliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
@@ -42,12 +44,12 @@ vi.mock('../hooks/usePanelTabs', () => ({
   usePanelTabs: () => ({}),
 }))
 
-beforeEach(() => {
-  __resetBottomTerminal()
+beforeEach(async () => {
+  await __resetBottomTerminal()
   vi.clearAllMocks()
 })
-afterEach(() => {
-  __resetBottomTerminal()
+afterEach(async () => {
+  await __resetBottomTerminal()
 })
 
 /** Store whose active slot is `key` and whose dashboard slot list carries the
@@ -92,28 +94,28 @@ describe('selectActiveSlotProject', () => {
 
 describe('TerminalTabsView "+" button — new tab cwd', () => {
   it('mints the new tab with the selected session project as cwd', async () => {
-    openBottomTerminal() // first tab, no cwd (panel opened before selection)
+    await openBottomTerminal() // first tab, no cwd (panel opened before selection)
     const store = storeWith('s1', '/repos/my-app')
     renderWithProviders(<TerminalTabsView variant="dock" />, { store })
 
     await userEvent.click(screen.getByRole('button', { name: 'New terminal' }))
 
     const { result } = renderHook(() => useBottomTerminal())
+    await waitFor(() => expect(result.current.tabs).toHaveLength(2))
     const tabs = result.current.tabs
-    expect(tabs).toHaveLength(2)
     expect(tabs[1].cwd).toBe('/repos/my-app')
   })
 
   it('mints the new tab without a cwd when no session is selected (server default)', async () => {
-    openBottomTerminal()
+    await openBottomTerminal()
     const store = storeWith(null)
     renderWithProviders(<TerminalTabsView variant="dock" />, { store })
 
     await userEvent.click(screen.getByRole('button', { name: 'New terminal' }))
 
     const { result } = renderHook(() => useBottomTerminal())
+    await waitFor(() => expect(result.current.tabs).toHaveLength(2))
     const tabs = result.current.tabs
-    expect(tabs).toHaveLength(2)
     expect(tabs[1].cwd).toBeUndefined()
   })
 })

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
+vi.mock('../hooks/useBottomTerminal', () => ({ refreshTerminalState: async () => true }))
 
 import {
   openPopout,
@@ -16,6 +17,7 @@ import {
   __setNavigateForTests,
   __resetForTests,
   TERMINAL_POPOUT_ID,
+  type PopoutMsg,
 } from '../utils/terminalPopout'
 
 /**
@@ -27,16 +29,28 @@ import {
  */
 const BEACON_KEY = 'mc-terminal-popout-alive'
 
+class Channel {
+  static current: Channel
+  onmessage: ((event: { data: PopoutMsg }) => void) | null = null
+  constructor() { Channel.current = this }
+  postMessage() {}
+  close() {}
+}
+function announceClosed() {
+  Channel.current.onmessage?.({ data: { t: 'close', id: TERMINAL_POPOUT_ID } })
+}
+
 function fakeWindow(): { focus: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; closed: boolean } {
   return { focus: vi.fn(), close: vi.fn(), closed: false }
 }
 
 function Probe() {
-  const poppedOut = useTerminalPoppedOut()
+  const poppedOut = useTerminalPoppedOut(null)
   return <span data-testid="probe">{poppedOut ? 'zzz-live' : 'zzz-docked'}</span>
 }
 
 beforeEach(() => {
+  vi.stubGlobal('BroadcastChannel', Channel)
   localStorage.removeItem(BEACON_KEY)
   __resetForTests()
 })
@@ -45,6 +59,7 @@ afterEach(() => {
   __resetForTests()
   localStorage.removeItem(BEACON_KEY)
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('terminalPopout window control', () => {
@@ -52,8 +67,8 @@ describe('terminalPopout window control', () => {
     const win = fakeWindow()
     const open = vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window)
 
-    expect(isPopoutOpen()).toBe(false)
-    openPopout()
+    expect(isPopoutOpen(null)).toBe(false)
+    openPopout(null)
 
     expect(open).toHaveBeenCalledTimes(1)
     const [url, name] = open.mock.calls[0]
@@ -61,7 +76,7 @@ describe('terminalPopout window control', () => {
     expect(name).toBe('mc-popout-terminal')
     // Synchronously true — callers distinguish a real open from a vetoed one
     // without waiting for a heartbeat round-trip.
-    expect(isPopoutOpen()).toBe(true)
+    expect(isPopoutOpen(null)).toBe(true)
     expect(getSnapshot().has(TERMINAL_POPOUT_ID)).toBe(true)
     expect(win.focus).toHaveBeenCalled()
   })
@@ -69,10 +84,10 @@ describe('terminalPopout window control', () => {
   it('focuses the existing window instead of opening a second one', () => {
     const win = fakeWindow()
     const open = vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window)
-    openPopout()
+    openPopout(null)
     win.focus.mockClear()
 
-    openPopout()
+    openPopout(null)
     expect(open).toHaveBeenCalledTimes(1)
     expect(win.focus).toHaveBeenCalledTimes(1)
   })
@@ -82,9 +97,9 @@ describe('terminalPopout window control', () => {
     const alert = vi.spyOn(window, 'alert').mockImplementation(() => {})
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    openPopout()
+    openPopout(null)
 
-    expect(isPopoutOpen()).toBe(false)
+    expect(isPopoutOpen(null)).toBe(false)
     expect(alert).toHaveBeenCalled()
     expect(warn).toHaveBeenCalled()
   })
@@ -92,34 +107,36 @@ describe('terminalPopout window control', () => {
   it('focuses through the held handle', () => {
     const win = fakeWindow()
     vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window)
-    openPopout()
+    openPopout(null)
     win.focus.mockClear()
 
-    focusPopout()
+    focusPopout(null)
     expect(win.focus).toHaveBeenCalledTimes(1)
   })
 
-  it('bringBack closes the window and drops it from the liveness map', () => {
+  it('bringBack retains ownership until the popup announces close', () => {
     const win = fakeWindow()
     vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window)
-    openPopout()
+    openPopout(null)
 
-    bringBack()
-    expect(win.close).toHaveBeenCalledTimes(1)
-    expect(isPopoutOpen()).toBe(false)
+    bringBack(null)
+    expect(win.close).not.toHaveBeenCalled()
+    expect(isPopoutOpen(null)).toBe(true)
+    announceClosed()
+    expect(isPopoutOpen(null)).toBe(false)
   })
 })
 
 describe('terminalPopout responder role', () => {
   it('registerPopout claims the singleton id and writes the liveness beacon', () => {
-    expect(isSelfPopout()).toBe(false)
-    const cleanup = registerPopout()
+    expect(isSelfPopout(null)).toBe(false)
+    const cleanup = registerPopout(null)
 
-    expect(isSelfPopout()).toBe(true)
-    expect(hasFreshBeacon()).toBe(true)
+    expect(isSelfPopout(null)).toBe(true)
+    expect(hasFreshBeacon(null)).toBe(true)
 
     cleanup()
-    expect(isSelfPopout()).toBe(false)
+    expect(isSelfPopout(null)).toBe(false)
     // Beacon cleared on teardown, or a reloaded main window would keep the
     // panel undocked with no popout alive.
     expect(localStorage.getItem(BEACON_KEY)).toBeNull()
@@ -128,9 +145,9 @@ describe('terminalPopout responder role', () => {
   it('returnSelfToMain navigates to the dashboard when close is refused', () => {
     const navigate = vi.fn()
     __setNavigateForTests(navigate)
-    const cleanup = registerPopout()
+    const cleanup = registerPopout(null)
 
-    returnSelfToMain()
+    returnSelfToMain(null)
     // happy-dom keeps the window alive, which is exactly the deep-linked
     // (no script opener) case: the control must still do something visible.
     expect(navigate).toHaveBeenCalledWith('/')
@@ -169,15 +186,15 @@ describe('useTerminalPoppedOut', () => {
     expect(screen.getByTestId('probe')).toHaveTextContent('zzz-docked')
   })
 
-  it('tracks the BroadcastChannel map too (open → live, bring back → docked)', () => {
+  it('tracks the BroadcastChannel map too (open → live, bring back → docked)', async () => {
     const win = fakeWindow()
     vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window)
     render(<Probe />)
 
-    act(() => { openPopout() })
+    act(() => { openPopout(null) })
     expect(screen.getByTestId('probe')).toHaveTextContent('zzz-live')
 
-    act(() => { bringBack() })
+    await act(async () => { bringBack(null); announceClosed() })
     expect(screen.getByTestId('probe')).toHaveTextContent('zzz-docked')
   })
 })
@@ -189,12 +206,12 @@ describe('terminalPopout subscribe', () => {
     const seen = vi.fn()
     const unsub = subscribe(seen)
 
-    openPopout()
+    openPopout(null)
     expect(seen).toHaveBeenCalled()
 
     unsub()
     seen.mockClear()
-    bringBack()
+    bringBack(null)
     expect(seen).not.toHaveBeenCalled()
   })
 })
