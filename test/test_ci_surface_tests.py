@@ -137,7 +137,14 @@ def test_backend_roots_cover_every_configured_testpath() -> None:
     import configparser
 
     parser = configparser.ConfigParser()
-    parser.read(_REPO_ROOT / "setup.cfg")
+    # `encoding` is not optional here. `ConfigParser.read` opens with no encoding,
+    # which decodes using `locale.getpreferredencoding()` -- UTF-8 on POSIX, but
+    # the legacy ANSI code page on Windows. `setup.cfg` contains non-ASCII (em
+    # dashes in its comments), so on a CJK Windows host this raises
+    # `UnicodeDecodeError` and the contract below is never checked at all. Same
+    # failure class `scripts/check_subprocess_encoding.py` exists for, reached
+    # through a file read rather than a subprocess pipe.
+    parser.read(_REPO_ROOT / "setup.cfg", encoding="utf-8")
     configured = parser.get("tool:pytest", "testpaths").split()
     assert configured, "setup.cfg declares no testpaths -- selector cannot be verified"
     missing = [p for p in configured if p not in _load_selector()._BACKEND_ROOTS]
@@ -146,6 +153,40 @@ def test_backend_roots_cover_every_configured_testpath() -> None:
         "_BACKEND_ROOTS, so every test under them would be SKIPPED (never run) "
         "on a frontend-only diff. Add them to _BACKEND_ROOTS."
     )
+
+
+def test_setup_cfg_carries_non_ascii_so_its_read_must_pin_utf8() -> None:
+    """Pins WHY the read above names an encoding, on hosts that cannot show it.
+
+    The defect is host-conditioned: an unpinned `ConfigParser.read` only
+    misbehaves where `locale.getpreferredencoding()` is not UTF-8, so a UTF-8 CI
+    runner passes either way and cannot exercise it. The two facts that make the
+    encoding load-bearing DO hold everywhere, and this asserts both -- so the
+    guard cannot rot silently on the runners that never feel it.
+
+    Deliberately not a repo-wide "missing encoding=" rule. `cross-platform.yml`
+    documents why it ships none (a line regex breaks on nested and multi-line
+    calls), and an AST version means editing `.github/workflows/**`. This stays
+    the size of the defect.
+    """
+    import configparser
+
+    raw = (_REPO_ROOT / "setup.cfg").read_bytes()
+    assert any(b > 0x7F for b in raw), (
+        "premise gone: setup.cfg is now pure ASCII, so the host code page can no "
+        "longer break this read and the pinned encoding may be retired"
+    )
+
+    # Guard the guard: those bytes are genuinely undecodable under a legacy code
+    # page, so an unpinned read really does RAISE rather than merely differ. cp950
+    # is the code page this was first reproduced on.
+    with pytest.raises(UnicodeDecodeError):
+        (_REPO_ROOT / "setup.cfg").read_text(encoding="cp950")
+
+    # And the pinned read is the one that works, on every host.
+    parser = configparser.ConfigParser()
+    assert parser.read(_REPO_ROOT / "setup.cfg", encoding="utf-8")
+    assert parser.get("tool:pytest", "testpaths").split()
 
 
 def test_frontend_spec_roots_cover_vitest_include(selector) -> None:
