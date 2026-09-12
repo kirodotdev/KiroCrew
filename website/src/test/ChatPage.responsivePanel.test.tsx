@@ -94,6 +94,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import ChatPage from '../pages/ChatPage'
+import PanelToggles from '../components/PanelToggles'
 
 const setWindowWidth = (w: number) => {
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: w })
@@ -110,6 +111,7 @@ function renderChat(store = createTestStore()) {
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter initialEntries={['/chat']}>
+            <PanelToggles showWorkspace />
             <Routes><Route path="/chat/:slug?" element={<ChatPage />} /></Routes>
           </MemoryRouter>
         </ThemeProvider>
@@ -261,7 +263,7 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
 
   it('opens the activity panel from the session-header toggle', async () => {
     const { store } = renderWithSlot()
-    const btn = await screen.findByLabelText('Open activity panel')
+    const btn = await screen.findByLabelText('Toggle side panel')
     expect(store.getState().chat.activityOpen).toBe(false)
     fireEvent.click(btn)
     expect(store.getState().chat.activityOpen).toBe(true)
@@ -269,10 +271,10 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
 
   it('stays live in the 768-880 band that used to disable it, and opens beside the chat', async () => {
     const { store } = renderWithSlot()
-    await screen.findByLabelText('Open activity panel')
+    await screen.findByLabelText('Toggle side panel')
     resizeTo(800) // below the old 880 space threshold (320 + 560), above mobile (768)
 
-    const btn = await screen.findByLabelText('Open activity panel')
+    const btn = await screen.findByLabelText('Toggle side panel')
     expect(screen.queryByLabelText('Window too narrow for the activity panel')).not.toBeInTheDocument()
     fireEvent.click(btn)
     expect(store.getState().chat.activityOpen).toBe(true)
@@ -280,28 +282,28 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
 
   it('stays live at 768 exactly (tablet portrait)', async () => {
     renderWithSlot()
-    await screen.findByLabelText('Open activity panel')
+    await screen.findByLabelText('Toggle side panel')
     resizeTo(768)
-    expect(await screen.findByLabelText('Open activity panel')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Toggle side panel')).toBeInTheDocument()
   })
 
   it('opens BESIDE the chat on a wide window (no fill width)', async () => {
     // 1400 - rail 236 - sidebar 260 = 904 >= 640
     renderWithSlot()
-    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByLabelText('Toggle side panel'))
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '')
   })
 
   it('opens FILLING the chat column when the rail + sidebar leave too little', async () => {
     renderWithSlot()
     resizeTo(800) // 800 - 236 - 260 = 304 < 640
-    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByLabelText('Toggle side panel'))
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '320')
   })
 
   it('switches an already-open panel from beside to fill on resize, without remounting it', async () => {
     renderWithSlot()
-    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByLabelText('Toggle side panel'))
     const before = await screen.findByTestId('side-panel')
     expect(before).toHaveAttribute('data-fill-width', '')
 
@@ -337,7 +339,7 @@ describe('ChatPage — activity toggle on mobile', () => {
 
   it('renders the toggle at a phone viewport and opens the panel', async () => {
     const { store } = renderWithSlot()
-    const btn = await screen.findByLabelText('Open activity panel')
+    const btn = await screen.findByLabelText('Toggle side panel')
     fireEvent.click(btn)
     expect(store.getState().chat.activityOpen).toBe(true)
     // Mobile has no actbar grid column, so the panel renders inline.
@@ -347,7 +349,7 @@ describe('ChatPage — activity toggle on mobile', () => {
   it('does not disable the toggle at widths below the desktop space threshold', async () => {
     renderWithSlot()
     // 390px is far below 880, which would disable it on desktop.
-    expect(await screen.findByLabelText('Open activity panel')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Toggle side panel')).toBeInTheDocument()
     expect(screen.queryByLabelText('Window too narrow for the activity panel')).not.toBeInTheDocument()
   })
 })
@@ -412,22 +414,20 @@ describe('ChatPage — focus-mode caption reserve on the title row', () => {
 
   it('reserves the caption strip for the trailing group while the panel is closed', async () => {
     const { store } = renderWithSlot()
-    // The reported scenario: closed panel, so the reopen toggle is the control
-    // sitting in the caption band.
-    const toggle = await screen.findByLabelText('Open activity panel')
+    // The shell owns the toggle; session actions still reserve caption space.
+    const toggle = await screen.findByLabelText('Toggle side panel')
     expect(store.getState().chat.activityOpen).toBe(false)
 
     const group = reserved()
     expect(group, 'title-row trailing group opts into the reserve').not.toBeNull()
     expect(group!.classList.contains('ml-auto')).toBe(true)
-    // The covered control is inside the group that got the reserve — the whole
-    // point, and what tells this apart from reserving some other surface.
-    expect(group!.contains(toggle)).toBe(true)
+    // The shell toggle no longer moves into the session action group.
+    expect(group!.contains(toggle)).toBe(false)
   })
 
   it('drops the reserve while the right-docked panel holds that edge', async () => {
     renderWithSlot()
-    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByLabelText('Toggle side panel'))
     await screen.findByTestId('side-panel')
 
     // The panel is at the window's trailing edge now and carries the reserve on
@@ -438,7 +438,7 @@ describe('ChatPage — focus-mode caption reserve on the title row', () => {
   it('keeps the reserve while the panel is docked at the bottom', async () => {
     setSidePanelDock('bottom')
     renderWithSlot()
-    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByLabelText('Toggle side panel'))
     await screen.findByTestId('side-panel')
 
     // Bottom-docked the panel sits under the chat, so the title row still owns

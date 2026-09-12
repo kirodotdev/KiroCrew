@@ -82,6 +82,7 @@ export default function ChatPane({
   followContentWidth,
   hideEmptyHint,
   openSideChat,
+  hostsPanelControls,
   busyMode = 'split',
 }: {
   slotKey: string
@@ -122,6 +123,9 @@ export default function ChatPane({
    *  split view's lives in the chat page's activity panel, the Members page's
    *  in its detail drawer. Capability by omission, like `onOpenFull`. */
   openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
+  /** This pane occupies the workspace's top-right corner. Its title bar hosts
+   *  the reservation for App-owned Side and Terminal toggles. */
+  hostsPanelControls?: boolean
   /** What the composer's send does while the slot is busy. Defaults to
    *  `'split'` — the same Steer/Queue split button as the main chat, which
    *  split-view (⌘D) panes keep: they are the main chat's own sessions seen
@@ -1149,11 +1153,7 @@ export default function ChatPane({
            auditing focus behaviour. */
         data-chat-pane={focused ? 'focused' : ''}
         {...dropTargetProps}
-        className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
-          frameless
-            ? ''
-            : `rounded-lg border transition-colors ${focused ? 'border-accent' : 'border-border'}`
-        }`}
+        className="relative flex flex-col h-full min-h-0 overflow-hidden bg-bg"
         style={{
           '--mc-content-width': followContentWidth ? CONTENT_WIDTH[chatConfig.contentWidth].messages : '100%',
           // Split-view panes leave --mc-input-width UNSET so ChatInput keeps
@@ -1162,34 +1162,33 @@ export default function ChatPane({
         } as React.CSSProperties}
       >
         {!frameless && (
-        <div className="relative z-50 flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
-          <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
-          {parentKey && (
-            <span
-              className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
-              title={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}
-            >
-              ↳ {parentTitle || parentKey}
-            </span>
-          )}
-          <span className="flex-1" />
-          {running && <span className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>}
-          {onSplitRight && (
-            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
-              <SplitGlyph />
-            </button>
-          )}
-          {onSplitDown && (
-            <button onClick={onSplitDown} title={i18nT('components.chatPane.split_down')} aria-label={i18nT('components.chatPane.split_down')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
-              <SplitGlyph down />
-            </button>
-          )}
-          {onRemove && (
-            <button onClick={onRemove} title={i18nT('components.chatPane.close_pane')} aria-label={i18nT('components.chatPane.close_pane')} className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
-              <X size={15} />
-            </button>
-          )}
+        <div className="panel-toolbar relative z-50 flex items-center gap-2 pl-3 pr-2 bg-bg shrink-0">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
+            <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
+            {parentKey && <span className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]" title={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}>↳ {parentTitle || parentKey}</span>}
+            {running && <span className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>}
+          </div>
+          {/* The host attribute sits on the actions group, not the toolbar: the
+              reservation it adds must stack on the toolbar's 8px trailing inset,
+              which putting it on the toolbar would replace. */}
+          <div data-pane-controls data-panel-controls-host={hostsPanelControls ? 'chat' : undefined} className="panel-toolbar-actions flex items-center shrink-0">
+            {onSplitRight && (
+              <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+                <SplitGlyph />
+              </button>
+            )}
+            {onSplitDown && (
+              <button onClick={onSplitDown} title={i18nT('components.chatPane.split_down')} aria-label={i18nT('components.chatPane.split_down')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+                <SplitGlyph down />
+              </button>
+            )}
+            {onRemove && (
+              <button onClick={onRemove} title={i18nT('components.chatPane.close_pane')} aria-label={i18nT('components.chatPane.close_pane')} className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
+                <X size={15} />
+              </button>
+            )}
+          </div>
         </div>
         )}
 
