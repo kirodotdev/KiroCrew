@@ -1871,6 +1871,51 @@ class TestBuiltinDenyPatterns:
         assert is_denied("git`echo`push origin main") is not None
         assert is_denied("git$()push origin") is not None
 
+    def test_substitution_span_survives_expansion_and_comment_parens(self) -> None:
+        """A literal ``)`` inside ``${...}`` or a ``#`` comment must not close
+        the substitution span (issue #9181).
+
+        ``_substitution_bodies`` feeds the nested-payload extractor: truncating
+        at such a paren hands every downstream scan a fragment while bash runs
+        the whole body, so a nested publish hides below the truncation point.
+        """
+        from kiro_crew.security import _substitution_bodies
+
+        # ``${v:-)}`` prints a literal ``)``; the span must cover the rest.
+        assert _substitution_bodies("kill $(echo ${v:-)}; pgrep -f kirocrew)") == [
+            "echo ${v:-)}; pgrep -f kirocrew"
+        ]
+        # The ``)`` after ``# `` is comment text; the span runs past the newline.
+        assert _substitution_bodies("kill $(echo x # )\npgrep -f kirocrew)") == [
+            "echo x # )\npgrep -f kirocrew"
+        ]
+        # A ``#`` mid-word is literal (``echo a#b`` is one word), not a comment.
+        assert _substitution_bodies("echo a#b") == []
+        # Nested expansion still extracts whole.
+        assert _substitution_bodies("kill $(echo ${a:-${b}} done)") == ["echo ${a:-${b}} done"]
+
+    def test_expansion_close_ignores_quoted_braces(self) -> None:
+        """A quoted ``}`` inside ``${...}`` is literal per POSIX 2.6.2 and must
+        not close the expansion (Design + Opus blocking findings on the
+        frozen-quote interior loop).
+
+        Closing early desyncs the outer walk from bash: the stray quote flips
+        the walker into a quote state bash never enters, hiding the ``;`` and
+        the ``git`` word that follow -- an allow-direction miss.
+        """
+        from kiro_crew.security import _iter_shell_chars, _substitution_bodies
+
+        # Double-quoted ``}``: the expansion closes at the second brace, so
+        # the ``;`` separator stays active and visible to the segment split.
+        steps = list(_iter_shell_chars(': ${v:-"}"}; git push origin main'))
+        semi = next(s for s in steps if s.char == ";")
+        assert semi.active
+        # Single-quoted ``}`` around a quoted paren: the full outer body
+        # survives instead of truncating at the quoted ``)``.
+        assert _substitution_bodies("kill $(echo ${v:-'}X)Y'} ; git push origin main)") == [
+            "echo ${v:-'}X)Y'} ; git push origin main"
+        ]
+
     def test_blocks_background_operator_bypass(self) -> None:
         """``&`` (single ampersand, the bash background operator) must split
         segments like ``;`` and ``&&``.
