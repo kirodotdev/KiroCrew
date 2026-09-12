@@ -99,6 +99,67 @@ describe('ToolCallLine simplifiedToolNames', () => {
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
     expect(screen.getByText('Running: git status')).toBeTruthy()
   })
+
+  it('re-labels a purpose-less shell pill from the command when the title is not the command', () => {
+    // kiro-cli's auto-title for a purpose-less bash call is a digest of
+    // argument fragments — unreadable. The tool log carries the real command
+    // in `input`; the pill labels from that instead.
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const soup = '--title, --text, Three, 1. ...'
+    const cmd = 'cd ~/backend && $PY ledger.py ticket-log --id P1 --type root-cause --title "x" --text "y"'
+    const msg = toolMsg({ content: `🔧 ${soup}`, meta: { tool_call_id: 'tc_7' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{
+          type: 'tool', text: soup, tool_call_id: 'tc_7', output: 'ok', ts: 1,
+          is_shell: true, input: JSON.stringify({ command: cmd }),
+        }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    // Short single-line command → verbatim inside the verb frame, matching
+    // the register of agent-authored purposes.
+    expect(screen.getByText(`Run ${cmd}`)).toBeTruthy()
+    expect(screen.queryByText(/--title, --text/)).toBeNull()
+  })
+
+  it('derives the digest when the purpose-less shell command is flood-length', () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const cmd = `python3 ledger.py ticket-log --text "${'x'.repeat(300)}"`
+    const msg = toolMsg({ content: '🔧 --text, x…', meta: { tool_call_id: 'tc_8' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{
+          type: 'tool', text: '--text, x…', tool_call_id: 'tc_8', output: 'ok', ts: 1,
+          is_shell: true, input: JSON.stringify({ command: cmd }),
+        }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    expect(screen.getByText('Run ledger.py ticket-log')).toBeTruthy()
+  })
+
+  it('prefers the agent-authored purpose over the command re-label', () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const msg = toolMsg({ content: '🔧 --id, P1, …', meta: { tool_call_id: 'tc_9' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{
+          type: 'tool', text: '--id, P1, …', tool_call_id: 'tc_9', output: 'ok', ts: 1,
+          is_shell: true, purpose: 'Log the root cause to the ticket ledger',
+          input: JSON.stringify({ command: 'python3 ledger.py ticket-log --id P1' }),
+        }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    expect(screen.getByText('Log the root cause to the ticket ledger')).toBeTruthy()
+  })
 })
 
 describe('ToolCallLine inline expansion', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveShellSummary, DERIVE_LABEL_THRESHOLD_CHARS, pickToolLabel } from '../utils/toolLabel'
+import { commandFromToolInput, deriveShellSummary, DERIVE_LABEL_THRESHOLD_CHARS, pickToolLabel } from '../utils/toolLabel'
 
 describe('deriveShellSummary', () => {
   it('summarizes a heredoc write to binary plus redirect target', () => {
@@ -19,7 +19,7 @@ describe('deriveShellSummary', () => {
 
   it('reads past a bookkeeping first line in a multi-line script', () => {
     const label = 'Running: export PATH=/usr/local/bin\ndocker-compose up --build | tee /tmp/build.log'
-    expect(deriveShellSummary(label)).toBe('Running: docker-compose, tee')
+    expect(deriveShellSummary(label)).toBe('Running: docker-compose up, tee')
   })
 
   it('stops parsing at a heredoc so body lines contribute no binaries', () => {
@@ -33,7 +33,7 @@ describe('deriveShellSummary', () => {
   })
 
   it('does not treat 2>&1 as a segment or a target', () => {
-    expect(deriveShellSummary('Running: make build 2>&1')).toBe('Running: make')
+    expect(deriveShellSummary('Running: make build 2>&1')).toBe('Running: make build')
   })
 
   it('skips env assignments before the binary', () => {
@@ -56,10 +56,46 @@ describe('deriveShellSummary', () => {
     expect(deriveShellSummary('@kirocrew-core/spawn_run', { bareCommand: true })).toBeNull()
   })
 
+
+  it('names the script behind an interpreter, with its subcommand', () => {
+    expect(deriveShellSummary('Running: python3 ledger.py ticket-log --id P1 --type root-cause')).toBe(
+      'Running: ledger.py ticket-log',
+    )
+    // Versioned interpreter, and inline code keeps the interpreter name.
+    expect(deriveShellSummary('Running: python3.12 tool.py')).toBe('Running: tool.py')
+    expect(deriveShellSummary("Running: python3 -c 'print(1)'")).toBe('Running: python3')
+  })
+
+  it('steps over variable-reference and wrapper heads', () => {
+    // The observed oncall shape: interpreter behind a shell variable, after a
+    // cd — the readable name is the script and its subcommand.
+    const cmd = 'Running: PY=/app/bin/python3; cd ~/backend && $PY ledger.py ticket-log --id X'
+    expect(deriveShellSummary(cmd)).toBe('Running: ledger.py ticket-log')
+    expect(deriveShellSummary('Running: sudo make install')).toBe('Running: make install')
+  })
+
+  it('attaches the subcommand only to the first meaningful name', () => {
+    expect(deriveShellSummary('Running: git fetch && git rebase upstream/main')).toBe('Running: git fetch')
+    expect(deriveShellSummary('Running: cd /repo && npm run build | tee log')).toBe('Running: npm run, tee')
+  })
+
   it('pickToolLabel still falls back to the raw label the summary substitutes for', () => {
     const raw = "cat > /tmp/desc.md <<'EOF'\nlong body\nEOF"
     const picked = pickToolLabel({ simplified: true, purpose: '', rawLabel: raw, uiLang: 'en' })
     expect(picked).toBe(raw)
     expect(raw.length > DERIVE_LABEL_THRESHOLD_CHARS || raw.includes('\n')).toBe(true)
+  })
+})
+
+describe('commandFromToolInput', () => {
+  it('reads the command out of raw-input JSON', () => {
+    expect(commandFromToolInput('{"command": "git status", "__tool_use_purpose": "check"}')).toBe('git status')
+  })
+  it('returns null for non-JSON, non-object, or command-less input', () => {
+    expect(commandFromToolInput('')).toBeNull()
+    expect(commandFromToolInput('not json')).toBeNull()
+    expect(commandFromToolInput('[1,2]')).toBeNull()
+    expect(commandFromToolInput('{"operations": []}')).toBeNull()
+    expect(commandFromToolInput('{"command": "  "}')).toBeNull()
   })
 })
