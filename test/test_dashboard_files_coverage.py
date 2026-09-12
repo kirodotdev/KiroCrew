@@ -1446,6 +1446,54 @@ class TestContentMatchesExt:
         assert files_mod._content_matches_ext(".svg", b"<svg/>")
 
 
+class TestResolveRasterExt:
+    WEBP = b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"\x00" * 8
+    PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    HEIC = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 8
+    MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 8
+
+    def test_truthful_name_is_kept_verbatim(self):
+        # ".jpeg" stays ".jpeg" -- not normalised to the canonical ".jpg".
+        assert files_mod._resolve_raster_ext(".jpeg", b"\xff\xd8\xff\xe1" + b"\x00" * 12) == ".jpeg"
+        assert files_mod._resolve_raster_ext(".png", self.PNG) == ".png"
+
+    def test_mislabelled_raster_maps_to_the_sniffed_types_extension(self):
+        assert files_mod._resolve_raster_ext(".jpeg", self.WEBP) == ".webp"
+        assert files_mod._resolve_raster_ext(".jpg", self.PNG) == ".png"
+        assert files_mod._resolve_raster_ext(".png", b"GIF89a" + b"\x00" * 10) == ".gif"
+
+    def test_non_raster_bytes_resolve_to_nothing(self):
+        assert files_mod._resolve_raster_ext(".jpeg", self.HEIC) is None
+        assert files_mod._resolve_raster_ext(".png", b"<html>") is None
+        assert files_mod._resolve_raster_ext(".webp", b"RIFF\x00\x00\x00\x00WAVEmore") is None
+
+    def test_non_raster_extension_is_not_this_helpers_business(self):
+        assert files_mod._resolve_raster_ext(".pdf", b"%PDF-1.4") is None
+        assert files_mod._resolve_raster_ext(".svg", self.PNG) is None
+
+    def test_every_sniffable_raster_has_a_canonical_extension(self):
+        from kiro_crew.messaging import raster
+
+        assert set(files_mod._RASTER_MIME_EXT) == set(raster._MAGIC)
+        assert set(files_mod._RASTER_MIME_EXT.values()) <= set(files_mod._RASTER_EXT_MIME)
+
+    def test_mismatch_message_names_heif_containers(self):
+        msg = files_mod._content_mismatch_message(".jpeg", self.HEIC)
+        assert msg.startswith("This .jpeg file is really a HEIC/AVIF photo")
+        assert ".webp" in msg
+
+    def test_mismatch_message_for_other_bmff_brands_stays_generic(self):
+        # An mp4 wearing .jpeg is not a photo container; do not call it one.
+        msg = files_mod._content_mismatch_message(".jpeg", self.MP4)
+        assert msg.startswith("This file is not really a .jpeg image")
+
+    def test_mismatch_message_for_non_raster_extensions_is_unchanged(self):
+        assert (
+            files_mod._content_mismatch_message(".docx", b"nope")
+            == "File content does not match its type: .docx"
+        )
+
+
 class TestFuzzyScore:
     def test_exact_and_stem_matches_outrank_everything(self):
         exact = files_mod._fuzzy_score("readme.md", "readme.md", "docs/readme.md")

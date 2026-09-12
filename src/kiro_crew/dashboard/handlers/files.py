@@ -1322,6 +1322,67 @@ def _content_matches_ext(ext: str, data: bytes) -> bool:
     return any(data.startswith(p) for p in prefixes)
 
 
+#: Canonical upload extension per sniffed raster type: the suffix a mislabelled
+#: raster is stored under so every downstream consumer that infers the mime
+#: from the path (ACP image inlining, /api/file-raw) reads the true type.
+_RASTER_MIME_EXT: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/webp": ".webp",
+}
+#: ISO-BMFF brands of still-image containers (HEIF/HEIC/AVIF). An iPhone photo
+#: that reaches the browser as ``IMG_1234.jpeg`` is routinely one of these, and
+#: the generic "not really a .jpeg" sentence leaves the user guessing why.
+_HEIF_BRANDS = frozenset(
+    {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1", b"avif", b"avis"}
+)
+
+
+def _resolve_raster_ext(ext: str, data: bytes) -> str | None:
+    """The extension a raster upload declared as *ext* is stored under.
+
+    Returns *ext* when the leading bytes match it, the sniffed type's canonical
+    extension when they are a DIFFERENT accepted raster, and ``None`` when they
+    are no raster at all. The relabel exists because browsers keep the URL's
+    extension on "Save image as" while the body is whatever the server sent
+    (a ``.jpeg`` that is really WebP is the everyday case), and a photo is a
+    photo whichever suffix it wears. Security is unchanged: the bytes still
+    have to be a raster the allowlist accepts, so the CWE-434 property --
+    no HTML or script stored under an image extension -- holds; only the label
+    is corrected instead of refused.
+    """
+    expected = _RASTER_EXT_MIME.get(ext)
+    if expected is None:
+        return None
+    sniffed = sniff_raster_mime(data[:SNIFF_BYTES])
+    if sniffed is None:
+        return None
+    if sniffed == expected:
+        return ext
+    return _RASTER_MIME_EXT[sniffed]
+
+
+def _content_mismatch_message(ext: str, data: bytes) -> str:
+    """User-facing sentence for a content-signature refusal.
+
+    Names the remedy for the same reason the video branch does: telling the
+    user their file "does not match its type" says what is wrong without
+    saying what to do about it, and the fix (convert or re-export) is not
+    guessable from the sentence.
+    """
+    if ext in _RASTER_EXT_MIME:
+        accepted = ", ".join(sorted(_RASTER_EXT_MIME))
+        if data[4:8] == b"ftyp" and data[8:12] in _HEIF_BRANDS:
+            return (
+                f"This {ext} file is really a HEIC/AVIF photo — convert it to "
+                f"one of: {accepted} and upload again"
+            )
+        return f"This file is not really a {ext} image — re-export it as one of: {accepted}"
+    return f"File content does not match its type: {ext}"
+
+
 async def _stream_video_part(
     part: BodyPartReader,
     dest: Path,
@@ -1540,7 +1601,25 @@ async def api_upload_file(request: web.Request) -> web.Response:
             # Content-signature gate (CWE-434): verify magic bytes match the
             # claimed extension BEFORE writing, so an allowed extension can't
             # smuggle arbitrary/binary content (e.g. a .png that is really HTML).
-            if not _content_matches_ext(ext, bytes(data)):
+            # A raster whose bytes are a different ACCEPTED raster is relabelled
+            # rather than refused: the content passed the same allowlist, only
+            # the filename lied, and the stored suffix must tell the truth for
+            # everything downstream that infers the mime from the path.
+            if ext in _RASTER_EXT_MIME:
+                true_ext = _resolve_raster_ext(ext, bytes(data))
+                accepted = true_ext is not None
+                if accepted and true_ext != ext:
+                    logger.info(
+                        "upload.file relabel: name=%s declared=%s stored=%s",
+                        safe_name,
+                        ext,
+                        true_ext,
+                    )
+                    ext = true_ext
+                    dest = dest.with_suffix(true_ext)
+            else:
+                accepted = _content_matches_ext(ext, bytes(data))
+            if not accepted:
                 await _cleanup()
                 _sel().log_api_access(
                     caller=caller,
@@ -1550,7 +1629,10 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     resources=f"file:{fname} reason:content_signature_mismatch:{ext}",
                 )
                 return web.json_response(
-                    {"error": f"File content does not match its type: {ext}"},
+                    {
+                        "error": _content_mismatch_message(ext, bytes(data)),
+                        "code": "content_mismatch",
+                    },
                     status=400,
                 )
             try:

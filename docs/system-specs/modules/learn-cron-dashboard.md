@@ -917,10 +917,6 @@ flow again. Replay remains merge-only and idempotent.
 
 ## Dashboard (`dashboard/`)
 
-The Developer → Config MCP Tool Search toggle saves `agent.tool_search` as a
-boolean through `PATCH /api/config/kirocrew`. The config watcher refreshes the
-defaults used by new sessions.
-
 Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
 - `folder_repository.py` — chat-folder load, serialized read-modify-write, rollback,
   full-value write confirmation, and breadcrumb traversal. `DashboardState` keeps
