@@ -547,6 +547,29 @@ def _release_stt_engine():
     stt_engine._engine = None
 
 
+@pytest.fixture(autouse=True)
+def _reopen_channel_history_admission():
+    """Never let an exit-path test leave history-lane admission closed.
+
+    ``executors.drain_channel_history_lane`` sets a process-global gate that is
+    meant to stay closed through the ``exec``/``os._exit`` every production
+    caller performs next. A test that exercises an exit path with ``os._exit``
+    or ``reexec_python_module`` mocked out (restart commands, auto-update,
+    gateway shutdown) closes that gate for real and then keeps living — and
+    every later ``ChannelHistory`` test in the same worker has its appends
+    silently refused. Reopening at teardown is the same contract production
+    imposes on a survivable exec failure, applied to every test regardless of
+    which suite it lives in, so worker scheduling order cannot flip a result.
+    """
+    yield
+    from kiro_crew import executors
+
+    # The gate is a close counter: a test may have drained more than once
+    # without reopening, so release every hold, not just one.
+    with executors._channel_history_admission_lock:
+        executors._channel_history_drain_holds = 0
+
+
 def absent_sysconf(name):
     """Stand-in for a missing ``os.sysconf`` (Windows has none).
 

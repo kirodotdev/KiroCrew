@@ -153,7 +153,6 @@ src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/local_review.py
 src/kiro_crew/changelog.py
-src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
@@ -318,7 +317,6 @@ src/kiro_crew/skills_script_validator.py
 src/kiro_crew/slack/blocks.py
 src/kiro_crew/slack/client.py
 src/kiro_crew/slack/enterprise.py
-src/kiro_crew/slack/events.py
 src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/sessions_view.py
 src/kiro_crew/subagent_persistence.py

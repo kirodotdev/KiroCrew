@@ -4243,35 +4243,55 @@ def pin_directory(path: str | os.PathLike) -> int:
     return fd
 
 
-def _win_open_without_following(path: str | os.PathLike) -> int:
-    """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
+def _win_open_without_following(
+    path: str | os.PathLike,
+    *,
+    desired_access: int | None = None,
+    creation: int | None = None,
+    extra_flags: int | None = None,
+    crt_flags: int | None = None,
+) -> int:
+    """``CreateFileW`` *path*, opening a reparse point INSTEAD of following it.
 
-    Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
-    not carry separate copies of the same security-critical flags. What each of
-    them then asserts about the descriptor differs; how the object is reached must
-    not.
+    Shared by :func:`pin_directory`, :func:`open_file_no_reparse` and
+    :func:`open_append_no_reparse` so the callers do not carry separate copies
+    of the same security-critical flags. What each of them then asserts about
+    the descriptor differs; how the object is reached must not. The defaults
+    open for READING an existing object; a caller may override the access mask
+    (``desired_access``), the creation disposition (``creation``), the flags OR'd
+    alongside it (``extra_flags``), and the CRT wrap mode (``crt_flags``) — but
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` is hard-wired and not overridable, because
+    it is the property this helper exists to guarantee.
 
     ``OPEN_REPARSE_POINT`` is the whole point: a junction or symlink at the name is
     opened AS ITSELF, so the caller sees what is really there and the target is
     never touched. That is what makes the refusal atomic rather than a check
     followed by an open -- and on Windows the difference is not academic, because
     resolving a reparse point aimed at a UNC share is itself an outbound SMB
-    authentication. ``BACKUP_SEMANTICS`` is what allows a directory to be opened at
-    all and is harmless on a file. The share mode omits ``FILE_SHARE_DELETE``: while
-    this descriptor lives, the object cannot be renamed or deleted -- and for a
-    directory, neither can anything above it.
+    authentication. ``BACKUP_SEMANTICS`` (in the default flags) is what allows a
+    directory to be opened at all and is harmless on a file. The share mode omits
+    ``FILE_SHARE_DELETE``: while this descriptor lives, the object cannot be
+    renamed or deleted -- and for a directory, neither can anything above it.
 
     The handle is wrapped in a CRT descriptor so ``os.fstat`` can read the
     attributes of what was actually opened and ``os.close`` can release it.
 
-    ``O_BINARY`` is part of that wrapping, not a detail. A CRT descriptor in TEXT
-    mode translates CRLF and stops at the first ``0x1A``, and a caller reading
-    with a raw ``os.read`` gets that translation: on a body of 55 bytes holding
-    one ``0x1A``, such a descriptor yields 12. ``os.fdopen(fd, "rb")`` hides the
-    difference because ``io.FileIO`` sets the mode itself, so only a raw-read
-    caller is exposed -- which is precisely the caller that copies media files.
-    Naming the flag here makes the descriptor's contract the same for both.
+    ``O_BINARY`` is part of the default wrapping, not a detail. A CRT descriptor
+    in TEXT mode translates CRLF and stops at the first ``0x1A``, and a caller
+    reading with a raw ``os.read`` gets that translation: on a body of 55 bytes
+    holding one ``0x1A``, such a descriptor yields 12. ``os.fdopen(fd, "rb")``
+    hides the difference because ``io.FileIO`` sets the mode itself, so only a
+    raw-read caller is exposed -- which is precisely the caller that copies media
+    files. Naming the flag here makes the descriptor's contract the same for all.
     """
+    if desired_access is None:
+        desired_access = _WIN_GENERIC_READ
+    if creation is None:
+        creation = _WIN_OPEN_EXISTING
+    if extra_flags is None:
+        extra_flags = _WIN_FILE_FLAG_BACKUP_SEMANTICS
+    if crt_flags is None:
+        crt_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
@@ -4285,18 +4305,16 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     kernel32.CreateFileW.restype = wintypes.HANDLE
     handle = kernel32.CreateFileW(
         os.fspath(path),
-        _WIN_GENERIC_READ,
+        desired_access,
         _WIN_FILE_SHARE_READ_WRITE,
         None,
-        _WIN_OPEN_EXISTING,
-        _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        creation,
+        extra_flags | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
         None,
     )
     if handle is None or handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
-    return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
-        handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    )
+    return msvcrt.open_osfhandle(handle, crt_flags)  # type: ignore[attr-defined]
 
 
 def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) -> int:
@@ -4338,6 +4356,57 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
             raise OSError(errno.ELOOP, "reparse point at the final component", os.fspath(path))
         if attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY:
             raise IsADirectoryError(errno.EISDIR, "is a directory", os.fspath(path))
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+#: ``CreateFileW`` arguments for :func:`open_append_no_reparse`.
+#: ``FILE_APPEND_DATA`` grants append-only writes; ``OPEN_ALWAYS`` creates the
+#: file when absent, matching ``O_CREAT`` semantics.
+_WIN_FILE_APPEND_DATA = 0x00000004
+_WIN_OPEN_ALWAYS = 4
+_WIN_FILE_ATTRIBUTE_NORMAL = 0x00000080
+
+
+def open_append_no_reparse(path: str | os.PathLike) -> int:
+    """Open (or create) *path* for appending WITHOUT following a link.
+
+    On POSIX this is ``O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW`` — a
+    symlink at the name fails the open with ``ELOOP``.
+
+    On Windows ``O_NOFOLLOW`` does not exist, and a plain ``os.open``
+    RESOLVES the name before any post-open check can run — for a reparse
+    point aimed at a UNC path, that resolution itself fires outbound
+    SMB/NTLM authentication to the remote host, leaking credentials before
+    any Python code sees a descriptor. So the open goes through
+    :func:`_win_open_without_following` (``CreateFileW`` with
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` — the same helper
+    :func:`pin_directory` uses, parameterised for append+create): the
+    reparse point ITSELF is opened instead of being followed — no name
+    resolution, no network traffic — and anything carrying the reparse
+    attribute is then refused atomically on the already-open handle.
+    Release with ``os.close``.
+    """
+    if IS_POSIX:
+        return os.open(
+            os.fspath(path),
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+
+    fd = _win_open_without_following(
+        path,
+        desired_access=_WIN_FILE_APPEND_DATA,
+        creation=_WIN_OPEN_ALWAYS,
+        extra_flags=_WIN_FILE_ATTRIBUTE_NORMAL,
+        crt_flags=os.O_APPEND,
+    )
+    try:
+        attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
+        if attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            raise OSError(errno.ELOOP, "path is a reparse point; refusing", os.fspath(path))
     except BaseException:
         os.close(fd)
         raise
