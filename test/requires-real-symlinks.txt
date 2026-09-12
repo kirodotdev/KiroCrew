@@ -209,6 +209,9 @@ test/test_snapshot_manifest_and_links.py::TestSymlinkedTreeRootsAreRefused::test
 test/test_app_manager.py::TestEnabledStateTellsUnreadableFromNotInstalled::test_a_dangling_symlink_is_unknown
 test/test_app_manager.py::TestEnabledStateTellsUnreadableFromNotInstalled::test_a_symlink_loop_is_unknown
 test/test_member_prompt.py::TestMemberBriefing::test_symlink_briefing_is_refused
+# Plants a FILE symlink out of the session store; a file link has no junction
+# form, so an unelevated Windows shell cannot build the fixture at all.
+test/test_pipeline_conductor_agent.py::TestFleetProbe::test_symlink_out_of_the_store_reads_gone
 test/test_security.py::TestKeystonePublishArtifacts::test_a_symlink_aimed_at_a_live_temp_is_caught
 test/test_config_loader.py::TestMigrationWriteBackOrdering::test_a_symlink_out_of_the_data_home_gets_no_lock_sidecar
 test/test_appearance_packs_sounds.py::TestReadingSounds::test_a_linked_cue_file_is_refused_like_any_other_pack_file
