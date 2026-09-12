@@ -2980,6 +2980,84 @@ def loopback_owner_pids(listeners: list[PortListener]) -> list[int]:
     return list(dict.fromkeys(e.pid for e in covering))
 
 
+def established_peer_pids(near: tuple[str, int], far: tuple[str, int]) -> list[int]:
+    """PIDs holding the FAR end of the established TCP connection *near*→*far*.
+
+    Attribution bound to ONE established socket rather than to a port. A caller
+    that has just connected knows both endpoints of its own socket
+    (``getsockname`` / ``getpeername``), and this answers "which process owns the
+    other end of THIS connection" — a question no port-scoped lookup can settle,
+    because the listener it names may have been replaced between the lookup and
+    the connect.
+
+    Matched on the exact 4-tuple, not on the filter: ``lsof
+    -iTCP@<addr>:<port>`` matches a socket with EITHER endpoint on that address
+    and port, so both ends of a loopback connection come back and only the
+    reversed tuple identifies the peer's own socket. The peer's view of
+    ``near→far`` is ``far→near``, which is what is compared.
+
+    POSIX asks ``lsof -nP -iTCP@<far addr>:<far port> -sTCP:ESTABLISHED -Fpn``,
+    whose ``n`` field carries ``<laddr>:<lport>-><raddr>:<rport>`` for a connected
+    socket (the LISTEN form carries no arrow). No family field is requested
+    because the comparison spells both endpoints out; a v6 address is bracketed in
+    the filter, which is the only form lsof reads it in. Returns ``[]`` on any
+    failure and on every non-POSIX platform: no attribution answer is not
+    permission, and a caller gating a credential on this treats an empty list as a
+    refusal. That is also why Windows is not approximated here — see
+    :func:`kiro_crew.port_resolution._gateway_owns_port_impl`, which already
+    denies the loopback ownership proof outright off POSIX.
+    """
+    if not IS_POSIX:
+        return []
+    lsof_bin = trusted_system_bin("lsof")
+    if lsof_bin is None:
+        return []
+    near_addr, near_port = _normalize_local_address(near[0]), int(near[1])
+    far_addr, far_port = _normalize_local_address(far[0]), int(far[1])
+    filter_host = f"[{far_addr}]" if ":" in far_addr else far_addr
+    try:
+        out = subprocess.check_output(
+            [
+                lsof_bin,
+                "-nP",
+                f"-iTCP@{filter_host}:{far_port}",
+                "-sTCP:ESTABLISHED",
+                "-Fpn",
+            ],
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.DEVNULL,
+            timeout=_LSOF_TIMEOUT_SECS,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        # CalledProcessError included: lsof exits non-zero when nothing matches,
+        # which for this query means "that connection is already gone".
+        return []
+    # The peer's own socket reads far→near; ours reads near→far.
+    wanted = f"{far_addr}:{far_port}->{near_addr}:{near_port}"
+    pids: list[int] = []
+    cur_pid: int | None = None
+    for line in out.splitlines():
+        if not line:
+            continue
+        tag, value = line[0], line[1:]
+        if tag == "p":
+            cur_pid = int(value) if value.isdigit() else None
+        elif tag == "n" and cur_pid is not None:
+            local, _, remote = value.partition("->")
+            if not remote:
+                continue  # a LISTEN socket caught by the address filter
+            spelled = (
+                f"{_normalize_local_address(local.rpartition(':')[0])}"
+                f":{local.rpartition(':')[2]}"
+                f"->{_normalize_local_address(remote.rpartition(':')[0])}"
+                f":{remote.rpartition(':')[2]}"
+            )
+            if spelled == wanted and cur_pid not in pids:
+                pids.append(cur_pid)
+    return pids
+
+
 def find_port_listeners(port: int) -> list[PortListener]:
     """Return (pid, local address) for each LISTEN socket on TCP *port*.
 

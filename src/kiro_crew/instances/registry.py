@@ -2,9 +2,11 @@
 
 Backs the *Instances* feature (multi-instance management). The registry is a
 small JSON file at ``~/.kiro/crew/instances.json``. Each record describes how to
-reach one remote Kiro Crew over **either SSH or AWS SSM Session Manager**
-(``connection_method``); the *local* instance is implicit (the gateway itself)
-and is never stored here.
+reach one Kiro Crew gateway over **SSH, AWS SSM Session Manager, or this host's
+own loopback** (``connection_method``); the *local* instance -- this gateway
+itself, as the switcher's ``Local`` entry -- is implicit and is never stored
+here. A ``loopback`` record is not that entry: it names a gateway reached on
+loopback, which may be a sibling on another port or this gateway's own port.
 
 Two persisted hints support lazy reconnect on gateway restart:
 
@@ -20,7 +22,9 @@ Security notes (standard practices):
   connect time and live only in memory / the browser cookie.
 * ``ssh_host`` and ``remote_bin`` get a light charset check here to reject
   obviously malformed input early; the injection-safe validation that guards
-  the actual ``ssh`` command line lives with the ``SshTunnelManager``.
+  the actual ``ssh`` command line lives with the ``SshTunnelManager``. A
+  ``loopback`` record holds no address at all: its destination is the fixed
+  ``constants.LOOPBACK_HOST``.
 * Writes go through :func:`kiro_crew.atomic_write.atomic_write` (temp file +
   rename) so a crash mid-write can't corrupt the registry.
 
@@ -101,8 +105,18 @@ _DEFAULT_TTL = "20h"
 # (ssh -N -L); "ssm" tunnels over AWS Systems Manager Session Manager
 # (aws ssm start-session --document-name AWS-StartPortForwardingSession),
 # needing no inbound SSH port and no SSH key — only IAM + the SSM agent.
-CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm")
-_DEFAULT_CONNECTION_METHOD = "ssh"
+# "loopback" reaches a gateway already listening on THIS host's loopback and so
+# spawns no forwarder at all. The manager admits it only inside a marked pod whose
+# config enables the verification seam.
+CONNECTION_METHOD_SSH = "ssh"
+CONNECTION_METHOD_SSM = "ssm"
+CONNECTION_METHOD_LOOPBACK = "loopback"
+CONNECTION_METHODS: tuple[str, ...] = (
+    CONNECTION_METHOD_SSH,
+    CONNECTION_METHOD_SSM,
+    CONNECTION_METHOD_LOOPBACK,
+)
+_DEFAULT_CONNECTION_METHOD = CONNECTION_METHOD_SSH
 
 # ``local_port == 0`` is the sentinel for "not yet allocated" — the port
 # allocator (Stage 3) assigns a real port at connect time.
@@ -165,7 +179,10 @@ class Instance:
     ``connection_method`` selects the transport: ``"ssh"`` (default, uses
     ``ssh_host``/``remote_bin``) or ``"ssm"`` (uses ``ssm_target`` — an EC2/SSM
     managed-instance id — plus optional ``aws_profile``/``aws_region``; no SSH
-    key or inbound port needed). Both methods share ``remote_port``/``ttl``.
+    key or inbound port needed), or ``"loopback"`` (no address field at all: it
+    reaches a gateway already listening on this host's own loopback,
+    ``constants.LOOPBACK_HOST``, so nothing is forwarded and no credential
+    leaves the machine). All three share ``remote_port``/``ttl``.
     """
 
     id: str
@@ -175,7 +192,7 @@ class Instance:
     local_port: int = _UNALLOCATED_PORT
     ttl: str = _DEFAULT_TTL
     remote_bin: str = ""
-    # "ssh" (default) or "ssm" — see CONNECTION_METHODS.
+    # "ssh" (default), "ssm" or "loopback" — see CONNECTION_METHODS.
     connection_method: str = _DEFAULT_CONNECTION_METHOD
     # SSM-only fields. ssm_target is an EC2 instance id (i-...) or SSM managed
     # instance id (mi-...); aws_profile/aws_region are optional (empty = use the
@@ -225,12 +242,15 @@ class Instance:
                 f"invalid connection_method {self.connection_method!r}: "
                 f"must be one of {CONNECTION_METHODS}"
             )
-        if self.connection_method == "ssh":
+        # A loopback record names no address — its destination is the fixed
+        # ``constants.LOOPBACK_HOST`` — so the shared port check below is all it
+        # has; only ssh and ssm carry transport fields of their own.
+        if self.connection_method == CONNECTION_METHOD_SSH:
             if not self.ssh_host or not _SSH_HOST_RE.match(self.ssh_host):
                 raise InvalidInstanceError(
                     f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
                 )
-        else:  # ssm
+        elif self.connection_method == CONNECTION_METHOD_SSM:
             if not self.ssm_target or not _SSM_TARGET_RE.match(self.ssm_target):
                 # No regex in the message — it reaches the Settings form verbatim.
                 raise InvalidInstanceError(
@@ -304,7 +324,9 @@ class Instance:
         """Build an :class:`Instance` from a stored dict, coercing types.
 
         Tolerant of missing/extra keys so older registry files (pre-SSM, with
-        no ``connection_method``) load cleanly — they default to ``"ssh"``.
+        no ``connection_method``) load cleanly — they default to ``"ssh"``. An
+        extra key is dropped, never carried: only the keys named below are read,
+        so a record hand-edited to name a ``loopback_host`` loads without one.
         """
 
         def _as_int(value: object, default: int) -> int:
@@ -459,8 +481,8 @@ class InstancesRegistry:
         to disambiguate collisions. Raises :class:`DuplicateInstanceError` if an
         explicit id already exists, or :class:`InvalidInstanceError` on bad input.
 
-        *connection_method* selects the transport ("ssh" or "ssm"); the fields
-        required depend on it — see :meth:`Instance.validate`.
+        *connection_method* selects the transport ("ssh", "ssm" or "loopback");
+        the fields required depend on it — see :meth:`Instance.validate`.
         """
         with self._lock:
             doc = self._read()
@@ -501,7 +523,7 @@ class InstancesRegistry:
                 "Added instance %s (%s: %s)",
                 inst.id,
                 inst.connection_method,
-                inst.ssh_host or inst.ssm_target,
+                inst.ssh_host or inst.ssm_target or f"port {inst.remote_port}",
             )
             return inst
 

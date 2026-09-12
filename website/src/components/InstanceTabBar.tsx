@@ -339,7 +339,7 @@ function UnreadBadge({
 export interface SwitcherEntry {
   id: string | null
   name: string
-  /** Secondary line: the SSH host the crew is reached through. */
+  /** Secondary line: the connection target the crew is reached through. */
   detail: string
   /** Hover text naming the crew, its host, and its live tunnel state. */
   title: string
@@ -1094,12 +1094,19 @@ export default function InstanceTabBar({
         const st = inst.status?.state
         // An SSM crew has no ssh_host: it is reached through its managed-instance
         // target, so that is what names the machine on its row.
-        const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+        const target = inst.connection_method === 'ssm'
+          ? inst.ssm_target
+          : inst.connection_method === 'loopback'
+            ? '127.0.0.1'
+            : inst.ssh_host
+        const detail = inst.connection_method === 'loopback'
+          ? `${i18nT('pages.settings.instancesPanel.loopback_same_host')} · ${target}`
+          : target
         return {
           id: inst.id,
           name: inst.name,
-          detail: target,
-          title: `${inst.name} (${target}) — ${stateLabel(st)}`,
+          detail,
+          title: `${inst.name} (${detail}) — ${stateLabel(st)}`,
           state: st,
           connecting:
             (connectMutation.isPending && connectMutation.variables === inst.id) ||

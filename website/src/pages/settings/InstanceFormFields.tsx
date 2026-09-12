@@ -10,7 +10,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
-import { api, ApiError, type AddInstanceBody, type InstanceView } from '../../api/client'
+import {
+  api,
+  ApiError,
+  type AddInstanceBody,
+  type InstanceConnectionMethod,
+  type InstanceView,
+} from '../../api/client'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -32,6 +38,20 @@ export const DEFAULT_TTL = '20h'
 // cleared field falls back to it rather than to the empty string, which the
 // registry rejects for an SSM crew.
 export const DEFAULT_SSM_RUN_AS = 'ec2-user'
+export const LOOPBACK_HOST = '127.0.0.1'
+
+/** Human label for an instance transport. */
+export function instanceConnectionMethodLabel(method: InstanceConnectionMethod): string {
+  if (method === 'loopback') {
+    return i18nT('pages.settings.instancesPanel.loopback_same_host')
+  }
+  return method === 'ssm' ? 'SSM' : 'SSH'
+}
+
+export function instanceConnectionTarget(inst: InstanceView): string {
+  if (inst.connection_method === 'loopback') return LOOPBACK_HOST
+  return inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+}
 
 // A tunnel forwards ONE TCP port and mints a token with a bounded lifetime, so
 // neither field has a sane fallback: coercing an unparseable value would persist
@@ -73,7 +93,7 @@ export function isBlankInstanceForm(values: InstanceFormValues): boolean {
 export function instanceFormFromView(inst: InstanceView): InstanceFormValues {
   return {
     name: inst.name,
-    method: inst.connection_method === 'ssm' ? 'ssm' : 'ssh',
+    method: inst.connection_method,
     sshHost: inst.ssh_host || '',
     ssmTarget: inst.ssm_target || '',
     awsProfile: inst.aws_profile || '',
@@ -115,14 +135,15 @@ export function useInstanceFormState(
   // form out from under unsaved work.
   const dirty = JSON.stringify(values) !== JSON.stringify(initial)
   const isSsm = values.method === 'ssm'
+  const isLoopback = values.method === 'loopback'
   // Parsed strictly: `Number('')` is 0 and `Number('80abc')` is NaN, but
   // `parseInt` would accept "80abc" as 80 and quietly forward the wrong port.
   const portRaw = values.remotePort.trim()
   const portNum = /^[0-9]+$/.test(portRaw) ? Number(portRaw) : NaN
   const portValid = Number.isInteger(portNum) && portNum >= PORT_MIN && portNum <= PORT_MAX
   const ttlValid = TTL_RE.test(values.ttl.trim())
-  // The transport-specific required field: ssh_host for SSH, ssm_target for SSM.
-  const targetFilled = isSsm ? !!values.ssmTarget.trim() : !!values.sshHost.trim()
+  // Loopback has no host field. Its target is the fixed 127.0.0.1 address.
+  const targetFilled = isLoopback || (isSsm ? !!values.ssmTarget.trim() : !!values.sshHost.trim())
   const valid = !!values.name.trim() && targetFilled && portValid && ttlValid
   /**
    * The request payload. Fields belonging to the transport that is NOT selected
@@ -155,6 +176,7 @@ export function useInstanceFormState(
     } = {}): AddInstanceBody => {
       const v = values
       const ssm = v.method === 'ssm'
+      const loopback = v.method === 'loopback'
       const opt = (raw: string, cleared?: string) =>
         raw.trim() || (explicitClears ? cleared ?? '' : undefined)
       const full: AddInstanceBody = {
@@ -180,12 +202,15 @@ export function useInstanceFormState(
               // returns to the default rather than to the empty string.
               ssm_run_as: opt(v.ssmRunAs, DEFAULT_SSM_RUN_AS),
             }
-          : { ssh_host: v.sshHost.trim() }),
+          : loopback
+            ? {}
+            : { ssh_host: v.sshHost.trim() }),
         // Both are gated by `valid`, so no fallback coercion here: a submit can
         // only carry a port and TTL the form already accepted.
         remote_port: Number(v.remotePort.trim()),
         ttl: v.ttl.trim(),
-        remote_bin: opt(v.remoteBin),
+        // Loopback has no remote shell, so a binary path is not part of its record.
+        ...(loopback ? {} : { remote_bin: opt(v.remoteBin) }),
       }
       return full
     },
@@ -222,6 +247,7 @@ export function useInstanceFormState(
     patch,
     reset: setValues,
     isSsm,
+    isLoopback,
     portValid,
     ttlValid,
     targetFilled,
@@ -368,6 +394,7 @@ export function EditInstanceForm({
         idPrefix={`edit-instance-${inst.id}`}
         form={form}
         lockTransport={lockTransport}
+        allowLoopback={baselineRef.current.connection_method === 'loopback'}
       />
       {lockTransport && (
         <p className="mt-2 text-[12px] text-warn">
@@ -435,13 +462,26 @@ export function InstanceFormFields({
   idPrefix,
   form,
   lockTransport = false,
+  allowLoopback = false,
 }: {
   idPrefix: string
   form: InstanceFormState
   /** Render the machine-identity fields read-only (see EditInstanceForm). */
   lockTransport?: boolean
+  /** Defensive support for direct component input. Settings filters loopback records before this form mounts. */
+  allowLoopback?: boolean
 }) {
-  const { values, set, isSsm, portValid, ttlValid } = form
+  const { values, set, isSsm, isLoopback, portValid, ttlValid } = form
+  const methods: InstanceConnectionMethod[] = allowLoopback
+    ? ['ssh', 'ssm', 'loopback']
+    : ['ssh', 'ssm']
+  const methodLabels = methods.map(method =>
+    method === 'loopback'
+      ? instanceConnectionMethodLabel(method)
+      : method === 'ssm'
+        ? i18nT('pages.settings.instancesPanel.aws_ssm_session_manager')
+        : i18nT('pages.settings.instancesPanel.ssh_tunnel'),
+  )
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <label htmlFor={`${idPrefix}-name`} className="flex flex-col gap-1 text-[13px] text-muted">
@@ -454,18 +494,20 @@ export function InstanceFormFields({
       <div className="flex flex-col gap-1 text-[13px] text-muted">
         {i18nT('pages.settings.instancesPanel.connection_method')}
         <SimpleSelect
-          options={['ssh', 'ssm']}
-          optionLabels={[i18nT('pages.settings.instancesPanel.ssh_tunnel'), i18nT('pages.settings.instancesPanel.aws_ssm_session_manager')]}
+          options={methods}
+          optionLabels={methodLabels}
           value={values.method}
-          onChange={v => set('method', v as 'ssh' | 'ssm')}
+          onChange={v => set('method', v as InstanceConnectionMethod)}
           aria-label={i18nT('pages.settings.instancesPanel.connection_method')}
           disabled={lockTransport}
         />
-        <span className="text-[12px] text-muted leading-snug">
-          {isSsm
-            ? i18nT('pages.settings.instancesPanel.tunnels_via_aws_ssm_start_session_no_inbound_ssh')
-            : i18nT('pages.settings.instancesPanel.opens_ssh_n_l_to_the_host_requires_non_interacti')}
-        </span>
+        {!isLoopback ? (
+          <span className="text-[12px] text-muted leading-snug">
+            {isSsm
+              ? i18nT('pages.settings.instancesPanel.tunnels_via_aws_ssm_start_session_no_inbound_ssh')
+              : i18nT('pages.settings.instancesPanel.opens_ssh_n_l_to_the_host_requires_non_interacti')}
+          </span>
+        ) : null}
       </div>
       {isSsm ? (
         <>
@@ -492,12 +534,12 @@ export function InstanceFormFields({
             </span>
           </label>
         </>
-      ) : (
+      ) : !isLoopback ? (
         <label htmlFor={`${idPrefix}-ssh-host`} className="flex flex-col gap-1 text-[13px] text-muted">
           {i18nT('pages.settings.instancesPanel.ssh_host_alias')}
           <input id={`${idPrefix}-ssh-host`} aria-label={i18nT('pages.settings.instancesPanel.ssh_host_alias')} className={inputCls} value={values.sshHost} onChange={e => set('sshHost', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.host_1_alias')} />
         </label>
-      )}
+      ) : null}
       <label htmlFor={`${idPrefix}-remote-port`} className="flex flex-col gap-1 text-[13px] text-muted">
         {i18nT('pages.settings.instancesPanel.remote_port')}
         <input id={`${idPrefix}-remote-port`} aria-label={i18nT('pages.settings.instancesPanel.remote_port')} className={inputCls} value={values.remotePort} onChange={e => set('remotePort', e.target.value)} placeholder="5476" inputMode="numeric" />
@@ -519,7 +561,8 @@ export function InstanceFormFields({
           </span>
         ) : null}
       </label>
-      <label htmlFor={`${idPrefix}-remote-bin`} className="flex flex-col gap-1 text-[13px] text-muted sm:col-span-2">
+      {!isLoopback ? (
+        <label htmlFor={`${idPrefix}-remote-bin`} className="flex flex-col gap-1 text-[13px] text-muted sm:col-span-2">
         {i18nT('pages.settings.instancesPanel.remote_kirocrew_path')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
         <input
           id={`${idPrefix}-remote-bin`}
@@ -533,7 +576,8 @@ export function InstanceFormFields({
           {i18nT('pages.settings.instancesPanel.only_needed_if')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew')}</code> {i18nT('pages.settings.instancesPanel.is_installed_somewhere_non_standard_on_the_remot')} <code className="text-text">{i18nT('pages.settings.instancesPanel.command_v_kirocrew')}</code>{' '}
           {i18nT('pages.settings.instancesPanel.commonly')} <code className="text-text">{i18nT('pages.settings.instancesPanel.local_bin_kirocrew')}</code>{i18nT('pages.settings.instancesPanel.use_an_absolute_path_no')} <code className="text-text">~</code>).
         </span>
-      </label>
+        </label>
+      ) : null}
     </div>
   )
 }

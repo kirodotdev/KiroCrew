@@ -1,4 +1,4 @@
-"""Injection-safe validation for SSH and SSM connection inputs.
+"""Injection-safe validation for SSH, SSM and loopback connection inputs.
 
 The ``SshTunnelManager`` and token-mint helper pass ``ssh_host`` and
 ``remote_bin`` into ``ssh`` argv lists, or ``ssm_target``/``aws_profile``/
@@ -20,6 +20,11 @@ remain:
 Validation lives here, with the tunnel manager, rather than in the registry:
 the registry does a light early-reject charset check, but this is the
 authoritative guard applied immediately before a command line is built.
+
+The ``loopback`` transport builds no command line and carries no per-record
+destination: it dials the fixed ``constants.LOOPBACK_HOST``. It is available only
+inside a Kiro Crew pod whose config enables the verification seam, which is what
+:class:`LoopbackValidationError` names.
 """
 
 from __future__ import annotations
@@ -74,6 +79,15 @@ class SshValidationError(ValueError):
 
 class SsmValidationError(ValueError):
     """Raised when an ssm_target, aws_profile, or aws_region fails validation."""
+
+
+class LoopbackValidationError(ValueError):
+    """Raised when a caller tries loopback outside its pod verification boundary.
+
+    The transport has no destination field to validate. Its fixed address remains
+    protected by the listener-ownership proof after the pod marker and config flag
+    admit the record.
+    """
 
 
 def validate_ssh_host(ssh_host: str) -> str:

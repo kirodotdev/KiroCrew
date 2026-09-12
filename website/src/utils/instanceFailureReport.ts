@@ -102,7 +102,7 @@ function failureMessageOf(
 export function reportInstanceFailure(input: {
   id: string
   name: string
-  /** `ssh` / `ssm` — which transport's repair steps apply. */
+  /** `ssh` / `ssm` / `loopback` — which transport's repair steps apply. */
   transport: string
   status: InstanceTunnelStatus | undefined
   stage: InstanceFailureStage

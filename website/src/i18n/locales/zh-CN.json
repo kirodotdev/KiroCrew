@@ -13063,6 +13063,7 @@
         "connecting": "正在连接…",
         "connection_did_not_complete_try_diagnose_for_det": "连接未完成。可使用“诊断”查看详情。",
         "connection_method": "连接方式",
+        "loopback_same_host": "回环（同一主机）",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "默认凭证链",
         "diagnose": "诊断",

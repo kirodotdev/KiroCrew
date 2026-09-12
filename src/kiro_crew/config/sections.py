@@ -5002,6 +5002,17 @@ class InstancesConfig:
             "one below the number of configured crews.",
         ),
     )
+    allow_loopback_transport: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Loopback Verification Transport",
+            "Permit pod verification records with connection_method 'loopback'. "
+            "This key is ignored unless the process carries the exact KIROCREW_POD=1 "
+            "marker set by Kiro Crew pod tooling. Product gateways cannot enable the "
+            "transport from config. The destination stays fixed at 127.0.0.1, and the "
+            "listener-ownership proof still applies inside a pod.",
+        ),
+    )
     tunnel_base_port: int = field(
         default=_DEFAULT_TUNNEL_BASE_PORT,
         metadata=_meta(

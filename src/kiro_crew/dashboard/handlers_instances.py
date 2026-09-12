@@ -38,10 +38,12 @@ from kiro_crew.dashboard.session_transfer import (
 )
 from kiro_crew.history import SEARCH_MIN_CHARS
 from kiro_crew.instances.constants import (
+    LOOPBACK_TRANSPORT_UNAVAILABLE_CODE,
     PROXY_PATH_MAX_DECODE_PASSES,
     PROXY_REQUEST_BODY_MAX_BYTES,
 )
 from kiro_crew.instances.registry import (
+    CONNECTION_METHOD_LOOPBACK,
     DEFAULT_REMOTE_PORT,
     DuplicateInstanceError,
     InstanceNotFoundError,
@@ -89,6 +91,36 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
 # (see coordsOf() in RemoteCrewPanel.tsx). Locked from PATCH for a correlated
 # cloud instance — see _is_correlated_cloud_instance().
 _ADDRESSING_FIELDS = {"connection_method", "ssm_target", "aws_profile", "aws_region"}
+
+
+def _loopback_transport_denied(
+    connection_method: str, *, action: str = "add"
+) -> web.Response | None:
+    """Refuse a loopback record outside the pod verification seam.
+
+    ``KiroCrewConfig.load`` masks the flag unless the pod runtime supplied the
+    exact marker. The manager repeats that outer gate before every connect, so a
+    hand-written record cannot bypass this early API refusal.
+
+    *connection_method* is the effective method the write would leave behind.
+    *action* names the audit event for create and edit denials.
+    """
+    if (connection_method or "").strip().lower() != CONNECTION_METHOD_LOOPBACK:
+        return None
+    if KiroCrewConfig.load().instances.allow_loopback_transport:
+        return None
+    _audit(action, "denied", error="loopback transport unavailable outside pod verification")
+    return web.json_response(
+        {
+            "error": (
+                "the loopback transport is a pod-only verification seam. Run this "
+                "gateway with Kiro Crew pod tooling and enable "
+                "instances.allow_loopback_transport inside that pod."
+            ),
+            "code": LOOPBACK_TRANSPORT_UNAVAILABLE_CODE,
+        },
+        status=400,
+    )
 
 
 def _is_correlated_cloud_instance(ssm_target: str) -> bool:
@@ -289,6 +321,11 @@ async def api_instances_add(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "invalid_body"}, status=400
         )
+    denied_loopback = await asyncio.to_thread(
+        _loopback_transport_denied, str(body.get("connection_method", ""))
+    )
+    if denied_loopback is not None:
+        return denied_loopback
     try:
         inst = await asyncio.to_thread(
             reg.add,
@@ -464,6 +501,21 @@ async def api_instances_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+
+    # Same opt-in gate as create, against the EFFECTIVE method the save would
+    # leave behind: `connection_method` when the edit sets it, else the record's
+    # own. Without this an edit persists a loopback record — or an edit to one —
+    # that the manager then refuses to connect, so the failure surfaces as a
+    # broken instance rather than a rejected edit.
+    denied_loopback = await asyncio.to_thread(
+        functools.partial(
+            _loopback_transport_denied,
+            str(changes.get("connection_method", current.connection_method)),
+            action="update",
+        )
+    )
+    if denied_loopback is not None:
+        return denied_loopback
 
     transport_changed = any(
         k in transport_keys and v != getattr(current, k) for k, v in changes.items()

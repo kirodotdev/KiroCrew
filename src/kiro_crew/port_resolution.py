@@ -115,8 +115,15 @@ def _config_url_port() -> int | None:
     return port if explicit is not None else None
 
 
-def _gateway_owns_port(port: int) -> bool:
-    """True only when *this user's* gateway process is listening on *port*.
+def _gateway_owns_port_impl(port: int, *, require_loopback: bool) -> bool:
+    """Shared core of the two ownership proofs; see the wrappers below.
+
+    *require_loopback* selects step 2's granularity: the PORT (any listening
+    socket of the recorded gateway) or the ADDRESS (only a socket that a
+    ``127.0.0.1`` connect reaches). Everything else — the sidecar, the uid, the
+    argv check, the fail-closed posture, the non-POSIX denial — is identical.
+
+    True only when *this user's* gateway process is listening on *port*.
 
     Reachability is not enough to trust a discovered port. Client commands hand
     the local secret to whatever answers (``_token`` and ``_logout`` send
@@ -132,10 +139,11 @@ def _gateway_owns_port(port: int) -> bool:
     1. **Recorded pid** — ``run_marker.read_pid(port)`` reads the sidecar the
        gateway wrote at ``0600`` inside the ``0700`` ``run/`` dir. Another local
        user cannot write it, so they cannot nominate a process of theirs.
-    2. **Holds the port** — that pid must be among
-       ``platform_compat.find_listening_pids(port)``. This is what makes a stale
-       recorded pid harmless: it has to actually hold the port we are about to
-       send the secret to.
+    2. **Holds the port** — that pid must be among the port's live listeners
+       (``platform_compat.find_listening_pids``, or under *require_loopback* the
+       narrower ``loopback_owner_pids(find_port_listeners(...))``). This is what
+       makes a stale recorded pid harmless: it has to actually hold the socket we
+       are about to send the secret to.
     3. **Owned by us, and ours** — the pid's uid must equal the caller's
        (``process_owner_uid``), and its argv must look like a gateway. The uid
        check is what closes pid *recycling* into a foreign user's process; argv
@@ -167,7 +175,15 @@ def _gateway_owns_port(port: int) -> bool:
     if recorded is None:
         return False
     try:
-        pids = platform_compat.find_listening_pids(port)
+        if require_loopback:
+            # Step 2, address-scoped: the recorded pid must own a listener that
+            # a connect to 127.0.0.1:<port> actually REACHES.
+            # ``loopback_owner_pids`` applies the kernel's most-specific-bind
+            # dispatch, so our wildcard socket is not credited while another
+            # process holds the exact loopback address.
+            pids = platform_compat.loopback_owner_pids(platform_compat.find_port_listeners(port))
+        else:
+            pids = platform_compat.find_listening_pids(port)
     except Exception:
         return False
     if recorded not in pids:
@@ -176,6 +192,38 @@ def _gateway_owns_port(port: int) -> bool:
     if owner is None or owner != os.getuid():
         return False
     return _patchable("_is_kirocrew_process")(recorded)
+
+
+def _gateway_owns_port(port: int) -> bool:
+    """True only when *this user's* gateway process is listening on *port*.
+
+    Attributes by PORT: any listening socket of the recorded gateway satisfies
+    step 2, whatever address it bound. Correct for a caller asking "is our
+    gateway the thing on this port" — see
+    :func:`_gateway_owns_loopback_port` for the stricter question a caller
+    dialling ``127.0.0.1`` has to ask.
+    """
+    return _gateway_owns_port_impl(port, require_loopback=False)
+
+
+def _gateway_owns_loopback_port(port: int) -> bool:
+    """True only when this user's gateway answers at ``127.0.0.1:<port>``.
+
+    Same three-part identity as :func:`_gateway_owns_port` with step 2 narrowed
+    from the port to the ADDRESS: the recorded pid must hold a listener that a
+    loopback connect reaches (``127.0.0.1``, the IPv4 wildcard, or a dual-stack
+    ``[::]`` socket when nothing more specific exists).
+
+    A port-scoped answer is not sound for a caller about to send the internal
+    secret to ``127.0.0.1``. ``KIROCREW_BIND=<interface addr>`` is supported
+    config, and a gateway bound that way leaves ``127.0.0.1:<port>`` free for any
+    local process: the port-scoped proof would accept our gateway's pid while the
+    credential travelled to the process that actually answers.
+
+    Fails closed on every leg the unscoped proof does, and additionally when the
+    recorded gateway holds the port on some other address only.
+    """
+    return _gateway_owns_port_impl(port, require_loopback=True)
 
 
 def port_is_gateway_owned(port: int) -> bool:
@@ -195,6 +243,21 @@ def port_is_gateway_owned(port: int) -> bool:
     file-permission argument the proof rests on does not hold.
     """
     return bool(_patchable("_gateway_owns_port")(port))
+
+
+def port_is_gateway_owned_on_loopback(port: int) -> bool:
+    """The ownership proof for a caller that dials ``127.0.0.1:<port>``.
+
+    Use this, not :func:`port_is_gateway_owned`, whenever the credential travels
+    to the loopback address rather than merely to the port: it requires the
+    recorded gateway to own a listener a loopback connect actually reaches, so an
+    interface-bound gateway cannot vouch for whatever took ``127.0.0.1:<port>``.
+
+    Inherits the underlying proof's contract unchanged: fails closed on every
+    missing or unverifiable step, and denies outright on non-POSIX, where the
+    file-permission argument the proof rests on does not hold.
+    """
+    return bool(_patchable("_gateway_owns_loopback_port")(port))
 
 
 def _marker_port() -> int | None:

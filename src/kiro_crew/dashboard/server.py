@@ -2863,7 +2863,9 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
     app.on_cleanup.append(_browser_view_shutdown)
 
 
-def _register_instances_hooks(app: web.Application, state: DashboardState, port: int) -> None:
+def _register_instances_hooks(
+    app: web.Application, state: DashboardState, port: int, bind_host: str = ""
+) -> None:
     """Register the opt-in Instances (multi-instance) startup/cleanup hooks.
 
     These MUST be attached before ``runner.setup()`` freezes the app's
@@ -2899,6 +2901,11 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
             # token, and a claim that disagrees with the parent's real origin
             # makes the browser refuse to frame the remote pane.
             parent_port=port,
+            # The address that port was bound on. The loopback mint skips its
+            # ownership proof only when this gateway's own socket answers on
+            # loopback; on a one-interface bind (KIROCREW_BIND=<addr>)
+            # 127.0.0.1:<port> belongs to whoever took it, so the proof runs.
+            parent_bind_host=bind_host,
         )
         state.instances_registry = registry
         state.instances_manager = manager
@@ -4373,7 +4380,10 @@ async def start_dashboard(
     # Register the opt-in instances startup/cleanup hooks HERE, before
     # ``runner.setup()`` freezes the app's signal lists. See
     # ``_register_instances_hooks`` for why ordering matters.
-    _register_instances_hooks(app, state, port)
+    # Resolve the bind address ONCE and use that same value for the site below,
+    # so what the instances manager is told matches what the socket does.
+    _bind_host = bind_address_for(local_only)
+    _register_instances_hooks(app, state, port, _bind_host)
     _register_browser_view_cleanup(app, state)
     _register_connections_warm_lifecycle(app, state)
 
@@ -4390,7 +4400,7 @@ async def start_dashboard(
     # prunes it (see refresh_tokens.foreign_port_cookies).
     runner = build_hardened_runner(app, max_field_size=_MAX_HEADER_FIELD_SIZE)
     await runner.setup()
-    site = web.TCPSite(runner, bind_address_for(local_only), port)
+    site = web.TCPSite(runner, _bind_host, port)
     await _start_site(site, port)
     # Export the port this gateway ACTUALLY bound so child processes resolve
     # loopback callbacks against the truth, not a re-derived config guess.

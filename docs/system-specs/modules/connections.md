@@ -8,6 +8,11 @@ disconnect, and the two launch-gate rungs. The subsystem is
 `l0_record.py`, `l1_smoke.py`, `tool_test.py`), plus
 `dashboard/handlers/connections.py` and `website/src/pages/connections/`.
 
+> **Not this document:** a link to another Kiro Crew *gateway* is the **Remote
+> Instances** feature, owned by [`instances.md`](instances.md). SSH and AWS SSM
+> are product transports. The loopback method in §16 is a pod-only verification
+> seam for #8175, not a product connection option.
+
 **Kiro Crew never holds a connection's credential.** kiro-cli owns the OAuth chain
 end to end; Kiro Crew observes grant presence by `stat`, and every rule below follows
 from that boundary. The credential-boundary detail lives in

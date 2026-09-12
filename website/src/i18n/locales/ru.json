@@ -13595,6 +13595,7 @@
         "connecting": "Подключение...",
         "connection_did_not_complete_try_diagnose_for_det": "Подключение не завершилось. Нажми «Диагностика» для подробностей.",
         "connection_method": "Способ подключения",
+        "loopback_same_host": "Loopback (тот же хост)",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "цепочка учётных данных по умолчанию",
         "diagnose": "Диагностика",

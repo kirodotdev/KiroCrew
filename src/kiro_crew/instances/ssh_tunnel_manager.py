@@ -4,13 +4,21 @@ Adapts the supervised-child + state-machine design of
 ``kiro_crew.tunnel.manager.TunnelManager`` (which points *outward* to expose the
 dashboard) to point *inward*: for each connected remote instance it supervises a
 local child process that forwards a loopback port to the remote Kiro Crew's
-dashboard port, over one of two transports (``Instance.connection_method``):
+dashboard port, over one of three transports (``Instance.connection_method``):
 
 * ``"ssh"`` (default): ``ssh -N -L 127.0.0.1:LP:127.0.0.1:RP <ssh_host>``.
 * ``"ssm"``: ``aws ssm start-session --document-name
   AWS-StartPortForwardingSession --target <ssm_target> --parameters
   portNumber=RP,localPortNumber=LP`` — no inbound SSH port or SSH key needed,
   only IAM (``ssm:StartSession``) and the SSM agent on the remote box.
+* ``"loopback"``: no child PROCESS. The destination gateway already listens on
+  ``127.0.0.1:RP`` on THIS host, so instead of a forwarder child the hub binds
+  its own allocated port in-process and relays to that destination, gating each
+  connection on the pinned-owner proof — the pane loads from the hub's port, not
+  the destination's. This path is admitted only when the process carries the
+  exact pod marker and the pod config enables ``instances.allow_loopback_transport``.
+  The destination is fixed at ``127.0.0.1`` and no record or config field can
+  redirect it.
 
 Design note: a literal ``ssh -fN`` would make ssh fork into the background and
 the foreground process exit immediately, which would leave the gateway unable to
@@ -32,7 +40,54 @@ self-heal are Phase 3 — this module exposes clean seams (an ``on_exit`` hook a
 a per-instance state machine) for that follow-up without implementing it here.
 SSM support reuses every one of those seams — it is a second *transport* plugged
 into the same tunnel/state-machine/self-heal/token-refresh code, not a parallel
-implementation.
+implementation. The loopback transport is a third, and the one that shows what
+those seams are really keyed on: the readiness wait, the health probe and the
+teardown all watch a PORT, so they carry over to a transport with no process at
+all. Only the two things that genuinely depend on a child — spawning it
+(:meth:`_SshTunnel._spawn_child`) and reading a failure off its exit
+(:meth:`_SshTunnel._fail_unhealthy`) — needed a case for it.
+
+**Watching a port is not enough for the loopback transport.** For ssh and ssm the
+credential travels into a child, and that child's exit takes the forwarded socket
+with it: there is no window in which the port answers but the peer is somebody
+else. The loopback transport's destination is an ordinary port on this host, so
+if the gateway exits, any local process may bind the freed port and answer every
+later TCP probe — which would leave the tunnel CONNECTED and hand it a reusable
+~20h bearer. So the loopback transport carries an IDENTITY as well as a port: the
+proven owner pid (:func:`_proven_loopback_owner`, over the address-scoped
+:func:`kiro_crew.port_resolution.port_is_gateway_owned_on_loopback`) is pinned at
+establishment by the readiness wait, re-proved by every health-probe cycle, and
+COMPARED rather than re-adopted. A proof failure or a changed pid condemns the
+tunnel one-way: sends are refused immediately and the tunnel fails toward a fresh
+``connect``, never rebinding onto the new listener.
+
+Two send classes, two freshness levels. The rare credential-ESTABLISHING send
+(:meth:`SshTunnelManager.token_validates`) proves immediately before it, so the
+bearer the browser receives is confirmed against a listener checked at that
+moment. The per-request proxy / transfer / search path reads the verdict the last
+probe established (:meth:`_SshTunnel.loopback_ownership_ok`), because an ``lsof``
+per proxied request is not a latency this path can pay. The accepted residual is
+therefore one probe interval wide: a listener replaced just after a passing probe
+is refused only once the next probe runs. It is bounded by the probe interval
+(``constants.DEFAULT_PROBE_INTERVAL_SECS``) and by the condemnation being
+synchronous — the
+verdict flips the moment a proof fails, before the state machine has finished
+tearing the tunnel down — and no send after that point is admitted.
+
+**The pane's own connections are gated on the SOCKET, not on the port.** The
+browser reaches the destination through an in-process forward
+(:meth:`_SshTunnel._forward_pane_connection`) carrying a query token and a
+host-scoped cookie of its own, and it is the one path a port-scoped proof cannot
+gate: proving a port and then dialling it are two steps, and a local process
+retry-looping the bind eventually wins that gap. So the relay dials FIRST and then
+attributes the process holding the far end of THAT established connection
+(:func:`kiro_crew.platform_compat.established_peer_pids`, matched on the exact
+4-tuple), and carries bytes only when it is the pinned owner. An answer naming
+another pid refuses and condemns the tunnel; no answer refuses that connection
+alone — an empty attribution is also what an already-closed connection looks
+like — except where the destination is this process's own port and there is no
+second party to attribute. Every ownership lookup is bounded, so no wedged tool
+holds a browser connection — or a teardown — open.
 
 Security (standard practices): loopback-bound forwards only (never ``0.0.0.0``);
 child spawned via argv list (no local shell) for both transports; ``ssh_host`` /
@@ -50,11 +105,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import aiohttp
 
@@ -67,6 +123,7 @@ from kiro_crew.cloud import ssm as cloud_ssm
 # hardcoded port, no wildcard). See server._extra_frame_ancestors.
 from kiro_crew.config import live
 from kiro_crew.config.loader import DASHBOARD_PORT as _LOCAL_DASHBOARD_PORT
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.deploy.engine import aws_spawn_env
 from kiro_crew.instances.constants import CAPABILITY_REPLY_MAX_BYTES as _CAPABILITY_REPLY_MAX_BYTES
 from kiro_crew.instances.constants import (
@@ -74,6 +131,12 @@ from kiro_crew.instances.constants import (
 )
 from kiro_crew.instances.constants import (
     DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_LOOPBACK_CONNECT_TIMEOUT_SECS as _DEFAULT_LOOPBACK_CONNECT_TIMEOUT_SECS,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_LOOPBACK_MINT_TIMEOUT_SECS as _DEFAULT_LOOPBACK_MINT_TIMEOUT_SECS,
 )
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT_SECS
@@ -104,15 +167,28 @@ from kiro_crew.instances.constants import (
 from kiro_crew.instances.constants import (
     DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS as _DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS,
 )
+from kiro_crew.instances.constants import LOOPBACK_HOST as _LOOPBACK
+from kiro_crew.instances.constants import (
+    LOOPBACK_TRANSPORT_UNAVAILABLE_CODE as _LOOPBACK_UNAVAILABLE_CODE,
+)
 from kiro_crew.instances.constants import SEARCH_REPLY_MAX_BYTES as _SEARCH_REPLY_MAX_BYTES
-from kiro_crew.instances.diagnostics import diagnose_instance, diagnose_instance_ssm
+from kiro_crew.instances.diagnostics import (
+    diagnose_instance,
+    diagnose_instance_loopback,
+    diagnose_instance_ssm,
+)
+from kiro_crew.instances.local_token_mint import _bind_covers_loopback, mint_loopback_token
 from kiro_crew.instances.port_allocator import PortAllocator, _is_addr_free, _is_port_free
 from kiro_crew.instances.registry import (
     _NO_FORWARDER_PID,
     _UNALLOCATED_PORT,
+    CONNECTION_METHOD_LOOPBACK,
+    CONNECTION_METHOD_SSH,
+    CONNECTION_METHOD_SSM,
     Instance,
     InstancesRegistry,
 )
+from kiro_crew.instances.run_marker import read_pid as _read_recorded_pid
 from kiro_crew.instances.ssm_token_mint import (
     mint_remote_token_ssm,
     run_remote_kirocrew_ssm,
@@ -124,6 +200,7 @@ from kiro_crew.instances.token_mint import (
     ttl_to_seconds,
 )
 from kiro_crew.instances.validation import (
+    LoopbackValidationError,
     SshValidationError,
     SsmValidationError,
     validate_aws_profile,
@@ -133,6 +210,7 @@ from kiro_crew.instances.validation import (
     validate_ssm_run_as,
     validate_ssm_target,
 )
+from kiro_crew.port_resolution import port_is_gateway_owned_on_loopback
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import _HMAC_KEY_MIN_BYTES as _SEL_HMAC_KEY_MIN_BYTES
 from kiro_crew.sel import sel, sel_hmac_key_path
@@ -141,7 +219,63 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
-_LOOPBACK = "127.0.0.1"
+#: What :meth:`_SshTunnel._pane_peer_verdict` can say about the process on the far
+#: end of one established pane connection. Three states rather than a boolean
+#: because only ``"foreign"`` is EVIDENCE: an answer naming a pid that is not the
+#: pinned owner means the listener was replaced, and condemns the tunnel.
+#: ``"unattributable"`` is absence of evidence — the lookup timed out, the tool
+#: cannot see the socket, or the connection is already gone (``lsof`` exits
+#: non-zero when nothing matches, which is what a closed connection looks like) —
+#: so it refuses THIS connection and leaves the tunnel alone. Collapsing the two
+#: would let ordinary browser connection churn condemn a healthy tunnel.
+_PaneVerdict = Literal["ours", "unattributable", "foreign"]
+
+#: How long either ownership lookup may hold the coroutine that awaits it — the
+#: pinned-owner proof (:meth:`_SshTunnel._loopback_owner_unchanged`) and the
+#: established-peer attribution (:meth:`_SshTunnel._socket_peer_is_owner`). Both
+#: fork ``lsof``, which carries its own subprocess bound, so this sits just above
+#: it: the subprocess bound is what normally fires, and this one catches a worker
+#: thread wedged OUTSIDE the subprocess — a stalled filesystem read, or a thread
+#: that never gets scheduled. It does not stop the thread, which no cancel can
+#: reach; it stops the WAIT, and the late answer is discarded rather than acted
+#: on. Not answering in time is a refusal, never a relay on unverified identity.
+_OWNERSHIP_LOOKUP_TIMEOUT_SECS = 6.0
+
+#: Upper bound on the final listener close after every pane relay has been
+#: cancelled and gathered. Deliberately SHORTER than
+#: _OWNERSHIP_LOOKUP_TIMEOUT_SECS: a relay parked in a lookup thread is
+#: cancelled at its await, and teardown never waits for that worker thread. The
+#: late answer is discarded, and ``_stopping`` keeps it from carrying bytes.
+_FORWARDER_DRAIN_TIMEOUT_SECS = 2.0
+
+
+def _established_peer_pids(near: tuple[str, int], far: tuple[str, int]) -> list[int]:
+    """PIDs holding the far end of the established connection *near*→*far*.
+
+    Thin seam over :func:`platform_compat.established_peer_pids` so the relay's
+    gate is patchable in tests the same way ``_proven_loopback_owner`` is.
+    Synchronous — it forks a port lookup — so callers reach it through
+    ``asyncio.to_thread``.
+    """
+    return platform_compat.established_peer_pids(near, far)
+
+
+def _proven_loopback_owner(port: int) -> int | None:
+    """PID this user's gateway holds ``127.0.0.1:<port>`` with, else ``None``.
+
+    Composes the two halves of a retainable identity: the address-scoped proof
+    (:func:`kiro_crew.port_resolution.port_is_gateway_owned_on_loopback`) decides
+    whether a loopback connect reaches OUR gateway, and the run-marker sidecar
+    names which process that is. ``None`` means the port is not provably ours,
+    which every caller treats as a refusal rather than a retry.
+
+    Synchronous: it forks a port lookup and reads a file, so callers reach it
+    through ``asyncio.to_thread`` rather than from the event loop.
+    """
+    if not port_is_gateway_owned_on_loopback(port):
+        return None
+    return _read_recorded_pid(port)
+
 
 #: The closed set of peer endpoints :meth:`SshTunnelManager.peer_capability` may
 #: read. Every one is a GET that reports what the peer gateway CAN do — its
@@ -493,6 +627,17 @@ class _SshTunnel:
     the caller. All state-machine, health-probe, and self-heal behavior below
     is shared between both transports — only argv-building and exit-error
     classification differ.
+
+    ``transport="loopback"`` is the third case and the one with no child
+    PROCESS: the destination gateway already listens on
+    ``127.0.0.1``:``remote_port`` on this host, so there is nothing to spawn,
+    and the hub binds its own allocated ``local_port`` in-process and relays to
+    the destination. Everything the class does that
+    watches the PORT rather than the process — the readiness wait, the health
+    probe, the teardown — is unchanged and is exactly the right supervision for
+    it. The one thing that has no analogue is a child exit, which is what
+    normally publishes a failure verdict; :meth:`_fail_unhealthy` publishes it
+    directly instead.
     """
 
     def __init__(
@@ -506,10 +651,12 @@ class _SshTunnel:
         compression: bool = True,
         probe_failure_threshold: int = _PROBE_FAILS,
         on_exit: Callable[[str], None] | None = None,
-        transport: str = "ssh",
+        transport: str = CONNECTION_METHOD_SSH,
         ssm_target: str = "",
         aws_profile: str = "",
         aws_region: str = "",
+        own_port: int = 0,
+        own_bind_host: str = "",
     ) -> None:
         self._id = instance_id
         self._ssh_host = ssh_host
@@ -521,7 +668,7 @@ class _SshTunnel:
         # down to trigger self-heal; the manager threads the config-tunable value.
         self._probe_fails = probe_failure_threshold
         self._on_exit = on_exit  # Phase 3 seam: called(instance_id) on unexpected exit
-        self._transport = transport  # "ssh" or "ssm"
+        self._transport = transport  # "ssh", "ssm" or "loopback"
         self._ssm_target = ssm_target
         self._aws_profile = aws_profile
         self._aws_region = aws_region
@@ -532,6 +679,25 @@ class _SshTunnel:
         self._stop_event = asyncio.Event()
         self._probe_failures = 0
         self._probe_failed = False  # set when the health probe forced teardown
+        # Loopback ownership, retained across the tunnel's life. The proven owner
+        # pid is adopted once (at establishment) and thereafter COMPARED: a
+        # different pid on the port is a different listener, which is a failure
+        # rather than a new identity to adopt. ``_ownership_condemned`` is the
+        # verdict every credential-bearing send reads, set the moment a proof
+        # fails so it blocks sends without waiting for the state machine.
+        self._loopback_owner_pid: int | None = None
+        self._ownership_condemned = False
+        # This gateway's OWN listening port and bind address, for the one case
+        # external attribution is not needed: the destination is this very
+        # process. Mirrors the mint's carve-out exactly (see
+        # :meth:`_destination_is_self`).
+        self._own_port = int(own_port or 0)
+        self._own_bind_host = own_bind_host
+        # The hub-owned listener the iframe loads from on the loopback transport,
+        # plus the relay tasks crossing it. None for ssh/ssm, where the forwarder
+        # child owns that socket instead.
+        self._forwarder: asyncio.AbstractServer | None = None
+        self._forward_tasks: list[asyncio.Task] = []  # type: ignore[type-arg]
         self._stopping = False
         self._stderr_buf = ""
         self.status = TunnelStatus(
@@ -541,8 +707,12 @@ class _SshTunnel:
         )
 
     def _build_argv(self) -> list[str]:
-        """Build the transport-specific supervised child argv."""
-        if self._transport == "ssm":
+        """Build the transport-specific supervised child argv.
+
+        Never called for the loopback transport, which spawns nothing — see
+        :meth:`_spawn_child`.
+        """
+        if self._transport == CONNECTION_METHOD_SSM:
             return _build_ssm_tunnel_argv(
                 self._ssm_target,
                 self._local_port,
@@ -566,13 +736,52 @@ class _SshTunnel:
         self._stopping = False
         self.status.state = TunnelState.CONNECTING
         self.status.error = ""
+        if not await self._spawn_child():
+            return False
+
+        ready = await self._wait_until_ready()
+        if not ready:
+            await self._terminate()
+            # The loopback transport has no child: its listener is what must go.
+            await self._stop_loopback_forwarder()
+            if self.status.state != TunnelState.ERROR:
+                self.status.state = TunnelState.ERROR
+                self.status.error = self.status.error or "tunnel did not become ready"
+            return False
+
+        self.status.state = TunnelState.CONNECTED
+        self.status.connected_at = time.time()
+        self.status.error = ""
+        # Supervise for later unexpected exit (Phase 3 self-heal hooks here).
+        self._monitor_task = asyncio.create_task(self._monitor())
+        # Health probe: detect a tunnel that's alive-but-not-forwarding and tear
+        # it down so the monitor's on_exit seam can recover it (Stage 2).
+        if _PROBE_INTERVAL > 0:
+            self._probe_task = asyncio.create_task(self._probe_loop())
+        logger.info("Tunnel connected for %s on 127.0.0.1:%d", self._id, self._local_port)
+        return True
+
+    async def _spawn_child(self) -> bool:
+        """Spawn the forwarder child, or report success when there is none to spawn.
+
+        The loopback transport forwards nothing: its destination is already
+        listening on this host, so there is no child, and ``_proc`` stays None.
+        Every later step that reads ``_proc`` already treats None as "no child"
+        (``_failed_on_child_exit``, ``_capture_stderr``, ``_terminate``,
+        ``pid``), so the readiness wait, health probe and teardown carry over
+        unchanged; :meth:`_fail_unhealthy` covers the one that does not.
+
+        Returns False with an ERROR status when the spawn itself fails.
+        """
+        if self._transport == CONNECTION_METHOD_LOOPBACK:
+            return await self._start_loopback_forwarder()
         # Built in a worker thread: the SSM branch resolves the aws CLI
         # absolutely, which probes the filesystem (PATH scan +
         # well-known install dirs) — synchronous work that must not run on the
         # gateway event loop, where a stalled network mount on PATH would
         # freeze every request and heartbeat.
         argv = await asyncio.to_thread(self._build_argv)
-        target = self._ssm_target if self._transport == "ssm" else self._ssh_host
+        target = self._ssm_target if self._transport == CONNECTION_METHOD_SSM else self._ssh_host
         logger.info(
             "Opening %s tunnel for %s: 127.0.0.1:%d -> %s:%d",
             self._transport,
@@ -582,7 +791,7 @@ class _SshTunnel:
             self._remote_port,
         )
         try:
-            ssm = self._transport == "ssm"
+            ssm = self._transport == CONNECTION_METHOD_SSM
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -614,25 +823,6 @@ class _SshTunnel:
             self.status.error = f"failed to spawn {self._transport} tunnel: {e}"
             logger.error("Tunnel spawn failed for %s: %s", self._id, e)
             return False
-
-        ready = await self._wait_until_ready()
-        if not ready:
-            await self._terminate()
-            if self.status.state != TunnelState.ERROR:
-                self.status.state = TunnelState.ERROR
-                self.status.error = self.status.error or "tunnel did not become ready"
-            return False
-
-        self.status.state = TunnelState.CONNECTED
-        self.status.connected_at = time.time()
-        self.status.error = ""
-        # Supervise for later unexpected exit (Phase 3 self-heal hooks here).
-        self._monitor_task = asyncio.create_task(self._monitor())
-        # Health probe: detect a tunnel that's alive-but-not-forwarding and tear
-        # it down so the monitor's on_exit seam can recover it (Stage 2).
-        if _PROBE_INTERVAL > 0:
-            self._probe_task = asyncio.create_task(self._probe_loop())
-        logger.info("Tunnel connected for %s on 127.0.0.1:%d", self._id, self._local_port)
         return True
 
     async def _probe_loop(self) -> None:
@@ -657,6 +847,15 @@ class _SshTunnel:
                 if await self._port_reachable():
                     self._probe_failures = 0
                     continue
+                if self._ownership_condemned:
+                    # Not a transient: the thing on the port is not the gateway
+                    # this tunnel's credential belongs to. Retrying cannot make
+                    # it ours again, so fail now instead of spending the failure
+                    # budget and leaving sends open across those cycles.
+                    self._probe_failed = True
+                    self._probe_failures = 0
+                    asyncio.create_task(self._fail_unhealthy())
+                    return
                 self._probe_failures += 1
                 logger.warning(
                     "Tunnel health probe failed (%d/%d) for %s",
@@ -673,10 +872,10 @@ class _SshTunnel:
                     )
                     self._probe_failed = True
                     self._probe_failures = 0
-                    # Terminate the child; _monitor (not stopping) marks ERROR and
-                    # fires on_exit. Done in a task so we don't await our own
-                    # cancellation if stop() races in.
-                    asyncio.create_task(self._terminate())
+                    # Publish the failure; with a child that means terminating it
+                    # so _monitor marks ERROR and fires on_exit. Done in a task so
+                    # we don't await our own cancellation if stop() races in.
+                    asyncio.create_task(self._fail_unhealthy())
                     return
         except asyncio.CancelledError:
             raise
@@ -684,10 +883,14 @@ class _SshTunnel:
             logger.exception("Tunnel probe loop crashed for %s: %s", self._id, exc)
 
     async def _wait_until_ready(self) -> bool:
-        """Poll the local forward until it accepts a connection or we time out.
+        """Poll the local forward until it is usable for a credential-bearing send.
 
         Fails early if the ssh child exits before the port comes up (e.g. auth
-        failure, ExitOnForwardFailure), capturing stderr for diagnostics.
+        failure, ExitOnForwardFailure), capturing stderr for diagnostics. For the
+        loopback transport this is also where the listener's identity is PINNED:
+        :meth:`_port_reachable` adopts the proven owner pid on its first success,
+        so every later probe and send compares against an identity established
+        before any credential moved.
         """
         deadline = time.monotonic() + self._connect_timeout
         while time.monotonic() < deadline:
@@ -701,9 +904,112 @@ class _SshTunnel:
                 if await self._failed_on_child_exit():
                     return False
                 return True
+            if self._ownership_condemned:
+                # Something answers on the port and it is provably not our
+                # gateway. Polling cannot change that, and the tunnel must not
+                # come up at all: a CONNECTED loopback tunnel is a licence to
+                # send the bearer there.
+                self.status.error = (
+                    f"the listener on {_LOOPBACK}:{self._remote_port} is not "
+                    f"provably a Kiro Crew gateway of yours; refusing to treat it "
+                    f"as this instance"
+                )
+                return False
             await asyncio.sleep(_READY_POLL_INTERVAL_SECS)
-        self.status.error = f"timed out after {self._connect_timeout}s waiting for forward"
+        self.status.error = self._ready_timeout_error()
         return False
+
+    def _ready_timeout_error(self) -> str:
+        """Name what the readiness wait was waiting for, per transport.
+
+        A forwarding transport was waiting for its own child to bind. The
+        loopback transport's readiness wait watches the DESTINATION port, which
+        it does not bind, so a timeout there means the destination gateway is
+        simply not listening — reporting that as a
+        forward that failed to come up would point the operator at machinery
+        this transport does not have.
+        """
+        if self._transport == CONNECTION_METHOD_LOOPBACK:
+            return (
+                f"no gateway answered {_LOOPBACK}:{self._remote_port} "
+                f"within {self._connect_timeout}s"
+            )
+        return f"timed out after {self._connect_timeout}s waiting for forward"
+
+    async def _fail_unhealthy(self) -> None:
+        """Publish a probe-condemned tunnel as failed so self-heal can fire.
+
+        With a supervised child, terminating it IS the publication: ``_monitor``
+        observes the exit, marks ERROR and calls ``on_exit``. The loopback
+        transport has no child and therefore no exit to observe, so the same
+        verdict is published here directly — otherwise a destination gateway
+        that went away would leave the tunnel reported CONNECTED forever, with
+        nothing to trigger recovery.
+        """
+        if self._proc is not None:
+            await self._terminate()
+            return
+        self.status.state = TunnelState.ERROR
+        self.status.error = self._exit_error(None)
+        logger.warning("Tunnel for %s failed its health probe: %s", self._id, self.status.error)
+        if self._on_exit is not None:
+            with contextlib.suppress(Exception):
+                self._on_exit(self._id)
+
+    async def rearm_loopback(self) -> bool:
+        """Re-prove a loopback destination without releasing the pane listener.
+
+        The browser-facing port is a credential boundary: an iframe keeps its
+        host-scoped cookie and reconnects while self-heal runs, so closing this
+        listener would let another local process bind the origin and receive that
+        reconnect. Recovery therefore keeps ``_forwarder`` intact, drops relays
+        from the failed destination generation, and pins a fresh owner behind the
+        same listener before returning to CONNECTED.
+        """
+        if self._transport != CONNECTION_METHOD_LOOPBACK:
+            return False
+        if self._forwarder is None or self._stopping or self._stop_event.is_set():
+            return False
+
+        previous_probe = self._probe_task
+        if (
+            previous_probe is not None
+            and previous_probe is not asyncio.current_task()
+            and not previous_probe.done()
+        ):
+            previous_probe.cancel()
+            await asyncio.gather(previous_probe, return_exceptions=True)
+
+        relays, self._forward_tasks = list(self._forward_tasks), []
+        for relay in relays:
+            relay.cancel()
+        if relays:
+            await asyncio.gather(*relays, return_exceptions=True)
+
+        self._ownership_condemned = False
+        self._loopback_owner_pid = None
+        self._probe_failed = False
+        self._probe_failures = 0
+        self.status.state = TunnelState.CONNECTING
+        self.status.error = ""
+
+        ready = await self._wait_until_ready()
+        if not ready or self._forwarder is None or self._stopping or self._stop_event.is_set():
+            self.status.state = TunnelState.ERROR
+            self.status.error = self.status.error or "loopback destination did not recover"
+            return False
+
+        self.status.state = TunnelState.CONNECTED
+        self.status.connected_at = time.time()
+        self.status.error = ""
+        if _PROBE_INTERVAL > 0:
+            self._probe_task = asyncio.create_task(self._probe_loop())
+        logger.info(
+            "Loopback destination recovered for %s behind retained pane port %d",
+            self._id,
+            self._local_port,
+        )
+        return True
 
     async def _failed_on_child_exit(self) -> bool:
         """Record an already-exited child as an ERROR status; True if it exited.
@@ -722,16 +1028,437 @@ class _SshTunnel:
         self.status.error = self._exit_error(proc.returncode)
         return True
 
-    async def _port_reachable(self) -> bool:
-        """Return True if something accepts a TCP connect on the local forward."""
+    def loopback_ownership_ok(self) -> bool:
+        """Whether this tunnel's listener is still provably our gateway.
+
+        The verdict a credential-bearing send reads. It is a CACHED answer, fresh
+        as of the last reachability probe, so the per-request proxy path costs no
+        port lookup. Always ``True`` for a forwarding transport, which carries no
+        such exposure: its credential goes into an ``ssh`` / ``session-manager``
+        child, and that child's exit takes the forwarded socket down with it, so
+        there is no freed port for another process to bind.
+        """
+        if self._transport != CONNECTION_METHOD_LOOPBACK:
+            return True
+        return not self._ownership_condemned
+
+    def _condemn_ownership(self, reason: str) -> None:
+        """Record that this tunnel's listener fails the ownership proof.
+
+        One-way within one destination generation: an ordinary probe or send can
+        never adopt whatever replaced the pinned owner. Loopback self-heal is the
+        sole reset point; it cancels every relay from the failed generation,
+        clears the retained destination identity, and re-proves behind the same
+        hub-owned pane listener before returning to CONNECTED.
+        """
+        if not self._ownership_condemned:
+            self._ownership_condemned = True
+            logger.warning(
+                "Loopback listener on %s:%d is no longer provably this user's "
+                "gateway (%s) for %s — refusing further credential-bearing "
+                "requests on it",
+                _LOOPBACK,
+                self._remote_port,
+                reason,
+                self._id,
+            )
+
+    async def revalidate_loopback_owner(self) -> bool:
+        """Re-prove the listener now, for a caller about to send a credential.
+
+        The fresh counterpart to :meth:`loopback_ownership_ok`, for the rare
+        credential-ESTABLISHING sends. Answers ``False`` for an already-condemned
+        tunnel without re-proving, since the verdict is one-way.
+        """
+        if self._transport != CONNECTION_METHOD_LOOPBACK:
+            return True
+        if self._ownership_condemned:
+            return False
+        return await self._loopback_owner_unchanged()
+
+    def _destination_is_self(self) -> bool:
+        """Whether the destination listener IS this very process.
+
+        The mint's carve-out, reproduced condition for condition: the same port,
+        on this process's exact ``127.0.0.1`` bind
+        (:func:`kiro_crew.instances.local_token_mint._bind_covers_loopback`).
+        Both halves are required. A gateway bound to one non-loopback interface
+        leaves ``127.0.0.1:<port>`` free for any local process. A wildcard
+        ``0.0.0.0`` bind is not conclusive either: on macOS/BSD a more-specific
+        loopback listener can coexist and wins dispatch. An unstated bind address
+        answers False too, so all of those cases run the ordinary proof.
+
+        Deliberately not widened beyond that pair: this is the only case where
+        there is no second party for external attribution to speak about.
+        """
+        return (
+            self._own_port > 0
+            and self._remote_port == self._own_port
+            and _bind_covers_loopback(self._own_bind_host)
+        )
+
+    async def _loopback_owner_unchanged(self) -> bool:
+        """Re-prove the loopback listener and hold its identity steady.
+
+        Adopts the proven pid the first time (establishment) and compares it on
+        every later call. An unprovable listener or a changed pid condemns the
+        tunnel and answers ``False``; the retained identity is left as it was, so
+        an intruder's pid never becomes the thing we compare against.
+
+        The one exception is :meth:`_destination_is_self`: when the destination is
+        this process's own port on its exact loopback bind, attribution has nothing
+        to add, so a lookup that cannot answer (an unprivileged caller that cannot
+        see its own socket, for instance) does not condemn the tunnel. A wildcard-
+        bound hub is not this exception and runs the proof. The identity pinned in
+        the exact-bind case is this process's pid, so a later answer naming anything
+        else still reads as a change.
+
+        Off the event loop: the proof forks a port lookup. BOUNDED off it too —
+        the lookup runs in a worker thread a cancel cannot interrupt, so an
+        unbounded wait would let one wedged ``lsof`` park a pane connection, or a
+        probe cycle, indefinitely. A lookup that does not answer in time is not a
+        different verdict from one that answers nothing: both take the branch
+        below, so the ``_destination_is_self`` carve-out still applies and every
+        other destination is condemned.
+        """
+        owner = await self._bounded_lookup(_proven_loopback_owner, self._remote_port)
+        if owner is None:
+            if self._destination_is_self():
+                if self._loopback_owner_pid is None:
+                    self._loopback_owner_pid = os.getpid()
+                return self._loopback_owner_pid == os.getpid()
+            self._condemn_ownership("ownership could not be proven")
+            return False
+        if self._loopback_owner_pid is None:
+            self._loopback_owner_pid = owner
+            return True
+        if owner != self._loopback_owner_pid:
+            self._condemn_ownership(
+                f"listener identity changed from pid {self._loopback_owner_pid} to pid {owner}"
+            )
+            return False
+        return True
+
+    async def _start_loopback_forwarder(self) -> bool:
+        """Bind the pane's hub-owned port and forward it to the destination.
+
+        The loopback transport's stand-in for an ``ssh -N -L`` child, in-process
+        because the destination is on this host and an ssh self-connect fails
+        host-key verification by design. What matters is not the mechanism but
+        the ownership: the socket the iframe loads from belongs to THIS gateway,
+        so it cannot be bound by anything else while the tunnel lives, and every
+        connection across it passes a gate the hub controls.
+
+        Binds ``127.0.0.1`` only, and publishes the port the kernel actually gave
+        (the caller may pass 0) so the pane's origin and the cookie name derive
+        from the real socket.
+        """
         try:
-            fut = asyncio.open_connection(_LOOPBACK, self._local_port)
+            self._forwarder = await asyncio.start_server(
+                self._forward_pane_connection, _LOOPBACK, self._local_port
+            )
+        except OSError as e:
+            self.status.state = TunnelState.ERROR
+            self.status.error = (
+                f"could not bind the local port for {self._id} "
+                f"({type(e).__name__}); retry, or move "
+                f"instances.tunnel_base_port to a quieter range"
+            )
+            return False
+        bound = self._forwarder.sockets[0].getsockname()[1]
+        self._local_port = int(bound)
+        self.status.local_port = int(bound)
+        logger.info(
+            "Serving local gateway for %s at %s:%d -> %s:%d (in-process forward)",
+            self._id,
+            _LOOPBACK,
+            self._local_port,
+            _LOOPBACK,
+            self._remote_port,
+        )
+        return True
+
+    async def _stop_loopback_forwarder(self) -> None:
+        """Release the pane's port and drop every connection across it.
+
+        Stop accepting first, cancel and gather the relays second, then await the
+        listener close. This mirrors ``mcp_gateway.gatewayd``: on Python 3.12+
+        ``Server.wait_closed()`` waits for accepted connections, so awaiting it
+        before cancelling their handlers deadlocks on a long-lived pane socket.
+        A port left bound by an orphaned listener is the squattable socket this
+        whole path exists to remove, so the release is unconditional.
+
+        The final listener wait is bounded, and teardown never waits on a lookup
+        thread. Cancelling a relay parked in ``asyncio.to_thread`` cancels its
+        await immediately; the worker may finish later, but its answer is
+        discarded. ``_stopping`` is set HERE rather than relied on from
+        ``stop()``, so every relay also finds the door shut after any late answer.
+        """
+        self._stopping = True
+        server, self._forwarder = self._forwarder, None
+        if server is not None:
+            server.close()
+
+        pumps, self._forward_tasks = list(self._forward_tasks), []
+        for task in pumps:
+            task.cancel()
+        if pumps:
+            await asyncio.gather(*pumps, return_exceptions=True)
+
+        if server is not None:
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=_FORWARDER_DRAIN_TIMEOUT_SECS)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Timed out after %.1fs waiting for the loopback pane listener "
+                    "for %s to close",
+                    _FORWARDER_DRAIN_TIMEOUT_SECS,
+                    self._id,
+                )
+            except Exception:
+                logger.debug("Loopback pane listener close failed for %s", self._id, exc_info=True)
+
+    async def _forward_pane_connection(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Relay ONE browser connection to the destination, if it is still ours.
+
+        The gate is the peer of the ESTABLISHED socket, not a port lookup taken
+        before the dial. Proof-then-dial is two steps: the owner can exit between
+        them, and a local attacker retry-looping the bind wins eventually. So the
+        dial happens first and the relay only begins once the process holding the
+        far end of THAT connection is attributed and matches the pinned owner —
+        binding the verdict to the socket bytes will actually cross.
+
+        The cached verdict and the pre-dial proof remain as fast-fails, refusing a
+        condemned tunnel without paying for a lookup, but neither licenses a relay
+        on its own. An attribution that cannot answer is a refusal, not
+        permission, so a platform that cannot name a socket's peer cannot carry
+        this transport (the ssh transport is unaffected).
+
+        Registered in ``_forward_tasks`` as the FIRST statement, before any await:
+        a task registered after the dial is invisible to
+        :meth:`_stop_loopback_forwarder`'s snapshot, so a connection still parked
+        in verification would survive the teardown and relay afterwards.
+        ``_stopping`` is re-checked after EVERY await that can park — the proof,
+        the dial and the attribution all can — because a cancel cannot interrupt
+        the worker thread a lookup runs in, so a lookup that returns late must
+        find the door already shut rather than proceed to relay. For the same
+        reason both endpoints are re-checked for liveness after verification: a
+        connection can be gone by the time a slow answer arrives, and there is
+        nothing left to relay over.
+
+        Both sockets are closed in one place, in a ``finally`` that does not
+        await. Closing is synchronous and therefore runs to completion even while
+        a cancellation unwinds this coroutine, where an awaited close could be
+        interrupted between the two endpoints and leak the second one.
+        """
+        task = asyncio.current_task()
+        if task is not None:
+            self._forward_tasks.append(task)
+        dest_writer: asyncio.StreamWriter | None = None
+        try:
+            if self._stopping:
+                self._log_pane_refusal("the tunnel is stopping")
+                return
+            if not self.loopback_ownership_ok() or not await self._loopback_owner_unchanged():
+                self._log_pane_refusal(
+                    "the destination listener is not provably this user's gateway"
+                )
+                return
+            if self._stopping:
+                self._log_pane_refusal("the tunnel is stopping")
+                return
+            try:
+                dest_reader, dest_writer = await asyncio.open_connection(
+                    _LOOPBACK, self._remote_port
+                )
+            except OSError as e:
+                logger.info(
+                    "Pane connection for %s could not reach %s:%d (%s)",
+                    self._id,
+                    _LOOPBACK,
+                    self._remote_port,
+                    type(e).__name__,
+                )
+                return
+            if self._stopping:
+                self._log_pane_refusal("the tunnel is stopping")
+                return
+            verdict = await self._pane_peer_verdict(dest_writer)
+            if verdict == "foreign":
+                self._condemn_ownership(
+                    "the process holding the far end of an established pane "
+                    "connection is not the pinned owner"
+                )
+                self._log_pane_refusal("its established peer is not the pinned owner")
+                return
+            if verdict != "ours":
+                self._log_pane_refusal("its established peer could not be attributed")
+                return
+            if self._stopping:
+                self._log_pane_refusal("the tunnel is stopping")
+                return
+            if writer.is_closing() or dest_writer.is_closing():
+                self._log_pane_refusal("an endpoint went away during verification")
+                return
+            await asyncio.gather(
+                self._pump(reader, dest_writer),
+                self._pump(dest_reader, writer),
+            )
+        finally:
+            if task is not None and task in self._forward_tasks:
+                self._forward_tasks.remove(task)
+            self._drop_writers(writer, dest_writer)
+
+    async def _pane_peer_verdict(self, dest_writer: asyncio.StreamWriter) -> _PaneVerdict:
+        """Attribute the process on the far end of THIS established pane socket.
+
+        Reads both endpoints off the connected socket, so the 4-tuple attributed
+        is the one the relay is about to carry bytes over rather than whatever
+        holds the port at lookup time. That is the whole point of running after the
+        dial: a port-scoped answer describes a listener, and the listener it
+        describes need not be the process on the other end of this socket.
+
+        Only ``"ours"`` relays. The split between the two refusals is the split
+        between evidence and its absence, and it is load-bearing: an empty
+        attribution is also what an already-closed connection looks like, so
+        treating it as a replacement would let a browser that opens and drops a
+        connection condemn a healthy tunnel.
+
+        One carve-out, the same one the establishment proof already makes
+        (:meth:`_destination_is_self`): when the destination is this process's own
+        port on its exact ``127.0.0.1`` bind, the far end IS this process, so there
+        is no second party for attribution to speak about and an unprivileged
+        caller that cannot see its own socket must not lose the pane. Wildcard-
+        bound hubs run the proof because a more-specific loopback peer can outrank
+        their socket. An answer naming another pid is still ``"foreign"`` in the
+        exact-bind case as everywhere.
+
+        Bounded through :meth:`_bounded_lookup`, so a wedged lookup refuses rather
+        than holding a browser connection open.
+        """
+        sock = dest_writer.get_extra_info("socket")
+        if sock is None:
+            return "unattributable"
+        try:
+            near = sock.getsockname()
+            far = sock.getpeername()
+        except OSError:
+            return "unattributable"  # already torn down; nothing to relay over
+        pids = await self._bounded_lookup(
+            _established_peer_pids, (near[0], near[1]), (far[0], far[1])
+        )
+        if not pids:
+            if self._destination_is_self() and self._loopback_owner_pid == os.getpid():
+                return "ours"
+            return "unattributable"
+        return "ours" if self._loopback_owner_pid in pids else "foreign"
+
+    async def _bounded_lookup(self, fn: Callable[..., _T], *args: Any) -> _T | None:
+        """Run one synchronous ownership lookup off the loop, under a hard bound.
+
+        Answers ``None`` when the lookup did not answer — it timed out, it raised,
+        or the thread could not run. Every caller reads that as "unattributable",
+        never as permission.
+
+        The bound does not stop the worker: a thread cannot be cancelled, so the
+        lookup runs on and its answer is DISCARDED rather than delivered late.
+        What the bound protects is the coroutine WAITING on it — a pane
+        connection, a probe cycle, and through them teardown, none of which may be
+        held open by one wedged ``lsof``. Cancellation propagates rather than
+        being flattened into a verdict, so a cancelled relay dies at this await
+        instead of resuming on an answer nobody is still entitled to act on.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(fn, *args), timeout=_OWNERSHIP_LOOKUP_TIMEOUT_SECS
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Ownership lookup for %s did not answer within %.0fs; treating the "
+                "listener as unattributable",
+                self._id,
+                _OWNERSHIP_LOOKUP_TIMEOUT_SECS,
+            )
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # never let a lookup failure read as permission
+            logger.debug("Ownership lookup for %s failed", self._id, exc_info=True)
+            return None
+
+    def _log_pane_refusal(self, reason: str) -> None:
+        """Say once why a pane connection is not being relayed.
+
+        Closing is not done here: every exit from
+        :meth:`_forward_pane_connection` runs through its ``finally``, so there is
+        one close path rather than one per refusal.
+        """
+        logger.warning("Refusing a pane connection for %s: %s", self._id, reason)
+
+    @staticmethod
+    def _drop_writers(*writers: asyncio.StreamWriter | None) -> None:
+        """Close every writer given, tolerating one already gone.
+
+        Synchronous on purpose. It runs from a ``finally`` that can be unwinding a
+        cancellation, and an ``await`` there could be interrupted after the first
+        endpoint and leak the second; ``close()`` flushes and schedules the FIN
+        without yielding, so both endpoints are released whatever happens next.
+        """
+        for w in writers:
+            if w is None:
+                continue
+            with contextlib.suppress(Exception):
+                w.close()
+
+    @staticmethod
+    async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Copy one direction until EOF, then half-close so the peer sees it.
+
+        Errors are swallowed rather than raised: either side closing is the
+        ordinary end of an HTTP exchange, and the caller closes both ends anyway.
+        """
+        with contextlib.suppress(Exception):
+            while True:
+                chunk = await reader.read(65536)
+                if not chunk:
+                    break
+                writer.write(chunk)
+                await writer.drain()
+        with contextlib.suppress(Exception):
+            if writer.can_write_eof():
+                writer.write_eof()
+
+    async def _port_reachable(self) -> bool:
+        """Return True if the local forward is usable for a credential-bearing send.
+
+        For a forwarding transport that is a TCP connect. The loopback transport
+        additionally re-proves listener OWNERSHIP: it has no child, so its
+        destination is an ordinary port on this host, and a TCP accept there is
+        satisfied just as well by a process that bound the port after our gateway
+        exited. Each probe cycle therefore re-establishes what the send path
+        relies on, and a failure condemns the tunnel rather than counting toward
+        recovery as a transient.
+
+        The loopback probe dials the DESTINATION port, not the hub's own pane
+        port: the pane port is a socket this process holds, so connecting to it
+        would only prove the forwarder is up, never that anything answers behind
+        it.
+        """
+        probe_port = (
+            self._remote_port if self._transport == CONNECTION_METHOD_LOOPBACK else self._local_port
+        )
+        try:
+            fut = asyncio.open_connection(_LOOPBACK, probe_port)
             reader, writer = await asyncio.wait_for(fut, timeout=1.0)
         except (OSError, asyncio.TimeoutError):
             return False
         writer.close()
         with contextlib.suppress(Exception):
             await writer.wait_closed()
+        if self._transport == CONNECTION_METHOD_LOOPBACK:
+            return await self._loopback_owner_unchanged()
         return True
 
     async def _monitor(self) -> None:
@@ -771,10 +1498,16 @@ class _SshTunnel:
         is classified separately by :meth:`_ssm_exit_error` — running SSM stderr
         through the ssh matchers above would mislabel e.g. an ``AccessDenied``
         as an "ssh auth failure".
+
+        The loopback transport reaches this method only through
+        :meth:`_fail_unhealthy` (there is no child, so no exit code): its single
+        verdict is the probe-failure branch below.
         """
         if self._probe_failed:
+            if self._transport == CONNECTION_METHOD_LOOPBACK:
+                return f"the gateway on {_LOOPBACK}:{self._remote_port} " f"stopped answering"
             return "health probe failed — tunnel alive but not forwarding"
-        if self._transport == "ssm":
+        if self._transport == CONNECTION_METHOD_SSM:
             return self._ssm_exit_error(returncode)
         # Drop ssh's benign post-quantum KEX advisory so it can't mask the real
         # failure (the loop symptom was this warning hiding "bind: ... in use").
@@ -869,6 +1602,7 @@ class _SshTunnel:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._monitor_task
         await self._terminate()
+        await self._stop_loopback_forwarder()
         self.status.state = TunnelState.STOPPED
         logger.info("Tunnel stopped for %s", self._id)
 
@@ -1065,7 +1799,7 @@ class _TransportParams:
     re-branching on ``connection_method``.
     """
 
-    method: str  # "ssh" | "ssm"
+    method: str  # "ssh" | "ssm" | "loopback"
     ssh_host: str = ""
     remote_bin: str = ""
     ssm_target: str = ""
@@ -1075,8 +1809,16 @@ class _TransportParams:
 
     @property
     def target(self) -> str:
-        """The human-facing target (ssh host or SSM instance id) for messages."""
-        return self.ssm_target if self.method == "ssm" else self.ssh_host
+        """The human-facing target (host, SSM instance id, or the loopback address).
+
+        The loopback transport carries no address of its own: its destination is
+        the fixed :data:`_LOOPBACK`.
+        """
+        if self.method == CONNECTION_METHOD_SSM:
+            return self.ssm_target
+        if self.method == CONNECTION_METHOD_LOOPBACK:
+            return _LOOPBACK
+        return self.ssh_host
 
     def tunnel_kwargs(self) -> dict:
         """Transport kwargs for the ``_SshTunnel`` constructor."""
@@ -1089,7 +1831,7 @@ class _TransportParams:
 
 
 class SshTunnelManager:
-    """Manages per-instance tunnels (SSH or SSM) keyed by instance id.
+    """Manages per-instance tunnels (SSH, SSM or loopback) keyed by instance id.
 
     Holds the live tunnels, allocates loopback ports, mints per-instance tokens,
     and keeps the registry's ``was_connected`` / ``last_active`` hints in sync.
@@ -1100,6 +1842,12 @@ class SshTunnelManager:
     because it is referenced by ``dashboard/server.py`` and the existing test
     suite; it now supervises whichever transport each instance's
     ``connection_method`` selects.
+
+    ``allow_loopback`` overrides the pod config flag for unit tests only. The
+    exact ``KIROCREW_POD=1`` marker remains the outer gate and cannot be
+    overridden. With ``allow_loopback=None``, the pod flag is read at each use
+    rather than captured here, so disabling the verification seam takes effect
+    without a gateway restart. The API performs the same fresh read.
     """
 
     def __init__(
@@ -1113,9 +1861,11 @@ class SshTunnelManager:
         recover_backoff_max_secs: float = _RECOVER_BACKOFF_MAX_SECS,
         probe_failure_threshold: int = _PROBE_FAILS,
         mint_timeout_secs: float | None = None,
+        allow_loopback: bool | None = None,
         mint_token: Callable[..., Awaitable[str]] = mint_remote_token,
         tunnel_factory: Callable[..., _SshTunnel] | None = None,
         parent_port: int | None = None,
+        parent_bind_host: str = "",
     ) -> None:
         self._registry = registry
         # The port the embedding dashboard ACTUALLY bound, carried into every
@@ -1131,6 +1881,12 @@ class SshTunnelManager:
         # passed to ``_register_instances_hooks``), so it is threaded in here
         # rather than re-derived.
         self._parent_port = parent_port if parent_port else _LOCAL_DASHBOARD_PORT
+        # The ADDRESS this gateway bound that port on, threaded in from the same
+        # place as the port. The loopback mint needs both to tell "the
+        # destination is my own listener" from "the destination is my own port
+        # number", which differ on a gateway bound to one interface. Empty means
+        # unstated, and the mint then proves the listener instead of assuming.
+        self._parent_bind_host = parent_bind_host
         self._allocator = PortAllocator(base_port=base_port)
         self._connect_timeout = connect_timeout_secs
         self._ssh_compression = ssh_compression
@@ -1141,6 +1897,7 @@ class SshTunnelManager:
         self._recover_backoff_max = recover_backoff_max_secs
         self._probe_fails = probe_failure_threshold
         self._mint_timeout = mint_timeout_secs
+        self._allow_loopback = allow_loopback
         self._mint_token = mint_token
         self._tunnel_factory = tunnel_factory or _SshTunnel
         self._tunnels: dict[str, _SshTunnel] = {}
@@ -1253,11 +2010,19 @@ class SshTunnelManager:
             raise cancelled
 
     def _reserved_ports(self) -> set[int]:
-        """Ports already taken: live tunnels + local_port set on any instance."""
+        """Ports unavailable to pane allocation.
+
+        Live and recorded pane ports stay unique. Every configured loopback
+        destination is reserved too, even while its sibling gateway is stopped:
+        letting another pane bind that port would prevent the sibling from
+        starting later.
+        """
         reserved: set[int] = {t.status.local_port for t in self._tunnels.values()}
         for inst in self._registry.list():
             if inst.local_port:
                 reserved.add(inst.local_port)
+            if inst.connection_method == CONNECTION_METHOD_LOOPBACK:
+                reserved.add(inst.remote_port)
         return reserved
 
     async def _reclaim_orphan_forwarder(self, inst: Instance, params: _TransportParams) -> None:
@@ -1427,8 +2192,10 @@ class SshTunnelManager:
         """
         if self._connect_timeout is not None:
             return self._connect_timeout  # explicit override
-        if method == "ssm":
+        if method == CONNECTION_METHOD_SSM:
             return _DEFAULT_SSM_CONNECT_TIMEOUT_SECS
+        if method == CONNECTION_METHOD_LOOPBACK:
+            return _DEFAULT_LOOPBACK_CONNECT_TIMEOUT_SECS
         return _DEFAULT_CONNECT_TIMEOUT_SECS
 
     def _mint_timeout_for(self, method: str) -> float:
@@ -1443,30 +2210,69 @@ class SshTunnelManager:
         """
         if self._mint_timeout is not None:
             return self._mint_timeout  # explicit override
-        if method == "ssm":
+        if method == CONNECTION_METHOD_SSM:
             return _DEFAULT_SSM_MINT_TIMEOUT_SECS
+        if method == CONNECTION_METHOD_LOOPBACK:
+            return _DEFAULT_LOOPBACK_MINT_TIMEOUT_SECS
         return _DEFAULT_MINT_TIMEOUT_SECS
+
+    def _loopback_allowed(self) -> bool:
+        """Whether the pod-only loopback verification seam is enabled.
+
+        ``KIROCREW_POD=1`` is the outer boundary. The config flag and the test
+        override are second keys inside that boundary; neither can make a
+        product gateway honor a loopback record.
+        """
+        if os.environ.get("KIROCREW_POD") != "1":
+            return False
+        if self._allow_loopback is not None:
+            return self._allow_loopback
+        try:
+            return bool(KiroCrewConfig.load().instances.allow_loopback_transport)
+        except Exception:
+            # Fail CLOSED: an unreadable config is not consent.
+            logger.warning("Could not read instances.allow_loopback_transport; refusing loopback")
+            return False
 
     def _resolve_transport(self, inst: Instance) -> _TransportParams:
         """Validate + resolve *inst*'s transport params immediately before use.
 
-        Raises :class:`SshValidationError` / :class:`SsmValidationError` so each
-        caller can surface a clean per-instance error. Validation happens here —
-        right before a command line is built — rather than trusting the
-        registry's lighter early-reject charset checks.
+        Raises :class:`SshValidationError` / :class:`SsmValidationError` /
+        :class:`LoopbackValidationError` so each caller can surface a clean
+        per-instance error. Validation happens here — right before a command
+        line is built — rather than trusting the registry's lighter early-reject
+        charset checks.
+
+        The loopback transport is refused unless the process carries the exact
+        pod marker and the pod config enables the verification seam. This is the
+        authoritative gate: the API check runs only on writes through that
+        surface, while ``instances.json`` is agent-writable and a hand-written
+        record can reach the manager directly.
+
+        Callers on the event loop offload this through :func:`asyncio.to_thread`:
+        the policy reads the config file synchronously via
+        :meth:`_loopback_allowed`, which must not block the loop.
         """
-        method = (inst.connection_method or "ssh").strip().lower()
-        if method == "ssm":
+        method = (inst.connection_method or CONNECTION_METHOD_SSH).strip().lower()
+        if method == CONNECTION_METHOD_SSM:
             return _TransportParams(
-                method="ssm",
+                method=CONNECTION_METHOD_SSM,
                 ssm_target=validate_ssm_target(inst.ssm_target),
                 aws_profile=validate_aws_profile(inst.aws_profile),
                 aws_region=validate_aws_region(inst.aws_region),
                 ssm_run_as=validate_ssm_run_as(inst.ssm_run_as),
                 remote_bin=validate_remote_bin(inst.remote_bin),
             )
+        if method == CONNECTION_METHOD_LOOPBACK:
+            if not self._loopback_allowed():
+                raise LoopbackValidationError(
+                    "the loopback transport is a pod-only verification seam. It requires "
+                    "the Kiro Crew pod runtime and "
+                    "instances.allow_loopback_transport=true inside that pod."
+                )
+            return _TransportParams(method=CONNECTION_METHOD_LOOPBACK)
         return _TransportParams(
-            method="ssh",
+            method=CONNECTION_METHOD_SSH,
             ssh_host=validate_ssh_host(inst.ssh_host),
             remote_bin=validate_remote_bin(inst.remote_bin),
         )
@@ -1476,9 +2282,11 @@ class SshTunnelManager:
 
         The SSH path goes through the injectable ``self._mint_token`` seam (kept
         so the existing tests can substitute a fake mint); the SSM path calls
-        :func:`mint_remote_token_ssm`. Never logs the token.
+        :func:`mint_remote_token_ssm`; the loopback path calls
+        :func:`mint_loopback_token`, which needs no remote shell at all. Never
+        logs the token.
         """
-        if params.method == "ssm":
+        if params.method == CONNECTION_METHOD_SSM:
             return await mint_remote_token_ssm(
                 params.ssm_target,
                 aws_profile=params.aws_profile,
@@ -1490,6 +2298,15 @@ class SshTunnelManager:
                 embed_parent_port=self._parent_port,
                 timeout_secs=self._mint_timeout_for(params.method),
             )
+        if params.method == CONNECTION_METHOD_LOOPBACK:
+            return await mint_loopback_token(
+                inst.remote_port,
+                own_port=self._parent_port,
+                own_bind_host=self._parent_bind_host,
+                ttl=inst.ttl,
+                embed_parent_port=self._parent_port,
+                timeout_secs=self._mint_timeout_for(params.method),
+            )
         return await self._mint_token(
             params.ssh_host,
             remote_bin=params.remote_bin,
@@ -1498,6 +2315,103 @@ class SshTunnelManager:
             embed_parent_port=self._parent_port,
             timeout_secs=self._mint_timeout_for(params.method),
         )
+
+    async def _acquire_local_port(
+        self,
+        *,
+        also_exclude: int | None = None,
+    ) -> int:
+        """Resolve the loopback port the embedded pane will load from.
+
+        All three transports give the embedded pane a hub-owned loopback port.
+        The allocator finds a free port and re-probes it. SSH and SSM hand that
+        port to their forwarder child; loopback binds it in-process and relays to
+        the destination gateway's separate, already-listening port.
+
+        ``also_exclude`` keeps one extra port out of the allocation on top of
+        the reserved set. A rebuild passes the port it just freed, so every
+        transport gets a fresh hub-owned pane port and escapes a cause bound to
+        the old one.
+
+        Raises :class:`RuntimeError` with a caller-facing message, which is what
+        ``connect`` turns into an ERROR status.
+        """
+        # Allocate a free loopback port for the forward. It deliberately does
+        # NOT have to equal ``inst.remote_port``. The embedded dashboard runs
+        # in an iframe at http://127.0.0.1:<local_port>, and the remote
+        # gateway accepts that because:
+        #   * ``check_origin`` has a same-origin loopback branch — a loopback
+        #     Origin equal to the request's own Host is trusted at ANY port,
+        #     which is exactly the shape the iframe produces (it is served at
+        #     127.0.0.1:<local_port> and calls that same location.host); and
+        #   * ``build_allowed_hosts`` compares hostname only, so the Host
+        #     header matches regardless of port; and
+        #   * the session cookie is named from the browser-facing port
+        #     (``_cookie_port_from_host``), so distinct local ports get
+        #     distinct cookies instead of colliding in the shared 127.0.0.1
+        #     jar — that helper exists precisely for tunnels whose local port
+        #     differs from the remote's.
+        # This does not reopen CSE SEC-016: a malicious local page on an
+        # arbitrary port sends its own Origin while the Host stays the
+        # gateway's, so the two differ and the same-origin branch rejects it.
+        # Browsers forbid scripts from forging either header.
+        #
+        # Mirroring the remote port is not an option the shipped defaults
+        # allow: a stock gateway binds the same default port on both ends, so a
+        # stock hub already holds the port a stock remote reports, and two
+        # stock installs could never connect under that rule.
+        #
+        # Every instance's recorded port stays reserved, and the allocator
+        # probes each candidate, so a port anything still holds — including a
+        # leftover forwarder of our own — is skipped rather than fought over.
+        # That skip is why no orphan-reaping step is needed for connect to
+        # make PROGRESS: nothing has to be killed to get a working tunnel.
+        #
+        # The cost that skip alone would carry: an ``ssh -N -L`` child
+        # orphaned by a gateway hard-kill keeps its loopback port and its
+        # session to the remote until the OS reaps it. That leak is now
+        # reclaimed by ``_reclaim_orphan_forwarder`` above — by the child's
+        # RECORDED pid behind a strict exact-argv identity check, never by
+        # scanning the process table. Argv-pattern matching over the process
+        # table is off the table because it can SIGTERM a forward the operator
+        # opened themselves; an unrecorded or unverified process is therefore
+        # left alone, and allocation simply skips its port.
+        #
+        # There is deliberately no "take my own previous port back" branch.
+        # It reads as free stability, but the case it fires in cannot benefit:
+        # ``disconnect`` zeroes the port, while ``shutdown`` documents that it
+        # "Leaves registry hints intact", so the recorded port survives a
+        # gateway RESTART rather than only a crash — and after any restart the
+        # token is re-minted and the pane reloads, so there is no iframe
+        # origin or ``mc_token_<port>`` cookie left to keep stable. The
+        # in-session case that genuinely wants the same port is already served
+        # by ``_recover``, which reuses ``current.status.local_port``.
+        #
+        # Everything here runs off the event loop: ``_reserved_ports`` reads
+        # the registry from disk under its own lock, and the port probe binds
+        # a socket. Under the mirror neither happened on this path -- the port
+        # was a fixed field read and one probe -- whereas this reads a file
+        # and can walk upward past every occupied candidate, all inside the
+        # manager lock on the gateway's loop, where a synchronous scan would
+        # stall unrelated requests and heartbeats. This matches how the rest
+        # of the module already reaches the registry (``asyncio.to_thread``).
+        reserved = await asyncio.to_thread(self._reserved_ports)
+        if also_exclude is not None:
+            reserved = set(reserved) | {also_exclude}
+        local_port: int = await asyncio.to_thread(self._allocator.allocate, exclude=reserved)
+
+        # The probe above is advisory — there is an inherent TOCTOU window
+        # between probing and ssh actually binding — so re-check immediately
+        # before spawning and fail with an actionable message rather than
+        # letting the child exit on ExitOnForwardFailure.
+        if not await asyncio.to_thread(_is_port_free, local_port):
+            raise RuntimeError(
+                f"local port {local_port} was taken while connecting. Retry; "
+                f"if it keeps happening, disconnect whatever is holding port "
+                f"{local_port} or move instances.tunnel_base_port to a "
+                f"quieter range."
+            )
+        return local_port
 
     async def connect(
         self, instance_id: str, *, rebuild: bool = False, only_if_connected: bool = False
@@ -1613,8 +2527,8 @@ class SshTunnelManager:
 
             # Injection-safe validation immediately before building command lines.
             try:
-                params = self._resolve_transport(inst)
-            except (SshValidationError, SsmValidationError) as e:
+                params = await asyncio.to_thread(self._resolve_transport, inst)
+            except (SshValidationError, SsmValidationError, LoopbackValidationError) as e:
                 return self._error_status(inst, f"invalid {inst.connection_method} settings: {e}")
 
             # SSM needs the local session-manager-plugin; fail with an actionable
@@ -1628,7 +2542,7 @@ class SshTunnelManager:
             # every request and heartbeat. Same reason _build_argv is offloaded
             # below, and the same thing the dashboard's own cloud handler does with
             # this exact call.
-            if params.method == "ssm":
+            if params.method == CONNECTION_METHOD_SSM:
                 if not await asyncio.to_thread(cloud_ssm.session_manager_plugin_installed):
                     return self._error_status(inst, cloud_ssm.session_manager_plugin_install_hint())
 
@@ -1639,85 +2553,15 @@ class SshTunnelManager:
             # skips the recorded port whether or not the reclaim succeeded.
             await self._reclaim_orphan_forwarder(inst, params)
 
-            # Allocate a free loopback port for the forward. It deliberately does
-            # NOT have to equal ``inst.remote_port``. The embedded dashboard runs
-            # in an iframe at http://127.0.0.1:<local_port>, and the remote
-            # gateway accepts that because:
-            #   * ``check_origin`` has a same-origin loopback branch — a loopback
-            #     Origin equal to the request's own Host is trusted at ANY port,
-            #     which is exactly the shape the iframe produces (it is served at
-            #     127.0.0.1:<local_port> and calls that same location.host); and
-            #   * ``build_allowed_hosts`` compares hostname only, so the Host
-            #     header matches regardless of port; and
-            #   * the session cookie is named from the browser-facing port
-            #     (``_cookie_port_from_host``), so distinct local ports get
-            #     distinct cookies instead of colliding in the shared 127.0.0.1
-            #     jar — that helper exists precisely for tunnels whose local port
-            #     differs from the remote's.
-            # This does not reopen CSE SEC-016: a malicious local page on an
-            # arbitrary port sends its own Origin while the Host stays the
-            # gateway's, so the two differ and the same-origin branch rejects it.
-            # Browsers forbid scripts from forging either header.
-            #
-            # Mirroring the remote port instead would make the shipped defaults
-            # self-contradictory: a stock gateway binds the same default port on
-            # both ends, so a stock hub would already hold the port a stock remote
-            # reports and two stock installs could never connect.
-            #
-            # Every instance's recorded port stays reserved, and the allocator
-            # probes each candidate, so a port anything still holds — including a
-            # leftover forwarder of our own — is skipped rather than fought over.
-            # That skip is why no orphan-reaping step is needed for connect to
-            # make PROGRESS: nothing has to be killed to get a working tunnel.
-            #
-            # The cost that skip alone would carry: an ``ssh -N -L`` child
-            # orphaned by a gateway hard-kill keeps its loopback port and its
-            # session to the remote until the OS reaps it. That leak is now
-            # reclaimed by ``_reclaim_orphan_forwarder`` above — by the child's
-            # RECORDED pid behind a strict exact-argv identity check, never by
-            # scanning the process table. Scanning it by argv pattern could
-            # SIGTERM a forward the operator opened themselves; an unrecorded or
-            # unverified process is therefore left alone, and allocation simply
-            # skips its port.
-            #
-            # There is deliberately no "take my own previous port back" branch.
-            # It reads as free stability, but the case it fires in cannot benefit:
-            # ``disconnect`` zeroes the port, while ``shutdown`` documents that it
-            # "Leaves registry hints intact", so the recorded port survives a
-            # gateway RESTART rather than only a crash — and after any restart the
-            # token is re-minted and the pane reloads, so there is no iframe
-            # origin or ``mc_token_<port>`` cookie left to keep stable. The
-            # in-session case that genuinely wants the same port is already served
-            # by ``_recover``, which reuses ``current.status.local_port``.
-            #
-            # Everything here runs off the event loop: ``_reserved_ports`` reads
-            # the registry from disk under its own lock, and the port probe binds
-            # a socket. Under the mirror neither happened on this path -- the port
-            # was a fixed field read and one probe -- whereas this reads a file
-            # and can walk upward past every occupied candidate, all inside the
-            # manager lock on the gateway's loop, where a synchronous scan would
-            # stall unrelated requests and heartbeats. This matches how the rest
-            # of the module already reaches the registry (``asyncio.to_thread``).
-            reserved = await asyncio.to_thread(self._reserved_ports)
-            if rebuild_freed_port is not None:
-                reserved = set(reserved) | {rebuild_freed_port}
+            # Resolve the loopback port the embedded pane will load from. Every
+            # transport gets a hub-owned allocation: ssh/ssm bind it in their
+            # forwarder child, while loopback binds it in-process and relays to
+            # the destination's separate port. A rebuild also excludes the port
+            # it just freed. See :meth:`_acquire_local_port`.
             try:
-                local_port = await asyncio.to_thread(self._allocator.allocate, exclude=reserved)
+                local_port = await self._acquire_local_port(also_exclude=rebuild_freed_port)
             except RuntimeError as e:
                 return self._error_status(inst, str(e))
-
-            # The probe above is advisory — there is an inherent TOCTOU window
-            # between probing and ssh actually binding — so re-check immediately
-            # before spawning and fail with an actionable message rather than
-            # letting the child exit on ExitOnForwardFailure.
-            if not await asyncio.to_thread(_is_port_free, local_port):
-                return self._error_status(
-                    inst,
-                    f"local port {local_port} was taken while connecting. Retry; "
-                    f"if it keeps happening, disconnect whatever is holding port "
-                    f"{local_port} or move instances.tunnel_base_port to a "
-                    f"quieter range.",
-                )
 
             # Open the tunnel first so the forward is live.
             tunnel = self._tunnel_factory(
@@ -1729,6 +2573,8 @@ class SshTunnelManager:
                 compression=self._ssh_compression,
                 probe_failure_threshold=self._probe_fails,
                 on_exit=self._on_tunnel_exit,
+                own_port=self._parent_port,
+                own_bind_host=self._parent_bind_host,
                 **params.tunnel_kwargs(),
             )
             self._tunnels[instance_id] = tunnel
@@ -2035,6 +2881,20 @@ class SshTunnelManager:
             return
         await self._recover(instance_id)
 
+    async def _restore_for_recovery(
+        self,
+        inst: Instance,
+        params: _TransportParams,
+        current: _SshTunnel,
+        local_port: int,
+    ) -> bool:
+        """Restore one unhealthy tunnel according to its transport contract."""
+        if params.method == CONNECTION_METHOD_LOOPBACK:
+            if self._tunnels.get(inst.id) is not current:
+                return False
+            return await current.rearm_loopback()
+        return await self._rebuild(inst, params, local_port)
+
     async def _rebuild(self, inst: Instance, params: _TransportParams, local_port: int) -> bool:
         """Build + start a fresh tunnel for *inst*, replacing the live one.
 
@@ -2058,6 +2918,8 @@ class SshTunnelManager:
             compression=self._ssh_compression,
             probe_failure_threshold=self._probe_fails,
             on_exit=self._on_tunnel_exit,
+            own_port=self._parent_port,
+            own_bind_host=self._parent_bind_host,
             **params.tunnel_kwargs(),
         )
         self._tunnels[inst.id] = tunnel
@@ -2119,9 +2981,10 @@ class SshTunnelManager:
     async def _recover(self, instance_id: str) -> None:
         """2-tier self-heal for an unhealthy tunnel (either transport).
 
-        Tier 1: rebuild the tunnel (reusing the existing token).
-        Tier 2: if rebuild fails, re-mint the token over the instance's
-        transport, then rebuild.
+        Tier 1 restores the transport while reusing the existing token. SSH and
+        SSM rebuild their forwarder child; loopback drops old relays and re-proves
+        the destination behind its still-bound pane listener. Tier 2 re-mints the
+        token, then repeats that transport-specific restore.
         Capped at ``_MAX_RECOVERY`` consecutive attempts (reset on success) so a
         persistently-broken host can't churn forever. No-ops if the instance was
         disconnected/removed or has already recovered while we waited for the lock.
@@ -2151,22 +3014,29 @@ class SshTunnelManager:
                 return
 
             try:
-                params = self._resolve_transport(inst)
-            except (SshValidationError, SsmValidationError) as e:
+                params = await asyncio.to_thread(self._resolve_transport, inst)
+            except (SshValidationError, SsmValidationError, LoopbackValidationError) as e:
                 logger.warning("Self-heal aborted for %s: %s", instance_id, e)
                 return
 
             local_port = current.status.local_port or inst.local_port
+            if params.method == CONNECTION_METHOD_LOOPBACK:
+                # Same pane listener, new destination generation. A token mint
+                # that began against the failed owner must not publish after the
+                # re-proof adopts its replacement.
+                self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
 
         # Phase 2 — slow remote I/O WITHOUT the lock.
-        # Tier 1 — rebuild tunnel, reuse existing token.
-        logger.info("Self-heal tier 1 (rebuild tunnel) for %s [attempt %d]", instance_id, attempts)
-        if await self._rebuild(inst, params, local_port):
+        # Tier 1 — restore the transport, reusing the existing token.
+        logger.info(
+            "Self-heal tier 1 (restore transport) for %s [attempt %d]", instance_id, attempts
+        )
+        if await self._restore_for_recovery(inst, params, current, local_port):
             await self._mark_recovered(instance_id)
             logger.info("Self-heal tier 1 succeeded for %s", instance_id)
             return
 
-        # Tier 2 — re-mint the dashboard token, then rebuild.
+        # Tier 2 — re-mint the dashboard token, then restore the transport.
         logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
         try:
             token = await self._mint_for(inst, params)
@@ -2174,11 +3044,11 @@ class SshTunnelManager:
             logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
             return
         async with self._lock:
-            if instance_id not in self._tunnels:
-                return  # disconnected while minting — discard
+            if self._tunnels.get(instance_id) is not current:
+                return  # disconnected or replaced while minting — discard
             self._store_token(instance_id, token, inst.ttl)
             self._schedule_token_refresh(instance_id)
-        if await self._rebuild(inst, params, local_port):
+        if await self._restore_for_recovery(inst, params, current, local_port):
             await self._mark_recovered(instance_id)
             logger.info("Self-heal tier 2 succeeded for %s", instance_id)
         else:
@@ -2218,7 +3088,8 @@ class SshTunnelManager:
             return None
         tunnel = self._tunnels.get(instance_id)
         local_port = (tunnel.status.local_port if tunnel else 0) or inst.local_port
-        if (inst.connection_method or "ssh").strip().lower() == "ssm":
+        method = (inst.connection_method or CONNECTION_METHOD_SSH).strip().lower()
+        if method == CONNECTION_METHOD_SSM:
             result = await diagnose_instance_ssm(
                 inst.ssm_target,
                 inst.remote_port,
@@ -2227,6 +3098,21 @@ class SshTunnelManager:
                 aws_region=inst.aws_region,
                 ssm_run_as=inst.ssm_run_as,
             )
+        elif method == CONNECTION_METHOD_LOOPBACK:
+            try:
+                await asyncio.to_thread(self._resolve_transport, inst)
+            except LoopbackValidationError as e:
+                diag = {
+                    "code": _LOOPBACK_UNAVAILABLE_CODE,
+                    "ok": False,
+                    "reason": str(e),
+                    "probes": [],
+                }
+                if tunnel is not None:
+                    tunnel.status.diagnosis = diag
+                logger.info("Instance %s diagnosis: %s", instance_id, diag["code"])
+                return diag
+            result = await diagnose_instance_loopback(inst.remote_port, local_port)
         else:
             result = await diagnose_instance(
                 inst.ssh_host,
@@ -2252,18 +3138,33 @@ class SshTunnelManager:
         keyed by ``remote_port``) and falling back to the bin-candidate ladder —
         so restart works even when ``~/.local/bin/kirocrew`` points at an
         uninstalled worktree. Validates the transport params first. After a
-        restart the remote dashboard port bounces, so the local tunnel's health
-        probe detects the drop and self-heals (Stage 2) — no manual reconnect
-        needed. Returns ``{ok, message}``.
+        restart the remote dashboard port bounces, so the local tunnel's
+        health probe detects the drop and self-heals (Stage 2) — no manual
+        reconnect needed. Returns ``{ok, message}``.
+
+        Refused for the loopback transport. There is no remote: the destination
+        is a gateway on this host, and restarting it means restarting either this
+        very process or a sibling the operator started, which is their own
+        ``kirocrew restart`` to run rather than something the dashboard should
+        trigger on their behalf.
         """
         inst = await asyncio.to_thread(self._registry.get, instance_id)
         if inst is None:
             return {"ok": False, "message": "unknown instance"}
         try:
-            params = self._resolve_transport(inst)
-        except (SshValidationError, SsmValidationError) as e:
+            params = await asyncio.to_thread(self._resolve_transport, inst)
+        except (SshValidationError, SsmValidationError, LoopbackValidationError) as e:
             return {"ok": False, "message": f"invalid {inst.connection_method} settings: {e}"}
-        if params.method == "ssm":
+        if params.method == CONNECTION_METHOD_LOOPBACK:
+            return {
+                "ok": False,
+                "message": (
+                    "this instance is a gateway on this host, so there is no "
+                    "remote to restart — run `kirocrew restart` against it "
+                    "directly"
+                ),
+            }
+        if params.method == CONNECTION_METHOD_SSM:
             rc, err = await run_remote_kirocrew_ssm(
                 params.ssm_target,
                 "restart",
@@ -2332,6 +3233,19 @@ class SshTunnelManager:
         """
         if not token or local_port <= 0:
             return False
+        # The loopback transport dials an ordinary port on this host, so prove
+        # RIGHT HERE that the listener is still the gateway this bearer belongs
+        # to. This send is rare (once per connect / re-mint) and it is the one
+        # that establishes a credential the caller then hands to the browser, so
+        # it pays for a fresh proof rather than reading the probe-cycle cache.
+        tunnel = self._loopback_tunnel_on(local_port)
+        if tunnel is not None and not await tunnel.revalidate_loopback_owner():
+            logger.info(
+                "Refusing the liveness probe on loopback port %s: the listener "
+                "is not provably this user's gateway",
+                local_port,
+            )
+            return False
         url = f"http://{_LOOPBACK}:{int(local_port)}/api/status"
         timeout = aiohttp.ClientTimeout(total=_TOKEN_PROBE_TIMEOUT)
         try:
@@ -2347,6 +3261,20 @@ class SshTunnelManager:
                 type(e).__name__,  # never the token
             )
             return False
+
+    def _loopback_tunnel_on(self, local_port: int) -> "_SshTunnel | None":
+        """The LOOPBACK tunnel serving *local_port*, or ``None``.
+
+        Resolves by port because the credential-bearing probe is addressed by
+        port, not by instance. Every live tunnel's hub-owned pane port is unique
+        because the allocator excludes all live and recorded pane ports, so at
+        most one tunnel matches. Returning ``None`` for a forwarding transport
+        is what keeps the ownership gate scoped to the transport that needs it.
+        """
+        for tunnel in self._tunnels.values():
+            if tunnel.status.local_port == int(local_port):
+                return tunnel if tunnel._transport == CONNECTION_METHOD_LOOPBACK else None
+        return None
 
     def _peer_target(self, instance_id: str, path: str) -> tuple[str, str]:
         """Resolve ``(url, cookie_name)`` for one request to a CONNECTED peer.
@@ -2364,6 +3292,12 @@ class SshTunnelManager:
           not on the peer's own listen port, so two remotes both serving 7777
           through different forwards do not collide on one cookie. A bare
           ``mc_token`` is never read and would 403 every call.
+        * a LOOPBACK peer must still be provably our own gateway. The verdict is
+          the one the last health probe established
+          (:meth:`_SshTunnel.loopback_ownership_ok`), so this costs no port
+          lookup per request; a failed probe condemns the tunnel synchronously,
+          which blocks every subsequent send here before the state machine has
+          finished tearing the tunnel down.
 
         Raises :class:`_PeerUnavailable` instead of returning an error, because
         the callers' failure shapes differ (an exception for ``proxy_request``,
@@ -2371,6 +3305,9 @@ class SshTunnelManager:
         """
         st = self.status(instance_id)
         if st is None or st.state is not TunnelState.CONNECTED:
+            raise _PeerUnavailable("not_connected")
+        tunnel = self._tunnels.get(instance_id)
+        if tunnel is not None and not tunnel.loopback_ownership_ok():
             raise _PeerUnavailable("not_connected")
         local_port = st.local_port
         if local_port <= 0:
@@ -2980,8 +3917,8 @@ class SshTunnelManager:
         # the await, compared after.
         epoch = self._tunnel_epoch.get(instance_id, 0)
         try:
-            params = self._resolve_transport(inst)
-        except (SshValidationError, SsmValidationError) as e:
+            params = await asyncio.to_thread(self._resolve_transport, inst)
+        except (SshValidationError, SsmValidationError, LoopbackValidationError) as e:
             logger.warning("Token refresh aborted for %s: %s", instance_id, e)
             return False
         try:

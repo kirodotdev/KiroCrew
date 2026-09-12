@@ -42,6 +42,8 @@ import {
   useInstanceFormState,
   isBlankInstanceForm,
   EMPTY_INSTANCE_FORM,
+  instanceConnectionMethodLabel,
+  instanceConnectionTarget,
 } from './InstanceFormFields'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
   connected: 'bg-ok',
@@ -167,9 +169,9 @@ function InstanceRow({
         <div className="text-text text-sm font-medium truncate">{inst.name}</div>
         <div className="text-[12px] text-muted truncate">
           <span className="uppercase tracking-wide text-muted-strong">
-            {inst.connection_method === 'ssm' ? 'SSM' : 'SSH'}
+            {instanceConnectionMethodLabel(inst.connection_method)}
           </span>{' '}
-          {inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host}
+          {instanceConnectionTarget(inst)}
           {inst.connection_method === 'ssm' && inst.aws_region ? ` (${inst.aws_region})` : ''}{' '}
           {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port} {i18nT('pages.settings.instancesPanel.ttl')} {inst.ttl}
           {typeof ttl === 'number' ? ' ' + i18nT('pages.settings.instancesPanel.token_left', { time: humanizeSecs(ttl) }) : ''}
@@ -235,7 +237,14 @@ export function InstancesPanel() {
         : i18nT('pages.settings.instancesPanel.failed_to_load_remote_crews')
       : ''
   const loading = instancesQuery.isLoading
-  const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
+  // Loopback is a pod-only verification seam, not a product-configurable crew.
+  // Keep it out of Settings before row actions can render or edit the record.
+  const instances = useMemo(
+    () => (instancesQuery.data?.instances ?? []).filter(
+      inst => String(inst.connection_method).trim().toLowerCase() !== 'loopback',
+    ),
+    [instancesQuery.data],
+  )
   const warmCap = instancesQuery.data?.warm_set_cap || 5
   // Runtime usability: true only when the SSH manager is actually running.
   // enabled (data present, no 403) but !active => the flag was set after the

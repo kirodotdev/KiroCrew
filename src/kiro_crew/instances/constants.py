@@ -65,6 +65,25 @@ WARM_SET_CAP_AUTO_CEILING: int = 8
 # so a stock gateway's own port is never the first candidate.
 DEFAULT_TUNNEL_BASE_PORT: int = 7778
 
+# The address every socket in this package binds or dials on this host: the
+# ssh/ssm forward's local end, the in-process pane forwarder, the readiness and
+# health probes, and the loopback transport's DESTINATION. That destination is
+# this constant rather than a per-record field because the credential the
+# loopback mint sends is authorized by an ownership proof that attributes the
+# listener a 127.0.0.1 connect reaches
+# (``port_resolution.port_is_gateway_owned_on_loopback``), so this is the one
+# address the proof speaks for — another loopback address (``127.0.0.2``), a
+# hostname (``localhost``, resolved outside this process) or ``::1`` is each a
+# destination nothing attributed. IPv4 only, deliberately: the URL builders on
+# this path interpolate the host unbracketed, and the ssh transport already pins
+# ``AddressFamily=inet``.
+LOOPBACK_HOST: str = "127.0.0.1"
+
+# Stable wire/diagnosis code when the pod-only verification transport is not
+# admitted. Shared by the owner API and the manager's read-only diagnosis path
+# so clients do not need two spellings for the same policy refusal.
+LOOPBACK_TRANSPORT_UNAVAILABLE_CODE: str = "loopback_transport_unavailable"
+
 # Enable SSH transport compression (``ssh -C``) on instance tunnels. The whole
 # remote dashboard travels over this single forwarded stream: the SPA bundle on
 # first connect plus every subsequent API/WebSocket frame. That payload is
@@ -125,6 +144,13 @@ DEFAULT_CONNECT_TIMEOUT_SECS: float = 15.0
 # an explicit ``connect_timeout_secs`` override, it wins for both transports.
 DEFAULT_SSM_CONNECT_TIMEOUT_SECS: float = 25.0
 
+# The loopback transport spawns no forwarder: the destination gateway is already
+# listening on this host, so readiness is a single loopback TCP connect that
+# either works now or is not going to. The wait exists only to cover a
+# destination still binding its port (a sibling gateway started moments ago), so
+# it is short — a longer one would just delay an honest "nothing is there".
+DEFAULT_LOOPBACK_CONNECT_TIMEOUT_SECS: float = 5.0
+
 # Upper bound (secs) on a user-configured instances.connect_timeout_secs. Keeps
 # a pathological value from making the connect path hang indefinitely. 120s is
 # generous enough for any realistic proxy chain while still bounding the wait.
@@ -154,6 +180,11 @@ DEFAULT_MINT_TIMEOUT_SECS: float = 30.0
 # higher than the direct-ssh mint's. When the user supplies an explicit
 # (non-None) ``mint_timeout_secs`` override, it wins for both transports.
 DEFAULT_SSM_MINT_TIMEOUT_SECS: float = 90.0
+
+# The loopback mint is one HTTP request to a gateway on this host's loopback —
+# no ssh child, no proxy handshake, no SSM dispatch latency. Sized for a busy
+# event loop rather than for a network.
+DEFAULT_LOOPBACK_MINT_TIMEOUT_SECS: float = 10.0
 
 # Bounds on a user-configured instances.mint_timeout_secs. Below the floor
 # falls back to the default (a mint that can't finish in under 10s of budget

@@ -3281,6 +3281,7 @@
       "defaultValue": {
         "enabled": false,
         "warm_set_cap": 0,
+        "allow_loopback_transport": false,
         "tunnel_base_port": 7778,
         "ssh_compression": true,
         "connect_timeout_secs": null,
@@ -3318,6 +3319,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "instances.allow_loopback_transport",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Allow Loopback Verification Transport",
+      "help": "Permit pod verification records with connection_method 'loopback'. This key is ignored unless the process carries the exact KIROCREW_POD=1 marker set by Kiro Crew pod tooling. Product gateways cannot enable the transport from config. The destination stays fixed at 127.0.0.1, and the listener-ownership proof still applies inside a pod.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "instances.tunnel_base_port",
