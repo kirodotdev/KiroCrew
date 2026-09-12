@@ -53,7 +53,7 @@ from typing import Any
 
 from kiro_crew import hooks, identity_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
 from kiro_crew.config.paths import config_dir
@@ -70,6 +70,15 @@ from kiro_crew.sandbox import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
+
+# Dashboard-facing text for a spec-repair arm that reported success while the
+# overlay still lists missing specs (the no-op-is-failure rule documented on
+# ``repair_agent_specs``). Shared by the main-rebuild and auxiliary arms so the
+# remediation command cannot drift between them.
+_SPECS_STILL_MISSING_ERROR = (
+    "The repair reported success but the specs are still missing. "
+    "Run `kirocrew setup --agent-only --clean` on the gateway host."
+)
 
 OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/cli/"
 # The exact command the user runs to sign in. A CODE CONSTANT, never a catalog
@@ -2205,6 +2214,40 @@ class KiroPrerequisiteService:
         logger.info("Agent specs repaired from the readiness gate")
         return ""
 
+    async def _repair_auxiliary_specs(self, missing: list[str]) -> str:
+        """Write the missing AUXILIARY required specs. Returns failure text, or ``""``.
+
+        The counterpart to :meth:`_repair_agent_specs` for the required specs
+        other than the main one — today only the lite agent spec. Unlike the
+        main-spec rebuild, this write is NOT in the lost-update class that
+        method's docstring gates on: ``_install_lite_agent_fallback`` is an
+        atomic whole-file JSON write, and no ``tools``/``allowedTools`` half is
+        toggle-merged into the lite spec, so there is no concurrent edit to
+        lose — and the spec is only written here when it is absent anyway.
+
+        An auxiliary name this method does not know how to write is deliberately
+        left alone: it stays missing, and the caller's post-repair overlay
+        reports it through the still-missing error text instead of a false
+        success.
+        """
+
+        def _write() -> None:
+            from kiro_crew.agent import _install_lite_agent_fallback  # circular import
+
+            if LITE_AGENT_FILENAME in missing:
+                _install_lite_agent_fallback()
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as exc:
+            logger.error(
+                "Auxiliary agent spec repair from the readiness gate failed",
+                exc_info=True,
+            )
+            return _sanitize_detail(f"{type(exc).__name__}: {exc}")
+        logger.info("Auxiliary agent specs repaired from the readiness gate")
+        return ""
+
     async def repair_agent_specs(self, caller: str = "") -> dict[str, Any]:
         """Repair the managed agent specs, then return the post-repair snapshot.
 
@@ -2242,6 +2285,28 @@ class KiroPrerequisiteService:
             # what the card's button offers.
             repairable = AGENT_FILENAME in missing_before
             if not repairable:
+                auxiliary_missing = [
+                    name for name in missing_before if name != AGENT_FILENAME
+                ]
+                error = ""
+                if auxiliary_missing:
+                    # Only auxiliary required specs are missing. The main-spec
+                    # gate above keeps rebuild_agent_config away from a present
+                    # main spec, but the auxiliary specs have their own writers
+                    # with no such lost-update class (see
+                    # _repair_auxiliary_specs), so refusing to write them would
+                    # leave the gate blocking on a file the button never
+                    # writes. Runs even when a spec is REJECTED: acceptance is
+                    # only evaluated for PRESENT specs, so a rejected main spec
+                    # and a missing lite spec can coexist, and writing a MISSING
+                    # file rewrites nothing — the lost-update reasoning behind
+                    # the rejection guard does not apply to it.
+                    error = await self._repair_auxiliary_specs(auxiliary_missing)
+                elif not rejected_before:
+                    # Nothing to repair: a concurrent repair already wrote the
+                    # specs. Report, do not write.
+                    before["agent_spec_repair_error"] = ""
+                    return before
                 if rejected_before:
                     # Not a no-op: acceptance is only re-answerable by the binary,
                     # and the stat-only overlay cannot ask it. force=True because
@@ -2251,14 +2316,15 @@ class KiroPrerequisiteService:
                         await self._probe(force=True)
                     except Exception:  # noqa: BLE001 — stale state beats a 500
                         logger.warning("Re-probe of rejected agent specs failed", exc_info=True)
-                    result = await self._agent_spec_overlay(self._snapshot_dict())
-                    result["agent_spec_repair_error"] = ""
-                    return result
-                # Nothing to repair, only an auxiliary spec is missing (which the
-                # main-spec gate deliberately excludes), or a concurrent repair
-                # already wrote it. Report, do not write.
-                before["agent_spec_repair_error"] = ""
-                return before
+                result = await self._agent_spec_overlay(self._snapshot_dict())
+                if (
+                    not error
+                    and auxiliary_missing
+                    and (result.get("missing_agent_specs") or [])
+                ):
+                    error = _SPECS_STILL_MISSING_ERROR
+                result["agent_spec_repair_error"] = error
+                return result
             error = await self._repair_agent_specs()
             if not error and AGENT_FILENAME in rejected_before:
                 # Acceptance is only re-answerable by the binary, and the overlay
@@ -2272,10 +2338,7 @@ class KiroPrerequisiteService:
                     logger.warning("Re-probe after agent-spec repair failed", exc_info=True)
             result = await self._agent_spec_overlay(self._snapshot_dict())
             if not error and (result.get("missing_agent_specs") or []):
-                error = (
-                    "The rebuild reported success but the specs are still missing. "
-                    "Run `kirocrew setup --agent-only --clean` on the gateway host."
-                )
+                error = _SPECS_STILL_MISSING_ERROR
             result["agent_spec_repair_error"] = error
             return result
 
