@@ -40,17 +40,7 @@ BACKEND_FOR_RUNNER = {
 #: Delete an entry and the assertion below demands the matrix entry -- which is the
 #: point: this is the only place the deferral is recorded, so it cannot go stale
 #: silently the way a comment does.
-PENDING_VALIDATION = {
-    "windows-latest": (
-        "The Task Scheduler backend exists, so require_backend() succeeds here and "
-        "the fixture would select it -- the old 'until a backend lands' reason is "
-        "spent. What is missing is a validated RUN: the scenario suite has never "
-        "executed on win32, and the nightly sets KIROCREW_E2E_REQUIRE=1, "
-        "which turns each precondition skip into a failure. Adding the entry before "
-        "one green run would red the nightly rather than cover the platform, and a "
-        "red nightly is how the publish jobs downstream of it get skipped."
-    ),
-}
+PENDING_VALIDATION: dict[str, str] = {}
 
 
 def _matrix_runners() -> list[str]:

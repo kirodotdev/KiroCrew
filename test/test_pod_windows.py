@@ -406,46 +406,65 @@ def test_stop_ends_then_deletes_and_drops_the_wrapper(cfg, monkeypatch):
 
 
 def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeypatch):
-    """`/End` is asynchronous and reaches only the task's own process.
-
-    Returning while the gateway is alive makes the caller reap the HOME from
-    under a live writer: the removal then fails quietly while the CLI reports
-    zero residue.
-    """
-    import os
+    """`/End` is asynchronous; stop must poll the exact root handle."""
 
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
     monkeypatch.setattr(win, "time", _FakeClock())
     seen = {"n": 0}
 
-    def dying(_cfg, _name):
+    def _active(_handle):
         seen["n"] += 1
-        return os.getpid() if seen["n"] < 4 else None
+        return seen["n"] < 4
 
-    monkeypatch.setattr(win, "supervised_pid", dying)
+    monkeypatch.setattr(
+        win,
+        "supervised_pid",
+        lambda *_a: 4242 if seen["n"] < 4 else None,
+    )
+    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
+    monkeypatch.setattr(
+        win,
+        "open_process_termination_handle",
+        lambda _pid, expected: 8001 if expected == "1000" else None,
+    )
+    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
+    monkeypatch.setattr(win, "process_handle_active", _active)
+    monkeypatch.setattr(win, "terminate_process_handle", lambda _handle: True)
+    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
     win.write_task_script(cfg, "smoke")
+
     assert win.stop(cfg, "smoke").returncode == 0
     assert seen["n"] >= 4, "stop must poll rather than trust /End's return"
 
 
 def test_stop_preserves_everything_when_the_gateway_will_not_die(cfg, monkeypatch):
-    import os
-
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
     monkeypatch.setattr(win, "time", _FakeClock())
-    monkeypatch.setattr(win, "supervised_pid", lambda *_: os.getpid())
-    # The escalation must be PINNED, so a recycled pid can never be signalled.
-    killed: list[tuple[int, str]] = []
+    monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242)
+    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
     monkeypatch.setattr(
         win,
-        "kill_process_tree_pinned",
-        lambda pid, token, sig=None: killed.append((pid, token)) or True,
+        "open_process_termination_handle",
+        lambda _pid, expected: 8001 if expected == "1000" else None,
     )
+    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
+    monkeypatch.setattr(win, "process_handle_active", lambda _handle: True)
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        win,
+        "terminate_process_handle",
+        lambda handle: terminated.append(handle) or True,
+    )
+    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
     win.write_task_script(cfg, "smoke")
+
     cp = win.stop(cfg, "smoke")
+
     assert cp.returncode == 1
-    assert "NOT zero-residue" in cp.stderr
-    assert killed and killed[0][0] == os.getpid()
+    assert "NOT proven zero-residue" in cp.stderr
+    assert terminated and terminated[0] == 8001
     assert win.task_script_path(cfg, "smoke").exists(), "a live pod keeps its definition"
 
 

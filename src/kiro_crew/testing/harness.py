@@ -889,6 +889,9 @@ def spawn_feature_gateway(
     *,
     crons: bool = False,
     timeout: Optional[float] = None,
+    kiro_home: Optional[Path] = None,
+    kiro_bin: Optional[str | Path] = None,
+    before_spawn: Optional[Callable[[dict[str, str], Path], None]] = None,
 ) -> Iterator[GatewayHandle]:
     """Spin up an isolated gateway from the current workspace checkout.
 
@@ -912,6 +915,17 @@ def spawn_feature_gateway(
         timeout: Override the ready-line timeout in seconds. Falls back to
             ``KIROCREW_HARNESS_READY_TIMEOUT`` env var, then to
             ``DEFAULT_READY_TIMEOUT``.
+        kiro_home: Explicit ``KIRO_HOME`` for the child. ``None`` keeps the
+            default ``<throwaway home>/kiro`` isolation. A caller using a host
+            home is responsible for proving that boot will not rewrite its
+            shared agent specs.
+        kiro_bin: Exact ``kiro-cli`` path to publish as
+            ``KIROCREW_KIRO_BIN`` in the child environment. Use this when a
+            prerequisite probe and the gateway must execute the same binary;
+            ``None`` preserves the inherited resolver behavior.
+        before_spawn: Optional read-only preflight called with a copy of the
+            final child environment and the child cwd immediately before
+            ``Popen``. Mutating the copy does not alter the gateway launch.
 
     Yields:
         ``GatewayHandle`` once the gateway has bound its dashboard port
@@ -956,7 +970,7 @@ def spawn_feature_gateway(
             # private-target exemption already lets this instance own. The whole tree
             # is removed with ``home`` on teardown, so the gateway writes only its own
             # specs and leaves the shared install untouched.
-            "KIRO_HOME": str(home / "kiro"),
+            "KIRO_HOME": str(kiro_home) if kiro_home is not None else str(home / "kiro"),
             # Marks this gateway as a test rig. It grants no launch privilege —
             # the packaged fake backend is exec'd by the ordinary in-place path
             # like any other runnable executable.
@@ -971,6 +985,8 @@ def spawn_feature_gateway(
             # kick the 610MB embedding-model download during a test run.
             "KIROCREW_SKIP_MODEL_DOWNLOAD": "1",
         }
+        if kiro_bin is not None:
+            env["KIROCREW_KIRO_BIN"] = str(kiro_bin)
 
         cmd = [
             sys.executable,
@@ -994,8 +1010,12 @@ def spawn_feature_gateway(
             # that specifically exercise the cron path opt back in via
             # ``crons=True``.
             cmd.append("--no-crons")
+        spawn_cwd = src.parent
+        if before_spawn is not None:
+            before_spawn(dict(env), spawn_cwd)
         proc = subprocess.Popen(
             cmd,
+            cwd=str(spawn_cwd),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

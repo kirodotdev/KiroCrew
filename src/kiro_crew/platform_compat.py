@@ -2430,6 +2430,33 @@ def _open_process_termination_handle(pid: int) -> int | None:
         return None
 
 
+def open_process_termination_handle(pid: int, expected_token: str) -> int | None:
+    """Open *pid* only when its exact process object matches *expected_token*.
+
+    The caller owns a returned handle and closes it with
+    :func:`close_process_handle`. Opening by numeric PID alone races PID reuse,
+    so the handle's creation FILETIME is compared with the authoritative token
+    before it is returned. A mismatch, unreadable identity, or malformed token
+    closes the handle and returns ``None``.
+    """
+
+    if type(pid) is not int or pid <= 1:
+        raise ValueError(f"open_process_termination_handle: refusing invalid pid {pid!r}")
+    handle = _open_process_termination_handle(pid)
+    if handle is None:
+        return None
+    try:
+        expected_creation = int(expected_token)
+        identity = _windows_process_handle_identity(handle)
+        if identity is None or identity[0] != pid or identity[1] != expected_creation:
+            close_process_handle(handle)
+            return None
+    except (TypeError, ValueError):
+        close_process_handle(handle)
+        return None
+    return handle
+
+
 def duplicate_asyncio_process_handle(process: object) -> int | None:
     """Duplicate asyncio's original Windows process handle for tree anchoring."""
 

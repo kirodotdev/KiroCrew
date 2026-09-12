@@ -535,6 +535,22 @@ Two details are load-bearing rather than incidental:
   are assigned to it, so the limits persist after `CloseHandle` and there is no
   handle registry or teardown to get wrong.
 
+Windows pod teardown does not infer a clean stop from the gateway PID record
+vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
+validates that handle's creation identity against the record, then retains exact
+handles for attributed descendants. Toolhelp preserves the PPID on a living
+direct child after its parent exits, so teardown performs a final snapshot of
+the root after it becomes inactive. This catches the reported direct-child race
+when creation follows the pre-signal snapshot and the root exits before the next
+poll; every descendant already retained by exact handle receives the same final
+scan. It does not claim to reconstruct a lineage through an intermediary that
+was never observed and is already gone. A root that cannot be anchored, an
+incomplete snapshot sequence, or a still-live retained handle fails closed: the
+scheduled task and pod HOME are preserved. The existing Job object remains a
+resource ceiling; `KILL_ON_JOB_CLOSE` is still deliberately unset, so normal
+restart semantics do not change.
+
+
 Failure modes are asymmetric on purpose. The **ceiling** fails soft — any Win32
 error logs a SECURITY warning and returns `False`, because a missing ceiling must
 not break the gateway. The **resume** is fatal when the pid still exists: a

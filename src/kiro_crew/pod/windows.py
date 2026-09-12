@@ -97,13 +97,18 @@ from kiro_crew.platform_compat import (
     IS_WINDOWS,
     SIGTERM,
     attributed_descendants,
+    close_process_handle,
 )
 from kiro_crew.platform_compat import created_after as _created_after_impl
 from kiro_crew.platform_compat import (
+    descendant_termination_handles,
     kill_process_tree_pinned,
+    open_process_termination_handle,
     pid_exists,
+    process_handle_active,
     process_start_time,
     resume_process_main_thread,
+    terminate_process_handle,
     trusted_system_bin,
 )
 from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig, environment_vars
@@ -805,6 +810,78 @@ def _kill_tree_quietly(pid: int, token: str) -> None:
         kill_process_tree_pinned(pid, token, SIGTERM)
 
 
+def _drain_exact_windows_tree(
+    root_pid: int,
+    root_handle: int,
+    descendants: dict[int, int],
+    *,
+    timeout: float = 5.0,
+) -> tuple[bool, list[int]]:
+    """Terminate an anchored Windows tree without acting on recyclable PIDs.
+
+    Every retained process is scanned while active and once more after it is
+    observed inactive. Toolhelp keeps a living child's PPID after its parent
+    exits, so that terminal scan closes the stop race where the parent creates
+    a child and exits between polls. Newly discovered children are retained by
+    exact handle and receive the same treatment recursively.
+    """
+
+    root_terminally_scanned = False
+    terminally_scanned: set[int] = set()
+    deadline = time.monotonic() + timeout
+    while True:
+        roots: list[tuple[int, int, bool, bool]] = []
+        root_active_before = process_handle_active(root_handle)
+        if root_active_before or not root_terminally_scanned:
+            roots.append((root_pid, root_handle, True, root_active_before))
+        for child_pid, child_handle in tuple(descendants.items()):
+            child_active_before = process_handle_active(child_handle)
+            if child_active_before or child_pid not in terminally_scanned:
+                roots.append((child_pid, child_handle, False, child_active_before))
+        if not roots:
+            break
+
+        for scan_pid, scan_handle, is_root, active_before in roots:
+            descendants.update(
+                descendant_termination_handles(
+                    scan_pid,
+                    descendants,
+                    root_handle=scan_handle,
+                )
+            )
+            active_after = process_handle_active(scan_handle)
+            terminal = not active_before and not active_after
+            if is_root:
+                root_terminally_scanned = terminal
+            elif terminal:
+                terminally_scanned.add(scan_pid)
+            else:
+                terminally_scanned.discard(scan_pid)
+
+        for child_handle in tuple(descendants.values()):
+            if process_handle_active(child_handle):
+                with contextlib.suppress(OSError, ValueError):
+                    terminate_process_handle(child_handle)
+        if process_handle_active(root_handle):
+            with contextlib.suppress(OSError, ValueError):
+                terminate_process_handle(root_handle)
+
+        proof_complete = root_terminally_scanned and all(
+            child_pid in terminally_scanned for child_pid in descendants
+        )
+        if proof_complete:
+            return False, []
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                "exact Windows tree drain timed out before terminal snapshots completed"
+            )
+        time.sleep(0.2)
+
+    # Reaching an empty root set is the same completed proof as the explicit
+    # check above; retained handles are inactive and terminally scanned.
+    return False, []
+
+
 def stop(
     cfg: PodConfig, name: str, *, timeout: float = STOP_TIMEOUT_SECS
 ) -> subprocess.CompletedProcess:
@@ -823,34 +900,37 @@ def stop(
     delete, and it is the reading that is not localized.
 
     **A survivor is escalated, not waited out forever.** Once the window
-    expires the gateway is killed through
-    :func:`kiro_crew.platform_compat.kill_process_tree_pinned`, which will not
-    fire unless the creation-time token still matches — so a recycled pid cannot
-    be signalled.
+    expires the anchored gateway and every validated descendant are terminated
+    through exact process handles. A recycled PID therefore cannot redirect the
+    stop onto a stranger's process.
 
-    **The unload result must be authoritative.** If the gateway is STILL alive,
-    if any child it had when the stop began is still alive (the pid record says
-    nothing about children, so they are snapshotted first and ended, pinned,
-    after the gateway), or the task could not be deleted, this returns a failure
-    and keeps the wrapper script: the caller must not tear down state that may
-    belong to a live pod. A ``/End`` or ``/Delete`` against a task that is not there is a
+    **The unload result must be authoritative.** If the gateway, any
+    attributed child, or the task survives, this returns a failure and keeps
+    the wrapper script. The caller must not tear down state that may belong to
+    a live pod. A ``/End`` or ``/Delete`` against a task that is not there is a
     no-op, not a failure, which is why both are judged by re-probing existence
     rather than by their own exit code.
+
+    **The root is anchored before ``/End`` and scanned after exit.** Toolhelp
+    keeps the original PPID on a living direct child after its parent exits.
+    Holding an exact root process handle supplies the missing lifetime boundary:
+    the reported race -- a direct child created after the initial snapshot but
+    before root exit -- is accepted, while a process attached to a recycled root
+    PID is rejected. A descendant already retained by exact handle also receives
+    one final post-exit scan. This does not claim to reconstruct lineage through
+    an intermediary that was never observed and is already gone. If the root
+    cannot be anchored or any required snapshot fails, teardown fails closed and
+    preserves the task and HOME.
 
     The caller still owns the HOME removal (see ``runtime.stop_pod``) because
     that goes through ``cleanup_home``'s name re-validation.
     """
-    # Snapshot the gateway's descendants BEFORE anything is signalled, each with
-    # its creation-time identity, keeping only those created after the gateway
-    # (see created_after for the recycled-pid stray this excludes). The pid record answers only for the gateway
-    # itself, so "the record is gone" proves the gateway exited and nothing
-    # about its children (kiro-cli sessions, MCP servers): a child that
-    # survived would keep writing into the HOME the caller is about to delete.
-    # The Job object attached at spawn bounds the tree but does not end it on
-    # close (see platform_compat's KILL_ON_JOB_CLOSE note), so the survivors are
-    # ended here, pinned by the identity read now so a recycled pid is never
-    # signalled.
+    # The token-only walk is the non-Windows control-flow path. A known Windows
+    # root must be anchored by an exact process handle before `/End`; numeric
+    # PIDs are never used as termination authority there.
     survivors: dict[int, str] = {}
+    exact_descendants: dict[int, int] = {}
+    root_handle: int | None = None
     gateway_pid = supervised_pid(cfg, name)
     handoff = handoff_in_progress(cfg, name)
     if gateway_pid is None and not handoff:
@@ -887,38 +967,135 @@ def stop(
             ),
         )
     gateway_token = process_start_time(gateway_pid) if gateway_pid is not None else None
-    if gateway_pid is not None and gateway_token:
-        # EVERY edge is attributed, not just "created after the gateway". The root
-        # comparison alone admits a stale orphan sitting under a RECYCLED
-        # INTERMEDIATE pid: it too was created after the gateway, it is unrelated to
-        # this pod, and it is frequently a same-user process this call could
-        # successfully terminate. Killing a stranger's tree is not recoverable, so
-        # the walk drops an unattributable child together with its subtree.
-        for child in attributed_descendants(gateway_pid, gateway_token):
-            child_token = process_start_time(child)
-            if child_token:
-                survivors[child] = child_token
-    ended = schtasks("/End", "/TN", task_name(cfg, name))
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if supervised_pid(cfg, name) is None:
-            break
-        time.sleep(0.2)
-    pid = supervised_pid(cfg, name)
-    if pid is not None:
-        token = process_start_time(pid)
-        if token:
-            _kill_tree_quietly(pid, token)
-        grace = time.monotonic() + 5.0
-        while time.monotonic() < grace and supervised_pid(cfg, name) is not None:
+    recorded_gateway = _read_pid_record(cfg, name)
+    snapshot_error: OSError | ValueError | None = None
+    root_alive = False
+    orphans: list[int] = []
+
+    if IS_WINDOWS and gateway_pid is not None:
+        if not gateway_token or recorded_gateway != (gateway_pid, gateway_token):
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr=(
+                    f"pod {name!r} gateway pid {gateway_pid} does not match its "
+                    "authoritative creation identity, so teardown cannot exclude PID "
+                    "reuse. Its HOME and task were preserved."
+                ),
+            )
+        root_handle = open_process_termination_handle(gateway_pid, gateway_token)
+        if root_handle is None:
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr=(
+                    f"pod {name!r} gateway pid {gateway_pid} could not be anchored by "
+                    "an exact process handle matching its creation identity. Its HOME "
+                    "and task were preserved."
+                ),
+            )
+        ended = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+        try:
+            try:
+                exact_descendants.update(
+                    descendant_termination_handles(
+                        gateway_pid,
+                        exact_descendants,
+                        root_handle=root_handle,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                snapshot_error = exc
+            if snapshot_error is None:
+                ended = schtasks("/End", "/TN", task_name(cfg, name))
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    try:
+                        exact_descendants.update(
+                            descendant_termination_handles(
+                                gateway_pid,
+                                exact_descendants,
+                                root_handle=root_handle,
+                            )
+                        )
+                    except (OSError, ValueError) as exc:
+                        snapshot_error = exc
+                        break
+                    if not process_handle_active(root_handle):
+                        break
+                    time.sleep(0.2)
+                try:
+                    root_alive, orphans = _drain_exact_windows_tree(
+                        gateway_pid,
+                        root_handle,
+                        exact_descendants,
+                    )
+                except (OSError, ValueError) as exc:
+                    snapshot_error = snapshot_error or exc
+                    # Retained handles still name exact owned process objects.
+                    # Best-effort termination is safe, but the failed proof below
+                    # preserves the task and HOME regardless of liveness afterward.
+                    for child_handle in exact_descendants.values():
+                        with contextlib.suppress(OSError, ValueError):
+                            terminate_process_handle(child_handle)
+                    with contextlib.suppress(OSError, ValueError):
+                        terminate_process_handle(root_handle)
+                    root_alive = process_handle_active(root_handle)
+                    orphans = sorted(
+                        child_pid
+                        for child_pid, child_handle in exact_descendants.items()
+                        if process_handle_active(child_handle)
+                    )
+        finally:
+            for child_handle in exact_descendants.values():
+                close_process_handle(child_handle)
+            close_process_handle(root_handle)
+    else:
+        # Portable control-flow coverage and non-Windows behavior retain the
+        # token-pinned path. A known Windows root never enters this branch.
+        if gateway_pid is not None and gateway_token:
+            for child in attributed_descendants(gateway_pid, gateway_token):
+                child_token = process_start_time(child)
+                if child_token:
+                    survivors[child] = child_token
+        ended = schtasks("/End", "/TN", task_name(cfg, name))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if supervised_pid(cfg, name) is None:
+                break
             time.sleep(0.2)
-    for child, child_token in survivors.items():
-        if _still_alive(child, child_token):
-            _kill_tree_quietly(child, child_token)
-    grace = time.monotonic() + 5.0
-    while time.monotonic() < grace and any(_still_alive(c, t) for c, t in survivors.items()):
-        time.sleep(0.2)
-    orphans = sorted(c for c, t in survivors.items() if _still_alive(c, t))
+        pid = supervised_pid(cfg, name)
+        if pid is not None:
+            token = process_start_time(pid)
+            if token:
+                _kill_tree_quietly(pid, token)
+            grace = time.monotonic() + 5.0
+            while time.monotonic() < grace and supervised_pid(cfg, name) is not None:
+                time.sleep(0.2)
+        for child, child_token in survivors.items():
+            if _still_alive(child, child_token):
+                _kill_tree_quietly(child, child_token)
+        grace = time.monotonic() + 5.0
+        while time.monotonic() < grace and any(
+            _still_alive(child, token) for child, token in survivors.items()
+        ):
+            time.sleep(0.2)
+        orphans = sorted(child for child, token in survivors.items() if _still_alive(child, token))
+        root_alive = supervised_pid(cfg, name) is not None
+
+    if snapshot_error is not None:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=ended.stdout or "",
+            stderr=(
+                f"pod {name!r} process tree enumeration failed during teardown: "
+                f"{snapshot_error}. Its HOME and task were preserved; this pod is "
+                "NOT proven zero-residue."
+            ),
+        )
     if orphans:
         return subprocess.CompletedProcess(
             args=[],
@@ -926,19 +1103,19 @@ def stop(
             stdout=ended.stdout or "",
             stderr=(
                 f"the gateway for pod {name!r} exited but {len(orphans)} of its child "
-                f"processes are still running after a pinned tree kill (pids "
+                f"processes are still running after exact-handle termination (pids "
                 f"{orphans}). Its HOME and task were preserved; this pod is NOT "
                 f"zero-residue.\n{_describe_processes(orphans)}"
             ),
         )
-    if supervised_pid(cfg, name) is not None:
+    if root_alive:
         return subprocess.CompletedProcess(
             args=[],
             returncode=1,
             stdout=ended.stdout or "",
             stderr=(
                 f"the gateway for pod {name!r} is still running after "
-                f"{timeout:.0f}s and a pinned tree kill (schtasks /End "
+                f"{timeout:.0f}s and exact-handle termination (schtasks /End "
                 f"rc={ended.returncode}). Its HOME and task were preserved; this "
                 "pod is NOT zero-residue."
             ),

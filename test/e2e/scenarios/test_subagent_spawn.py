@@ -18,6 +18,8 @@ needs a model.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytestmark = pytest.mark.timeout(600)
@@ -46,9 +48,20 @@ def test_one_agent_turn_completes_with_a_tool_call(pod) -> None:
         "the pod spawned a different agent or the turn never completed.\n"
         f"stream tail: {text[-2000:]!r}\n{pod.logs()}"
     )
-    assert (
-        "tool_call" in text
-    ), f"the {TOOL_TRIGGER} turn emitted no tool_call event.\nstream tail: {text[-2000:]!r}"
+    events = []
+    for line in text.splitlines():
+        if not line.startswith("data: {"):
+            continue
+        try:
+            event = json.loads(line.removeprefix("data: "))
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    assert any(
+        event.get("type") == "tool" and "hello-from-fake" in str(event.get("content", ""))
+        for event in events
+    ), f"the {TOOL_TRIGGER} turn emitted no tool event.\nstream tail: {text[-2000:]!r}"
 
     # The turn is also durable, not just streamed: the slot must now hold it.
     slots = pod.api("GET", "chat/slots")

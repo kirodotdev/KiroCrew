@@ -54,12 +54,13 @@ def test_force_clean_plane_unloads_launchd_jobs_and_removes_plists(tmp_path, mon
     monkeypatch.setattr(
         scenarios_conftest.platform_compat, "live_thread_group_leaders", lambda: None
     )
+    monkeypatch.setattr(scenarios_conftest, "_matching_plane_processes", lambda _scratch: [])
     env = {
         "KIROCREW_POD_UNIT_PREFIX": scenarios_conftest.PLANE_PREFIX,
         "KIROCREW_POD_ROOT": str(pods_dir),
     }
 
-    services, killed = scenarios_conftest._force_clean_plane(scratch, "smoke", env)
+    services, killed, removed = scenarios_conftest._force_clean_plane(scratch, "smoke", env)
 
     # launchd.domain(), not os.getuid(): this test also runs on Windows, where
     # os has no getuid; the helper carries the same guard the product uses.
@@ -70,6 +71,7 @@ def test_force_clean_plane_unloads_launchd_jobs_and_removes_plists(tmp_path, mon
     ]
     assert services == [smoke_label, stale_label]
     assert killed == []
+    assert removed is False  # fake_rmtree records instead of deleting the plane
     assert not smoke_plist.exists()
     assert not stale_plist.exists()
     assert unrelated_plist.exists()

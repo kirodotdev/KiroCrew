@@ -146,14 +146,11 @@ jobs:
   # NOT a `needs:` of anything: a scenario failure must not hold up a nightly
   # publish, and a publish failure must not hide a scenario result.
   #
-  # Linux and macOS only for now. There is no `if: runner.os != 'Windows'` in any
-  # scenario body and none in this job: the suite's pod fixture asks the pod's own
-  # `runtime.require_backend()` whether this host can run pods, so the matrix is a
-  # pure consequence of which backends exist. The Windows backend now EXISTS, so
-  # what holds windows-latest back is a validated run rather than a missing
-  # backend, and that reason is pinned in `test/test_pod_scenario_matrix.py`
-  # instead of stated here -- delete its PENDING_VALIDATION entry and the test
-  # demands this matrix entry.
+  # Linux, macOS, and Windows run the same scenario bodies. There is no
+  # platform skip in the job: the fixture asks runtime.require_backend(), then
+  # drives systemd, launchd, or the dedicated Task Scheduler task selected by
+  # production. test/test_pod_scenario_matrix.py pins backend existence to this
+  # matrix so a future backend cannot remain silently uncovered.
   pod-scenarios:
     name: Pod Scenario E2E (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -161,7 +158,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15]
+        os: [ubuntu-latest, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,15 +177,23 @@ jobs:
       # back to a global one. So the venv is a hard prerequisite, in the layout
       # `pod provision` expects.
       - name: Build the checkout venv the pod boots
+        shell: bash
         run: |
+          set -euo pipefail
           python -m venv .venv
-          .venv/bin/python -m pip install -U pip build
-          .venv/bin/python -m pip install -e . --group dev
-          .venv/bin/kirocrew --version
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            PY=.venv/Scripts/python.exe
+          else
+            PY=.venv/bin/python
+          fi
+          "$PY" -m pip install -U pip build
+          "$PY" -m pip install -e . --group dev
+          "$PY" -m kiro_crew --version
 
       # `pod up` fails loud without a built SPA bundle, on purpose: a pod serves
       # the real dashboard. Staged the same way ci.yml's e2e job stages it.
       - name: Build and stage the SPA bundle
+        shell: bash
         run: |
           cd website
           npm ci
@@ -251,19 +256,26 @@ jobs:
       # KIROCREW_E2E_REQUIRE=1 is the belt: it turns each precondition
       # skip into a failure. The grep is the braces.
       - name: Run the pod scenario suite
+        shell: bash
         env:
           KIROCREW_E2E_SCENARIOS: "1"
           KIROCREW_E2E_REQUIRE: "1"
         run: |
           set -uo pipefail
-          .venv/bin/python -m pytest -v -p no:cacheprovider -o addopts= \
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            PY=.venv/Scripts/python.exe
+          else
+            PY=.venv/bin/python
+          fi
+          "$PY" -m pytest -v -p no:cacheprovider -o addopts= \
             -n0 --timeout=600 test/e2e/scenarios/ 2>&1 | tee pod-scenarios.log
           status="${PIPESTATUS[0]}"
           echo "pytest exit: ${status}"
-          # Anchored: an unanchored '6 passed' also matches '16 passed' / '26
-          # passed', so the pin would hold after a scenario was added.
-          if ! grep -qE '(^|[^0-9])6 passed' pod-scenarios.log; then
-            echo "::error::the pod scenario suite did not report 6 passed; a skipped or collapsed suite is not a pass"
+          # Anchored: an unanchored '8 passed' also matches '18 passed' / '28
+          # passed', so the pin would hold after a scenario was added. The eight
+          # are six user-flow scenarios plus two fixture-isolation checks.
+          if ! grep -qE '(^|[^0-9])8 passed' pod-scenarios.log; then
+            echo "::error::the pod scenario suite did not report 8 passed; a skipped or collapsed suite is not a pass"
             exit 1
           fi
           exit "${status}"
@@ -279,6 +291,8 @@ jobs:
             pod-scenarios.log
             /tmp/kce2e-*/a/**
             /tmp/kce2e-*/h/**/*.log
+            ${{ runner.temp }}/**/kce2e-*/a/**
+            ${{ runner.temp }}/**/kce2e-*/h/**/*.log
           if-no-files-found: ignore
           retention-days: 7
 
