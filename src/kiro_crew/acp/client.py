@@ -128,6 +128,7 @@ from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_TERMINATE,
     METHOD_SESSION_UPDATE,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
@@ -1588,6 +1589,9 @@ _INIT_TIMEOUT = 240.0  # 4 min — MCP servers can be slow to initialize
 # disk, with headroom. On expiry the adapter is REFUSED, never started with
 # its mask missing.
 _SANDBOX_PREFLIGHT_TIMEOUT = 60.0
+# A reset must not leave its prior session and MCP children alive indefinitely.
+# Kiro's targeted terminate is a request, so this is its bounded acknowledgement window.
+_RESET_SESSION_RETIRE_TIMEOUT = 5.0
 # set_mode/set_model: fire-and-forget.  kiro-cli accepts these commands
 # but usually never sends a JSON-RPC response — MCP servers load
 # asynchronously.  Any late responses land in _buffer and are harmlessly
@@ -5444,6 +5448,119 @@ class AcpClient:
         # A config-option advisory may have substituted the served model.
         self._resolved_model_id = self._last_substitution_model or self._model
         logger.info("ACP model: %s", self._model)
+
+    async def new_conversation(self) -> None:
+        """Reset a warm client without changing its process.
+
+        A fresh ACP session loses the active mode, model, and session-scoped
+        permission configuration. Keep the prior session selected until those
+        settings are re-applied so a failed reset cannot leave the caller on a
+        half-configured conversation.
+        """
+        if not self._is_process_alive():
+            raise AcpProcessDied("Process is not alive — cannot start a new conversation")
+        if not self._session_id:
+            raise AcpError("Cannot reset a conversation before the session is initialized")
+        if self.has_active_turn():
+            raise AcpError("Cannot reset a conversation while a turn is in flight")
+
+        old_session_id = self._session_id
+        if not self._is_kiro:
+            await self._retire_reset_session(old_session_id)
+            raise AcpError(
+                "This ACP backend does not support targeted session retirement; "
+                "the raw client was discarded for a clean hard reset"
+            )
+
+        session_resp = await self._new_session_following_substitution()
+        new_session_id = session_resp.get("sessionId")
+        if not new_session_id:
+            raise AcpError(
+                "session/new returned no sessionId during conversation reset; "
+                "the prior conversation remains active"
+            )
+
+        self._session_id = new_session_id
+        try:
+            self._capture_available_models(session_resp)
+            if self._uses_advertised_model_selection:
+                await self._persist_advertised_models_if_changed()
+                await self._reseed_after_capture()
+            self._store_session_config(session_resp)
+            if self._is_kiro:
+                if not self._modes_advertised or self._agent in self._available_mode_ids:
+                    await self._send_request(
+                        METHOD_SET_MODE,
+                        {"sessionId": new_session_id, "modeId": self._agent},
+                    )
+                else:
+                    raise AcpError(
+                        f"Agent mode {self._agent!r} is not available on this session "
+                        f"(advertised modes: {self._available_mode_ids or 'none'}); "
+                        "refusing to reset onto the backend default mode."
+                    )
+            await self._apply_startup_model()
+            if acp_tool_gate.routing_for(self.backend) is acp_tool_gate.Routing.SESSION_CONFIG:
+                await self._apply_session_permission_routing()
+        except BaseException:
+            self._session_id = old_session_id
+            await self._retire_reset_session(new_session_id)
+            raise
+
+        if not await self._retire_reset_session(old_session_id):
+            raise AcpError(
+                "The prior ACP session could not be retired; the raw client was "
+                "discarded for a clean hard reset"
+            )
+
+        self._resumed = False
+        if self._is_kiro:
+            jsonl_path = kiro_sessions_dir() / f"{new_session_id}.jsonl"
+            try:
+                self._jsonl_pos = jsonl_path.stat().st_size if jsonl_path.exists() else 0
+            except OSError:
+                self._jsonl_pos = 0
+        self._last_activity = time.monotonic()
+        logger.info("ACP conversation reset: %s -> %s", old_session_id, new_session_id)
+
+    async def _retire_reset_session(self, session_id: str) -> bool:
+        """Retire one reset session, or dispose this unshared process instead.
+
+        Generic ACP has no session-close operation. Kiro's extension can reclaim
+        exactly one session and its MCP children; every other case must drop the
+        raw process so the workflow pool's existing hard-reset path starts clean.
+        """
+        if self._is_kiro:
+            try:
+                request_id = await self._send_request(
+                    METHOD_SESSION_TERMINATE, {"sessionId": session_id}
+                )
+                await self._wait_for_response(
+                    request_id,
+                    timeout=_RESET_SESSION_RETIRE_TIMEOUT,
+                    method=METHOD_SESSION_TERMINATE,
+                )
+                return True
+            except asyncio.CancelledError:
+                await self.shutdown()
+                raise
+            except Exception:
+                logger.warning(
+                    "ACP session retirement failed for %s; discarding raw process",
+                    session_id,
+                    exc_info=True,
+                )
+        else:
+            logger.debug(
+                "ACP backend %s has no targeted session retirement; discarding raw process",
+                self.backend,
+            )
+
+        try:
+            await self.shutdown()
+        except Exception:
+            logger.debug("raw ACP process disposal after reset failed", exc_info=True)
+        return False
 
     async def _reseed_after_capture(self) -> None:
         """Re-seed settings.local.json once the backend's model list is known.

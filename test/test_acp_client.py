@@ -40,7 +40,9 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KIRO,
     JSONRPC_METHOD_NOT_FOUND,
+    METHOD_SESSION_TERMINATE,
     AcpPromptStats,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -10417,6 +10419,120 @@ class TestSubstitutionFollow:
         assert resp.get("sessionId") is None
         client._write_claude_local_settings.assert_not_called()
         assert sent.count("session/new") == 1
+
+
+class TestNewConversation:
+    @staticmethod
+    def _make_warm_client(tmp_path):
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_KIRO)
+        process = MagicMock()
+        process.returncode = None
+        client._process = process
+        client._session_id = "session-old"
+        client._turn_done.set()
+        return client
+
+    @pytest.mark.asyncio
+    async def test_reconfigures_a_fresh_session_before_adopting_it(self, tmp_path):
+        client = self._make_warm_client(tmp_path)
+        client._new_session_following_substitution = AsyncMock(
+            return_value={"sessionId": "session-new"}
+        )
+        client._apply_startup_model = AsyncMock()
+        client._wait_for_response = AsyncMock(return_value={})
+        sent: list[tuple[str, dict]] = []
+
+        async def send(method, params):
+            sent.append((method, params))
+            return len(sent)
+
+        client._send_request = send
+
+        await client.new_conversation()
+
+        assert client._session_id == "session-new"
+        assert sent == [
+            ("session/set_mode", {"sessionId": "session-new", "modeId": client._agent}),
+            (METHOD_SESSION_TERMINATE, {"sessionId": "session-old"}),
+        ]
+        client._apply_startup_model.assert_awaited_once()
+        client._wait_for_response.assert_awaited_once_with(
+            2,
+            timeout=acp_client._RESET_SESSION_RETIRE_TIMEOUT,
+            method=METHOD_SESSION_TERMINATE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_reconfiguration_keeps_the_prior_session(self, tmp_path):
+        client = self._make_warm_client(tmp_path)
+        client._new_session_following_substitution = AsyncMock(
+            return_value={"sessionId": "session-new"}
+        )
+        client._apply_startup_model = AsyncMock(side_effect=AcpError("model rejected"))
+        client._send_request = AsyncMock(return_value=1)
+        client._wait_for_response = AsyncMock(return_value={})
+
+        with pytest.raises(AcpError, match="model rejected"):
+            await client.new_conversation()
+
+        assert client._session_id == "session-old"
+        client._send_request.assert_any_await(
+            METHOD_SESSION_TERMINATE, {"sessionId": "session-new"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_discards_the_raw_process_when_targeted_retirement_fails(self, tmp_path):
+        client = self._make_warm_client(tmp_path)
+        client._new_session_following_substitution = AsyncMock(
+            return_value={"sessionId": "session-new"}
+        )
+        client._apply_startup_model = AsyncMock()
+        client._send_request = AsyncMock(return_value=1)
+        client._wait_for_response = AsyncMock(side_effect=AcpError("terminate unavailable"))
+        client.shutdown = AsyncMock()
+
+        with pytest.raises(AcpError, match="prior ACP session could not be retired"):
+            await client.new_conversation()
+
+        client._send_request.assert_any_await(
+            METHOD_SESSION_TERMINATE, {"sessionId": "session-old"}
+        )
+        client.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_discards_an_unsupported_raw_backend_before_creating_a_session(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        process = MagicMock()
+        process.returncode = None
+        client._process = process
+        client._session_id = "session-old"
+        client._turn_done.set()
+        client._new_session_following_substitution = AsyncMock()
+        client.shutdown = AsyncMock()
+
+        with pytest.raises(AcpError, match="does not support targeted session retirement"):
+            await client.new_conversation()
+
+        client._new_session_following_substitution.assert_not_awaited()
+        client.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_session_dead_process_and_active_turn(self, tmp_path):
+        client = self._make_warm_client(tmp_path)
+        client._new_session_following_substitution = AsyncMock(return_value={})
+
+        with pytest.raises(AcpError, match="no sessionId"):
+            await client.new_conversation()
+        assert client._session_id == "session-old"
+
+        client._process = None
+        with pytest.raises(AcpProcessDied):
+            await client.new_conversation()
+
+        client = self._make_warm_client(tmp_path)
+        client._turn_done.clear()
+        with pytest.raises(AcpError, match="turn is in flight"):
+            await client.new_conversation()
 
 
 class TestSubstitutionWrappersAndRedaction:

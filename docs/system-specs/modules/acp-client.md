@@ -284,6 +284,13 @@ Custom agents use cold start with `--agent <name>` flag at spawn time.
 
 `initialize` → `session/load` or `session/new` → `set_mode` (conditional) → `set_model` (conditional) → drain notifications → `session/prompt`
 
+`new_conversation()` keeps the process warm but follows the fresh-session
+configuration contract: it creates a new `session/new`, restores the mode,
+model, and any session-scoped permission routing, then adopts that session.
+Until reconfiguration succeeds, the client retains its prior session; a failed
+reset therefore raises without leaving a caller on a partially configured
+conversation.
+
 `ensure_ready()` creates `_work_dir` once per instance (off-loop `mkdir -p`,
 remembered via a flag) so the per-prompt warm path pays no filesystem syscall;
 `_spawn()` re-creates it (also off-loop) on every spawn, and `_reset_state()`
