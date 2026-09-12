@@ -25,12 +25,23 @@ if [ ! -d "$app_path" ] || [[ "$app_path" != *.app ]]; then
   exit 1
 fi
 
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=hdiutil-detach.sh
+source "$(dirname "${BASH_SOURCE[0]}")/hdiutil-detach.sh"
+
 scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/kirocrew-dmg.XXXXXX")"
 mount_dir="$scratch_dir/mount"
 read_write_image="$scratch_dir/layout-rw.dmg"
-mounted=0
+# Whole-disk device node of the currently attached image (empty when none).
+# Detach is always addressed to this node, never to $mount_dir: the mount path
+# disappears as soon as the volume is unmounted, while the device stays attached
+# until the eject completes -- see hdiutil-detach.sh.
+device=""
 cleanup() {
-  if [ "$mounted" -eq 1 ]; then
+  if [ -n "$device" ]; then
+    hdiutil detach "$device" -force >/dev/null 2>&1 || true
+  else
+    # Covers the window between a successful attach and reading its device.
     hdiutil detach "$mount_dir" -force >/dev/null 2>&1 || true
   fi
   rm -rf -- "$scratch_dir"
@@ -45,25 +56,24 @@ trap cleanup EXIT
 # is layered rather than absolute: keep the volume out of Finder (-nobrowse
 # at both attach sites) and give the eject bounded retries with a force
 # fallback. electron-builder classifies hdiutil's "Resource busy" as
-# transient-retry for the same reason.
+# transient-retry for the same reason. The retry loop itself lives in
+# hdiutil-detach.sh; it addresses the device node and treats "no longer
+# attached" as success, because a busy verdict can come from an eject that
+# still completes on its own.
+attach_image() {
+  local plist
+  plist="$(hdiutil attach "$@" -plist)"
+  device="$(dmg_device_from_attach_plist "$plist")"
+}
+
 detach_mount() {
   # Flush first so a force-detach on the final attempt cannot lose writes.
   # Force is acceptable here because every write we issued has completed and
   # synced, and the resize/convert/verification stages that follow re-read the
   # image and fail loudly on a damaged filesystem.
   sync
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    if hdiutil detach "$mount_dir"; then
-      mounted=0
-      return 0
-    fi
-    echo "WARN: detach of $mount_dir failed (attempt ${attempt}/5); retrying" >&2
-    sleep $((attempt * 3))
-  done
-  echo "WARN: detach still busy after 5 attempts; forcing" >&2
-  hdiutil detach "$mount_dir" -force
-  mounted=0
+  dmg_detach_device "$device"
+  device=""
 }
 
 mkdir -p "$mount_dir" "$(dirname "$output_path")"
@@ -100,9 +110,8 @@ if [ "$expanded_sectors" -gt "$maximum_sectors" ]; then
 fi
 hdiutil resize -sectors "$expanded_sectors" "$read_write_image" >/dev/null
 
-hdiutil attach -readwrite -noverify -noautoopen -nobrowse \
-  -mountpoint "$mount_dir" "$read_write_image" >/dev/null
-mounted=1
+attach_image -readwrite -noverify -noautoopen -nobrowse \
+  -mountpoint "$mount_dir" "$read_write_image"
 
 # The background is a volume-bound alias recorded INSIDE .DS_Store, so that file
 # is the layout. Fingerprint the template's copy now, while it is still the one
@@ -148,9 +157,8 @@ hdiutil convert "$read_write_image" -format UDZO -o "$output_path" -ov >/dev/nul
 # available on a runner re-renders the window, so the definitive check is the
 # first real signing run -- see README.md, which also names the plan-B that
 # removes this question entirely.
-hdiutil attach -readonly -noverify -noautoopen -nobrowse \
-  -mountpoint "$mount_dir" "$output_path" >/dev/null
-mounted=1
+attach_image -readonly -noverify -noautoopen -nobrowse \
+  -mountpoint "$mount_dir" "$output_path"
 missing=()
 [ -f "$mount_dir/.DS_Store" ] || missing+=(".DS_Store (Finder icon placement)")
 if [ ! -e "$mount_dir/.background.tiff" ] && [ ! -d "$mount_dir/.background" ]; then

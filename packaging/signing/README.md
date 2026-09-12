@@ -31,9 +31,20 @@ trigger macOS Gatekeeper warnings).
   the freshly-copied app and can hold the volume against ejection ("Resource
   busy") — the same transient class electron-builder retries on. The script
   layers its defenses: `-nobrowse` keeps the volume out of Finder, and the
-  eject gets bounded retries with a synced force fallback. hdiutil calls run without `-quiet`, because
+  eject gets bounded retries with a synced force fallback (see
+  `hdiutil-detach.sh`). hdiutil calls run without `-quiet`, because
   that flag suppresses stderr too and previously reduced failures of this
   script to bare exit codes.
+- `hdiutil-detach.sh` — the detach retry loop `build-dmg.sh` sources. It
+  addresses the device node (`/dev/diskN`, read from `hdiutil attach -plist`)
+  rather than the mount path, and after every failed attempt asks `hdiutil info`
+  whether the device is still attached instead of trusting the exit status.
+  `hdiutil detach` unmounts and then ejects, and reports "Resource busy" when
+  only the eject is held — at which point the mount path is already gone, so a
+  path-addressed retry can only ever answer "No such file or directory". A
+  device that is no longer attached counts as detached however that came about;
+  a device that survives `-force` is still a hard failure. `test/test_hdiutil_detach.py`
+  drills the loop against a scripted fake `hdiutil`.
 
   The branded background is a **volume-bound alias recorded inside `.DS_Store`**,
   which is why the image is reused rather than rebuilt from a folder: recreating
