@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
@@ -541,14 +542,56 @@ def to_client_custom_agent(
     return out
 
 
+def _spec_by_declared_name(agents_dir: Path, agent_id: str) -> dict[str, Any] | None:
+    """Return the spec in *agents_dir* whose declared ``name`` is *agent_id*.
+
+    A spec's filename and its declared ``name`` are allowed to differ, and a
+    package manager that installs several agents namespaces them on disk as
+    ``<package>-<name>.json`` while the declared ``name`` stays bare. The config,
+    the CLI and :func:`kiro_crew.agent.agent_spec_path` all address such an agent
+    by its bare name, so a filename-only lookup here misses it and the projection
+    fails loud on an agent every other surface resolves.
+
+    Reads through :func:`kiro_crew.agent_discovery._read_agent_spec` — the one
+    hardened reader — so this scan of a user-writable directory applies the same
+    guards as the listing path (size cap, AppleDouble sidecars, a symlink whose
+    resolved target is sensitive, non-UTF-8 bytes, JSON that is not an object).
+
+    The parsed spec is returned rather than its path, and the caller uses it as
+    it stands. Handing back a path for the caller to reopen would put a second
+    read outside the guards: between the reader resolving the symlink and the
+    reopen, the link can be repointed at a sensitive file, which would then be
+    read with no denial and no SEL audit entry.
+    """
+    for path in sorted(agents_dir.glob("*.json")):
+        spec = _read_agent_spec(path, operation="kas_agent_projection", source="unknown")
+        if isinstance(spec, dict) and spec.get("name") == agent_id:
+            return spec
+    return None
+
+
 def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     """Read a materialized agent spec.
 
     Takes the directory explicitly rather than resolving it here so this module
     stays free of :mod:`kiro_crew.agent`, which imports the config loader and
     would form an import cycle.
+
+    ``<agent_id>.json`` stays the primary path. Only when that file is absent
+    does the declared-``name`` scan run, so a namespaced spec resolves by its
+    declared name in exactly the case that used to fail: no direct file. When
+    both exist the direct filename still wins here, which is the reverse of
+    :func:`kiro_crew.agent.agent_spec_path`; that divergence is deliberate and
+    pinned by a test rather than fixed in passing. The scan returns the spec
+    it already parsed under the hardened reader's guards, and that spec is
+    returned as is: reopening the file it came from would read it a second time
+    with no guards.
     """
     path = agents_dir / f"{agent_id}.json"
+    if not path.is_file():
+        scanned = _spec_by_declared_name(agents_dir, agent_id)
+        if scanned is not None:
+            return scanned
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:

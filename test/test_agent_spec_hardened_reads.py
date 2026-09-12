@@ -885,6 +885,10 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # the PROJECT checkout first (kiro-cli resolves --agent there before the user
     # level) and falls back to the user-level spec, so a refusal names which of the
     # two was refused rather than leaving the reader to guess.
+    # The KAS projection's declared-name fallback scans the agents dir when
+    # ``<agent_id>.json`` is absent, so it reads specs it did not name and the
+    # denial has to be attributed to the projection rather than to a listing.
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     "kiro_crew/acp/session_mcp.py": [
         ("session_mcp_project_agent", "unknown"),
         ("session_mcp_servers", "unknown"),

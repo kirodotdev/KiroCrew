@@ -21,6 +21,7 @@ from kiro_crew.acp.kas_agents import (
     KAS_MAX_CUSTOM_AGENTS,
     KasAgentTranslationError,
     build_kas_custom_agents,
+    load_agent_spec,
     resolve_prompt,
     to_client_custom_agent,
 )
@@ -765,3 +766,75 @@ class TestRuntimeSuppliesTheStubbedSet:
 
         assert seen == [frozenset()]
         assert out == [{"id": "kirocrew"}]
+
+
+class TestSpecLookup:
+    """Which file on disk the projection reads for an ``agent_id``.
+
+    A spec's filename and its declared ``name`` are allowed to differ, and a
+    package manager that installs several agents namespaces them as
+    ``<package>-<name>.json``. ``kiro_crew.agent.agent_spec_path`` already
+    resolves those by declared name, so a filename-only lookup here fails the
+    projection on agents the config, the CLI and the dashboard all resolve.
+    """
+
+    @staticmethod
+    def _write(agents_dir: Path, filename: str, **over) -> Path:
+        path = agents_dir / filename
+        path.write_text(json.dumps(_spec(**over)), encoding="utf-8")
+        return path
+
+    def test_the_filename_match_is_read(self, tmp_path):
+        self._write(tmp_path, "kirocrew.json", description="direct")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "direct"
+
+    def test_a_namespaced_filename_resolves_by_declared_name(self, tmp_path):
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "namespaced"
+
+    def test_the_filename_match_outranks_the_declared_name_scan(self, tmp_path):
+        """The fallback is additive: it never displaces a spec that resolves today."""
+        self._write(tmp_path, "kirocrew.json", description="direct")
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "direct"
+
+    def test_no_match_still_names_the_direct_path(self, tmp_path):
+        """The scan must not blur the error: the operator is told which file to
+        create, not which of the dir's specs failed to match."""
+        self._write(tmp_path, "SomePackage-other.json", name="other")
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        assert str(tmp_path / "kirocrew.json") in str(exc.value)
+
+    def test_an_unparseable_sibling_does_not_break_the_scan(self, tmp_path):
+        """The agents dir is user-writable and shared, so a stray file is normal;
+        the hardened reader skips it and the real match is still found."""
+        (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+        (tmp_path / "list.json").write_text("[]", encoding="utf-8")
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "namespaced"
+
+    def test_a_missing_agents_dir_is_a_translation_error(self, tmp_path):
+        with pytest.raises(KasAgentTranslationError):
+            load_agent_spec(tmp_path / "absent", "kirocrew")
+
+    def test_the_scanned_spec_is_used_without_a_second_read(self, tmp_path, monkeypatch):
+        """The hardened reader resolves the symlink and vets the target it lands
+        on. Reopening that path afterwards would read whatever it points at by
+        then, so the vetted parse itself has to be what the projection uses."""
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="on disk")
+        monkeypatch.setattr(
+            kas_agents,
+            "_read_agent_spec",
+            lambda *_a, **_k: _spec(description="what the reader vetted"),
+        )
+
+        spec = load_agent_spec(tmp_path, "kirocrew")
+
+        assert spec["description"] == "what the reader vetted"
