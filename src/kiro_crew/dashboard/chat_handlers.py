@@ -3727,6 +3727,22 @@ def _make_stop_resolver(
     return _resolve
 
 
+async def _cancel_terminal_stop_task(task_at_stop: asyncio.Task[Any] | None) -> None:
+    """Settle a captured runner once no provider can finish its turn."""
+    if task_at_stop is None or task_at_stop is asyncio.current_task() or task_at_stop.done():
+        return
+    task_at_stop.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(task_at_stop), timeout=2.0)
+    except asyncio.CancelledError:
+        # A cancelled runner raises here too, but cancellation of this request
+        # must still abort its response and shutdown path.
+        if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+            raise
+    except asyncio.TimeoutError:
+        logger.warning("Stopped turn task did not settle within 2 seconds; inspect the slot")
+
+
 def _slot_not_found() -> web.Response:
     """The one 404 every cancel-route refusal returns.
 
@@ -3876,6 +3892,11 @@ async def stop_slot_turn(
         # the mirrored chat_done. Nothing local to tear down.
         return {"ok": True}
 
+    # Capture the runner before stopping the provider. A provider that reports
+    # no active turn cannot drive this task's finally block, while a newer
+    # runner must never be cancelled by an older stop request.
+    task_at_stop = slot.task
+
     # Escalation path: a second stop press while a cooperative cancel is
     # already pending hard-kills. We escalate on ANY second press — not only
     # when the client computed force=true — because the client derives force
@@ -3929,6 +3950,7 @@ async def stop_slot_turn(
         # reports success and cancels nothing. The SEL record below stays on the
         # slot-derived key, which identifies the tab the operator pressed.
         await state.sessions.stop_turn(cancel_key, force=True, on_hard=_on_hard_force)
+        await _cancel_terminal_stop_task(task_at_stop)
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
             agent=getattr(slot, "agent", "") or "kirocrew",
@@ -4016,9 +4038,12 @@ async def stop_slot_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    if outcome in {"hard", "idle"}:
+        await _cancel_terminal_stop_task(task_at_stop)
     # Resolve orphaned card when provider reports no active turn
-    if outcome == "idle" and slot._stop_event_id:
-        _resolve_stop_event(slot, "soft")
+    if outcome == "idle":
+        if slot._stop_event_id:
+            _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
     sel().log_tool_invocation(
@@ -4379,6 +4404,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "info": "stop already in progress"})
     if not slot._queue:
         return web.json_response({"error": "queue empty, use /stop instead"}, status=400)
+    task_at_stop = slot.task
 
     # Claim the stop slot synchronously BEFORE the await below: the
     # idempotency guard above is check-then-act, and a concurrent /interrupt
@@ -4495,11 +4521,24 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    if outcome in {"hard", "idle"}:
+        await _cancel_terminal_stop_task(task_at_stop)
     # Resolve orphaned card when provider reports no active turn
-    if outcome == "idle" and slot._stop_event_id:
-        _resolve_stop_event(slot, "soft")
+    if outcome == "idle":
+        if slot._stop_event_id:
+            _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
+        # An "idle" outcome means the provider has no active turn, so there is
+        # no running runner whose finally-block dequeue will pick up the next
+        # queued message — but preserve_queue=True left it waiting, so it would
+        # be stranded. Dispatch it here. Only when no successor turn has already
+        # taken the slot (a newer slot.task): a successor owns the queue and
+        # re-dispatching would double-fire a turn against it. `task_at_stop` is
+        # the captured predecessor; cancelling it (above) does not reassign
+        # slot.task, so `slot.task is task_at_stop` is exactly "no successor."
+        if slot.task is task_at_stop:
+            await _start_next_queued_turn(state, slot)
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
         agent=getattr(slot, "agent", "") or "kirocrew",

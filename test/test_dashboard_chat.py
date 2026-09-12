@@ -15645,6 +15645,168 @@ class TestStopTurnSlotState:
         slot.task.cancel()
 
     @pytest.mark.asyncio
+    async def test_stop_turn_idle_cancels_orphaned_task(self, tmp_path, monkeypatch):
+        """An idle provider outcome cannot leave a dashboard turn running."""
+        state = self._make_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.ensure_future(asyncio.sleep(999))
+        state.sessions.stop_turn = AsyncMock(return_value="idle")
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/chat/slots/s1/stop")
+            assert response.status == 200
+
+        assert slot._stop_state == "idle"
+        assert slot.task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_idle_does_not_cancel_successor_task(self, tmp_path, monkeypatch):
+        """A stop settles its captured runner, never one claimed while it waited."""
+        state = self._make_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        stopped_task = asyncio.ensure_future(asyncio.sleep(999))
+        slot.task = stopped_task
+        successor_task: asyncio.Task[None] | None = None
+
+        async def fake_stop_turn(*args, **kwargs):
+            nonlocal successor_task
+            successor_task = asyncio.ensure_future(asyncio.sleep(999))
+            slot.task = successor_task
+            return "idle"
+
+        state.sessions.stop_turn = fake_stop_turn
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/chat/slots/s1/stop")
+            assert response.status == 200
+
+        assert stopped_task.cancelled()
+        assert successor_task is not None
+        assert not successor_task.cancelled()
+        successor_task.cancel()
+        await asyncio.gather(successor_task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_terminal_stop_task_propagates_request_cancellation(self):
+        """The stop request must not swallow its own cancellation while draining."""
+        from kiro_crew.dashboard.chat_handlers import _cancel_terminal_stop_task
+
+        release = asyncio.Event()
+
+        async def waits_after_cancel():
+            try:
+                await asyncio.sleep(999)
+            except asyncio.CancelledError:
+                await release.wait()
+
+        runner = asyncio.create_task(waits_after_cancel())
+        await asyncio.sleep(0)
+        request_task = asyncio.current_task()
+        assert request_task is not None
+        asyncio.get_running_loop().call_soon(request_task.cancel)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await _cancel_terminal_stop_task(runner)
+        finally:
+            release.set()
+            await runner
+
+    @pytest.mark.asyncio
+    async def test_interrupt_idle_runner_finally_starts_only_one_queued_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """A cancelled runner owns the preserved-queue handoff."""
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        state = self._make_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        runner_started = asyncio.Event()
+        successor_release = asyncio.Event()
+        dispatched: list[str] = []
+
+        async def successor():
+            await successor_release.wait()
+
+        async def runner():
+            runner_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                queued = slot._queue.pop(0)
+                dispatched.append(queued["content"])
+                slot.task = asyncio.create_task(successor())
+
+        runner_task = asyncio.create_task(runner())
+        slot.task = runner_task
+        await runner_started.wait()
+        slot.queue_append("first queued prompt")
+        slot.queue_append("second queued prompt")
+        state.sessions.stop_turn = AsyncMock(return_value="idle")
+        handler_dispatch = AsyncMock(return_value=True)
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/interrupt", api_chat_slot_interrupt)
+        try:
+            with patch(
+                "kiro_crew.dashboard.chat_handlers._start_next_queued_turn", handler_dispatch
+            ):
+                async with TestClient(TestServer(app)) as client:
+                    response = await client.post("/api/chat/slots/s1/interrupt")
+                    assert response.status == 200
+
+            assert slot._stop_state == "idle"
+            assert runner_task.cancelled()
+            assert dispatched == ["first queued prompt"]
+            assert [queued["content"] for queued in slot._queue] == ["second queued prompt"]
+            handler_dispatch.assert_not_awaited()
+        finally:
+            successor_release.set()
+            await asyncio.gather(slot.task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_interrupt_idle_dispatches_queue_when_no_successor(self, tmp_path, monkeypatch):
+        """An idle provider outcome leaves no active runner to drive the
+        preserved-queue handoff, so a cancelled runner that never dispatches a
+        successor must not strand the queue — the handler dispatches it itself
+        (issue #9118)."""
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        state = self._make_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        # A real, cancellable runner that, unlike the test above, does NOT
+        # reassign slot.task in a finally — mirroring the idle _stage_loop whose
+        # queue handoff is skipped on cancellation.
+        runner_task = asyncio.ensure_future(asyncio.sleep(999))
+        slot.task = runner_task
+        slot.queue_append("first queued prompt")
+        state.sessions.stop_turn = AsyncMock(return_value="idle")
+        handler_dispatch = AsyncMock(return_value=True)
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/interrupt", api_chat_slot_interrupt)
+        try:
+            with patch(
+                "kiro_crew.dashboard.chat_handlers._start_next_queued_turn", handler_dispatch
+            ):
+                async with TestClient(TestServer(app)) as client:
+                    response = await client.post("/api/chat/slots/s1/interrupt")
+                    assert response.status == 200
+            assert slot._stop_state == "idle"
+            assert runner_task.cancelled()
+            # No successor took the slot (slot.task is still the cancelled
+            # runner), so the handler dispatches the preserved queue itself.
+            assert slot.task is runner_task
+            handler_dispatch.assert_awaited_once()
+        finally:
+            if not runner_task.done():
+                runner_task.cancel()
+            await asyncio.gather(runner_task, return_exceptions=True)
+
+    @pytest.mark.asyncio
     async def test_stop_turn_force_query_param(self, tmp_path, monkeypatch):
         """POST stop?force=true when soft_pending → skips cancel, hard kill."""
         state = self._make_state(tmp_path, monkeypatch)

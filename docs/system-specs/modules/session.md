@@ -643,6 +643,12 @@ applier — a raised turn budget is in force on the next prompt.
    - `"timeout"` or `"error"` → fall through to hard kill.
 4. Hard kill: `reset(key)` → fire-and-forget `_eager_respawn(key)` task → call `on_hard` callback → return `"hard"`.
 
+Dashboard stop and interrupt handlers snapshot the runner task before calling
+`stop_turn()`. A terminal `"hard"` or `"idle"` result means the provider cannot
+drive that runner to its `finally` block, so the handler cancels and awaits only
+the captured task. A later turn is never touched; a task that does not settle
+within two seconds emits a warning for investigation.
+
 ### Cancelled-turn context restore
 
 `_Session.prev_turn_cancelled` is a one-shot flag set on soft-cancel
