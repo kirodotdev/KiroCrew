@@ -375,6 +375,7 @@ async function discoverMcpTools(
   tools: { name: string; description?: string }[]
   fromCache: boolean
   errorCode?: string
+  status?: string
 } | null> {
   // Mochi's OWN route, not core's. Core has GET /api/mcp (whole inventory) and
   // PUT/DELETE on /api/mcp/servers/{name} — no per-server read, so this used to
@@ -413,6 +414,13 @@ async function discoverMcpTools(
     // as "this server simply has no tools" -- the same silent-success shape this
     // fix set out to remove, just one layer down.
     const status = body.status
+    if (status === 'needs_auth') {
+      return {
+        tools: body.tools ?? [],
+        fromCache: body.cached === true,
+        status,
+      }
+    }
     if (status && status !== 'ok') {
       return { tools: body.tools ?? [], fromCache: false, errorCode: 'probe_failed' }
     }
