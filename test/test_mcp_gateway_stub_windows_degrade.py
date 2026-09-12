@@ -24,6 +24,7 @@ untested platform took a path nobody had exercised.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -55,6 +56,7 @@ class _FakeProc:
 
 def _args(command: str = "backend-bin", env_file: str = "") -> argparse.Namespace:
     return argparse.Namespace(
+        server="third-party",
         target_command=command,
         target_args="--serve|--stdio",
         target_args_sep="|",
@@ -262,3 +264,113 @@ def test_the_module_still_exposes_the_real_subprocess_and_exit_calls() -> None:
     assert stub.subprocess is subprocess
     assert stub.os is os
     assert "subprocess.Popen(" in Path(stub.__file__).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
+@pytest.mark.parametrize(
+    ("target", "retains_identity"),
+    [
+        ("third-party", False),
+        ("third-party-credentials", False),
+        ("managed-name-only", False),
+        ("custom-args", False),
+        ("custom-env", False),
+        ("declared-identity", False),
+        ("declared-identity-case", False),
+        ("unresolved-install", False),
+        ("unsafe-python-fallback", False),
+        ("managed-default-home", True),
+        ("managed-symlink-home", True),
+        ("managed-dot-home", True),
+        ("managed-mismatched-home", False),
+        ("managed-override-home", True),
+        ("managed-safe-python", True),
+    ],
+)
+def test_fallback_identity_reaches_only_the_verified_managed_backend(
+    windows: bool,
+    target: str,
+    retains_identity: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    degrade: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    """Exercise both actual handoffs, including a managed-name impostor.
+
+    A shared child's stub has its own key and may inherit its parent's PID.
+    Neither grants a third-party backend authority, including when declared env
+    tries to restore it. A genuine core fallback must retain the child's key.
+    """
+    from kiro_crew import agent, mcp_discovery
+
+    home = str(tmp_path / "crew")
+    if target == "managed-symlink-home":
+        from conftest import make_dir_link
+
+        Path(home).mkdir()
+        alias = tmp_path / "crew-alias"
+        make_dir_link(alias, Path(home))
+        home = str(alias)
+    elif target == "managed-dot-home":
+        home = str(tmp_path) + os.sep + "." + os.sep + "crew"
+    command = str(tmp_path / "kirocrew")
+    expected_args = ["mcp-core"]
+    if target == "unsafe-python-fallback":
+        expected_args = ["-m", "kiro_crew", "mcp-core"]
+    elif target == "managed-safe-python":
+        expected_args = ["-P", "-s", "-m", "kiro_crew", "mcp-core"]
+
+    def invocation(subcommand: str) -> tuple[str, list[str]]:
+        if target == "unresolved-install":
+            raise RuntimeError("install unavailable")
+        return command, list(expected_args)
+
+    monkeypatch.setattr(agent, "_kirocrew_mcp_invocation", invocation)
+    monkeypatch.setattr(mcp_discovery, "_resolved_managed_invocation", {})
+    monkeypatch.setenv("KIROCREW_HOME", home)
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "child-session")
+    monkeypatch.setenv("KIROCREW_HOST_PID", "12345")
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+    _install_popen(monkeypatch, degrade, _FakeProc())
+
+    args = _args(command=command)
+    args.server = "third-party" if target.startswith("third-party") else "kirocrew-core"
+    args.target_args = "|".join(expected_args)
+    declared: dict[str, str] = {}
+    if target == "managed-name-only":
+        args.target_command = str(tmp_path / "impostor")
+    elif target == "custom-args":
+        args.target_args += "|--custom"
+    elif target == "custom-env":
+        declared["PYTHONPATH"] = str(tmp_path / "untrusted")
+    elif target in {"declared-identity", "declared-identity-case"}:
+        declared = {
+            "KIROCREW_SESSION_KEY": "forged-session",
+            "KIROCREW_HOST_PID": "54321",
+        }
+        if target == "declared-identity-case":
+            declared = {key.lower(): value for key, value in declared.items()}
+    elif target == "managed-override-home":
+        declared["KIROCREW_HOME"] = home
+    elif target == "managed-mismatched-home":
+        declared["KIROCREW_HOME"] = str(tmp_path / "other-crew")
+    if target == "third-party-credentials":
+        declared["BACKEND_TOKEN"] = "backend-credential"
+    if declared:
+        sidecar = tmp_path / "fallback-env.json"
+        sidecar.write_text(json.dumps(declared), encoding="utf-8")
+        args.env_file = str(sidecar)
+
+    with pytest.raises((SystemExit, AssertionError)):
+        stub.fallback_exec(args)
+
+    env = degrade["popen"][0][1]["env"] if windows else degrade["exec"][0][2]
+    if retains_identity:
+        assert env["KIROCREW_SESSION_KEY"] == "child-session"
+        assert env["KIROCREW_HOME"] == home
+    else:
+        assert not {"KIROCREW_SESSION_KEY", "KIROCREW_HOST_PID"} & {key.upper() for key in env}
+        if target == "third-party-credentials":
+            assert env["BACKEND_TOKEN"] == "backend-credential"
+    assert "PATH" in env
+    assert os.environ["KIROCREW_SESSION_KEY"] == "child-session"

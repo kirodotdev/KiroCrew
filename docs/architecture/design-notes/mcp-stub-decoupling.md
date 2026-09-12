@@ -1,14 +1,15 @@
 # Decoupling the MCP stub from the pooling allowlist
 
-The stub roster is **opt-in per server**: `mcp_gateway.stub_servers` is empty by
-default, so a default install runs no stub, no daemon and no gateway in the request
-path. What this note records is why *whether a stub exists* is a separate question
+The default stub roster contains **`kirocrew-core`**, whose session-bound tools
+need verified per-call identity even on harnesses that do not inherit identity
+environment variables. Other servers remain opt-in. An explicit empty roster
+runs no stub or daemon. What this note records is why *whether a stub exists* is a separate question
 from *whether the backend is shared*, and why a connection-private backend sits
 outside the pooling budget.
 
 ## The config surface
 
-- **`mcp_gateway.stub_servers`** — the stub ROSTER, empty by default. Routing is what
+- **`mcp_gateway.stub_servers`** — the stub ROSTER, containing `kirocrew-core` by default. Routing is what
   interposes a stub, so this is the per-server decision and the only thing that can
   grant MCP Apps for that server. It is a layer an edition can own: a distribution
   that wants its known servers stubbed out of the box ships them here and keeps
@@ -33,8 +34,13 @@ outside the pooling budget.
 A stub for every stdio server is the shape this note originally argued for, and the
 reason it is not the default is cost, not incoherence: it adds a daemon plus one proxy
 process per (server, session) to an install that asked for neither — measured at 166
-stub processes at ~15.3 MB PSS each on one developer machine. A topology change
-belongs behind a choice rather than in a default.
+stub processes at ~15.3 MB PSS each on one developer machine. A core-only default
+pays that cost for the identity channel core tools require; other servers are
+routed only by choice. Backend sharing remains a separate opt-in. The roster
+default also reaches upgrades with neither roster spelling configured; if such
+an install already set `enabled: true`, that choice shares the newly routed core
+backend. An explicit roster, legacy roster or per-server opt-out keeps its
+existing meaning.
 
 ## Why the two decisions are separate
 

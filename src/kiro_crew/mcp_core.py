@@ -53,7 +53,12 @@ from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loopback_http import loopback_urlopen
-from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_caller
+from kiro_crew.mcp_caller import (
+    CallerContext,
+    current_caller,
+    current_tenant_nonce,
+    set_current_caller,
+)
 from kiro_crew.mcp_shared import (
     call_tool_with_logging,
     internal_caller,
@@ -847,6 +852,16 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
     """
     if _resolve_session_key_strict():
         return ""
+    if current_tenant_nonce():
+        # A connection marker proves routing, never session identity. Do not
+        # tell the operator to enable a route this request already traversed.
+        return (
+            f" {server} reached the MCP broker, but this call has no verified "
+            f"session identity. Check that the stub uses the gateway's "
+            f"KIROCREW_HOME and receives the session claim after startup, then "
+            f"reload this session. Enabling routing again will not repair "
+            f"an unidentified broker connection."
+        )
     if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
         # The sandbox launcher declared a host pid, so the channel exists and
         # the sidecar is what failed — a signing/trust-root problem, not routing.

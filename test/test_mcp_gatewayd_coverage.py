@@ -646,9 +646,15 @@ class TestApplyAbort:
         assert out == {"type": "abort-rejected", "reason": "no valid pids"}
 
     @pytest.mark.asyncio
-    async def test_cancels_in_flight_work_for_every_indexed_stub(self, monkeypatch):
+    @pytest.mark.parametrize("session_bound", [False, True])
+    async def test_cancels_in_flight_work_for_every_indexed_stub(
+        self, monkeypatch, session_bound
+    ):
         monkeypatch.setattr(gw, "_audit_abort_applied", lambda *a, **k: None)
-        conn = gw._StubConn("stub-a", [909], "demo", None)
+        conn = gw._StubConn(
+            "stub-a", [909], "demo", CallerContext(session_key="subagent:child"),
+            session_bound=session_bound,
+        )
         gw._conn_index_add(conn)
         backend = MagicMock()
         backend.cancel_in_flight_for_stub = AsyncMock(return_value=["1", "2"])

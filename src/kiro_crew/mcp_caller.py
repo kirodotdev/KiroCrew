@@ -142,10 +142,9 @@ def _parent_pid(pid: int) -> int:
     ``CreateToolhelp32Snapshot`` on Windows -- none of which spawns a process.
 
     Avoiding a ``ps`` fork per ancestor matters here: this walk runs on the
-    stub's Register path (bounded at ten levels) and on every iteration of the
-    recaller poll, whose backoff caps at 30s but does not terminate while the
-    session key is unresolved -- and an unresolved key is exactly the condition
-    that starts the poll, so it cannot be served from the non-empty-only cache.
+    stub's Register path (bounded at ten levels) and before requests on an
+    unidentified connection. An unresolved key cannot be served from the
+    non-empty-only cache.
     ``get_ppid`` also resolves on Windows, where ``ps`` does not exist.
 
     ``get_ppid`` reports failure as ``-1``; normalise it to ``0`` so the walk

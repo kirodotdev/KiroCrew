@@ -35,16 +35,25 @@ For scripted or headless setups:
 
 ```json
 {
-  "mcp_gateway": { "stub_servers": ["excalidraw"] },
+  "mcp_gateway": { "stub_servers": ["kirocrew-core", "excalidraw"] },
   "dashboard":   { "mcp_app_panel": true }
 }
 ```
 
-`stub_servers` is empty by default, so an untouched config renders no apps and runs no broker. Routing a server is the opt-in.
-Backend sharing is a separate, opt-in decision:
+New installations route `kirocrew-core` by default for session identity. This
+starts a broker and one stub per core connection. Other servers, including
+servers that render MCP Apps, require routing to be enabled individually.
+An explicit list replaces the default, so keep `kirocrew-core` when adding
+another server if you use identity-bound core tools.
+
+Upgrades preserve saved lists, including an empty list saved by an older
+version during an ordinary configuration update. If session-ledger tools
+report a missing identity channel, enable core routing in MCP Management and
+restart between tasks; see [Session ledger](session-ledger.md#if-the-ledger-reports-a-missing-identity-channel).
+Backend sharing remains a separate, opt-in decision:
 
 ```json
-{ "mcp_gateway": { "enabled": true, "stub_servers": ["excalidraw"] } }
+{ "mcp_gateway": { "enabled": true, "stub_servers": ["kirocrew-core", "excalidraw"] } }
 ```
 
 `mcp_gateway.stub_servers` is the only thing that gives a server a stub. A

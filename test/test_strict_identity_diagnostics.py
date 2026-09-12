@@ -9,15 +9,15 @@ Two surfaces are under test, and they exist for two different readers:
 2. ``cli_doctor._doctor_strict_identity`` — the reader doing a checkup before
    hitting the wall.
 
-Both are REPORTS. ``mcp_gateway.stub_servers`` is empty by default on purpose
-(routing starts a broker plus a stub per server), so neither surface repairs
-anything.
+Both are reports; neither surface changes routing or repairs a connection.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from kiro_crew import cli_doctor, mcp_core
 
@@ -59,6 +59,17 @@ class TestStrictIdentityDiagnosis:
         assert "did not verify" in out
         assert "trust root" in out
         assert "mcp_gateway.stub_servers" not in out
+
+    def test_routed_but_unidentified_call_does_not_claim_routing_is_disabled(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
+        monkeypatch.setattr(mcp_core, "current_tenant_nonce", lambda: "connection-only")
+        out = mcp_core.strict_identity_diagnosis()
+        assert "reached the MCP broker" in out
+        assert "no verified session identity" in out
+        assert "KIROCREW_HOME" in out
+        assert "is not in mcp_gateway.stub_servers" not in out
 
 
 class TestRefusalsCarryTheDiagnosis:
@@ -154,11 +165,9 @@ class TestDoctorStrictIdentity:
         assert "monitor_start" in out and "session_ledger" in out
 
     def test_it_never_makes_doctor_exit_nonzero(self, monkeypatch, capsys) -> None:
-        """The line is a NOTE, not a problem. ``stub_servers`` is empty by
-        default, so appending to doctor's ``issues`` would make a stock install
-        exit 1 and break ``kirocrew doctor && kirocrew gateway`` — the failure
-        the speech-to-text section is written to avoid. Signature-enforced: the
-        function takes no ``issues`` list at all, so it structurally cannot.
+        """An explicit empty roster remains a supported choice, so this note
+        cannot break ``kirocrew doctor && kirocrew gateway``. Signature-enforced:
+        the function takes no ``issues`` list at all, so it structurally cannot.
         """
         import inspect
 
@@ -185,8 +194,22 @@ class TestDoctorStrictIdentity:
         routing is not what decides whether strict identity resolves — warning
         there would be false."""
         monkeypatch.setattr(cli_doctor._plat, "system", lambda: "Linux")
-        cli_doctor._doctor_strict_identity(self._Cfg([]))
+        cli_doctor._doctor_strict_identity(self._Cfg(["kirocrew-core"]))
         assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize("platform", ["Linux", "Darwin", "Windows"])
+    def test_empty_roster_explains_the_upgrade_and_operator_action(
+        self, monkeypatch, capsys, platform
+    ) -> None:
+        monkeypatch.setattr(cli_doctor._plat, "system", lambda: platform)
+        cli_doctor._doctor_strict_identity(self._Cfg([]))
+        out = " ".join(capsys.readouterr().out.split())
+        assert "preserved on upgrade" in out
+        assert "saved the old empty default" in out
+        assert "ordinary configuration save" in out
+        assert "kirocrew-core routing in MCP Management" in out
+        assert "restart between tasks" in out
+        assert "⚠" not in out
 
     def test_a_malformed_config_does_not_raise(self, monkeypatch, capsys) -> None:
         """Doctor never fails on the object it was handed."""

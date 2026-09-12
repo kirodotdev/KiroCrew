@@ -722,8 +722,10 @@ class TestMalformedDeclaredEnv:
 
     @pytest.mark.parametrize("bad_env", [[{}], "x", 5, [{"A": "1"}]])
     def test_non_dict_env_does_not_raise(self, tmp_path, bad_env):
+        from kiro_crew.config.paths import config_dir
+
         entry = self._build(tmp_path, bad_env)
-        assert entry["env"] == {}
+        assert entry["env"] == {"KIROCREW_HOME": str(config_dir())}
         # A malformed env yields no --env-file: nothing to hash or apply.
         assert "--env-file" not in entry["args"]
 

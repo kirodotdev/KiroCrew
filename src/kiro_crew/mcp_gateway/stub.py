@@ -415,7 +415,7 @@ def _build_caller_block(channel_id: Optional[str]) -> dict[str, str]:
     forwarded call — silently breaking state-mutating tools (``learn_add`` et
     al.) that need session identity. Sharing the backend-side resolver keeps
     both ends of the wire in agreement. If the key is still unknown at register
-    (claim hasn't happened yet), the recaller loop repairs it later."""
+    (claim hasn't happened yet), request-time caller repair checks again."""
     session_key = CallerContext.from_env().session_key
     # Diagnostic identity only — the OS user. USERNAME is the Windows spelling
     # of USER; check both so this dimension is not empty on one platform.
@@ -511,6 +511,9 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "channel_id": channel_id,
         "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
         "caller": caller,
+        # A session-injected key identifies this stub for its whole lifetime.
+        # A delayed claim for its shared runtime must not replace that key.
+        "session_bound": bool(os.environ.get("KIROCREW_SESSION_KEY")),
         # Claim-push (gateway → gatewayd ``claim`` frame): the ancestor PID
         # chain of this stub, nearest first. gatewayd indexes the connection
         # under EVERY ancestor so a claim naming any level of the runtime's
@@ -530,7 +533,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
 
 
 async def _write_frame(writer: asyncio.StreamWriter, obj: dict) -> None:
-    # stdin_pump and _recaller_loop both write this shared stub->gateway socket
+    # stdin_pump and the liveness monitor write this shared stub->gateway socket
     # and both await drain(). Each write() here lands a WHOLE frame in one
     # synchronous call, so frame bytes cannot interleave — the hazard is the
     # concurrent drain(): under backpressure, FlowControlMixin._drain_helper on
@@ -823,6 +826,7 @@ async def run_bridge(
     ping_max_misses: int = _BRIDGE_PING_MAX_MISSES,
     peer_supports_ping: bool = False,
     session: StubSession,
+    caller_repair: Optional[_CallerRepair] = None,
 ) -> None:
     """Pump stdin ↔ socket until either side closes or ``stop_event`` fires.
 
@@ -858,10 +862,12 @@ async def run_bridge(
     # deliberately NOT cleared: those are what a reconnect exists to reuse.
     session.reason = ""
     session.outstanding_ids = []
-    # stdin_pump and _recaller_loop both write this shared stub->gateway socket;
+    # stdin_pump and the liveness monitor write this shared stub->gateway socket;
     # serialize their write+drain through one lock (mirrors gatewayd/backend).
     if getattr(writer, "_mc_write_lock", None) is None:
         setattr(writer, "_mc_write_lock", asyncio.Lock())
+    if caller_repair is not None:
+        caller_repair.reset_connection()
     writer_failed = threading.Event()
     writer_failed_evt = asyncio.Event()
 
@@ -907,16 +913,20 @@ async def run_bridge(
             # let the session keep whatever a reconnect will need.
             # Best-effort: parse failures are silently ignored — the frame is
             # still forwarded verbatim.
+            is_request = False
             try:
                 msg = json.loads(line)
                 if isinstance(msg, dict):
                     session.note_outbound(line, msg)
                     if "method" in msg and "id" in msg:
                         _outstanding_ids.add(msg["id"])
+                        is_request = True
             except (ValueError, TypeError):
                 pass
             try:
-                # Serialize with _recaller_loop's _write_frame writes on the
+                if is_request and caller_repair is not None:
+                    await caller_repair.before_request(writer)
+                # Serialize with the liveness monitor's _write_frame writes on the
                 # same socket: the write itself is whole-frame atomic, but a
                 # second concurrent drain() under backpressure trips the
                 # single-waiter assert in FlowControlMixin._drain_helper on
@@ -1153,6 +1163,8 @@ async def run_bridge(
             # recoverable outage turns into a session that answers wrongly.
             session.reason = "unknown"
         session.outstanding_ids = list(_outstanding_ids)
+        if caller_repair is not None and session.reason not in StubSession.RECONNECTABLE:
+            caller_repair.close()
 
 
 async def _emit_error_frames(req_ids: list, message: str, *, pool_label: str) -> None:
@@ -1322,7 +1334,7 @@ async def _reconnect(
     rather than gone -- and retries a handshake replay that lost its connection
     for the same reason, since the daemon reached first may still be starting or
     may die again. What is NOT retried is a refusal: an older daemon will not
-    grow the ``poolable_ack`` capability, and a generation that answers the
+    grow a missing registration capability, and a generation that answers the
     handshake differently will keep answering that way, so retrying either only
     delays the terminal exit.
     """
@@ -1382,6 +1394,14 @@ async def _reconnect(
                 "poolable field and this server is not shareable; refusing "
                 "rather than risk being pooled pool=%s",
                 pool_label,
+            )
+            return None
+
+        if payload.get("session_bound") is True and "session_bound_ack" not in _caps:
+            await _safe_close(writer)
+            logger.warning(
+                "stub reconnect: gateway cannot preserve the explicit session "
+                "binding; refusing this generation pool=%s", pool_label,
             )
             return None
 
@@ -1712,6 +1732,9 @@ def fallback_exec(args: argparse.Namespace) -> None:
     diagnostic. Windows has no in-place exec, so there the backend runs as a
     child inheriting this process's stdio -- see :func:`_fallback_spawn_child`
     for why the emulated ``exec*`` would kill the session outright."""
+    # Keep discovery's HTTP and policy imports out of the normal stub path.
+    from kiro_crew.mcp_discovery import _is_first_party_managed_argv
+
     target_args = _split_target_args(args.target_args, args.target_args_sep)
     argv = [args.target_command, *target_args]
     # Restore the server's declared env. The rewriter moves declared env
@@ -1719,8 +1742,32 @@ def fallback_exec(args: argparse.Namespace) -> None:
     # otherwise reads only for PoolKey hashing. On this fallback path we exec
     # the real backend directly, so it must run with its declared env to match
     # the non-pooled baseline — the daemon's own environment lacks it.
+    declared_env = _parse_env_file(getattr(args, "env_file", "") or "")
     exec_env = dict(os.environ)
-    exec_env.update(_parse_env_file(getattr(args, "env_file", "") or ""))
+    exec_env.update(declared_env)
+    # The shared child's identity belongs to the stub, not an arbitrary
+    # fallback backend. Preserve it only for the package-derived managed
+    # invocation, using the same argv + env proof as discovery. A managed
+    # name alone cannot make spec-authored command text trustworthy.
+    # The wrapper pins the data home even when the original default entry had
+    # no env; include that inherited pin in the proof of the effective env.
+    managed_env = dict(declared_env)
+    if os.environ.get("KIROCREW_HOME"):
+        inherited_home = os.environ["KIROCREW_HOME"]
+        # Match the package's resolved home without normalizing a declared
+        # override into a trusted value. Resolution failure keeps the raw pin;
+        # the verifier's own failed resolution then refuses direct authority.
+        with contextlib.suppress(OSError, RuntimeError):
+            inherited_home = str(Path(inherited_home).expanduser().resolve())
+        managed_env.setdefault("KIROCREW_HOME", inherited_home)
+    if not _is_first_party_managed_argv(
+        getattr(args, "server", ""), args.target_command, target_args, managed_env
+    ):
+        exec_env = {
+            key: value
+            for key, value in exec_env.items()
+            if key.upper() not in {"KIROCREW_SESSION_KEY", "KIROCREW_HOST_PID"}
+        }
     if platform_compat.IS_WINDOWS:
         _fallback_spawn_child(argv, exec_env)
     # exec IS this fallback stub's whole purpose: when the gateway is
@@ -1745,89 +1792,95 @@ def _install_signal_handlers(
 
 # --- Warm-pool caller repair -----------------------------------------------
 
-# A warm-pool stub registers BEFORE its kiro-cli is claimed, so its Register
-# payload carries an empty ``session_key`` (the key is unknown at pool-fill
-# time). ``rekey()`` on claim only mutates the gateway-side provider object —
-# it never re-registers this stub — so gatewayd keeps ``caller=None`` for the
-# life of the connection and every state-mutating tool (``learn_add`` et al.)
-# fails with "missing X-Session-Key". These knobs bound a poll that watches for
-# the session key to materialize (the dashboard writes
-# ``session_pid_<pid>.txt`` on the claimed session's first turn) and then sends
-# a ``recaller`` control frame so gatewayd stamps the right identity from then
-# on.
-_RECALLER_POLL_INTERVAL_SECS = 1.5
-# Backoff ceiling. Claim-push (gateway → gatewayd ``claim`` frame on rekey)
-# is now the primary identity-repair path; this poll is the FALLBACK for
-# claim-frame loss / gatewayd restarts, so it must never strand a connection
-# by expiring — a warm-pool runtime is routinely claimed far later than any
-# fixed budget, so a fixed deadline would strand exactly that case.
-# Instead of a deadline, the interval decays from
-# 1.5s to this cap, so a long-idle pool stub costs one identity probe every
-# 30s instead of leaking an aggressive poll forever.
-_RECALLER_POLL_MAX_INTERVAL_SECS = 30.0
-_RECALLER_POLL_BACKOFF = 1.5
+_CALLER_REPAIR_TIMEOUT_SECS = 1.0
 
 
-async def _recaller_loop(
-    writer: asyncio.StreamWriter,
-    channel_id: Optional[str],
-    stop_event: asyncio.Event,
-) -> None:
-    """Poll for a late-arriving session key and re-register the caller once.
+class _CallerRepair:
+    """Resolve late identity before a request can overtake its recaller.
 
-    Started only when the initial Register carried an empty ``session_key``.
-    FALLBACK path under claim-push (the gateway's ``claim`` frame is the
-    primary repair); unbounded with interval backoff so a late claim can
-    never be stranded by a poll deadline. Exits on: key found (after sending
-    one ``recaller`` frame) or bridge teardown (``stop_event``). Writes a
-    whole frame per ``_write_frame`` (a single synchronous ``writer.write``
-    before any await), so frame BYTES cannot interleave with the stdin pump
-    sharing this ``writer`` — but the write lock in ``_write_frame`` is still
-    required: two coroutines awaiting ``drain()`` concurrently under
-    backpressure trip the single-drain-waiter assert in
-    ``FlowControlMixin._drain_helper`` on pre-3.12-fix interpreters, which
-    kills a pump task and tears the bridge down.
+    Only a connection registered without identity uses this repair. The pending
+    lookup belongs to the stub and survives reconnects: cancelling its asyncio
+    future cannot stop a blocked executor thread. Only the sent flag is reset
+    for a new connection, and lookup completion never writes to a socket.
     """
-    loop = asyncio.get_running_loop()
-    interval = _RECALLER_POLL_INTERVAL_SECS
-    while not stop_event.is_set():
-        try:
-            # Sleep-or-wake: return promptly if the bridge tears down.
-            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+
+    def __init__(self, channel_id: Optional[str]) -> None:
+        self._channel_id = channel_id
+        self._pending: Optional[asyncio.Future[dict[str, str]]] = None
+        self._sent = False
+
+    def reset_connection(self) -> None:
+        self._sent = False
+
+    async def before_request(self, writer: asyncio.StreamWriter) -> None:
+        if self._sent:
             return
-        except asyncio.TimeoutError:
-            pass
-        interval = min(interval * _RECALLER_POLL_BACKOFF, _RECALLER_POLL_MAX_INTERVAL_SECS)
-        # ``_build_caller_block`` -> ``CallerContext.from_env`` does a
-        # synchronous /proc ancestry walk + file reads; offload it to the
-        # dedicated subprocess pool (not the shared default) so a slow or
-        # wedged filesystem read here can neither freeze the stdin-pump bridge
-        # that shares this event loop nor starve unrelated default-pool work.
-        caller = await loop.run_in_executor(
-            subprocess_executor(), _build_caller_block, channel_id
+        deadline = asyncio.get_running_loop().time() + _CALLER_REPAIR_TIMEOUT_SECS
+        inherited_lookup = self._pending is not None
+        caller = await self._resolve_caller(deadline)
+        if caller is None and inherited_lookup and self._pending is None:
+            # A previous request's lookup can finish empty before OR during this
+            # request, after identity has appeared. Only a fresh miss describes
+            # this request. Share one deadline rather than doubling its wait.
+            caller = await self._resolve_caller(deadline)
+        if caller is None:
+            return
+        # The broker consumes this control frame before the request that follows
+        # on this same stream. No timer, retry or cross-connection ACK is needed.
+        await _write_frame(
+            writer,
+            {
+                "type": "recaller",
+                "caller": caller,
+                "session_key": caller["session_key"],
+                "session_type": caller["session_type"],
+                "principal_id": caller["principal_id"],
+                "channel_id": self._channel_id,
+            },
         )
-        if not caller["session_key"]:
-            continue
-        frame = {
-            "type": "recaller",
-            "caller": caller,
-            # Flat mirror — gatewayd's ``_caller_from_register`` accepts either
-            # the nested ``caller`` dict or these top-level fields.
-            "session_key": caller["session_key"],
-            "session_type": caller["session_type"],
-            "principal_id": caller["principal_id"],
-            "channel_id": channel_id,
-        }
-        try:
-            await _write_frame(writer, frame)
-            logger.info(
-                "stub sent recaller after warm-pool claim (session_type=%s)",
-                caller["session_type"],
+        self._sent = True
+        logger.info(
+            "stub sent recaller before request (session_type=%s)",
+            caller["session_type"],
+        )
+
+    async def _resolve_caller(self, deadline: float) -> Optional[dict[str, str]]:
+        loop = asyncio.get_running_loop()
+        if self._pending is None:
+            self._pending = loop.run_in_executor(
+                subprocess_executor(), _build_caller_block, self._channel_id
             )
-        except (OSError, ConnectionError):
-            # Connection already gone — bridge will tear down on its own.
-            pass
-        return
+            # A reconnect or shutdown may abandon the waiter, but a late worker
+            # exception must still be retrieved. This callback never writes.
+            self._pending.add_done_callback(
+                lambda future: None if future.cancelled() else future.exception()
+            )
+        try:
+            caller = await asyncio.wait_for(
+                asyncio.shield(self._pending), timeout=max(0.0, deadline - loop.time())
+            )
+        except asyncio.TimeoutError:
+            # Reuse this lookup on the next request, including after reconnect.
+            # A TimeoutError FROM the resolver is completed work, not a pending
+            # lookup, and must not prevent the next request from trying again.
+            if self._pending.done():
+                self._pending = None
+            return None
+        except Exception:
+            self._pending = None
+            logger.debug("stub caller lookup unavailable", exc_info=True)
+            return None
+        self._pending = None
+        return caller if caller["session_key"] else None
+
+    def close(self) -> None:
+        if self._pending is not None:
+            if self._pending.done():
+                if not self._pending.cancelled():
+                    self._pending.exception()
+            else:
+                self._pending.cancel()
+            self._pending = None
 
 
 async def _amain(argv: Optional[list[str]] = None) -> int:
@@ -1854,7 +1907,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # does a synchronous /proc ancestry walk + file reads (and _binary_version
     # hashes the target binary), so offload the whole cold-start resolution to
     # the dedicated subprocess pool (not the shared default) — consistent with
-    # _recaller_loop, so a wedged filesystem read can't starve default-pool work.
+    # request-time repair, so a wedged read can't starve default-pool work.
     loop = asyncio.get_running_loop()
     payload = await loop.run_in_executor(subprocess_executor(), build_register_payload, args)
 
@@ -1908,6 +1961,17 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             pool_label,
         )
         await _safe_close(writer)
+        fallback_exec(args)
+        return 1  # unreachable
+
+    # A surviving pre-feature daemon ignores session_bound, allowing a delayed
+    # parent PID claim to replace a child's key. Require its acknowledgment
+    # before any MCP traffic; the verified direct fallback retains the child key.
+    if payload.get("session_bound") is True and "session_bound_ack" not in _caps:
+        reason = "gateway cannot preserve the explicit session binding"
+        await _safe_close(writer)
+        await alog_fallback(reason, payload["stub_uuid"], pool_label, args)
+        logger.warning("handshake: %s; falling back pool=%s", reason, pool_label)
         fallback_exec(args)
         return 1  # unreachable
 
@@ -1990,45 +2054,19 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # captured handshake and the ending reason all live here precisely because a
     # connection dies with the daemon and the stub does not.
     session = StubSession()
+    caller_repair = _CallerRepair(_resolve_channel_id(args.channel_id))
     peer_supports_ping = bool(
         isinstance(capabilities, list) and "bridge_ping" in capabilities
     )
     while True:
-        # Warm-pool caller repair: if we registered without a session key (the
-        # kiro-cli was pool-spawned before its session was claimed), watch for
-        # the key to materialize and re-register the caller so state-mutating
-        # tools (learn_add et al.) work for the claimed session. No-op for stubs
-        # that already had a key at register. Re-armed per connection: the task
-        # writes THIS socket, so one that outlived its connection would write a
-        # closed writer.
-        recaller_task: Optional[asyncio.Task[None]] = None
-        if not payload.get("session_key"):
-            recaller_task = asyncio.create_task(
-                _recaller_loop(
-                    writer, _resolve_channel_id(args.channel_id), stop_event
-                ),
-                name="kirocrew-mcp-stub-recaller",
-            )
-        try:
-            # The return value is the legacy single-connection signal; this
-            # caller reads the richer ending off the session instead.
-            await run_bridge(
-                reader,
-                writer,
-                stop_event,
-                peer_supports_ping=peer_supports_ping,
-                session=session,
-            )
-        finally:
-            if recaller_task is not None:
-                if not recaller_task.done():
-                    recaller_task.cancel()
-                # Always await — even a task that already finished (successfully
-                # or with an exception) must have its result/exception
-                # retrieved, or asyncio logs "Task exception was never
-                # retrieved" and hides a bug.
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await recaller_task
+        await run_bridge(
+            reader,
+            writer,
+            stop_event,
+            peer_supports_ping=peer_supports_ping,
+            session=session,
+            caller_repair=caller_repair if not payload.get("session_key") else None,
+        )
 
         if session.reason not in StubSession.RECONNECTABLE:
             break
@@ -2078,7 +2116,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
 
         # Refresh the caller before re-registering: the session key may have
         # materialized since the first Register (warm-pool claim), and carrying
-        # it in the new handshake is better than re-running the recaller.
+        # it in the new handshake avoids a request-time recaller.
         #
         # The uuid in this payload is a placeholder: ``_reconnect`` mints a fresh
         # one per handshake ATTEMPT, because it is a per-REGISTRATION handle the
@@ -2122,10 +2160,12 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             isinstance(capabilities, list) and "bridge_ping" in capabilities
         )
 
+    caller_repair.close()
+
     # Terminal: the bridge ended for a reason no reconnect can address, or the
     # reconnect budget ran out.
     #
-    # Deliberately NOT followed by fallback_exec. The four pre-flight fallback
+    # Deliberately NOT followed by fallback_exec. The pre-flight fallback
     # sites work because kiro-cli's ``initialize`` is still unread in fd0, so the
     # exec'd server comes up initialized. Here stdin_pump has already consumed
     # and forwarded ``initialize``, and kiro-cli never re-sends it, so an exec'd

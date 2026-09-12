@@ -36,6 +36,25 @@ A ledger is marked finished when its work is done or abandoned, which stops it
 being re-injected into later cycles. A stale ledger quietly steering a session
 that has moved on is the failure this avoids.
 
+## If the ledger reports a missing identity channel
+
+New installations route `kirocrew-core` through the MCP gateway automatically.
+That starts a broker process and a stub for each core connection; sharing
+backends across sessions remains off unless you enable it separately.
+
+An upgrade preserves saved routing lists, including an empty
+`mcp_gateway.stub_servers: []`. Older versions could save that empty default
+during an ordinary configuration update, even if you never chose to turn
+routing off. Upgrading alone does not change it.
+`kirocrew doctor` reports this empty-list upgrade guidance on every platform.
+
+If ledger calls are refused because core is unrouted, open **Developer → MCP
+Management** and enable routing for **kirocrew-core**. Apply the change between
+tasks and restart Kiro Crew, then ask the session to read its ledger. For a
+headless setup, add `"kirocrew-core"` to `mcp_gateway.stub_servers`, preserving
+any other entries, and restart. An empty ledger is a successful read if the
+session has not recorded work yet.
+
 ## Related docs
 
 - [Monitor loops](monitor-loops.md): the repeated-wake work a ledger most often backs

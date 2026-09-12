@@ -2935,7 +2935,9 @@
         "idle_timeout_secs": 300,
         "resolve_once_refresh_hours": 24,
         "max_backends": 64,
-        "stub_servers": [],
+        "stub_servers": [
+          "kirocrew-core"
+        ],
         "poolable_servers": [],
         "stub_overrides": {},
         "pool_identity_env": [],
@@ -3070,10 +3072,12 @@
       "sensitive": false,
       "tags": [],
       "label": "Routed Servers",
-      "help": "MCP server names given a stub. The stub interposes a stub, which is what makes server-authored UI (MCP Apps) and backend sharing possible for that server — so it is the one per-server decision. Empty by default: an unstubbed server is launched by the session itself, the same process topology as running without the broker, and an empty list means no broker runs at all. Whether stubbed servers SHARE one backend is the separate global switch (mcp_gateway.enabled). Managed from MCP Management.",
+      "help": "MCP server names given a stub. The stub interposes a stub, which is what makes server-authored UI (MCP Apps) and backend sharing possible for that server — so it is the one per-server decision. Defaults to kirocrew-core so session-bound core tools receive verified caller identity on every call. Other servers are launched directly. An explicit empty list means no broker runs. Whether stubbed servers SHARE one backend is the separate global switch (mcp_gateway.enabled). Managed from MCP Management.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": [],
+      "defaultValue": [
+        "kirocrew-core"
+      ],
       "requiresRestart": true
     },
     {

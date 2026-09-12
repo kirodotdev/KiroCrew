@@ -223,6 +223,37 @@ async def _handle(reader: Any, writer: Any) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_key,bound,expected",
+    [
+        ("subagent:child", True, "subagent:child"),
+        ("subagent:child", False, "dashboard:parent"),
+        ("", True, "dashboard:parent"),
+    ],
+)
+async def test_delayed_parent_claim_preserves_explicit_child_binding(
+    monkeypatch, session_key, bound, expected
+) -> None:
+    backend, _ = _patch_env(monkeypatch)
+    reader = _QueueReader()
+    register = _register(session_key)
+    register["session_bound"] = bound
+    reader.feed(register)
+    reader.feed(_CALL)
+    task = asyncio.create_task(_handle(reader, _RecordingWriter()))
+    try:
+        await asyncio.wait_for(backend.forwarded.wait(), timeout=5.0)
+        await gw._apply_claim(_claim(_WRAPPER_PID, "dashboard:parent"))
+        backend.forwarded.clear()
+        reader.feed(_CALL)
+        await asyncio.wait_for(backend.forwarded.wait(), timeout=5.0)
+        assert backend.callers[-1].session_key == expected
+    finally:
+        reader.eof()
+        await asyncio.wait_for(task, timeout=5.0)
+
+
+@pytest.mark.asyncio
 async def test_claim_retargets_live_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """Key-less register forwards caller=None; after a claim for its runtime
     tree the very next forwarded call carries the claimed identity. The claim
@@ -929,6 +960,20 @@ def test_stub_register_payload_carries_ancestor_pids() -> None:
     # Chain walks upward: on Linux the second entry (when present) must be
     # the parent of the first.
     assert len(set(chain)) == len(chain)  # no cycles
+
+
+@pytest.mark.parametrize("session_key", ["", "subagent:child"])
+def test_stub_register_marks_explicit_session_binding(monkeypatch, session_key) -> None:
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", session_key)
+    monkeypatch.setattr("kiro_crew.mcp_caller._FROM_ENV_CACHE", None)
+    args = stub_mod._parse_args(
+        ["--server", "echo-mcp", "--agent", "cp-agent",
+         "--target-command", "/bin/true", "--work-dir", "/tmp"]
+    )
+    payload = stub_mod.build_register_payload(args)
+    assert payload["session_bound"] is bool(session_key)
+    if session_key:
+        assert payload["session_key"] == session_key
 
 
 def test_stub_register_payload_keeps_legacy_user_identity_key() -> None:
