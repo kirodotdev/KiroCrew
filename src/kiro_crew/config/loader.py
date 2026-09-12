@@ -819,11 +819,6 @@ def _apply_document_migrations(
             if recorded_adoptions is not None:
                 recorded_adoptions.extend(fresh)
             if drop_drifted_keys(data, fresh):
-                logger.info(
-                    "config: adopted the current default for %s — the stored value "
-                    "was a superseded default this install never chose",
-                    ", ".join(fresh),
-                )
                 changed = True
 
     return changed
@@ -4521,6 +4516,15 @@ class KiroCrewConfig:
                 by_key = {e.dotted_key: e for e in adoptable}
                 for key in confirmed_adoptions:
                     entry = by_key.get(key)
+                    if entry is not None:
+                        logger.warning(
+                            "config: adopted current default for %s; removed stored value %r. "
+                            "To restore it: kirocrew config set %s %s",
+                            key,
+                            entry.old_default,
+                            key,
+                            entry.old_default,
+                        )
                     if entry is not None and not _overlay_supplies(local_data, key):
                         _adopt_in_memory(cfg, key, entry.old_default)
             elif needs_migration:

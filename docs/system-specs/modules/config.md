@@ -475,6 +475,11 @@ parsed field still EQUALS `old_default`, so a value the loader clamped or coerce
 keeps the loader's correction. A key the `config.local.json` overlay supplies is
 cleared on disk but left alone in memory: the overlay is the operator's live choice.
 
+After the config write succeeds, the loader warns at the default log level for each
+adopted key, naming the removed value and the `kirocrew config set` command that
+restores it. A deferred or failed write emits no adoption notice. The warning
+describes the stored value without claiming to know whether the operator chose it.
+
 `stt.provider` is deliberately absent from `SUPERSEDED_DEFAULTS` even though its
 default moved to `local`: `_validated_stt_provider` coerces a retired value at
 parse time, so the stored value never wins and there is no *default* for an
