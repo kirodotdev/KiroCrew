@@ -117,9 +117,27 @@ describe('saveSoundSettings', () => {
     const listener = vi.fn()
     window.addEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, listener)
     const s: SoundSettings = { enabled: true, volume: 0.5, perCategory: { all: 'ding' } }
-    saveSoundSettings(s)
+    expect(saveSoundSettings(s)).toBe(true)
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual(s)
     expect(listener).toHaveBeenCalledTimes(1)
+    window.removeEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, listener)
+  })
+
+  it('returns false and does NOT dispatch when persistence fails (quota)', () => {
+    // A quota-dropped write must not announce a change: otherwise every mounted
+    // useNotificationSound reloads and reads the OLD stored value, diverging
+    // from what the user chose. safeSetItem swallows a persistent quota error
+    // and returns false — simulate that by making setItem throw a
+    // QuotaExceededError with no reclaimable keys present.
+    const listener = vi.fn()
+    window.addEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, listener)
+    const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError')
+    })
+    const s: SoundSettings = { enabled: true, volume: 0.5, perCategory: { all: 'ding' } }
+    expect(saveSoundSettings(s)).toBe(false)
+    expect(listener).not.toHaveBeenCalled()
+    setSpy.mockRestore()
     window.removeEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, listener)
   })
 })
@@ -169,6 +187,24 @@ describe('presetForKind', () => {
     expect(presetForKind('agent', base)).toBe('chime') // no override -> all
     expect(presetForKind('agent', { ...base, perCategory: { ...base.perCategory, agent: 'ding' } })).toBe('ding')
     expect(presetForKind('agent', { ...base, perCategory: { ...base.perCategory, all: 'none', agent: 'ding' } })).toBe('ding')
+  })
+
+  it('global all=none silences approval built-in pulse when approval has no override', () => {
+    // The whole point of setting all=none is to silence everything. A built-in
+    // category default (approval -> pulse) must NOT survive an explicit global
+    // silence, or the setting reads as ignored.
+    expect(presetForKind('approval', { ...base, perCategory: { all: 'none' } })).toBe('none')
+  })
+
+  it('an explicit approval override still wins over global all=none', () => {
+    expect(presetForKind('approval', { ...base, perCategory: { all: 'none', approval: 'ding' } })).toBe('ding')
+  })
+
+  it('built-in approval pulse still applies when the global fallback is audible', () => {
+    // Regression guard: the all=none rule must not disable the built-in default
+    // when the fallback is a real preset.
+    expect(presetForKind('approval', { ...base, perCategory: { all: 'chime' } })).toBe('pulse')
+    expect(presetForKind('approval', { ...base, perCategory: {} })).toBe('pulse') // fallback chime
   })
 })
 
@@ -346,6 +382,78 @@ describe('useNotificationSound', () => {
     unmount()
     expect(removeSpy).toHaveBeenCalledWith(MC_SOUND_SETTINGS_CHANGED_EVENT, expect.any(Function))
     expect(removeSpy).toHaveBeenCalledWith(MC_NOTIFICATION_EVENT, expect.any(Function))
+    expect(removeSpy).toHaveBeenCalledWith('storage', expect.any(Function))
+  })
+
+  it('cross-tab storage event for the sound key reloads settings', () => {
+    // Mount with the default (cron -> plays 'chime'). Another tab silences cron,
+    // writes the key, and fires a `storage` event. The mounted hook must reload
+    // and then treat a cron notification as silent.
+    let nowMs = 1000
+    const perf = vi.spyOn(performance, 'now').mockImplementation(() => nowMs)
+    const { unmount } = renderHook(() => useNotificationSound())
+
+    // Simulate the other tab's persisted value, then the DOM storage event.
+    const next: SoundSettings = { enabled: true, volume: 0.35, perCategory: { all: 'chime', cron: 'none' } }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: STORAGE_KEY, newValue: JSON.stringify(next), storageArea: localStorage,
+    }))
+
+    const before = mockCtx.createOscillator.mock.calls.length
+    nowMs = 2000
+    window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail: { kind: 'cron' } }))
+    expect(mockCtx.createOscillator.mock.calls.length).toBe(before) // reloaded -> cron silent
+
+    perf.mockRestore()
+    unmount()
+  })
+
+  it('ignores a storage event for a different key', () => {
+    saveSoundSettings({ enabled: true, volume: 0.35, perCategory: { all: 'chime', cron: 'none' } })
+    let nowMs = 1000
+    const perf = vi.spyOn(performance, 'now').mockImplementation(() => nowMs)
+    const { unmount } = renderHook(() => useNotificationSound())
+
+    // A different key silences cron in storage, but its storage event names an
+    // unrelated key: the hook must NOT reload, so cron stays 'none' (from the
+    // mount load) — verify by flipping cron audible in storage under the WRONG
+    // key and confirming it is NOT picked up.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled: true, volume: 0.35, perCategory: { all: 'chime', cron: 'ding' } }))
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'some-other-key', newValue: 'x', storageArea: localStorage,
+    }))
+
+    const before = mockCtx.createOscillator.mock.calls.length
+    nowMs = 2000
+    window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail: { kind: 'cron' } }))
+    expect(mockCtx.createOscillator.mock.calls.length).toBe(before) // not reloaded -> cron still silent
+
+    perf.mockRestore()
+    unmount()
+  })
+
+  it('ignores a storage event from a different storage area', () => {
+    saveSoundSettings({ enabled: true, volume: 0.35, perCategory: { all: 'chime', cron: 'none' } })
+    let nowMs = 1000
+    const perf = vi.spyOn(performance, 'now').mockImplementation(() => nowMs)
+    const { unmount } = renderHook(() => useNotificationSound())
+
+    // A sessionStorage write in a same-origin iframe also fires 'storage'; the
+    // key matches but storageArea is not localStorage, so the hook must ignore
+    // it and keep the mount-loaded cron='none'.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled: true, volume: 0.35, perCategory: { all: 'chime', cron: 'ding' } }))
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: STORAGE_KEY, newValue: 'x', storageArea: sessionStorage,
+    }))
+
+    const before = mockCtx.createOscillator.mock.calls.length
+    nowMs = 2000
+    window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail: { kind: 'cron' } }))
+    expect(mockCtx.createOscillator.mock.calls.length).toBe(before) // ignored -> cron still silent
+
+    perf.mockRestore()
+    unmount()
   })
 })
 

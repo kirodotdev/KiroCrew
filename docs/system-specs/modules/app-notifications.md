@@ -100,3 +100,65 @@ Dashboard-user settings routes expose the union of registered channels and store
 `NotificationPayload.validate` accepts action entries with non-empty `id` and `label`, and validates each optional action URL at the persistence trust root. `test_notification_bus.py::test_action_count_capped` and `::test_action_field_lengths_capped` pin action bounds. URL-less actions persist but do not render; `test_action_without_url_accepted` pins that contract.
 
 `website/src/components/notifications/NotificationDetailPanel.tsx` and `NotificationFeed.tsx` render navigation actions only after `safeInternalUrl` rechecks a dashboard-internal URL. Unacknowledged approval notes render Approve and Reject controls that use the approval API. `NotificationFeed` collapses notes sharing a `group_key` within a date group to the newest row and expands the stack on demand. `NotificationsBellButton` sends the unread attention count through `badge:set`; `electron/badge.js` clamps it before `app.setBadgeCount`.
+
+## Notification sound (client)
+
+Notification sound is produced entirely on the client and is independent of the
+notification feed, the bell badge, and OS notification-center toasts. The
+WebAudio layer is the **single source of sound**: `website/src/hooks/useNotificationSound.ts`
+synthesizes tones through the Web Audio API (no audio files) and is the only
+component that emits sound. Both page-context `Notification` constructors —
+`website/src/hooks/useNativeNotification.ts` (feed toast) and the approval toast
+in `website/src/hooks/useWebSocket.ts` — pass `silent: true`, so the OS toast
+never adds its own system chime on top of the WebAudio tone. A browser that
+ignores `silent` degrades to the prior double-sound behavior and no worse.
+
+### Sound events
+
+Two sound kinds are synthesized by the websocket layer. `TURN_DONE_KIND`
+(`'turn'`, on `chat_done`) is sound-only: it never appears in the feed (no Redux
+entry, no toast, no badge). `APPROVAL_KIND` (`'approval'`, on an `approval`
+frame) is synthesized for sound, but the same approval frame *separately* adds an
+approval notification to the feed — so approval both chimes and shows a feed
+entry, and the two are independent. Both chimes are suppressed during reconnect
+catch-up replay, and `shouldChimeOnTurnDone` also suppresses slot-less turn
+completions. A real feed `notification` frame fires `MC_NOTIFICATION_EVENT` with
+its own `kind`, except when the note is muted-channel (`silenced`) or `passive`.
+
+### Settings and resolution
+
+Settings persist in `localStorage` under `mc-notification-sound`
+(`{ enabled, volume, perCategory }`). `presetForKind(kind, settings)` resolves
+the preset for a kind, in order:
+
+1. `enabled === false` → `'none'` (primary switch; WebAudio never plays).
+2. An explicit per-category override in `perCategory[kind]`.
+3. Global `perCategory.all === 'none'` → `'none'`. An explicit global silence
+   wins over any built-in category default, so `all='none'` truly silences every
+   category that has no explicit override — **including** approval.
+4. A built-in, non-persisted category default (`BUILTIN_CATEGORY_DEFAULTS`,
+   currently `approval → pulse`). Reached only when the global fallback is
+   audible. Not written to `localStorage`, so a "Use default" reset cannot clear
+   it.
+5. The global fallback `perCategory.all ?? 'chime'`.
+
+`NotificationsPanel.tsx` previews the effective per-category preset by calling
+`presetForKind` (not a naive `perCategory[cat] ?? fallback`), so the settings
+row, its Test button, and runtime playback always agree — notably for approval,
+whose built-in `pulse` default the naive form did not show.
+
+### Persistence and cross-surface sync
+
+`saveSoundSettings` writes through `safeSetItem` (quota-defensive) and returns a
+boolean. It fires the same-window `MC_SOUND_SETTINGS_CHANGED_EVENT` **only on a
+successful persist**; a quota-dropped write returns `false` and stays silent, so
+no mounted `useNotificationSound` reloads and reads the old value.
+`NotificationsPanel` adopts a change into local state only when the save returns
+`true`, leaving the UI showing the persisted truth on failure.
+
+`useNotificationSound` stays in sync three ways: the same-window
+`MC_SOUND_SETTINGS_CHANGED_EVENT`, and a cross-tab DOM `storage` listener that
+filters by `storageArea === localStorage` and by the `mc-notification-sound`
+key (a `null` key, i.e. `clear()`, is also honored) then reloads through
+`loadSoundSettings` so validation and clamping are reused. Notification playback
+is debounced to one tone per 300 ms.
