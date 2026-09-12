@@ -126,6 +126,25 @@ class TestLivenessSweep:
     def test_missing_root_returns_zero(self, scratch_root: Path) -> None:
         assert sc.sweep_dead_scratch() == 0
 
+    def test_large_dead_idle_tree_is_reclaimed(self, scratch_root: Path) -> None:
+        # Regression (issue #9508): the idle walk used to bail to "active"
+        # past 10_000 entries, so a dead tree that big could never be
+        # reclaimed no matter how idle. The walk is uncapped now.
+        path = sc.allocate_scratch("bigdead")
+        sc.record_owner(path, 2**22 - 1)  # dead owner
+        target = path / "shard"
+        target.mkdir()
+        for i in range(10_001):
+            (target / f"f{i:05d}.log").touch()
+        past = time.time() - 2 * sc._UNOWNED_GRACE_SECONDS
+        for p in (path, target, path / sc.OWNER_FILENAME):
+            os.utime(p, (past, past))
+        for f in target.iterdir():
+            os.utime(f, (past, past))
+
+        assert sc.sweep_dead_scratch() == 1
+        assert not path.exists()
+
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege")
     def test_symlink_child_is_never_followed(self, scratch_root: Path, tmp_path: Path) -> None:
         victim = tmp_path / "victim"

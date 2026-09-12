@@ -141,11 +141,6 @@ def _pgroup_alive(pid: int) -> bool:
     return platform_compat.pgroup_exists(pid)
 
 
-#: Entry cap for the tree-idle walk: a tree too big to scan cheaply reads as
-#: ACTIVE (kept) -- the sweep must stay cheap and err toward keeping.
-_TREE_IDLE_SCAN_CAP = 10_000
-
-
 def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """The newest mtime anywhere in *root*'s tree (lstat, symlinks never followed).
 
@@ -153,20 +148,23 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     touches the top DIRECTORY's mtime, but every write refreshes the FILE's
     own mtime -- so tree-newest is the faithful idle signal on every
     platform, and the only one available on Windows (no process groups).
-    Fail-safe: an unreadable entry or a tree past the scan cap returns
-    *fallback* (reads as active, the sweep keeps the dir).
+    Fail-safe: an unreadable entry returns *fallback* (reads as active, the
+    sweep keeps the dir).
+
+    Deliberately UNCAPPED: an entry cap that bails to *fallback* turns every
+    tree larger than the cap into a permanently active-looking one, so a dead
+    agent that wrote enough entries could never be reclaimed. The walk runs
+    on a periodic sweep (not per-request), and its size is bounded by what one
+    agent wrote into its OWN scratch dir, so a full metadata walk is the
+    right trade -- same call as ``mcp_gateway.backend_tmp``.
     """
     newest = 0.0
-    seen = 0
     try:
         newest = os.lstat(root).st_mtime
         stack = [root]
         while stack:
             current = stack.pop()
             for entry in os.scandir(current):
-                seen += 1
-                if seen > _TREE_IDLE_SCAN_CAP:
-                    return fallback
                 info = os.lstat(entry.path)
                 if info.st_mtime > newest:
                     newest = info.st_mtime
