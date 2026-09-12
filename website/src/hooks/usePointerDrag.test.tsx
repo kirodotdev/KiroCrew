@@ -222,3 +222,148 @@ describe('usePointerDrag pointercancel sentinel coordinates', () => {
     expect(onEnd).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('usePointerDrag capture-acquisition failure', () => {
+  // setPointerCapture can THROW (NotFoundError for an inactive pointerId, or
+  // the element being disconnected at call time) — the hook wraps it in a
+  // swallowed catch, which is the right liveness call (a drag should still
+  // start). But an UNCAPTURED drag gets no retargeting and no
+  // lostpointercapture (capture never existed): the moment the pointer leaves
+  // the handle, move events stop, and a pointerup outside the element never
+  // reaches it. `s.active` stays true, onEnd never fires, and every consumer
+  // onStart side effect (body-wide user-select suppression, pinned
+  // body.cursor, dragging flags) is stranded — the acquisition-side twin of
+  // the capture-LOSS class the lostpointercapture handler heals. The fallback:
+  // when acquisition fails, listen for that pointerId's up/cancel on window
+  // so the drag can always terminate.
+
+  function renderThrowingHandle(props: PointerDragOptions) {
+    const utils = renderHandle(props)
+    utils.handle.setPointerCapture = () => {
+      throw new DOMException('InvalidPointerId', 'NotFoundError')
+    }
+    return utils
+  }
+
+  it('ATTACK: capture fails and pointerup lands outside the handle — the drag must still end', () => {
+    const onEnd = vi.fn()
+    const { handle } = renderThrowingHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    // Uncaptured: the up fires on whatever is under the pointer — window
+    // level is the only place the hook can still hear it.
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 150, clientY: 110 })
+
+    expect(onEnd).toHaveBeenCalledTimes(1)
+    expect(onEnd.mock.calls[0][0]).toMatchObject({ x: 150, y: 110, committed: true })
+  })
+
+  it('ATTACK: capture fails and the platform cancels outside — sentinel coords must not corrupt the end', () => {
+    const onEnd = vi.fn()
+    const { handle } = renderThrowingHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 150, clientY: 110 })
+    // Platform-fired cancel at window level with legacy sentinel coords: the
+    // allow-list (pointerup only) must govern the fallback path too.
+    fireEvent.pointerCancel(window, { pointerId: 1, clientX: 0, clientY: 0 })
+
+    expect(onEnd).toHaveBeenCalledTimes(1)
+    expect(onEnd.mock.calls[0][0]).toMatchObject({
+      dx: 50, dy: 10, x: 150, y: 110, committed: true,
+    })
+  })
+
+  it('CONTROL: the fallback ignores other pointers — only the failed-capture pointerId ends the drag', () => {
+    const onEnd = vi.fn()
+    const { handle } = renderThrowingHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    // A different pointer (second touch) releasing elsewhere is not ours.
+    fireEvent.pointerUp(window, { pointerId: 2, clientX: 300, clientY: 300 })
+    expect(onEnd).not.toHaveBeenCalled()
+
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 150, clientY: 110 })
+    expect(onEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it('CONTROL: element-delivered pointerup on an uncaptured drag ends exactly once (no window double-fire)', () => {
+    // The pointer never left the handle: the up bubbles from the element
+    // THROUGH window. React's synthetic handler and the window fallback both
+    // see it — the s.active guard must keep the end single-fire.
+    const onEnd = vi.fn()
+    const { handle } = renderThrowingHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 120, clientY: 105 })
+
+    expect(onEnd).toHaveBeenCalledTimes(1)
+    expect(onEnd.mock.calls[0][0]).toMatchObject({ x: 120, y: 105 })
+  })
+
+  it('BENIGN: when capture succeeds, no window fallback is armed', () => {
+    const addSpy = vi.spyOn(window, 'addEventListener')
+    const onEnd = vi.fn()
+    const { handle } = renderHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    const pointerListeners = addSpy.mock.calls.filter(
+      ([type]) => type === 'pointerup' || type === 'pointercancel',
+    )
+    addSpy.mockRestore()
+
+    expect(pointerListeners).toHaveLength(0)
+    // and the captured path still ends normally
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 120, clientY: 100 })
+    expect(onEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it('BENIGN: fallback listeners are removed once the drag ends (no leak across drags)', () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+    const onEnd = vi.fn()
+    const { handle } = renderThrowingHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 150, clientY: 110 })
+    expect(onEnd).toHaveBeenCalledTimes(1)
+
+    const removed = removeSpy.mock.calls.filter(
+      ([type]) => type === 'pointerup' || type === 'pointercancel',
+    )
+    removeSpy.mockRestore()
+    expect(removed.length).toBeGreaterThanOrEqual(2)
+
+    // A later, unrelated window pointerup must not re-fire onEnd.
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: 10 })
+    expect(onEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it('BENIGN: a new drag after a fallback end works from a clean slate', () => {
+    const onEnd = vi.fn()
+    const { handle } = renderThrowingHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 150, clientY: 110 })
+    expect(onEnd).toHaveBeenCalledTimes(1)
+
+    fireEvent.pointerDown(handle, { pointerId: 3, clientX: 30, clientY: 30 })
+    fireEvent.pointerUp(window, { pointerId: 3, clientX: 40, clientY: 35 })
+    expect(onEnd).toHaveBeenCalledTimes(2)
+    expect(onEnd.mock.calls[1][0]).toMatchObject({ dx: 10, dy: 5 })
+  })
+
+  it('BENIGN: unmount mid-uncaptured-drag removes the window fallback listeners', () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+    const onEnd = vi.fn()
+    const { handle, unmount } = renderThrowingHandle({ onMove: () => {}, onEnd, threshold: 0 })
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 })
+    unmount()
+
+    const removed = removeSpy.mock.calls.filter(
+      ([type]) => type === 'pointerup' || type === 'pointercancel',
+    )
+    removeSpy.mockRestore()
+    expect(removed.length).toBeGreaterThanOrEqual(2)
+  })
+})
