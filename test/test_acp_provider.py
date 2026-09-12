@@ -1228,10 +1228,12 @@ def test_to_llm_event_preserves_mcp_identity_trusted():
         is_shell=False,
         mcp_server_name="example-server",
         tool_name="get-item",
+        tool_identity_trusted=True,
         mcp_identity_trusted=True,
     )
     assert src.child_mcp_identity_trusted is True
     out = AcpProvider._to_llm_event(src)
+    assert out.tool_identity_trusted is True
     assert out.mcp_identity_trusted is True
     assert out.child_mcp_identity_trusted is True
     assert out.child_unconditional_grant_eligible is True
@@ -1246,5 +1248,6 @@ def test_to_llm_event_preserves_mcp_identity_trusted():
         tool_name="get-item",
     )
     out_untrusted = AcpProvider._to_llm_event(src_untrusted)
+    assert out_untrusted.tool_identity_trusted is False
     assert out_untrusted.mcp_identity_trusted is False
     assert out_untrusted.child_mcp_identity_trusted is False

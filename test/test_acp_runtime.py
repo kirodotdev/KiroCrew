@@ -6069,6 +6069,10 @@ def test_build_permission_event_recovers_tool_name_from_cache():
     )
     event, _ = build_permission_event(msg, tool_name_cache=name_cache)
     assert event.tool_name == "perform_pet_action"
+    # Replay provenance belongs to EVENT_TOOL_CALL, the only event shape the
+    # dashboard recovery collector reads. Permission events keep their separate
+    # pair-provenance contract and must not mint this unused flag.
+    assert event.tool_identity_trusted is False
     # .get() (not .pop()): a later tool_call_update for the same id re-reads it.
     assert name_cache.get("tc-1") == "perform_pet_action"
 

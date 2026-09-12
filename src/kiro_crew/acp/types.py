@@ -615,6 +615,10 @@ class AcpEvent:
     #: classification (cache hit), not the miss-default False.
     raw_params_trusted: bool = False
     shell_classified: bool = False
+    #: tool_identity_trusted: tool_name below came from the provenance-verified
+    #: `_meta.kiro.toolName` extraction path, never a title or inline fallback.
+    #: Security gates must require this flag in addition to a recognized name.
+    tool_identity_trusted: bool = False
     #: mcp_identity_trusted: mcp_server_name/tool_name below were populated
     #: from a provenance-verified source — the origin-scoped tool_call caches
     #: (permission path) or ``_meta.kiro`` on the tool_call frame itself —

@@ -2270,6 +2270,102 @@ def classify_empty_turn(activity: EmptyTurnActivity) -> str:
     return EMPTY_CAUSE_OTHER
 
 
+# A current-turn blocker the model can only have invented.  Kiro Crew receives
+# real tool failures through a refusal/error/result frame; a normal end_turn that
+# follows a successful read/search call carries no runtime signal that tools were
+# disabled.  Match the complete terminal response, not just its prefix: otherwise
+# untrusted content could append an action and mint a synthetic action turn.
+_FALSE_CURRENT_TOOL_BLOCKER_RE = re.compile(
+    r"^\s*(?:"
+    r"i(?:'|’)m blocked from further tool execution in the resumed session: "
+    r"the screenshot delivery tools are no longer callable here\."
+    r"|i(?:'|’)m proceeding, but this turn(?:'|’)s tool budget was exhausted "
+    r"immediately after loading the workflow\. "
+    r"No publish or deployment has happened yet\."
+    r")\s*$",
+    re.IGNORECASE,
+)
+_FALSE_CURRENT_TOOL_BLOCKER_NEAR_MISS_RE = re.compile(
+    r"^\s*i(?:'|’)?m\b"
+    r"(?=[^\n]*(?:tool|read|search|fetch))"
+    r"(?=[^\n]*(?:block|unavail|inaccess|no\s+longer|budget|exhaust))"
+    r"[^\n]+$",
+    re.IGNORECASE,
+)
+_READ_ONLY_PREPARATION_TOOLS = frozenset(
+    {
+        "fs_read",
+        "glob",
+        "grep",
+        "introspect",
+        "tool_search",
+        "web_fetch",
+        "web_search",
+    }
+)
+
+
+def is_false_current_tool_blocker(final_segment_text: str) -> bool:
+    """Whether the assistant falsely claims THIS turn lost tool execution.
+
+    This is deliberately narrower than a generic ``budget`` search.  A model may
+    legitimately explain a subagent cap or quote an earlier failure; only a
+    first-person claim about the live turn is actionable here.
+    """
+    return bool(_FALSE_CURRENT_TOOL_BLOCKER_RE.search(final_segment_text or ""))
+
+
+def is_false_current_tool_blocker_near_miss(final_segment_text: str) -> bool:
+    """Whether blocker-adjacent text missed the replay grammar.
+
+    Diagnostic only: this predicate never grants replay authority. It lets the
+    runner count wording drift without logging model text or widening the two
+    incident statements accepted by :func:`is_false_current_tool_blocker`.
+    """
+    text = final_segment_text or ""
+    return not is_false_current_tool_blocker(text) and bool(
+        _FALSE_CURRENT_TOOL_BLOCKER_NEAR_MISS_RE.search(text)
+    )
+
+
+def tool_calls_are_read_only_preparation(
+    turn_tool_calls: int,
+    turn_tool_identities: tuple[tuple[str, str, str, bool], ...],
+    successful_tool_call_ids: frozenset[str],
+    *,
+    builtin_identity_trusted: bool,
+) -> bool:
+    """True when every dispatch is a proven successful read-only builtin.
+
+    Each identity is ``(tool_call_id, mcp_server_name, tool_name,
+    tool_identity_trusted)``. The caller must positively prove the serving
+    backend is Kiro, and every name must carry extractor provenance rather than
+    merely being non-empty. MCP tools are excluded even when their names look
+    read-only; their schemas are not owned by this host. Missing provenance,
+    duplicate ids, absent identity, an unknown builtin, an incomplete/failed
+    result, or any count mismatch fails closed.
+    """
+    if not builtin_identity_trusted:
+        return False
+    if turn_tool_calls <= 0 or len(turn_tool_identities) != turn_tool_calls:
+        return False
+    call_ids: list[str] = []
+    for call_id, server_name, tool_name, identity_trusted in turn_tool_identities:
+        if not all(isinstance(value, str) for value in (call_id, server_name, tool_name)):
+            return False
+        if (
+            not call_id
+            or server_name
+            or identity_trusted is not True
+            or tool_name not in _READ_ONLY_PREPARATION_TOOLS
+        ):
+            return False
+        call_ids.append(call_id)
+    if len(set(call_ids)) != len(call_ids):
+        return False
+    return frozenset(call_ids) == successful_tool_call_ids
+
+
 def should_recover_promise_only(
     *,
     stop_reason: str,
@@ -2281,13 +2377,17 @@ def should_recover_promise_only(
     is_cancelled: bool,
     refusal_reasons: list,
     turn_tool_calls: int = 0,
+    turn_tool_identities: tuple[tuple[str, str, str, bool], ...] = (),
+    successful_tool_call_ids: frozenset[str] = frozenset(),
+    builtin_identity_trusted: bool = False,
+    directive_user_origin: bool = False,
     in_stage_execution: bool = False,
     stop_in_progress: bool = False,
     stop_generation_unchanged: bool = True,
     queue_empty: bool = True,
     no_pending_steers: bool = True,
 ) -> bool:
-    """Decide whether to inject ONE promise-only continuation.
+    """Decide whether to inject ONE unacted-turn continuation.
 
     All must hold (each guards a distinct failure mode):
       * NO Stop is in progress (``stop_in_progress`` is the runner's
@@ -2316,22 +2416,26 @@ def should_recover_promise_only(
         those have their own paths and must stay unchanged;
       * it produced visible output (a promise IS visible output) and is not the
         empty-response case (that path owns ``not produced_visible_output``);
-      * the turn made NO tool calls (``turn_tool_calls == 0``). The segment-buffer
-        reset at each tool boundary is not an airtight "never replay an executed
-        action" proxy on its own: a turn that completed a side-effecting tool
-        (e.g. ``send_message``) and then emitted trailing promise-shaped text
-        ("I'll send that now") still matches the detector, and the continuation
-        would REISSUE the completed action (duplicate external message). The
-        promise-only bug is by definition a turn that announced an action and made
-        NO tool call, so requiring a zero tool-call count closes the replay hole
-        directly. A turn that ran a read then promised a further action is excluded
-        too — a false negative, which is the safe direction;
-      * the final segment is a terminal promise-to-act
-        (:func:`is_promise_only_terminal`). Because the runner resets its segment
-        buffer at every tool boundary, ``final_segment_text`` is exactly the text
-        AFTER the last tool call — so a turn that executed a tool and then
-        summarised has a summary here, not a promise; the ``turn_tool_calls`` gate
-        above is the airtight backstop for the same guarantee;
+      * ordinary promise-only recovery still requires ZERO tool calls. A second,
+        narrower shape may contain calls only when every dispatch has a unique id,
+        the runner positively identified the serving backend as Kiro, the provider
+        supplied a canonical non-MCP builtin identity carrying explicit extractor
+        provenance, that identity is one of the fixed read/search/fetch tools,
+        and a final
+        ``status=completed`` result arrived for exactly the same id set. Display
+        ``tool_kind`` and name non-emptiness are never authorization evidence.
+        Unknown/MCP/missing/untrusted identity,
+        duplicate ids, incomplete or failed calls, and every count/status mismatch
+        fail closed. The tool-bearing shape also requires
+        ``directive_user_origin``: the runner replays the authenticated user's
+        exact message, never the model-authored blocker or an announced action.
+        This lets a skill read or deferred-tool search retry without replaying a
+        completed mutation or minting authority from fetched content;
+      * the final segment is either a terminal promise-to-act
+        (:func:`is_promise_only_terminal`) on a zero-call turn, or the narrowly
+        full-matched false current-tool blocker above after read-only preparation.
+        Because the runner resets its segment buffer at every tool boundary,
+        ``final_segment_text`` is exactly the text AFTER the last tool call;
       * this is NOT a stage-execution turn (``in_stage_execution``). A turn run by
         the orchestrator's stage loop must not spawn async recovery: the loop
         records the stage complete and advances before the continuation finishes,
@@ -2351,7 +2455,14 @@ def should_recover_promise_only(
         return False
     if is_cancelled or refusal_reasons:
         return False
-    if turn_tool_calls != 0:
+    if turn_tool_calls != 0 and not tool_calls_are_read_only_preparation(
+        turn_tool_calls,
+        turn_tool_identities,
+        successful_tool_call_ids,
+        builtin_identity_trusted=builtin_identity_trusted,
+    ):
+        return False
+    if turn_tool_calls and not directive_user_origin:
         return False
     if in_stage_execution:
         return False
@@ -2361,6 +2472,8 @@ def should_recover_promise_only(
         return False
     if prompt_depth != 0 or promise_only_retries >= 1:
         return False
+    if turn_tool_calls:
+        return is_false_current_tool_blocker(final_segment_text)
     return is_promise_only_terminal(final_segment_text)
 
 
@@ -2573,6 +2686,11 @@ def is_system_injection(content: str) -> bool:
 #: Structural queue-entry kind for runner-injected recovery instructions.
 SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 
+#: Structural kind for a false-tool-blocker retry whose TEXT is the authenticated
+#: user's original request.  It is recovery orchestration (so it breaks merges and
+#: can be purged), but its ``RecoveryPayload.ORIGINAL`` remains user-authored.
+FALSE_TOOL_BLOCKER_REPLAY_KIND = "false_tool_blocker_replay"
+
 #: Row-level kind for the `error` notice appended when a recovery has ALREADY
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
@@ -2625,30 +2743,36 @@ CRON_NOTIFICATION_KIND = "cron_notification"
 
 #: All system-injection kinds (for set-membership checks).
 _SYSTEM_INJECTION_KINDS = frozenset(
-    (SUBAGENT_COMPLETION_KIND, CRON_NOTIFICATION_KIND, SYNTHETIC_RECOVERY_KIND)
+    (
+        SUBAGENT_COMPLETION_KIND,
+        CRON_NOTIFICATION_KIND,
+        SYNTHETIC_RECOVERY_KIND,
+        FALSE_TOOL_BLOCKER_REPLAY_KIND,
+    )
 )
 
 
 def is_synthetic_recovery_item(item: dict) -> bool:
-    """True when a queue ENTRY is a runner-injected synthetic recovery
-    instruction (post-transient CONTINUE / empty-response nudge).
+    """True when a queue ENTRY is runner-injected recovery orchestration.
 
-    Classification is structural — the ``kind`` tag set at ``queue_insert``
-    time — never content equality: metadata survives any queue transformation
-    (merge, prefixing, truncation) and cannot collide with a user pasting the
-    transcript-visible recovery text verbatim (which must classify as a plain
-    user message)."""
-    return item.get("kind") == SYNTHETIC_RECOVERY_KIND
+    The false-tool-blocker replay carries the authenticated user's own text, but
+    its distinct kind still identifies the runner-owned retry for queue ordering
+    and late-cancellation purge. Payload provenance remains a separate question.
+    """
+    return item.get("kind") in (
+        SYNTHETIC_RECOVERY_KIND,
+        FALSE_TOOL_BLOCKER_REPLAY_KIND,
+    )
 
 
 class RecoveryPayload(str, Enum):
     """Whether a recovery entry's TEXT is runner-authored or the user's own words.
 
     ``build_recovery_requeue`` already draws this line — a continuation once the
-    turn emitted output, the original request before that — but both re-queue
-    under ``SYNTHETIC_RECOVERY_KIND``, because both must render as an inject row
-    rather than a second user bubble. The kind therefore cannot also answer
-    whether the text may be mirrored to a linked thread as user speech.
+    turn emitted output, the original request before that. Most re-queue under
+    ``SYNTHETIC_RECOVERY_KIND``; false-tool-blocker user replays use their own
+    purgeable kind. Neither kind can answer whether text may be mirrored to a
+    linked thread as user speech, so payload remains the authority classifier.
 
     ``str`` mixin (not ``StrEnum``) for Py3.10 compat, matching ``ResetCause``.
     """
