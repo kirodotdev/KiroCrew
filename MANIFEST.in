@@ -43,6 +43,8 @@ recursive-include src/kiro_crew/docs *.md
 # a missing line here drops the file from every published artifact.
 recursive-include src/kiro_crew/docs *.json
 recursive-include src/kiro_crew/tests_fixtures *
+# Gate extensions loaded into a harness at spawn (see [options.package_data]).
+recursive-include src/kiro_crew/agent_sdk/gate_extensions *.ts
 
 # --- Pruning: never ship test trees, vendored node deps, or build cruft ------
 prune test

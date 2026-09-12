@@ -152,6 +152,8 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     # OpenCode's credential home follows the XDG data directory; a relocated token
     # must not reach the classification child any more than a default one does.
     "XDG_DATA_HOME",
+    # pi's whole agent directory, credential store included, follows this one.
+    "PI_CODING_AGENT_DIR",
 )
 
 
