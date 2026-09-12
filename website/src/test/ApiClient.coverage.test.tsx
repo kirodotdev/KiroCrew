@@ -990,13 +990,6 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call(2).body).toHaveProperty('client')
   })
 
-  it('handoffSlot posts no body when the channel is left to the server', async () => {
-    await api.handoffSlot('chat-1')
-    expect(call().init?.body).toBeUndefined()
-    await api.handoffSlot('chat-1', 'slack')
-    expect(call(1).body).toEqual({ channel: 'slack' })
-  })
-
   it('cancelTaskRunner and installDiscoveredSkill keep their optional fields optional', async () => {
     await api.cancelTaskRunner()
     expect(call().init?.body).toBeUndefined()

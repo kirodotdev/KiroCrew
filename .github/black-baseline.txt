@@ -1010,7 +1010,6 @@ test/test_subagent_sizing.py
 test/test_subagent_stall.py
 test/test_subquestion_queue.py
 test/test_sweep_stale_permissions.py
-test/test_sync_bridge.py
 test/test_system_metrics_coalescing.py
 test/test_tag_session.py
 test/test_tail_fork_config.py
