@@ -26,13 +26,14 @@ import ntpath
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Iterator, Optional
 
 from aiohttp import web
 
@@ -963,10 +964,16 @@ def safe_join(root: Path, rel_path: str) -> Path:
     rather than being flagged at every downstream use. A separate
     check-then-fresh-``resolve()`` returns a different value and does not
     neutralize the flow.
+
+    A NUL byte is refused in the component stage too. On posix ``realpath``
+    raises ``ValueError`` for an embedded NUL, but ``ntpath.realpath`` swallows
+    that error and returns the unresolved string, so a Windows host would hand
+    the poisoned path back to the caller.
     """
     candidate = PurePosixPath(rel_path.replace("\\", "/"))
     if (
-        candidate.is_absolute()
+        "\x00" in rel_path
+        or candidate.is_absolute()
         or ".." in candidate.parts
         or ntpath.isabs(rel_path)
         or ntpath.splitdrive(rel_path)[0]
@@ -995,6 +1002,262 @@ def _list_note_files_sync(root: Path) -> list[str]:
 
 async def list_note_files(root: Path) -> list[str]:
     return await asyncio.to_thread(_list_note_files_sync, root)
+
+
+# ---------------------------------------------------------------------------
+# Obsidian attachments
+# ---------------------------------------------------------------------------
+#
+# A vault written with Obsidian embeds its images as `![[file.png]]`, and
+# Obsidian finds that file through the vault-level `attachmentFolderPath`
+# setting rather than next to the note. The two helpers below give the page
+# what it needs to do the same: the setting, and the image files that exist.
+# Both read the VAULT ROOT (`localPath`) rather than the subfolder scope, because
+# `.obsidian/` sits at the root and the setting is relative to it, so a scoped
+# vault's attachments legitimately live outside its note scope.
+
+#: Extensions the attachment index reports. The index only tells the page which
+#: files exist; the bytes are still served (and content-sniffed) by the
+#: dashboard's `/api/file-raw`, so this is a filter, not a trust decision.
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"})
+
+#: `FILE_ATTRIBUTE_REPARSE_POINT`: the bit a Windows `lstat` sets on a junction
+#: (and a symlink). Spelled out because `stat.FILE_ATTRIBUTE_*` is typed as
+#: Windows-only, while this code runs -- and is type-checked -- everywhere;
+#: `st_file_attributes` is simply absent on POSIX, so the test reads 0 there.
+_WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+
+
+def _vault_ancestor_is_linked(root: Path) -> bool:
+    """True when any ANCESTOR of the vault root is a symlink/junction.
+
+    The root itself, and every directory below it, is entered through
+    `_pinned_dir`, whose open refuses a link at the name in the same operation
+    that would have followed it. An ancestor cannot be handled that way: the
+    open of `root` resolves the path above it, and on Windows a link whose
+    target is a UNC share turns that resolution into an outbound SMB
+    authentication. `first_linked_ancestor` tests ROOT-FIRST and stops at the
+    first hit, so the probe itself never crosses a link. `localPath` is
+    resolved when the vault is attached, but a link can be planted after that,
+    so this runs on every refresh, before the root is opened. What remains is
+    the window between this probe and the open below; closing it needs a
+    write to a directory ABOVE the vault, which nothing in this app performs,
+    and on Windows the pin taken right after freezes every ancestor for the
+    rest of the walk.
+    """
+    return platform_compat.first_linked_ancestor(root) is not None
+
+
+@contextlib.contextmanager
+def _pinned_dir(path: "str | os.PathLike[str]") -> Iterator[Optional[int]]:
+    """Open *path* as a real directory and hold it for the block, or yield None.
+
+    `platform_compat.pin_directory` is the check AND the use: `O_NOFOLLOW |
+    O_DIRECTORY` on POSIX, `CreateFileW(OPEN_REPARSE_POINT)` on Windows, so a
+    symlink, a junction or a file at the name fails the open itself instead of
+    being seen by one `lstat` and followed by the next `scandir`. On Windows the
+    held handle also denies rename and delete of the directory and of every
+    directory above it, which is what keeps a path-based `scandir` inside the
+    block on the object that was opened. None means "not a directory we may
+    enter" -- absent, a file, a link -- and callers treat all three alike.
+    """
+    try:
+        fd = platform_compat.pin_directory(path)
+    except OSError:
+        yield None
+        return
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _walk_pinned(root: Path) -> Iterator[tuple[str, list[str], list[str]]]:
+    """`os.walk(root, topdown=True)` with every directory pinned before it is read.
+
+    Yields `(rel_dir, dirnames, filenames)`: `rel_dir` is the directory's
+    vault-root-relative posix path (`""` for the root), and `dirnames` may be
+    pruned in place before the generator resumes, exactly as with `os.walk`.
+    Nothing reached through a link is named: a symlink or a junction (Windows)
+    is dropped from both lists without being dereferenced -- as a directory it
+    would pull a foreign tree in, and as a file it could only ever produce a
+    failing image, since `/api/file-raw` refuses a link when the bytes are asked
+    for. A directory that vanishes mid-walk is skipped. The link test is the
+    entry's own `lstat` data, and the descent below does not rely on it: the
+    open that enters a directory refuses a link at the name on its own.
+
+    Where the platform allows (POSIX), the listing and each descent are relative
+    to the held descriptor (`scandir(fd)`, `open(name, dir_fd=...)`), so the
+    path string is never re-resolved after the pin. Windows has no relative
+    open, so the descent re-opens by path -- under the parent's pin, which
+    denies the rename that would let a link take the name in between.
+    """
+    yield from _walk_pinned_from(root, "")
+
+
+def _walk_pinned_from(dir_path: Path, rel_dir: str) -> Iterator[tuple[str, list[str], list[str]]]:
+    with _pinned_dir(dir_path) as fd:
+        if fd is None:
+            return
+        try:
+            listing = fd if os.scandir in os.supports_fd else dir_path
+            with os.scandir(listing) as it:
+                entries = list(it)
+        except OSError:
+            return
+        dirnames: list[str] = []
+        filenames: list[str] = []
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            # A junction reports as a directory but carries the reparse
+            # attribute; a symlink is its own mode. Neither is named.
+            if stat.S_ISLNK(st.st_mode) or (
+                getattr(st, "st_file_attributes", 0) & _WIN_FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                dirnames.append(entry.name)
+            else:
+                filenames.append(entry.name)
+        dirnames.sort()
+        filenames.sort()
+        yield rel_dir, dirnames, filenames
+        for name in dirnames:
+            child_rel = f"{rel_dir}/{name}" if rel_dir else name
+            yield from _walk_pinned_from(dir_path / name, child_rel)
+
+
+def _obsidian_attachment_folder_sync(root: Path) -> Optional[str]:
+    """Obsidian's ``attachmentFolderPath`` for a vault root, or ``None``.
+
+    ``None`` when the vault carries no `.obsidian/` directory, when `app.json`
+    is absent or unreadable, or when the value could not be a folder inside the
+    vault. A missing or corrupt setting never blocks the vault: the page then
+    resolves an embed by searching the index instead.
+
+    The value is user-supplied vault content, so it is confined the way a note
+    path is, by the same `safe_join` in validation-only mode (as `note_fs_path`
+    does): absolute paths, `..` segments, drive letters and a folder that
+    resolves outside the vault are refused. The verbatim string is what gets
+    returned, so the two Obsidian relative forms (`./` for the note's own
+    folder, `./sub` for a subfolder of it) survive; the page interprets them
+    per note.
+
+    Neither the root, `.obsidian` nor `app.json` may be a symlink or a Windows
+    junction: on Windows a link to a UNC share makes any dereference an
+    outbound SMB authentication. None of the three is CHECKED and then opened.
+    The root and `.obsidian` are entered through `_pinned_dir`, whose open
+    refuses a link at the name in the same operation and, on Windows, holds the
+    directory against rename while the next step runs; `app.json` is opened at
+    its OWN name with `open_file_no_reparse` -- the same atomic refusal for a
+    file (`hooks.safe_read_file_bytes` is not used for the open: it reads the
+    realpath'd target by design, which is the follow being refused here; its
+    `validate_file_path` gate still runs first). A link at any of the three
+    makes the vault read as a non-Obsidian one. Ancestors of the root are the
+    one thing an open cannot settle, so they get the root-first probe
+    (`_vault_ancestor_is_linked`) before anything is opened.
+    """
+    if _vault_ancestor_is_linked(root):
+        return None
+    app_json = root / ".obsidian" / "app.json"
+    with _pinned_dir(root) as root_fd:
+        if root_fd is None:
+            return None
+        with _pinned_dir(root / ".obsidian") as obsidian_fd:
+            if obsidian_fd is None:
+                return None
+            if hooks.validate_file_path(str(app_json)) is None:
+                return None
+            try:
+                fd = platform_compat.open_file_no_reparse(app_json)
+            except OSError:
+                return None
+            try:
+                with os.fdopen(fd, "rb") as fh:
+                    data = fh.read(hooks.MAX_FILE_BYTES + 1)
+            except OSError:
+                return None
+    if len(data) > hooks.MAX_FILE_BYTES:
+        return None
+    try:
+        settings = json.loads(data.decode("utf-8", "replace"))
+    except (ValueError, RecursionError):
+        # ValueError covers JSONDecodeError AND the bare ValueError the int
+        # parser raises past `sys.int_info.str_digits_check_threshold` (a
+        # 4300+ digit literal). A pathologically nested document overruns the
+        # decoder's recursion limit instead. All corrupt settings, not a 500.
+        return None
+    raw = settings.get("attachmentFolderPath") if isinstance(settings, dict) else None
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().replace("\\", "/")
+    if not value:
+        return None
+    try:
+        safe_join(root, value)
+    except (ApiError, ValueError):
+        # ValueError: a character the OS path layer rejects survives `strip()`
+        # and `safe_join`'s component checks, then fails inside `realpath`.
+        # Corrupt settings, not a 500.
+        return None
+    return value
+
+
+async def obsidian_attachment_folder(vault: dict[str, Any]) -> Optional[str]:
+    return await asyncio.to_thread(_obsidian_attachment_folder_sync, Path(vault["localPath"]))
+
+
+def _list_attachment_files_sync(root: Path, attachment_folder: Optional[str]) -> list[str]:
+    """Vault-root-relative posix paths of every image file in the vault.
+
+    Hidden directories are pruned like the note walk does, with one exception:
+    the configured attachment folder is walked even when it is dotted, because
+    a vault that keeps its images in `.attachments/` has every embed pointing
+    there. Linked directories are not followed -- symlinks, and on Windows the
+    junctions `os.path.islink` cannot see -- so a link out of the vault cannot
+    pull a foreign tree (or a remote share) into the index. That refusal is the
+    walk's own: `_walk_pinned` enters every directory, the root included,
+    through an open that fails on a link at the name, so there is no separate
+    check for a later step to race. Ancestors of the root are probed root-first
+    before the walk, the one place an open cannot do the job.
+    """
+    if _vault_ancestor_is_linked(root):
+        return []
+    keep: Optional[str] = None
+    if attachment_folder and not attachment_folder.startswith("./"):
+        keep = attachment_folder.strip("/")
+    out: list[str] = []
+    for rel_dir, dirnames, filenames in _walk_pinned(root):
+        kept: list[str] = []
+        for d in dirnames:
+            rel = f"{rel_dir}/{d}" if rel_dir else d
+            if d.startswith(".") and not (keep and (keep == rel or keep.startswith(rel + "/"))):
+                continue
+            kept.append(d)
+        dirnames[:] = kept
+        for name in filenames:
+            if name.startswith(".") or os.path.splitext(name)[1].lower() not in IMAGE_EXTENSIONS:
+                continue
+            out.append(f"{rel_dir}/{name}" if rel_dir else name)
+    return sorted(out)
+
+
+async def attachment_index(vault: dict[str, Any]) -> tuple[Optional[str], list[str]]:
+    """The vault's attachment folder setting and the image files that exist.
+
+    Read together because the index is walked with the setting (a dotted
+    attachment folder is the one hidden directory the walk enters), and served
+    together because the page needs both to resolve an embed the way Obsidian
+    does. Computed on read, never persisted, so a vault opened in Obsidian for
+    the first time (or whose setting changed) reads right on the next refresh.
+    """
+    root = Path(vault["localPath"])
+    folder = await obsidian_attachment_folder(vault)
+    files = await asyncio.to_thread(_list_attachment_files_sync, root, folder)
+    return folder, files
 
 
 async def make_dirs(path: Path) -> None:
@@ -1352,7 +1615,10 @@ async def api_vaults(request: web.Request) -> web.Response:
     vaults = []
     for v in await read_vaults():
         # `external` = attached in place rather than cloned by this app.
-        # Computed on read, never persisted.
+        # Computed on read, never persisted. Nothing here touches a vault's
+        # tree: the listing is the app's entry call, and one vault on a dead
+        # mount must not hold the others back. Per-vault reads (the Obsidian
+        # attachment setting) live on the per-vault routes.
         vaults.append({**v, "external": not str(v["localPath"]).startswith(clone_root)})
     return web.json_response(
         {
@@ -1641,6 +1907,20 @@ async def api_notes(request: web.Request) -> web.Response:
     vault = await require_vault(request)
     await scan_changes(vault)
     return web.json_response({"notes": await note_listing(vault)})
+
+
+async def api_attachments(request: web.Request) -> web.Response:
+    """The vault's attachment folder and its image files, for `![[file.png]]` embeds.
+
+    Rescanned on every call rather than cached: an image is pasted into a vault
+    by Obsidian or dropped in from Finder, neither of which this backend sees,
+    and the page asks for the index alongside the note listing, which is
+    already a rescan. Per vault, on request, so the cost of reading one vault's
+    tree is paid by the vault being read and by nothing else.
+    """
+    vault = await require_vault(request)
+    folder, files = await attachment_index(vault)
+    return web.json_response({"attachmentFolderPath": folder, "files": files})
 
 
 async def api_note_read(request: web.Request) -> web.Response:
@@ -2393,6 +2673,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/pat", api_pat)
     app.router.add_get("/api/changes", api_changes)
     app.router.add_get("/api/notes", api_notes)
+    app.router.add_get("/api/attachments", api_attachments)
     app.router.add_get("/api/note", api_note_read)
     app.router.add_put("/api/note", api_note_save)
     app.router.add_delete("/api/note", api_note_delete)

@@ -81,7 +81,8 @@ import {
   shiftListItem,
   targetsSameNote,
 } from './utils'
-import type { Backlink, EditRange, Note, NoteActions, SearchHit, Shortcut, Vault } from './types'
+import type { EmbedContext } from './utils'
+import type { AttachmentIndex, Backlink, EditRange, Note, NoteActions, SearchHit, Shortcut, Vault } from './types'
 
 /** Backend capabilities this UI bundle needs. */
 const REQUIRED_FEATURES = [
@@ -144,6 +145,15 @@ function useMeasuredBox(onMeasure: (el: HTMLElement) => void) {
 export default function MdNotebookPage() {
   const [vaults, setVaults] = useState<Vault[] | null>(null)
   const [notes, setNotes] = useState<Note[]>([])
+  // The active vault's attachment folder setting and its image files,
+  // vault-root-relative, for resolving an Obsidian `![[file]]` embed.
+  // Undefined until the backend has answered (or when it predates the
+  // endpoint), which the resolver reads as "no setting, no index".
+  const [attachments, setAttachments] = useState<AttachmentIndex | undefined>(undefined)
+  // Sequence of attachment-index requests. Two refreshes of the SAME vault can
+  // overlap (a save followed by a manual refresh, say); the vault guard below
+  // does not order those, so without this an older index could land last.
+  const attachmentsSeq = useRef(0)
   const [activePath, setActivePath] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [backlinks, setBacklinks] = useState<Backlink[]>([])
@@ -739,6 +749,23 @@ export default function MdNotebookPage() {
       if (vaultRef.current !== requested) return
       setError(e instanceof Error ? e.message : String(e))
     }
+    // The attachment index rides along with the note listing rather than
+    // gating it: a backend older than this UI has no such route, and an image
+    // that fails to index must not take the notes down with it. A failure
+    // clears the index rather than keeping the last one: that one may belong to
+    // the vault the user just switched away from, and resolving this vault's
+    // embeds against it would show another vault's files. With no index the
+    // embeds resolve by position, which is right for every vault. Only the
+    // newest request may write: an older reply for the same vault is dropped.
+    const seq = ++attachmentsSeq.current
+    try {
+      const index = await notesApi.listAttachments(requested)
+      if (vaultRef.current !== requested || seq !== attachmentsSeq.current) return
+      setAttachments(index)
+    } catch {
+      if (vaultRef.current !== requested || seq !== attachmentsSeq.current) return
+      setAttachments(undefined)
+    }
   }, [])
 
   const flushSave = useCallback(async () => {
@@ -893,6 +920,10 @@ export default function MdNotebookPage() {
     // are per-vault for the same reason: the trees are unrelated.
     setPinned(new Set(loadPref<string[]>(pinnedKey(activeVaultId), [])))
     setCollapsed(new Set(loadPref<string[]>(collapsedKey(activeVaultId), [])))
+    // The attachment index is per-vault too. Cleared here, before this vault's
+    // index arrives, so an embed rendered in the meantime resolves by position
+    // instead of through the previous vault's file list.
+    setAttachments(undefined)
     setRenamingPath(null)
     void loadNotes()
   }, [activeVaultId, loadNotes])
@@ -1637,6 +1668,16 @@ export default function MdNotebookPage() {
   // sources. Derived here rather than in `Preview` because the vault's local
   // path lives in this page's state, not in the note body.
   const noteDir = noteDirPath(activeVault, activePath)
+  // Same for an Obsidian embed, which additionally needs the vault root, the
+  // vault's attachment folder setting and the index of files that exist.
+  const embeds: EmbedContext | undefined = activeVault
+    ? {
+        vaultRoot: activeVault.localPath,
+        noteDir,
+        attachmentFolder: attachments?.attachmentFolderPath,
+        attachments: attachments?.files,
+      }
+    : undefined
   // `pending` means "differs from the last commit", which is only actionable when
   // there is a remote the note has not reached yet. On a local-only vault it has
   // no destination, clears itself on the next autosave, and reads as "not saved"
@@ -2520,6 +2561,7 @@ export default function MdNotebookPage() {
               <Preview
                 content={content}
                 noteDir={noteDir}
+                embeds={embeds}
                 onToggleCheckbox={toggleCheckbox}
                 editRange={editBlock}
                 onStartEdit={startBlockEdit}

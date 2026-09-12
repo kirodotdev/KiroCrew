@@ -1716,6 +1716,7 @@
         "view_list": "Flat list"
       },
       "preview": {
+        "embedAmbiguous": "Several files in the vault are named {{name}} ({{paths}}) — add the folder to the embed to pick one.",
         "mermaidError": "Invalid Mermaid diagram — showing its source."
       },
       "row": {

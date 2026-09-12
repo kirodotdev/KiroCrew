@@ -2697,6 +2697,7 @@
         "view_list": "平铺列表"
       },
       "preview": {
+        "embedAmbiguous": "库中有多个名为 {{name}} 的文件（{{paths}}）— 请在嵌入中加上文件夹以选择其中一个。",
         "mermaidError": "无效的 Mermaid 图表——显示其源代码。"
       },
       "row": {

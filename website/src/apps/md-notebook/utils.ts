@@ -188,6 +188,197 @@ export function resolveNoteImageSrc(src: string, noteDir?: string): string | nul
   return `/api/file-raw?path=${encodeURIComponent(path)}`
 }
 
+/**
+ * What an Obsidian `![[file]]` embed needs to find its file. Built by the page,
+ * which owns the vault record and the attachment index, and handed to the
+ * renderer whole so a new resolution input is one more field here rather than
+ * one more prop threaded through every inline call.
+ */
+export interface EmbedContext {
+  /** Vault root, absolute: `localPath`, not the subfolder scope, because Obsidian's setting is relative to it. */
+  vaultRoot: string
+  /** Directory of the note being read, absolute. */
+  noteDir?: string
+  /** Obsidian's `attachmentFolderPath`; null or undefined when the vault has none. */
+  attachmentFolder?: string | null
+  /**
+   * Vault-root-relative posix paths of the image files the backend found, or
+   * undefined when the index is not loaded (older backend, first paint).
+   */
+  attachments?: readonly string[]
+}
+
+/** One parsed `![[target|size]]` embed. */
+export interface ParsedEmbed {
+  target: string
+  /** Requested display width in CSS pixels, when the suffix was a size. */
+  width?: number
+  /** The suffix when it was not a size: Obsidian shows it as the alt text. */
+  alt?: string
+}
+
+/**
+ * File extensions an `![[embed]]` is rendered as an image for. Obsidian's embed
+ * grammar also transcludes notes (`![[Other note]]`), PDFs and audio; those are
+ * not images, so they keep the wikilink presentation rather than being asserted
+ * missing by an image lookup that can never find them. Mirrors the backend's
+ * `IMAGE_EXTENSIONS`, which decides what the attachment index reports.
+ */
+const IMAGE_EMBED_RE = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i
+
+/** Whether an embed target names an image file, by extension. */
+export function isImageEmbed(target: string): boolean {
+  return IMAGE_EMBED_RE.test(target.trim())
+}
+
+/** Widths outside this range are ignored: a stray `|1` or `|99999` should not shape the layout. */
+const EMBED_WIDTH_MIN = 32
+const EMBED_WIDTH_MAX = 2000
+
+/**
+ * Split the inside of an `![[...]]` embed into its target and its `|` suffix.
+ *
+ * Obsidian's suffix is a size (`|720` or `|720x400`, of which only the width
+ * matters under a max-width cap) or, when it is not numeric, alt text. A
+ * `#heading` fragment is dropped: it addresses a section of a note, and an
+ * image has none.
+ */
+export function parseEmbed(inner: string): ParsedEmbed {
+  const bar = inner.indexOf('|')
+  const rawTarget = (bar === -1 ? inner : inner.slice(0, bar)).split('#')[0].trim()
+  const suffix = bar === -1 ? '' : inner.slice(bar + 1).trim()
+  const out: ParsedEmbed = { target: rawTarget }
+  if (!suffix) return out
+  const size = /^(\d+)(?:x\d+)?$/.exec(suffix)
+  if (size) {
+    const width = Number(size[1])
+    if (width >= EMBED_WIDTH_MIN && width <= EMBED_WIDTH_MAX) out.width = width
+  } else {
+    out.alt = suffix
+  }
+  return out
+}
+
+/** File name of a vault-relative path. */
+function basename(path: string): string {
+  const slash = path.lastIndexOf('/')
+  return slash === -1 ? path : path.slice(slash + 1)
+}
+
+/** `a/b` from `a` and `b`, tolerating an empty or trailing-slash directory. */
+function joinRel(dir: string, name: string): string {
+  const d = dir.replace(/\/+$/, '')
+  return d ? `${d}/${name}` : name
+}
+
+/**
+ * Resolve an Obsidian embed target to a vault-root-relative path, or null when
+ * it must degrade to the missing-image presentation.
+ *
+ * Obsidian looks a bare file name up across the whole vault, preferring the
+ * configured attachment folder; a target that carries a folder is taken as
+ * vault-relative. This mirrors that in a fixed order, so the same note resolves
+ * the same file every time:
+ *
+ * 1. a target with a folder resolves from the vault root;
+ * 2. otherwise the configured attachment folder — Obsidian's `./` forms meaning
+ *    the note's own folder or a subfolder of it;
+ * 3. then the note's own folder, then the vault root;
+ * 4. then, for a BARE name only, when the index knows the vault, the one file
+ *    with that name anywhere in it. Two files with the same name resolve to
+ *    nothing rather than to whichever sorted first: a wrong image reads as the
+ *    author's mistake, a missing one as the app's, and only the second can be
+ *    acted on. A target that named a folder never reaches this step: the author
+ *    said where the file is, so a same-named file elsewhere is a different file.
+ *
+ * Without an index the first candidate is returned as is; the file endpoint
+ * then answers 404 for a file that is not there, which is the same fallback.
+ * With an index, a target the index does not know still resolves to the first
+ * candidate, because the index is a snapshot and the file may have just been
+ * pasted in.
+ *
+ * The target is note text, so it is confined here the way a note path is on the
+ * backend: an absolute path, a `..` segment or a drive letter resolves to
+ * nothing. The file endpoint re-validates whatever survives.
+ *
+ * The ambiguous case is returned as a reason rather than a bare null so the
+ * fallback can say so: to the reader, "two files share this name" and "no such
+ * file" call for different actions, and the file is in the vault in the first.
+ */
+export function resolveEmbedTarget(target: string, ctx: EmbedContext): string | 'ambiguous' | null {
+  const raw = target.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (!raw) return null
+  if (raw.startsWith('/') || WINDOWS_ABS_PATH_RE.test(raw) || raw.split('/').includes('..')) return null
+  const vaultRoot = ctx.vaultRoot.replace(/\/+$/, '')
+  // The note's folder, vault-relative. `noteDir` is absolute and sits under the
+  // root (possibly below a subfolder scope), so stripping the root prefix is
+  // exact; a `noteDir` outside the root is treated as unknown.
+  let noteRel: string | undefined
+  if (ctx.noteDir) {
+    if (ctx.noteDir === vaultRoot) noteRel = ''
+    else if (ctx.noteDir.startsWith(`${vaultRoot}/`)) noteRel = ctx.noteDir.slice(vaultRoot.length + 1)
+  }
+  const candidates: string[] = []
+  if (raw.includes('/')) {
+    candidates.push(raw)
+  } else {
+    const folder = ctx.attachmentFolder?.trim()
+    if (folder) {
+      if (folder === '.' || folder === './') {
+        if (noteRel !== undefined) candidates.push(joinRel(noteRel, raw))
+      } else if (folder.startsWith('./')) {
+        if (noteRel !== undefined) candidates.push(joinRel(joinRel(noteRel, folder.slice(2)), raw))
+      } else {
+        candidates.push(joinRel(folder, raw))
+      }
+    }
+    if (noteRel !== undefined) candidates.push(joinRel(noteRel, raw))
+    candidates.push(raw)
+  }
+  const unique = [...new Set(candidates)]
+  if (!ctx.attachments) return unique[0]
+  const known = new Set(ctx.attachments)
+  const hit = unique.find(c => known.has(c))
+  if (hit) return hit
+  if (raw.includes('/')) return unique[0]
+  const byName = sameNamed(raw, ctx.attachments)
+  if (byName.length === 1) return byName[0]
+  if (byName.length > 1) return 'ambiguous'
+  return unique[0]
+}
+
+/** The indexed files whose bare name is `name` (a bare target, after normalisation). */
+function sameNamed(name: string, attachments: readonly string[]): string[] {
+  const raw = name.replace(/\\/g, '/').replace(/^\.\//, '')
+  return attachments.filter(p => basename(p) === raw)
+}
+
+/** What the renderer needs for one embed: a loadable URL, or why there is none. */
+export interface ResolvedEmbed {
+  src: string | null
+  /**
+   * Set when several vault files share the bare name: the vault-root-relative
+   * paths of those files, in index order. There is more to say than "not
+   * found", and the reader should not have to search the vault for paths the
+   * resolver has already computed.
+   */
+  ambiguous?: readonly string[]
+}
+
+/**
+ * URL the browser can load for an Obsidian embed, or the reason there is none.
+ * Same file endpoint, and therefore the same validation, as
+ * `resolveNoteImageSrc` for a local markdown image.
+ */
+export function resolveEmbedSrc(target: string, ctx: EmbedContext | undefined): ResolvedEmbed {
+  if (!ctx) return { src: null }
+  const rel = resolveEmbedTarget(target, ctx)
+  if (rel === null) return { src: null }
+  if (rel === 'ambiguous') return { src: null, ambiguous: sameNamed(target, ctx.attachments ?? []) }
+  const path = `${ctx.vaultRoot.replace(/\/+$/, '')}/${rel}`
+  return { src: `/api/file-raw?path=${encodeURIComponent(path)}` }
+}
+
 /** Directory of a note inside its vault, absolute, for resolving its images. */
 export function noteDirPath(
   vault: { localPath: string; subfolder?: string } | null | undefined,

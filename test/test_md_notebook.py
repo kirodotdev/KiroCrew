@@ -2234,6 +2234,9 @@ async def test_rejected_push_is_reported_not_swallowed(fixtures) -> None:
         "..\\outside.md",
         "C:\\Windows\\system.ini",
         "\\\\server\\share\\note.md",
+        # `ntpath.realpath` swallows the embedded-NUL ValueError posix raises,
+        # so the NUL has to be refused before any path call sees it.
+        "notes/evil\x00.md",
     ],
 )
 def test_safe_join_rejects_escapes_before_touching_the_filesystem(fixtures, tmp_path: Path, rel: str) -> None:

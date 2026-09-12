@@ -17,6 +17,18 @@ export interface Vault {
   knowledgeSourceId?: string | null
 }
 
+/**
+ * What the backend knows about a vault's images: Obsidian's
+ * `attachmentFolderPath` from `.obsidian/app.json` (vault-relative, or
+ * `./`-prefixed for the note's own folder; null when there is no usable
+ * setting) and the vault-root-relative paths of the image files that exist.
+ * Read per vault, on request, so the vault listing never touches a vault tree.
+ */
+export interface AttachmentIndex {
+  attachmentFolderPath: string | null
+  files: string[]
+}
+
 export interface Note {
   path: string
   /** Display name: the filename without its `.md` extension, never a frontmatter title. */

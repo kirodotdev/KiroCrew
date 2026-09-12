@@ -2748,6 +2748,7 @@
         "view_list": "평면 목록"
       },
       "preview": {
+        "embedAmbiguous": "볼트에 {{name}} 이름의 파일이 여러 개 있습니다({{paths}}). 임베드에 폴더를 추가하여 하나를 선택하세요.",
         "mermaidError": "잘못된 Mermaid 다이어그램 — 소스를 표시합니다."
       },
       "row": {

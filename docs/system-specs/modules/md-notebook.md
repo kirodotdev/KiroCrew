@@ -148,8 +148,9 @@ UI calls. All vault-scoped routes accept `?vault=<id>` and fall back to the firs
 | Route | Returns |
 | --- | --- |
 | `/health`, `/api/health` | `{ok, features[]}` — the capability probe |
-| `/api/vaults` | `{vaults[], hasPat, hasGhAuth}` |
+| `/api/vaults` | `{vaults[], hasPat, hasGhAuth}`; each vault also carries `external`, computed on read. Reads no vault tree: the listing is the app's entry call, and one vault on a dead mount must not hold the others back |
 | `/api/notes` | `{notes[]}` with title, `modifiedAt`, `createdAt`, `syncStatus` |
+| `/api/attachments` | `{attachmentFolderPath, files[]}` — the vault's Obsidian setting (null when none) and the vault-ROOT-relative paths of its image files, for resolving Obsidian `![[file]]` embeds. Per vault, on request, computed on read |
 | `/api/note?path=` | `{path, content, mtime, meta, backlinks[]}` |
 | `/api/search?q=` | `{results[]}`; an empty query returns nothing, not everything |
 | `/api/changes?since=` | `{rev, changed[], watching}` — external-edit poll |
@@ -176,7 +177,7 @@ UI calls. All vault-scoped routes accept `?vault=<id>` and fall back to the firs
 
 Both health routes return a `features` list: `createdAt`, `attach`, `changes`,
 `saveGuard`, `forget`, `pat`, `newNote`, `move`, `duplicate`, `trash`, `localOnly`,
-`autoCommit`, `trashOpen`, `knowledge`, `pickFolder`.
+`autoCommit`, `trashOpen`, `knowledge`, `pickFolder`, `settings`, `autoSyncLoop`.
 The gateway keeps an app's backend alive across UI reloads, so a process running older code than
 the page would otherwise surface as confusing "no route" errors; the UI compares this list
 and names the missing capabilities instead. `trash` is listed even though it adds no route,
@@ -416,6 +417,36 @@ Knowledge-sync calls go to the HOST API (`/api/knowledge/*`) rather than the app
 because registration needs the user's dashboard session. `/api/knowledge` is therefore
 declared in the manifest's `permissions.api`.
 
+### Images and Obsidian embeds
+
+The preview renders two image syntaxes, each resolved its own way, because a vault
+migrated from Obsidian carries both — sometimes in one note — and keeps the old one
+long after its `.obsidian/` directory is gone:
+
+- `![alt](src)`: a remote source goes through `urlTransform()`; a local one resolves
+  against the note's own directory and is served by the dashboard's `/api/file-raw`.
+- `![[file|size]]`: recognised in EVERY vault, not only one that reads as Obsidian,
+  and rendered as an image only when the target has an image extension — Obsidian's
+  embed grammar also transcludes notes, PDFs and audio, which keep the wikilink
+  presentation rather than being asserted missing. The target resolves, in a fixed
+  order, to a vault-relative path when it carries a folder; else the vault's
+  `attachmentFolderPath` (Obsidian's `./` forms meaning the note's folder or a
+  subfolder of it); else the note's folder; else the vault root; and finally, for a
+  bare name only, when the `/api/attachments` index knows the vault, the one file with
+  that name anywhere in it. Several files sharing the name resolve to nothing rather
+  than to whichever sorted first, and the fallback says so in visible text (and its
+  tooltip), naming the paths found so the reader need not search for them. A numeric suffix is a
+  display width (clamped, still capped by the column); a non-numeric one is the alt
+  text, and a bare embed's alt is its file name so the image is not read as decorative.
+
+Both read the vault ROOT (`localPath`), not the subfolder scope: `.obsidian/app.json`
+sits at the root and its setting is relative to it. The setting is vault content, so it
+is confined like a note path (absolute, `..`, drive letter → dropped), and a missing or
+corrupt `app.json` leaves the vault usable with no setting. Whatever survives is
+re-validated by `/api/file-raw`, which is the trust boundary; the frontend resolution
+only decides WHICH path to ask for. A resolved-to-nothing or 404'd image shows its alt
+text or file name with the broken-image glyph, and the block keeps click-to-edit.
+
 ### Notes panel affordances
 
 * **New note** lives in the panel header (top right, beside the vault selector) and creates
@@ -481,3 +512,7 @@ the save guard, path traversal, unique note naming, duplicate-note naming and co
 move-without-overwrite, external-change
 detection, self-write suppression, token file permissions, the knowledge flag round-trip,
 and a real sync against git fixtures including the conflict path.
+`test/test_md_notebook_attachments.py` covers the Obsidian setting (detection, the
+relative forms, corrupt and escaping values) and the attachment index (extensions,
+dotted-folder pruning with the configured folder kept, vault root vs scope, symlinked
+directories not followed).

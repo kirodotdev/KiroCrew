@@ -2860,6 +2860,7 @@
         "view_list": "Liste simple"
       },
       "preview": {
+        "embedAmbiguous": "Plusieurs fichiers du coffre s'appellent {{name}} ({{paths}}) — ajoutez le dossier dans l'embed pour en choisir un.",
         "mermaidError": "Diagramme Mermaid invalide — sa source est affichée."
       },
       "row": {

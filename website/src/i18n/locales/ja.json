@@ -2748,6 +2748,7 @@
         "view_list": "フラットリスト"
       },
       "preview": {
+        "embedAmbiguous": "ボルト内に {{name}} という名前のファイルが複数あります（{{paths}}）。埋め込みにフォルダーを追加して 1 つを選択してください。",
         "mermaidError": "無効な Mermaid 図 — ソースを表示しています。"
       },
       "row": {

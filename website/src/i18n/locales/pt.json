@@ -2809,6 +2809,7 @@
         "view_list": "Lista simples"
       },
       "preview": {
+        "embedAmbiguous": "Vários arquivos no vault chamam-se {{name}} ({{paths}}) — adicione a pasta ao embed para escolher um.",
         "mermaidError": "Diagrama Mermaid inválido — mostrando o código-fonte."
       },
       "row": {

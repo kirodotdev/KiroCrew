@@ -10,7 +10,7 @@
 import { i18nT } from '../../i18n/t'
 import { API_BASE } from './constants'
 import { vaultContentPath } from './utils'
-import type { Note, NoteDoc, NotesSettings, SearchHit, SyncResult, Vault } from './types'
+import type { AttachmentIndex, Note, NoteDoc, NotesSettings, SearchHit, SyncResult, Vault } from './types'
 
 /** An API failure that carries the response payload callers need. */
 export class ApiError extends Error {
@@ -88,6 +88,10 @@ export const notesApi = {
   pickFolder: () => mdnbCall<{ path: string | null; cancelled: boolean }>('POST', '/pick-folder'),
 
   listNotes: (vault: string | null) => mdnbCall<{ notes: Note[] }>('GET', mdnbVaultQuery('/notes', vault)),
+
+  /** The vault's attachment folder and its image files, for `![[embed]]` resolution. */
+  listAttachments: (vault: string | null) =>
+    mdnbCall<AttachmentIndex>('GET', mdnbVaultQuery('/attachments', vault)),
 
   readNote: (vault: string | null, path: string) =>
     mdnbCall<NoteDoc>('GET', mdnbVaultQuery(`/note?path=${encodeURIComponent(path)}`, vault)),

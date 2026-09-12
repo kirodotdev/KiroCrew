@@ -2804,6 +2804,7 @@
         "view_list": "Flache Liste"
       },
       "preview": {
+        "embedAmbiguous": "Mehrere Dateien im Vault heißen {{name}} ({{paths}}) — geben Sie im Embed den Ordner an, um eine auszuwählen.",
         "mermaidError": "Ungültiges Mermaid-Diagramm — Quelltext wird angezeigt."
       },
       "row": {

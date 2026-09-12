@@ -34,25 +34,30 @@ import {
   LIST_MARKER_RE,
   fenceLang,
   indentPx,
+  isImageEmbed,
+  parseEmbed,
   parseMermaidBlock,
   parseTable,
+  resolveEmbedSrc,
   resolveNoteImageSrc,
 } from './utils'
-import type { ParsedTable, TableAlign } from './utils'
+import type { EmbedContext, ParsedTable, TableAlign } from './utils'
 import type { EditRange } from './types'
 import { urlTransform } from '../../utils/urlTransform'
+import { i18nT } from '../../i18n/t'
 
 /**
- * Inline spans: code, bold, italic, wikilinks, links and images.
+ * Inline spans: code, bold, italic, wikilinks, links, images and embeds.
  *
- * The image alternative sits last but still wins over the link one for
- * `![alt](src)`: its match starts at the `!`, one character earlier than the
- * link's `[`, and the engine takes the leftmost match before it ever considers
- * alternative order. Appending it therefore leaves every existing group number
- * untouched, which is why it is not spliced in beside the link branch.
+ * The image and embed alternatives sit last but still win over the link and
+ * wikilink ones for `![alt](src)` and `![[file]]`: their match starts at the
+ * `!`, one character earlier than the `[`, and the engine takes the leftmost
+ * match before it ever considers alternative order. Appending them therefore
+ * leaves every existing group number untouched, which is why they are not
+ * spliced in beside the branches they shadow.
  */
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))|(!\[([^\]]*)\]\(([^)]+)\))/g
+  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))|(!\[([^\]]*)\]\(([^)]+)\))|(!\[\[([^\]]+?)\]\])/g
 
 /**
  * Render one line's inline markup to React nodes.
@@ -61,8 +66,15 @@ const INLINE_RE =
  * relative image source into a file the dashboard can serve. Optional because
  * every other span renders without it, so a caller that has no note context
  * (a test, a preview of loose text) still gets everything but relative images.
+ * `embeds` is the same for an Obsidian `![[file]]`: without it the embed shows
+ * its file name in the missing-image presentation.
  */
-export function inline(text: string, key: number | string, noteDir?: string): ReactNode[] {
+export function inline(
+  text: string,
+  key: number | string,
+  noteDir?: string,
+  embeds?: EmbedContext,
+): ReactNode[] {
   const nodes: ReactNode[] = []
   const re = new RegExp(INLINE_RE.source, 'g')
   let last = 0
@@ -130,6 +142,45 @@ export function inline(text: string, key: number | string, noteDir?: string): Re
       nodes.push(
         <NoteImage key={k} src={resolveNoteImageSrc(m[12], noteDir)} alt={m[11]} rawSrc={m[12]} />,
       )
+    } else if (m[13]) {
+      // Obsidian embed. Recognised in every vault, not only one that carries an
+      // `.obsidian/` directory: a vault migrated away from Obsidian keeps its
+      // embeds long after the metadata is gone, and both syntaxes then sit in
+      // the same note. The context only improves where the file is looked for.
+      const embed = parseEmbed(m[14])
+      if (isImageEmbed(embed.target)) {
+        const resolved = resolveEmbedSrc(embed.target, embeds)
+        nodes.push(
+          <NoteImage
+            key={k}
+            src={resolved.src}
+            // The file name, not an empty string, when the note gave no alt: an
+            // empty alt marks the image decorative, and a pasted screenshot is
+            // the content of its line, not decoration.
+            alt={embed.alt ?? embed.target}
+            rawSrc={embed.target}
+            width={embed.width}
+            reason={
+              resolved.ambiguous
+                ? i18nT('apps.mdNotebook.preview.embedAmbiguous', {
+                    name: embed.target,
+                    paths: resolved.ambiguous.join(', '),
+                  })
+                : undefined
+            }
+          />,
+        )
+      } else {
+        // A note transclusion, a PDF, audio: not an image, so not something an
+        // image lookup can honestly call missing. It keeps the presentation a
+        // wikilink has, the target as accent text, until embeds of other kinds
+        // are rendered for what they are.
+        nodes.push(
+          <span key={k} style={{ color: ACCENT }}>
+            {embed.alt ?? embed.target}
+          </span>,
+        )
+      }
     }
     last = m.index + m[0].length
     i++
@@ -157,7 +208,7 @@ const CELL_BORDER = '1px solid var(--border)'
  * into horizontal scrolling. The wrapper still scrolls, so a genuinely wide
  * table stays reachable instead of overflowing the column.
  */
-function tableNode(t: ParsedTable, key: number, noteDir?: string): ReactNode {
+function tableNode(t: ParsedTable, key: number, noteDir?: string, embeds?: EmbedContext): ReactNode {
   const cell = (align: TableAlign, first: boolean): CSSProperties => ({
     padding: CELL_PAD,
     textAlign: align ?? 'left',
@@ -186,7 +237,7 @@ function tableNode(t: ParsedTable, key: number, noteDir?: string): ReactNode {
                   borderBottom: CELL_BORDER,
                 }}
               >
-                {inline(text, `${key}-h${c}`, noteDir)}
+                {inline(text, `${key}-h${c}`, noteDir, embeds)}
               </th>
             ))}
           </tr>
@@ -202,7 +253,7 @@ function tableNode(t: ParsedTable, key: number, noteDir?: string): ReactNode {
                     ...(r === 0 ? null : { borderTop: CELL_BORDER }),
                   }}
                 >
-                  {inline(text, `${key}-${r}-${c}`, noteDir)}
+                  {inline(text, `${key}-${r}-${c}`, noteDir, embeds)}
                 </td>
               ))}
             </tr>
@@ -228,6 +279,8 @@ export interface PreviewProps {
    * sources; without it those images fall back to their alt text.
    */
   noteDir?: string
+  /** Where an Obsidian `![[file]]` embed looks for its file; without it embeds fall back to their file name. */
+  embeds?: EmbedContext
 }
 
 export function Preview({
@@ -240,6 +293,7 @@ export function Preview({
   onSplitEdit,
   onDirtyEdit,
   noteDir,
+  embeds,
 }: PreviewProps) {
   const body = content.replace(FM_RE, '')
   // `split('\n')` yields a trailing EMPTY segment whenever the body ends with a
@@ -404,7 +458,7 @@ export function Preview({
         blk(
           idx,
           table.end,
-          tableNode(table, idx, noteDir),
+          tableNode(table, idx, noteDir, embeds),
           { fontFamily: FONT_MONO },
           { split: false },
         ),
@@ -439,7 +493,7 @@ export function Preview({
                     : undefined
                 }
               >
-                {inline(task[3], idx, noteDir)}
+                {inline(task[3], idx, noteDir, embeds)}
               </span>
             </div>,
           ),
@@ -484,7 +538,7 @@ export function Preview({
         // The editor inherits the heading's typography AND colour so the text
         // does not shift shade on click; the chrome is rendered-only, which is
         // what distinguishes the two states.
-        blk(idx, idx, <Tag style={style}>{inline(head[2], idx, noteDir)}</Tag>, {
+        blk(idx, idx, <Tag style={style}>{inline(head[2], idx, noteDir, embeds)}</Tag>, {
           fontSize: style.fontSize,
           fontWeight: style.fontWeight,
           lineHeight: style.lineHeight,
@@ -501,7 +555,7 @@ export function Preview({
         withRails(
           enter(ind),
           idx,
-          blk(idx, idx, <div style={{ marginLeft: ind + 4 }}>{['• ', ...inline(li[2], idx, noteDir)]}</div>),
+          blk(idx, idx, <div style={{ marginLeft: ind + 4 }}>{['• ', ...inline(li[2], idx, noteDir, embeds)]}</div>),
         ),
       )
       return
@@ -517,7 +571,7 @@ export function Preview({
           blk(
             idx,
             idx,
-            <div style={{ marginLeft: ind + 4 }}>{[`${ol[2]}. `, ...inline(ol[3], idx, noteDir)]}</div>,
+            <div style={{ marginLeft: ind + 4 }}>{[`${ol[2]}. `, ...inline(ol[3], idx, noteDir, embeds)]}</div>,
           ),
         ),
       )
@@ -547,7 +601,7 @@ export function Preview({
               color: 'var(--muted)',
             }}
           >
-            {inline(line.slice(2), idx, noteDir)}
+            {inline(line.slice(2), idx, noteDir, embeds)}
           </div>,
         ),
       )
@@ -558,7 +612,7 @@ export function Preview({
       blk(
         idx,
         idx,
-        line.trim() === '' ? <div style={{ height: '8px' }} /> : <div>{inline(line, idx, noteDir)}</div>,
+        line.trim() === '' ? <div style={{ height: '8px' }} /> : <div>{inline(line, idx, noteDir, embeds)}</div>,
       ),
     )
   })
