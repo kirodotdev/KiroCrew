@@ -283,17 +283,40 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
     plugin_cmd = "" if plugin else await _in_executor(ssm.session_manager_plugin_install_command)
     _audit("preflight", "success")
     return web.json_response(
-        {**reach, "session_manager_plugin": bool(plugin), "session_manager_plugin_command": plugin_cmd}
+        {
+            **reach,
+            "session_manager_plugin": bool(plugin),
+            "session_manager_plugin_command": plugin_cmd,
+        }
     )
 
 
 async def api_cloud_iam_policy(request: web.Request) -> web.Response:
-    """GET /api/cloud/iam-policy — the least-privilege policy JSON to attach."""
+    """GET /api/cloud/iam-policy — the least-privilege policy JSON to attach.
+
+    Default body is the *launcher* document only. ``?instance=1&posture=``
+    adds a labeled sibling ``instance_policy`` / ``instance_posture`` so the
+    instance fragment cannot be mistaken for the launch principal grant.
+    """
     denied = _guard(request, "iam_policy")
     if denied is not None:
         return denied
+    body: dict[str, str] = {"policy": iam.policy_json()}
+    instance_flag = (request.query.get("instance") or "").strip().lower()
+    if instance_flag in {"1", "true", "yes"}:
+        posture = (request.query.get("posture") or "").strip()
+        if posture not in {"workload", "login"}:
+            return web.json_response(
+                {
+                    "error": "instance posture must be workload or login",
+                    "code": "invalid_instance_posture",
+                },
+                status=400,
+            )
+        body["instance_policy"] = iam.agentcore_instance_policy_json(posture)
+        body["instance_posture"] = posture
     _audit("iam_policy", "success")
-    return web.json_response({"policy": iam.policy_json()})
+    return web.json_response(body)
 
 
 async def api_cloud_provisioners(request: web.Request) -> web.Response:
@@ -347,7 +370,10 @@ async def api_cloud_launch_get(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: ``{provider_id?, profile, region, size_key}``. ``provider_id`` names a
+    Body: ``{provider_id?, profile, region, size_key}``. AgentCore posture and
+    Gateway URL are CLI-only (``--agentcore-posture``); a dashboard launch
+    stays ``none`` and refuses either field with a 400.
+    ``provider_id`` names a
     row of ``GET /api/cloud/provisioners`` and defaults to the built-in EC2 lane,
     so a pre-seam client body launches exactly what it always did. The POSIX gate
     is per descriptor: the built-in shells to ``bash``/``aws`` and needs one, an
@@ -368,9 +394,7 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
         )
     size_key = str(body.get("size_key") or "").strip()
     provider_id = str(body.get("provider_id") or BUILTIN_PROVISIONER_ID).strip()
-    provisioner = next(
-        (p for p in await _in_executor(_provisioners) if p.id == provider_id), None
-    )
+    provisioner = next((p for p in await _in_executor(_provisioners) if p.id == provider_id), None)
     if provisioner is None:
         _audit("launch_create", "denied", error=f"unknown provisioner {provider_id!r}")
         return web.json_response(
@@ -389,6 +413,28 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    raw_posture = body.get("agentcore_posture")
+    if raw_posture not in (None, "", "none"):
+        return web.json_response(
+            {
+                "error": "dashboard launch stays none; pass --agentcore-posture on the CLI",
+                "code": "dashboard_agentcore_posture_forbidden",
+            },
+            status=400,
+        )
+    agentcore_posture = "none"
+    # Same rule for the URL: without a posture there is nothing to sign
+    # against, and a persisted URL would ride into ``engine.provision`` as
+    # a kwarg a four-argument edition engine cannot accept.
+    if str(body.get("agentcore_gateway_url") or "").strip():
+        return web.json_response(
+            {
+                "error": "dashboard launch stays none; set the Gateway URL with the posture on the CLI",
+                "code": "dashboard_agentcore_gateway_url_forbidden",
+            },
+            status=400,
+        )
+    agentcore_gateway_url = ""
     # One launch at a time. Without this a double-click or a retried request
     # creates two jobs with two tags and two CloudFormation stacks — two billed
     # instances, and the client cannot undo that after the fact. The check, the
@@ -434,6 +480,8 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                     size_key=size_key,
                     provider_id=provider_id,
                     step_labels=dict(provisioner.step_labels or ()),
+                    agentcore_posture=agentcore_posture,
+                    agentcore_gateway_url=agentcore_gateway_url,
                 )
             )
         except KeyError as e:  # unknown size
@@ -600,9 +648,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
             # as a no-op, resolves no id, and skips the unregister AGAIN, so the row can
             # never be cleared from this panel. The launch job that created this tag
             # persists its instance id: still server-owned state, never caller input.
-            iid = next(
-                (j.instance_id for j in store.list() if j.tag == tag and j.instance_id), ""
-            )
+            iid = next((j.instance_id for j in store.list() if j.tag == tag and j.instance_id), "")
         # destroy: issue the delete and return; do not block the request on
         # DELETE_COMPLETE (minutes). A later status / the reaper reflects it.
         out = ec2.destroy(tag, profile, region, wait=False)
@@ -623,9 +669,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # without this arm a malformed tag in the URL path becomes a 500 instead of
         # telling the caller what was wrong with their input.
         _audit(op, "denied", request_id=tag, error=str(e))
-        return web.json_response(
-            {"error": str(e), "code": "invalid_cloud_parameter"}, status=400
-        )
+        return web.json_response({"error": str(e), "code": "invalid_cloud_parameter"}, status=400)
     except CloudActionDenied as e:
         _audit(op, "denied", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "cloud_action_denied"}, status=403)

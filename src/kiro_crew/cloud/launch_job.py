@@ -156,6 +156,8 @@ class LaunchJob:
     profile: str
     region: str
     size_key: str
+    agentcore_posture: str = "none"
+    agentcore_gateway_url: str = ""
     tag: str = ""
     status: str = PENDING
     steps: list = field(default_factory=default_steps)
@@ -187,6 +189,8 @@ class LaunchJob:
             "profile": self.profile,
             "region": self.region,
             "size_key": self.size_key,
+            "agentcore_posture": self.agentcore_posture,
+            "agentcore_gateway_url": self.agentcore_gateway_url,
             "tag": self.tag,
             "status": self.status,
             "steps": [s.to_dict() for s in self.steps],
@@ -213,6 +217,8 @@ class LaunchJob:
             profile=str(d.get("profile", "")),
             region=str(d.get("region", "")),
             size_key=str(d.get("size_key", "")),
+            agentcore_posture=str(d.get("agentcore_posture", "none") or "none"),
+            agentcore_gateway_url=str(d.get("agentcore_gateway_url", "") or ""),
             tag=str(d.get("tag", "")),
             status=str(d.get("status", PENDING)),
             steps=steps,
@@ -296,6 +302,8 @@ class LaunchJobStore:
         size_key: str,
         provider_id: str = BUILTIN_PROVISIONER_ID,
         step_labels: Optional[Mapping[str, str]] = None,
+        agentcore_posture: str = "none",
+        agentcore_gateway_url: str = "",
     ) -> LaunchJob:
         """Build + persist a fresh PENDING job.
 
@@ -304,10 +312,15 @@ class LaunchJobStore:
         ``size_key`` is that provisioner's own shape vocabulary (a DevSpace
         instance type, a Fargate cpu/memory pair), which its engine validates in
         ``provision``. Rejecting it here against the EC2 table would refuse every
-        non-EC2 launch.
+        non-EC2 launch. The AgentCore posture and Gateway URL are normalized for
+        every provisioner: they shape the IAM grant, not the compute.
         """
+        from kiro_crew.cloud import iam
+
         if provider_id == BUILTIN_PROVISIONER_ID:
             sizes.get_tier(size_key)  # raises KeyError with the valid set if unknown
+        posture = iam.normalize_agentcore_posture(agentcore_posture)
+        gateway_url = iam.normalize_agentcore_gateway_url(agentcore_gateway_url)
         job = LaunchJob(
             id=_new_job_id(),
             profile=profile,
@@ -315,6 +328,8 @@ class LaunchJobStore:
             size_key=size_key,
             provider_id=provider_id,
             steps=default_steps(step_labels),
+            agentcore_posture=posture,
+            agentcore_gateway_url=gateway_url,
         )
         # Claim ownership BEFORE the file exists. `reap_orphans` spares only jobs this
         # process owns, and it runs off the event loop: a reap already in flight can
@@ -465,7 +480,18 @@ class LaunchEngine(Protocol):
     """The AWS-touching operations a launch needs, injected for testability."""
 
     def preflight(self, profile: str, region: str) -> None: ...
-    def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str: ...
+
+    def provision(
+        self,
+        *,
+        tag: str,
+        size_key: str,
+        profile: str,
+        region: str,
+        agentcore_posture: str = "none",
+        agentcore_gateway_url: str = "",
+    ) -> str: ...
+
     def begin_signin(self, *, instance_id: str, profile: str, region: str) -> SigninHandle: ...
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None: ...
     def teardown(self, *, tag: str, profile: str, region: str) -> bool: ...
@@ -605,8 +631,23 @@ def run_launch(
         # 2) Provision (create instance + install; blocks until healthy)
         _check_cancel()
         s = _activate(STEP_PROVISION)
+        # The AgentCore kwargs ride along only when the job carries a posture:
+        # an edition's provisioner engine may implement the base four-kwarg
+        # ``provision`` and never see a posture, and a plain launch must not
+        # fail on an engine that predates the two optional parameters. A URL
+        # without a posture has nothing to sign against, so it never travels.
+        agentcore_kw: dict = {}
+        if job.agentcore_posture != "none":
+            agentcore_kw = {
+                "agentcore_posture": job.agentcore_posture,
+                "agentcore_gateway_url": job.agentcore_gateway_url,
+            }
         job.instance_id = engine.provision(
-            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region
+            tag=job.tag,
+            size_key=job.size_key,
+            profile=job.profile,
+            region=job.region,
+            **agentcore_kw,
         )
         s.detail = job.instance_id
         s.state = STEP_DONE
@@ -643,9 +684,7 @@ def run_launch(
                 job.status = RUNNING
                 s.state = STEP_DONE if signed else STEP_SKIPPED
                 s.detail = (
-                    "Signed in."
-                    if signed
-                    else "Not signed in yet — finish it from the dashboard."
+                    "Signed in." if signed else "Not signed in yet — finish it from the dashboard."
                 )
                 store.save(job)
             else:

@@ -72,12 +72,10 @@ class TestSubTemplateSyntax:
         )
         # And the banner is excluded anyway: the log APPENDS across re-runs of
         # the unit, so a previous attempt's banner can still be the last match.
-        assert "grep -av 'BOOTSTRAP FAILED'" in text, (
-            "a prior attempt's banner lingers in the appended log; exclude it"
-        )
-        reason = next(
-            line for line in text.splitlines() if line.strip().startswith('reason="')
-        )
+        assert (
+            "grep -av 'BOOTSTRAP FAILED'" in text
+        ), "a prior attempt's banner lingers in the appended log; exclude it"
+        reason = next(line for line in text.splitlines() if line.strip().startswith('reason="'))
         assert "err1" in reason and "tail_ctx" in reason, reason
         assert reason.index("err1") < reason.index("tail_ctx"), (
             "the error line must precede the log tail in the reason, or a "
@@ -93,17 +91,15 @@ class TestSubTemplateSyntax:
         # that will not resolve is a network fault -- calling it "did not install"
         # points the reader at permissions and glibc/musl instead of at DNS.
         text = ec2.load_template()
-        assert 'fail "could not DOWNLOAD kiro-cli from $KIRO_URL' in text, (
-            "the download must fail with its own message naming the URL"
-        )
+        assert (
+            'fail "could not DOWNLOAD kiro-cli from $KIRO_URL' in text
+        ), "the download must fail with its own message naming the URL"
         # The install keeps its deliberately tolerant path plus the binary check,
         # so a genuine install failure is still reported as an install failure.
         assert "install returned nonzero" in text
         assert 'fail "kiro-cli did not install' in text
         # And the download must be judged BEFORE the install runs.
-        assert text.index("could not DOWNLOAD kiro-cli") < text.index(
-            "install returned nonzero"
-        )
+        assert text.index("could not DOWNLOAD kiro-cli") < text.index("install returned nonzero")
 
     def test_source_fetch_failure_is_not_asserted_to_be_an_install_failure(self):
         # kcfetch.sh runs under `set -e`, so a failing `aws s3 cp`, `git clone`
@@ -115,9 +111,9 @@ class TestSubTemplateSyntax:
         # step it cannot know.
         text = ec2.load_template()
         assert 'fail "kirocrew source fetch or install failed"' in text
-        assert 'fail "kirocrew install.sh failed"' not in text, (
-            "this message asserts the install step for what may be a fetch fault"
-        )
+        assert (
+            'fail "kirocrew install.sh failed"' not in text
+        ), "this message asserts the install step for what may be a fetch fault"
 
 
 class TestValidation:
@@ -226,6 +222,35 @@ class TestTemplate:
 
         assert not _re.search(r"ami-[0-9a-f]{8,}", text)
 
+    def test_agentcore_workload_identity_is_opt_in(self):
+        text = ec2.load_template()
+        assert "AWS::BedrockAgentCore::WorkloadIdentity" in text
+        assert "AgentCorePosture:" in text
+        assert "AllowedValues: [none, workload, login]" in text
+        assert "KIROCREW_AGENTCORE_WORKLOAD_NAME" in text
+        assert "KIROCREW_AGENTCORE_GATEWAY_URL" in text
+        assert "AgentCoreGatewayUrl:" in text
+        # userinfo credentials must not survive CloudFormation validation.
+        gw_pat = re.search(
+            r"AgentCoreGatewayUrl:.*?AllowedPattern: \"([^\"]+)\"",
+            text,
+            re.S,
+        )
+        assert gw_pat is not None
+        assert "@" not in gw_pat.group(1)
+        # systemd treats % as specifiers; !Sub expands the URL first, then
+        # sed doubles % so Environment= keeps a percent-encoded path intact.
+        assert "AC_GW_ESC=$(printf '%s' '${AgentCoreGatewayUrl}' | sed 's/%/%%/g')" in text
+        assert "Environment=KIROCREW_AGENTCORE_GATEWAY_URL=$AC_GW_ESC" in text
+        assert "Environment=KIROCREW_AGENTCORE_GATEWAY_URL=${AgentCoreGatewayUrl}" not in text
+        # Unquoted <<KCFETCH + set -u: $AC_EXTRA must be escaped so the
+        # outer bootstrap does not expand an unbound var at write time.
+        assert text.count("install.sh --voice \\$AC_EXTRA") == 2
+        assert "CrewWorkloadIdentity:" in text
+        assert "AgentCoreWorkloadInstancePolicy:" in text
+        assert "AgentCoreLoginInstancePolicy:" in text
+        assert "AgentCoreNameRequired:" in text
+
     def test_source_read_grant_pinned_to_derived_arn_not_params(self):
         # The instance role's INLINE SourceObjectRead s3:GetObject must be scoped
         # to the DERIVED launcher path, NOT the user-controlled SourceBucket/
@@ -279,7 +304,15 @@ class TestTemplate:
         import re as _re
 
         text = ec2.load_template()
-        for param in ("SourceBucket", "SourceKey", "KirocrewRepo", "KirocrewRef", "AllowSshCidr"):
+        for param in (
+            "SourceBucket",
+            "SourceKey",
+            "KirocrewRepo",
+            "KirocrewRef",
+            "AllowSshCidr",
+            "AgentCoreWorkloadName",
+            "AgentCoreGatewayUrl",
+        ):
             block = _re.search(rf"  {param}:\n(?:    .+\n)+", text)
             assert block, f"parameter {param} missing"
             assert "AllowedPattern" in block.group(0), f"{param} lacks AllowedPattern"
@@ -319,7 +352,7 @@ class TestTemplate:
         # The failure reason must fold the real build error from the setup log, so it
         # is diagnosable even when the crew ran a cloned install.sh that did not itself
         # hard-fail (the default clone-of-main path).
-        assert 'grep -aiE' in text and '"$LOG"' in text
+        assert "grep -aiE" in text and '"$LOG"' in text
         assert "Build errors:" in text
 
     def test_bootstrap_requires_the_frontend_build(self):
@@ -441,13 +474,13 @@ class TestTemplate:
         # filter) proves the assertions can fail, so the test constrains the
         # filter rather than its own construction.
         log_lines = [b"padding line %d" % i for i in range(25)] + [
-            b'step one ok',
-            b'Installing npm dependencies for the dashboard',
-            b'INSTALLING KIROCREW AND DEPENDENCIES',
-            b'Building React App (vite)',
+            b"step one ok",
+            b"Installing npm dependencies for the dashboard",
+            b"INSTALLING KIROCREW AND DEPENDENCIES",
+            b"Building React App (vite)",
             b'\x1b[31mnpm error\x1b[0m: build "failed"',
-            b'caf\xc3\xa9 \xe4\xb8\xad\xe6\x96\x87 glyphs',
-            b'bell\x07done back\\slash\r',
+            b"caf\xc3\xa9 \xe4\xb8\xad\xe6\x96\x87 glyphs",
+            b"bell\x07done back\\slash\r",
         ]
 
         def printable(data: bytes) -> bytes:
@@ -531,6 +564,9 @@ class TestUserDataSize:
         "KirocrewRepo": "r" * 255,
         "KirocrewRef": "f" * 128,
         "DashboardPort": "65535",
+        "AgentCorePosture": "workload",
+        "AgentCoreWorkloadName": "n" * 255,
+        "AgentCoreGatewayUrl": "https://" + "g" * 500,
         "StackTag": "t" * 51,
         "AWS::AccountId": "1" * 12,
         "AWS::Region": "ap-southeast-99",
@@ -585,9 +621,7 @@ class TestUserDataSize:
         # the raw literal (the substitutions net-add bytes). If this fails the
         # worst-case table has degraded into an optimistic one.
         script = self._raw_userdata()
-        assert len(self._expand(script).encode()) > len(
-            script.replace("${!", "${").encode()
-        )
+        assert len(self._expand(script).encode()) > len(script.replace("${!", "${").encode())
 
 
 _BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary"
@@ -613,6 +647,21 @@ class TestBuildDeployArgv:
         assert "StackTag=t1" in argv
         # the pre-created shared boundary ARN is passed to the template param
         assert f"PermissionsBoundaryArn={_BOUNDARY_ARN}" in argv
+        assert "AgentCorePosture=none" in argv
+        assert "AgentCoreWorkloadName=" in argv
+        assert "AgentCoreGatewayUrl=" in argv
+
+    def test_agentcore_gateway_url_override(self):
+        tier = sizes.get_tier("balanced")
+        argv = ec2.build_deploy_argv(
+            tag="t1",
+            tier=tier,
+            vpc_id="vpc-1",
+            subnet_id="subnet-1",
+            permissions_boundary_arn=_BOUNDARY_ARN,
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        assert "AgentCoreGatewayUrl=https://gw.example.test/mcp" in argv
         # discovery tags applied to the stack
         assert "kirocrew:managed=true" in argv
         assert "kirocrew:instance=t1" in argv
@@ -961,9 +1010,7 @@ class TestDnsPreflight:
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
         hits = ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1")
-        assert hits == [
-            ("desktop-release.q.us-east-1.amazonaws.com", "q.us-east-1.amazonaws.com")
-        ]
+        assert hits == [("desktop-release.q.us-east-1.amazonaws.com", "q.us-east-1.amazonaws.com")]
 
     def test_clean_vpc_has_no_hits(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):

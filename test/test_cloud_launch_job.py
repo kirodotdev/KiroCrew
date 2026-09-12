@@ -37,8 +37,16 @@ class FakeHandle:
 class FakeEngine:
     """Records calls; each step is individually configurable to raise/return."""
 
-    def __init__(self, *, handle=None, preflight_exc=None, provision_exc=None, register_exc=None,
-                 teardown_exc=None, teardown_confirms=True):
+    def __init__(
+        self,
+        *,
+        handle=None,
+        preflight_exc=None,
+        provision_exc=None,
+        register_exc=None,
+        teardown_exc=None,
+        teardown_confirms=True,
+    ):
         self.handle = handle or FakeHandle(already=True)
         self.preflight_exc = preflight_exc
         self.provision_exc = provision_exc
@@ -58,8 +66,10 @@ class FakeEngine:
         if self.preflight_exc:
             raise self.preflight_exc
 
-    def provision(self, *, tag, size_key, profile, region):
-        self.calls.append(("provision", tag, size_key))
+    def provision(
+        self, *, tag, size_key, profile, region, agentcore_posture="none", agentcore_gateway_url=""
+    ):
+        self.calls.append(("provision", tag, size_key, agentcore_posture, agentcore_gateway_url))
         if self.provision_exc:
             raise self.provision_exc
         return "i-0abc123456789def0"
@@ -88,12 +98,38 @@ class TestStoreDurability:
         loaded = s2.get(job.id)
         assert loaded is not None
         assert loaded.size_key == "balanced"
+        assert loaded.agentcore_posture == "none"
         assert [st.key for st in loaded.steps] == [
             lj.STEP_PREFLIGHT,
             lj.STEP_PROVISION,
             lj.STEP_SIGNIN,
             lj.STEP_CONNECT,
         ]
+
+    def test_create_persists_agentcore_posture(self, tmp_path):
+        s1 = _store(tmp_path)
+        job = s1.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_posture="workload",
+        )
+        loaded = lj.LaunchJobStore(root=s1.root).get(job.id)
+        assert loaded is not None
+        assert loaded.agentcore_posture == "workload"
+
+    def test_create_persists_agentcore_gateway_url(self, tmp_path):
+        s1 = _store(tmp_path)
+        job = s1.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_posture="workload",
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        loaded = lj.LaunchJobStore(root=s1.root).get(job.id)
+        assert loaded is not None
+        assert loaded.agentcore_gateway_url == "https://gw.example.test/mcp"
 
     def test_create_rejects_unknown_size(self, tmp_path):
         with pytest.raises(KeyError):
@@ -156,6 +192,43 @@ class TestStoreDurability:
 
 
 class TestRunLaunch:
+    def test_posture_none_never_hands_agentcore_kwargs_to_the_engine(self, tmp_path):
+        """An edition engine written to the base four-kwarg ``provision`` must
+        keep working for a plain launch -- even one whose job carries a stray
+        Gateway URL -- because a URL without a posture has nothing to sign."""
+
+        class FourArgEngine(FakeEngine):
+            def provision(self, *, tag, size_key, profile, region):
+                self.calls.append(("provision", tag, size_key))
+                return "i-0four00000000000"
+
+        s = _store(tmp_path)
+        job = s.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        eng = FourArgEngine(handle=FakeHandle(already=True))
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.DONE
+        assert out.instance_id == "i-0four00000000000"
+
+    def test_postured_job_hands_both_agentcore_kwargs_to_the_engine(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_posture="workload",
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        eng = FakeEngine(handle=FakeHandle(already=True))
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.DONE
+        provision = next(c for c in eng.calls if c[0] == "provision")
+        assert provision[3:] == ("workload", "https://gw.example.test/mcp")
+
     def test_happy_path_already_signed_in(self, tmp_path):
         s = _store(tmp_path)
         job = s.create(profile="dev", region="us-east-1", size_key="balanced")
@@ -183,8 +256,13 @@ class TestRunLaunch:
             seen["code"] = mid.signin.code if mid.signin else None
 
         eng = FakeEngine(
-            handle=FakeHandle(url="https://x/verify", code="BQTZ-XKFD", ports=[54123], signed=True,
-                              on_wait=on_wait)
+            handle=FakeHandle(
+                url="https://x/verify",
+                code="BQTZ-XKFD",
+                ports=[54123],
+                signed=True,
+                on_wait=on_wait,
+            )
         )
         out = lj.run_launch(job, s, eng)
         assert seen["status"] == lj.AWAITING_SIGNIN
@@ -323,7 +401,8 @@ class TestRealSigninHandleFailures:
         from kiro_crew.cloud import launch_engine as le
 
         monkeypatch.setattr(
-            le.login, "start_device_login",
+            le.login,
+            "start_device_login",
             lambda *a, **k: SimpleNamespace(
                 already_logged_in=False, url="u", code="c", ports=[], close=lambda: None
             ),
@@ -384,11 +463,15 @@ class TestRealEngineGatewayPort:
         from kiro_crew.cloud import launch_engine as le
 
         seen = {}
-        monkeypatch.setattr(le.ec2, "deploy", lambda **kw: (
-            seen.update(kw) or SimpleNamespace(instance_id="i-0abc")))
+        monkeypatch.setattr(
+            le.ec2,
+            "deploy",
+            lambda **kw: (seen.update(kw) or SimpleNamespace(instance_id="i-0abc")),
+        )
         monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
         monkeypatch.setattr(
-            le.connect_mod, "register_instance",
+            le.connect_mod,
+            "register_instance",
             lambda iid, **kw: seen.update({"reg": kw}) or "inst-1",
         )
         return le, seen
@@ -665,7 +748,9 @@ class TestProvisionerOnTheJob:
         """Another provisioner's ``size_key`` is its own vocabulary; refusing it here
         against ``sizes.py`` would refuse every non-EC2 launch."""
         job = _store(tmp_path).create(
-            profile="", region="us-west-2", size_key="dev.standard1.large",
+            profile="",
+            region="us-west-2",
+            size_key="dev.standard1.large",
             provider_id="devspace",
         )
         assert job.provider_id == "devspace"
@@ -673,14 +758,20 @@ class TestProvisionerOnTheJob:
 
     def test_step_labels_override_only_known_keys(self, tmp_path):
         job = _store(tmp_path).create(
-            profile="", region="", size_key="s", provider_id="devspace",
+            profile="",
+            region="",
+            size_key="s",
+            provider_id="devspace",
             step_labels={lj.STEP_PROVISION: "Create the DevSpace", "bogus": "ignored"},
         )
         labels = {st.key: st.label for st in job.steps}
         assert labels[lj.STEP_PROVISION] == "Create the DevSpace"
         assert labels[lj.STEP_PREFLIGHT] == "Check your AWS setup"  # untouched core label
         assert [st.key for st in job.steps] == [
-            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+            lj.STEP_PREFLIGHT,
+            lj.STEP_PROVISION,
+            lj.STEP_SIGNIN,
+            lj.STEP_CONNECT,
         ]
 
     def test_default_steps_with_no_overrides_are_the_core_labels(self):
