@@ -164,6 +164,13 @@ def stub_gateway(monkeypatch: pytest.MonkeyPatch) -> _RecordingUnixServer:
         # these tests red instead of silently pointing them at a dead path.
         socket_path = cfg.home_dir("wt") / dashboard_socket_path(port).name
         socket_path.parent.mkdir(parents=True, exist_ok=True)
+        # Attest THIS process as the pod's gateway: the fixture's unix server
+        # answers from the test process, so the kernel's peer credentials on
+        # every connection name ``os.getpid()``. Recording that pid (with its
+        # live start identity) lets the connect-time peer check added for
+        # #8552 prove the fixture gateway exactly the way it proves a real one
+        # -- these tests exercise the verification path, not a bypass of it.
+        _write_record(cfg, "wt", port, f"{os.getpid()}\n", _live_start_token())
         unix = _RecordingUnixServer(str(socket_path), _Handler)
         stack.callback(unix.server_close)
         unix.seen = []

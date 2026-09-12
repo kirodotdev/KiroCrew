@@ -6,15 +6,19 @@ import argparse
 import ast
 import json
 import os
+import shutil
+import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tmpdir_helpers import short_tmp_base
 
 from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
@@ -4256,8 +4260,66 @@ class TestRuntimeHelpers:
                 return b'{"token":"tok-xyz"}'
 
         monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
-        monkeypatch.setattr(rt, "loopback_urlopen", lambda *a, **k: _Resp())
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
+        monkeypatch.setattr(rt, "unix_socket_urlopen", lambda *a, **k: _Resp())
         assert rt.mint_token(c, "demo", "1h") == "tok-xyz"
+
+    def test_mint_token_sends_the_secret_only_over_the_pod_socket(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The X-Local-Secret request rides the pod's AF_UNIX socket, never TCP.
+
+        The TCP-era transport (#8552) attested ownership and then opened a
+        SEPARATE loopback connection carrying the secret: a pod exiting inside
+        that window frees the port for any local user, and loopback TCP has no
+        peer-credential API to tell the squatter from the gateway. The socket
+        lives inside the pod's owner-only home, so delivery there cannot reach
+        another user -- and `unix_socket_urlopen` has no TCP handler, making
+        "no fallback" structural. This test pins both properties: the TCP
+        opener is never consulted, and the secret-bearing request lands on
+        exactly the pod's own socket path.
+        """
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / ".local_secret").write_text("s3cret")
+
+        class _Resp:
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *a: object) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b'{"token":"tok-uds"}'
+
+        tcp_calls: list[object] = []
+        uds_calls: list[dict[str, object]] = []
+
+        def _tcp(*a: object, **k: object) -> "_Resp":
+            tcp_calls.append(a)
+            return _Resp()
+
+        def _uds(
+            req: object, timeout: float, *, socket_path: object, verify_peer: object = None
+        ) -> "_Resp":
+            uds_calls.append({"req": req, "socket_path": socket_path, "verify_peer": verify_peer})
+            return _Resp()
+
+        monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
+        monkeypatch.setattr(rt, "loopback_urlopen", _tcp)
+        monkeypatch.setattr(rt, "unix_socket_urlopen", _uds)
+
+        assert rt.mint_token(c, "demo", "1h") == "tok-uds"
+        assert tcp_calls == []  # the secret-bearing call has no TCP path at all
+        port = rt.derive_port(c, "demo")
+        assert uds_calls[0]["socket_path"] == rt.pod_socket_path(c, "demo", port)
+        assert callable(uds_calls[0]["verify_peer"])  # peer check rides every send
+        req = uds_calls[0]["req"]
+        assert req.get_header("X-local-secret") == "s3cret"  # urllib-normalized key
 
     def test_mint_token_refuses_a_foreign_port_holder(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5098,16 +5160,175 @@ class TestReviewRound1Fixes:
             def read(self) -> bytes:
                 return b'{"token":"t"}'
 
-        def _urlopen(req: object, timeout: int = 5) -> "_Resp":
+        def _urlopen(
+            req: object,
+            timeout: int = 5,
+            *,
+            socket_path: object = None,
+            verify_peer: object = None,
+        ) -> "_Resp":
             captured["url"] = req.full_url  # type: ignore[attr-defined]
             return _Resp()
 
         # Mint now requires positive ownership proof; this test is about the URL
         # it builds, so grant the proof rather than exercising the guard here.
         monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
-        monkeypatch.setattr(rt, "loopback_urlopen", _urlopen)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
+        monkeypatch.setattr(rt, "unix_socket_urlopen", _urlopen)
         rt.mint_token(c, "demo", "1 h")
         assert "ttl=1%20h" in captured["url"]
+
+
+class TestMintPeerVerification:
+    """Connect-time peer verification on the pod's unix socket (#8552, round 2).
+
+    ``port_owner`` proves the pid RECORD is fresh; these tests pin the other
+    half: the process ANSWERING the socket file must be that recorded pid, as
+    read from the kernel's peer credentials on the connected socket, before a
+    single HTTP byte (and the ``X-Local-Secret`` header behind it) is sent.
+    """
+
+    def _grant_record_freshness(self, monkeypatch: pytest.MonkeyPatch, pid: int) -> None:
+        monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: pid)
+
+    def test_verifier_refuses_a_mismatched_peer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        self._grant_record_freshness(monkeypatch, 4242)
+        monkeypatch.setattr(rt, "get_peer_pid", lambda sock: 9999)
+        verify = rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+        with pytest.raises(rt.PodError, match="refusing to send"):
+            verify(object())
+
+    def test_verifier_refuses_an_unreadable_peer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``None`` from the kernel is a refusal, never a pass (deny-by-default)."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        self._grant_record_freshness(monkeypatch, 4242)
+        monkeypatch.setattr(rt, "get_peer_pid", lambda sock: None)
+        verify = rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+        with pytest.raises(rt.PodError, match="unidentifiable process"):
+            verify(object())
+
+    def test_verifier_refuses_when_no_pid_is_attested(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No provable record at send time = no verifier at all, fail closed."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: None)
+        with pytest.raises(rt.PodOwnershipUnproven):
+            rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+
+    def test_verifier_accepts_the_attested_peer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        self._grant_record_freshness(monkeypatch, 4242)
+        monkeypatch.setattr(rt, "get_peer_pid", lambda sock: 4242)
+        verify = rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+        assert verify(object()) is None  # no raise = the send may proceed
+
+    @staticmethod
+    def _serve_once(server_sock: socket.socket, received: list[bytes]) -> threading.Thread:
+        """Accept one connection and record whatever arrives (empty = refused)."""
+
+        def _run() -> None:
+            try:
+                conn, _ = server_sock.accept()
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(2)
+                data = b""
+                try:
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                except OSError:
+                    pass
+                received.append(data)
+                if data:
+                    body = b'{"token":"tok-live"}'
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                        b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+                    )
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        return thread
+
+    def _mint_against_live_listener(
+        self, monkeypatch: pytest.MonkeyPatch, attested_pid: int
+    ) -> tuple[list[bytes], "rt.PodError | None"]:
+        """Drive the REAL kernel peer check: a live in-process unix listener
+        (peer pid = ``os.getpid()``) answers the pod's derived socket path,
+        while the attested record names *attested_pid*. Only record freshness
+        is granted; ``get_peer_pid`` runs unpatched against the real socket.
+        """
+        if platform_compat.IS_WINDOWS:
+            pytest.skip("AF_UNIX transport is POSIX-only")
+        root = Path(tempfile.mkdtemp(prefix="podpeer-", dir=short_tmp_base()))
+        try:
+            monkeypatch.setenv("KIROCREW_POD_ROOT", str(root))
+            c = PodConfig.load()
+            home = c.home_dir("demo")
+            home.mkdir(parents=True)
+            (home / ".local_secret").write_text("s3cret")
+            port = rt.derive_port(c, "demo")
+            socket_path = rt.pod_socket_path(c, "demo", port)
+            socket_path.parent.mkdir(parents=True, exist_ok=True)
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                server.bind(str(socket_path))
+                server.listen(1)
+                received: list[bytes] = []
+                thread = self._serve_once(server, received)
+                self._grant_record_freshness(monkeypatch, attested_pid)
+                error: rt.PodError | None = None
+                try:
+                    assert rt.mint_token(c, "demo", "1h") == "tok-live"
+                except rt.PodError as exc:
+                    error = exc
+                server.close()
+                thread.join(timeout=5)
+                return received, error
+            finally:
+                server.close()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_mint_refuses_a_rebound_socket_before_any_bytes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE #8552 round-2 window: a same-UID process rebinds the socket path.
+
+        The listener is real and answering, the pid record is fresh, but the
+        kernel says the peer is this test process, not the attested gateway
+        (pid 1). The mint must refuse AND the listener must observe zero bytes
+        -- the request line, let alone the secret header, never went out.
+        """
+        received, error = self._mint_against_live_listener(monkeypatch, attested_pid=1)
+        assert error is not None and "refusing to send" in str(error)
+        assert received in ([], [b""])  # connection at most; never a byte of HTTP
+
+    def test_mint_sends_when_the_kernel_names_the_attested_peer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Benign path, no new denials: attest THIS process, the real
+        ``SO_PEERCRED``/``LOCAL_PEERPID`` read agrees, the mint completes."""
+        received, error = self._mint_against_live_listener(monkeypatch, attested_pid=os.getpid())
+        assert error is None
+        assert len(received) == 1 and b"X-Local-Secret: s3cret" in received[0]
 
 
 class TestReviewRound2Fix:

@@ -38,6 +38,7 @@ from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.instances import run_marker
 from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
+from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 from kiro_crew.platform_compat import (
     IS_LINUX,
     IS_MACOS,
@@ -1809,9 +1810,49 @@ def health(cfg: PodConfig, name: str, port: int, timeout: int = 3) -> int:
 
 # --------------------------------------------------------------------------- #
 # Token mint — reads the pod's OWN .local_secret (in its isolated HOME), then
-# calls /api/token/local with X-Local-Secret. Keeps the secret read inside this
-# process (never an agent-issued `cat`).
+# calls /api/token/local with X-Local-Secret over the pod's private unix
+# socket. Keeps the secret read inside this process (never an agent-issued
+# `cat`), and keeps the secret's delivery inside the pod's owner-only home
+# (never a rebindable loopback port — #8552). The connected socket's peer is
+# kernel-verified against the attested gateway pid before any bytes are sent,
+# so even a same-UID rebind of the socket path receives nothing.
 # --------------------------------------------------------------------------- #
+def _attested_gateway_verifier(cfg: PodConfig, name: str, port: int, socket_path: Path):
+    """Build a connect-time peer check pinned to pod *name*'s attested gateway.
+
+    ``port_owner`` proves the pid RECORD is fresh, but a record cannot prove
+    who answers the socket FILE: the path sits in a directory its owner can
+    always rewrite, so a same-UID process can unlink it and bind its own
+    listener there — and the mint request would hand that listener the pod's
+    ``.local_secret``. The kernel can prove it: peer credentials on the
+    connected socket (``SO_PEERCRED`` on Linux, ``LOCAL_PEERPID`` on macOS)
+    name the listener's pid as of ``listen()``, so requiring that pid to equal
+    the attested gateway pid refuses a rebound socket BEFORE any HTTP bytes.
+    Deny-by-default, same shape as the server-side admission this feature
+    added: a mismatched peer and an unreadable peer both refuse.
+    """
+    attested = _pod_recorded_pid(cfg, name, port)
+    if attested is None:
+        raise PodOwnershipUnproven(
+            f"withholding pod {name!r}'s credential: its gateway pid record "
+            f"could not be re-proven at send time, so the process answering "
+            f"{socket_path} cannot be verified. {_unproven_remedy(cfg, name, port)}"
+        )
+
+    def _verify(sock: socket.socket) -> None:
+        peer = get_peer_pid(sock)
+        if peer != attested:
+            who = "an unidentifiable process" if peer is None else f"pid {peer}"
+            raise PodError(
+                f"refusing to send pod {name!r}'s credential: {socket_path} is "
+                f"answered by {who}, not the attested gateway (pid {attested}). "
+                f"The socket path may have been rebound since the pod started; "
+                f"`kirocrew pod status {name}` shows the gateway's state."
+            )
+
+    return _verify
+
+
 def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     secret_file = cfg.home_dir(name) / ".local_secret"
     try:
@@ -1823,14 +1864,11 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     port = derive_port(cfg, name)
     owner = port_owner(cfg, name, port)
     if owner != OWNER_POD:
-        # Positive proof REQUIRED here, unlike `health`. This call sends the pod's
-        # own ``.local_secret`` and returns a dashboard credential for whatever
-        # answered, so the two ways of being wrong are not symmetrical: refusing a
-        # live pod costs an error message, while proceeding on an unproven port
-        # hands a different local user -- who can bind 127.0.0.1 but cannot read
-        # this 0600 secret -- a credential for this pod. That is the same reason
-        # ``port_resolution._gateway_owns_port`` fails closed on the path that
-        # sends the secret, including when the listener lookup is simply missing.
+        # Positive proof kept even though the send below rides the pod's own
+        # unix socket: the pre-check costs one process lookup and buys the
+        # refusal messages below, which name WHY the pod cannot answer instead
+        # of surfacing a bare connection error from the socket. The transport
+        # is what makes the secret safe; this is what makes the failure legible.
         if owner == OWNER_FOREIGN:
             raise PodError(
                 f"refusing to mint a credential for pod {name!r}: :{port} is held "
@@ -1845,15 +1883,32 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
             f"process would receive the pod's secret. "
             f"{_unproven_remedy(cfg, name, port)}"
         )
+    socket_path = pod_socket_path(cfg, name, port)
+    verify_peer = _attested_gateway_verifier(cfg, name, port, socket_path)
     url = f"http://127.0.0.1:{port}/api/token/local?ttl={urllib.parse.quote(str(ttl))}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        # Loopback-only call to the pod's own gateway on 127.0.0.1; the URL is
-        # internally derived, so the dynamic-URL SSRF audit rule is a false positive.
-        with loopback_urlopen(req, timeout=5) as resp:  # nosemgrep
+        # Over the pod's own unix socket, never TCP (#8552): this request CARRIES
+        # the pod's `.local_secret`, and the pod's TCP port is ordinary loopback
+        # that any local user can bind the moment the pod releases it — with no
+        # peer-credential API on the wire to tell the squatter from the gateway.
+        # `unix_socket_urlopen` has no TCP handler, so "no fallback" is structural:
+        # a missing, stale, or refusing socket raises instead of handing the
+        # header to whatever answered. The URL keeps the loopback host so the
+        # gateway's Host validation sees exactly what it saw on TCP; the socket
+        # path is derived, never caller-supplied. verify_peer closes the residual
+        # window on the socket itself: a same-UID process that rebinds the path
+        # fails the kernel peer-pid check and never sees the header.
+        with unix_socket_urlopen(  # nosemgrep
+            req, timeout=5, socket_path=socket_path, verify_peer=verify_peer
+        ) as resp:
             token = json.loads(resp.read()).get("token", "")
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise PodError(f"token mint failed on :{port} ({name}): {exc}") from exc
+        raise PodError(
+            f"token mint for pod {name!r} did not complete over its API socket "
+            f"({socket_path}): {exc}. Not retried on 127.0.0.1:{port} — the pod's "
+            f"secret must not be sent to a process that is not this pod's gateway."
+        ) from exc
     if not token:
         raise PodError(f"gateway returned empty token on :{port} ({name})")
     return token
@@ -2039,6 +2094,7 @@ def pod_api(
             f"  Restart it:    kirocrew pod down {name} && kirocrew pod up {name}"
         )
     token = mint_token(cfg, name)
+    verify_peer = _attested_gateway_verifier(cfg, name, port, socket_path)
     url = _authenticated_url(port, normalized, token)
     body = data.encode("utf-8") if data else None
     headers = {"Content-Type": "application/json"} if data else {}
@@ -2047,8 +2103,14 @@ def pod_api(
         # Over the pod's own unix socket, never TCP: `unix_socket_urlopen` has no
         # TCP handler, so a dead or replaced listener cannot receive this token.
         # Caller input contributes only the path, never the host or the socket.
+        # This is a NEW connection after the mint's, so it re-verifies the peer:
+        # a socket rebound between the two sends would otherwise capture a live
+        # (if short-TTL) credential.
         with unix_socket_urlopen(  # nosemgrep
-            request, timeout=API_TIMEOUT_SECS, socket_path=socket_path
+            request,
+            timeout=API_TIMEOUT_SECS,
+            socket_path=socket_path,
+            verify_peer=verify_peer,
         ) as response:
             raw = _read_capped(response, method, normalized, name)
             return response.status, _scrub_token(raw, token)

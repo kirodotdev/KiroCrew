@@ -38,6 +38,7 @@ import os
 import socket
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
 __all__ = ["build_loopback_opener", "loopback_urlopen", "unix_socket_urlopen"]
 
@@ -74,12 +75,19 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
     only ``connect()`` is rerouted onto the unix socket.
     """
 
-    def __init__(self, socket_path: str, host: str, timeout=None) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        host: str,
+        timeout=None,
+        verify_peer: "Callable[[socket.socket], None] | None" = None,
+    ) -> None:
         if timeout is None:
             super().__init__(host)
         else:
             super().__init__(host, timeout=timeout)
         self._socket_path = socket_path
+        self._verify_peer = verify_peer
 
     def connect(self) -> None:  # noqa: D102 -- contract inherited
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -87,7 +95,14 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
             sock.settimeout(self.timeout)
         try:
             sock.connect(self._socket_path)
-        except OSError:
+            if self._verify_peer is not None:
+                # Between connect() and the first send: a peer that fails
+                # verification must never see the request line, let alone the
+                # credential headers behind it. The callback raising is the
+                # refusal; BaseException so even an interrupt cannot leak the
+                # connected fd.
+                self._verify_peer(sock)
+        except BaseException:
             sock.close()
             raise
         self.sock = sock
@@ -100,21 +115,33 @@ class _UnixHTTPHandler(urllib.request.HTTPHandler):
     handler (same displacement rule ``build_loopback_opener`` documents).
     """
 
-    def __init__(self, socket_path: str) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        verify_peer: "Callable[[socket.socket], None] | None" = None,
+    ) -> None:
         super().__init__()
         self._socket_path = socket_path
+        self._verify_peer = verify_peer
 
     def http_open(self, req):  # noqa: D102 -- contract inherited
         def _factory(host, timeout=None, **_kwargs):
-            return _UnixHTTPConnection(self._socket_path, host, timeout=timeout)
+            return _UnixHTTPConnection(
+                self._socket_path, host, timeout=timeout, verify_peer=self._verify_peer
+            )
 
         return self.do_open(_factory, req)
 
 
-def _build_unix_opener(socket_path: str) -> urllib.request.OpenerDirector:
+def _build_unix_opener(
+    socket_path: str,
+    verify_peer: "Callable[[socket.socket], None] | None" = None,
+) -> urllib.request.OpenerDirector:
     """Opener twin of :func:`build_loopback_opener` bound to a unix socket."""
     return urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), _NoRedirect(), _UnixHTTPHandler(socket_path)
+        urllib.request.ProxyHandler({}),
+        _NoRedirect(),
+        _UnixHTTPHandler(socket_path, verify_peer),
     )
 
 
@@ -123,6 +150,7 @@ def unix_socket_urlopen(
     timeout: float,
     *,
     socket_path: "str | os.PathLike[str]",
+    verify_peer: "Callable[[socket.socket], None] | None" = None,
 ):
     """Open ``req`` over *socket_path* and **only** over *socket_path*.
 
@@ -144,12 +172,24 @@ def unix_socket_urlopen(
     *socket_path* is trusted (derived, never caller-supplied); the URL's host is
     preserved, so the gateway's Host validation sees exactly what it would on
     TCP.
+
+    *verify_peer*, when given, is called with the **connected** socket before
+    any HTTP bytes are written. It is the caller's identity policy: raise to
+    refuse (the socket is closed and the exception propagates unwrapped, so a
+    caller's own error type survives urllib), return to proceed. A unix socket
+    proves which *user* answers by where the file lives, but not which
+    *process*: the path sits in a directory its owner can always rewrite, so a
+    same-UID process can unlink it and bind its own listener. Kernel peer
+    credentials on the connected socket (``SO_PEERCRED`` / ``LOCAL_PEERPID``)
+    are the one channel that survives that swap, and they are only readable
+    once connected -- which is why the hook lives here and not at the call
+    site.
     """
     if not hasattr(socket, "AF_UNIX"):
         # Windows. Raised as OSError so callers' existing transport handling
         # catches it instead of an AttributeError escaping from connect().
         raise OSError("AF_UNIX sockets are not available on this platform")
-    return _build_unix_opener(os.fspath(socket_path)).open(req, timeout=timeout)
+    return _build_unix_opener(os.fspath(socket_path), verify_peer).open(req, timeout=timeout)
 
 
 def loopback_urlopen(

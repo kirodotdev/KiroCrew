@@ -143,8 +143,9 @@ the version selector (channel tags track their channel; version tags pin).
      similar non-secret static files are served without a token (standard
      SPA bootstrap; the app is useless without a token once loaded).
   3. **Local bootstrap** — `/api/token/local` and `/api/shutdown` require
-     a loopback peer **plus** a filesystem secret, so they are unreachable
-     through the published port by construction.
+     a same-machine peer (a loopback address, or for the token endpoint the
+     dashboard's kernel-verified unix socket) **plus** a filesystem secret,
+     so they are unreachable through the published port by construction.
   CSRF origin checks apply to all state-changing requests, and the
   DNS-rebinding Host barrier applies to every request except the three
   probe paths.
