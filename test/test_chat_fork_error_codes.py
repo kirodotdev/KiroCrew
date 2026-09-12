@@ -72,7 +72,7 @@ def test_the_ratchet_can_actually_fail() -> None:
     outside the allowlist.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 27, f"scanner reached {len(coded)} coded sites, expected 27"
+    assert len(coded) == 28, f"scanner reached {len(coded)} coded sites, expected 28"
     assert all(f.code_value for f in coded)
 
 
@@ -328,6 +328,50 @@ async def test_the_three_404s_stay_indistinguishable(tmp_path, monkeypatch) -> N
         f"tell a slot it may not see from one that does not exist: {seen}"
     )
     assert len(errors) == 1, seen
+
+
+@pytest.mark.asyncio
+async def test_an_app_cannot_fork_a_channel_backed_slot_it_owns(tmp_path, monkeypatch) -> None:
+    """Forking a channel-backed slot mints a plain app-owned child holding
+    the channel's messages, which the send/export boundaries then legitimately
+    wave through. Refused at the source, with the
+    SAME 404 as the ownership refusals (anti-enumeration), for both shapes:
+    a channel link, and an unbound channel-born slot (``channel_origin``)."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _seeded_state(tmp_path)
+
+    linked = state.get_or_create_slot("linkedslot")
+    linked.append("user", "channel talk", "msg msg-u")
+    linked._app = "app-a"
+    linked.linked_session_key = "slack:1700000000.000100"
+
+    unbound = state.get_or_create_slot("unboundslot")
+    unbound.append("user", "channel talk", "msg msg-u")
+    unbound._app = "app-a"
+    unbound.channel_origin = True
+
+    @web.middleware
+    async def _as_app_a(request: web.Request, handler):
+        request["app"] = "app-a"
+        request["user"] = "app-a"
+        return await handler(request)
+
+    app = _make_app(state)
+    app.middlewares.insert(0, _as_app_a)
+
+    keys_before = set(state._slots)
+    async with TestClient(TestServer(app)) as client:
+        reference = await client.post("/api/chat/slots/nosuchslot/fork", json={})
+        reference_body = await reference.json()
+        for slot in ("linkedslot", "unboundslot"):
+            resp = await client.post(f"/api/chat/slots/{slot}/fork", json={})
+            body = await resp.json()
+            assert resp.status == 404, slot
+            # Byte-identical to the unknown-slot answer, or the response itself
+            # tells an app which of its slots are channel-backed.
+            assert body == reference_body, slot
+
+    assert set(state._slots) == keys_before, "a refused fork must allocate no child"
 
 
 @pytest.mark.asyncio

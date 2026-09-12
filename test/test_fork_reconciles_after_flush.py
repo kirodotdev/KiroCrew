@@ -310,7 +310,7 @@ async def test_a_boundary_ahead_of_the_window_does_not_duplicate_persisted_turns
 
     flushes = {"n": 0}
 
-    async def fake_flush(_state, s, best_effort=True):
+    async def fake_flush(_state, s, best_effort=True, **_kw):
         # Exactly what a completed save does to these two counters:
         # chat_persistence sets ``_disk_window_len = len(window)`` and clears
         # ``_dirty``. Stubbed rather than run for real so this test measures the
