@@ -494,6 +494,232 @@ class TestFleetProbe:
             assert quiet not in out, quiet
         assert "pid=14" in out  # -n auto is the unbounded case
 
+    def test_readout_separates_a_whole_suite_run_from_a_path_scoped_one(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """The rule alone cannot rank two matches, and they warrant opposite acts.
+
+        A whole-suite run is the shape that reached the several-hundred-process
+        fan-out worth interrupting mid-turn; a one-file run matching the same rule
+        merely omitted a flag. Before ``scope`` both printed as the same line, so a
+        reader could not judge severity without going to ``ps`` on the host.
+
+        The interpreter path is the trap this pins: ``/usr/bin/python3`` carries a
+        separator, so a classifier reading argv from index 0 calls every POSIX run
+        path-scoped -- and the answer would look plausible while being uniformly
+        wrong."""
+        mod = self._mod()
+        proc = tmp_path / "proc"
+        for pid, argv in (
+            # Absolute interpreter, no target: separators exist but only before
+            # the runner token, so this must still read as a whole-suite run.
+            ("21", b"/usr/bin/python3\x00-m\x00pytest\x00-q\x00"),
+            ("22", b"pytest\x00-q\x00test/x.py\x00"),  # a plain file target
+            ("23", b"pytest\x00-q\x00test/x.py::test_one\x00"),  # a node id
+            ("24", b"pytest\x00-q\x00-k\x00some_name\x00"),  # a selector, no path
+        ):
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / "cmdline").write_bytes(argv)
+        cfg = self._config(tmp_path, monkeypatch, [])
+        monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
+        out = self._run(mod, cfg, capsys)
+        line = {
+            ln.split("pid=")[1].split()[0]: ln for ln in out.splitlines() if "BANNED pid=" in ln
+        }
+        assert "scope=suite" in line["21"], line["21"]
+        for narrowed in ("22", "23", "24"):
+            assert "scope=paths" in line[narrowed], line[narrowed]
+        # The classification is DERIVED from the argv; no argument may ride out on
+        # it. `some_name` is a selector the operator chose and is as sensitive as
+        # any other argument, so its absence is asserted alongside the verdict.
+        assert "some_name" not in out
+        assert "test/x.py" not in out
+
+    def test_a_bare_directory_target_reads_as_suite_on_purpose(self, tmp_path, capsys, monkeypatch):
+        """``pytest test`` is path-scoped and is reported as ``suite`` anyway.
+
+        Not an oversight, and pinned so it cannot be "fixed" into the dangerous
+        direction. A bare token is indistinguishable from an option's VALUE
+        without a table of which options take one -- in ``--token secret test``
+        nothing marks ``secret`` as a value and ``test`` as a target -- so
+        counting bare tokens as targets would let a genuine whole-suite run that
+        happens to pass any option value print as ``scope=paths``, i.e. read as
+        the harmless case. Over-stating severity is the fail-closed direction for
+        a monitoring control, so the ambiguity resolves that way."""
+        mod = self._mod()
+        proc = tmp_path / "proc"
+        (proc / "31").mkdir(parents=True)
+        (proc / "31" / "cmdline").write_bytes(
+            b"python\x00-m\x00pytest\x00--token\x00sec\x00test\x00"
+        )
+        cfg = self._config(tmp_path, monkeypatch, [])
+        monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
+        out = self._run(mod, cfg, capsys)
+        assert "scope=suite" in out
+        assert "sec" not in out.replace("scope=", "")  # the value never escapes
+
+    def test_scope_admits_it_cannot_tell_rather_than_guessing(self, tmp_path, capsys, monkeypatch):
+        """A custom rule can match a cmdline naming no runner token this knows.
+
+        Reporting ``suite`` there would invent the highest severity from no
+        evidence, and ``paths`` would invent the lowest. ``unknown`` is the only
+        honest third answer, and a reader who sees it knows to look rather than
+        trusting a fabricated rank."""
+        mod = self._mod()
+        proc = tmp_path / "proc"
+        (proc / "41").mkdir(parents=True)
+        (proc / "41" / "cmdline").write_bytes(b"some-runner\x00--all\x00")
+        cfg = self._config(tmp_path, monkeypatch, [], banned_process_res=[r"\bsome-runner\b"])
+        monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
+        out = self._run(mod, cfg, capsys)
+        assert "BANNED pid=41" in out
+        assert "scope=unknown" in out
+
+    def test_the_two_disclosed_residuals_land_on_the_declared_side(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """The docstring names two forms it gets approximately right; pin both.
+
+        ``--pyargs kiro_crew.mod`` narrows a run to one package but carries no
+        separator, no ``.py`` and no ``::``, so it reads ``suite`` -- over-stating
+        severity, the same fail-closed direction the bare-token case takes. An
+        interpreter that glues the module flag onto the runner name leaves no
+        runner token standing alone and reads ``unknown``; the default rule wants a
+        word boundary there, so reaching that form at all takes a custom rule.
+
+        Both are disclosed in the classifier's own text. Pinned so a later edit
+        cannot quietly move either one to the quiet answer, which is the direction
+        that would matter."""
+        mod = self._mod()
+        proc = tmp_path / "proc"
+        glued = b"-m" + b"pytest"
+        for pid, argv in (
+            ("61", b"pytest\x00--pyargs\x00kiro_crew.mod\x00"),
+            ("62", b"/usr/bin/python3\x00" + glued + b"\x00-q\x00"),
+        ):
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / "cmdline").write_bytes(argv)
+        cfg = self._config(
+            tmp_path,
+            monkeypatch,
+            [],
+            banned_process_res=[glued.decode(), *mod.DEFAULT_BANNED_RES],
+        )
+        monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
+        out = self._run(mod, cfg, capsys)
+        line = {
+            ln.split("pid=")[1].split()[0]: ln for ln in out.splitlines() if "BANNED pid=" in ln
+        }
+        assert "scope=suite" in line["61"], line["61"]
+        assert "scope=unknown" in line["62"], line["62"]
+        # The package name is an argument like any other and must not ride out.
+        assert "kiro_crew.mod" not in out
+
+    def test_an_option_value_is_not_a_target(self, tmp_path, capsys, monkeypatch):
+        """``--cov src/kiro_crew`` and ``-W ignore::X`` are whole-suite runs.
+
+        Both carry the two shapes the target test looks for -- a separator and a
+        ``::`` node id -- in the VALUE of a value-taking option rather than in a
+        target, so before ``_VALUE_TAKING_OPTS`` every one of them printed
+        ``scope=paths``: the LOW-priority readout, on the runs most worth
+        interrupting. Pinned here because the table is a finite list and a later
+        edit that drops an entry brings the misread straight back."""
+        mod = self._mod()
+        proc = tmp_path / "proc"
+        for pid, argv in (
+            # A path-shaped value: the separator belongs to `--cov`, not a target.
+            ("51", b"/usr/bin/python3\x00-m\x00pytest\x00--cov\x00src/kiro_crew\x00-q\x00"),
+            # A `::`-shaped value: a warning filter, not a node id.
+            ("52", b"pytest\x00-W\x00ignore::DeprecationWarning\x00-q\x00"),
+            # An `--ignore <path>` narrows nothing about the run's fan-out.
+            ("53", b"pytest\x00--ignore\x00test/slow\x00"),
+        ):
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / "cmdline").write_bytes(argv)
+        cfg = self._config(tmp_path, monkeypatch, [])
+        monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
+        out = self._run(mod, cfg, capsys)
+        line = {
+            ln.split("pid=")[1].split()[0]: ln for ln in out.splitlines() if "BANNED pid=" in ln
+        }
+        for pid in ("51", "52", "53"):
+            assert "scope=suite" in line[pid], line[pid]
+        # The option values are arguments like any other and must not ride out on
+        # the derived word.
+        assert "src/kiro_crew" not in out
+        assert "DeprecationWarning" not in out
+        assert "test/slow" not in out
+
+    #: ``_VALUE_TAKING_OPTS`` as DOCUMENTED, held independently of the module on
+    #: purpose. A list read back out of the code under test cannot notice a
+    #: DELETION -- it just stops generating that option's case -- so the frozen
+    #: copy is what makes a dropped entry a failure rather than a silent gap.
+    _DOCUMENTED_VALUE_TAKING_OPTS = frozenset(
+        {
+            "-c",
+            "-n",
+            "-o",
+            "-p",
+            "-r",
+            "-W",
+            "--basetemp",
+            "--confcutdir",
+            "--cov",
+            "--cov-config",
+            "--cov-report",
+            "--deselect",
+            "--dist",
+            "--durations",
+            "--ignore",
+            "--ignore-glob",
+            "--import-mode",
+            "--junitxml",
+            "--log-file",
+            "--log-level",
+            "--maxfail",
+            "--override-ini",
+            "--rootdir",
+            "--tb",
+            "--tx",
+        }
+    )
+
+    def test_every_value_taking_option_consumes_its_value(self, tmp_path, capsys, monkeypatch):
+        """The three examples above, widened to every documented member.
+
+        The table IS the defence, so a sample of three cannot pin it: an entry
+        that goes missing makes that one option's value read as a target and its
+        run print ``scope=paths`` -- the low-priority readout on a whole-suite
+        run -- while the three sampled options keep passing. Every member gets a
+        value carrying BOTH shapes the target test looks for at once, a separator
+        and a ``::`` node id, so a dropped entry cannot read as anything else.
+
+        Driven from the frozen list above rather than from the module, because a
+        self-derived list is blind to exactly the edit this exists to catch.
+        """
+        mod = self._mod()
+        assert mod._VALUE_TAKING_OPTS == self._DOCUMENTED_VALUE_TAKING_OPTS
+        proc = tmp_path / "proc"
+        expected: dict[str, tuple[str, str]] = {}
+        for offset, opt in enumerate(sorted(self._DOCUMENTED_VALUE_TAKING_OPTS)):
+            pid = str(6100 + offset)
+            value = f"vt{offset}/x.py::T"
+            expected[pid] = (opt, value)
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / "cmdline").write_bytes(
+                b"pytest\x00" + opt.encode() + b"\x00" + value.encode() + b"\x00"
+            )
+        cfg = self._config(tmp_path, monkeypatch, [])
+        monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
+        out = self._run(mod, cfg, capsys)
+        line = {
+            ln.split("pid=")[1].split()[0]: ln for ln in out.splitlines() if "BANNED pid=" in ln
+        }
+        for pid, (opt, value) in expected.items():
+            assert pid in line, f"{opt}: no BANNED line"
+            assert "scope=suite" in line[pid], f"{opt}: {line[pid]}"
+            assert value not in out, f"{opt}: the value rode out on the readout"
+
     def test_a_shell_running_a_command_string_is_not_the_tool_it_names(
         self, tmp_path, capsys, monkeypatch
     ):

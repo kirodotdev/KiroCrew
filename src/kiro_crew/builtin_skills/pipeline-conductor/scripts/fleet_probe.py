@@ -66,7 +66,7 @@ Metadata only, by design: transcript-derived text never appears in the output,
 so no private session content crosses into the caller's context whatever keys
 the config watches. Content, when a ruling needs it, is read through the
 workspace-authorized session tools.
-    BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s
+    BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown
     OK <n> watched, <m> fired | load/cpu <x> (<posture>) | mem <G>G
        | banned <k> | foreign <k> | deliver init-timeout <a>, watchdog <b>
 
@@ -271,6 +271,129 @@ DEFAULT_BANNED_RES = (
     r"\bpytest\b(?!.*(?:-n|--numprocesses)\s*=?\s*\d)",
     r"\bvitest\b\s+run\s*$",
 )
+
+#: Token bases that identify the test runner inside a ``/proc`` argv.
+_RUNNER_BASES = frozenset({"pytest", "pytest.exe", "py.test", "vitest", "vitest.cmd"})
+
+#: Options that consume the FOLLOWING token as their value, so that token must not
+#: be read as a target. Without this, every one of these whole-suite forms printed
+#: ``scope=paths`` -- the LOW-priority readout -- because the value happens to carry
+#: a separator or a ``::``: ``--cov src/kiro_crew``, ``-W ignore::DeprecationWarning``,
+#: ``-c setup.cfg``, ``-o addopts=…``, ``--ignore <path>``, ``--deselect <node id>``,
+#: ``--rootdir <dir>``, ``--junitxml <file>``.
+#:
+#: ``-k`` / ``-m`` are value-taking too but are deliberately absent: a selector
+#: narrows a run, so they are answered before this table is consulted.
+#:
+#: Several of these (``--cov``, ``--cov-report``, ``--durations``) also accept the
+#: bare form, where the next token IS a target. Consuming it then reads a narrowed
+#: run as ``suite``, which over-states severity -- the same fail-closed direction the
+#: bare-token case below resolves to, so the residual error stays on the safe side.
+_VALUE_TAKING_OPTS = frozenset(
+    {
+        "-c",
+        "-n",
+        "-o",
+        "-p",
+        "-r",
+        "-W",
+        "--basetemp",
+        "--confcutdir",
+        "--cov",
+        "--cov-config",
+        "--cov-report",
+        "--deselect",
+        "--dist",
+        "--durations",
+        "--ignore",
+        "--ignore-glob",
+        "--import-mode",
+        "--junitxml",
+        "--log-file",
+        "--log-level",
+        "--maxfail",
+        "--override-ini",
+        "--rootdir",
+        "--tb",
+        "--tx",
+    }
+)
+
+
+def _run_scope(argv: list[str]) -> str:
+    """Classify a flagged run as ``suite`` or ``paths`` WITHOUT echoing any argument.
+
+    A rule match says a run's worker count was not chosen; it says nothing about
+    how much that run is doing, and those are wildly different severities. A
+    whole-suite run is what reached the several-hundred-process fan-out and is the
+    line to reach for first; a single-file run matching the same rule merely
+    omitted a flag and can wait its turn. Ranking only -- whether to respond at
+    all stays keyed to ``cwd=fleet``, which this word never gates. Reported as ONE
+    derived word so the readout stays judgeable without anyone opening ``ps``.
+
+    Deliberately derived, never quoted. The caller documents why the argv is not
+    echoed -- a command line can carry a credential or a presigned URL, and this
+    text lands in the conductor's model context -- and a path is exactly the part
+    that leaks a checkout layout. ``suite`` / ``paths`` / ``unknown`` carries the
+    severity while being three fixed strings that can hold no argument content.
+
+    Scanning starts AFTER the runner token because everything before it is the
+    interpreter's own path: ``/usr/bin/python3`` contains a separator, so reading
+    argv from index 0 would classify every POSIX invocation as path-scoped.
+
+    **Deliberately approximate, and biased toward over-stating severity.** A bare
+    token cannot be told from an option's VALUE without knowing which options take
+    one, and this function cannot know that: ``--token secret test`` offers no way
+    to see that ``secret`` is a value and ``test`` a target. So only an
+    unmistakable target counts -- one carrying a separator, a ``.py`` suffix or a
+    ``::`` node id -- and the two resulting misreads are not symmetrical:
+
+    * ``pytest test`` (a bare directory, no separator) reads as ``suite``. That
+      over-states severity, which is the fail-closed direction for a monitoring
+      control and the same direction the wrapper exemption above chose.
+    * Nothing reads as ``paths`` unless a real target shape is present, so the
+      quiet answer is never the one produced by guessing.
+    * ``pytest --pyargs kiro_crew.mod`` names an importable package, not a path,
+      so it carries none of the three shapes and reads as ``suite`` -- narrowed in
+      fact, over-stated in the readout, the same safe direction.
+
+    Resolving a token against the filesystem would settle it and is refused on
+    purpose: this walks OTHER processes' argv, each with its own cwd, so a probe
+    that stat()s their arguments both lies about relative paths and turns a
+    read-only monitor into something that touches attacker-influenced paths.
+    """
+    start: int | None = None
+    for i, tok in enumerate(argv):
+        base = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+        if base in _RUNNER_BASES:
+            start = i + 1
+            break
+    if start is None:
+        # The rule matched the joined string, but no runner token stands alone --
+        # a wrapper, a name this function does not know, or an interpreter that
+        # glued the module flag onto the runner name with no space. Guessing a
+        # severity here would be worse than admitting the gap.
+        return "unknown"
+    skip_next = False
+    for tok in argv[start:]:
+        if skip_next:
+            # The value of a value-taking option, not a target. `--cov src/kiro_crew`
+            # and `-W ignore::X` are whole-suite runs whose VALUE carries a separator.
+            skip_next = False
+            continue
+        # A selector narrows a run as surely as a path does, and `-k`/`-m` take
+        # their value either as the next token or glued on with `=`.
+        if tok in {"-k", "-m"} or tok.startswith(("-k=", "-m=")):
+            return "paths"
+        if tok in _VALUE_TAKING_OPTS:
+            skip_next = True
+            continue
+        if tok.startswith("-"):
+            continue
+        if "::" in tok or tok.endswith(".py") or "/" in tok or "\\" in tok:
+            return "paths"
+    return "suite"
+
 
 #: An initialize-timeout tail: the session never got a live backend, so nothing
 #: it was told to do was ever delivered. Literal from the emitters
@@ -1310,12 +1433,22 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                 # costs no state and keeps the probe read-only outside
                 # ``--mark-handled``. An unreadable or stale age prints ``age=?s``,
                 # like an unknown cwd, and never blocks the line.
+                #
+                # ``scope=`` answers the orthogonal question. ``age`` says whether
+                # this is the same offender as last cycle; ``scope`` says which of
+                # two matches to reach for first, because the rule alone cannot
+                # separate a whole-suite run from a one-file run that merely omitted
+                # a flag. It ranks and never gates -- the stop itself stays keyed to
+                # ``cwd=fleet``. It is the one thing derived FROM the argv rather
+                # than dropped with it, and it is three fixed words, so it carries
+                # severity without carrying content.
                 age = (
                     _proc_age_secs(proc_root, entry.name, start_tok) if incarnation_stable else None
                 )
                 age_field = "?" if age is None else str(age)
                 lines.append(
-                    f"BANNED pid={entry.name} rule={matched} cwd={cwd_class} age={age_field}s"
+                    f"BANNED pid={entry.name} rule={matched} cwd={cwd_class} "
+                    f"age={age_field}s scope={_run_scope(argv)}"
                 )
     per_cpu = None
     if hasattr(os, "getloadavg"):
