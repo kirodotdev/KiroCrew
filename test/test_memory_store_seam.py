@@ -45,20 +45,9 @@ _GATE_PATH = _REPO_ROOT / "scripts" / "check_memory_store_seam.py"
 # both of its sites now name the global store, and
 # :func:`test_no_resolver_site_reaches_its_root_by_omission` is what keeps them
 # naming it rather than silently drifting back to omission.
-# The two that remain all share one property, and it is the reason they are
-# still here rather than a shortfall of effort: NOTHING IN THEIR SCOPE NAMES A
-# CREW. Reading the global store is the correct answer for each, and the honest
-# spelling of that is to leave the omission visible in this count rather than to
-# paper it over with a keyword that changes nothing. The only value any of them
-# holds is an `agent`, which is a kiro-cli template id — a namespace DISJOINT
-# from `cfg.agents` — so deriving a store from one would answer `default` for
-# exactly the crew that configured otherwise (the gate's own
-# `store-not-derived-from-agent` rule refuses it):
-#
-#   slack/gateway.py  the heartbeat — one process-wide `HEARTBEAT_KEY` on the fixed
-#                     `kirocrew-heartbeat` template
-#   eval/runner.py    the offline eval harness — a synthetic `eval_<name>_<ns>` key
-#                     in a throwaway workspace, with no config and no crew
+# The remaining call has no crew identity: the process-wide heartbeat uses
+# Global context on the fixed heartbeat template. Changed calls must still name
+# their store explicitly; the offline evaluator names DEFAULT_MEMORY_STORE.
 EXPECTED_BACKLOG = {
     # 16 before subagent runs were converted, then 15. The eight that came off
     # next are the surfaces that DO hold an identity: Slack (native and
@@ -71,7 +60,7 @@ EXPECTED_BACKLOG = {
     # execution, removing the two scheduled-context sites from this backlog.
     # Webhooks and task planner/executor continuations now preserve the trusted
     # originating session binding, removing three more sites.
-    "store-identity-required": 2,
+    "store-identity-required": 1,
 }
 
 # A call in the shape every site actually uses: the bound method is handed to the

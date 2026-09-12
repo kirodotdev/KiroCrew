@@ -45,6 +45,7 @@ from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MEMORY_DB_FILE,
+    STORE_BACKUP_DIR_NAME,
     active_store_names,
     named_store_of_db,
     owned_store_path,
@@ -54,7 +55,8 @@ from kiro_crew.memory_stores import (
 logger = logging.getLogger(__name__)
 
 #: Directory name holding a store's backups, created beside that store's own file.
-BACKUP_DIR_NAME = "backups"
+#: Spelled by ``memory_stores`` so the snapshot can leave it out of a bundle by name.
+BACKUP_DIR_NAME = STORE_BACKUP_DIR_NAME
 
 #: Original ``<stem>.<UTC timestamp>.db`` names remain readable for restore and
 #: retention. Current names add microseconds and a UUID so two accepted manual or

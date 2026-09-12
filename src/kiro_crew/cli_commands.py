@@ -91,6 +91,7 @@ from kiro_crew.memory_stores import (
     UnknownMemoryStore,
     archive_member_memory_store,
     memory_store_binding_defect,
+    memory_store_namespace_lock,
     named_store_or_empty,
     persist_member_config,
     provision_member_memory,
@@ -1258,7 +1259,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
                         exc_info=True,
                     )
 
-        _locked_config_write(_mutate_agent_delete, cleanup_failure=_rollback_archive)
+        with memory_store_namespace_lock():
+            _locked_config_write(_mutate_agent_delete, cleanup_failure=_rollback_archive)
         print(f"Deleted agent: {args.name}")
 
     elif action == "reset-model":

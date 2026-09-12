@@ -2222,9 +2222,8 @@ async def api_memory_graph(request: web.Request) -> web.Response:
     mem = _get_memory(state)
 
     try:
-        loop = asyncio.get_running_loop()
-        nodes, edges = await loop.run_in_executor(
-            None, _build_memory_graph, mem, state.lessons.load_all()
+        nodes, edges = await asyncio.to_thread(
+            lambda: _build_memory_graph(mem, state.lessons.load_all())
         )
 
         for n in nodes:

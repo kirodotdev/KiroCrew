@@ -30,10 +30,12 @@ import re
 import shutil
 from contextlib import closing
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from kiro_crew.config.loader import config_dir
+from kiro_crew.memory import INDEX_DB_FILE
+from kiro_crew.memory_stores import MEMORY_DB_FILE, named_store_product_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 try:  # pragma: no cover - exercised by whichever binding is installed
@@ -70,6 +72,27 @@ _DERIVED_INDEXES = frozenset({"memory_index.db"})
 _MAX_SETTLE_PASSES = 10
 
 _PRODUCT_DATABASES = frozenset({"memory.db", "workspace/knowledge/knowledge.db"})
+
+
+def _named_store_role(rel: str) -> str:
+    """Which product file a ``memory_stores/<name>/...`` path is, or ``""``.
+
+    The two sets above hold FIXED paths. A named store's vector file and index sit under a
+    directory the operator named, so they are recognised by shape through the layout owner
+    (`memory_stores.named_store_product_file`) and then given the same treatment as their
+    root-level twins: the vector file is payload this backup exists to carry, the index is
+    derived and dropped for a rebuild. Asked by bundle-relative path, never by basename,
+    for the reason the sets' own comment gives.
+    """
+    return named_store_product_file(PurePosixPath(rel).parts)
+
+
+def _is_derived_index(rel: str) -> bool:
+    return rel in _DERIVED_INDEXES or _named_store_role(rel) == INDEX_DB_FILE
+
+
+def _is_product_database(rel: str) -> bool:
+    return rel in _PRODUCT_DATABASES or _named_store_role(rel) == MEMORY_DB_FILE
 
 
 class _SchemaCarriesCredential(Exception):
@@ -1146,14 +1169,14 @@ def redact_bundle_for_egress(stage: Path) -> RedactionReport:
             path.unlink()
             report.dropped.append(rel)
             continue
-        if rel in _DERIVED_INDEXES:
+        if _is_derived_index(rel):
             path.unlink()
             report.dropped.append(rel)
             report.rebuilt_indexes.append(rel)
             continue
         if path.suffix == ".db":
             try:
-                _redact_database(path, report, rel, product=rel in _PRODUCT_DATABASES)
+                _redact_database(path, report, rel, product=_is_product_database(rel))
             except _PayloadUnprovable:
                 # Never deleted: an off-host copy missing the memory it was taken for is
                 # the failure this whole path exists to prevent.

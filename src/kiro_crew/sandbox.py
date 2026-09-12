@@ -47,6 +47,7 @@ from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
+from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
 
@@ -4388,7 +4389,7 @@ def _prepare_private_log_dir(layout: _PrivateMemoryLayout | None = None) -> str:
     except OSError as exc:
         raise RuntimeError("memory_unavailable: cannot verify protected memory hardlinks") from exc
     home = config_dir().resolve()
-    root = home / "memory_stores" / ".execution-logs"
+    root = home / MEMORY_STORES_DIR_NAME / EXECUTION_LOGS_DIR_NAME
     if root.resolve() != root:
         raise RuntimeError("Private execution log directory is redirected")
     platform_compat.make_owner_only_dir(root)
@@ -4559,7 +4560,7 @@ def _private_memory_seatbelt_rules(
             rules.append(f"(deny network-outbound (remote unix-socket {predicate}))")
         # Task text in a diagnostic belongs only to its execution. The path
         # hint does not grant access; these OS predicates are the authority.
-        log_root = json.dumps(home + "/memory_stores/.execution-logs")
+        log_root = json.dumps(f"{home}/{MEMORY_STORES_DIR_NAME}/{EXECUTION_LOGS_DIR_NAME}")
         exception = f" (require-not (subpath {json.dumps(log_directory)}))" if log_directory else ""
         for operation in ("file-read*", "file-write*", "file-link"):
             rules.append(f"(deny {operation} (require-all (subpath {log_root}){exception}))")

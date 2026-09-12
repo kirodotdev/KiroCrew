@@ -121,6 +121,7 @@ from kiro_crew.memory_stores import (
     UnknownMemoryStore,
     archive_member_memory_store,
     memory_store_binding_defect,
+    memory_store_namespace_lock,
     persist_member_config,
     provision_member_memory,
     require_member_memory_not_archived,
@@ -4131,19 +4132,20 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                             changed = True
                     return doc if changed else None
 
-                try:
-                    update_config_locked(mutate=_mutate)
-                except BaseException:
-                    for store_name, owner in reversed(created_archives):
-                        try:
-                            rollback_member_memory_archive_if_active(store_name, owner)
-                        except Exception:
-                            logger.error(
-                                "failed to roll back member memory retirement for %s",
-                                store_name,
-                                exc_info=True,
-                            )
-                    raise
+                with memory_store_namespace_lock():
+                    try:
+                        update_config_locked(mutate=_mutate)
+                    except BaseException:
+                        for store_name, owner in reversed(created_archives):
+                            try:
+                                rollback_member_memory_archive_if_active(store_name, owner)
+                            except Exception:
+                                logger.error(
+                                    "failed to roll back member memory retirement for %s",
+                                    store_name,
+                                    exc_info=True,
+                                )
+                        raise
                 from kiro_crew.context import release_cached_memory_store
 
                 for store_name, owner in skipped_allocations:
@@ -5136,6 +5138,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         created_archive = False
         retired_store = ""
 
+        @memory_store_namespace_lock()
         def _delete_member() -> tuple[str, bool]:
             nonlocal created_archive, retired_store
 

@@ -323,9 +323,172 @@ the off-store consumers hold — the snapshot `memory` component, `portability`'
 export/import zip, `scripts/sync-to-remote.sh` — so relocating it drops the index
 from every backup while a restore writes a copy nothing reads. A NAMED store's index
 does live beside its own markdown, which is what makes the index per-store and puts
-it behind the `memory_stores/` fence; those three consumers name no per-store path,
-so a named store's index is simply outside their reach until one of them learns a
-store name.
+it behind the `memory_stores/` fence. The snapshot `memory` component and
+`portability`'s export both carry the whole `memory_stores/` tree (see
+[Named stores ride the backup paths](#named-stores-ride-the-backup-paths)), so a
+named store's index rides beside its markdown; `scripts/sync-to-remote.sh` still
+names only the root paths.
+
+### Named stores ride the backup paths
+
+`memory_stores/` is a tree of the snapshot `memory` component
+(`snapshot.COMPONENTS["memory"].trees`), and `portability.create_export_zip` walks it
+with the same pinned walk it uses for `workspace/`. A bundle that declares `memory`
+therefore carries every named store — markdown, vector file, FTS index,
+`lessons.jsonl`, `member-memory.json` — not only the default store's root files. Three
+rules make the tree a component without making its runtime state one:
+
+- **The host-local half never rides, in either direction.**
+  `memory_stores.is_host_local_store_state(rel_parts)` is the ONE predicate naming
+  it: the member signing key (`MEMBER_API_KEY_FILE`, regenerated on the restoring host
+  exactly as `sel_hmac.key` is), the private execution logs
+  (`EXECUTION_LOGS_DIR_NAME`, per-process diagnostics of runs that happened here) and
+  the local rolling-backup directories (`MEMBER_BACKUPS_DIR_NAME`, and a named V1
+  store's own `STORE_BACKUP_DIR_NAME`, which hold that host's recovery copies and any
+  pending-restore journal — the default store's `<home>/backups/` sits outside every
+  component for the same reason). The snapshot applies it at staging
+  (`_staging_ignore`) and at extraction (`_never_ships`, by PATH, because a
+  `backups` folder is an ordinary name anywhere but `memory_stores/<store>/`); the
+  export applies it in `_keep_store_for_export` and the import strips it from an
+  extracted archive before either mode copies (`_strip_host_local_store_state`). The
+  writers spell these names through the same constants, so the exclusion cannot drift
+  from what they create. Retirement records under `MEMBER_MEMORY_ARCHIVE_DIR`
+  (`.archived-members/`) are also host-local: replace and rollback preserve them in
+  place, and archives cannot import or reset this host's retirement decisions. This
+  prevents an older configuration from reactivating a retired generation, even when
+  its marker predates the restore. Member deletion, package-sync pruning and failed
+  allocation retirement acquire namespace admission before the configuration lock;
+  failed-publication rollback keeps that order. Cache release happens outside namespace
+  admission because a cold cache constructor can hold the cache lock while awaiting it.
+- **A store's databases are product databases.** `memory_stores.named_store_product_file`
+  recognises `memory_stores/<name>/memory.db` and `.../memory_index.db` by shape (a
+  well-formed store name, the exact filename), and `snapshot.is_product_tree_database`
+  extends the fixed `PRODUCT_TREE_DATABASES` set with it: a store's database is copied
+  through the SQLite backup API, refused at snapshot time when it is not a readable
+  database, and validated strictly before a restore installs it. Merge keeps each
+  existing named store whole and installs only stores the destination lacks
+  (`_merge_named_stores`), so a manifest and its databases stay in one generation.
+  Both restore output and the import summary name each store kept
+  (`memory_stores/<name> (kept the existing store …)`). Empty and Markdown-only
+  destination directories are also kept: missing SQLite files do not prove that local
+  preferences, lessons or a provisioning operation can be overwritten. Use replace to
+  deliberately take the archive's whole store. The
+  redaction pass treats the store index as derived (dropped for a rebuild) and the
+  store vector file as payload, as it does their root twins.
+- **The export lifts the agent fence for this tree only, and the routes are
+  owner-only.** `is_sensitive_path` is True for every store path so a crew's agent
+  cannot read another crew's memory; `portability._open_verified(..., fenced_ok=True)`
+  admits those paths on the `memory_stores/` walk alone, because the export is the
+  operator downloading their own install. Containment, the regular-file and
+  single-link checks and the lexical filter above all still apply, and the filter is
+  what keeps the signing key out. What makes "the operator" true is the route:
+  `GET /api/portability/export` and `POST /api/portability/import` run
+  `require_owner_dashboard_request` after authentication, so a non-owner dashboard
+  subject (an allow-listed messaging user holding a `!dashboard` token) gets the
+  standard `owner_only` 403 and the archive is never built.
+- **An import validates the memory it will install before it moves anything.**
+  `apply_import_zip` runs the restore's own `_refuse_corrupt_source_databases` over the
+  `memory` component in both modes (replace installs everything, merge only what the
+  destination lacks -- a named store the destination lacks being exactly the case that
+  would otherwise copy a torn `memory.db` verbatim). A refusal reaches the handler as
+  `SourceComponentUnsound` and is answered `409` with the sentence, not `500`.
+- **Named-store readers participate in replacement admission.** The dashboard's
+  named V1 Markdown cache holds a shared store-use lock on POSIX without requiring a vector
+  database. The lock is released when neither the cache nor an in-flight request
+  retains the object; V2 keeps its vector-tier admission. Snapshot staging holds shared
+  locks across both tree copying and database restaging, and ZIP export holds them
+  across the named-store walk. SQLite export opens sources read-only, so a vanished
+  database is refused rather than recreated empty. These are generation barriers, not
+  a transaction spanning every file or every store. Writers outside these admission
+  paths still require a stopped gateway for replace.
+- **Namespace changes are serialized before enumerating stores.**
+  `memory_stores.memory_store_namespace_lock` holds the stable
+  `.member-backups/.namespace.lock` across replace's enumeration, backup, mutation and
+  rollback, on every platform. Provisioning and configuration publication take the same
+  lock; publication revalidates the store after acquisition, so a store removed between
+  allocation and publication cannot be acknowledged as a successful create. Merge and
+  backup readers also take it to avoid copying a half-provisioned store. Public named
+  `MemoryStore` and `LessonStore` read/write operations hold this lock across the
+  complete call, including read-modify-write and index updates. This covers Windows
+  Markdown-only stores without relying on an open SQLite handle, and protects named
+  lesson JSONL on every platform. Nested calls share a thread-local, per-root hold;
+  exception exit releases it. Operation-local file/configuration locks follow namespace
+  admission; replace probes the separate lifetime locks without waiting. Global V1
+  operations do not acquire this namespace lock. The namespace lock is released on
+  acquisition failures as well as successful or rolled-back replacements. Async callers
+  offload the entire store operation with `asyncio.to_thread` or an existing executor,
+  including cold `ContextBuilder.get_memory_for` construction and JSONL reads. Passing
+  `load_all()` as an executor argument does not offload it; the call belongs inside the
+  worker. The synchronous-I/O ratchet is lexical and does not prove indirect store calls
+  safe, so endpoint tests also assert that locked operations run off the event loop.
+  Offloaded context calls still declare `memory_store`. The offline evaluator passes
+  `DEFAULT_MEMORY_STORE`: its `ContextBuilder` registers the supplied scenario memory
+  as the default cache entry, rather than selecting a crew or the configured default.
+- **Replace holds every store's lifetime lock for its whole duration.**
+  `member_memory_backup.hold_stores_for_replace(root, names)` takes the EXCLUSIVE lock
+  on each store's `.member-backups/<name>/.store-use.lock` -- the lock every open named
+  `VectorMemoryStore` (V1 or V2) holds shared for its connection's lifetime -- without waiting, and
+  `_do_replace` holds them across phase one, the mutations and any rollback. A store
+  that is open makes the acquisition fail at once and `_do_replace` raises
+  `NamedStoresInUse` before anything is saved or moved (the empty rollback directory is
+  removed); a store opened WHILE the replace runs blocks inside
+  `acquire_store_use_lock` until it finishes and then opens what the replace put there.
+  Without either half, the removal of a store directory would leave that process writing
+  into an unlinked database whose rows vanish at its next restart (POSIX keeps an open
+  file alive past its unlink) -- the case the gateway-running check cannot see is an
+  import applied inside the running gateway, or a second process. The names held are
+  the live stores AND the archive's, so a store the archive introduces is held before
+  anything can find it. Every named `VectorMemoryStore.init()` first takes namespace
+  admission, then acquires its shared lifetime lock and opens SQLite. Cold initialization
+  cannot create an unenumerated directory during replace; a completed open before
+  enumeration is visible and its lifetime lock makes replace refuse. This applies to
+  direct CLI and audit openers as well as `ContextBuilder` workers, without maintaining
+  a second list of declared names. `ensure_memory_store_dir` and pending member-restore
+  activation also hold namespace admission when creating or publishing directories.
+  The namespace lock holds new provisioning until the replace
+  finishes; writers that bypass both locks still require a stopped gateway.
+  Two consequences shape the
+  replace: `memory_stores/` is cleared
+  entry by entry (`_clear_store_directories`) and its root-level host-local entries --
+  `.member-backups/`, `.execution-logs/`, `.member-api-key` -- stay in place, because
+  the held lock is the file at that path and removing the directory would let a new
+  opener create a fresh, unheld lock beside the held handle; and the archive's tree is
+  copied into that kept root (`must_create=False` for the root alone, every child still
+  refused on collision). A named V1 store's own `backups/` sits inside its store
+  directory and goes with it into the rollback set. Recovery also clears only store
+  children and copies the saved directories into the kept root, so the root, lock inodes
+  and rollback copy survive a failed replace. The per-store lifetime lock is a no-op
+  on Windows, where SQLite's open handle denies deleting the database; the namespace
+  lock still serializes provisioning and replacement there.
+
+**Archive boundary.** Backup archives contain the selected private memory in cleartext.
+Owner-only directory permissions on snapshot staging and ZIP extraction restrict other
+OS users; they do not extend the agent's `memory_stores/` path fence to arbitrary
+archive or temporary paths. The operator must keep backup outputs and temporary roots
+outside untrusted agent access. This change does not claim archive encryption or a
+whole-install, cross-file transactional backup.
+
+**Replace and the bundle's silence.** Replace clears each memory tree and refills it
+from the archive, so a store directory the archive lacks is removed (into the rollback
+set) — the destination's stores end up matching the archive's. The store rollback
+copy lives at `<home>/memory_stores/.member-backups/pre-restore-<timestamp>/`,
+inside the same agent-hidden fence as the live stores, never in the ordinary
+`<home>/pre-restore-<timestamp>/` rollback directory. The save excludes root-level
+host-local entries (including its own destination), keeps each store's internal V1
+`backups/`, and prints the private rollback path, including in an incomplete-rollback
+failure report. Its directory is allocated independently
+so repeated restores cannot share a rollback set even when the ordinary one is empty.
+A bundle written before
+the tree was a component is silent for a different reason, so `MANIFEST.json`'s
+`version` (`snapshot.MANIFEST_VERSION`, 4; the export's own `EXPORT_MANIFEST_VERSION`,
+3) is what `_bundle_carries_named_stores` reads: replacing from an older bundle leaves
+the live tree untouched and prints that it did, while the rest of `memory` is
+replaced. Replace also keeps the tree on its list whether or not `workspace` is
+selected — the two `workspace/` subtrees defer to the workspace pass, `memory_stores/`
+is under no other component's tree. A staged tree that holds no file (a home whose
+`memory_stores/` contains only runtime state) does not count as payload for the
+declared-without-payload refusal. Restored store entries land owner-only (`0o700` /
+`0o600` in the tar filter), as provisioning makes them.
 
 **A named store starts EMPTY.** Nothing is copied from the default store and nothing
 is inferred from it: no preferences, no projects, no history, no semantic or episodic

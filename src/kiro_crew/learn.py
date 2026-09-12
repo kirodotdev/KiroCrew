@@ -17,6 +17,7 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.memory_startup import require_memory_ready
+from kiro_crew.memory_stores import named_store_operation
 from kiro_crew.project_scope import canonical_scope, project_scope_satisfied
 
 try:
@@ -235,6 +236,7 @@ class LessonStore:
         )
         self._cache = None  # invalidate
 
+    @named_store_operation
     def save(self, lesson: Lesson) -> None:
         """Insert *lesson*, skipping a rule that is already stored.
 
@@ -248,6 +250,7 @@ class LessonStore:
         """
         self._insert_or_enrich(lesson, enrich=False)
 
+    @named_store_operation
     def save_or_enrich(self, lesson: Lesson) -> str:
         """Insert *lesson*, or attach its NOT-clause to the record holding the same
         rule, in ONE lock acquisition. Returns ``inserted``/``enriched``/``unchanged``.
@@ -363,6 +366,7 @@ class LessonStore:
         logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
         return outcome
 
+    @named_store_operation
     def remove(self, rule_substring: str) -> bool:
         """Remove lessons whose rule contains *rule_substring*. Returns True if any removed.
 
@@ -379,6 +383,7 @@ class LessonStore:
             self._write_all(kept)
         return True
 
+    @named_store_operation
     def load_all(self) -> list[Lesson]:
         """Load all lessons from the JSONL file. Uses mtime-based caching."""
         require_memory_ready(self._memory_store_name)
@@ -436,6 +441,7 @@ class LessonStore:
             if not le.repo_scope or project_scope_satisfied(le.repo_scope, project_dir)
         ]
 
+    @named_store_operation
     def get_context(self, project_dir: str | Path | None = None) -> str:
         """Format lessons as context for injection into prompts.
 

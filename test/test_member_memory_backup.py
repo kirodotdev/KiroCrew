@@ -618,3 +618,26 @@ def test_bad_member_journal_preserves_ambiguous_recovery_state(env, ambiguous):
     assert backup.exists()
     if ambiguous == "missing_current":
         assert not path.exists()
+
+
+@pytest.mark.parametrize("without_namespace", [False, True])
+def test_pending_activation_holds_namespace_while_publishing(env, monkeypatch, without_namespace):
+    path = env.paths["alice"]
+    backup = member_backup.backup_store(path)
+    member_backup.stage_restore(backup, path)
+    env.tiers["alice"].close()
+    publish = member_backup.replace_with_retry
+    observed = []
+    root = (env.root / memory_stores.MEMORY_STORES_DIR_NAME).resolve()
+
+    def observe(source, destination, *args, **kwargs):
+        observed.append(root in getattr(memory_stores._NAMESPACE_LOCK_STATE, "roots", set()))
+        return publish(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(member_backup, "replace_with_retry", observe)
+    activate = member_backup.apply_pending_restore
+    if without_namespace:
+        activate = activate.__wrapped__
+    activate(path)
+    assert observed and all(held is not without_namespace for held in observed)
+    assert not member_backup.pending_restore_status(path)["pending"]

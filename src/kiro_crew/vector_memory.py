@@ -1278,19 +1278,18 @@ class VectorMemoryStore:
     def policy_revision(self) -> str:
         return memory_v2.ALGORITHM_VERSION if self.algorithm_version == "v2" else "v1"
 
+    @memory_stores.named_store_operation
     def init(self) -> None:
-        """Create DB and hold a private V2 generation until :meth:`close`."""
+        """Open under namespace admission, then hold the named generation until close."""
         from kiro_crew.memory_startup import require_memory_ready
 
         require_memory_ready(self._memory_store_name)
         if self._memory_store_name and self._store_use_lock_fd is None:
             from kiro_crew import member_memory_backup
 
-            # The config fallback keeps the admission lock mandatory during
-            # the restore's brief directory-absent rename window, when the V2
-            # manifest cannot be read from its usual path.
-            if member_memory_backup.is_member_store(self._db_path):
-                self._store_use_lock_fd = member_memory_backup.acquire_store_use_lock(self._db_path)
+            # Named V1 and V2 stores are both replaced as whole directories.
+            # Take admission before opening SQLite, even while a manifest is absent.
+            self._store_use_lock_fd = member_memory_backup.acquire_store_use_lock(self._db_path)
         try:
             self._init_database()
         except BaseException:

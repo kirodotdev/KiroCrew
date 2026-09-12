@@ -912,7 +912,7 @@ class HistoryConsolidator:
             elif ws_name:
                 from kiro_crew.context import ContextBuilder
 
-                memory = ContextBuilder.get_memory_for(ws_name)
+                memory = await asyncio.to_thread(ContextBuilder.get_memory_for, ws_name)
                 vector_store = self._vector_store
             else:
                 memory = self._memory

@@ -213,5 +213,5 @@ class TestASelectiveBundleIsRefusedByOlderRestores:
             tf.extractall(work)
         root = next(d for d in work.iterdir() if d.is_dir())
         man = json.loads((root / "MANIFEST.json").read_text())
-        assert man["version"] == 3
+        assert man["version"] == snap.MANIFEST_VERSION
         assert "memory" in man["components"]

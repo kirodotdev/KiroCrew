@@ -1353,7 +1353,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 vs_ok = True
         # Fallback: legacy JSONL store.
         if not vs_ok and orch.ctx_builder is not None:
-            all_lessons = orch.ctx_builder.lessons.load_all()
+            all_lessons = await asyncio.to_thread(orch.ctx_builder.lessons.load_all)
             total_lessons = len(all_lessons)
             for le in all_lessons[-5:]:
                 lesson_lines.append(

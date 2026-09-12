@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from conftest import make_dir_link, requires_o_nofollow
-from kiro_crew import platform_compat, portability
+from kiro_crew import platform_compat, portability, snapshot
 from kiro_crew.jsonl_util import UnreadableRecord
 from kiro_crew.portability import (
     EXPORT_EXCLUDE,
@@ -174,7 +174,7 @@ class TestExport:
     def test_export_creates_valid_zip(self, patched_config_dir):
         zip_bytes, manifest = create_export_zip()
         assert len(zip_bytes) > 0
-        assert manifest["version"] == 2
+        assert manifest["version"] == portability.EXPORT_MANIFEST_VERSION
         assert manifest["format"] == "zip"
         assert "created_at" in manifest
         assert "hostname" in manifest
@@ -1092,7 +1092,7 @@ class TestValidate:
             ok, error, manifest = validate_import_zip(Path(tmp.name))
             assert ok is True
             assert error == ""
-            assert manifest["version"] == 2
+            assert manifest["version"] == portability.EXPORT_MANIFEST_VERSION
         finally:
             os.unlink(tmp.name)
 
@@ -1999,8 +1999,18 @@ async def test_import_handler_outcome_reflects_a_refused_merge(
     async def _fake_read_upload(request):
         return upload, None
 
-    req = make_mocked_request("POST", "/api/portability/import?mode=merge")
-    req["user"] = "tester"
+    # The route is owner-gated, so the request carries the owner shape the gate reads
+    # (`dashboard_owner_helpers`): a state with no configured owner and the signed local
+    # bootstrap subject as the caller. Without it the test fails on the gate, not on
+    # the audit outcome it names.
+    from aiohttp import web
+    from dashboard_owner_helpers import NoConfiguredOwner
+
+    app = web.Application()
+    app["state"] = NoConfiguredOwner()
+    req = make_mocked_request("POST", "/api/portability/import?mode=merge", app=app)
+    req["user"] = "local-app"
+    req["app"] = ""
     with patch.object(ph, "_read_upload_file", _fake_read_upload):
         with patch.object(ph, "validate_import_zip", lambda p: (True, "", {"version": 2})):
             with patch.object(ph, "apply_import_zip", lambda p, m: summary):
@@ -2011,6 +2021,64 @@ async def test_import_handler_outcome_reflects_a_refused_merge(
     assert len(events) == 1, events
     assert events[0]["outcome"] == expected_outcome
     assert ("refused=crons" in events[0]["resources"]) is expect_refused_tag
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error,expected_code",
+    [
+        pytest.param(
+            snapshot.NamedStoresInUse(["acme"]),
+            "named_store_in_use",
+            id="a-held-store-is-retried-after-releasing-it",
+        ),
+        pytest.param(
+            snapshot.SourceComponentUnsound("memory_stores/acme/memory.db is torn"),
+            "import_source_unsound",
+            id="a-torn-archive-needs-a-different-archive",
+        ),
+    ],
+)
+async def test_a_refused_import_names_a_machine_readable_code(tmp_path, error, expected_code):
+    # The two refusals share a status and differ in what the caller should do next, so the
+    # code is what a client branches on rather than the sentence.
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+    from dashboard_owner_helpers import NoConfiguredOwner
+
+    import kiro_crew.dashboard.handlers.portability as ph
+
+    upload = tmp_path / "upload.zip"
+    upload.write_bytes(b"")
+
+    async def _fake_read_upload(request):
+        return upload, None
+
+    def _refuse(path, mode):
+        raise error
+
+    class _FakeSel:
+        def log_api_access(self, **kw):
+            pass
+
+    app = web.Application()
+    app["state"] = NoConfiguredOwner()
+    req = make_mocked_request("POST", "/api/portability/import?mode=merge", app=app)
+    req["user"] = "local-app"
+    req["app"] = ""
+    with (
+        patch.object(ph, "_read_upload_file", _fake_read_upload),
+        patch.object(ph, "validate_import_zip", lambda p: (True, "", {"version": 3})),
+        patch.object(ph, "apply_import_zip", _refuse),
+        patch.object(ph, "_sel", lambda: _FakeSel()),
+    ):
+        resp = await ph.api_portability_import(req)
+
+    assert resp.status == 409
+    body = json.loads(resp.text)
+    assert body["code"] == expected_code
+    assert body["ok"] is False
+    assert str(error) in body["error"]
 
 
 class TestExclusionsSurviveAWindowsSeparator:
@@ -2083,3 +2151,114 @@ class TestExclusionsSurviveAWindowsSeparator:
             names = zf.namelist()
         assert any(n.endswith("workspace/deep/keep.md") for n in names), names
         assert not any("\\" in n for n in names), names
+
+
+@pytest.mark.parametrize("existing", [True, False])
+@pytest.mark.parametrize("per_file_copy", [False, True])
+def test_import_merge_preserves_store_generations(tmp_path, monkeypatch, existing, per_file_copy):
+    from test_snapshot_memory_stores import (
+        _per_file_store_merge,
+        _seed_store_generation,
+        _store_bytes,
+    )
+
+    from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
+    from kiro_crew.vector_memory import VectorMemoryStore
+
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(source))
+    for name in ("acme", "other"):
+        _seed_store_generation(source, name, 2)
+    archive = tmp_path / "export.zip"
+    archive.write_bytes(create_export_zip()[0])
+    monkeypatch.setenv("KIROCREW_HOME", str(destination))
+    kept = destination / MEMORY_STORES_DIR_NAME / "acme"
+    if existing:
+        _seed_store_generation(destination, "acme", 1)
+    before = _store_bytes(kept)
+    if per_file_copy:
+        monkeypatch.setattr(portability, "_merge_named_stores", _per_file_store_merge)
+    summary = apply_import_zip(archive, mode="merge")
+    with contextlib.closing(VectorMemoryStore(db_path=kept / "memory.db")) as store:
+        if existing and per_file_copy:
+            assert (kept / "member-memory.json").exists()
+            with pytest.raises(ValueError, match="private schema"):
+                store.init()
+        else:
+            if existing:
+                assert _store_bytes(kept) == before
+                assert not (kept / "member-memory.json").exists()
+                assert not (kept / "memory_index.db").exists()
+                assert any("acme (kept the existing store;" in item for item in summary["items"])
+            else:
+                for name in ("member-memory.json", "memory.db", "memory_index.db"):
+                    assert (kept / name).is_file()
+            store.init()
+            assert store._memory_version == (1 if existing else 2)
+    for name in ("member-memory.json", "memory.db", "memory_index.db"):
+        assert (destination / MEMORY_STORES_DIR_NAME / "other" / name).is_file()
+
+
+@pytest.mark.parametrize("exists", [False, True])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "memory#.db",
+        pytest.param(
+            "memory?#.db",
+            marks=pytest.mark.skipif(
+                platform_compat.IS_WINDOWS, reason="Windows forbids '?' in filenames"
+            ),
+        ),
+    ],
+)
+def test_database_export_opens_read_only(tmp_path, exists, filename):
+    source = tmp_path / filename
+    if exists:
+        with contextlib.closing(sqlite3.connect(str(source))) as db:
+            db.execute("CREATE TABLE sample (value TEXT)")
+            db.execute("INSERT INTO sample VALUES ('kept')")
+            db.commit()
+        before = source.read_bytes()
+        output = io.BytesIO()
+        portability._backup_sqlite(source, output)
+        assert source.read_bytes() == before
+        restored = tmp_path / "restored.db"
+        restored.write_bytes(output.getvalue())
+        with contextlib.closing(sqlite3.connect(str(restored))) as db:
+            assert db.execute("SELECT value FROM sample").fetchall() == [("kept",)]
+    else:
+        with pytest.raises(portability.sqlite3.OperationalError):
+            portability._backup_sqlite(source, io.BytesIO())
+        assert not source.exists()
+        # A read-write SQLite open creates this missing source instead of refusing it.
+        with contextlib.closing(sqlite3.connect(str(source))):
+            pass
+        assert source.exists()
+
+
+def test_import_restricts_staging_before_extracting(tmp_path, monkeypatch):
+    archive = tmp_path / "export.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("export/MANIFEST.json", json.dumps({"version": 3}))
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(portability, "_mc_dir", lambda: home)
+    restricted = []
+    restrict = platform_compat.restrict_dir_to_owner
+    extract = zipfile.ZipFile.extract
+
+    def restrict_directory(path):
+        restrict(path)
+        restricted.append(Path(path))
+
+    def extract_after_restrict(self, member, path, *args, **kwargs):
+        assert Path(path) in restricted
+        return extract(self, member, path, *args, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "restrict_dir_to_owner", restrict_directory)
+    monkeypatch.setattr(zipfile.ZipFile, "extract", extract_after_restrict)
+    apply_import_zip(archive)
+    assert restricted

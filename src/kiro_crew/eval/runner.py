@@ -20,6 +20,7 @@ from typing import Any
 
 from kiro_crew.eval.scenario import Assertion, AssertionType, Scenario, SeedProfile, Session, Turn
 from kiro_crew.memory import MemoryStore
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -230,10 +231,10 @@ class EvalRunner:
 
         config = KiroCrewConfig.load()
         memory = MemoryStore(workspace=ws)
-        memory.init()
+        await asyncio.to_thread(memory.init)
 
         if scenario.seed:
-            _seed_profile(ws, scenario.seed)
+            await asyncio.to_thread(_seed_profile, ws, scenario.seed)
 
         # Set env so providers share the same memory directory
         # NOTE: os.environ mutation is process-global — not safe for concurrent runs.
@@ -391,7 +392,11 @@ class EvalRunner:
         # Build memory context once for the first turn of non-first sessions
         memory_context = ""
         if ctx_builder is not None:
-            memory_context = ctx_builder.build_session_context(session_key=session_key)
+            memory_context = await asyncio.to_thread(
+                ctx_builder.build_session_context,
+                session_key=session_key,
+                memory_store=DEFAULT_MEMORY_STORE,
+            )
 
         session_result = SessionResult(name=session_def.name)
         try:

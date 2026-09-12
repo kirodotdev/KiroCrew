@@ -413,8 +413,12 @@ def private_runtime_log_dir() -> Path | None:
         hint = os.environ.get("_KIROCREW_PRIVATE_LOG_DIRECTORY", "")
         if hint:
             path = Path(hint)
-            if path.parent == home / "memory_stores" / ".execution-logs" and path.name.startswith(
-                "member-"
+            # circular import: this module is a leaf (see the module docstring) and must
+            # not import from ``kiro_crew`` at import time.
+            from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
+
+            if path.parent == home / MEMORY_STORES_DIR_NAME / EXECUTION_LOGS_DIR_NAME and (
+                path.name.startswith("member-")
             ):
                 return path
     return None

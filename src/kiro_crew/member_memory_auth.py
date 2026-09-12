@@ -25,6 +25,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.paths import config_dir
+from kiro_crew.memory_stores import MEMBER_API_KEY_FILE, MEMORY_STORES_DIR_NAME
 
 PROOF_HEADER = "X-Member-Session-Proof"
 PROOF_META_KEY = "memberMemoryProof"
@@ -520,7 +521,7 @@ def _verified_global_process(pid: int) -> bool:
 
 
 def _proof_key(*, create: bool) -> bytes | None:
-    path = config_dir().resolve() / "memory_stores" / ".member-api-key"
+    path = config_dir().resolve() / MEMORY_STORES_DIR_NAME / MEMBER_API_KEY_FILE
     if path.resolve() != path:
         return None
     if create:

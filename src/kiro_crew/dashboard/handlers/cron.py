@@ -2339,7 +2339,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     if memory_refusal is not None:
         return memory_refusal
     _lesson_mem = (
-        ContextBuilder.get_memory_for(memory_store=_lesson_silo)
+        await asyncio.to_thread(ContextBuilder.get_memory_for, memory_store=_lesson_silo)
         if _lesson_silo
         else _get_memory(state)
     )
@@ -2533,7 +2533,7 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     if memory_refusal is not None:
         return memory_refusal
     _lesson_mem = (
-        ContextBuilder.get_memory_for(memory_store=_lesson_silo)
+        await asyncio.to_thread(ContextBuilder.get_memory_for, memory_store=_lesson_silo)
         if _lesson_silo
         else _get_memory(state)
     )
@@ -2853,7 +2853,7 @@ async def api_lessons(request: web.Request) -> web.Response:
     if memory_refusal is not None:
         return memory_refusal
     _lesson_mem = (
-        ContextBuilder.get_memory_for(memory_store=_lesson_silo)
+        await asyncio.to_thread(ContextBuilder.get_memory_for, memory_store=_lesson_silo)
         if _lesson_silo
         else _get_memory(state)
     )
@@ -2886,12 +2886,12 @@ async def api_lessons(request: web.Request) -> web.Response:
         # own file and never the operator's -- an empty silo answers "no lessons", not
         # "here are the global ones". A silo also takes no workspace union: the two are
         # separate namespaces, so another target's rows are not this store's to show.
-        rows = _lesson_jsonl_store(state, _lesson_silo).load_all()
+        rows = await asyncio.to_thread(lambda: _lesson_jsonl_store(state, _lesson_silo).load_all())
         if not _lesson_silo:
             # Merge global + workspace-scoped lessons
             ws = workspace or _get_active_workspace(state)
             if ws != "default":
-                ws_lessons = _get_lessons(state, ws).load_all()
+                ws_lessons = await asyncio.to_thread(lambda: _get_lessons(state, ws).load_all())
                 seen = {le.rule.lower().strip() for le in rows}
                 for le in ws_lessons:
                     if le.rule.lower().strip() not in seen:

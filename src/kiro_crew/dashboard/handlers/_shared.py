@@ -2551,12 +2551,34 @@ async def markdown_memory_for_store(state: DashboardState, store: str):
         from kiro_crew.memory import MemoryStore
         from kiro_crew.memory_stores import memory_index_path_for, memory_store_dir_for
 
-        mem = MemoryStore(
-            workspace=memory_store_dir_for(store),
-            index_db=memory_index_path_for(store),
-            memory_version=version,
-        )
-        await asyncio.to_thread(mem.init)
+        def build_memory():
+            import weakref
+
+            from kiro_crew.member_memory_backup import (
+                acquire_store_use_lock,
+                release_store_use_lock,
+            )
+            from kiro_crew.memory_stores import MEMORY_DB_FILE
+
+            workspace = memory_store_dir_for(store)
+            fd = acquire_store_use_lock(workspace / MEMORY_DB_FILE) if version == 1 else None
+            try:
+                mem = MemoryStore(
+                    workspace=workspace,
+                    index_db=memory_index_path_for(store),
+                    memory_version=validate_target(),
+                )
+                mem.init()
+                # Keep admission while either the cache or an in-flight request owns
+                # this object, including V1 Markdown-only stores with no vector tier.
+                if fd is not None:
+                    weakref.finalize(mem, release_store_use_lock, fd)
+                return mem
+            except BaseException:
+                release_store_use_lock(fd)
+                raise
+
+        mem = await asyncio.to_thread(build_memory)
         cache[store] = mem
         state._store_markdown = cache  # type: ignore[attr-defined]
         return mem

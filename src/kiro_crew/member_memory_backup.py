@@ -15,10 +15,10 @@ import shutil
 import stat
 import tempfile
 import zipfile
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 from uuid import uuid4
 
 from kiro_crew import memory_stores, platform_compat
@@ -74,7 +74,7 @@ def backup_directory(db_path: Path) -> Path:
     root = memory_stores.memory_stores_root().resolve()
     name = db_path.parent.name
     memory_stores.validate_memory_store_name(name)
-    target = root / ".member-backups" / name
+    target = root / memory_stores.MEMBER_BACKUPS_DIR_NAME / name
     if target.resolve() != target:
         raise ValueError("Member backup directory is redirected")
     return target
@@ -101,9 +101,9 @@ def _open_store_use_lock(db_path: Path) -> int:
 
 
 def acquire_store_use_lock(db_path: Path) -> int | None:
-    """Hold one V2 store generation open on POSIX until its SQLite close.
+    """Hold one named store generation open on POSIX until its SQLite close.
 
-    POSIX permits renaming an open SQLite database, so every V2
+    POSIX permits renaming an open SQLite database, so every named
     :class:`VectorMemoryStore` holds this shared lock for its connection's
     lifetime. Windows SQLite handles already deny renaming their containing
     directory; taking the existing exclusive fallback there would serialize all
@@ -129,6 +129,87 @@ def release_store_use_lock(fd: int | None) -> None:
         platform_compat.release_lock(fd)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def hold_stores_for_read(stores_root: Path) -> Iterator[None]:
+    """Keep enumerated store generations in place until every file has been copied."""
+    with memory_stores.memory_store_namespace_lock(stores_root), ExitStack() as locks:
+        if stores_root.is_dir():
+            for entry in sorted(stores_root.iterdir()):
+                if (
+                    not entry.is_dir()
+                    or entry.name == memory_stores.DEFAULT_MEMORY_STORE
+                    or memory_stores.memory_store_name_defect(entry.name) is not None
+                ):
+                    continue
+                fd = acquire_store_use_lock(entry / memory_stores.MEMORY_DB_FILE)
+                locks.callback(release_store_use_lock, fd)
+        yield
+
+
+class StoresInUse(RuntimeError):
+    """Some of the stores a replace must own are open in another process right now."""
+
+    def __init__(self, names: list[str]) -> None:
+        self.names = names
+        super().__init__(", ".join(names))
+
+
+@contextmanager
+def hold_stores_for_replace(stores_root: Path, names: Iterable[str]) -> Iterator[None]:
+    """Hold every named store's lifetime lock EXCLUSIVELY for the body's duration.
+
+    The replace half of a snapshot restore removes each store directory and refills it
+    from the archive, and POSIX lets an open SQLite handle outlive that removal: a process
+    that opened the store keeps writing into an unlinked file whose rows vanish at its
+    next restart. :func:`acquire_store_use_lock` exists for this -- every open named store
+    holds its lock SHARED for the connection's lifetime -- so taking the EXCLUSIVE lock is
+    both the question and the barrier. A store already open makes the acquisition fail
+    at once (:class:`StoresInUse`, nothing has been touched); a store opened WHILE this is
+    held blocks inside ``acquire_store_use_lock`` until the body returns, and then opens
+    whatever the replace put there. A probe alone left exactly that second case open: a
+    cold store opened between the probe and the removal was unlinked with its writer
+    attached.
+
+    Two things make the barrier real rather than nominal. The lock file is opened (and
+    created, for a store that has never been opened -- *names* should cover the stores
+    the ARCHIVE brings as well as the live ones) through the same
+    :func:`_open_store_use_lock` the openers use, so both sides contend on one inode. And
+    the caller must leave ``.member-backups/`` in place across the replace: the inode this
+    holds is the file at that path, and removing it would let a new opener create a fresh,
+    unheld one beside the held handle.
+
+    No-op on Windows, where no store takes the lock and the OS denies the removal itself.
+    """
+    if not platform_compat.IS_POSIX:
+        yield
+        return
+    wanted = sorted({n for n in names if memory_stores.memory_store_name_defect(n) is None})
+    fds: list[int] = []
+    busy: list[str] = []
+    try:
+        for name in wanted:
+            fd = _open_store_use_lock(stores_root / name / memory_stores.MEMORY_DB_FILE)
+            try:
+                taken = platform_compat.try_acquire_lock(fd, exclusive=True)
+            except BaseException:
+                os.close(fd)
+                raise
+            if not taken:
+                os.close(fd)
+                busy.append(name)
+                continue
+            fds.append(fd)
+        if busy:
+            raise StoresInUse(busy)
+        yield
+    finally:
+        for fd in fds:
+            try:
+                platform_compat.release_lock(fd)
+            finally:
+                os.close(fd)
 
 
 @contextmanager
@@ -555,6 +636,7 @@ def cancel_pending_restore(db_path: Path) -> bool:
             return True
 
 
+@memory_stores.memory_store_namespace_lock()
 def apply_pending_restore(db_path: Path) -> str | None:
     """Startup barrier only. Keep the prior tree and recover interrupted renames."""
     out = backup_directory(db_path)

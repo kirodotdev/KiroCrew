@@ -193,7 +193,7 @@ class TestSnapshot:
         assert (snap / "skills/my-skill/SKILL.md").is_file()
         assert not (snap / "workspace/hygiene_data/week1.json").exists()
         m = json.loads((snap / "MANIFEST.json").read_text(encoding="utf-8"))
-        assert m["version"] == 3
+        assert m["version"] == snapshot_mod.MANIFEST_VERSION
         # v3 is additive over v2 — every v2 key is still present, so a restore built
         # before the purpose seam reads a v3 bundle correctly instead of refusing it.
         for v2_key in (

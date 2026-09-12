@@ -44,6 +44,7 @@ from kiro_crew.hooks import (
     unc_probe_allowed,
 )
 from kiro_crew.memory_startup import require_memory_ready
+from kiro_crew.memory_stores import named_store_operation
 from kiro_crew.metrics.db_metrics import timed, timed_query
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform_compat import file_lock, first_linked_ancestor, is_link_or_junction
@@ -327,6 +328,7 @@ class MemoryStore:
             pass  # new file: let atomic_write apply the umask default
         atomic_write(path, content, mode=mode, newline=newline)
 
+    @named_store_operation
     def init(self) -> None:
         """Create directory structure and default files."""
         self._require_link_free_roots()  # gate before the first syscall
@@ -339,6 +341,7 @@ class MemoryStore:
 
     # ── Preferences ──
 
+    @named_store_operation
     def read_preferences(self) -> str:
         """Read user preferences markdown file."""
         require_memory_ready(self._memory_store_name)
@@ -348,6 +351,7 @@ class MemoryStore:
             return self._preferences_file.read_text(encoding="utf-8")
         return ""
 
+    @named_store_operation
     def write_preferences(self, content: str, *, expected_baseline: str | None = None) -> bool:
         """Write user preferences and update FTS index.
 
@@ -389,6 +393,7 @@ class MemoryStore:
             os.close(lock_fd)
         return True
 
+    @named_store_operation
     def add_preference(self, preference: str) -> None:
         """Append a preference line, avoiding duplicates."""
         content = self.read_preferences()
@@ -398,6 +403,7 @@ class MemoryStore:
 
     # ── Projects ──
 
+    @named_store_operation
     def read_projects(self) -> str:
         """Read active projects markdown file."""
         require_memory_ready(self._memory_store_name)
@@ -407,6 +413,7 @@ class MemoryStore:
             return self._projects_file.read_text(encoding="utf-8")
         return ""
 
+    @named_store_operation
     def write_projects(self, content: str, *, expected_baseline: str | None = None) -> bool:
         """Write active projects, adding header if missing, and update FTS index.
 
@@ -437,6 +444,7 @@ class MemoryStore:
             os.close(lock_fd)
         return True
 
+    @named_store_operation
     def write_private_profile_validated(
         self, filename: str, content: str, validate: Callable[[str], None]
     ) -> None:
@@ -469,6 +477,7 @@ class MemoryStore:
 
     # ── Legacy read/write (used by consolidator) ──
 
+    @named_store_operation
     def read(self) -> str:
         """Read preferences + projects as combined memory (legacy compat)."""
         parts: list[str] = []
@@ -480,6 +489,7 @@ class MemoryStore:
             parts.append(projects)
         return "\n\n".join(parts)
 
+    @named_store_operation
     def write(self, content: str) -> None:
         """Write combined memory — splits into preferences + projects sections."""
         if "# Active Projects" in content:
@@ -507,6 +517,7 @@ class MemoryStore:
         date = datetime.now().strftime("%Y-%m-%d")
         return self._history_dir / f"{date}.md"
 
+    @named_store_operation
     def append_history(self, entry: str) -> None:
         """Append a timestamped entry to today's daily history file.
 
@@ -570,6 +581,7 @@ class MemoryStore:
             os.close(lock_fd)
         self._invalidate_history_cache()  # today's window changed
 
+    @named_store_operation
     def read_editable_history(self) -> str:
         """Read the history document replaced by the dashboard's daily edit.
 
@@ -584,6 +596,7 @@ class MemoryStore:
             _private_store=self._validated_private_read_store(),
         )["content"]
 
+    @named_store_operation
     def write_today_history(
         self,
         content: str,
@@ -662,6 +675,7 @@ class MemoryStore:
                 self._invalidate_history_cache()
         return True
 
+    @named_store_operation
     def prune_history(self, keep_days: int = 365) -> int:
         """Delete daily history files older than *keep_days*. Returns count deleted."""
         require_memory_ready(self._memory_store_name)
@@ -684,6 +698,7 @@ class MemoryStore:
             self._invalidate_history_cache()
         return deleted
 
+    @named_store_operation
     def read_recent_history(self, days: int = 14) -> str:
         """Read history with V1 age tiers or bounded, full retained V2 entries.
 
@@ -751,6 +766,7 @@ class MemoryStore:
             result += f"\n_…{n_more} more entries_"
         return result
 
+    @named_store_operation
     def read_history(self) -> str:
         """Read all history from the last 30 days (legacy compat)."""
         return self.read_recent_history(days=30)
@@ -854,6 +870,7 @@ class MemoryStore:
             return False
         return True
 
+    @named_store_operation
     def markdown_snapshot(self, since: _date | None = None) -> dict:
         """Structured, read-only view of the markdown memory layer.
 
@@ -877,6 +894,7 @@ class MemoryStore:
             "history": self._history_entries(since=since, private_store=private),
         }
 
+    @named_store_operation
     def read_history_entries(self, since: _date | None = None) -> list[dict]:
         """Per-day history entries, oldest first, as structured data.
 
@@ -1125,6 +1143,7 @@ class MemoryStore:
     # ── Context Injection ──
 
     @timed("memory", "read")
+    @named_store_operation
     def get_context(
         self,
         prefs_cap: int = 4_000,
@@ -1261,6 +1280,7 @@ class MemoryStore:
             if conn is not None:
                 conn.close()
 
+    @named_store_operation
     def rebuild_index(self) -> int:
         """Rebuild the full FTS index from all memory files. Returns file count."""
         require_memory_ready(self._memory_store_name)
@@ -1332,6 +1352,7 @@ class MemoryStore:
                 conn.close()
         return indexed if self._memory_version == 2 else len(files)
 
+    @named_store_operation
     def index_row_count(self) -> int | None:
         """Rows in the FTS index, or ``None`` when the index cannot be read.
 
@@ -1354,6 +1375,7 @@ class MemoryStore:
             if conn is not None:
                 conn.close()
 
+    @named_store_operation
     def search(self, query: str, limit: int = 5) -> list[dict]:
         """Search memory for the literal words in ``query``.
 
