@@ -1075,7 +1075,11 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "MCP app render payloads",
         "mcp_apps_render.py",
-        "Recursively redacts string leaves of a rendered MCP app payload.",
+        "Recursively redacts string leaves of a rendered MCP app payload. Both "
+        "scanners run on every payload; a plausible inline data: image/font body "
+        "is exempted from them when — and just when — the app's own declared CSP "
+        "grants it no outbound origin, so an app that can egress is scanned in "
+        "full.",
     ),
     (
         "Auto-skill pending detail / promotion",

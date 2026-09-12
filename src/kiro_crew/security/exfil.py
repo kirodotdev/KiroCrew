@@ -1072,6 +1072,14 @@ EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
 def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     """Scan and redact suspicious exfiltration URLs from text.
 
+    This pass carries NO inline-media awareness: an inline media ``data:`` URI is
+    scanned in full like any other text, because its base64 body is structurally
+    indistinguishable from an encoded secret. The inline-media carve-out — which
+    exempts a rendered sub-resource on a surface whose CSP grants it no way to
+    leave the page — lives ONLY in the composed
+    :func:`kiro_crew.security.redact_mcp_app_payload_text` helper, applied once
+    around both passes, and is reachable only from the MCP-app payload redactor.
+
     Returns (cleaned_text, list_of_warnings).
     """
     warnings = scan_exfiltration_urls(text)
