@@ -1148,6 +1148,12 @@
         "font_specimen": "Aa"
       }
     },
+    "projectScaffolder": {
+      "projectScaffolderPage": {
+        "n_already_set_up": "{{n}} already set up",
+        "root_already_exists_nothing_to_create": "This directory already has its sidebar folder, so there is nothing left to create."
+      }
+    },
     "designCritique": {
       "constants": {
         "blocked_figma_app_missing_hint": "Open the file in Figma desktop and try again, or export the frames as PNGs and drop them here.",

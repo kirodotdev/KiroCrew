@@ -268,7 +268,7 @@ describe('ProjectScaffolderPage', () => {
     expect(screen.getByText('pyproject.toml')).toBeInTheDocument()
   })
 
-  it('shows an already-scaffolded row with a disabled checkbox it cannot tick', async () => {
+  it('shows an already-scaffolded row as read-only state with no checkbox', async () => {
     const user = userEvent.setup()
     queued.push({ status: 200, body: SCAN })
     renderPage()
@@ -276,9 +276,11 @@ describe('ProjectScaffolderPage', () => {
 
     await expandDeferred(user)
     await waitFor(() => expect(screen.getAllByTestId('candidate-row')).toHaveLength(4))
-    const existing = screen.getByLabelText(`${ROOT}/services/done (Already set up)`)
-    expect(existing).toBeDisabled()
-    expect(existing).not.toBeChecked()
+    // The existing row offers no control at all: the icon carries the state
+    // and keeps the path as its accessible name.
+    expect(screen.queryByLabelText(`${ROOT}/services/done`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(`${ROOT}/services/done (Already set up)`)).toBeInTheDocument()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(3)
     expect(screen.getByTestId('already-set-up')).toBeInTheDocument()
   })
 
@@ -294,7 +296,8 @@ describe('ProjectScaffolderPage', () => {
     // two and leave the already-scaffolded one alone.
     await user.click(within(screen.getByTestId('nested-suggestions')).getByRole('button', { name: 'Select all inside' }))
     expect(screen.getByTestId('selected-count')).toHaveTextContent('3 selected')
-    expect(within(nested).getByLabelText(`${ROOT}/services/done (Already set up)`)).not.toBeChecked()
+    // The existing row has no checkbox, so select-all structurally cannot reach it.
+    expect(within(nested).queryByLabelText(`${ROOT}/services/done`)).not.toBeInTheDocument()
 
     await user.click(within(screen.getByTestId('nested-suggestions')).getByRole('button', { name: 'Select none inside' }))
     // The root list keeps its own selection, proving the bulk action is scoped.
@@ -319,6 +322,8 @@ describe('ProjectScaffolderPage', () => {
         warnings: [],
       },
     })
+    // The success handler refreshes the preview with a second scan.
+    queued.push({ status: 200, body: SCAN })
     renderPage()
     await scan(user)
     await waitFor(() => expect(screen.getByTestId('preview-group')).toBeInTheDocument())
@@ -334,7 +339,7 @@ describe('ProjectScaffolderPage', () => {
     expect(calls[1].body).toEqual({ root: ROOT, selected: [`${ROOT}/services`] })
 
     expect(screen.getByTestId('result-created')).toHaveTextContent('1 created')
-    expect(screen.getByTestId('result-skipped')).toHaveTextContent('1 already existed')
+    expect(screen.getByTestId('result-skipped')).toHaveTextContent('1 already set up')
     expect(screen.getByTestId('result-failed')).toHaveTextContent('1 failed')
     // A failed row carries the server's prose through the shared error surface;
     // the machine-readable code is not shown -- the sentence is the message.
@@ -343,6 +348,8 @@ describe('ProjectScaffolderPage', () => {
     expect(failed).not.toHaveTextContent('color_invalid')
     // Skipped paths are listed like created ones, so the tally can be reconciled.
     expect(screen.getByTestId('skipped-rows')).toHaveTextContent(`${ROOT}/services/done`)
+    // Let the post-create refresh land, so the test does not end mid-request.
+    await waitFor(() => expect(calls).toHaveLength(3))
   })
 
   it('distinguishes an empty scan from a populated one and still offers the root folder', async () => {
@@ -525,6 +532,8 @@ describe('ProjectScaffolderPage', () => {
         root: ROOT, created: [], skipped_existing: [], failed: [], warnings: [],
       },
     })
+    // The retry's success refreshes the preview with a second scan.
+    queued.push({ status: 200, body: SCAN })
     renderPage()
     await scan(user)
     await waitFor(() => expect(screen.getAllByTestId('preview-group').length).toBeGreaterThan(0))
@@ -534,6 +543,7 @@ describe('ProjectScaffolderPage', () => {
     await user.click(screen.getByRole('button', { name: 'Create sidebar folders' }))
 
     await waitFor(() => expect(screen.queryByTestId('create-error')).not.toBeInTheDocument())
+    await waitFor(() => expect(calls).toHaveLength(4))
   })
 
   it('treats a root-moved create refusal as the stale state, not a dead-end notice', async () => {
@@ -711,6 +721,8 @@ describe('ProjectScaffolderPage', () => {
         skipped_existing: [], failed: [], warnings: [],
       },
     })
+    // The success handler refreshes the preview with a second scan.
+    queued.push({ status: 200, body: MIXED_SCAN })
     renderPage()
     await scan(user)
 
@@ -728,6 +740,7 @@ describe('ProjectScaffolderPage', () => {
     await waitFor(() => expect(screen.getByTestId('scaffold-results')).toBeInTheDocument())
     expect(calls[1].url).toBe('/api/project-scaffold/create')
     expect(calls[1].body).toEqual({ root: ROOT, selected: [`${ROOT}/tools/lint`] })
+    await waitFor(() => expect(calls).toHaveLength(3))
   })
 
   it('omits the deferred section entirely when nothing is nested deeper', async () => {
@@ -742,5 +755,153 @@ describe('ProjectScaffolderPage', () => {
     await waitFor(() => expect(screen.getByTestId('preview-group')).toBeInTheDocument())
     expect(screen.queryByTestId('nested-suggestions')).not.toBeInTheDocument()
     expect(screen.queryByTestId('nested-toggle')).not.toBeInTheDocument()
+  })
+
+  it('refreshes the preview after a create so the created rows read as already set up', async () => {
+    // Without the refresh the just-created rows stay ticked and enabled,
+    // inviting a second create whose only outcome is "already existed".
+    const user = userEvent.setup()
+    queued.push({ status: 200, body: SCAN })
+    queued.push({
+      status: 200,
+      body: {
+        root: ROOT,
+        created: [
+          { path: `${ROOT}/services`, folder_id: 'f1', name: 'services' },
+          { path: `${ROOT}/services/api`, folder_id: 'f2', name: 'api' },
+        ],
+        skipped_existing: [], failed: [], warnings: [],
+      },
+    })
+    // The refresh's answer: the root and both created rows exist now.
+    queued.push({
+      status: 200,
+      body: {
+        ...SCAN,
+        root_existing: true,
+        candidates: SCAN.candidates.map((c) => (
+          c.path === `${ROOT}/services` || c.path === `${ROOT}/services/api`
+            ? { ...c, existing: true, selected: false }
+            : c
+        )),
+      },
+    })
+    renderPage()
+    await scan(user)
+    await waitFor(() => expect(screen.getByTestId('preview-group')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'Create sidebar folders' }))
+
+    await waitFor(() => expect(screen.getByTestId('scaffold-results')).toBeInTheDocument())
+    // A second scan of the SCANNED root, not a hand-off to the live field.
+    await waitFor(() => expect(calls).toHaveLength(3))
+    expect(calls[2]).toEqual({ url: '/api/project-scaffold/scan', body: { root: ROOT } })
+
+    // The created row flips to the read-only form: its checkbox is gone and
+    // the badge carries the state.
+    await waitFor(() => expect(screen.queryByLabelText(`${ROOT}/services`)).not.toBeInTheDocument())
+    expect(screen.getByTestId('already-set-up')).toBeInTheDocument()
+    expect(screen.getByTestId('root-existing')).toBeInTheDocument()
+    // And the results the user is reading are still on screen.
+    expect(screen.getByTestId('result-created')).toHaveTextContent('2 created')
+    // The landing state has the root's folder in place and nothing ticked, so
+    // the create button refuses the guaranteed no-op and says why.
+    expect(screen.getByRole('button', { name: 'Create sidebar folders' })).toBeDisabled()
+    expect(screen.getByTestId('noop-create-reason')).toHaveTextContent('nothing left to create')
+  })
+
+  it('preserves the hand-tuned selection across the post-create refresh', async () => {
+    // The refresh must not re-tick a row the user deliberately unticked: the
+    // server default would re-arm a second create with the excluded folder.
+    const user = userEvent.setup()
+    queued.push({ status: 200, body: SCAN })
+    queued.push({
+      status: 200,
+      body: {
+        root: ROOT,
+        created: [{ path: `${ROOT}/services`, folder_id: 'f1', name: 'services' }],
+        skipped_existing: [], failed: [], warnings: [],
+      },
+    })
+    // The refresh reports the created row as existing and re-offers the rest
+    // with the server's OWN defaults, api ticked among them.
+    queued.push({
+      status: 200,
+      body: {
+        ...SCAN,
+        candidates: SCAN.candidates.map((c) => (
+          c.path === `${ROOT}/services` ? { ...c, existing: true, selected: false } : c
+        )),
+      },
+    })
+    renderPage()
+    await scan(user)
+    await waitFor(() => expect(screen.getByTestId('preview-group')).toBeInTheDocument())
+
+    // Hand-tune: untick the deferred api row the server pre-ticked.
+    const nested = await expandDeferred(user)
+    await user.click(within(nested).getByLabelText(`${ROOT}/services/api`))
+    expect(screen.getByTestId('selected-count')).toHaveTextContent('1 selected')
+
+    await user.click(screen.getByRole('button', { name: 'Create sidebar folders' }))
+    await waitFor(() => expect(screen.getByTestId('scaffold-results')).toBeInTheDocument())
+    await waitFor(() => expect(calls).toHaveLength(3))
+
+    // The created row dropped out as existing, and api stayed UNTICKED even
+    // though the fresh scan's server default ticks it. The disclosure the user
+    // opened is still open — the refresh is the same tree, not a new one.
+    await waitFor(() => expect(screen.queryByLabelText(`${ROOT}/services`)).not.toBeInTheDocument())
+    expect(screen.getByTestId('selected-count')).toHaveTextContent('Root folder + 0 selected')
+    expect(within(screen.getByTestId('nested-list')).getByLabelText(`${ROOT}/services/api`)).not.toBeChecked()
+  })
+
+  it('keeps the results card when the post-create refresh fails', async () => {
+    const user = userEvent.setup()
+    queued.push({ status: 200, body: SCAN })
+    queued.push({
+      status: 200,
+      body: {
+        root: ROOT,
+        created: [{ path: `${ROOT}/services`, folder_id: 'f1', name: 'services' }],
+        skipped_existing: [], failed: [], warnings: [],
+      },
+    })
+    queued.push({ status: 500, body: { error: 'scan timed out' } })
+    renderPage()
+    await scan(user)
+    await waitFor(() => expect(screen.getByTestId('preview-group')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'Create sidebar folders' }))
+
+    // The refresh failed, and it cost neither the outcome nor the preview: the
+    // failure renders in the root field's slot, as any scan failure does.
+    await waitFor(() => expect(screen.getByTestId('root-error')).toHaveTextContent('scan timed out'))
+    expect(screen.getByTestId('result-created')).toBeInTheDocument()
+    expect(screen.getByTestId('preview-group')).toBeInTheDocument()
+  })
+
+  it('removes the empty-state action when the root folder already exists', async () => {
+    const user = userEvent.setup()
+    queued.push({ status: 200, body: { ...EMPTY_SCAN, root_existing: true } })
+    renderPage()
+    await scan(user)
+
+    await waitFor(() => expect(screen.getByTestId('scan-empty')).toBeInTheDocument())
+    // The subtitle carries the whole outcome; the branch renders no control
+    // (and no badge) that could contradict it or invite the no-op create.
+    expect(screen.queryByRole('button', { name: 'Create the root folder only' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('root-existing')).not.toBeInTheDocument()
+    expect(screen.getByTestId('scan-empty-subtitle')).toHaveTextContent('nothing left to create')
+  })
+
+  it('keeps the empty-state action enabled while the root folder does not exist', async () => {
+    // Regression guard for the gate above: a fresh root must stay creatable.
+    const user = userEvent.setup()
+    queued.push({ status: 200, body: EMPTY_SCAN })
+    renderPage()
+    await scan(user)
+
+    await waitFor(() => expect(screen.getByTestId('scan-empty')).toBeInTheDocument())
+    expect(screen.queryByTestId('root-existing')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create the root folder only' })).toBeEnabled()
+    expect(screen.getByTestId('scan-empty-subtitle')).toHaveTextContent('You can still create a folder')
   })
 })
