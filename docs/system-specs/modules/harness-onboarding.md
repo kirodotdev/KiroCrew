@@ -196,6 +196,26 @@ the reason. An explicit allowlist rather than a relaxed assertion is the point:
 a plain `baseline != known` still fails, so an id may sit outside the baseline
 only by being named.
 
+**Selectability additionally requires a decided MCP projection.** A harness an
+operator can choose is a harness whose sessions have — or provably do not have —
+Kiro Crew's own tools, and that answer is a declared kind in
+`src/kiro_crew/providers/mirrors/registry.py` (`PROJECTIONS`): `native`, `mirror`,
+`external` or `no-channel`. Work the checklist in
+[`providers/mirrors/README.md`](../../../src/kiro_crew/providers/mirrors/README.md)
+("Adding a backend: checklist") as part of this stage, not after it. The kind is
+not a formality and the failure it closes is specific: a session comes up holding
+`tools: ["@kirocrew-core", ...]` with nothing defining `kirocrew-core`, so every
+Crew tool is absent while the harness works and nothing anywhere is red. That
+shipped on four harnesses in a row, because a projection nobody had written was
+spelled the same way as a projection nobody needed.
+
+`no-channel` is a legitimate answer here, on the same terms as dormancy: it must be
+NAMED. A selectable `no-channel` harness has to name the channel that would have to
+exist and its tracking pointer in the declaration, and be named in this document —
+`test_provider_mirrors.py` checks both halves, so a gap recorded in only one of them
+fails. The reader of this file is the human who writes the code; the declaration is
+what the code reads; neither substitutes for the other.
+
 Selectability has exactly one gate, `resolve_selected_backend`, and it logs
 (H4). Do not add a static `enum` to `AgentConfig.acp_backend`: a literal frozen
 at import cannot see a boot-time registration, and `validate_config_data`

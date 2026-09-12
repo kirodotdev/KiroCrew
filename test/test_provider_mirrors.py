@@ -11,52 +11,246 @@ Design: ``docs/request-for-change/rfc-agent-config-mirror.md``.
 
 from __future__ import annotations
 
+import importlib
+import re
+from pathlib import Path
+
 import pytest
 
-from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_KNOWN,
+)
+from kiro_crew.agent_sdk.backends import BASELINE_SELECTABLE_BACKENDS
+from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
 from kiro_crew.providers.mirrors import (
     MIRRORS,
-    NO_MIRROR,
+    PROJECTIONS,
     Concern,
     Disposition,
+    McpProjection,
+    ProjectionKind,
     Ruling,
+    has_mirror,
     mirror_for,
+    projection_for,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: Where a selectable harness's admission is recorded. A ``no-channel`` backend
+#: must be named there as well as here: the declaration says what the transport
+#: cannot carry, and the onboarding table is what a human reads BEFORE writing any
+#: of it, so a gap recorded in only one of the two is a gap the next author misses.
+_ONBOARDING_DOC = Path("docs/system-specs/modules/harness-onboarding.md")
+
+#: Prose that stands in for a decision. A kind is the decision now, so a reason
+#: carrying one of these is a schedule wearing a declaration's clothes -- the exact
+#: state that let a selectable backend ship with no projection and every check
+#: green.
+_SCHEDULE_PROSE: tuple[str, ...] = (
+    "pending",
+    "not yet moved",
+    "has not moved",
+    "unwritten",
+    "not written yet",
+    "nobody got round",
+    "next pr",
+    "coming soon",
+    "todo",
+)
+
+#: Kinds that describe a finished state. The other two are addressable on purpose
+#: (``channel`` / ``projection`` plus ``tracking``), so only these two are held to
+#: carrying no schedule at all.
+_SETTLED_KINDS = (ProjectionKind.NATIVE, ProjectionKind.MIRROR)
+
+
+def _slugify_heading(line: str) -> str:
+    """A markdown heading's GitHub anchor, near enough for a link check."""
+    text = line.lstrip("#").strip().lower()
+    text = re.sub(r"[^a-z0-9 \-]", "", text)
+    return re.sub(r"\s+", "-", text).strip("-")
+
+
+def _tracking_resolves(tracking: str) -> bool:
+    """Does *tracking* address something a reader can actually reach?
+
+    An https URL is taken at its word -- a test must not make a network call to
+    decide whether a declaration is well formed. A repo-relative ``path#anchor``
+    is checked properly, because that is the form a doc reorganisation silently
+    breaks, and a tracking pointer that resolves to nothing is the prose this
+    record replaced with extra steps.
+    """
+    if tracking.startswith("https://"):
+        return True
+    path, _, anchor = tracking.partition("#")
+    doc = _REPO_ROOT / path
+    if not doc.is_file():
+        return False
+    if not anchor:
+        return True
+    headings = [
+        _slugify_heading(line)
+        for line in doc.read_text(encoding="utf-8").splitlines()
+        if line.startswith("#")
+    ]
+    return anchor.lower() in headings
+
+
+#: A spec that references one server and defines it. Fed to the ref resolver to
+#: ask the only question that distinguishes a `native` backend structurally: is
+#: this an id whose refs are satisfied by the spec's OWN mcpServers, because the
+#: harness reads that file itself? Every other kind is judged against the wire
+#: array, so the same spec leaves the ref unresolved there.
+_NATIVE_PROBE_SPEC = {"tools": ["@probesrv"], "mcpServers": {"probesrv": {}}}
+
+
+def _resolver_reads_the_spec_itself(backend: str) -> bool:
+    """Does the ref resolver credit *backend* with the spec's own servers?
+
+    This is what makes `native` checkable by something other than a list of
+    forbidden words. `native` claims the harness reads
+    ``~/.kiro/agents/<name>.json`` itself, and exactly one other module already
+    has to know that:
+    ``agent_sdk.mcp_refs`` satisfies a ``@server`` ref from the spec's own
+    definitions for such a backend and from the wire array for every other. So a
+    declaration claiming `native` is cross-checked against the resolver that acts
+    on the claim, in a different package, rather than against how its prose is
+    worded.
+    """
+    return unresolved_server_refs(_NATIVE_PROBE_SPEC, [], backend=backend) == []
+
+
+def projection_complaints(
+    *,
+    projections: dict,
+    mirrors: dict,
+    known: frozenset,
+    selectable: frozenset,
+    onboarding: str,
+) -> list[str]:
+    """Every way a set of declarations fails the contract, as one list.
+
+    A function over its inputs rather than a test reading the module's globals,
+    for one reason: the rules have to be provable in BOTH directions. A suite that
+    only asserts the shipped tables pass cannot show that a prose-only entry on a
+    selectable backend would fail -- and "the guard would have caught it" is the
+    claim this whole file exists to make good on. The negative case feeds doctored
+    tables through this same function, so the rule under test is the rule that
+    ships.
+    """
+    complaints: list[str] = []
+
+    for backend in sorted(known | selectable):
+        declared = projections.get(backend)
+        if declared is None:
+            complaints.append(f"{backend!r}: no PROJECTIONS entry")
+            continue
+        in_mirrors = backend in mirrors
+        if declared.kind is ProjectionKind.MIRROR and not in_mirrors:
+            complaints.append(f"{backend!r}: declares kind=mirror with no MIRRORS class")
+        if in_mirrors and declared.kind is not ProjectionKind.MIRROR:
+            complaints.append(
+                f"{backend!r}: has a MIRRORS class but declares kind={declared.kind.value}"
+            )
+        if (declared.kind is ProjectionKind.NATIVE) != _resolver_reads_the_spec_itself(backend):
+            claimed = "claims native" if declared.kind is ProjectionKind.NATIVE else "does not"
+            complaints.append(
+                f"{backend!r}: {claimed} claim native, but agent_sdk.mcp_refs "
+                "disagrees about whether this backend resolves refs from the spec "
+                "itself -- the kind and the resolver acting on it must not diverge"
+            )
+        if declared.kind in _SETTLED_KINDS:
+            hit = [p for p in _SCHEDULE_PROSE if p in declared.reason.lower()]
+            if hit:
+                complaints.append(
+                    f"{backend!r}: kind={declared.kind.value} reason reads as a "
+                    f"schedule ({', '.join(hit)}) -- an unfinished projection has "
+                    "its own kind"
+                )
+        if declared.tracking and not _tracking_resolves(declared.tracking):
+            complaints.append(f"{backend!r}: tracking {declared.tracking!r} resolves to nothing")
+        if declared.kind is ProjectionKind.EXTERNAL:
+            try:
+                importlib.import_module(declared.projection)
+            except Exception as exc:
+                complaints.append(
+                    f"{backend!r}: external projection {declared.projection!r} "
+                    f"does not import ({exc})"
+                )
+        if declared.kind is ProjectionKind.NO_CHANNEL and backend in selectable:
+            if backend not in onboarding:
+                complaints.append(
+                    f"{backend!r}: selectable and no-channel, but "
+                    f"{_ONBOARDING_DOC} does not name it"
+                )
+    return complaints
+
+
+def _onboarding_text() -> str:
+    return (_REPO_ROOT / _ONBOARDING_DOC).read_text(encoding="utf-8")
 
 
 class TestEveryBackendIsAccountedFor:
-    def test_every_known_backend_has_a_mirror_or_a_stated_reason(self):
+    def test_every_known_and_selectable_backend_resolves_to_one_declaration(self):
         """The whole point: absence must be a statement, not an oversight.
 
-        A backend in neither map is the shape of the original defect -- nobody
-        declared it needed a projection, so nobody wrote one, and the session came
-        up missing its tools with no error.
+        A backend with no declaration is the shape of the original defect --
+        nobody said it needed a projection, so nobody wrote one, and the session
+        came up missing its tools with no error. Selectable ids are checked
+        alongside the known ones rather than assumed to be a subset: an edition
+        plugin registers its own, and the one that reaches the dashboard switch
+        without an entry here is exactly the one this rule is for.
         """
-        unaccounted = sorted(
-            b for b in ACP_BACKENDS_KNOWN if b not in MIRRORS and b not in NO_MIRROR
+        complaints = projection_complaints(
+            projections=PROJECTIONS,
+            mirrors=MIRRORS,
+            known=ACP_BACKENDS_KNOWN,
+            selectable=BASELINE_SELECTABLE_BACKENDS,
+            onboarding=_onboarding_text(),
         )
-        assert not unaccounted, (
-            f"backends with no mirror and no NO_MIRROR entry: {unaccounted}. "
-            "Add a mirror in providers/mirrors/ or a NO_MIRROR entry with the reason."
-        )
+        assert not complaints, "\n".join(complaints)
 
-    def test_no_backend_is_in_both_maps(self):
-        assert not (set(MIRRORS) & set(NO_MIRROR))
+    def test_every_declaration_states_a_real_reason(self):
+        for backend, declared in PROJECTIONS.items():
+            assert (
+                len(declared.reason.strip()) > 40
+            ), f"{backend!r} needs a real reason, not a label"
 
-    def test_every_no_mirror_entry_states_a_real_reason(self):
-        for backend, reason in NO_MIRROR.items():
-            assert len(reason.strip()) > 40, f"{backend!r} needs a real reason, not a label"
-
-    def test_an_unregistered_backend_raises_rather_than_returning_none(self):
+    def test_an_undeclared_backend_raises_rather_than_returning_none(self):
         """Fail loud. Returning None would read as 'declared to need no mirror'."""
         with pytest.raises(KeyError, match="no agent-config mirror"):
             mirror_for("a-backend-nobody-registered")
+        with pytest.raises(KeyError, match="no agent-config mirror"):
+            projection_for("a-backend-nobody-registered")
 
-    def test_mirror_for_returns_none_only_for_a_declared_no_mirror(self):
-        for backend in NO_MIRROR:
-            assert mirror_for(backend) is None
-        for backend in MIRRORS:
-            assert mirror_for(backend) is not None
+    def test_mirror_for_returns_none_for_every_kind_but_mirror(self):
+        for backend, declared in PROJECTIONS.items():
+            expected_mirror = declared.kind is ProjectionKind.MIRROR
+            assert (mirror_for(backend) is not None) is expected_mirror
+            assert has_mirror(backend) is expected_mirror
+
+    def test_kas_is_declared_external_rather_than_carrying_a_schedule(self):
+        """KAS is the entry the prose form got wrong, so it is pinned by name.
+
+        Its projection is real and complete and travels as
+        ``_meta.kiro.customAgents``; what is outstanding is only which folder the
+        code sits in. ``external`` says that and names the module, so the reader
+        who wants the projection can go and read it -- where the prose form said
+        "not moved here yet", which a test cannot tell apart from "not written".
+        """
+        declared = projection_for(ACP_BACKEND_KAS)
+        assert declared.kind is ProjectionKind.EXTERNAL
+        assert declared.projection == "kiro_crew.acp.kas_agents"
+        assert declared.tracking
+
+    def test_the_one_no_channel_backend_names_what_would_have_to_exist(self):
+        declared = projection_for(ACP_BACKEND_OPENCODE)
+        assert declared.kind is ProjectionKind.NO_CHANNEL
+        assert declared.channel.strip()
+        assert declared.tracking.strip()
 
 
 class TestRulingsAreComplete:
@@ -199,3 +393,189 @@ class TestClaudeCodeMirror:
         ruling = mirror_for("claude").rulings()[Concern.MCP_SERVERS]
         assert ruling.disposition is Disposition.DELIVERED
         assert "settings.local.json" in ruling.reason
+
+
+class TestAProseOnlyDeclarationFailsTheParityTest:
+    """The negative half, and the reason the rules are a function of their inputs.
+
+    Every assertion above says the shipped tables pass. None of them shows that
+    the tables COULD fail, and a guard nobody has watched fail is a guard nobody
+    knows the shape of. These feed a fake selectable backend through the same
+    checker the real test uses.
+    """
+
+    def _tables(self, declared: McpProjection) -> dict:
+        return dict(
+            projections={**PROJECTIONS, "fakebackend": declared},
+            mirrors=MIRRORS,
+            known=frozenset(ACP_BACKENDS_KNOWN | {"fakebackend"}),
+            selectable=frozenset(BASELINE_SELECTABLE_BACKENDS | {"fakebackend"}),
+            onboarding=_onboarding_text(),
+        )
+
+    def test_a_selectable_backend_with_no_declaration_at_all_fails(self):
+        complaints = projection_complaints(
+            projections=PROJECTIONS,
+            mirrors=MIRRORS,
+            known=frozenset(ACP_BACKENDS_KNOWN | {"fakebackend"}),
+            selectable=frozenset(BASELINE_SELECTABLE_BACKENDS | {"fakebackend"}),
+            onboarding=_onboarding_text(),
+        )
+        assert any("no PROJECTIONS entry" in c for c in complaints)
+
+    def test_a_settled_kind_carrying_a_schedule_fails(self):
+        """The exact entry the prose form allowed: a paragraph instead of a kind.
+
+        A backend claiming it needs no projection while its own reason explains
+        that the projection is pending is the state that shipped four times. It
+        parses, it reads plausibly, and nothing could fail on it.
+        """
+        complaints = projection_complaints(
+            **self._tables(
+                McpProjection(
+                    kind=ProjectionKind.NATIVE,
+                    reason=(
+                        "this harness has the most complete projection of any backend, "
+                        "it simply has not moved into this folder yet -- tracked as the "
+                        "next PR in the mirror stack"
+                    ),
+                )
+            )
+        )
+        assert any("reads as a schedule" in c for c in complaints)
+
+    def test_a_native_claim_the_ref_resolver_does_not_credit_fails(self):
+        """The one kind a list of forbidden words could not keep honest.
+
+        `mirror` needs a registered class, `external` needs an importable module,
+        `no-channel` needs a channel and an onboarding row -- each is checked
+        against something outside the declaration. `native` is checked against
+        ``agent_sdk.mcp_refs``, which has to know the same fact to resolve a ref at
+        all, so a backend declared `native` that the resolver judges against the
+        wire array is a divergence rather than a wording choice.
+        """
+        complaints = projection_complaints(
+            **self._tables(
+                McpProjection(
+                    kind=ProjectionKind.NATIVE,
+                    reason="this harness is handed the agent spec and reads it itself",
+                )
+            )
+        )
+        assert any("agent_sdk.mcp_refs disagrees" in c for c in complaints)
+
+    def test_a_no_channel_backend_absent_from_the_onboarding_table_fails(self):
+        complaints = projection_complaints(
+            **self._tables(
+                McpProjection(
+                    kind=ProjectionKind.NO_CHANNEL,
+                    reason="its initialize advertises no transport the array can use",
+                    channel="an http endpoint the shared gateway serves",
+                    tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+                )
+            )
+        )
+        assert any("does not name it" in c for c in complaints)
+
+    def test_a_tracking_pointer_that_resolves_to_nothing_fails(self):
+        complaints = projection_complaints(
+            **self._tables(
+                McpProjection(
+                    kind=ProjectionKind.EXTERNAL,
+                    reason="its projection lives beside the transport that carries it",
+                    projection="kiro_crew.acp.kas_agents",
+                    tracking="docs/request-for-change/rfc-agent-config-mirror.md#no-such-heading",
+                )
+            )
+        )
+        assert any("resolves to nothing" in c for c in complaints)
+
+    def test_an_external_projection_naming_no_module_fails(self):
+        complaints = projection_complaints(
+            **self._tables(
+                McpProjection(
+                    kind=ProjectionKind.EXTERNAL,
+                    reason="its projection lives beside the transport that carries it",
+                    projection="kiro_crew.acp.no_such_module",
+                    tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+                )
+            )
+        )
+        assert any("does not import" in c for c in complaints)
+
+    def test_a_mirror_kind_with_no_registered_class_fails(self):
+        complaints = projection_complaints(
+            **self._tables(
+                McpProjection(
+                    kind=ProjectionKind.MIRROR,
+                    reason="a mirror class in this folder projects the spec for it",
+                )
+            )
+        )
+        assert any("no MIRRORS class" in c for c in complaints)
+
+
+class TestMcpProjectionRejectsAnIncoherentClaim:
+    def test_a_reason_is_required(self):
+        with pytest.raises(ValueError, match="needs a reason"):
+            McpProjection(kind=ProjectionKind.NATIVE, reason="  ")
+
+    def test_no_channel_without_a_channel_is_refused(self):
+        with pytest.raises(ValueError, match="must name the channel"):
+            McpProjection(
+                kind=ProjectionKind.NO_CHANNEL,
+                reason="its transports cannot carry a stdio server",
+                tracking="https://example.invalid/1",
+            )
+
+    def test_no_channel_without_tracking_is_refused(self):
+        with pytest.raises(ValueError, match="not a kind"):
+            McpProjection(
+                kind=ProjectionKind.NO_CHANNEL,
+                reason="its transports cannot carry a stdio server",
+                channel="an http endpoint the gateway serves",
+            )
+
+    def test_external_without_a_module_is_refused(self):
+        with pytest.raises(ValueError, match="must name the module"):
+            McpProjection(
+                kind=ProjectionKind.EXTERNAL,
+                reason="the projection lives beside its transport",
+                tracking="https://example.invalid/1",
+            )
+
+    def test_a_channel_on_a_settled_kind_is_refused(self):
+        """A channel on a native declaration would read as a gap that is not one."""
+        with pytest.raises(ValueError, match="only meaningful for a no-channel"):
+            McpProjection(
+                kind=ProjectionKind.NATIVE,
+                reason="it reads the spec itself",
+                channel="somewhere",
+            )
+
+    def test_tracking_on_a_settled_kind_is_refused(self):
+        """A finished state has nothing outstanding, so it has nothing to track."""
+        with pytest.raises(ValueError, match="not a finished state"):
+            McpProjection(
+                kind=ProjectionKind.MIRROR,
+                reason="a mirror in this folder projects it",
+                tracking="https://example.invalid/1",
+            )
+
+
+class TestAMirrorMustActuallyDeliverItsServers:
+    @pytest.mark.parametrize("backend", sorted(MIRRORS))
+    def test_mcp_servers_is_delivered_or_translated_never_a_gap(self, backend):
+        """``kind=mirror`` is a claim about the servers, so the ruling must agree.
+
+        A mirror whose own ``mcpServers`` ruling is ``no-channel`` or ``withheld``
+        describes a backend that gets none of Crew's tools -- the very state
+        ``no-channel`` is the kind FOR. Allowing the two to disagree would let a
+        registered mirror stand in for the declaration that says so, which is the
+        prose problem again one level down.
+        """
+        ruling = mirror_for(backend).rulings()[Concern.MCP_SERVERS]
+        assert ruling.disposition in (
+            Disposition.DELIVERED,
+            Disposition.TRANSLATED,
+        ), f"{backend!r} is registered as a mirror but rules mcpServers {ruling.disposition.value}"

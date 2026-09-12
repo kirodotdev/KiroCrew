@@ -95,15 +95,72 @@ documented cause of the `hooks` regression: see `UNSUPPORTED_SPEC_KEYS` in
 `acp/kas_agents.py`, whose comment states the rule this vocabulary generalises —
 *no slot on the wire is not no such capability in the backend*.
 
-## Adding a backend
+## The four projection kinds
 
-1. Write `<backend>.py` here with a mirror class and its `rulings()`.
-2. Add it to `MIRRORS` in `registry.py` — or, if it genuinely needs no
-   projection, add it to `NO_MIRROR` **with the reason**. A backend in neither map
-   raises.
-3. Route the backend's session-params hook on `AcpClient` at the mirror.
-4. The parity test then holds you to it: every backend x every concern must
-   resolve to a disposition with a reason.
+A disposition answers "what happens to this concern"; a **kind** answers the prior
+question, "how does anything reach this backend at all?". Every backend id this
+build can spell has one `McpProjection` in `registry.py`, and the kind is what a
+test can read.
+
+| Kind | Means | Required fields |
+|---|---|---|
+| `native` | the backend reads `~/.kiro/agents/<name>.json` itself, so there is nothing to project | `reason` |
+| `mirror` | a mirror in this folder projects it; must have a class in `MIRRORS` | `reason` |
+| `external` | Crew projects it, from a module outside this folder | `reason`, `projection`, `tracking` |
+| `no-channel` | no transport this backend advertises can carry Crew's servers | `reason`, `channel`, `tracking` |
+
+`no-channel` is the only kind under which a session legitimately holds none of
+Crew's tools, and it is the one the prose form could not distinguish from a
+backlog item. A paragraph can explain a gap without ever giving it an address, and
+a gap with no address is indistinguishable from a decision — so the two kinds that
+are not finished states are required to be ADDRESSABLE, by the constructor rather
+than by a reviewer. `channel` names what would have to exist; `projection` names
+the module a reader goes to; `tracking` is an issue URL or a repo-relative
+`path#anchor` the parity test resolves.
+
+A `native` or `mirror` declaration may carry neither, and its `reason` may not read
+as a schedule: the parity test rejects "pending", "not yet moved", "unwritten" and
+their relatives on those two kinds.
+
+Every kind is additionally cross-checked against something outside its own text,
+so no kind's honesty rests on how its reason is worded. `mirror` needs a
+registered class and an `mcpServers` ruling of `delivered` or `translated`;
+`external` needs an importable module; `no-channel` needs a channel, a resolvable
+tracking pointer and an onboarding row; and `native` is checked against
+`agent_sdk/mcp_refs.py`, which has to know the same fact to resolve a `@server`
+ref at all — it satisfies a ref from the spec's OWN `mcpServers` for a
+spec-reading backend and from the wire array for every other. A declaration and
+the resolver acting on it may not diverge, in either direction. A selectable backend
+whose projection was not written could previously sit under one name with an
+explanation of when it would be, and every check stayed green — which is the
+structural reason the same missing-tools defect shipped on four harnesses in a row.
+
+## Adding a backend: checklist
+
+1. **Decide the kind.** Read its `initialize` result before deciding: what the
+   harness advertises is the answer, not what it resembles. A harness that
+   advertises no transport the `session/new` array can use is `no-channel`, and
+   that is a legitimate destination — named, not implied.
+2. **Write the mirror, or write the declaration.** `mirror` means a
+   `<backend>.py` here with a mirror class and its `rulings()`, registered in
+   `MIRRORS`. Every other kind means an entry in `PROJECTIONS` with the fields its
+   kind requires. A backend in neither table raises.
+3. **Route it.** For a `mirror`, point the backend's session-params hook on
+   `AcpClient` at the mirror so the declaration and the wire agree.
+4. **The parity test then holds you to it** (`test/test_provider_mirrors.py`):
+   one declaration per known and selectable id, `mirror` only with a class,
+   `mcpServers` ruled `delivered` or `translated` on a mirror, `native` only for an
+   id `agent_sdk/mcp_refs.py` resolves against the spec itself, a resolvable
+   `tracking`, an importable `projection`, and every concern answered with a
+   reason.
+5. **The doctor row.** A selected `no-channel` backend prints one informational
+   row naming its `channel` and `tracking`, so the operator who chose it learns
+   that Crew's tools are absent by declaration rather than by diagnosis.
+6. **The onboarding table row.** A selectable `no-channel` backend must also be
+   named in `docs/system-specs/modules/harness-onboarding.md`, and the parity test
+   checks it. The declaration is what code reads; the onboarding table is what a
+   human reads BEFORE writing any of this, so a gap recorded in only one of the
+   two is a gap the next author misses.
 
 The folder makes a mirror easy to find and easy to copy. The test is what asks
 the question. Both are needed — a folder alone is just a tidier place to forget.
@@ -123,12 +180,16 @@ A mirror declares and routes; a helper translates.
 
 ## Current state
 
-| Backend | Mirror | Notes |
+Declared in `PROJECTIONS` (`registry.py`); this table is a reading of it, not a
+second source.
+
+| Backend | Kind | Where it goes, and what is outstanding |
 |---|---|---|
-| `claude` | `claude_code.py` | both faces; `hooks` is its one open `no-channel` |
-| `codex` | `codex.py` | wire face only — Crew writes no codex file, so the `session/new` array is its whole channel. `hooks` is its one open `no-channel`; `disabledTools` is honoured by withholding a third-party server it narrows, and by refusing the call at the approval request for Crew's own control plane; the array, the withhold set and the deny pairs all come from one spec parse |
-| `` (kiro-cli) | `NO_MIRROR` | reads the spec itself via `--agent`; only a small `cli.json` overlay, whose home is still an open decision |
-| `kas` | `NO_MIRROR`, pending | has the most complete projection of any backend, not yet moved here |
+| `` (kiro-cli) | `native` | reads the spec itself via `--agent`. Its only native-config write is the small `cli.json` overlay, whose home is a separate decision |
+| `claude` | `mirror` | `claude_code.py`, both faces; `hooks` is its one open `no-channel` disposition |
+| `codex` | `mirror` | `codex.py`, wire face only — Crew writes no codex file, so the `session/new` array is its whole channel. `hooks` is its one open `no-channel` disposition; `disabledTools` is honoured by withholding a third-party server it narrows, and by refusing the call at the approval request for Crew's own control plane; the array, the withhold set and the deny pairs all come from one spec parse |
+| `kas` | `external` | `acp/kas_agents.py` (+ `acp/kas_permissions.py`), travelling as `_meta.kiro.customAgents`. The most complete projection of any backend, down a real channel — what is outstanding is only WHERE the code sits, and the RFC schedules that as a pure relocation of its own so a live harness's projection is not moved and changed in one diff |
+| `opencode` | `no-channel` | its `initialize` advertises `http` and `sse` MCP transports and no stdio, so the array cannot carry Crew's stdio servers, and its own config file lives in the operator's checkout. The shared MCP gateway does not reach it either: a broker stub is shaped as a stdio element too, so it lands in the same array. Its sessions hold none of Crew's own tools, gateway on or off |
 
 ## Verify against the adapter, not against the last mirror
 

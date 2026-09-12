@@ -113,10 +113,10 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
     **It reads the mirror seam, and that bounds what it can claim.** The wire
     array comes from ``providers.mirrors.mirror_for`` -- the same seam
     ``AcpClient._resolve_session_mcp_servers`` composes from -- so a backend whose
-    projection lives OUTSIDE that folder (KAS today, per its own ``NO_MIRROR``
-    reason) reports refs here that its own projection may well carry.
-    ``has_mirror`` is what lets the caller say which case it is instead of
-    collapsing the two.
+    projection lives OUTSIDE that folder (an ``external`` declaration) reports
+    refs here that its own projection may well carry. ``has_mirror`` is what lets
+    the caller say which case it is instead of collapsing the two, and
+    :func:`backend_mcp_projection` is what says which kind it is.
 
     ``permission_surface_owned=True`` models the ordinary spawn: the claude mirror
     withholds its whole array when Crew did not author the session's native
@@ -131,7 +131,7 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
     from kiro_crew.acp.session_mcp import agent_spec_snapshot
     from kiro_crew.acp_backends import selectable_backend_values
     from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
-    from kiro_crew.providers.mirrors import NO_MIRROR, mirror_for
+    from kiro_crew.providers.mirrors import has_mirror, mirror_for
 
     spec = agent_spec_snapshot(agent)
     if not spec:
@@ -148,8 +148,39 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
             unresolved = unresolved_server_refs(spec, wire, backend=backend)
         except Exception:
             continue
-        rows.append((backend, unresolved, backend not in NO_MIRROR))
+        rows.append((backend, unresolved, has_mirror(backend)))
     return True, sorted(rows)
+
+
+def backend_mcp_projection(backend: str) -> tuple[str, str, str] | None:
+    """How *backend* is declared to receive Crew's MCP servers, as plain data.
+
+    Returns ``(kind, channel, tracking)`` -- the kind spelled as its wire value
+    (``native`` / ``mirror`` / ``external`` / ``no-channel``) -- or ``None`` for a
+    backend with no declaration, which is a state the parity test refuses rather
+    than one a consumer should render.
+
+    The record's ``reason`` is deliberately NOT projected. It is written for the
+    reader of the registry, at registry length, and the consumer renders the two
+    fields that answer an operator's question instead. A field nothing reads is a
+    field the next caller has to decide whether to trust.
+
+    Here rather than read by the consumer for the reason every function in this
+    module is here: the declaration lives in ``providers/mirrors``, and a consumer
+    importing it would take a boundary edge the agent-sdk-boundary gate refuses.
+    Plain strings only, so no mirror type crosses the boundary and a caller cannot
+    accidentally hold the record.
+
+    Never raises. A build whose registry cannot be imported is a broken tree, and
+    a diagnostic row is not the place to discover it.
+    """
+    try:
+        from kiro_crew.providers.mirrors import projection_for
+
+        declared = projection_for(backend)
+    except Exception:
+        return None
+    return (str(declared.kind.value), declared.channel, declared.tracking)
 
 
 def kiro_cli_resolves() -> bool:

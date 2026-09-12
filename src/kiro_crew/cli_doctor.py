@@ -1195,7 +1195,6 @@ def _doctor_unresolved_mcp_refs() -> None:
     prints a clean row there rather than every ref it declares -- the resolver keys
     that on the backend id, not on this function.
     """
-    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
     from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs
 
     try:
@@ -1208,7 +1207,7 @@ def _doctor_unresolved_mcp_refs() -> None:
         return
 
     for backend, unresolved, has_mirror in rows:
-        label = POLICY_ID_BY_BACKEND.get(backend, backend) or backend
+        label = _backend_policy_label(backend)
         if not unresolved:
             print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
             continue
@@ -1224,9 +1223,10 @@ def _doctor_unresolved_mcp_refs() -> None:
                 "tools behind them are absent from its sessions with nothing to "
                 "say so. The shared MCP gateway can still deliver a server it "
                 "wrapped as a broker stub, which this row does not model. "
-                "Whether the omission is a decision or an unwritten projection "
-                "is recorded per backend in providers/mirrors/registry.py "
-                "(NO_MIRROR); a backend that projects elsewhere reads as "
+                "Which of those it is -- a decided no-channel harness or a "
+                "projection that lives outside providers/mirrors/ -- is the KIND "
+                "on that backend's entry in providers/mirrors/registry.py "
+                "(PROJECTIONS); a backend that projects elsewhere reads as "
                 "unprojected here."
             )
             continue
@@ -1237,6 +1237,75 @@ def _doctor_unresolved_mcp_refs() -> None:
             "transport, or a name the spec references but never defines. Compare "
             "the agent spec's mcpServers against its tools list."
         )
+
+
+def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
+    """One row for the SELECTED backend when its declaration says ``no-channel``.
+
+    :func:`_doctor_unresolved_mcp_refs` answers this per selectable harness, off
+    the default spec's own refs. This answers a different question, about the one
+    harness the operator actually configured, and it answers it for a spec that
+    references no server at all: a ``no-channel`` backend has no transport that
+    can carry Crew's servers, so every Crew tool is absent from its sessions
+    whatever the spec says. That is a property of the harness, not of the spec,
+    and a spec with an empty ``tools`` list produces no unresolved ref to hang it
+    off.
+
+    Prints only for that one kind. ``native``, ``mirror`` and ``external`` all
+    mean the servers do reach the session, so a row there would be noise on every
+    stock install — and the refs row already speaks when a projection drops
+    something.
+
+    Reports only, and appends NO entry to ``issues``, on the terms
+    :func:`_doctor_strict_identity` and :func:`_doctor_unresolved_mcp_refs` both
+    set: choosing a harness whose transport cannot carry Crew's tools is a
+    supported configuration with a declared reason, not a broken install, and
+    failing doctor's exit code on it would make a deliberate choice read as a
+    fault.
+
+    Asks ``agent_sdk`` rather than reading the declaration here, for the reason
+    every other backend question in this module does: the record lives in
+    ``providers/mirrors`` and reaching it from a consumer would take a boundary
+    edge the agent-sdk-boundary gate refuses.
+    """
+    from kiro_crew.agent_sdk.drivers.acp import backend_mcp_projection
+
+    try:
+        backend = cfg.agent.acp_backend
+    except Exception:
+        return
+    declared = backend_mcp_projection(backend)
+    if declared is None:
+        return
+    kind, channel, tracking = declared
+    if kind != "no-channel":
+        return
+    label = _backend_policy_label(backend)
+    print(f"  mcp projection: \u23f9 {label} carries none of Kiro Crew's own tools")
+    _print_wrapped(
+        "This harness advertises no transport the session MCP array can use, so "
+        "Crew's servers are absent by declaration rather than by a "
+        "misconfiguration. The shared MCP gateway does not change that: a broker "
+        "stub is shaped as a stdio element too, so it lands in the same array. "
+        "Switching agent.acp_backend is the operator-side remedy; the line below "
+        "is what would have to be built instead."
+    )
+    # Read off a declaration a plugin-registered backend can author, so it is
+    # printed through the same display guard as every other value in this report.
+    _print_wrapped(f"Would need: {_safe_display(channel)}")
+    _print_wrapped(f"Tracked at: {_safe_display(tracking)}")
+
+
+def _backend_policy_label(backend: str) -> str:
+    """The human spelling of *backend*, matching the refs row's own labels.
+
+    ``ACP_BACKEND_KIRO`` is the empty string, so a bare id renders as nothing;
+    the policy mapping is the one place that already owns a printable name for
+    every id this build can spell.
+    """
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+
+    return POLICY_ID_BY_BACKEND.get(backend, backend) or backend
 
 
 def _doctor_agent_auth() -> None:
@@ -3493,6 +3562,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_strict_identity(cfg)
     _doctor_mcp_gateway_daemon(issues)
     _doctor_unresolved_mcp_refs()
+    _doctor_selected_backend_projection(cfg)
 
     # ── Credentials (AWS / credential-vending MCP) ──
     # After identity, before the agent-facing sections: this is the answer to

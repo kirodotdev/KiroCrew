@@ -525,6 +525,94 @@ class TestUnresolvedMcpRefs:
         assert capsys.readouterr().out == ""
 
 
+class TestSelectedBackendProjectionRow:
+    """The row for a harness whose transport carries none of Crew's own tools.
+
+    Distinct from the unresolved-refs row above, and the difference is what the
+    row is for: refs are read off the default spec, so a spec that references no
+    server produces no row at all -- while a ``no-channel`` harness has no
+    transport for Crew's servers whatever any spec says. That is a property of the
+    harness, and the operator who selected it gets told once.
+    """
+
+    def _cfg(self, backend: str):
+        return SimpleNamespace(agent=SimpleNamespace(acp_backend=backend))
+
+    def test_the_selected_no_channel_backend_gets_a_row_with_its_channel(self, capsys):
+        """Reads the shipped declaration, not a stub.
+
+        A stub would pass on a build where opencode's own entry has drifted back
+        to claiming a projection it does not have, which is the drift the typed
+        record exists to make visible.
+        """
+        cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        out = capsys.readouterr().out
+        assert "opencode" in out
+        assert "none of Kiro Crew's own tools" in out
+        assert "Would need:" in out
+        assert "Tracked at:" in out
+
+    def test_a_backend_that_does_receive_its_servers_prints_nothing(self, capsys):
+        """Silence is the whole point on a stock install.
+
+        kiro-cli reads the spec itself, so a row there would be a permanent note
+        about a state that is correct -- and a report that talks on every install
+        is one people stop reading.
+        """
+        cli_doctor._doctor_selected_backend_projection(self._cfg(""))
+        assert capsys.readouterr().out == ""
+
+    def test_an_undeclared_backend_is_silent_rather_than_wrong(self, capsys):
+        """The parity test refuses this state; the report must not guess at it."""
+        cli_doctor._doctor_selected_backend_projection(self._cfg("a-backend-nobody-declared"))
+        assert capsys.readouterr().out == ""
+
+    def test_a_declaration_carrying_terminal_controls_is_rendered_inert(self, monkeypatch, capsys):
+        """An edition plugin authors its own declaration, so the text is scrubbed.
+
+        Same rule as the refs row: anything a party other than this file wrote
+        goes through ``_safe_display`` before reaching a terminal.
+        """
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        monkeypatch.setattr(
+            acp_driver,
+            "backend_mcp_projection",
+            lambda _b: ("no-channel", "http\x1b]0;pwned\x07", "tracked"),
+        )
+        cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "http" in out
+
+    def test_the_row_never_moves_doctors_exit_code(self):
+        """It takes no ``issues`` list, so it structurally cannot append one.
+
+        Choosing a harness whose transport cannot carry Crew's tools is a
+        supported configuration with a declared reason, so it must not make
+        ``kirocrew doctor`` exit 1.
+        """
+        import inspect
+
+        params = list(inspect.signature(cli_doctor._doctor_selected_backend_projection).parameters)
+        assert params == ["cfg"]
+
+    def test_the_row_is_reached_from_the_report_itself(self):
+        """The check runs, rather than merely existing for its own tests to call."""
+        import inspect
+
+        assert "_doctor_selected_backend_projection(cfg)" in inspect.getsource(cli_doctor._doctor)
+
+    def test_an_unreadable_config_does_not_break_triage(self, capsys):
+        class _Boom:
+            @property
+            def agent(self):
+                raise RuntimeError("config unreadable")
+
+        cli_doctor._doctor_selected_backend_projection(_Boom())  # must not raise
+        assert capsys.readouterr().out == ""
+
+
 class TestSwapTotalProbe:
     """``SwapTotal`` parsed from /proc/meminfo → KiB, or None when unreadable."""
 
