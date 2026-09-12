@@ -437,6 +437,37 @@ class TestStartDevProc:
         assert result["ok"] is False
         assert "exited" in result["error"]
 
+    def test_process_exit_reads_only_a_bounded_log_tail(self, tmp_path, monkeypatch):
+        """A noisy child cannot force the error path to load its whole log."""
+        _make_pkg_json(tmp_path, {"dev": "vite"})
+        (tmp_path / "node_modules").mkdir()
+        monkeypatch.setattr(server, "_resolve_bin", lambda n: Path("/usr/bin/npm"))
+        monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+
+        payload = "noise-" * 1_000 + "界" * 900 + "END"
+        fake = FakePopen(pid=201, returncode=1)
+
+        def fake_popen(*args, **kwargs):
+            handle = kwargs["stdout"]
+            handle.write(payload.encode("utf-8"))
+            handle.flush()
+            return fake
+
+        original_read_text = Path.read_text
+
+        def reject_whole_log_read(path, *args, **kwargs):
+            if path.name == "devserver-proj-tail.log":
+                raise AssertionError("startup diagnostics must not read the whole log")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(Path, "read_text", reject_whole_log_read)
+
+        result = server._start_dev_proc("proj-tail", tmp_path)
+
+        assert result["ok"] is False
+        assert result["log"] == payload[-server._DEV_LOG_TAIL_CHARS :]
+
     def test_spawn_oserror(self, tmp_path, monkeypatch):
         """Popen failure (e.g. ENOENT) returns an error dict, not an exception."""
         _make_pkg_json(tmp_path, {"dev": "vite"})
