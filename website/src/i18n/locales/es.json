@@ -6952,12 +6952,12 @@
       "no_matches": "Sin coincidencias"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "Gestionar en Ajustes",
+      "manage_visible_models": "Gestionar modelos visibles",
       "default_for_agent": "Modelo predeterminado para <agent/>",
       "filter_models": "Filtrar modelos",
       "model_list": "Lista de modelos",
-      "models": "Modelos",
       "pin_model_unavailable": "<model/> no se ofrece en este momento",
-      "reasoning": "Razonamiento",
       "set_default_for_agent": "Establecer <model/> como modelo predeterminado para <agent/>",
       "set_default_for_new_sessions": "Valor predeterminado global para las nuevas sesiones…",
       "type_to_filter": "Escribe para filtrar…"
@@ -7270,6 +7270,7 @@
       "effort": "Esfuerzo",
       "effort_help": "El esfuerzo de razonamiento define cuánto tiempo piensa el modelo antes de responder. Más esfuerzo significa más tiempo razonando problemas difíciles (respuestas más lentas y mejores); menos esfuerzo es más rápido. Al desactivar la anulación por sesión, se vuelve al valor predeterminado de Ajustes → Chat o, si no hay ninguno definido, a la elección del propio modelo (solo Fable/Opus/Sonnet).",
       "faster": "Más rápido",
+      "configured_default_marker": "Valor predeterminado configurado",
       "reasoning_effort": "Esfuerzo de razonamiento",
       "smarter": "Más inteligente",
       "use_configured_default": "Usar el valor predeterminado configurado",
@@ -7400,6 +7401,10 @@
       "selected": "seleccionado",
       "showing": "Mostrando",
       "you": "Tú"
+    },
+    "multiSelect": {
+      "deselect_all": "Anular selección",
+      "select_all": "Seleccionar todo"
     },
     "searchableSelect": {
       "no_matches": "Sin coincidencias",
@@ -13052,6 +13057,13 @@
         "default_auto": "Predeterminado (automático)",
         "default_defers_to_your_agent_config_and_then_to": "Los agentes con su propio modelo configurado ignoran esta opción. \"Predeterminado\" usa el modelo de la configuración del agente o el predeterminado del sistema cuando no hay ninguno configurado. Cambiar esto no afecta las sesiones que ya están abiertas.",
         "default_model": "Modelo predeterminado",
+        "auto_always_visible": "Siempre visible en los selectores de modelos del chat",
+        "failed_to_save_selectable_models": "No se pudieron guardar los modelos seleccionables",
+        "model_picker_all_models": "Todos los modelos ({{count}})",
+        "model_picker_selected_models": "Seleccionados {{selected}} / {{total}}",
+        "search_models": "Buscar modelos…",
+        "selectable_models": "Modelos seleccionables",
+        "selectable_models_description": "Elige qué modelos anunciados aparecen en los selectores del chat. Auto y el modelo de la sesión activa siempre permanecen visibles.",
         "default_normal_length": "Predeterminado: longitud normal",
         "default_reasoning_effort": "Esfuerzo de razonamiento predeterminado",
         "default_to_autopilot_mode": "Usar el modo piloto automático por defecto",

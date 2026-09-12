@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect } from '../../components/settings'
 import { Btn, Input } from '../../components/ui'
 import { Plus, Trash2 } from 'lucide-react'
 import { configPatternRefused, configUrlTemplateOk } from '../../utils/autolinkRules'
@@ -16,7 +16,7 @@ import { api, type FeatureVideoStatus } from '../../api/client'
 import { useAppSelector } from '../../store'
 import { serializeDefaultMemoryModeUpdate } from '../../api/queryClient'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
-import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
@@ -24,6 +24,8 @@ import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../.
 import { platformShortcut } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
+import { fmtNumber } from '../../i18n/format'
+import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -50,7 +52,9 @@ function restoreLabels(): string[] {
 const FEATURE_VIDEO_POLL_MS = 15_000
 
 const COMPACT_OPTIONS = ['20', '40', '60', '70', '80', '90']
-const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '70% (default)', '80%', '90%']
+function compactLabels(): string[] {
+  return ['20%', '40%', '60%', `70% (${i18nT('components.jobForm.default')})`, '80%', '90%']
+}
 
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.
 const ROLE_OPTIONS = ['', ...ROLE_SLUGS]
@@ -411,6 +415,12 @@ export function LinkPatternsEditor({ label, description, configKey, rules, onSav
   )
 }
 
+type HiddenModelsUpdate = {
+  next: string[]
+  add?: string[]
+  remove?: string[]
+}
+
 export function ChatPanel() {
   const qc = useQueryClient()
   const [chatCfg, setChatCfg] = useState<ChatConfig>(loadChatConfig)
@@ -456,7 +466,7 @@ export function ChatPanel() {
   // second toggle during a save carries the first one's value forward.
   const dashCfg = overlay.shown(
     'dashboardConfig',
-    dashQ.data ?? { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, default_memory_mode: 'persistent' as const, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false, link_patterns: [], mcp_app_panel: false, auto_open_git_panel: false, session_card_source_links: true, folder_suggestions_enabled: true, use_builtin_browser: true },
+    dashQ.data ?? { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, default_memory_mode: 'persistent' as const, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false, link_patterns: [], mcp_app_panel: false, auto_open_git_panel: false, session_card_source_links: true, folder_suggestions_enabled: true, use_builtin_browser: true, model_picker_hidden_models: [] },
   )
   const shownDefaultMemoryMode = overlay.shown(
     DEFAULT_MEMORY_MODE_PATH,
@@ -760,7 +770,81 @@ export function ChatPanel() {
   // These are the DEFAULTS for new sessions. A session's own model/effort
   // picker still overrides them per-slot; nothing here touches live sessions.
   // Same query key as every other model picker so the list is fetched once.
-  const availableModels = useAvailableModels()
+  const availableModelsQ = useAvailableModelsQuery()
+  const availableModels = availableModelsQ.data
+  const hiddenModels = overlay.shown(
+    'dashboard.model_picker_hidden_models',
+    normalizeHiddenModels(dashCfg.model_picker_hidden_models),
+  )
+  const hiddenModelSet = new Set(hiddenModels)
+  const selectedModelIds = new Set(
+    availableModels
+      .filter(model => model.name === 'auto' || !hiddenModelSet.has(model.name))
+      .map(model => model.name),
+  )
+  const selectedModelCount = selectedModelIds.size
+  const modelPickerSummary = selectedModelCount === availableModels.length
+    ? i18nT('pages.settings.chatPanel.model_picker_all_models', { count: fmtNumber(availableModels.length) })
+    : i18nT('pages.settings.chatPanel.model_picker_selected_models', {
+        selected: fmtNumber(selectedModelCount),
+        total: fmtNumber(availableModels.length),
+      })
+  const hiddenModelsOpts = overlay.mutationOpts<HiddenModelsUpdate>({
+      queryKey: ['dashboardConfig'],
+      mutationFn: ({ add, remove }: HiddenModelsUpdate) => api.updateDashboardConfig({
+        ...(add ? { model_picker_hidden_models_add: add } : {}),
+        ...(remove ? { model_picker_hidden_models_remove: remove } : {}),
+      }),
+      path: () => 'dashboard.model_picker_hidden_models',
+      displayValue: update => update.next,
+      applyToCache: (cached, update) => ({
+        ...(cached as DashboardConfig),
+        model_picker_hidden_models: update.next,
+        model_picker_configured: true,
+      }),
+      onFailure: () => {
+        setPathSaveError(
+          'dashboard.model_picker_hidden_models',
+          i18nT('pages.settings.chatPanel.failed_to_save_selectable_models'),
+        )
+      },
+      onSupersede: clearOwnPathError,
+    })
+  const hiddenModelsMut = useMutation({
+    ...hiddenModelsOpts,
+    onSuccess: (data, update, token) => {
+      // This acknowledgement is monotonic even if a newer list edit superseded
+      // the successful save. Never mark a visit, pending write, or failure.
+      qc.setQueryData<DashboardConfig>(['dashboardConfig'], cached => cached
+        ? { ...cached, model_picker_configured: true }
+        : cached)
+      return hiddenModelsOpts.onSuccess(data, update, token)
+    },
+    // Serializing this path keeps this tab's delta sequence in UI order while the
+    // server applies each delta against the current config under its write lock.
+    scope: { id: 'dashboard.model_picker_hidden_models' },
+  })
+  const saveHiddenModels = (update: HiddenModelsUpdate) => {
+    hiddenModelsMut.mutate(update)
+  }
+  const toggleVisibleModel = (model: string, selected: boolean) => {
+    if (model === 'auto') return
+    const next = selected
+      ? hiddenModels.filter(value => value !== model)
+      : [...hiddenModels.filter(value => value !== model), model]
+    saveHiddenModels(selected ? { next, remove: [model] } : { next, add: [model] })
+  }
+  const advertisedModelIds = new Set(availableModels.map(model => model.name))
+  const hiddenUnadvertisedModels = hiddenModels.filter(model => !advertisedModelIds.has(model))
+  const advertisedOptionalModelIds = availableModels.filter(model => model.name !== 'auto').map(model => model.name)
+  const selectAllModels = () => saveHiddenModels({
+    next: hiddenUnadvertisedModels,
+    remove: advertisedOptionalModelIds,
+  })
+  const deselectAllModels = () => saveHiddenModels({
+    next: [...hiddenUnadvertisedModels, ...advertisedOptionalModelIds],
+    add: advertisedOptionalModelIds,
+  })
   // '' in config means "unset" and resolves the same way 'auto' does, so both
   // render as the 'auto' option rather than as a missing selection.
   const defaultModel = mcCfg?.agent?.model || 'auto'
@@ -904,6 +988,17 @@ export function ChatPanel() {
           <Btn onClick={() => mcQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
       )}
+      {(availableModelsQ.isError || availableModelsQ.isDegraded) && (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          {/* No hand-off: the editable drafts in this panel stay mounted while
+              the catalog retry runs; navigating away could discard them. */}
+          <ErrorNotice
+            className="flex-1 min-w-[16rem]"
+            message={i18nT('pages.settings.chatPanel.failed_to_load_config')}
+          />
+          <Btn onClick={() => availableModelsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
+        </div>
+      )}
 
       <SettingsSection title={i18nT('pages.settings.chatPanel.model')}>
         {/* Grouped by role so each block reads as "which model + how hard it
@@ -921,6 +1016,35 @@ export function ChatPanel() {
             optionLabels={modelOptions.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : m))}
             onChange={v => defaultModelMut.mutate(v)}
             disabled={!mcQ.isSuccess}
+          />
+          <SettingsMultiSelect
+            label={i18nT('pages.settings.chatPanel.selectable_models')}
+            description={i18nT('pages.settings.chatPanel.selectable_models_description')}
+            options={availableModels.map(model => ({
+              value: model.name,
+              label: model.name,
+              description: model.name === 'auto'
+                ? i18nT('pages.settings.chatPanel.auto_always_visible')
+                : model.description,
+              locked: model.name === 'auto',
+            }))}
+            selected={selectedModelIds}
+            onToggle={toggleVisibleModel}
+            bulkActions={[
+              {
+                label: i18nT('components.multiSelect.select_all'),
+                onSelect: selectAllModels,
+              },
+              {
+                label: i18nT('components.multiSelect.deselect_all'),
+                onSelect: deselectAllModels,
+              },
+            ]}
+            summary={modelPickerSummary}
+            searchPlaceholder={i18nT('pages.settings.chatPanel.search_models')}
+            disabled={!dashQ.isSuccess || !availableModelsQ.isSuccess || availableModelsQ.isDegraded}
+            configKey="dashboard.model_picker_hidden_models"
+            settingId="chat.selectable-models"
           />
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.default_reasoning_effort')}
@@ -1226,7 +1350,7 @@ export function ChatPanel() {
             description={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
             value={String(mcCfg?.session?.autocompact_pct ?? 70)}
             options={COMPACT_OPTIONS}
-            optionLabels={COMPACT_LABELS}
+            optionLabels={compactLabels()}
             onChange={v =>
               api.patchConfig('session.autocompact_pct', Number(v))
                 .then(() => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }))

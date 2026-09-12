@@ -6748,12 +6748,12 @@
       "no_matches": "无匹配项"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "设置中管理",
+      "manage_visible_models": "管理显示的模型",
       "default_for_agent": "<agent/> 的默认模型",
       "filter_models": "筛选模型",
       "model_list": "模型列表",
-      "models": "模型",
       "pin_model_unavailable": "<model/> 目前未提供",
-      "reasoning": "推理",
       "set_default_for_agent": "将 <model/> 设为 <agent/> 的默认模型",
       "set_default_for_new_sessions": "新会话的全局默认…",
       "type_to_filter": "输入以筛选…"
@@ -7050,6 +7050,7 @@
       "effort": "强度",
       "effort_help": "推理强度决定模型在回答前思考多久。强度越高，用于思考难题的时间越长（更慢，但答案更好）；越低则越快。关闭会话级覆盖后，会回退到“设置 → 聊天”中的默认值，或在未设置默认值时交由模型自行决定（仅 Fable/Opus/Sonnet）。",
       "faster": "更快",
+      "configured_default_marker": "已配置默认值",
       "reasoning_effort": "推理强度",
       "smarter": "更聪明",
       "use_configured_default": "使用已配置的默认值",
@@ -7180,6 +7181,10 @@
       "selected": "已选中",
       "showing": "正在显示",
       "you": "你"
+    },
+    "multiSelect": {
+      "deselect_all": "取消全选",
+      "select_all": "全选"
     },
     "searchableSelect": {
       "no_matches": "无匹配项",
@@ -12697,6 +12702,13 @@
         "default_auto": "默认（自动）",
         "default_defers_to_your_agent_config_and_then_to": "配置了自己模型的代理会忽略此设置。“默认”使用代理配置中的模型；若未配置，则使用系统默认模型。更改此设置不会影响已打开的会话。",
         "default_model": "默认模型",
+        "auto_always_visible": "在聊天模型选择器中始终显示",
+        "failed_to_save_selectable_models": "保存可选模型失败",
+        "model_picker_all_models": "全部模型（{{count}}）",
+        "model_picker_selected_models": "已选择 {{selected}} / {{total}}",
+        "search_models": "搜索模型…",
+        "selectable_models": "可选模型",
+        "selectable_models_description": "选择哪些已提供的模型显示在聊天模型选择器中。Auto 和当前会话正在使用的模型始终保留显示。",
         "default_normal_length": "默认 — 正常长度",
         "default_reasoning_effort": "默认推理强度",
         "default_to_autopilot_mode": "默认使用自动驾驶模式",

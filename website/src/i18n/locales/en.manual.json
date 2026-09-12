@@ -2705,6 +2705,7 @@
       "comment_unread_other": "{{count}} comments · unread"
     },
     "reasoningEffortDropdown": {
+      "configured_default_marker": "Configured default",
       "default_with_level": "Default · {{level}}",
       "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set (Fable/Opus/Sonnet only)."
     },
@@ -2796,6 +2797,10 @@
       "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
       "trust_all_tools_channel": "Trust all tools in this channel — persists across restarts",
       "trust_this_command": "Trust “<mono>{{cmd}}</mono>”"
+    },
+    "multiSelect": {
+      "deselect_all": "Deselect all",
+      "select_all": "Select all"
     },
     "searchableSelect": {
       "no_matches": "No matches",
@@ -5259,13 +5264,20 @@
         "status_unavailable": "Status unavailable"
       },
       "chatPanel": {
+        "auto_always_visible": "Always visible in chat model pickers",
         "click_a_suggested_reply_to_send_it_instantly": "Click a suggested reply to send it instantly. {{mod}}+Click to select multiple.",
         "comfortable": "Comfortable",
         "compact": "Compact",
         "default_auto": "Default (auto)",
+        "failed_to_save_selectable_models": "Failed to save selectable models",
+        "model_picker_all_models": "All models ({{count}})",
+        "model_picker_selected_models": "Selected {{selected}} / {{total}}",
         "maximum_characters_retained_in_the_completion_ev": "Maximum characters retained in the completion event after applying the truncation mode. 0 disables truncation entirely. Default {{n}}.",
         "opt_in_split_the_chat_into_resizable_session_pan": "Opt-in: split the chat into resizable session panes ({{mod}}+D). Experimental.",
         "role_chat": "Chat",
+        "search_models": "Search models…",
+        "selectable_models": "Selectable Models",
+        "selectable_models_description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",
         "role_background": "Background",
         "role_subagents": "Sub-agents",
         "background_effort": "Background Effort",

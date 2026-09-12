@@ -467,6 +467,10 @@ export interface SliderProps {
   ticks?: boolean
   /** When true, the knob pulses an accent halo while parked at the max notch. */
   emphasizeMax?: boolean
+  /** Independent reference marker on the same axis, such as a configured default. */
+  markerValue?: number
+  /** Visible and accessible label for markerValue. */
+  markerLabel?: string
   className?: string
   'aria-label'?: string
 }
@@ -477,7 +481,7 @@ export interface SliderProps {
  *  (arrows = step, Shift+arrow / PageUp-Down = ×10, Home/End = min/max). */
 export function Slider({
   value, onChange, min = 0, max = 100, step = 1, disabled,
-  label, showValue, formatValue, ticks, emphasizeMax, className = '', 'aria-label': ariaLabel,
+  label, showValue, formatValue, ticks, emphasizeMax, markerValue, markerLabel, className = '', 'aria-label': ariaLabel,
 }: SliderProps) {
   const trackRef = React.useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = React.useState(false)
@@ -497,6 +501,13 @@ export function Slider({
   const pct = ((current - min) / range) * 100
   const display = formatValue ? formatValue(current) : String(current)
   const atMax = emphasizeMax && current >= max
+  const markerCurrent = markerValue === undefined ? null : clamp(markerValue)
+  const markerFrac = markerCurrent === null ? null : (markerCurrent - min) / range
+  const markerTransform = markerCurrent === min
+    ? 'translateX(0)'
+    : markerCurrent === max
+      ? 'translateX(-100%)'
+      : 'translateX(-50%)'
 
   // Discrete-stepper detection: a small, even number of steps. Discrete sliders
   // render tick marks AND spring to each notch even while dragging; continuous
@@ -645,6 +656,17 @@ export function Slider({
             style={{ left: center(f) }}
           />
         ))}
+        {markerFrac !== null && markerLabel && markerValue === markerCurrent && (
+          <span
+            role="img"
+            aria-label={markerLabel}
+            data-slider-marker
+            className="absolute bottom-[calc(100%+4px)] z-10 whitespace-nowrap text-[10px] font-medium text-accent"
+            style={{ left: center(markerFrac), transform: markerTransform }}
+          >
+            {markerLabel}
+          </span>
+        )}
         {/* hover/drag tooltip — value of the step under the cursor */}
         {hoverVal !== null && (
           <div

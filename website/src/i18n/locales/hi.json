@@ -6850,12 +6850,12 @@
       "no_matches": "कोई मेल नहीं"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "सेटिंग में प्रबंधित करें",
+      "manage_visible_models": "दिखने वाले मॉडल प्रबंधित करें",
       "default_for_agent": "<agent/> का डिफ़ॉल्ट मॉडल",
       "filter_models": "मॉडल फ़िल्टर करें",
       "model_list": "मॉडल सूची",
-      "models": "मॉडल",
       "pin_model_unavailable": "<model/> अभी पेश नहीं किया जा रहा है",
-      "reasoning": "रीज़निंग",
       "set_default_for_agent": "<model/> को <agent/> का डिफ़ॉल्ट मॉडल बनाओ",
       "set_default_for_new_sessions": "नए सेशन के लिए ग्लोबल डिफ़ॉल्ट…",
       "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…"
@@ -7160,6 +7160,7 @@
       "effort": "प्रयास",
       "effort_help": "रीज़निंग प्रयास तय करता है कि मॉडल उत्तर देने से पहले कितनी देर सोचेगा। उच्च प्रयास यानी कठिन समस्याओं पर ज़्यादा देर तक सोचना (धीमा, पर बेहतर उत्तर); कम प्रयास तेज़ रहता है। प्रति-सत्र ओवरराइड बंद करने पर सेटिंग्स → चैट में सेट किया गया डिफ़ॉल्ट लागू होता है, या डिफ़ॉल्ट सेट न होने पर मॉडल अपना चुनाव करता है (केवल Fable/Opus/Sonnet)।",
       "faster": "तेज़",
+      "configured_default_marker": "कॉन्फ़िगर किया गया डिफ़ॉल्ट",
       "reasoning_effort": "रीज़निंग प्रयास",
       "smarter": "अधिक स्मार्ट",
       "use_configured_default": "कॉन्फ़िगर किया गया डिफ़ॉल्ट उपयोग करें",
@@ -7290,6 +7291,10 @@
       "selected": "चुने गए",
       "showing": "दिखा रहे हैं",
       "you": "तुम"
+    },
+    "multiSelect": {
+      "deselect_all": "चयन हटाएँ",
+      "select_all": "सभी चुनें"
     },
     "searchableSelect": {
       "no_matches": "कोई मेल नहीं",
@@ -12875,6 +12880,13 @@
         "default_auto": "डिफ़ॉल्ट (ऑटो)",
         "default_defers_to_your_agent_config_and_then_to": "अपना कॉन्फ़िगर किया गया मॉडल रखने वाले एजेंट इस सेटिंग को अनदेखा करते हैं। 'डिफ़ॉल्ट' एजेंट कॉन्फ़िगरेशन का मॉडल इस्तेमाल करता है, या कोई मॉडल कॉन्फ़िगर न होने पर सिस्टम डिफ़ॉल्ट का। इसे बदलने से पहले से खुले सेशन प्रभावित नहीं होते।",
         "default_model": "डिफ़ॉल्ट मॉडल",
+        "auto_always_visible": "चैट मॉडल चयनकर्ताओं में हमेशा दिखाई देता है",
+        "failed_to_save_selectable_models": "चुनने योग्य मॉडल सहेजे नहीं जा सके",
+        "model_picker_all_models": "सभी मॉडल ({{count}})",
+        "model_picker_selected_models": "{{selected}} / {{total}} चुने गए",
+        "search_models": "मॉडल खोजें…",
+        "selectable_models": "चुनने योग्य मॉडल",
+        "selectable_models_description": "चुनें कि चैट मॉडल चयनकर्ताओं में कौन से उपलब्ध मॉडल दिखें। Auto और सक्रिय सत्र का मॉडल हमेशा दिखाई देंगे।",
         "default_normal_length": "डिफ़ॉल्ट — सामान्य लंबाई",
         "default_reasoning_effort": "डिफ़ॉल्ट रीज़निंग प्रयास",
         "default_to_autopilot_mode": "डिफ़ॉल्ट रूप से ऑटोपायलट मोड रखें",

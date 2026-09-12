@@ -635,6 +635,14 @@
       "description": "Time window for session restoration"
     },
     {
+      "id": "chat.selectable-models",
+      "label": "Selectable Models",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Adashboard.model_picker_hidden_models",
+      "description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",
+      "configKey": "dashboard.model_picker_hidden_models"
+    },
+    {
       "id": "chat.send-shortcut",
       "label": "Send shortcut",
       "tab": "chat",

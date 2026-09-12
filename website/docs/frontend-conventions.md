@@ -35,7 +35,8 @@ hand-rolling:
 `Slider`, `Checkbox`, `FilteredEmpty`.
 
 There is deliberately no `Select` primitive: use `SimpleSelect`,
-`SettingsSelect`, or `SearchableSelect`.
+`SettingsSelect`, `SearchableSelect`, or `SettingsMultiSelect` for a searchable
+checkbox list in Settings.
 
 `SimpleSelect` accepts optional decorative `optionIcons` alongside its text
 labels. Desktop rows and the selected value show those identities; touch devices

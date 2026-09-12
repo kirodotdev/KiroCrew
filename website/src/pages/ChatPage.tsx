@@ -248,6 +248,7 @@ import WelcomeView from '../components/WelcomeView'
 import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
+import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
@@ -899,8 +900,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       contextWindow: m.context_window || undefined,
     }))
   }, [remoteCrew.isRemote, remoteCrew.capabilities, localModels])
+  const hiddenModelsQ = useModelPickerHiddenModelsQuery()
+  const hiddenModelIds = hiddenModelsQ.data
+  const modelPickerConfigured = useModelPickerConfigured()
   const availableModels = effectiveModels
-  const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(availableModels)
+  const modelPickerModels = useMemo(
+    () => {
+      const pickerSlot = slots.find(slot => slot.key === activeSlot)
+      return filterInteractiveModels(effectiveModels, hiddenModelIds, [
+        pickerSlot?.model || '',
+        pickerSlot?.served_model || '',
+      ])
+    },
+    [effectiveModels, hiddenModelIds, slots, activeSlot],
+  )
+  const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelPickerModels)
   // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
     open: agentDropdown,
@@ -7493,11 +7507,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}
+                modelVisibilityError={hiddenModelsQ.isError}
+                onRetryModelVisibility={() => hiddenModelsQ.refetch()}
                 hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
                 defaultEffort={defaultEffort}
                 effortLevelsOverride={remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined}
+                onManageModels={modelPickerConfigured ? undefined : () => {
+                  setModelDropdown(false)
+                  navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
+                }}
                 onSetDefault={() => {
                   setModelDropdown(false)
                   navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))

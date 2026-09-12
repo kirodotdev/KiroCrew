@@ -6850,12 +6850,12 @@
       "no_matches": "Keine Treffer"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "In Einstellungen verwalten",
+      "manage_visible_models": "Sichtbare Modelle verwalten",
       "default_for_agent": "Standardmodell für <agent/>",
       "filter_models": "Modelle filtern",
       "model_list": "Modellliste",
-      "models": "Modelle",
       "pin_model_unavailable": "<model/> wird derzeit nicht angeboten",
-      "reasoning": "Reasoning",
       "set_default_for_agent": "<model/> als Standardmodell für <agent/> festlegen",
       "set_default_for_new_sessions": "Globaler Standard für neue Sitzungen…",
       "type_to_filter": "Zum Filtern tippen…"
@@ -7160,6 +7160,7 @@
       "effort": "Aufwand",
       "effort_help": "Der Denkaufwand legt fest, wie lange das Modell vor der Antwort nachdenkt. Höher bedeutet mehr Zeit zum Durchdenken schwieriger Probleme (langsamer, bessere Antworten); niedriger ist schneller. Wird die Übersteuerung pro Sitzung deaktiviert, fällt der Denkaufwand auf den Standard unter Einstellungen → Chat zurück oder, wenn kein Standard gesetzt ist, auf die Wahl des Modells selbst (nur Fable/Opus/Sonnet).",
       "faster": "Schneller",
+      "configured_default_marker": "Konfigurierter Standard",
       "reasoning_effort": "Denkaufwand",
       "smarter": "Intelligenter",
       "use_configured_default": "Konfigurierten Standard verwenden",
@@ -7290,6 +7291,10 @@
       "selected": "ausgewählt",
       "showing": "Angezeigt",
       "you": "Du"
+    },
+    "multiSelect": {
+      "deselect_all": "Auswahl aufheben",
+      "select_all": "Alle auswählen"
     },
     "searchableSelect": {
       "no_matches": "Keine Treffer",
@@ -12874,6 +12879,13 @@
         "default_auto": "Standard (auto)",
         "default_defers_to_your_agent_config_and_then_to": "Agenten mit einem eigenen konfigurierten Modell ignorieren diese Einstellung. „Standard“ verwendet das Modell aus der Agentenkonfiguration oder den Systemstandard, wenn keines konfiguriert ist. Änderungen wirken sich nicht auf bereits geöffnete Sitzungen aus.",
         "default_model": "Standardmodell",
+        "auto_always_visible": "In der Chat-Modellauswahl immer sichtbar",
+        "failed_to_save_selectable_models": "Auswählbare Modelle konnten nicht gespeichert werden",
+        "model_picker_all_models": "Alle Modelle ({{count}})",
+        "model_picker_selected_models": "{{selected}} / {{total}} ausgewählt",
+        "search_models": "Modelle suchen…",
+        "selectable_models": "Auswählbare Modelle",
+        "selectable_models_description": "Wähle, welche angebotenen Modelle in der Chat-Modellauswahl erscheinen. Auto und das aktive Sitzungsmodell bleiben immer sichtbar.",
         "default_normal_length": "Standard – normale Länge",
         "default_reasoning_effort": "Standard-Denkaufwand",
         "default_to_autopilot_mode": "Standardmäßig Autopilot-Modus",

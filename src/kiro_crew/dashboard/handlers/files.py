@@ -86,6 +86,7 @@ from kiro_crew.security import (
 from kiro_crew.slack.handler import is_tracked_channel
 from kiro_crew.validation import (
     FILE_READ_SCHEMA,
+    MODEL_ID_RE,
     ValidationError,
     validate_tool_args,
 )
@@ -4233,7 +4234,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             )
             return body_err
         assert body is not None  # read_bounded_json returns (dict, None) on success
-        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "default_memory_mode", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "link_patterns", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
+        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "default_memory_mode", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "link_patterns", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links", "model_picker_hidden_models_add", "model_picker_hidden_models_remove"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
         # Read-only keys the GET exposes: both settings surfaces save with
@@ -4241,7 +4242,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         # PUT body. Drop them here instead of listing them in _allowed -- they
         # stay unwritable, but a round-tripped read-only field must not 400 an
         # unrelated toggle save.
-        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts", "social_share_enabled"}
+        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts", "social_share_enabled", "model_picker_hidden_models", "model_picker_configured"}
         body = {
             k: v
             for k, v in body.items()
@@ -4254,6 +4255,59 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             )
             return web.json_response({"error": f"Unknown fields: {unknown}"}, status=400)
         updates: dict[str, object] = {}
+        hidden_model_add: list[str] | None = None
+        hidden_model_remove: list[str] | None = None
+
+        def _validated_hidden_model_list(field: str) -> tuple[list[str] | None, web.Response | None]:
+            val = body[field]
+            if not isinstance(val, list) or len(val) > 128:
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return None, web.json_response(
+                    {
+                        "error": f"{field} must be an array of at most 128 model IDs",
+                        "code": "invalid_model_picker_hidden_models",
+                    },
+                    status=400,
+                )
+            hidden_models: list[str] = []
+            seen_models: set[str] = set()
+            for raw_model in val:
+                if not isinstance(raw_model, str):
+                    _sel().log_tool_invocation(
+                        session_key="dashboard",
+                        tool_name="dashboard_config_write",
+                        outcome="failure",
+                    )
+                    return None, web.json_response(
+                        {
+                            "error": f"{field} entries must be strings",
+                            "code": "invalid_model_picker_hidden_models",
+                        },
+                        status=400,
+                    )
+                model = raw_model.strip()
+                if not model or model == "auto":
+                    continue
+                if not MODEL_ID_RE.fullmatch(model):
+                    _sel().log_tool_invocation(
+                        session_key="dashboard",
+                        tool_name="dashboard_config_write",
+                        outcome="failure",
+                    )
+                    return None, web.json_response(
+                        {
+                            "error": f"{field} contains an invalid model ID",
+                            "code": "invalid_model_picker_hidden_models",
+                        },
+                        status=400,
+                    )
+                if model not in seen_models:
+                    seen_models.add(model)
+                    hidden_models.append(model)
+            return hidden_models, None
+
         if "restore_sessions" in body:
             val = body["restore_sessions"]
             if not isinstance(val, bool):
@@ -4506,6 +4560,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["session_card_source_links"] = val
+        if "model_picker_hidden_models_add" in body:
+            hidden_model_add, error_response = _validated_hidden_model_list(
+                "model_picker_hidden_models_add"
+            )
+            if error_response is not None:
+                return error_response
+            updates["model_picker_configured"] = True
+        if "model_picker_hidden_models_remove" in body:
+            hidden_model_remove, error_response = _validated_hidden_model_list(
+                "model_picker_hidden_models_remove"
+            )
+            if error_response is not None:
+                return error_response
+            updates["model_picker_configured"] = True
         # Serialize the read-modify-write under BOTH config locks so no concurrent
         # writer -- in-process OR another process -- can clobber it:
         #  * update_config_locked holds the cross-process advisory file lock
@@ -4533,6 +4601,25 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             section = data.get("dashboard")
             if not isinstance(section, dict):
                 section = data["dashboard"] = {}
+            if hidden_model_add is not None or hidden_model_remove is not None:
+                current = section.get("model_picker_hidden_models")
+                current_models = current if isinstance(current, list) else []
+                remove = set(hidden_model_remove or [])
+                merged_models: list[str] = []
+                seen_models: set[str] = set()
+                for raw_model in current_models:
+                    if not isinstance(raw_model, str):
+                        continue
+                    model = raw_model.strip()
+                    if not model or model == "auto" or model in remove or model in seen_models:
+                        continue
+                    seen_models.add(model)
+                    merged_models.append(model)
+                for model in hidden_model_add or []:
+                    if model not in seen_models:
+                        seen_models.add(model)
+                        merged_models.append(model)
+                section["model_picker_hidden_models"] = merged_models
             for _field, _value in updates.items():
                 section[_field] = _value
             return data
@@ -4637,6 +4724,8 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,
+            "model_picker_hidden_models": list(cfg.dashboard.model_picker_hidden_models),
+            "model_picker_configured": cfg.dashboard.model_picker_configured,
             # Read-only here (absent from the PUT allowlist above): authorizing a
             # self-managed GitLab instance is a config-file decision, not a
             # dashboard toggle. The client uses it only to decide which pasted

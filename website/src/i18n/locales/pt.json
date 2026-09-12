@@ -6952,12 +6952,12 @@
       "no_matches": "Nenhuma correspondência"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "Gerenciar nas configurações",
+      "manage_visible_models": "Gerenciar modelos visíveis",
       "default_for_agent": "Modelo padrão de <agent/>",
       "filter_models": "Filtrar modelos",
       "model_list": "Lista de modelos",
-      "models": "Modelos",
       "pin_model_unavailable": "<model/> não está sendo oferecido no momento",
-      "reasoning": "Raciocínio",
       "set_default_for_agent": "Definir <model/> como modelo padrão de <agent/>",
       "set_default_for_new_sessions": "Padrão global para novas sessões…",
       "type_to_filter": "Digite para filtrar…"
@@ -7270,6 +7270,7 @@
       "effort": "Esforço",
       "effort_help": "O esforço de raciocínio define por quanto tempo o modelo pensa antes de responder. Valores maiores significam mais tempo raciocinando sobre problemas difíceis (mais lento, respostas melhores); valores menores são mais rápidos. Ao desativar a substituição por sessão, o esforço volta ao padrão definido em Configurações → Chat, ou à escolha do próprio modelo quando nenhum padrão está definido (apenas Fable/Opus/Sonnet).",
       "faster": "Mais rápido",
+      "configured_default_marker": "Padrão configurado",
       "reasoning_effort": "Esforço de raciocínio",
       "smarter": "Mais inteligente",
       "use_configured_default": "Usar o padrão configurado",
@@ -7400,6 +7401,10 @@
       "selected": "selecionado",
       "showing": "Exibindo",
       "you": "Você"
+    },
+    "multiSelect": {
+      "deselect_all": "Desmarcar tudo",
+      "select_all": "Selecionar tudo"
     },
     "searchableSelect": {
       "no_matches": "Nenhum resultado",
@@ -13051,6 +13056,13 @@
         "default_auto": "Padrão (automático)",
         "default_defers_to_your_agent_config_and_then_to": "Agentes com um modelo configurado próprio ignoram esta configuração. 'Padrão' usa o modelo da configuração do agente ou o padrão do sistema quando nenhum estiver configurado. Alterar isso não afeta sessões que já estão abertas.",
         "default_model": "Modelo padrão",
+        "auto_always_visible": "Sempre visível nos seletores de modelo do chat",
+        "failed_to_save_selectable_models": "Não foi possível salvar os modelos selecionáveis",
+        "model_picker_all_models": "Todos os modelos ({{count}})",
+        "model_picker_selected_models": "Selecionados {{selected}} / {{total}}",
+        "search_models": "Pesquisar modelos…",
+        "selectable_models": "Modelos selecionáveis",
+        "selectable_models_description": "Escolha quais modelos anunciados aparecem nos seletores do chat. Auto e o modelo da sessão ativa permanecem sempre visíveis.",
         "default_normal_length": "Predefinido — comprimento normal",
         "default_reasoning_effort": "Esforço de raciocínio padrão",
         "default_to_autopilot_mode": "Usar modo Autopilot por padrão",

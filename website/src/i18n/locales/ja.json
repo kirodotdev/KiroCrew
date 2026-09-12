@@ -6748,12 +6748,12 @@
       "no_matches": "一致するものがありません"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "設定で管理",
+      "manage_visible_models": "表示するモデルを管理",
       "default_for_agent": "<agent/> のデフォルトモデル",
       "filter_models": "モデルをフィルター",
       "model_list": "モデルリスト",
-      "models": "モデル",
       "pin_model_unavailable": "<model/> は現在提供されていません",
-      "reasoning": "推論",
       "set_default_for_agent": "<model/> を <agent/> のデフォルトモデルに設定",
       "set_default_for_new_sessions": "新規セッションのグローバルデフォルト…",
       "type_to_filter": "フィルターするには入力…"
@@ -7050,6 +7050,7 @@
       "effort": "エフォート",
       "effort_help": "推論エフォートは、モデルが回答前に考える時間を設定します。高いほど難しい問題を長く推論するため遅くなりますが、回答品質が向上します。低いほど高速です。セッションごとの上書きをオフにすると、設定 → チャットのデフォルトへフォールバックします。デフォルトがなければモデル自身の選択を使用します（Fable/Opus/Sonnet のみ）。",
       "faster": "高速",
+      "configured_default_marker": "設定済みのデフォルト",
       "reasoning_effort": "推論エフォート",
       "smarter": "スマート",
       "use_configured_default": "設定されたデフォルトを使用",
@@ -7180,6 +7181,10 @@
       "selected": "選択済み",
       "showing": "表示中",
       "you": "あなた"
+    },
+    "multiSelect": {
+      "deselect_all": "すべてを選択解除",
+      "select_all": "すべてを選択"
     },
     "searchableSelect": {
       "no_matches": "マッチするものがありません",
@@ -12697,6 +12702,13 @@
         "default_auto": "デフォルト（自動）",
         "default_defers_to_your_agent_config_and_then_to": "独自の設定済みモデルがあるエージェントは、この設定を無視します。「デフォルト」は、エージェント設定のモデルを使用し、未設定の場合はシステムデフォルトを使用します。変更しても、すでに開いているセッションには影響しません。",
         "default_model": "デフォルトモデル",
+        "auto_always_visible": "チャットのモデル選択では常に表示",
+        "failed_to_save_selectable_models": "選択可能なモデルを保存できませんでした",
+        "model_picker_all_models": "すべてのモデル（{{count}}）",
+        "model_picker_selected_models": "{{selected}} / {{total}} を選択",
+        "search_models": "モデルを検索…",
+        "selectable_models": "選択可能なモデル",
+        "selectable_models_description": "チャットのモデル選択に表示する提供モデルを選びます。Auto とアクティブなセッションのモデルは常に表示されます。",
         "default_normal_length": "標準 — 通常の長さ",
         "default_reasoning_effort": "デフォルト推論努力度",
         "default_to_autopilot_mode": "オートパイロットモードをデフォルトに",

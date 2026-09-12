@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { useProvider } from '../providers'
-import { modelListRefetchInterval } from '../providers/modelListHealth'
+import { modelListRefetchInterval, useModelsDegraded } from '../providers/modelListHealth'
 import { withAutoFirst } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
 
@@ -43,13 +43,20 @@ const PLACEHOLDER: ModelInfo[] = [{ name: 'auto', description: '' }]
  * kiro-cli. Other mounted observers still fetch normally — `enabled` gates who
  * *triggers* a fetch, not what lands in the cache.
  */
-export function useAvailableModels({ enabled }: { enabled?: boolean } = {}): ModelInfo[] {
+type AvailableModelsOptions = { enabled?: boolean }
+
+export function useAvailableModelsQuery({ enabled }: AvailableModelsOptions = {}) {
   const provider = useProvider()
-  const { data } = useQuery({
+  const isDegraded = useModelsDegraded(provider.id)
+  const query = useQuery({
     queryKey: ['available-models', provider.id],
     queryFn: async () => withAutoFirst(await provider.fetchAvailableModels()),
     refetchInterval: modelListRefetchInterval,
     ...(enabled === undefined ? {} : { enabled }),
   })
-  return data ?? PLACEHOLDER
+  return { ...query, data: query.data ?? PLACEHOLDER, isDegraded }
+}
+
+export function useAvailableModels(options: AvailableModelsOptions = {}): ModelInfo[] {
+  return useAvailableModelsQuery(options).data
 }

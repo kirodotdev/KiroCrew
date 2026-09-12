@@ -6952,12 +6952,12 @@
       "no_matches": "Aucun résultat"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "Gérer dans les paramètres",
+      "manage_visible_models": "Gérer les modèles affichés",
       "default_for_agent": "Modèle par défaut pour <agent/>",
       "filter_models": "Filtrer les modèles",
       "model_list": "Liste des modèles",
-      "models": "Modèles",
       "pin_model_unavailable": "<model/> n’est pas proposé pour le moment",
-      "reasoning": "Raisonnement",
       "set_default_for_agent": "Définir <model/> comme modèle par défaut pour <agent/>",
       "set_default_for_new_sessions": "Valeur par défaut globale pour les nouvelles sessions…",
       "type_to_filter": "Saisir pour filtrer…"
@@ -7270,6 +7270,7 @@
       "effort": "Effort",
       "effort_help": "L’effort de raisonnement définit la durée de réflexion du modèle avant de répondre. Plus il est élevé, plus le modèle prend le temps de résoudre les problèmes difficiles (réponses plus lentes mais meilleures) ; plus il est faible, plus la réponse est rapide. Désactiver le remplacement par session revient à la valeur par défaut définie dans Paramètres → Chat, ou au choix du modèle lui-même si aucune valeur par défaut n’est définie (Fable/Opus/Sonnet uniquement).",
       "faster": "Plus rapide",
+      "configured_default_marker": "Valeur par défaut configurée",
       "reasoning_effort": "Effort de raisonnement",
       "smarter": "Plus intelligent",
       "use_configured_default": "Utiliser la valeur par défaut configurée",
@@ -7400,6 +7401,10 @@
       "selected": "sélectionné",
       "showing": "Affichage de",
       "you": "Toi"
+    },
+    "multiSelect": {
+      "deselect_all": "Tout désélectionner",
+      "select_all": "Tout sélectionner"
     },
     "searchableSelect": {
       "no_matches": "Aucun résultat",
@@ -13052,6 +13057,13 @@
         "default_auto": "Par défaut (auto)",
         "default_defers_to_your_agent_config_and_then_to": "Les agents ayant leur propre modèle configuré ignorent ce réglage. «Par défaut» utilise le modèle de la configuration de l’agent, ou le modèle système par défaut lorsqu’aucun n’est configuré. Modifier ce réglage n’affecte pas les sessions déjà ouvertes.",
         "default_model": "Modèle par défaut",
+        "auto_always_visible": "Toujours visible dans les sélecteurs de modèle du chat",
+        "failed_to_save_selectable_models": "Impossible d’enregistrer les modèles sélectionnables",
+        "model_picker_all_models": "Tous les modèles ({{count}})",
+        "model_picker_selected_models": "{{selected}} / {{total}} sélectionnés",
+        "search_models": "Rechercher des modèles…",
+        "selectable_models": "Modèles sélectionnables",
+        "selectable_models_description": "Choisissez les modèles annoncés qui apparaissent dans les sélecteurs du chat. Auto et le modèle de la session active restent toujours visibles.",
         "default_normal_length": "Par défaut — longueur normale",
         "default_reasoning_effort": "Effort de raisonnement par défaut",
         "default_to_autopilot_mode": "Mode Autopilot par défaut",

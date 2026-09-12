@@ -6748,12 +6748,12 @@
       "no_matches": "일치 항목 없음"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "설정에서 관리",
+      "manage_visible_models": "표시할 모델 관리",
       "default_for_agent": "<agent/>의 기본 모델",
       "filter_models": "모델 필터",
       "model_list": "모델 목록",
-      "models": "모델",
       "pin_model_unavailable": "<model/>은(는) 현재 제공되지 않습니다",
-      "reasoning": "추론",
       "set_default_for_agent": "<model/>을(를) <agent/>의 기본 모델로 설정",
       "set_default_for_new_sessions": "새 세션의 전역 기본값…",
       "type_to_filter": "입력하여 필터…"
@@ -7050,6 +7050,7 @@
       "effort": "강도",
       "effort_help": "추론 강도는 모델이 답변하기 전에 생각하는 시간을 정합니다. 높을수록 어려운 문제를 더 오래 추론하므로 느리지만 답변 품질이 좋아지고, 낮을수록 빠릅니다. 세션별 재정의를 끄면 설정 → 채팅의 기본값으로 돌아가며, 기본값이 없으면 모델 자체의 선택을 사용합니다(Fable/Opus/Sonnet만 해당).",
       "faster": "빠르게",
+      "configured_default_marker": "설정된 기본값",
       "reasoning_effort": "추론 강도",
       "smarter": "똑똑하게",
       "use_configured_default": "설정된 기본값 사용",
@@ -7180,6 +7181,10 @@
       "selected": "선택됨",
       "showing": "표시 중",
       "you": "나"
+    },
+    "multiSelect": {
+      "deselect_all": "전체 선택 해제",
+      "select_all": "전체 선택"
     },
     "searchableSelect": {
       "no_matches": "일치 항목 없음",
@@ -12697,6 +12702,13 @@
         "default_auto": "기본값 (자동)",
         "default_defers_to_your_agent_config_and_then_to": "자체 구성된 모델이 있는 에이전트는 이 설정을 무시합니다. ‘기본값’은 에이전트 구성의 모델을 사용하며, 구성된 모델이 없으면 시스템 기본값을 사용합니다. 이를 변경해도 이미 열린 세션에는 영향이 없습니다.",
         "default_model": "기본 모델",
+        "auto_always_visible": "채팅 모델 선택기에 항상 표시",
+        "failed_to_save_selectable_models": "선택 가능한 모델을 저장하지 못했습니다",
+        "model_picker_all_models": "모든 모델 ({{count}})",
+        "model_picker_selected_models": "{{selected}} / {{total}} 선택됨",
+        "search_models": "모델 검색…",
+        "selectable_models": "선택 가능한 모델",
+        "selectable_models_description": "채팅 모델 선택기에 표시할 제공 모델을 선택합니다. Auto와 활성 세션 모델은 항상 표시됩니다.",
         "default_normal_length": "기본 — 보통 길이",
         "default_reasoning_effort": "기본 추론 강도",
         "default_to_autopilot_mode": "오토파일럿 모드를 기본값으로",

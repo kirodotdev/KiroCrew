@@ -26,12 +26,16 @@ import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import ModelDropdownList from './ModelDropdownList'
+import { ManageModelsFooter } from './ModelEffortDropdown'
+import { settingsPath } from './settingsPath'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
+import type { ModelInfo } from '../providers/types'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
+import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
@@ -440,8 +444,27 @@ export default function ChatPane({
       .catch(() => setDefaultAgentFailed(true))
   }, [dispatch])
   const agentDD = useFilteredDropdown(installedAgents)
-  const availableModels = useAvailableModels()
-  const modelDD = useFilteredDropdown(availableModels)
+  const localModels = useAvailableModels()
+  const effectiveModels = useMemo<ModelInfo[]>(() => {
+    if (!paneRemoteCrew.isRemote) return localModels
+    return (paneRemoteCrew.capabilities?.models ?? []).map(model => ({
+      name: model.model_name,
+      description: model.description || model.display_name,
+      contextWindow: model.context_window || undefined,
+    }))
+  }, [paneRemoteCrew.isRemote, paneRemoteCrew.capabilities, localModels])
+  const hiddenModelsQ = useModelPickerHiddenModelsQuery()
+  const hiddenModelIds = hiddenModelsQ.data
+  const modelPickerConfigured = useModelPickerConfigured()
+  const availableModels = effectiveModels
+  const modelPickerModels = useMemo(
+    () => filterInteractiveModels(effectiveModels, hiddenModelIds, [
+      paneSlot?.model || '',
+      paneSlot?.served_model || '',
+    ]),
+    [effectiveModels, hiddenModelIds, paneSlot?.model, paneSlot?.served_model],
+  )
+  const modelDD = useFilteredDropdown(modelPickerModels)
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The slot's own `model_withheld` verdict answers that when the
   // backend has one; the degraded flag gates only the list-membership fallback —
@@ -1589,9 +1612,27 @@ export default function ChatPane({
                 className={ddInputCls}
               />
             </div>
+            {hiddenModelsQ.isError && (
+              <div className="flex items-center gap-2 px-1.5 py-1">
+                {/* No hand-off: this pane's composer may hold an unsent draft.
+                    Retry keeps the user in the owning chat. */}
+                <ErrorNotice
+                  className="min-w-0 flex-1"
+                  variant="inline"
+                  message={i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}
+                />
+                <Btn type="button" className="shrink-0" onClick={() => hiddenModelsQ.refetch()}>
+                  {i18nT('pages.settings.chatPanel.retry')}
+                </Btn>
+              </div>
+            )}
             <div role="listbox" aria-label={i18nT('components.chatPane.model_list')} className="overflow-y-auto max-h-[280px]">
               <ModelDropdownList models={modelDD.filtered} activeModel={shownModel} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />
             </div>
+            {!modelPickerConfigured && <ManageModelsFooter onManage={() => {
+              modelDD.setOpen(false)
+              navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
+            }} />}
           </div>,
           document.body,
         )}

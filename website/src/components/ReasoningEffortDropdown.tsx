@@ -75,6 +75,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   const concrete = currentEffort && !levels.includes(currentEffort) ? [...levels, currentEffort] : levels
   const maxIdx = Math.max(0, concrete.length - 1)
   const currentIdx = concrete.indexOf(currentEffort)
+  const defaultIdx = defaultEffort ? concrete.indexOf(defaultEffort) : -1
 
   // Optimistic default state so the toggle flips instantly; the persisted value
   // catches up after the debounced write + slot refresh.
@@ -85,6 +86,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   // so toggling Default off restores the user's last explicit pick.
   const [idx, setIdx] = useState(() => currentIdx >= 0 ? currentIdx : Math.min(2, maxIdx))
   useEffect(() => { if (currentIdx >= 0) setIdx(currentIdx) }, [currentIdx])
+  useEffect(() => { setIdx(prev => Math.min(prev, maxIdx)) }, [maxIdx])
   // Async failures must restore the latest authoritative props, not the values
   // captured when a debounced pick started. Keep the concrete selection while
   // Default is authoritative: it is intentionally remembered for the next
@@ -187,7 +189,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
 
   return (
     <div className={embedded ? 'px-3 py-2.5' : 'rounded-lg bg-bg-elevated border border-border px-4 py-3.5 w-[240px]'}>
-      <div className="flex items-center gap-1.5 mb-3">
+      <div className={`flex items-center gap-1.5 ${defaultIdx >= 0 ? 'mb-5' : 'mb-3'}`}>
         <span className="text-[14px] font-medium text-muted uppercase tracking-[.04em] leading-none">{i18nT('components.reasoningEffortDropdown.effort')}</span>
         <span className="relative inline-flex items-center overflow-hidden leading-none" style={{ height: '1.5em' }}>
           <AnimatePresence mode="popLayout" initial={false}>
@@ -214,13 +216,15 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
         onChange={handleSlide}
         disabled={isDefault}
         emphasizeMax={!isDefault}
+        markerValue={defaultIdx >= 0 ? defaultIdx : undefined}
+        markerLabel={defaultIdx >= 0 ? i18nT('components.reasoningEffortDropdown.configured_default_marker') : undefined}
         formatValue={v => effortLabel(concrete[v] ?? '')}
       />
-      <div className={`relative mt-1 h-[14px] text-[10px] text-muted select-none transition-opacity ${isDefault ? 'opacity-40' : ''}`}>
+      <div className={`relative mt-1 h-[14px] select-none text-[10px] text-muted transition-opacity ${isDefault ? 'opacity-40' : ''}`}>
         <span className="absolute left-0">{i18nT('components.reasoningEffortDropdown.faster')}</span>
         <span className="absolute right-0">{i18nT('components.reasoningEffortDropdown.smarter')}</span>
       </div>
-      <div className="flex items-center justify-between gap-2 mt-3.5">
+      <div className="mt-3.5 flex items-center justify-between gap-2">
         <span className="text-[12px] text-text">{defaultToggleLabel}</span>
         <Toggle checked={isDefault} onChange={handleToggleDefault} label={defaultToggleLabel} />
       </div>

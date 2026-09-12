@@ -1063,6 +1063,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.selectable-models",
+    "label": "Selectable Models",
+    "labelKey": "pages.settings.chatPanel.selectable_models",
+    "description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "dashboard.model_picker_hidden_models",
+    "settingId": "chat.selectable-models"
+  },
+  {
     "id": "chat.send-shortcut",
     "label": "Send shortcut",
     "labelKey": "pages.settings.chatPanel.send_shortcut",

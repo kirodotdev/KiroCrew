@@ -1989,6 +1989,21 @@ appears.
 them at boot via `GET /api/theme/boot`; empty `theme_mode`/`theme_color` mean
 unset (the frontend falls back to `localStorage` or the built-in default).
 
+### Interactive model picker visibility
+
+`DashboardConfig.model_picker_hidden_models` is a workspace-persistent list of
+model IDs hidden from interactive chat model pickers. The default is `[]`, which
+shows the full advertised list. The loader accepts only string arrays, trims and
+deduplicates entries, and ignores empty strings and `auto`. The dashboard PUT
+endpoint applies the shared model-ID grammar and a bounded list length. Changes
+apply to ChatPage and ChatPane without a restart; they do not alter `/api/models`,
+entitlement, defaults, role or fallback models, bulk switching, crew editors, or
+app-specific selectors. `model_picker_configured` records the first successful
+visibility save and is read-only through the dashboard API; the same atomic write
+that replaces the hidden list sets it. Existing configurations with a non-empty,
+valid hidden list migrate to configured, while an empty or invalid legacy value
+does not dismiss the first-use shortcut.
+
 ### Dashboard UI language
 
 `DashboardConfig.language` selects the dashboard interface language. It rides the

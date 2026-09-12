@@ -4732,12 +4732,12 @@
       "no_matches": "No matches"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "Manage in Settings",
+      "manage_visible_models": "Manage visible models",
       "default_for_agent": "Default model for <agent/>",
       "filter_models": "Filter models",
       "model_list": "Model list",
-      "models": "Models",
       "pin_model_unavailable": "<model/> isn't offered right now",
-      "reasoning": "Reasoning",
       "set_default_for_agent": "Set <model/> as default model for <agent/>",
       "set_default_for_new_sessions": "Global default for new sessions…",
       "type_to_filter": "Type to filter…"
