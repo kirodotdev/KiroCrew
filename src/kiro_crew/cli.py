@@ -1318,6 +1318,43 @@ Examples:
         action="store_true",
         help="Collect logs + crash reports into a redacted diagnostics zip",
     )
+    _doctor_parser.add_argument(
+        "--ledger-sweep",
+        action="store_true",
+        help=(
+            "List the session/work ledgers that look finished (dry run — "
+            "nothing is deleted without --purge)"
+        ),
+    )
+    _doctor_parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="With --ledger-sweep: actually delete the listed ledgers (irreversible)",
+    )
+    _doctor_parser.add_argument(
+        "--older-than-days",
+        type=float,
+        default=None,
+        metavar="N",
+        help="With --ledger-sweep: idle window before a ledger qualifies (default: 30)",
+    )
+    _doctor_parser.add_argument(
+        "--include-orphans",
+        action="store_true",
+        help=(
+            "With --ledger-sweep: also list a conductor work ledger that holds no "
+            "items at all and whose key names no session this machine still has. "
+            "Never relaxes the session-ledger rule — an in-flight ledger stays"
+        ),
+    )
+    _doctor_parser.add_argument(
+        "--purge-unreadable",
+        action="store_true",
+        help=(
+            "With --ledger-sweep --purge: also delete records this sweep could "
+            "not parse (they are listed but kept by default)"
+        ),
+    )
 
     # gateway
     gw_parser = cli_help.add_command(sub, "gateway")
@@ -3011,7 +3048,15 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             whatsapp=getattr(args, "whatsapp", False),
         )
     elif args.command == "doctor":
-        _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))
+        _doctor(
+            platform_boot_error=_platform_boot_error,
+            bundle=getattr(args, "bundle", False),
+            ledger_sweep_mode=getattr(args, "ledger_sweep", False),
+            ledger_purge=getattr(args, "purge", False),
+            ledger_older_than_days=getattr(args, "older_than_days", None),
+            ledger_include_orphans=getattr(args, "include_orphans", False),
+            ledger_purge_unreadable=getattr(args, "purge_unreadable", False),
+        )
     elif args.command == "manifest":
         _manifest(
             alias=getattr(args, "alias", None),

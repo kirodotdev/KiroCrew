@@ -57,8 +57,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
+import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -188,6 +190,7 @@ CODE_FIELD_TOO_LONG = "field_too_long"
 CODE_INVALID_ACTION = "invalid_action"
 CODE_INVALID_STATUS = "invalid_status"
 CODE_INVALID_VALUE = "invalid_value"
+CODE_LEDGER_NOT_FINISHED = "ledger_not_finished"
 
 
 class WorkLedgerError(Exception):
@@ -1852,3 +1855,143 @@ def apply_acceptance_update(
             slot_key, item, "decision", "acceptance promoted by the conductor"
         )
         return {"item": item, "event": event}
+
+
+# --------------------------------------------------------------------------- #
+# Maintenance
+# --------------------------------------------------------------------------- #
+
+
+def _census_locked(directory: Path) -> tuple[int, int, str]:
+    """``(open, unreadable, damage)`` over one conductor's items. Call under the lock.
+
+    Reads the files directly rather than through :func:`list_work_items`, which
+    SKIPS an unreadable item: that is the right answer for a listing and the
+    wrong one for a delete decision, because a torn record would then be
+    invisible and the ledger would look finished. An item whose stored ``state``
+    is not one of :data:`ITEM_STATES` counts as unreadable rather than closed --
+    an unrecognised disposition is not evidence of closure.
+
+    A failure to ENUMERATE the directory is its own answer, in *damage*, and never
+    folded into "zero items". An items directory this process cannot read is the
+    one case where the count and the truth are unrelated: reading it as empty
+    selects the ordinary purge, which removes ``conductor.json`` and leaves the
+    item data it could not see standing -- a ledger destroyed down to the records
+    that made it a ledger. An absent directory is not damage: a conductor that
+    never created an item has none.
+    """
+    open_items = unreadable = 0
+    items_dir_path = directory / _ITEMS_DIR
+    try:
+        with os.scandir(items_dir_path) as scan:
+            names = sorted(entry.name for entry in scan if entry.is_file())
+    except FileNotFoundError:
+        return 0, 0, ""
+    except OSError as exc:
+        return 0, 0, f"items directory could not be read ({exc.strerror or exc})"
+    for name in names:
+        if not name.endswith(".json") or not _ITEM_ID_RE.match(name[: -len(".json")]):
+            continue
+        raw = _read_json_record(items_dir_path / name)
+        if not isinstance(raw, dict):
+            unreadable += 1
+            continue
+        state = raw.get("state")
+        if not isinstance(state, str) or state not in ITEM_STATES:
+            unreadable += 1
+        elif state not in TERMINAL_ITEM_STATES:
+            open_items += 1
+    return open_items, unreadable, ""
+
+
+def purge_conductor(slot_key: str, *, allow_unreadable: bool = False) -> bool:
+    """Delete one conductor's whole ledger directory. Returns whether it went.
+
+    An EXPLICIT maintenance primitive, like ``session_ledger.purge``: nothing in
+    the request path calls it. The caller owns the POLICY decision -- which
+    ledgers are old enough, which an operator asked about -- but not the
+    correctness one: this function re-establishes for itself, under the lock,
+    that the ledger is actually finished.
+
+    IT IS AIMED BY KEY, NOT BY PATH, and resolves the directory itself through
+    :func:`conductor_dir`. A caller that found a store by WALKING the root must
+    therefore check that the directory it looked at is the one this key resolves
+    to before calling: a copied or hand-made store carrying another ledger's
+    ``slot_key`` breadcrumb otherwise sends this function at the canonical
+    ledger, which the caller never listed and an operator never saw.
+
+    Serialised by :func:`conductor_lock`, FIRST in the lock order, and the
+    re-check happens INSIDE that hold. It refuses -- ``WorkLedgerError`` with
+    code :data:`CODE_LEDGER_NOT_FINISHED` -- when any item is non-terminal, and
+    when any item record is unreadable unless *allow_unreadable* says the
+    operator asked for that too. ``_create_item`` takes this same lock across
+    its whole transaction, so a conductor cannot mint an item while the re-check
+    and the removal run: a caller's eligibility snapshot going stale between its
+    scan and this call is caught here rather than acted on. An ITEM write takes
+    only its own item lock, which is why the refusal is keyed on every item
+    being terminal -- the one state from which the store accepts no item write.
+
+    The lock file is deleted LAST, after the hold is released. It is the inode the
+    lock is held on, and Windows refuses to unlink a file an open handle still
+    holds, so removing it from inside the critical section would leave the
+    directory behind on exactly the platform the lock exists to cover. Removal is
+    best-effort past that point: a concurrent holder of an item lock (POSIX
+    permits the unlink, Windows does not) leaves a residue rather than raising,
+    and the return value reports what actually happened.
+
+    RESIDUAL, stated rather than implied. Removing the lock file removes the
+    inode the lock is taken on, so a writer that was blocked on the OLD inode
+    can proceed while a later writer creates a NEW one, and the two are then not
+    serialised against each other. That is not fixable by ordering: unlinking
+    inside the hold has the same effect, and any path-based advisory lock has it
+    the moment its store is deleted -- ``session_ledger.purge`` removes the same
+    kind of lock file with no lock held at all. What bounds it is WHAT is left to
+    interleave over: this call removes ``conductor.json`` first, so a writer
+    arriving afterwards mints a fresh header rather than editing the purged one,
+    and the worst outcome is two fresh headers racing on a ledger the operator
+    just deleted -- not a lost record.
+    """
+    directory = conductor_dir(slot_key)
+    if not directory.is_dir():
+        return False
+    with conductor_lock(slot_key):
+        open_items, unreadable, damage = _census_locked(directory)
+        if open_items:
+            raise WorkLedgerError(
+                f"conductor ledger has {open_items} open item(s); refusing to purge it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        if damage and not allow_unreadable:
+            raise WorkLedgerError(
+                f"conductor ledger's {damage}; refusing to purge it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        if unreadable and not allow_unreadable:
+            raise WorkLedgerError(
+                f"conductor ledger has {unreadable} unreadable item record(s); "
+                "refusing to purge it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        try:
+            children = list(directory.iterdir())
+        except OSError:
+            children = []
+        for child in children:
+            if child.name == _LOCK_FILE:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                try:
+                    child.unlink()
+                except OSError:
+                    logger.debug("work ledger purge: could not remove %s", child.name)
+    try:
+        (directory / _LOCK_FILE).unlink(missing_ok=True)
+        directory.rmdir()
+    except OSError:
+        logger.debug("work ledger purge: ledger directory not fully removed")
+    return not directory.exists()

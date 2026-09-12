@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import platform as _plat
 import shlex
@@ -19,7 +20,15 @@ from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
 from kiro_crew import agent as _agent
-from kiro_crew import agent_state, dep_sync, diagnostics, platform_compat, sandbox, stt
+from kiro_crew import (
+    agent_state,
+    dep_sync,
+    diagnostics,
+    ledger_sweep,
+    platform_compat,
+    sandbox,
+    stt,
+)
 from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.acp.kas_transport import (
@@ -3296,7 +3305,65 @@ def _venv_deps_ok(venv_py: Path) -> bool:
     return proc.returncode == 0
 
 
-def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
+def _ledger_sweep(
+    *,
+    purge: bool,
+    older_than_days: float | None,
+    include_orphans: bool,
+    purge_unreadable: bool,
+) -> None:
+    """Print (and optionally purge) the ledgers that look finished.
+
+    A short-circuit MODE of ``doctor``, shaped like ``--bundle``: this command has
+    no subparsers, so a maintenance action is a flag plus its modifiers rather
+    than a nested subcommand. Dry run is the default and changes nothing — the
+    purge is a second, explicit invocation, because the deletion is irreversible
+    and the report is what makes it reviewable.
+
+    Deliberately NOT an MCP tool and never automatic. Neither ledger is reclaimed
+    on tab close, on permanent history deletion, or at gateway start, all by
+    design (``docs/system-specs/modules/session-work-ledger.md`` §2); this stays
+    an operator command so no model-reachable surface can delete a session's
+    resumable state.
+    """
+    # ``None`` means "the module's default", so the window has ONE owner. A
+    # literal repeated in argparse would be a second default that drifts silently.
+    window = (
+        ledger_sweep.DEFAULT_OLDER_THAN_DAYS if older_than_days is None else float(older_than_days)
+    )
+    # ``math.isfinite`` FIRST, and not a bare ``window < 0``: every comparison
+    # against NaN is false, so a NaN window passes the sign check AND then makes
+    # every ``age < window`` false, which admits every ledger in both stores at
+    # once. Infinity is refused alongside it — it is not a window, and taking it
+    # as "collect nothing" would make a typo look like a working command.
+    if not math.isfinite(window) or window < 0:
+        print("  ❌ --older-than-days must be a finite number of days, and not negative")
+        sys.exit(2)
+    header = "Ledger Sweep" + ("" if purge else " (dry run — nothing is deleted)")
+    print(f"{header}\n")
+    try:
+        report = ledger_sweep.scan(older_than_days=window, include_orphans=include_orphans)
+    except OSError as exc:
+        print(f"  ❌ could not read the ledger stores: {exc}")
+        sys.exit(1)
+    result = ledger_sweep.purge(report, include_unreadable=purge_unreadable) if purge else None
+    for line in ledger_sweep.render(report, purged=result):
+        print(line)
+    if not purge and report.removable:
+        print("\n  Purge them with: kirocrew doctor --ledger-sweep --purge")
+    if not purge and report.unreadable:
+        print("  Unreadable records need --purge-unreadable, and are worth reading first.")
+
+
+def _doctor(
+    platform_boot_error: "Exception | None" = None,
+    bundle: bool = False,
+    ledger_sweep_mode: bool = False,
+    ledger_purge: bool = False,
+    ledger_older_than_days: float | None = None,
+    ledger_include_orphans: bool = False,
+    ledger_purge_unreadable: bool = False,
+) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
     ``platform_boot_error`` carries a :class:`PlatformCompositionError` from
@@ -3304,7 +3371,46 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     resolved to a non-standalone edition whose companion is missing).  The
     doctor is deliberately allowed to run in that state — diagnosing a broken
     setup is its job — and reports the failure here instead of aborting.
+
+    ``bundle`` and ``ledger_sweep_mode`` are short-circuit MODES rather than extra
+    checks: each prints its own report and returns instead of running the health
+    pass, because neither answers "is this install healthy". The mode parameter is
+    not called ``ledger_sweep`` because that name is the imported module here.
     """
+
+    # ── Ledger cleanup sweep (--ledger-sweep) ──
+    # Short-circuit BEFORE the banner: this mode reports on stored state, not on
+    # the health of the install, so the health banner would only mislabel it.
+    #
+    # A modifier passed WITHOUT the mode is refused rather than ignored. Bare
+    # ``doctor --purge`` otherwise ran the ordinary health pass and exited 0,
+    # which reads exactly like a purge that found nothing to do — so the operator
+    # believes state was reclaimed when nothing was even scanned.
+    if not ledger_sweep_mode:
+        stray = [
+            name
+            for name, given in (
+                ("--purge", ledger_purge),
+                ("--older-than-days", ledger_older_than_days is not None),
+                ("--include-orphans", ledger_include_orphans),
+                ("--purge-unreadable", ledger_purge_unreadable),
+            )
+            if given
+        ]
+        if stray:
+            print(
+                f"  ❌ {', '.join(stray)} only applies with --ledger-sweep; "
+                "nothing was scanned and nothing was deleted."
+            )
+            sys.exit(2)
+    if ledger_sweep_mode:
+        _ledger_sweep(
+            purge=ledger_purge,
+            older_than_days=ledger_older_than_days,
+            include_orphans=ledger_include_orphans,
+            purge_unreadable=ledger_purge_unreadable,
+        )
+        return
 
     print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
