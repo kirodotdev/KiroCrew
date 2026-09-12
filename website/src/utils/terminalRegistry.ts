@@ -153,6 +153,22 @@ export function sendRawToTerminalSession(sessionId: string, data: string): boole
   }
 }
 
+/**
+ * Send raw bytes to a terminal session — used by touch swipe-to-scroll to write
+ * synthesized arrow-key or SGR mouse-wheel sequences straight to the PTY.
+ * Returns false if that session has no open socket.
+ */
+export function sendRawBytesToTerminalSession(sessionId: string, data: Uint8Array): boolean {
+  const ws = getTerminalWs(sessionId)
+  if (!ws || data.length === 0) return false
+  try {
+    ws.send(data)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /* ── Persistent per-session connection manager ──
  * The WebSocket lives here (module scope), NOT in the TerminalView component,
  * so unmounting the terminal tab (activity-bar close, tab switch, chat switch,

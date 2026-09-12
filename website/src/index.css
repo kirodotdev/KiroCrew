@@ -2519,6 +2519,12 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   html { touch-action: pan-x pan-y; }
 }
 
+/* Swipe-to-scroll intercept: when a full-screen or mouse-tracking terminal app
+   is active, the drag is turned into scroll input for the app, so the browser
+   must not claim the vertical pan first. Toggled by useTerminalTouchScroll.
+   `none` is strictly narrower than the root, so the intersection stays `none`. */
+.term-scroll-intercept { touch-action: none; }
+
 /* ── Liquid-glass design system ──
  * Two composable classes for any surface that should look like Apple-style
  * liquid glass — file chips, sidebar, chat input, follow-up bar, etc.

@@ -10,6 +10,7 @@ import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } fro
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
+import { useTerminalTouchScroll } from '../hooks/useTerminalTouchScroll'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
 import ErrorNotice from './ErrorNotice'
@@ -293,6 +294,13 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   // (the staged Select key only reaches the last line or the whole buffer).
   // Inert on mouse devices, where xterm's drag-selection already works.
   const touchSelect = useTerminalTouchSelection(term, touchDevice)
+
+  // One-finger swipe-to-scroll. Full-screen apps (claude, vim, less) have no
+  // scrollback to pan, so the drag is translated into the scroll input they
+  // expect — arrow keys, or SGR wheel reports at the finger cell when the app
+  // holds mouse tracking. Inert on the normal screen, where xterm/browser
+  // already pan the scrollback.
+  useTerminalTouchScroll(term, sessionId, containerRef)
 
   // Re-measure + refit, gated on pane visibility (see remeasureAndFit). Stable
   // per cached term/fit, so the effects below don't re-subscribe.
