@@ -868,10 +868,10 @@ class TestSchemaInit:
     ) -> None:
         """A file that does not exist is skipped by a check, not by catching.
 
-        On Windows ``restrict_to_owner`` shells out, so a missing path raises plain
-        ``OSError`` (icacls exits non-zero) rather than ``FileNotFoundError`` -- which
-        only ever comes from the POSIX ``os.chmod``. Catching alone therefore spawned
-        a futile ``icacls`` per absent file and logged a false "may be readable by
+        On Windows ``restrict_to_owner``'s DACL write raises plain ``OSError``
+        for a missing path rather than ``FileNotFoundError`` -- which only ever
+        comes from the POSIX ``os.chmod``. Catching alone therefore paid a futile
+        lockdown attempt per absent file and logged a false "may be readable by
         other users" warning for each, twice per init. Asserting on what reaches the
         helper pins the check itself, which is observable on both platforms; a mode or
         DACL assertion could not distinguish the two implementations.
@@ -3380,8 +3380,9 @@ class TestAsyncInitOffloadGuard:
     """AST guard for blocking ``VectorMemoryStore`` lifecycle calls.
 
     An ``async def`` must never call ``init()`` or ``close()`` inline. The
-    Windows init path shells out to icacls, and close serializes on the same
-    store lock as ordinary database operations, so either can freeze the event
+    init path is blocking file IO whose Windows DACL writes can block on a
+    network volume round-trip, and close serializes on the same store lock
+    as ordinary database operations, so either can freeze the event
     loop. Async callers offload via ``asyncio.to_thread`` / ``run_in_executor``
     (which take the callable UNCALLED, so they never trip this guard).
 

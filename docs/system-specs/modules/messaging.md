@@ -2305,8 +2305,9 @@ like this transaction's own work.
   field when `.env` is empty, so a crash between the two writes would otherwise
   resurrect a revoked credential on the next restart, and the copy sits in
   agent-readable `config.json`. Both writes go through `asyncio.to_thread`:
-  the atomic write fsyncs, and the owner-only lockdown shells out to `icacls`
-  on Windows, neither of which may block the gateway loop.
+  the atomic write fsyncs, and the owner-only lockdown's Windows DACL write
+  can block on a network volume round-trip, neither of which may block the
+  gateway loop.
 
 ## Telegram channel
 

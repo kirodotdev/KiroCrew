@@ -1301,7 +1301,8 @@ class TestHmacKeyManagementExtras:
         """A restrict_to_owner failure must not crash SecurityEventLog init.
 
         The chmod test above only exercises the POSIX arm of
-        ``restrict_to_owner``; on Windows it runs icacls instead, so this
+        ``restrict_to_owner``; on Windows it applies an owner-only DACL
+        in-process instead, so this
         variant injects the failure at ``restrict_to_owner`` itself — the seam
         ``atomic_write`` calls on every platform — pinning that
         ``restrict_on_error="warn"`` keeps key creation fail-soft.

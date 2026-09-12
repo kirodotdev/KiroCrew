@@ -1169,7 +1169,7 @@ complete, and the keystone floor closes the whole class).
   world-readable file: 0o600 on POSIX, owner-only DACL on Windows. On a
   lockdown failure `atomic_write` raises by default (the same fail-loud
   contract the other keystone writers in `apps/builtins/*` use for their
-  `policy_store.py` and `secrets.py`), so a transient icacls failure cannot
+  `policy_store.py` and `secrets.py`), so a transient lockdown failure cannot
   leave the ceiling under the inherited parent DACL.
   `_reload_live_hooks` splices the new opt-out fields onto the live
   `HookManager` (preserving its flat hook keys) so the change enforces without

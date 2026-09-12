@@ -3676,8 +3676,9 @@ def test_the_audit_write_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
     """Constructing the SEL must not happen on the loop.
 
     `log_tool_invocation` only enqueues, but the FIRST `sel()` of a process
-    constructs the log -- trust-dir creation, key validation, and on Windows an
-    `icacls` subprocess. This can genuinely be that first call, because
+    constructs the log -- trust-dir creation, key validation, and on Windows a
+    DACL write that can block on a network volume round-trip. This can genuinely
+    be that first call, because
     `sel_audit_middleware` logs AFTER `await handler(...)`: on a fresh gateway the
     first authenticated request constructs the log inside whatever handler runs
     first.
