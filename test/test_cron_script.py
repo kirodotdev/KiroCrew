@@ -1171,6 +1171,81 @@ class TestMcpToolClient:
         assert "AKIA1234567890123456" not in tail
         assert "boom" in tail
 
+    def test_stderr_tail_redacts_credential_straddling_the_slice_boundary(self, tmp_path):
+        """A key straddling the tail cut must not leak a fragment.
+
+        Sized so slicing FIRST would open ten characters INTO the access
+        key, leaving a digit fragment the key regex cannot match. The whole
+        capture is redacted before the tail slice cuts, so redaction sees
+        the key whole.
+        """
+        import re
+
+        from kiro_crew.cron_script import McpToolClient
+        stderr_path = tmp_path / "stderr.log"
+        filler = "x" * 1000
+        # Synthetic key id: deliberately well-formed so the redaction regex has
+        # a real target; it is not a credential.
+        secret = "AKIA1234567890123456"  # nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
+        stderr_path.write_text(filler + secret + "x" * 1006 + " failure")
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert len(tail) <= 1024
+        assert "AKIA1234567890123456" not in tail  # nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
+        assert "AKIA" not in tail
+        assert re.search(r"\d{4,}", tail) is None
+        assert "failure" in tail
+
+    def test_stderr_tail_redacts_url_longer_than_any_window(self, tmp_path):
+        """A URL longer than any read window must not leak its query tail.
+
+        The URL itself spans ~6 KiB, so its scheme sits thousands of
+        characters from EOF while the query tail lands inside the served
+        tail; only a full-capture redaction pass sees the scheme and scrubs
+        the match whole. A windowed read would scan the tail without its
+        scheme and serve the raw query.
+        """
+        from kiro_crew.cron_script import McpToolClient
+        stderr_path = tmp_path / "stderr.log"
+        # Long query triggers redact_exfiltration_urls' length-based
+        # heuristic, as in the test below; here it is long enough that no
+        # fixed window reaches back to the scheme.
+        long_query = "data=" + ("a" * 6000)
+        url = f"https://evil.example.com/leak?{long_query}"
+        stderr_path.write_text("x" * 100 + url + " failure")
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert len(tail) <= 1024
+        assert "evil.example.com/leak" not in tail
+        assert "a" * 100 not in tail
+        assert "failure" in tail
+
+    def test_stderr_tail_withholds_oversized_captures_behind_a_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """Beyond the full-redaction ceiling the tail is WITHHELD, not windowed.
+
+        A pathological (over the ceiling) capture is not worth serving even a bounded
+        slice of: it gets a fixed marker instead of a tail that would
+        misrepresent a log the operator cannot see.
+        """
+        from kiro_crew import cron_script
+        from kiro_crew.cron_script import McpToolClient
+        monkeypatch.setattr(cron_script, "_STDERR_FULL_REDACT_MAX", 64)
+        stderr_path = tmp_path / "stderr.log"
+        # Synthetic key id: deliberately well-formed so a leak would be caught;
+        # it is not a credential. The nosemgrep annotation must share the line
+        # with the literal - Semgrep matches suppressions per line.
+        payload = "x" * 80 + "AKIA1234567890123456 failure"  # nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
+        stderr_path.write_text(payload)
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert tail == "[stderr omitted: too large to redact in full]"
+        assert "AKIA" not in tail
+
     def test_stderr_tail_redacts_exfiltration_urls(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
