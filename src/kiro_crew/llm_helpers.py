@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import name_grant
 from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
+from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.hooks import _EDIT_TOOL_KIND, fire_tool_hooks, get_global_hook_store
@@ -450,8 +451,18 @@ def next_fallback_candidate(
     list fails OPEN (candidates accepted): entitlement unknown is not
     entitlement denied, matching ``model_is_unusable``'s stance, and the
     substitute ``set_model`` path re-validates against the live list anyway.
+
+    A persisted chain entry can carry a stale ``<namespace>::<bare-id>``
+    qualifier from the catalog that advertised it (#8521's mismatch class)
+    while the session advertises the bare id, so membership is judged through
+    :func:`resolve_pin_spelling` (the shared fold) rather than literally — an
+    entry absent under BOTH spellings is still skipped, and the active-model
+    skip applies to the folded spelling too. The CHAIN's own spelling is what
+    is returned (``FallbackState.next_candidate`` locates the applied
+    candidate with ``remaining.index``); wire-facing consumers re-fold it via
+    :func:`fallback_wire_spelling`.
     """
-    adv = {a.strip().lower() for a in (advertised or []) if isinstance(a, str) and a.strip()}
+    adv = [a for a in (advertised or []) if isinstance(a, str) and a.strip()]
     act = (active_model or "").strip().lower()
     for cand in chain:
         if not isinstance(cand, str):
@@ -459,11 +470,35 @@ def next_fallback_candidate(
         low = cand.strip().lower()
         if not low or low == act:
             continue
-        if adv and low not in adv:
-            logger.debug("model fallback: skipping %r (not advertised)", cand)
-            continue
+        if adv:
+            served = resolve_pin_spelling(cand, adv)
+            if not served:
+                logger.debug("model fallback: skipping %r (not advertised)", cand)
+                continue
+            if served.strip().lower() == act:
+                # Post-fold active skip: a qualified entry that resolves to
+                # the currently-failing model cannot help.
+                continue
         return cand
     return None
+
+
+def fallback_wire_spelling(candidate: str, advertised: Sequence[str] | None) -> str:
+    """The spelling of *candidate* to send on the wire and keep in records.
+
+    A chain entry stays in its OWN spelling for ``FallbackState`` bookkeeping
+    (``remaining.index``), but everything later compared against SERVED models
+    — the substitute ``set_model`` call, the swap witness, the sticky
+    :data:`TURN_FALLBACK_ATTR` marker the restore probe reads, and the
+    active/walked records — must carry the ADVERTISED spelling: a
+    ``<namespace>::``-qualified spelling there is one the backend never
+    advertised (``AcpClient.set_model``'s explicit-pick guard would raise) and
+    desynchronizes the restore probe from the session it watches. Falls back
+    to the candidate's own spelling when the advertised set cannot resolve it
+    (empty/unknown fails open, matching :func:`next_fallback_candidate`).
+    """
+    ids = [a for a in (advertised or []) if isinstance(a, str) and a.strip()]
+    return (resolve_pin_spelling(candidate, ids) if ids else "") or candidate
 
 
 @dataclass
@@ -545,9 +580,13 @@ async def advance_fallback_candidate(
     chain skipping the primary, unadvertised ids, and the currently-active
     (failing) candidate; applies the first candidate whose substitute
     ``set_model`` lands; publishes the sticky marker
-    (:data:`TURN_FALLBACK_ATTR`); and emits the greppable swap warning.
-    Returns the applied candidate, or ``None`` when the chain is exhausted or
-    the provider exposes no ``set_model`` seam — the caller then surfaces the
+    (:data:`TURN_FALLBACK_ATTR`); and emits the greppable swap warning. A
+    ``<namespace>::``-qualified chain entry is applied AND recorded under its
+    advertised spelling (:func:`fallback_wire_spelling`) — the wire, the
+    marker, and the walked/active records must agree with the served model
+    the restore probe later compares against. Returns the applied candidate
+    (advertised spelling), or ``None`` when the chain is exhausted or the
+    provider exposes no ``set_model`` seam — the caller then surfaces the
     original error exactly as before this feature existed.
     """
     advertised = provider_advertised_ids(provider)
@@ -573,18 +612,21 @@ async def advance_fallback_candidate(
         cand = fb_state.next_candidate(fb_state.primary or active, advertised)
         if cand is None:
             return None
-        if cand.strip().lower() == (active or "").strip().lower():
+        # The chain's own spelling drove the walk bookkeeping; the wire and
+        # every served-model comparison below use the advertised spelling.
+        wire = fallback_wire_spelling(cand, advertised)
+        if wire.strip().lower() == (active or "").strip().lower():
             # With a marker-seeded primary, the chain can still name the
             # CURRENTLY-failing fallback the session sits on — retrying it is
             # what this walk exists to escape.
             continue
         _raw_before = provider_raw_model(provider)
         try:
-            await set_model_fn(cand)
+            await set_model_fn(wire)
         except Exception:
             logger.debug(
                 "model fallback: set_model(%r) failed; skipping candidate",
-                cand,
+                wire,
                 exc_info=True,
             )
             continue
@@ -599,30 +641,30 @@ async def advance_fallback_candidate(
         if (
             _raw_before
             and _raw_after == _raw_before
-            and _raw_after.strip().lower() != cand.strip().lower()
+            and _raw_after.strip().lower() != wire.strip().lower()
         ):
             logger.debug(
                 "model fallback: set_model(%r) was a silent no-op (model still %r); "
                 "skipping candidate",
-                cand,
+                wire,
                 _raw_after,
             )
             continue
-        fb_state.active = cand
+        fb_state.active = wire
         fb_state.attempts = 1
-        fb_state.walked.append(cand)
+        fb_state.walked.append(wire)
         try:
-            setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, cand))
+            setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, wire))
         except Exception:
             logger.debug("publishing fallback marker failed", exc_info=True)
         logger.warning(
             "model fallback: %s -> %s (reason=throttle-exhaustion, surface=%s%s)",
             fb_state.primary or "?",
-            cand,
+            wire,
             surface,
             log_suffix,
         )
-        return cand
+        return wire
 
 
 def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[None]] | None:

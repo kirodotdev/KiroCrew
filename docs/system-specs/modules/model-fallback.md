@@ -41,16 +41,24 @@ walk.
 paths. It preserves the original primary from an existing provider marker when
 available, otherwise from the active model. It then skips the primary, the
 currently active model, and candidates absent from a known advertised-model
-set. An unavailable advertised set does not reject a candidate; this is
-load-bearing because entitlement cannot be determined without that set.
+set. Membership and both skips are judged through `resolve_pin_spelling`, so a
+persisted chain entry carrying a stale `<namespace>::<bare-id>` qualifier still
+matches a backend that advertises the bare id; an entry absent under both
+spellings stays skipped. An unavailable advertised set does not reject a
+candidate; this is load-bearing because entitlement cannot be determined
+without that set.
 
 The helper calls the substitute `set_model` path and verifies that the serving
 model changed before it records the candidate, publishes `TURN_FALLBACK_ATTR`,
 or logs the swap. This witness prevents a non-raising no-op model selection from
-being announced as a fallback. `TestSetModelWitness`,
-`TestAdvanceFallbackCandidateAutoPrimary`, and `TestFallbackState` in
+being announced as a fallback. The wire call, the witness, the marker, and the
+walked/active records all carry the advertised spelling of the candidate
+(`fallback_wire_spelling`); the chain's own spelling drives only the walk
+bookkeeping. `TestSetModelWitness`,
+`TestAdvanceFallbackCandidateAutoPrimary`,
+`TestAdvanceFallbackCandidateNamespacedChain`, and `TestFallbackState` in
 `test/test_llm_helpers.py` cover no-op handling, marker-seeded primary
-selection, advertised-model filtering, and chain progress.
+selection, advertised-model filtering, spelling folds, and chain progress.
 
 `FallbackState.should_retry_active` owns the per-candidate retry allowance, and
 `fallback_rewound_transient_budget` derives the dashboard counter from the same
