@@ -3468,11 +3468,10 @@ class CronService:
             logger.warning("Deferred cron removals held: grant-epoch bump failed", exc_info=True)
             self._pending_removals |= pending
             return []
-        self._jobs = [j for j in self._jobs if j.id not in to_remove]
         # A Done()/delete_after_run job that self-removes retires its principal
         # just as a CLI remove does, so its children are released in the SAME
-        # save (see _release_children_of_removed).
-        restore = self._release_children_of_removed(to_remove)
+        # save (see _remove_job_rows).
+        restore = self._remove_job_rows(to_remove)
         # BACKGROUND writer: this runs inside the due-scan, so an unreadable
         # store must not abort the tick and stop every other job. The deferred
         # delete simply stays pending until the store is readable again.
@@ -3557,11 +3556,13 @@ class CronService:
         """
         with self._file_lock():
             self._sync_for_write()
-            before = len(self._jobs)
+            # Bump UNCONDITIONALLY: grant_epoch_ids() raises on corrupt epoch
+            # state, so removing even a missing id surfaces that corruption
+            # instead of answering a quiet False. The bump reads live rows, so
+            # it must precede the filter inside _remove_job_rows.
             self._bump_grant_epochs_for({job_id})
-            self._jobs = [j for j in self._jobs if j.id != job_id]
-            if len(self._jobs) < before:
-                restore = self._release_children_of_removed({job_id})
+            if any(j.id == job_id for j in self._jobs):
+                restore = self._remove_job_rows({job_id})
                 try:
                     self._save()
                 except BaseException:
@@ -3579,6 +3580,26 @@ class CronService:
                 logger.info("Removed cron job %s", job_id)
                 return True
         return False
+
+    def _remove_job_rows(self, removed_ids: set[str]) -> list[tuple[CronJob, str]]:
+        """Filter ``removed_ids`` out of ``self._jobs`` and cascade the release.
+
+        The ONLY sanctioned spelling of a structural remove. Every site that
+        drops a job's row from ``self._jobs`` must route through this helper so
+        the removal and the release of the removed jobs' children land in the
+        SAME save -- a bare list-comprehension filter compiles and passes tests
+        while silently skipping the cascade, stranding every child the removed
+        cron owns. ``test_cron_remove_rows_structural.py`` fails any filter
+        site that bypasses this helper.
+
+        Same contract as :meth:`_release_children_of_removed`: IN-LOCK ONLY,
+        after ``_sync_for_write()``; the caller must ``_save()`` afterwards and
+        on save failure restore the returned ``(job, previous_owner)`` pairs
+        (and reset the fingerprint where its path requires it). Grant-epoch
+        bumps read the live rows, so callers bump BEFORE calling this.
+        """
+        self._jobs = [j for j in self._jobs if j.id not in removed_ids]
+        return self._release_children_of_removed(removed_ids)
 
     def _release_children_of_removed(self, removed_ids: set[str]) -> list[tuple[CronJob, str]]:
         """Clear ownership on jobs whose cron principal is among ``removed_ids``.
@@ -3652,8 +3673,7 @@ class CronService:
                     missing.append(jid)
             if targets:
                 self._bump_grant_epochs_for(targets)
-                self._jobs = [j for j in self._jobs if j.id not in targets]
-                restore = self._release_children_of_removed(targets)
+                restore = self._remove_job_rows(targets)
                 try:
                     self._save()
                 except BaseException:
@@ -3772,8 +3792,7 @@ class CronService:
             if removed:
                 targets = set(removed)
                 self._bump_grant_epochs_for(targets)
-                self._jobs = [j for j in self._jobs if j.id not in targets]
-                restore = self._release_children_of_removed(targets)
+                restore = self._remove_job_rows(targets)
                 try:
                     self._save()
                 except BaseException:
@@ -5160,14 +5179,14 @@ class CronService:
                         by_id[job.id].user_paused = True
                     self._pending_removals.add(job.id)
                 else:
-                    self._jobs = [j for j in self._jobs if j.id != job.id]
-                    consumed_row = True
                     # Consuming the one-shot retires its principal cron:<job id>,
                     # so a child that job created is released in the SAME save --
-                    # the fifth removal core alongside the four locked cores. Runs
-                    # after the row is filtered out so the job cannot release
-                    # itself; rolled back below if the save fails.
-                    restore = self._release_children_of_removed({job.id})
+                    # the fifth removal core alongside the four locked cores.
+                    # _remove_job_rows filters the row out before releasing so
+                    # the job cannot release itself; rolled back below if the
+                    # save fails.
+                    restore = self._remove_job_rows({job.id})
+                    consumed_row = True
             # BACKGROUND writer: a job has already run, so an unreadable store
             # must not surface as a job-runner crash. The run result is lost,
             # which is strictly better than clobbering the store.
