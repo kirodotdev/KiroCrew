@@ -313,6 +313,13 @@ def referenced_skill_names() -> set[str]:
 
 _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
+#: Upper bound for a one-shot fire time, matching the ``at`` field's schema cap
+#: (``FieldSpec("at", ..., max_val=4102444800)`` — the start of 2100). Enforced
+#: HERE as well because the store is the persistence owner: a value past what
+#: ``datetime.fromtimestamp`` can render is accepted by a caller that skips the
+#: schema (CLI, apps SDK) and then raises while serializing the job list, which
+#: fails ``GET /api/crons`` for every job until that record is deleted by id.
+_MAX_AT_TS = 4102444800
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
 # Margin the per-wake budget must leave above a command/script subprocess
 # timeout: the wake deadline cancels only the executor FUTURE (threads are
@@ -1911,6 +1918,26 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
     return job
 
 
+def _clear_one_shot_deletion(job: "CronJob") -> None:
+    """Disarm ``delete_after_run`` when a job stops being a one-shot.
+
+    ``delete_after_run`` is how a one-shot is consumed: the executor removes the
+    job after it delivers. Every one-shot the dashboard and the composer shortcut
+    create carries it, so converting one to a recurring schedule while the flag
+    stayed set produced a job that ran ONCE and then deleted itself — a recurring
+    schedule the user configured and never saw again, with the deletion looking
+    like the job had simply vanished.
+
+    Scoped to a KIND CHANGE, which is the only place the flag becomes wrong: a
+    same-kind retime leaves it alone (a one-shot that moves an hour later is still
+    a one-shot). It cannot fight an explicit caller either, because ``update_job``
+    accepts no ``delete_after_run`` kwarg — this path has no way to express that
+    intent, so a kind change is the only thing that moves the flag here.
+    """
+    if job.schedule.kind != "at" and getattr(job, "delete_after_run", False):
+        job.delete_after_run = False
+
+
 class CronService:
     """Background service for managing and executing scheduled jobs."""
 
@@ -2981,8 +3008,9 @@ class CronService:
     def update_job(self, job_id: str, **kwargs: Any) -> CronJob | None:
         """Update fields on an existing job. Returns updated job or None if not found.
 
-        Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
-        approval_mode, silent, skip_dates, timezone, thread_ts, model,
+        Accepted kwargs: name, message, every_secs, cron_expr, at_ts (one-shot
+        fire time; mutually exclusive with the two recurring spellings), agent_id,
+        channel, approval_mode, silent, skip_dates, timezone, thread_ts, model,
         timeout_secs (per-wake execution budget, 1..86400).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the
@@ -3061,6 +3089,24 @@ class CronService:
                     and kwargs["every_secs"]
                 ):
                     raise ValueError("Cannot specify both cron_expr and every_secs")
+                # A schedule has exactly one kind, so a one-shot time cannot arrive
+                # beside a recurring spelling: taking both would silently drop one,
+                # and which one it dropped would depend on assignment order below.
+                if "at_ts" in kwargs and kwargs["at_ts"] is not None:
+                    if kwargs.get("cron_expr") or kwargs.get("every_secs"):
+                        raise ValueError("Cannot specify at_ts with cron_expr or every_secs")
+                    try:
+                        _at = float(kwargs["at_ts"])
+                    except (ValueError, TypeError) as e:
+                        raise ValueError(f"Invalid at_ts: {kwargs['at_ts']!r}") from e
+                    # Bounded for the same reason the create route bounds it: an
+                    # unrepresentable value is stored fine and then raises inside
+                    # `datetime.fromtimestamp` when the job list is serialized,
+                    # which takes down `GET /api/crons` for EVERY job until the
+                    # record is deleted by id.
+                    if not math.isfinite(_at) or not 0 <= _at <= _MAX_AT_TS:
+                        raise ValueError(f"at_ts out of range: {_at!r}")
+                    kwargs["at_ts"] = _at
                 if "cron_expr" in kwargs and kwargs["cron_expr"]:
                     if not validate_cron_expr(kwargs["cron_expr"]):
                         raise ValueError(f"Invalid cron expression: {kwargs['cron_expr']}")
@@ -3258,8 +3304,17 @@ class CronService:
                 # Schedule changes (already validated above)
                 if "cron_expr" in kwargs and kwargs["cron_expr"]:
                     job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+                    _clear_one_shot_deletion(job)
                 elif "every_secs" in kwargs and kwargs["every_secs"]:
                     job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+                    _clear_one_shot_deletion(job)
+                elif "at_ts" in kwargs and kwargs["at_ts"] is not None:
+                    # Re-timing a one-shot, not converting a recurring job into one:
+                    # the caller names a fire time and the kind follows, the same
+                    # way the two branches above let a spelling decide the kind.
+                    # `delete_after_run` is a separate field a caller sets on its
+                    # own, so re-timing never silently arms or disarms it.
+                    job.schedule = CronSchedule(kind="at", at_ts=float(kwargs["at_ts"]))
                 self._save()
                 logger.info("Updated cron job %s", job_id)
                 return job

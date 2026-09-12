@@ -1,6 +1,6 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
+import { Clock, ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
@@ -38,6 +38,7 @@ import ErrorNotice from './ErrorNotice'
 import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
 import { consumeComposerRelease, COMPOSER_EXPAND_EVENT } from '../pages/chat/composerFocus'
 import BusySendButton, { useBusySendMode } from './BusySendButton'
+import ScheduleLaterPopover from './ScheduleLaterPopover'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from './ContextBar'
@@ -652,6 +653,12 @@ interface ChatInputProps {
    * switch silently discards the draft it produced.
    */
   promptOptimizer?: boolean
+  /** Pending one-shot crons targeting THIS chat, for the scheduled-message
+   *  banner. The host owns the read; see `scheduledForSlot`. */
+  scheduledMessages?: Array<{ id: string; at_ts: number; name?: string }>
+  /** Invalidate the host's scheduled-messages read after this composer
+   *  schedules one, so the banner appears without a reload. */
+  onScheduledMessagesChanged?: () => void
   /**
    * The user-driven collapse: the "put the message box away while I read" entry
    * point, the bar that replaces it, and the persisted preference.
@@ -951,6 +958,8 @@ function ChatInput({
   typedCommandMenus = true,
   slotApprovalChrome = true,
   promptOptimizer = true,
+  scheduledMessages,
+  onScheduledMessagesChanged,
   collapsible = false,
   connected = true,
   onOptimizeResult,
@@ -1480,6 +1489,9 @@ function ChatInput({
   }, [ctxPopoverOpen])
   const plusWrapRef = useRef<HTMLDivElement>(null)
   const plusBtnRef = useRef<HTMLButtonElement>(null)
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [scheduleRect, setScheduleRect] = useState<DOMRect | null>(null)
+  const [scheduleError, setScheduleError] = useState('')
   const plusMenuRef = useRef<HTMLDivElement>(null)
   const [plusRect, setPlusRect] = useState<DOMRect | null>(null)
   useEffect(() => {
@@ -1691,6 +1703,73 @@ function ChatInput({
       setAutoCompactError(msg)
     },
   })
+  /** Schedule the composer's text as a one-shot cron instead of sending it now.
+   *
+   *  A shortcut over the ordinary create route, not a second scheduling model:
+   *  the job it makes is an ordinary one-shot that the Schedule page lists,
+   *  edits and cancels. `session_key` names THIS chat so the result is mirrored
+   *  back into the conversation the text was typed in — without it the run's
+   *  output lands in a `cron-<id>` tab carrying none of this conversation's
+   *  context. A gateway that predates that field ignores it and the job simply
+   *  delivers to its own tab, so the shortcut degrades rather than failing.
+   */
+  const scheduleSendMutation = useMutation({
+    mutationFn: ({ text, atSecs }: { text: string; atSecs: number }) =>
+      api.createCron({
+        // A cron needs a name and nobody wants to type one for a reminder, so the
+        // first line stands in — trimmed to the field's own cap rather than an
+        // arbitrary length, and falling back when the draft is only attachments.
+        name: text.split('\n')[0].trim().slice(0, 80) || i18nT('components.chatInput.scheduled_message'),
+        message: text,
+        at: atSecs,
+        session_key: activeSlot || '',
+      }),
+    onSuccess: (_r, vars) => {
+      setScheduleError('')
+      // Clear ONLY the draft that was scheduled. A create can take long enough for
+      // the user to start typing the next message, and an unconditional clear would
+      // delete that replacement draft — the request's own success erasing work it
+      // never saw.
+      if (value.trim() === vars.text) onChange('')
+      onScheduledMessagesChanged?.()
+    },
+    onError: (err) => {
+      // ErrorNotice beside the draft, not a transient toast: a schedule that
+      // silently fails reads as a sent message that never arrives, and the repo's
+      // `errors-use-error-notice` anchor wants a persistent surface for exactly
+      // that. No hand-off: the draft is deliberately left in the composer so the
+      // user can retry or send it now.
+      setScheduleError(agentSwitchFailureMessage(err))
+    },
+  })
+  const scheduleComposer = useCallback((atSecs: number) => {
+    const text = value.trim()
+    if (!text || disabled) return
+    setScheduleOpen(false)
+    scheduleSendMutation.mutate({ text, atSecs })
+  }, [value, disabled, scheduleSendMutation])
+  const schedulingSend = scheduleSendMutation.isPending
+  const openScheduleLater = useCallback(() => {
+    // Anchored on the plus button, the control the row was reached from, so the
+    // panel opens where the menu just was.
+    setScheduleRect(plusBtnRef.current?.getBoundingClientRect() ?? null)
+    setScheduleError('')
+    setScheduleOpen(true)
+  }, [])
+  /** Jobs this chat has scheduled and not yet run, newest fire time first.
+   *
+   *  Supplied by the HOST rather than fetched here: `GET /api/crons` on every
+   *  ChatInput mount would add a request to a component many surfaces render
+   *  (side panel, panes, tests), and the page that owns routing already owns its
+   *  query client. Same shape as `promptOptimizer` / `canSteer` — a host that has
+   *  no use for the banner passes nothing and renders none.
+   */
+  const scheduledForSlot = useMemo(() => {
+    const nowSecs = Date.now() / 1000
+    return (scheduledMessages ?? [])
+      .filter(j => typeof j.at_ts === 'number' && Number.isFinite(j.at_ts) && j.at_ts > nowSecs)
+      .sort((a, b) => a.at_ts - b.at_ts)
+  }, [scheduledMessages])
   const pushAutoCompact = useCallback((pct: number | null) => {
     if (!activeSlot) return
     const slot = activeSlot
@@ -3714,6 +3793,60 @@ function ChatInput({
         )}
       </AnimatePresence>
 
+      {scheduledForSlot.length > 0 && (
+        <div className="px-4 mb-1">
+          {/* Not an ErrorNotice: nothing failed. A low-key `role="status"` strip,
+              the same shape the template-updated notice uses, so a pending message
+              is visible without competing with the composer. */}
+          <div
+            role="status"
+            data-testid="scheduled-message-banner"
+            className="flex items-center gap-2 rounded-lg border border-accent-subtle bg-accent-subtle/40 px-2.5 py-1.5 text-[12px] text-muted"
+          >
+            <Clock size={13} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">
+              {scheduledForSlot.length === 1
+                ? i18nT('components.chatInput.one_message_scheduled', {
+                    when: new Date((scheduledForSlot[0].at_ts as number) * 1000).toLocaleString(),
+                  })
+                : i18nT('components.chatInput.n_messages_scheduled', {
+                    count: scheduledForSlot.length,
+                    when: new Date((scheduledForSlot[0].at_ts as number) * 1000).toLocaleString(),
+                  })}
+            </span>
+            {/* A link to the surface that can edit or cancel it. The Schedule page
+                is deliberately the only place that mutates a job, so this hands the
+                user there rather than growing a second edit surface here. */}
+            <a
+              href="/schedule"
+              className="shrink-0 font-medium text-accent hover:underline"
+              data-testid="scheduled-message-banner-link"
+            >
+              {i18nT('components.chatInput.view_schedule')}
+            </a>
+          </div>
+        </div>
+      )}
+      {scheduleOpen && scheduleRect && (
+        <ScheduleLaterPopover
+          anchorRect={scheduleRect}
+          onSchedule={scheduleComposer}
+          onClose={() => setScheduleOpen(false)}
+          scheduling={schedulingSend}
+        />
+      )}
+      {scheduleError && (
+        <div className="px-4 mb-1">
+          {/* No hand-off: the composer draft below is unsaved — the schedule failed,
+              so the text is deliberately left in place to retry or send now. */}
+          <ErrorNotice
+            variant="inline"
+            testId="schedule-error"
+            message={scheduleError}
+            onDismiss={() => setScheduleError('')}
+          />
+        </div>
+      )}
       {optimizeError && (
         <div className="px-4 mb-1">
           {/* No hand-off: the composer draft below (the prompt that was restored) is unsaved. */}
@@ -4137,6 +4270,32 @@ function ChatInput({
                         rejects. A stacked row (the same shape as the trigger
                         shortcuts below) is its own row by construction. */}
                     <div className="mt-2 flex flex-col gap-0.5">
+                      {/* Send later is a stacked ROW for the same reason Sketch is
+                          one: the idle action row already carries mic + Optimize +
+                          Send, and `max-two-buttons-per-row` rejects widening or
+                          wrapping it. This menu is a separate visual group, so the
+                          row costs the capped row nothing and relocates none of the
+                          controls already in it. The trade is discoverability — a
+                          caret on Send would advertise itself — which is why the
+                          Schedule page stays the surface that lists and cancels
+                          what this creates. */}
+                      <button
+                        type="button"
+                        onClick={() => { setPlusOpen(false); openScheduleLater() }}
+                        // Same gate as `scheduleComposer`: a draft is required
+                        // because the scheduled job's message IS the draft, and an
+                        // attachment-only composer would schedule an empty prompt.
+                        disabled={!value.trim() || schedulingSend || !connected}
+                        title={i18nT('components.chatInput.send_later')}
+                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                        data-testid="plus-menu-send-later"
+                      >
+                        <Clock size={14} className="w-4 shrink-0 text-muted lucide-inline" />
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.send_later')}</div>
+                          <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.send_later_desc')}</div>
+                        </div>
+                      </button>
                       <button
                         type="button"
                         onClick={() => { setPlusOpen(false); setSketchOpen(true) }}

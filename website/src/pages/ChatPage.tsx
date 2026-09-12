@@ -1063,6 +1063,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const liveAutomation = useAppSelector(state => activeSlot
     ? selectAutomationForSlot(state, activeSlot)
     : null)
+  // Pending one-shot crons this chat scheduled, for the composer's
+  // scheduled-message banner. Owned by the PAGE rather than by ChatInput: that
+  // component is rendered by several surfaces (and by many tests), and a per-mount
+  // `GET /api/crons` would add a request to all of them. Read on mount and on
+  // focus, not polled — the set changes only when the user acts.
+  const scheduledCrons = useQuery({
+    queryKey: ['crons', 'session-scheduled', activeSlot],
+    queryFn: () => api.crons(),
+    enabled: !!activeSlot,
+    staleTime: 30_000,
+  })
+  const scheduledMessages = useMemo(() => {
+    const jobs = (scheduledCrons.data?.jobs ?? []) as Array<{ id: string; name?: string; session_key?: string | null; at_ts?: number | null; enabled?: boolean }>
+    // `dashboard:<slot>` is how the create path namespaces a target, and a finite
+    // `at_ts` is what makes it a one-shot rather than a recurring job that merely
+    // belongs to this chat. ChatInput drops any whose time has already passed.
+    return jobs
+      .filter(j => j.session_key === `dashboard:${activeSlot}` && typeof j.at_ts === 'number' && j.enabled !== false)
+      .map(j => ({ id: j.id, at_ts: j.at_ts as number, name: j.name }))
+  }, [scheduledCrons.data, activeSlot])
   const automationSnapshot = useQuery({
     queryKey: ['session-automation', activeSlot],
     enabled: !!activeSlot,
@@ -7143,6 +7163,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 voice={composerVoiceOptions}
               >
               <ChatInput
+                scheduledMessages={scheduledMessages}
+                onScheduledMessagesChanged={scheduledCrons.refetch}
               aboveComposer={
                 <>
                   {/* Session-control failures surface HERE, beside the chips they

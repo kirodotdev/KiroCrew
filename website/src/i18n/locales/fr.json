@@ -5922,7 +5922,14 @@
       "session_control_ready": "Prêt",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Cette session suit l’agent par défaut ({{name}}). Elle n’a pas d’agent propre, elle change donc si le défaut change. Cliquez pour en épingler un.",
-      "model_inherited_default": "Cette session utilise le modèle par défaut ({{name}}). Elle n’a pas de modèle propre, elle change donc si le défaut change. Cliquez pour en épingler un."
+      "model_inherited_default": "Cette session utilise le modèle par défaut ({{name}}). Elle n’a pas de modèle propre, elle change donc si le défaut change. Cliquez pour en épingler un.",
+      "send_later": "Envoyer plus tard…",
+      "schedule": "Planifier",
+      "scheduled_message": "Message planifié",
+      "send_later_desc": "Planifier l'envoi de ce message plus tard",
+      "one_message_scheduled": "1 message planifié pour {{when}}",
+      "n_messages_scheduled": "{{count}} messages planifiés, le prochain {{when}}",
+      "view_schedule": "Voir la planification"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -6561,7 +6568,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "Le prompt ou la consigne envoyé à l'agent lorsque cette tâche se déclenche",
       "timezone": "Fuseau horaire",
       "weekly_schedule": "Planification hebdomadaire",
-      "which_agent_handles_this_job_leave_default_for_t": "Quel agent traite cette tâche. Laissez la valeur par défaut pour l'agent principal."
+      "which_agent_handles_this_job_leave_default_for_t": "Quel agent traite cette tâche. Laissez la valeur par défaut pour l'agent principal.",
+      "run_once": "Exécuter une fois",
+      "pick_a_date_and_time": "Choisissez une date et une heure",
+      "pick_a_time_in_the_future": "Choisissez une heure future"
     },
     "jobLogsView": {
       "cancel": "Annuler",

@@ -5829,7 +5829,14 @@
       "session_control_ready": "Bereit",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Diese Sitzung folgt dem Standard-Agenten ({{name}}). Sie hat keinen eigenen Agenten, ändert sich also mit dem Standard. Zum Anheften klicken.",
-      "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen."
+      "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen.",
+      "send_later": "Später senden…",
+      "schedule": "Planen",
+      "scheduled_message": "Geplante Nachricht",
+      "send_later_desc": "Diese Nachricht für später planen",
+      "one_message_scheduled": "1 Nachricht geplant für {{when}}",
+      "n_messages_scheduled": "{{count}} Nachrichten geplant, nächste {{when}}",
+      "view_schedule": "Zeitplan anzeigen"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -6459,7 +6466,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "Der Prompt oder die Aufgabe, die an den Agenten gesendet wird, wenn dieser Job ausgelöst wird",
       "timezone": "Zeitzone",
       "weekly_schedule": "Wöchentlicher Zeitplan",
-      "which_agent_handles_this_job_leave_default_for_t": "Welcher Agent diesen Job bearbeitet. Für den primären Agenten auf Standard belassen."
+      "which_agent_handles_this_job_leave_default_for_t": "Welcher Agent diesen Job bearbeitet. Für den primären Agenten auf Standard belassen.",
+      "run_once": "Einmal ausführen",
+      "pick_a_date_and_time": "Datum und Uhrzeit wählen",
+      "pick_a_time_in_the_future": "Wähle eine Zeit in der Zukunft"
     },
     "jobLogsView": {
       "cancel": "Abbrechen",

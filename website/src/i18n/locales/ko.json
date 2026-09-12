@@ -5686,7 +5686,7 @@
       "screenshot": "스크린샷",
       "select_project": "프로젝트 선택",
       "send": "전송",
-      "send_options": "전송 옵션",
+      "send_options": "보내기 옵션",
       "show_in_chat": "채팅에 표시",
       "show_pending_tool_call_in_chat": "대기 중인 도구 호출을 채팅에 표시",
       "skill": "스킬",
@@ -5736,7 +5736,14 @@
       "session_control_ready": "준비됨",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
-      "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요."
+      "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
+      "send_later": "나중에 보내기…",
+      "schedule": "예약",
+      "scheduled_message": "예약된 메시지",
+      "send_later_desc": "이 메시지를 나중에 보내도록 예약합니다",
+      "one_message_scheduled": "{{when}}에 1개의 메시지가 예약됨",
+      "n_messages_scheduled": "{{count}}개의 메시지가 예약됨, 다음은 {{when}}",
+      "view_schedule": "일정 보기"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -6357,7 +6364,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "이 작업이 실행될 때 에이전트에게 전송되는 프롬프트 또는 작업",
       "timezone": "시간대",
       "weekly_schedule": "주간 스케줄",
-      "which_agent_handles_this_job_leave_default_for_t": "이 작업을 처리할 에이전트입니다. 기본 에이전트를 사용하려면 기본값으로 두세요."
+      "which_agent_handles_this_job_leave_default_for_t": "이 작업을 처리할 에이전트입니다. 기본 에이전트를 사용하려면 기본값으로 두세요.",
+      "run_once": "한 번만 실행",
+      "pick_a_date_and_time": "날짜와 시간을 선택하세요",
+      "pick_a_time_in_the_future": "미래 시간을 선택하세요"
     },
     "jobLogsView": {
       "cancel": "취소",

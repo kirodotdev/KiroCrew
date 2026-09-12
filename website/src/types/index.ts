@@ -397,6 +397,14 @@ export interface CronJob {
   id: string; name: string; message: string
   enabled: boolean; schedule: string; last_status: string
   cron_expr?: string | null; every?: number | null; every_secs?: number | null
+  /** One-shot fire time (epoch seconds). Set only for a `kind: "at"` schedule,
+   *  and the field that lets the Schedule form round-trip a one-shot: without it
+   *  such a job matches neither the interval nor the weekly shape and falls
+   *  through to a cron mode with an empty expression. */
+  at_ts?: number | null
+  /** Whether the job is removed after it next runs. Independent of the schedule
+   *  kind — a one-shot normally carries it, but a recurring job may too. */
+  delete_after_run?: boolean
   at?: number | null; created_ts?: number | null
   agent?: string; model?: string; channel?: string; approval_mode?: string; silent?: boolean
   /** Crews a sequence job runs, in order. Takes PRECEDENCE over `agent` at run

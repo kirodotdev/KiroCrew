@@ -5736,7 +5736,14 @@
       "session_control_ready": "準備完了",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
-      "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
+      "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
+      "send_later": "後で送信…",
+      "schedule": "予約",
+      "scheduled_message": "予約メッセージ",
+      "send_later_desc": "このメッセージを後で送信するよう予約します",
+      "one_message_scheduled": "{{when}} に1件のメッセージを予約中",
+      "n_messages_scheduled": "{{count}}件のメッセージを予約中、次は {{when}}",
+      "view_schedule": "予定を表示"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -6357,7 +6364,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "このジョブが実行するときエージェントに送信されるプロンプトまたはタスク",
       "timezone": "タイムゾーン",
       "weekly_schedule": "週次スケジュール",
-      "which_agent_handles_this_job_leave_default_for_t": "このジョブを処理するエージェント。プライマリエージェントの場合はデフォルトのままにしてください。"
+      "which_agent_handles_this_job_leave_default_for_t": "このジョブを処理するエージェント。プライマリエージェントの場合はデフォルトのままにしてください。",
+      "run_once": "1回だけ実行",
+      "pick_a_date_and_time": "日時を選択してください",
+      "pick_a_time_in_the_future": "未来の日時を選択してください"
     },
     "jobLogsView": {
       "cancel": "キャンセル",

@@ -5922,7 +5922,14 @@
       "session_control_ready": "Listo",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Esta sesión sigue el agente predeterminado ({{name}}). No tiene un agente propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno.",
-      "model_inherited_default": "Esta sesión usa el modelo predeterminado ({{name}}). No tiene un modelo propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno."
+      "model_inherited_default": "Esta sesión usa el modelo predeterminado ({{name}}). No tiene un modelo propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno.",
+      "send_later": "Enviar más tarde…",
+      "schedule": "Programar",
+      "scheduled_message": "Mensaje programado",
+      "send_later_desc": "Programa este mensaje para enviarlo más tarde",
+      "one_message_scheduled": "1 mensaje programado para {{when}}",
+      "n_messages_scheduled": "{{count}} mensajes programados, el próximo {{when}}",
+      "view_schedule": "Ver programación"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -6561,7 +6568,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "El prompt o la tarea que se envía al agente cuando se dispara este trabajo",
       "timezone": "Zona horaria",
       "weekly_schedule": "Programación semanal",
-      "which_agent_handles_this_job_leave_default_for_t": "Qué agente se encarga de este trabajo. Deja el valor predeterminado para el agente principal."
+      "which_agent_handles_this_job_leave_default_for_t": "Qué agente se encarga de este trabajo. Deja el valor predeterminado para el agente principal.",
+      "run_once": "Ejecutar una vez",
+      "pick_a_date_and_time": "Elige una fecha y hora",
+      "pick_a_time_in_the_future": "Elige una hora futura"
     },
     "jobLogsView": {
       "cancel": "Cancelar",

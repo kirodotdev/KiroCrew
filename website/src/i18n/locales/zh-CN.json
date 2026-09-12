@@ -5736,7 +5736,14 @@
       "session_control_ready": "就绪",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "此会话跟随默认代理（{{name}}）。它没有自己的代理，因此默认代理变化时它也会变化。点击可固定一个。",
-      "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。"
+      "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。",
+      "send_later": "稍后发送…",
+      "schedule": "计划",
+      "scheduled_message": "计划的消息",
+      "send_later_desc": "将此消息安排在稍后发送",
+      "one_message_scheduled": "已安排 1 条消息于 {{when}} 发送",
+      "n_messages_scheduled": "已安排 {{count}} 条消息，下一条 {{when}}",
+      "view_schedule": "查看日程"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -6357,7 +6364,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "此任务触发时发送给代理的提示词或任务",
       "timezone": "时区",
       "weekly_schedule": "每周计划",
-      "which_agent_handles_this_job_leave_default_for_t": "由哪个代理处理此任务。保持默认则使用主代理。"
+      "which_agent_handles_this_job_leave_default_for_t": "由哪个代理处理此任务。保持默认则使用主代理。",
+      "run_once": "运行一次",
+      "pick_a_date_and_time": "请选择日期和时间",
+      "pick_a_time_in_the_future": "请选择将来的时间"
     },
     "jobLogsView": {
       "cancel": "取消",
