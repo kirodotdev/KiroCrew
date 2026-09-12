@@ -1289,7 +1289,11 @@ which parses fine — so fail-closing on a *malformed* file would catch only a c
 variant of an attack the design already concedes, while turning a non-atomic fleet
 push or a hand-edit typo into an unbootable host. Corruption there is a reliability
 event: it is logged at WARNING, plugin admission independently fails closed on the
-same file, and `kirocrew doctor` reports it.
+same file, and `kirocrew doctor` reports it. Distinct from a broken FILE: a
+well-formed trust root whose `require_policy_signature` is present but not a
+real JSON boolean (explicit `null`, `"false"`, `0`) reads fail-closed as
+opted-IN — both the enforcement gate and the key store route through the one
+strict `admission.AdmissionPolicy.from_dict` reader (#9641).
 
 
 **Threat model.** This detects **offline / at-rest tampering and substitution** of

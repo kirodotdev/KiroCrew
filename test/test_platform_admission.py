@@ -685,3 +685,89 @@ class TestReadPolicyTrustRoot:
         assert governance_health.governance_status() == "unknown"
         assert governance_health.last_incident() is None
         governance_health.reset()
+
+
+class TestStrictBooleanFlagCoercion:
+    """Gate flags in ``AdmissionPolicy.from_dict`` reject non-boolean JSON.
+
+    ``bool()`` on a raw JSON value turns any non-empty string (``"false"``
+    included) into ``True`` while ``null`` and ``""`` read as ``False`` — the
+    fail-open direction for an admission gate. A present-but-not-boolean value
+    must read as ON (fail-closed) with a warning; an absent key stays OFF (the
+    documented default); a real boolean is honoured.
+    """
+
+    _FLAGS = ("require_signature", "require_policy_signature")
+
+    @pytest.mark.parametrize("flag", _FLAGS)
+    def test_absent_key_reads_off(self, flag):
+        assert getattr(AdmissionPolicy.from_dict({}), flag) is False
+
+    @pytest.mark.parametrize("flag", _FLAGS)
+    @pytest.mark.parametrize("real", [True, False])
+    def test_real_boolean_is_honoured(self, flag, real):
+        assert getattr(AdmissionPolicy.from_dict({flag: real}), flag) is real
+
+    @pytest.mark.parametrize("flag", _FLAGS)
+    @pytest.mark.parametrize("junk", ["false", "true", None, "", 0, 1, []])
+    def test_present_non_boolean_reads_fail_closed_on(self, flag, junk):
+        assert getattr(AdmissionPolicy.from_dict({flag: junk}), flag) is True
+
+    @pytest.mark.parametrize("junk", ["false", None, 0, 1])
+    def test_present_non_boolean_is_warned_about(self, junk, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.WARNING, logger="kiro_crew.platform.admission"):
+            AdmissionPolicy.from_dict({"require_policy_signature": junk})
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "require_policy_signature" in m
+            and "true or false" in m
+            and "fail-closed" in m
+            for m in messages
+        ), messages
+
+    def test_a_real_boolean_emits_no_warning(self, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.WARNING, logger="kiro_crew.platform.admission"):
+            AdmissionPolicy.from_dict(
+                {"require_signature": True, "require_policy_signature": False}
+            )
+        assert not caplog.records
+
+
+class TestNonAsciiSignature:
+    """A malformed signature must produce an ordinary refusal, never raise.
+
+    ``hmac.compare_digest`` accepts two ASCII-only strs but raises TypeError on
+    a non-ASCII str operand, and ``manifest.signature`` is plugin-supplied text
+    — the exception would escape ``evaluate_admission`` as a generic error on
+    exactly the input the gate exists to refuse.
+    """
+
+    # Non-ASCII character plus a lone surrogate (json.loads accepts both).
+    _BAD_SIG = "d\u00ebadbeef\udc80"
+
+    def _policy(self):
+        return AdmissionPolicy(
+            mode=MODE_ENFORCE, require_signature=True, trust_keys={"p13n": "s3cret"}
+        )
+
+    def test_signature_valid_returns_false(self):
+        from kiro_crew.platform.admission import _signature_valid
+
+        m = PluginManifest(
+            name="amazon", publisher="p13n", version="1", signature=self._BAD_SIG
+        )
+        assert _signature_valid(m, self._policy()) is False
+
+    def test_a_non_ascii_signature_is_refused_not_raised(self, patch_manifest):
+        m = PluginManifest(
+            name="amazon", publisher="p13n", version="1", signature=self._BAD_SIG
+        )
+        patch_manifest(m)
+        ep = _FakeEntryPoint(name="amazon")
+        decision = evaluate_admission(ep, self._policy())
+        assert not decision.allowed
+        assert "signature" in decision.reason
