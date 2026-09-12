@@ -139,7 +139,13 @@ describe('the incremental poll', () => {
 
   it('polls only while the panel is open AND a language is set', () => {
     // Translation is off by default; polling for it regardless would be pure waste.
-    const enabled = SessionSource.match(/enabled: initQuery\.isSuccess && [^\n]*/)
+    //
+    // Scoped to the translation query's own block rather than matching the first
+    // `enabled:` in the file — the note query added one above it, and a loose match
+    // silently started asserting against the wrong query.
+    const block = SessionSource.match(/const translationQuery = useQuery\(\{[\s\S]*?\n {2}\}\)/)
+    expect(block).toBeTruthy()
+    const enabled = block![0].match(/enabled: [^\n]*/)
     expect(enabled).toBeTruthy()
     expect(enabled![0]).toContain('translationOpen')
     expect(enabled![0]).toContain('Boolean(translationLanguage)')
