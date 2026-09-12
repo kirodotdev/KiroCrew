@@ -109,6 +109,8 @@ def test_local_review_and_generic_monitoring_keep_their_own_contracts():
     assert "works without a Kiro Crew checkout or prepare-pr installed" in babysit
     for contract in ("GitLab", "Bitbucket", "Stall tripwire", "not counted AND not reset"):
         assert contract in babysit
+    assert "Other-host guidance is not live-verified here" in babysit
+    assert "detailed_merge_status" not in babysit
 
 
 @pytest.mark.parametrize(
@@ -123,9 +125,43 @@ def test_slim_skills_do_not_regrow_duplicate_guidance_or_wire_model_ids(name, by
 
 
 def test_ci_doc_links_the_contract_and_rationale_drops_stale_budget():
-    assert "prepare-pr/SKILL.md#review-repair-routing" in _text(ROOT / "docs/ci/ci-and-reviews.md")
+    ci_doc = _text(ROOT / "docs/ci/ci-and-reviews.md")
+    assert "prepare-pr/SKILL.md#review-repair-routing" in ci_doc
     rationale = _text(SKILLS / "prepare-pr/references/rationale.md")
     assert "3 is the real limit" not in rationale and "10-iteration backstop" not in rationale
+    assert "## Why review repairs are delegated by reviewer family" in rationale
+
+
+def test_ladder_generation_names_live_only_in_the_canonical_table():
+    heads = [
+        row.split("|")[2].split(" -> ")[0].strip()
+        for row in _routing().splitlines()
+        if " -> " in row
+    ]
+    assert heads
+    for path in (
+        ROOT / "docs/ci/ci-and-reviews.md",
+        SKILLS / "prepare-pr/references/rationale.md",
+        SKILLS / "kirocrew-worktree-dev/SKILL.md",
+        SKILLS / "babysit/SKILL.md",
+    ):
+        for head in heads:
+            assert head not in _text(path), f"{path.name} restates {head!r}"
+
+
+def test_local_reviewers_are_pinned_per_call_and_launched_concurrently():
+    phase_two = " ".join(
+        _text(PREPARE).split("### Phase 2", 1)[1].split("### Phase 3", 1)[0].split()
+    )
+    assert "one model-pinned `spawn_run` call per entry in `reviewers[]`" in phase_two
+    assert "never the repair-family table" in phase_two
+    assert "separate calls carry independent pins" in phase_two
+    assert "run concurrently" in phase_two
+    assert "END THE TURN once after the whole launch batch" in phase_two
+    assert "wait for every completion before reading results or editing" in phase_two
+    assert "disclose the sequential fallback" in phase_two
+    assert "collect completion before dispatching the next" not in phase_two
+    assert "END THE TURN after each call" not in phase_two
 
 
 @pytest.mark.parametrize("name", ["prepare-pr", "babysit"])

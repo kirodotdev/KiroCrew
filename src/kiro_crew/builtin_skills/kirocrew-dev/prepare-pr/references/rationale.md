@@ -137,6 +137,30 @@ on the GPT comment, and one-rationale-per-finding keeps a reused reason from sil
 claiming findings it was never checked against. A rationale reused across several
 findings is the blanket line from "Common mistakes" with a marker on top of it.
 
+## Why review repairs are delegated by reviewer family
+
+The routing table in `SKILL.md` records a maintainer-requested execution policy
+for this repository's own PRs. It does not rest on a defect found in an earlier
+parent self-fix, and it does not claim a delegated repair is better than a parent
+repair. The acceptance condition is: each CI AI finding is repaired by a
+model-pinned subagent from the same family as the lane that raised it, preferring
+the stronger available member of that family, with disclosed lower-tier fallback,
+while the parent keeps verification, consolidation and publication. The intent is
+a repair that starts from the finding, the owning spec and the assigned files
+rather than the parent's round history (a subagent can still inherit context, so
+this is intent, not a guarantee), read by the family that wrote the finding, and
+checked by the parent as a separate step.
+
+The listing selects availability, the table states preference: the backend/account
+model listing says what exists, and an entry there is neither entitlement nor proof
+of service, which is why the skill still requires exact IDs and reports an
+unverified served model as such. "No pinnable spawn facility means a blocker" is
+part of the requested policy: the parent reports the blocker and hands off rather
+than presenting its own fix as delegated. The names live once, in the `SKILL.md`
+table; `docs/ci/ci-and-reviews.md` points at it, and
+`test/test_review_repair_routing_skill.py` pins the row order deliberately, so a
+generation change is one table edit plus the test that records the policy.
+
 ## Why the PR body must come from the template file
 
 The maintainer's auto-approval bot greps for the template's exact heading strings.

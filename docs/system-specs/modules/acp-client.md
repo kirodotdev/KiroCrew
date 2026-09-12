@@ -222,7 +222,11 @@ privacy boundaries, stop conditions and output formats. Shared wording is not
 moved into a common include: source deduplication alone would not reduce the
 selected prompt sent to the model. `test/test_prompt_compact_contract.py` checks
 each file's UTF-8 size budget, template slots, critical operational clauses and
-the orchestrator example against the real plan parser. Prompt tests guard text
+the orchestrator example against the real plan parser. The size budget is an
+absolute UTF-8 byte ceiling per selectable prompt: a context-cost guard, not a
+token count and not a permanent ban on new rules. A maintainer may raise a
+ceiling in a reviewed change when a rule earns its bytes; the clause tests, not
+the ceiling, decide whether a contract survived. Prompt tests guard text
 contracts, not a guarantee that a model follows them; runtime controls remain
 authoritative. The normal prompt's browser instructions keep approval groups,
 borrowed-browser ownership and subagent session isolation inline rather than

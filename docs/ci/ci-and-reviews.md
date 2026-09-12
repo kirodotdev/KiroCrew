@@ -16,19 +16,19 @@ is [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 For Kiro Crew PR CI AI comments, agents MUST load and execute
 [prepare-pr's Review repair routing](../../src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/SKILL.md#review-repair-routing).
-That is the sole procedural contract: Opus-family findings prefer Fable 5.1
-repair subagents, and GPT 5.6 findings prefer GPT 6 repair subagents, with ordered
-lower-tier fallback from the current backend listing. These are prose family
-preferences, not hardcoded model IDs, config defaults or new profile fields.
-The delegate implements the minimal fix, tests and self-reviews it; the parent
-verifies and consolidates, and publishes only with user authorization.
+That section is the one canonical contract, and its table is the only place the
+repair-family preference order is written; this doc does not restate it, and
+`test/test_review_repair_routing_skill.py` pins that table on purpose because it
+records a requested execution policy. The reason for the policy lives in
+prepare-pr's `references/rationale.md`.
 
-A catalogue entry or accepted pin is not entitlement or proof of service.
-Runtime/provider evidence identifies the actual model when available; otherwise
-the result is explicitly unverified. Downgrades are disclosed, attempts are
-bounded, and partial edits are inspected before any continuation. Missing
-delegation is a blocker, never a parent self-fix presented as delegation.
-The CI workflows and base-ref profile's read-only local reviewer semantics stay
+The boundaries that matter here: the preferences are prose, not CI models, config
+defaults or profile fields; the delegate implements, tests and self-reviews the
+minimal fix, and the parent verifies, consolidates and publishes only with user
+authorization; a missing model-pinned delegation facility is a blocker, never a
+parent self-fix presented as delegation; a catalogue entry or accepted pin is not
+proof of service, so an unverified served model is reported as such. The CI
+workflows and the base-ref profile's read-only local reviewer semantics stay
 unchanged. Worktree-dev and babysit point to this contract; general monitoring
 does not depend on the Kiro Crew repository or on prepare-pr being installed.
 

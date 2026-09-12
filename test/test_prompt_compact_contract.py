@@ -14,8 +14,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "src" / "kiro_crew" / "config"
-# Fixed UTF-8 source-byte baselines, not token estimates or a live git dependency.
-BASELINE_BYTES = {"prompt.md": 50_907, "prompt-orchestrator.md": 29_310}
+# Absolute UTF-8 source-byte budgets, not token counts or live git baselines.
+# A maintainer may raise a budget in a reviewed change when a new rule earns
+# its space. Preserve the operational clauses below rather than cutting them
+# to fit; their tests, not a size limit, check the retained text contracts.
+PROMPT_BYTE_CEILINGS = {"prompt.md": 40_725, "prompt-orchestrator.md": 23_448}
 
 
 def _read(name: str = "prompt.md") -> str:
@@ -34,14 +37,14 @@ def _require(text: str, *patterns: str) -> None:
         assert re.search(pattern, flat, re.IGNORECASE), f"missing contract: {pattern}"
 
 
-@pytest.mark.parametrize("name", BASELINE_BYTES)
-def test_each_selected_prompt_saves_at_least_twenty_percent(name: str) -> None:
+@pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
+def test_each_selected_prompt_stays_under_its_byte_ceiling(name: str) -> None:
     # Normalize checkout line endings so Windows measures the same shipped text.
     size = len(_read(name).encode("utf-8"))
-    assert size <= BASELINE_BYTES[name] * 0.8, (name, size, BASELINE_BYTES[name])
+    assert size <= PROMPT_BYTE_CEILINGS[name], (name, size, PROMPT_BYTE_CEILINGS[name])
 
 
-@pytest.mark.parametrize("name", BASELINE_BYTES)
+@pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
 def test_template_slots_remain_complete_and_unique(name: str) -> None:
     text = _read(name)
     assert re.findall(r"\{\{([A-Z_]+)\}\}", text) == [
@@ -53,7 +56,7 @@ def test_template_slots_remain_complete_and_unique(name: str) -> None:
     assert text.rstrip().endswith("{{WIDGET_BLOCK}}\n\n{{VERBOSITY_BLOCK}}")
 
 
-@pytest.mark.parametrize("name", BASELINE_BYTES)
+@pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
 def test_each_prompt_keeps_its_own_output_and_host_boundaries(name: str) -> None:
     text = _read(name)
     output = _section(text, "## Output Format")

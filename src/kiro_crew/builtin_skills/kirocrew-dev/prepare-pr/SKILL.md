@@ -417,11 +417,14 @@ backstop.
 2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Run `python3 $SKILL_DIR/scripts/local_review.py --base origin/<base>` from the worktree: it resolves the worktree and both SHAs itself and reads no environment variable, so exporting `BASE_SHA` / `HEAD_SHA` does nothing (`$BASE_SHA` survives only as a token it substitutes inside extracted CI snippets). It writes one task file per reviewer (`local-review-<name>.md`) carrying that reviewer's prompt **extracted literally from its `contract` workflow**, plus the inputs CI assembles — base-ref `AUTOSDE.yaml` snapshots, the prefetched `BASE...HEAD` diff, and the PR intent inside the workflow's own UNTRUSTED framing. `--out-dir` / `--stage-dir` override the unique temp directories it otherwise creates and `--json` emits the summary machine-readably. It stages outside the worktree and never calls a model.
 
    Dispatch one model-pinned `spawn_run` call per entry in `reviewers[]`, using
-   its profile `model`, never the repair-family table. A batch-wide model pin cannot
-   represent different reviewers: use separate calls. With `spawn_run`, END THE
-   TURN after each call and collect completion before dispatching the next model.
-   Reviewers may run concurrently only through a tool whose schema supports a
-   separate model pin per reviewer and returns all results before work continues.
+   its profile `model`, never the repair-family table. `model` is batch-wide per
+   call, so separate calls carry independent pins: launch them back-to-back in one
+   tool-call batch and they run concurrently. END THE TURN once after the whole
+   launch batch and wait for every completion before reading results or editing.
+   Do not launch a sibling reviewer after a call already required the turn to end,
+   and do not serialize an interface-supported launch batch: unnecessary waiting
+   adds latency. If the interface cannot issue parallel pinned calls, say so and
+   disclose the sequential fallback it forced.
    Only reviewers declaring a `contract` get generated briefs; use `rubric` for the
    rest. Run ordered stages within one review, carrying each stage's output into
    the next. Local reviewers are read-only, unlike repair subagents.

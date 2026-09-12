@@ -178,25 +178,20 @@ verdicts; duplicate dispatch can inflate failure counts. If conclusions are not
 trustworthy, use the current-head marker/comment body and needed job logs.
 Record that finding in the repo's own tracker, not this general skill.
 
-| Host | Verdict | Separate review axis |
-|---|---|---|
-| GitHub | Repo's aggregate commit status when present, otherwise full `statusCheckRollup`; `gh pr view <n> --json state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup` | GraphQL review threads plus comments/reviews for the current head |
-| GitLab | `glab mr view <iid>` or `glab api projects/:id/merge_requests/:iid`, using `detailed_merge_status` | `--unresolved` where supported, or Discussions API |
-| Bitbucket Cloud | PR `state` plus `/2.0/repositories/{ws}/{repo}/commit/{sha}/statuses`; no single merge verdict | Comments/tasks; below Premium merge checks only warn |
+On GitHub, read the repo's aggregate commit status when present, otherwise the
+full `statusCheckRollup` (`gh pr view <n> --json
+state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`), and read
+review threads plus comments/reviews for the current head separately. The rollup
+is a `CheckRun | StatusContext` union: classify `.conclusion` AND `.state`,
+respecting the repo's named aggregate status. A same-named CheckRun is not that
+commit status.
 
-GitLab's deprecated `merge_status` omits states. `ci_still_running`, `checking`,
-`preparing`, `unchecked` mean wait; `mergeable` is clean. Report `conflict`,
-`need_rebase`, `not_approved`, `draft_status`, `discussions_not_resolved`,
-`status_checks_must_pass`, `requested_changes` as distinct blockers. Pipeline
-`success` can hide failed `allow_failure` jobs. `blocking_discussions_resolved`
-is not a thread count and can be true when resolution is not required; count
-threads separately and inspect external status checks.
-
-GitHub's rollup is a `CheckRun | StatusContext` union: classify `.conclusion`
-AND `.state`, respecting the repo's named aggregate status. A same-named CheckRun
-is not that commit status. Bitbucket non-`OPEN` is terminal; its weaker green
-never waives the thread check. The GitLab/Bitbucket guidance comes from API docs,
-not a live run of this skill: verify flags/fields against the actual host.
+Other-host guidance is not live-verified here. On another host (GitLab, Bitbucket,
+an enterprise forge) derive the same two answers, lifecycle plus aggregate merge
+verdict and a separate review-thread axis, from that host's own verdict fields,
+using its CLI or API help rather than field names remembered from elsewhere. Wait
+states, hidden allowed-failure jobs and "no single merge verdict" hosts all fail
+closed until you have confirmed the mapping on the actual host.
 
 Conflict or `BEHIND` requires an authorized sync, not another unchanged poll:
 GitHub cannot build a conflicted merge ref, so `pull_request` checks may never
