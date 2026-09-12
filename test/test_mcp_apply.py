@@ -30,9 +30,14 @@ def _make_request(body: dict) -> MagicMock:
     ``request.content`` instead of calling ``request.json()``.
     """
     state = MagicMock()
+    state.owner_id = ""
     state._background_tasks = set()
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
+    claims = {"user": "local-app", "app": ""}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
     attach_body(request, body)
     return request
 
@@ -526,10 +531,13 @@ def _make_stub_request(body: dict) -> MagicMock:
     ``state`` carries no ``_mcp_gateway_apply_stub`` so the handler persists the
     allowlist without attempting an in-process pool re-apply.
     """
-    state = SimpleNamespace(_mcp_gateway_apply_stub=None)
+    state = SimpleNamespace(_mcp_gateway_apply_stub=None, owner_id="")
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
-    request.get = MagicMock(return_value="dashboard")
+    claims = {"user": "local-app", "app": ""}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
     attach_body(request, body)
     return request
 

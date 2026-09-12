@@ -17,6 +17,7 @@ import re
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
@@ -263,6 +264,10 @@ async def api_mcp_discover_install(request: web.Request) -> web.Response:
     write it into the KiroCrew scope enabled=true (reusing the mcp.py write
     helpers). provider=capability: delegate to the edition manager.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.discover_install")
+    if denied is not None:
+        return denied
+
     try:
         body = await request.json()
     except Exception:

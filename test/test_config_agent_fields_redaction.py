@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.config import loader as L
 from kiro_crew.config.loader import KiroCrewConfig
@@ -263,6 +264,7 @@ class TestConfigEndpointWire:
         app = web.Application()
         app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
         app["state"] = SimpleNamespace(subagents=MagicMock(spec=["update_completion_keep"]))
+        as_owner(app)
         with patch("kiro_crew.config.loader.config_path", return_value=cfg_path):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.patch(

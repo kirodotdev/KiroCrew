@@ -49,6 +49,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
+
+
+def is_owner_dashboard_request(request: web.Request) -> bool:
+    """Return whether *request* carries the configured dashboard-owner identity.
+
+    Dashboard mutations use the authenticated token claims populated by the
+    token-auth middleware. An empty app claim distinguishes the dashboard from
+    app-scoped tokens; when no channel owner is configured, only the signed
+    standalone-local bootstrap subjects are accepted.
+    """
+    state = request.app["state"]
+    owner_id = str(getattr(state, "owner_id", "") or "")
+    caller = str(request.get("user") or "")
+    if "app" not in request or request["app"] != "" or not caller:
+        return False
+    if owner_id:
+        return caller == owner_id
+    return caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
+
+
 def _redact_memory_field(val: object) -> object:
     """Redact credentials and exfiltration URLs from a memory field.
 
@@ -2221,7 +2242,12 @@ def _read_memory_mode(path: "Path") -> str | None:
 
 
 async def require_owner_dashboard_request(
-    request: web.Request, operation: str
+    request: web.Request,
+    operation: str,
+    *,
+    allow_internal_auth: bool = False,
+    error: str = "owner authorization required",
+    resources: str = "non_owner_block",
 ) -> web.Response | None:
     """Owner gate shared across dashboard handler modules.
 
@@ -2235,6 +2261,9 @@ async def require_owner_dashboard_request(
     inside the function body to avoid a circular import: ``source_providers``
     imports chat-state helpers that reach back into sibling handler modules.
     """
+    if allow_internal_auth and request.get("internal_auth"):
+        return None
+
     from kiro_crew.dashboard.handlers.source_providers import (
         is_owner_dashboard_request,
     )
@@ -2255,14 +2284,15 @@ async def require_owner_dashboard_request(
             operation=operation,
             outcome="denied",
             source="dashboard",
-            resources="non_owner_block",
+            resources=resources,
+            error=error,
         )
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)
 
     # Deny decision made above; only the response label changes for a signed
     # pre-owner bootstrap subject (see stale_owner_session_response).
-    return _owner_denial_response(request)
+    return _owner_denial_response(request, error_message=error)
 
 
 def _owner_denial_response(

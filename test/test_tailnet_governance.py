@@ -351,10 +351,18 @@ class TestStatusState:
 # ── Chokepoint (b): the dashboard PATCH allowlist ─────────────────────────
 
 
+@web.middleware
+async def _owner_identity(request, handler):
+    request["user"] = "local-app"
+    request["app"] = ""
+    return await handler(request)
+
+
 def _patch_app() -> web.Application:
     from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
 
-    app = web.Application()
+    app = web.Application(middlewares=[_owner_identity])
+    app["state"] = SimpleNamespace(owner_id="")
     app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
     return app
 

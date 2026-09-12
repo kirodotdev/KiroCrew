@@ -26,6 +26,12 @@ from kiro_crew.dashboard.handlers import mcp as h
 
 def _req(body: object) -> web.Request:
     app = web.Application()
+    # The MCP mutation endpoints are owner-gated: model the token-auth
+    # middleware's signed local-owner claims so the type-contract under test
+    # is what answers, not the guard.
+    state = MagicMock()
+    state.owner_id = ""
+    app["state"] = state
     raw = json.dumps(body).encode()
     req = make_mocked_request(
         "POST",
@@ -34,6 +40,8 @@ def _req(body: object) -> web.Request:
         headers={"Content-Length": str(len(raw))},
         payload=BodyStreamPayload(raw),
     )
+    req["user"] = "local-app"
+    req["app"] = ""
     return req
 
 

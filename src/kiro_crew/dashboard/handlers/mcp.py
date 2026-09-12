@@ -30,7 +30,10 @@ from kiro_crew.config.loader import (
     _resolve_stub_roster,
 )
 from kiro_crew.config.paths import data_home, kiro_agents_dir
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.env import emit_env
 from kiro_crew.loop_lock import LoopBoundLock
@@ -887,6 +890,9 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     Merges ``enabled`` and ``disabledTools`` from global mcp.json so
     probe results don't reset user's previous enable/disable choices.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.probe")
+    if denied is not None:
+        return denied
     global _mcp_probe_ts
     from kiro_crew.mcp_discovery import probe_all  # noqa: F811
 
@@ -1006,6 +1012,9 @@ async def api_mcp_measure_start(request: web.Request) -> web.Response:
     A second call while a pass is running is reported rather than queued, because
     both passes would select the same unmeasured set and simply double the spawns.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.measure")
+    if denied is not None:
+        return denied
     if _measure_progress["running"]:
         return web.json_response({"ok": False, "running": True, **_measure_progress})
     _measure_progress.update(running=True, done=0, measured=0, total=0, error="")
@@ -1064,6 +1073,10 @@ async def api_mcp_quarantine_clear(request: web.Request) -> web.Response:
     off by hand stays off. It does not mount or unmount anything either -- the
     server was never unmounted.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.quarantine_clear")
+    if denied is not None:
+        return denied
+
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1121,6 +1134,10 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
        ``sessions_reset: 0``. Otherwise every session and the warm pool are
        reset so the next message cold-starts on the new file.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.sync")
+    if denied is not None:
+        return denied
+
     from kiro_crew.mcp_discovery import (  # noqa: F811
         kirocrew_managed_names,
         sync_discovered_servers,
@@ -1335,6 +1352,10 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
     1. Sets ``disabled`` in ``~/.kiro/settings/mcp.json`` (ACP runtime).
     2. Syncs ``tools``/``allowedTools`` in ``kirocrew.json`` (non-ACP mode).
     """
+    denied = await require_owner_dashboard_request(request, "mcp.toggle")
+    if denied is not None:
+        return denied
+
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1401,6 +1422,10 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
     Updates ``disabledTools`` in ``~/.kiro/settings/mcp.json``.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.toggle_tool")
+    if denied is not None:
+        return denied
+
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1466,6 +1491,10 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
 async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     """POST /api/mcp/toggle-all — enable or disable all MCP servers."""
+    denied = await require_owner_dashboard_request(request, "mcp.toggle_all")
+    if denied is not None:
+        return denied
+
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1513,6 +1542,10 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     on PATH it is also asked to uninstall (best-effort); on a vanilla
     machine ``aim`` is absent and that step is skipped gracefully.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.remove")
+    if denied is not None:
+        return denied
+
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1579,6 +1612,15 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
     DELETE removes the server from the config.
     """
+    denied = await require_owner_dashboard_request(
+        request,
+        "mcp.server_detail",
+        allow_internal_auth=True,
+        resources=request.path,
+    )
+    if denied is not None:
+        return denied
+
     name = request.match_info["name"]
     if not name or not name.strip():
         return web.json_response({"error": "server name is required"}, status=400)
@@ -2197,6 +2239,10 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
     closes that; the narrower file lock is retained inside ``_do_mcp_apply`` for
     cross-process coordination with bridges.py.
     """
+    denied = await require_owner_dashboard_request(request, "mcp.apply")
+    if denied is not None:
+        return denied
+
     async with _get_apply_lock():
         return await _do_mcp_apply(request)
 
@@ -2766,6 +2812,9 @@ async def api_mcp_resolve_refresh(request: web.Request) -> web.Response:
     ``ready`` / ``unresolved`` / ``error``. A server that fails to resolve is not
     an error for the request: it simply keeps launching the way it does today.
     """
+    denied = await require_owner_dashboard_request(request, "mcp_gateway.resolve_refresh")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     refresh = getattr(state, "_mcp_resolve_refresh", None)
     if refresh is None:
@@ -2810,6 +2859,9 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     so the dashboard session stays authenticated.  Returns the verified state
     ``{ok, enabled, running, ping_ok}``.
     """
+    denied = await require_owner_dashboard_request(request, "mcp_gateway.enable")
+    if denied is not None:
+        return denied
     from kiro_crew.config.loader import config_path  # circular import
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # circular import
 
@@ -3343,6 +3395,9 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     Returns ``{ok, name, stub, ...}`` for the single form and
     ``{ok, names, stub, ...}`` for the batch form.
     """
+    denied = await require_owner_dashboard_request(request, "mcp_gateway.set_stub")
+    if denied is not None:
+        return denied
     from kiro_crew.config.loader import (  # noqa: F811
         ConfigReadError,
         config_path,

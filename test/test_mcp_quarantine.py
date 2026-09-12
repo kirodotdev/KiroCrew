@@ -631,8 +631,19 @@ def endpoint(tmp_path, monkeypatch):
 
 
 async def _client(mod) -> TestClient:
-    app = web.Application()
-    app["state"] = MagicMock()
+    # The quarantine-clear route is owner-gated: model the token-auth
+    # middleware's signed local-owner claims so the endpoint behavior under
+    # test is what answers, not the guard.
+    @web.middleware
+    async def _owner_identity(request, handler):
+        request["user"] = "local-app"
+        request["app"] = ""
+        return await handler(request)
+
+    app = web.Application(middlewares=[_owner_identity])
+    state = MagicMock()
+    state.owner_id = ""
+    app["state"] = state
     app.router.add_post("/api/mcp/quarantine/clear", mod.api_mcp_quarantine_clear)
     client = TestClient(TestServer(app))
     await client.start_server()

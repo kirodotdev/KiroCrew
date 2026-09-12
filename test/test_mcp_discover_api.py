@@ -154,6 +154,16 @@ def fake_sel(monkeypatch):
     return instance
 
 
+@web.middleware
+async def _owner_identity(request, handler):
+    request["user"] = "local-app"
+    request["app"] = ""
+    state = request.app.get("state")
+    if state is not None:
+        state.owner_id = ""
+    return await handler(request)
+
+
 def _make_app(provider) -> web.Application:
     from kiro_crew.dashboard.handlers import mcp_discover as mod
 
@@ -162,7 +172,7 @@ def _make_app(provider) -> web.Application:
     mod._registry = registry  # inject the fake registry
 
     state = MagicMock()
-    app = web.Application()
+    app = web.Application(middlewares=[_owner_identity])
     app["state"] = state
     app.router.add_get("/api/mcp/discover", mod.api_mcp_discover)
     app.router.add_get("/api/mcp/discover/detail", mod.api_mcp_discover_detail)
@@ -642,7 +652,7 @@ class TestDiscoverInstall:
         registry.register(capability_provider)
         mod._registry = registry
 
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_identity])
         app["state"] = MagicMock()
         app.router.add_post("/api/mcp/discover/install", mod.api_mcp_discover_install)
         client = TestClient(TestServer(app))

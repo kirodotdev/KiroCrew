@@ -65,11 +65,20 @@ def fake_sel(monkeypatch):
     return instance
 
 
+@web.middleware
+async def _owner_identity(request, handler):
+    request["user"] = "local-app"
+    request["app"] = ""
+    return await handler(request)
+
+
 def _make_app() -> web.Application:
     from kiro_crew.dashboard.handlers import mcp_custom as mod
 
-    app = web.Application()
-    app["state"] = MagicMock()
+    app = web.Application(middlewares=[_owner_identity])
+    state = MagicMock()
+    state.owner_id = ""
+    app["state"] = state
     app.router.add_post("/api/mcp/custom", mod.api_mcp_custom_add)
     app.router.add_get("/api/mcp/custom/{name}", mod.api_mcp_custom_get)
     app.router.add_put("/api/mcp/custom/{name}", mod.api_mcp_custom_update)
@@ -1113,8 +1122,9 @@ class TestServersListSurfacesCustomAdds:
         )
         monkeypatch.setattr("kiro_crew.mcp_discovery._extra_scope_sources", lambda: [])
 
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_identity])
         state = MagicMock()
+        state.owner_id = ""
         state._background_tasks = set()
         app["state"] = state
         from kiro_crew.dashboard.handlers import mcp_custom as custom_mod
