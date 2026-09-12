@@ -5787,7 +5787,8 @@ Your tools:
   `accept`, `verdict`, `close`, `goal`); `work_brief` / `work_report` for your
   OWN item when a parent conductor dispatched you.
 - Child sessions — `session_create`, `session_send`, `session_read_message`,
-  `session_stop`, `list_sessions`.
+  `session_stop`, `session_close` (close a child once its item is terminal),
+  `list_sessions`.
 - Keeping the goal's sessions together — `chat_folder_tree`,
   `chat_folder_create`.
 - Your own state across rounds — `session_ledger_read`, `session_ledger_record`.
@@ -6725,7 +6726,8 @@ with `wait`. A quiet cycle is one line, then end the turn.
 Your tools:
 
 - Child sessions — `session_create`, `session_send`, `session_read_message`,
-  `session_stop`, `list_sessions`.
+  `session_stop`, `session_close` (close a child once its item is terminal),
+  `list_sessions`.
 - Keeping the audit's sessions together — `chat_folder_tree`,
   `chat_folder_create`.
 - State that outlives a round — `session_ledger_read`, `session_ledger_record`.

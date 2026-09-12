@@ -398,6 +398,21 @@ class TestStopConditions:
         body = _flat(_section(skill_text, self.HEADING))
         assert "autonudge_stop" in body
 
+    def test_a_terminal_child_is_closed_in_the_cycle_and_at_the_stop(self, skill_text: str) -> None:
+        """Stopping a child's loop is not the same act as closing its session, so the
+        procedure has to name the second one twice: per item inside the cycle, and for
+        whatever is still open when the conductor itself stops. The VOID fixer is
+        called out because ``session_stop`` reads as the whole close-out for it."""
+        cycle = _flat(_section(skill_text, "## The patrol cycle"))
+        assert "session_close that child session in the same cycle" in cycle
+        assert "a void fixer is closed after its session_stop" in cycle
+        body = _flat(_section(skill_text, self.HEADING))
+        assert "session_close each remaining child whose item is terminal" in body
+        assert (
+            "a child still holding a pending human question, or a fixer driving an"
+            " unmerged pr, stays open" in body
+        )
+
 
 class TestRulesOfEngagementExport:
     """The M0 review surface. Shape is a contract; the values are the human's."""

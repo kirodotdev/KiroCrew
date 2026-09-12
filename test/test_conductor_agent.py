@@ -491,6 +491,23 @@ class TestConductorInstaller:
         assert "work_ledger_read` first, every cycle" in body
         assert "action=accept" in body
 
+    def test_prompt_and_skill_close_a_child_once_its_item_is_terminal(self, tmp_path, monkeypatch):
+        """A conductor that stops an item's loop and leaves its session open leaves a
+        finished worker parked in the sidebar with nothing to re-arm. The prompt
+        names the verb in the child-session tool line, and the skill ties it to
+        ``action=close`` so ending the item and ending its session are one step.
+        """
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        assert "`session_close` (close a child once its item is terminal)" in prompt
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "Closing the item and closing its session happen together" in body
+        assert "`session_close` archives (reopenable); it never deletes" in body
+        assert "`session_close` each one whose item is terminal" in body
+        assert (
+            "leave open any child still holding a pending human question or driving an"
+            " unmerged PR" in body
+        )
+
     def test_skill_feeds_the_evaluator_through_a_quoted_heredoc(self):
         """The acceptance document is built from ingested text, and the skill's
         example is what the agent copies. A ``printf '%s' '<json>'`` form ends its

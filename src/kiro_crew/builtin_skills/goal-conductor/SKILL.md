@@ -264,7 +264,13 @@ Each cycle:
 
    If the user says the card is gone, re-issue it. A report that the card vanished is not an answer.
 4. `work_ledger_record` `action=close` with the item's `state` when an item is
-   finally done with — that is what ends it. `action=decide` records an
+   finally done with — that is what ends it. **Closing the item and closing
+   its session happen together.** When a work item reaches a terminal verdict
+   (accepted, rejected, abandoned/void) and its loop is stopped,
+   `session_close` that child session in the same cycle — a finished worker
+   has nothing left to re-arm. `session_close` archives (reopenable); it never
+   deletes. Never close a child that still has a pending human question or an
+   unmerged PR it is actively driving. `action=decide` records an
    instruction you want the worker to read out of `work_brief`; it is the ONE
    field the worker treats as an instruction, so keep it to a decision.
 5. `session_read_message` for detail the record does not carry — a question's
@@ -342,8 +348,12 @@ Stop and report when ANY of these fire. Do not push past one.
 4. **A decision is needed that no acceptance condition can settle.** Stopping to
    ask is correct here. Guessing is the failure.
 
-Call `autonudge_stop` when you stop. Reaching `max_cycles` is a runaway
-backstop, not a finish.
+Call `autonudge_stop` when you stop, and close out the children you created
+before your final report: `session_close` each one whose item is terminal, and
+**leave open any child still holding a pending human question or driving an
+unmerged PR**. Stop condition 4 fires precisely because a person is about to
+re-engage with such a child, and a close cancels its turn and discards that
+work. Reaching `max_cycles` is a runaway backstop, not a finish.
 
 ## What the ledger holds, and what your own does
 
@@ -455,11 +465,14 @@ what the composer renders:
   runs as the target's own turn, and a stop discards the target's in-flight work.
   You ingest external content by design, so the prompt is the only call-time
   check on both. Expect one approval per item at dispatch (the seed), one per
-  question you answer, and one if you ever stop an item. `execute_bash` also
-  still prompts, so **each patrol cycle that verifies anything blocks on one
-  approval for the `accept_eval.py` invocation**. Size the nudge interval for
-  that, and batch. On a host with a governance ceiling even the granted verbs
-  prompt; if you see approvals where this says you should not, that is why.
+  question you answer, and one if you ever stop an item. `session_close` sits on
+  the same footing — it writes to a session that is not yours, even though it
+  archives rather than deletes — so budget one approval per child you close out.
+  `execute_bash` also still prompts, so **each patrol cycle that verifies
+  anything blocks on one approval for the `accept_eval.py` invocation**. Size
+  the nudge interval for that, and batch. On a host with a governance ceiling
+  even the granted verbs prompt; if you see approvals where this says you
+  should not, that is why.
 - **`session_send` reports delivery, not completion.** `started: true` means the
   target began a turn on your message; `started: false` means it queued. Neither
   says the work succeeded — acceptance is still the evaluator's job.

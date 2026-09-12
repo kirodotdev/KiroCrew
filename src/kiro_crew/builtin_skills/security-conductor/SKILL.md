@@ -296,7 +296,15 @@ Each cycle, in this order:
    verdict. These are what go missing, because nothing fires to remind you. An
    entry clears when the obligation is discharged, not when you decide about it.
 4. **Record verdicts and state back** in one write.
-5. **Report only real signals.** A quiet cycle is one line, then end the turn.
+5. **Close out what is terminal.** When a work item reaches a terminal verdict
+   (accepted, rejected, abandoned/void) and its loop is stopped,
+   `session_close` that child session in the same cycle — a finished worker
+   has nothing left to re-arm. It holds for auditor, verifier, retrospective
+   and fixer sessions alike, and a VOID fixer is closed after its
+   `session_stop` rather than left open. `session_close` archives
+   (reopenable); it never deletes. Never close a child that still has a
+   pending human question or an unmerged PR it is actively driving.
+6. **Report only real signals.** A quiet cycle is one line, then end the turn.
 
 ## Stop conditions
 
@@ -319,6 +327,13 @@ Stop and report, rather than continuing, on any of these:
 - The false-positive rate for the round is high enough that verifiers are the
   only thing producing signal. Report the rate; a finding stream nobody has
   measured is not a foundation for a fixer lane.
+
+Whichever fires: before the final report, `session_close` each remaining child
+whose item is terminal — auditor, verifier, retrospective and fixer alike. **A
+child still holding a pending human question, or a fixer driving an unmerged PR,
+stays open**: the pending-human-gate stop above fires while a person is
+mid-decision on exactly such a child, and a close cancels its turn and
+discards that work.
 
 ## Known limits (state them, don't hide them)
 

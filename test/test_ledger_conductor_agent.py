@@ -105,6 +105,15 @@ def test_the_alias_spec_is_identical_apart_from_name_and_description(tmp_path, m
         assert alias[field] == live[field], field
 
 
+def test_the_alias_prompt_closes_a_child_once_its_item_is_terminal(tmp_path, monkeypatch):
+    """The alias is what an unmigrated session records as its agent, so the
+    session-lifecycle rule has to reach it too. Pinned on the emitted prompt rather
+    than on the shared constant: the identity test above proves the two specs match,
+    and this one proves the clause is in the one the alias ships."""
+    alias = _install(tmp_path, monkeypatch)
+    assert "`session_close` (close a child once its item is terminal)" in alias["prompt"]
+
+
 def test_the_governance_ceiling_reaches_the_alias_the_same_way(tmp_path, monkeypatch):
     """A ceiling is host state, not per-spec state, so it must strip the same ref
     from both. Pinned on a work-ledger ref: the alias is the spec an unmigrated

@@ -90,6 +90,13 @@ class TestSecurityConductorInstaller:
             assert role in prompt, role
         assert "prepare-pr" in prompt  # the fixer's own procedure
 
+    def test_prompt_closes_a_child_once_its_item_is_terminal(self, tmp_path, monkeypatch):
+        """Four child roles reach a terminal verdict and the loop is stopped for each
+        one; without the verb in the tool line the finished session stays open and the
+        operator cleans up by hand."""
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        assert "`session_close` (close a child once its item is terminal)" in prompt
+
     def test_prompt_delegates_scope_and_acceptance_to_scripts(self, tmp_path, monkeypatch):
         """Both decisions this agent must NOT make by judgment: whether a target
         is in scope, and whether a finding is real. Each names the script whose
