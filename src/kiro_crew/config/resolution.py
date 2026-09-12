@@ -83,6 +83,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "timezone",
         "auto_update",
         "registries",
+        "a2a_agents",
         "connections_ui",
     }
 )

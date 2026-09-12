@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _SYSTEM_PREFIX,
         _TRANSIENT_CONTINUE_MSG,
         _TURN_LIMIT,
+        A2A_PROVIDER_LABEL,
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         _context_groups_of,
         _describe_exception,
+        _is_a2a_agent,
         _redact,
         _resolved_model_of,
         _subagent_default_effort,
@@ -57,6 +59,7 @@ if TYPE_CHECKING:
         annotate_model_fallback,
         append_fallback_story,
         apply_completion_keep,
+        build_remote_task_message,
         cap_result_file,
         configured_fallback_chain,
         evict_completed_agents,
@@ -312,6 +315,60 @@ class RunEventCoordinator(ManagerComponent):
         """Get agent info by ID."""
         return self._manager._agents.get(agent_id)
 
+    async def _persist_a2a_context_impl(self, info: SubagentInfo, provider: Any) -> None:
+        """Record the A2A ``contextId`` *provider* adopted, if state.json lacks it.
+
+        The session record written at acquisition time carries ``session_id=""``
+        for an A2A run -- the contextId only arrives with the first response --
+        so this is the write that makes ``spawn_continue`` possible. It runs
+        after the turn (success) AND from the provider release, which every
+        terminal path reaches: a stream that raises after the remote adopted a
+        contextId (the ordinary dropped/failed-task path) skips the post-turn
+        write, and only the release-time write keeps that conversation
+        resumable rather than recorded as gone.
+        Idempotent: a no-op when the record already carries this id.
+        """
+        try:
+            ctx = getattr(provider, "context_id", None)
+            if ctx and str(ctx) != str(getattr(info, "_session_id", "")):
+                setattr(info, "_session_id", str(ctx))
+                await self._manager._write_state_off_loop(
+                    info, "A2A contextId record", session_id=str(ctx)
+                )
+        except Exception:
+            logger.debug("Failed to persist A2A contextId for %s", info.id, exc_info=True)
+
+    async def _release_direct_provider_impl(self, info: SubagentInfo, *, cancel: bool) -> None:
+        """Cancel (optionally) and shut down a run's directly-constructed provider.
+
+        An A2A run is served by an ``A2AProvider`` stashed on ``info`` rather than
+        by a SessionManager session, so the session-keyed teardown never reaches
+        it: without this, every remote run leaked its aiohttp ``ClientSession``
+        and a user stop never issued ``CancelTask`` -- the remote agent kept
+        working on a task nobody was reading. ``cancel=True`` on the stop/reap
+        path (a turn may still be in flight); ``cancel=False`` on normal
+        completion (the turn ended; only the session needs closing). Best-effort
+        and bounded: teardown must never hang on a dead remote.
+        """
+        provider = getattr(info, "_direct_provider", None)
+        if provider is None:
+            return
+        # The continuation path re-resolves the provider from state, so clearing
+        # the attribute here does not strand a later spawn_continue.
+        setattr(info, "_direct_provider", None)
+        # The conversation handle outlives the provider: persist it before the
+        # session closes, whatever path brought us here.
+        await self._persist_a2a_context_impl(info, provider)
+        if cancel:
+            try:
+                await asyncio.wait_for(provider.cancel(wait_ack_timeout=0.0), timeout=5.0)
+            except Exception:
+                logger.debug("Subagent %s: remote CancelTask failed", info.id, exc_info=True)
+        try:
+            await asyncio.wait_for(provider.shutdown(), timeout=5.0)
+        except Exception:
+            logger.debug("Subagent %s: direct provider shutdown failed", info.id, exc_info=True)
+
     async def _teardown_run_session_impl(self, info: SubagentInfo, session_key: str) -> None:
         """Release and reset the run's own session (skipped when reaped).
 
@@ -323,6 +380,10 @@ class RunEventCoordinator(ManagerComponent):
         and the teardown gate — leaking a concurrency slot, which is the very
         class of bug this module's guard split exists to prevent.
         """
+        # Directly-constructed (A2A) provider: not keyed in the SessionManager, so
+        # the release/reset below would never touch it. The turn has ended here,
+        # so close the session without a CancelTask.
+        await self._release_direct_provider_impl(info, cancel=False)
         try:
             if info._session_sharing:
                 # Session-sharing subagents: destroy the session handle
@@ -784,7 +845,47 @@ class RunEventCoordinator(ManagerComponent):
         if info.keep:
             self._manager._sessions.mark_continuable(session_key)
             self._manager._conversations[session_key] = time.time()
-        use_session_sharing = (not info.keep) and self._manager._should_use_session_sharing(info)
+        # ── A2A remote-subagent branch ──────────────────────────────────────
+        # An agent in the a2a_agents registry is a REMOTE subagent: construct an
+        # A2AProvider directly instead of an ACP session. This is the branch
+        # point (chosen over the provider factory) because the factory also
+        # serves primary/dashboard/cron sessions; branching here keeps the
+        # subagent-only invariant structural. A2A agents are already excluded
+        # from session sharing in _should_use_session_sharing.
+        #
+        # The decision is the one ADMISSION made (admission.spawn_impl resolves
+        # the registry once and stashes the entry on the record), not a fresh
+        # registry read: the governance vet and the collision refusal judged
+        # that resolution, and a config write between admission and this point
+        # must not be able to re-route an admitted local spawn off-box. Only
+        # admission writes the stash (from ``_a2a_agent_entry``, which validated
+        # the type and the card URL); an absent stash means LOCAL.
+        _a2a_entry = getattr(info, "_a2a_entry", None)
+        # Every branch below assigns ``client``; declaring the type once here (rather
+        # than a ``None`` placeholder) keeps it non-Optional for the type checker.
+        client: LLMProvider
+        if _a2a_entry is not None:
+            client = await self._build_a2a_provider_impl(info, _a2a_entry)
+            # Make the provider resolvable by paths that look sessions up by
+            # key (steer_run_impl's _resolve_provider): an A2A provider is
+            # never registered in the session manager, so without this stash
+            # spawn_steer polls the startup-grace window forever and reports
+            # session_starting for the run's whole life instead of the typed
+            # supports_steer rejection.
+            setattr(info, "_direct_provider", client)
+            is_new = not bool(info.conversation_key)
+            # Resume honesty: a resumed A2A conversation has a retained
+            # contextId only if start() succeeded and we carried one in. The
+            # provider adopts/keeps context_id; report _resumed True only when a
+            # continuation carried a contextId AND the card fetched (client
+            # started). Otherwise the resume_failed guard below fires.
+            _resumed = bool(info.conversation_key) and bool(getattr(client, "context_id", None))
+            is_cc = False
+            use_session_sharing = False
+        else:
+            use_session_sharing = (not info.keep) and self._manager._should_use_session_sharing(
+                info
+            )
         # A per-spawn or per-role model / reasoning-effort override cannot be
         # applied to the parent's already-started shared runtime (it was spawned
         # with the parent's model and cannot switch model per session). Force the
@@ -793,7 +894,9 @@ class RunEventCoordinator(ManagerComponent):
         # model/effort would silently no-op on the default (session-sharing) path.
         if eff_model or eff_effort:
             use_session_sharing = False
-        if use_session_sharing:
+        if _a2a_entry is not None:
+            pass  # A2A client already constructed above.
+        elif use_session_sharing:
             try:
                 client = await self._manager._create_shared_session(info, session_key, agent)
             except Exception as exc:
@@ -907,28 +1010,45 @@ class RunEventCoordinator(ManagerComponent):
         # turn; it cannot continue with Global memory.
         from kiro_crew.context import prepare_store_vectors
 
-        await prepare_store_vectors(
-            self._manager._ctx_builder, info.memory_store, session_key=session_key
-        )
-        full_message, _ = await run_in_embed_pool(
-            self._manager._ctx_builder.build_message,
-            message,
-            is_new,
-            session_key,
-            project=info.cwd or None,
-            memory_store=info.memory_store or None,
-            provider_type=self._manager._provider_label_of(client),
-            model_window=_sub_window,
-            context_groups=_groups,
-        )
-        # The one place the resolved scope and its cost are both known — without
-        # this, "the sub-agent didn't know X" is undebuggable after the fact.
-        logger.info(
-            "Subagent %s context: groups=%s, %d chars",
-            info.id,
-            ",".join(sorted(_groups)) or "conduct-only",
-            len(full_message),
-        )
+        if _a2a_entry is not None:
+            # Remote egress boundary: a remote agent gets the task text and a
+            # delegation preamble, nothing from this host's envelope (memory,
+            # lessons, project steering, skills index, system prompt). See
+            # build_remote_task_message; the module doc states the contract.
+            full_message = build_remote_task_message(
+                raw_task,
+                resumed_after_cancel=bool(
+                    info._cancel_retry_used and (info.streaming_text or info.tool_count > 0)
+                ),
+            )
+            logger.info(
+                "Subagent %s context: remote (task text only), %d chars",
+                info.id,
+                len(full_message),
+            )
+        else:
+            await prepare_store_vectors(
+                self._manager._ctx_builder, info.memory_store, session_key=session_key
+            )
+            full_message, _ = await run_in_embed_pool(
+                self._manager._ctx_builder.build_message,
+                message,
+                is_new,
+                session_key,
+                project=info.cwd or None,
+                memory_store=info.memory_store or None,
+                provider_type=self._manager._provider_label_of(client),
+                model_window=_sub_window,
+                context_groups=_groups,
+            )
+            # The one place the resolved scope and its cost are both known — without
+            # this, "the sub-agent didn't know X" is undebuggable after the fact.
+            logger.info(
+                "Subagent %s context: groups=%s, %d chars",
+                info.id,
+                ",".join(sorted(_groups)) or "conduct-only",
+                len(full_message),
+            )
 
         result_text = ""
         turns = 0
@@ -1034,6 +1154,16 @@ class RunEventCoordinator(ManagerComponent):
         # Persist the cleanup identity captured immediately after session
         # acquisition, together with mutable retention intent.
         try:
+            # For an A2A subagent the durable conversation handle (contextId) is
+            # adopted from the first response, AFTER identity capture — so refresh
+            # it from the live provider now that a turn has run, letting the
+            # existing session_id persistence carry the contextId for resume.
+            # Gated on the registry decision, not on duck-typed attributes: a
+            # local provider (or a test double) must never have its session id
+            # overwritten here.
+            _a2a_ctx = getattr(client, "context_id", None) if _a2a_entry is not None else None
+            if _a2a_ctx:
+                setattr(info, "_session_id", str(_a2a_ctx))
             state_update: dict[str, object] = {
                 "session_id": str(getattr(info, "_session_id", "")),
                 "provider": str(getattr(info, "_session_provider", "")),
@@ -1698,6 +1828,16 @@ class RunEventCoordinator(ManagerComponent):
                 _complete_event = event
                 break
 
+        # A2A contextId re-persist (post-turn). The "session record" write above
+        # runs at session-acquisition time — BEFORE the first A2A message — so
+        # for an A2A subagent it persists session_id="" (the contextId is only
+        # adopted from the first response). Persist it now that the turn has
+        # completed; the provider release repeats this (idempotently) on every
+        # terminal path, so a turn that RAISES after adopting a contextId still
+        # leaves a resumable record rather than conversation_gone.
+        if _a2a_entry is not None:
+            await self._persist_a2a_context_impl(info, client)
+
         # Strip [OPTIONS: ...] tags and redact sensitive content
         cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
         if cleaned:
@@ -1760,7 +1900,11 @@ class RunEventCoordinator(ManagerComponent):
                 # executed; model_source reports what actually ran.
                 ("" if provider_fallback_active(client) else (info.model or "")),
                 _complete_event,
-                provider="claude_code" if is_cc else "acp",
+                provider=(
+                    A2A_PROVIDER_LABEL
+                    if _a2a_entry is not None
+                    else ("claude_code" if is_cc else "acp")
+                ),
                 surface="subagent",
                 # Ownership stamp (see _build_token_record): an app-dispatched
                 # subagent's spend must be readable by that app's audit — the
@@ -1788,6 +1932,49 @@ class RunEventCoordinator(ManagerComponent):
         Stats().inc_subagent_completed()
         logger.info("Subagent %s completed", info.id)
 
+    async def _build_a2a_provider_impl(self, info: SubagentInfo, entry: Any) -> "LLMProvider":
+        """Construct and start an :class:`A2AProvider` for a remote subagent.
+
+        Fresh spawn: no context_id — the provider adopts one from the first
+        response. Continuation (``info.conversation_key`` set + a retained
+        contextId recorded in state): reconstruct with that contextId so the
+        remote agent inherits the prior conversation. ``start()`` fetches the
+        Agent Card; on failure it raises, and because a continuation reports
+        ``_resumed`` off ``context_id`` the run's ``resume_failed`` guard fires
+        rather than silently starting a blank conversation.
+        """
+        # Imported here (not at module top): this method is rebound onto the
+        # subagent module namespace, where a top-level import in run.py is inert.
+        # The driver is the SDK-boundary crossing; run.py never imports providers.
+        from kiro_crew.agent_sdk.drivers.a2a import create_a2a_provider
+
+        retained_context = ""
+        if info.conversation_key:
+            try:
+                # read_state is synchronous file I/O: off the loop, so a stalled
+                # filesystem cannot freeze every gateway turn and heartbeat.
+                retained_context = await asyncio.to_thread(
+                    self._manager._a2a_retained_context, info.conversation_key
+                )
+            except Exception:  # pragma: no cover - defensive
+                retained_context = ""
+        provider = create_a2a_provider(entry, context_id=retained_context or None)
+        # start() fetches the Agent Card; a failure here is intentional (see
+        # docstring): the resume guard converts it into resume_failed.
+        try:
+            await provider.start()
+        except Exception:
+            # On a FRESH spawn a card-fetch failure should tombstone the run with
+            # a clear error; on a CONTINUATION the resume_failed guard handles it.
+            logger.warning(
+                "A2A subagent %s: agent-card fetch failed for %s",
+                info.id,
+                getattr(entry, "name", "?"),
+            )
+            if not info.conversation_key:
+                raise
+        return provider
+
     def _should_use_session_sharing_impl(self, info: SubagentInfo) -> bool:
         """Decide whether a subagent should use the shared-runtime path.
 
@@ -1807,6 +1994,11 @@ class RunEventCoordinator(ManagerComponent):
         if info.model or info.allowed_tools or info.bare:
             return False
         if not info.parent_session_key:
+            return False
+        # A2A remote agents cannot host a multiplexed local ACP runtime — they
+        # are a different provider entirely. Force the dedicated path so the
+        # A2AProvider is constructed at the get_or_create call site.
+        if _is_a2a_agent(info.agent):
             return False
         return self._manager._sessions.is_session_sharing_eligible(info.parent_session_key)
 

@@ -438,6 +438,19 @@ class TerminalCoordinator(ManagerComponent):
         # No live task to cancel above (already exited) — the reap still owns
         # teardown bookkeeping from here, so mark it now.
         info.reaped = True
+
+        # A remote (A2A) run has no session process to kill: its turn is stopped
+        # by CancelTask on the remote and by closing our HTTP session. This runs
+        # AFTER `reaped` is set and the local task is cancelled, never before:
+        # closing the HTTP session mid-stream wakes the run task, and a run that
+        # wakes while `reaped` is still False records its own error/completion
+        # before the reap owns the record. With ownership claimed first, the woken
+        # task's arms see `reaped` and bare-return. Bounded and best-effort so a
+        # dead remote cannot stall the bookkeeping below. No-op for local runs.
+        try:
+            await self._manager._release_direct_provider(info, cancel=True)
+        except Exception:
+            logger.debug("Reaper: remote release failed for %s", agent_id, exc_info=True)
         # Guard 1 of 3 — the terminal RECORD (done/error/stat/tombstone/cost) is
         # first-arrival-wins on `info.done`, so it is never written twice.
         if not info.done:

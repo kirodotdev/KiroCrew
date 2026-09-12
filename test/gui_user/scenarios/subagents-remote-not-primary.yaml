@@ -1,0 +1,31 @@
+# Nightly: the safety invariant. A remote agent can only ever be a subagent.
+# Membership in a2a_agents is what makes it remote, and the primary-agent
+# picker reads only local agents, so the remote name must be structurally
+# absent from the picker -- not filtered, not greyed out, simply not there --
+# while the same name IS spawnable as a subagent (subagents-remote-spawn.yaml).
+#
+# Test-mode mechanism: none beyond the seed. The `rich` seed registers
+# `remote-demo` in a2a_agents; this scenario only reads the picker.
+name: subagents-remote-not-primary
+tier: nightly
+feature: subagents
+user_story: >-
+  As a user, I want the agent picker for my chat to offer only local agents,
+  so that I cannot accidentally run a whole session on a remote worker that is
+  meant to be delegated to.
+docs_url: docs/system-specs/modules/a2a-subagents.md
+summary: Open the chat's agent switcher and confirm the remote agent is not offered
+preconditions:
+  seed: rich
+  start_url: /
+steps:
+  - You are on the chat page. Start a new chat from the sidebar.
+  - Find the control near the message box that shows which agent this chat uses (it names the current agent and opens a list when clicked). Open it.
+  - If the list has a filter box, type "remote" into it. Otherwise read the whole list.
+  - Note every agent name offered, then close the list without changing the agent.
+expectations:
+  - The list of agents you can pick for this chat does NOT contain "remote-demo".
+  - The list does contain at least one agent (the picker is not empty or broken).
+  - The chat's current agent is unchanged after closing the list.
+max_steps: 12
+max_seconds: 300

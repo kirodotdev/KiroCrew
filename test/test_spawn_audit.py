@@ -433,6 +433,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # The git-clone spawn's argv is built from validated owner/repo
         # components, never raw user text, so it is benign.
         "apps/builtins/auto_improvement/backend/clone_setup.py::_setup_safe_clone",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) in the test-mode fake A2A server's CLI
+        # entry point, which drives its own aiohttp loop. No child process is
+        # created; the only inputs are ``--host``/``--port`` from the operator's
+        # own argv. Same classification as the ``asyncio.run`` sites above.
+        "testing/fake_a2a_server.py::main",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the async
         # ``SessionAgentRunner._approve`` coroutine from a synchronous test. No child

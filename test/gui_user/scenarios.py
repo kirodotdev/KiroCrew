@@ -50,6 +50,7 @@ _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 #: ``docs/build/gui-user-test.md``. Order is the order the report groups appear in.
 FEATURES: dict[str, str] = {
     "chat": "Chat sessions",
+    "subagents": "Subagents & remote agents",
     "side-panel": "Side panel tabs",
     "terminal": "Terminal panel",
     "sidebar": "Sessions sidebar & folders",

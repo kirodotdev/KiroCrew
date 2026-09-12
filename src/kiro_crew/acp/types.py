@@ -185,6 +185,9 @@ PROVIDER_LABEL_CLAUDE = "claude_code"
 PROVIDER_LABEL_KAS = "kas"
 PROVIDER_LABEL_CODEX = "codex"
 PROVIDER_LABEL_OPENCODE = "opencode"
+# A remote agent driven over A2A (kiro_crew.providers.a2a.A2AProvider). Persisted
+# with a subagent run's state so cleanup routing and resume identify the backend.
+PROVIDER_LABEL_A2A = "a2a"
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
