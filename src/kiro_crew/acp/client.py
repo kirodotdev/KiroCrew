@@ -320,6 +320,29 @@ _OPENCODE_CONFIG_READBACK_ARGS = ("debug", "config")
 # short-lived child, measured at ~2.3s on a loaded dev desktop.
 _OPENCODE_READBACK_TIMEOUT_S = 30.0
 
+# Launchers that carry the adapter's entry script as their next argument.  A
+# label taken from argv[0] alone would read "node" for every adapter resolved
+# to a script rather than a native binary.
+_ADAPTER_INTERPRETERS = frozenset({"node", "node.exe"})
+
+
+def _adapter_spawn_label(argv: Sequence[str], seam: str) -> str:
+    """Keep a stable seam label while identifying the resolved program.
+
+    Both ACP seams resolve their binary through a documented environment
+    override (``CLAUDE_AGENT_ACP_BIN``, ``CODEX_ACP_BIN``), and either may point
+    at a dispatch shim or a vendored build that is not the seam's own adapter.
+    The seam is useful to existing log parsers, while the resolved program proves
+    which adapter command that seam actually launched.
+    """
+    if not argv:
+        return seam
+    program = argv[0]
+    if Path(program).name.casefold() in _ADAPTER_INTERPRETERS and len(argv) > 1:
+        program = argv[1]
+    return f"{seam} via {program}" if program else seam
+
+
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
 # claude-agent-acp "Unexpected case: {...thinking_tokens...}" line.  Mechanism
@@ -5817,6 +5840,8 @@ class AcpClient:
                     f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
                 )
             argv: list[str] = claude_argv
+            spawn_label = _adapter_spawn_label(argv, CLAUDE_ACP_BIN)
+            stderr_label = _adapter_spawn_label(argv, "claude-acp")
         elif self._is_codex:
             # Selectable on a public build (BASELINE_SELECTABLE_BACKENDS), so this
             # branch runs for real users; what is unwritten is the session MCP array
@@ -5855,6 +5880,8 @@ class AcpClient:
             # warm: _session_mcp_servers resolves a cold cache itself; the warm is
             # what keeps the read off the loop.
             self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
+            spawn_label = _adapter_spawn_label(argv, CODEX_ACP_BIN)
+            stderr_label = spawn_label
             # Fail closed BEFORE the spawn when the mask below would be dropped:
             # several wrap_argv paths return without applying extra_hidden_dirs,
             # which would start an enforced adapter with no compensating control
@@ -5909,6 +5936,8 @@ class AcpClient:
                     f"itself."
                 )
             argv = [opencode_bin, OPENCODE_ACP_SUBCMD]
+            spawn_label = f"{OPENCODE_BIN} {OPENCODE_ACP_SUBCMD}"
+            stderr_label = OPENCODE_BIN
             # The same refuse-then-mask preflight the codex arm runs, keyed on the
             # same routing question rather than on this harness's identity: it is
             # ENFORCED, so the OS credential mask is the compensating control for the
@@ -6032,6 +6061,8 @@ class AcpClient:
             if overlap:
                 raise AcpError(overlap)
             argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
+            spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
+            stderr_label = KIRO_CLI_BIN
 
         # OS-level sandbox: wrap the command to hide sensitive paths.
         # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
@@ -6245,19 +6276,7 @@ class AcpClient:
         # readable on every platform, so equality on a fresh random id is the
         # comparison that cannot false-match across spawns.
         self._process_instance = uuid.uuid4().hex[:16]
-        _spawn_label = (
-            CLAUDE_ACP_BIN
-            if self._is_claude
-            else (
-                CODEX_ACP_BIN
-                if self._is_codex
-                else (
-                    f"{OPENCODE_BIN} {OPENCODE_ACP_SUBCMD}"
-                    if self._is_opencode
-                    else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
-                )
-            )
-        )
+        _spawn_label = spawn_label
         # Everything from here to the end of _spawn runs with a LIVE subprocess
         # that nothing has recorded yet, so every step must be guarded. Without
         # this, any exception in the window — finish_suspended_spawn, the
@@ -6333,7 +6352,9 @@ class AcpClient:
                 )
 
             if self._process.stderr:
-                self._stderr_task = asyncio.ensure_future(self._drain_stderr(self._process.stderr))
+                self._stderr_task = asyncio.ensure_future(
+                    self._drain_stderr(self._process.stderr, label=stderr_label)
+                )
         except BaseException:
             logger.error(
                 "Spawn of %s (PID %s) failed after the process was live; killing it so it "
@@ -6352,7 +6373,9 @@ class AcpClient:
                 )
             raise
 
-    async def _drain_stderr(self, stderr: asyncio.StreamReader) -> None:
+    async def _drain_stderr(
+        self, stderr: asyncio.StreamReader, *, label: str = KIRO_CLI_BIN
+    ) -> None:
         # Count of suppressed high-frequency marker lines (see
         # _SUPPRESSED_STDERR_MARKERS) and the monotonic timestamp of the last
         # throttled summary, so a thinking burst is observable in the log
@@ -6385,16 +6408,7 @@ class AcpClient:
             self._stderr_lines.append(text)
             redacted, _ = redact_exfiltration_urls(text)
             redacted, _ = redact_credentials(redacted)
-            _bin_label = (
-                "claude-acp"
-                if self._is_claude
-                else (
-                    CODEX_ACP_BIN
-                    if self._is_codex
-                    else OPENCODE_BIN if self._is_opencode else KIRO_CLI_BIN
-                )
-            )
-            logger.warning("%s stderr: %s", _bin_label, redacted)
+            logger.warning("%s stderr: %s", label, redacted)
         if suppressed:
             # Flush the residual count once the stream closes so the final burst
             # is still accounted for.
