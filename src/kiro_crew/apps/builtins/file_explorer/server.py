@@ -1309,6 +1309,25 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 
 
+class _Server(ThreadingHTTPServer):
+    """The listener, with the address-reuse flag bound to the platform.
+
+    ``http.server.HTTPServer`` hardcodes ``allow_reuse_address = 1``, and that flag
+    does not mean the same thing on both families. On POSIX it only waives
+    TIME_WAIT so a restart can rebind. On Windows ``SO_REUSEADDR`` additionally
+    lets a socket bind an address that already has a LIVE listener, so a second
+    File Explorer backend on ``PORT`` would bind successfully and the two would
+    split incoming requests instead of one failing.
+
+    The gateway detects a port collision by checking that the spawned child died on
+    its initial bind (``kiro_crew/apps/backend.py``), which only works while the
+    bind is actually allowed to fail. So the flag is off on Windows and EADDRINUSE
+    is permitted to surface. This mirrors the workflows backend's ``_Server``.
+    """
+
+    allow_reuse_address = platform_compat.IS_POSIX
+
+
 def main() -> int:
     # Install the platform context before serving. This backend is spawned as
     # its own subprocess by the app backend launcher, so it inherits no context;
@@ -1317,7 +1336,7 @@ def main() -> int:
     # non-standalone edition. Idempotent and fail-closed, mirroring the CLI and
     # gateway entry points (and Dev Fleet's backend).
     boot_platform(KiroCrewConfig.load())
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), FileExplorerHandler)
+    server = _Server(("127.0.0.1", PORT), FileExplorerHandler)
     logger.info(
         "listening on http://127.0.0.1:%d  rg=%s  allowed=%s",
         PORT,
