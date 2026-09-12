@@ -1060,7 +1060,13 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
     directive actually landed.
     """
     out = session_directive.encode(kind, args, human)
-    if session_directive.is_refusal(out):
+    # STRUCTURAL test, not a content test: encode either produced a marker or it
+    # refused. Asking ``is_refusal(out)`` instead matched any payload that merely
+    # CONTAINED the refusal token — so a stop whose reason quoted that token was
+    # classified as a refusal, skipped the publish and the vouch, and had its real
+    # marker defanged downstream, losing the stop. That is the same
+    # "infer provenance from imitable content" mistake this gate exists to remove.
+    if not session_directive.has_marker(out):
         return out
     # Gateway-side derivation (mcp_core.derive_directive) re-runs this very
     # handler and wants the validated payload, not a POST.
@@ -1087,7 +1093,11 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
         )
     except Exception:
         pass
-    return out
+    # POSITIVE PROVENANCE: this is the one place a real marker is produced, so it
+    # is the one place that can say so. Without it the outermost gate has to infer
+    # authenticity from the bytes, which a rejection echoing a model-chosen
+    # argument name can imitate.
+    return session_directive.vouch(out)
 
 
 def autonudge_stop(name: str, args: dict[str, Any]) -> str:
