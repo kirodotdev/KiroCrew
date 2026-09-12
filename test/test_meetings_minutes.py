@@ -320,7 +320,7 @@ class TestOutputsOverlay:
             resp = await client.delete(
                 f"{BASE}/meetings/standup/outputs", json={"agent_id": "note-taker"}
             )
-            assert (await resp.json())["reverted"] is True
+            assert (await resp.json()) == {"ok": True, "agent_id": "note-taker"}
 
             body = await (await client.get(f"{BASE}/meetings/standup/outputs")).json()
         assert body["outputs"]["note-taker"] == "# Generated\n"
@@ -335,7 +335,10 @@ class TestOutputsOverlay:
                 f"{BASE}/meetings/standup/outputs", json={"agent_id": "note-taker"}
             )
             assert resp.status == 200
-            assert (await resp.json())["reverted"] is False
+            # The response says nothing about whether an edit existed: no client
+            # ever consumed the old ``reverted`` flag, so the payload is the same
+            # either way.
+            assert (await resp.json()) == {"ok": True, "agent_id": "note-taker"}
 
     @pytest.mark.asyncio
     async def test_a_sidecar_is_ignored_once_the_agent_turns_into_an_html_widget(

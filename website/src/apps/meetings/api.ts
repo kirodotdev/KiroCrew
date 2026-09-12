@@ -341,7 +341,7 @@ export const meetingsApi = {
     ),
   /** Discard the user's edit, so the agent's own output is shown again. */
   revertOutput: (id: string, agentId: string) =>
-    request<{ ok: boolean; agent_id: string; reverted: boolean }>(
+    request<{ ok: boolean; agent_id: string }>(
       `/meetings/${encodeURIComponent(id)}/outputs`,
       { method: 'DELETE', body: JSON.stringify({ agent_id: agentId }) },
     ),
