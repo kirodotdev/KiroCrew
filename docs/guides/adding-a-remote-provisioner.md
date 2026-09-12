@@ -39,7 +39,7 @@ Which engine runs is a Composable Platform Provider seam. `src/kiro_crew/platfor
 
 The API surface is two routes: `GET /api/cloud/provisioners` lists the descriptors, and `POST /api/cloud/launch` takes a `provider_id` and re-resolves it against the same seam before any job file is written. An id the provider lists but cannot back is rejected with `unknown_provisioner` at 400, before a job exists.
 
-On the frontend, `website/src/components/remoteProvisionerRenderers.tsx` is a registry of form components keyed by the descriptor's `kind`, not its `id` — so several rows can share one form. `aws_ec2` is drawn by the core's own panel and is refused as a registration target: claiming it would be a collision, not an override. A `kind` with no renderer is skipped by the selector, so an older frontend shows an edition's new lane as absent rather than as a broken panel.
+On the frontend, `website/src/components/remoteProvisionerRenderers.tsx` is a registry of form components keyed by the descriptor's `kind`, not its `id` — so several rows can share one form. `aws_ec2` is drawn by the core's own panel and `registerRemoteProvisionerRenderer` **refuses** it: claiming that form would be a collision, not an override. That refusal is a frontend one. On the backend, `provisioners()` is trusted — a second descriptor under the id `aws_ec2` is not rejected, it is simply not something you may do (the id's own docstring says so), and doing it anyway leaves `api_cloud_launch_create` resolving whichever row it reaches first. A `kind` with no renderer is skipped by the selector, so an older frontend shows an edition's new lane as absent rather than as a broken panel.
 
 ### The whole path
 
@@ -71,8 +71,8 @@ A descriptor says which lanes exist and how to draw each one. It never says how 
 
 | Field | Meaning | Who reads it | Fixed or yours |
 |---|---|---|---|
-| `id` | The identifier a launch request names as `provider_id` | `api_cloud_launch_create`, and a future governance scope | Yours, except `aws_ec2` |
-| `kind` | Which frontend form draws this lane | `canRenderRemoteProvisionerKind`, `getRemoteProvisionerRenderer` | Yours, except `aws_ec2` |
+| `id` | The identifier a launch request names as `provider_id` | `api_cloud_launch_create`, and a future governance scope | Yours; `aws_ec2` is reserved by convention, unenforced on the backend |
+| `kind` | Which frontend form draws this lane | `canRenderRemoteProvisionerKind`, `getRemoteProvisionerRenderer` | Yours; `aws_ec2` is refused by the renderer registry |
 | `label` | Untranslated display name on the selector | The Set-up tab selector | Yours; edition-owned copy, deliberately outside the core catalog |
 | `posix_only` | Whether a launch may run on a Windows gateway | `api_cloud_launch_create`, per descriptor | Yours; the built-in shells to `bash` and `aws`, so it is `True` |
 | `step_labels` | Overrides the user-facing label of any of the four launch steps | `default_steps` | Labels are yours, keys are not |
@@ -89,16 +89,26 @@ A descriptor says which lanes exist and how to draw each one. It never says how 
 | Method | What core does with the return | Must guarantee |
 |---|---|---|
 | `preflight(profile, region)` | Fails the launch on any raise | Raise if the launch cannot possibly succeed. Run your own authorization here; a frontend form cannot skip a check by not drawing it |
-| `provision(tag, size_key, profile, region)` | Stored as `job.instance_id`, passed to `begin_signin` and `register` | Return the identity `teardown` can act on. Validate your own `size_key` here |
-| `begin_signin(instance_id, profile, region)` | Reads `already_logged_in`, `url`, `code`, `ports`; calls `wait(cancel)` then `close()` | Return a handle. Set `already_logged_in` when there is nothing to do; leave `url` empty to skip without blocking |
+| `provision(tag, size_key, profile, region)` | Stored as `job.instance_id`, passed to `begin_signin` and `register` | Return the identity `register` accepts. **Also tag the resource with `tag`** — that is the only handle `teardown` gets. Validate your own `size_key` here |
+| `begin_signin(instance_id, profile, region)` | Reads `already_logged_in`, `url`, `code`, `ports`; calls `wait(cancel)` then `close()` | Return a handle — **do not raise for a sign-in that merely did not complete.** Set `already_logged_in` when there is nothing to do; leave `url` empty to skip without blocking |
 | `register(instance_id, tag, profile, region)` | Nothing — it is the last step | **Raise loudly if the registry write fails.** `register_instance` is best-effort by contract and returns `None` on failure; swallowing that marks the launch done while the user pays for an invisible machine |
-| `teardown(tag, profile, region)` | `True` is reported to the user as removed | Return `True` only when the resource is **confirmed** gone. An accepted delete request that later fails is not a `True` |
+| `teardown(tag, profile, region)` | `True` is reported to the user as removed | Return `True` only when the resource is **confirmed** gone. An accepted delete request that later fails is not a `True`. Note it receives `tag`, never `provision`'s return |
 
 ### The four step keys are fixed
 
 `preflight`, `provision`, `signin` and `connect` are the step keys, and rollback branches on them: `run_launch` rolls back only when the `provision` step is the one that failed, because a later failure means the machine exists and `register` has already named it for recovery. Rename a key and that branch stops matching. `step_labels` lets you relabel any of the four so a lane that does not create an EC2 instance is not described as one.
 
 Note the asymmetry: `register` runs during the step keyed `connect`. There is no `register` step.
+
+### `tag` is the teardown handle, and rollback has one blind spot
+
+Two facts about `run_launch` that together decide how your engine must behave.
+
+**`teardown` never sees what `provision` returned.** Core generates `tag` (a short `kc-…` string) before `preflight` and passes it to `provision` and to `teardown`; `provision`'s return value goes to `job.instance_id` and from there to `begin_signin` and `register` only. So a resource your engine can find *only* by the identity it returned is a resource rollback cannot delete. Tag it with `tag` at creation, or key it on `tag` some other way, and make `teardown` idempotent — running it against a `tag` that created nothing must be a no-op that returns cleanly.
+
+**A raise after `provision` succeeds is not rolled back.** Rollback is scoped to `job.step("provision").state == "failed"`, on the reasoning that a later failure means the machine exists and `register` has already named it for manual recovery. That reasoning holds for a `register` failure. It does **not** hold for a raise out of `begin_signin`, which happens *before* `register` — the machine exists, nothing rolls it back, and nothing put it in the registry either. Your `begin_signin` must therefore not raise for a sign-in that merely failed to complete: return a handle whose `wait` returns `False` and the launch continues to `register`, which is the outcome the user can recover from. Reserve a raise for the case where the machine itself is unusable, and tear it down yourself before you raise.
+
+A user *cancel* during sign-in is handled: `run_launch` rolls back whenever the `provision` step has moved past `pending`. Only the raise path has the gap.
 
 ### `size_key`, `profile` and `region` are generic wires
 
@@ -163,11 +173,13 @@ Replace the default during composition with `dataclasses.replace(ctx, remote_pro
 
 ### 3. Implement the `LaunchEngine`
 
-Five methods, with the guarantees from the table in section B. Two are worth restating because getting them wrong costs the user money:
+Five methods, with the guarantees from the table in section B. Three are worth restating because getting them wrong costs the user money:
 
-`teardown` must confirm. Requesting a delete and returning `True` tells the user their billing stopped when the resource may still be running.
+`teardown` must confirm, and must work from `tag` alone. Requesting a delete and returning `True` tells the user their billing stopped when the resource may still be running; and a resource findable only by `provision`'s return value is one rollback cannot reach.
 
 `register` must raise on failure. Mirror `RealLaunchEngine.register`: it checks `register_instance`'s return for `None` and raises a message naming the resource, so a machine that was created but never registered is still recoverable by hand.
+
+`begin_signin` must not raise for an incomplete sign-in. It runs after `provision` and before `register`, which is the one window rollback does not cover.
 
 ### 4. Choose the transport at `register` time
 
@@ -188,7 +200,9 @@ Mount them through `contribute_routes` on the `dashboard` seam. Do not extend `/
 
 ### 7. Test it
 
-Mirror the two existing suites. `test/test_remote_provisioner_seam.py` covers the descriptor, the default provider and composition — that the seam resolves your provider, that `engine_for` raises `KeyError` for an unknown id, and that a descriptor cannot claim `aws_ec2`. `test/test_cloud_handlers.py` covers the handler behaviour: that `GET /api/cloud/provisioners` lists your row, that `POST /api/cloud/launch` with your `provider_id` reaches your engine, and that an unknown id is a 400 before a job file exists.
+Mirror the two existing suites. `test/test_remote_provisioner_seam.py` covers the descriptor, the default provider and composition — that the built-in descriptor is what it claims, that `engine_for` raises `KeyError` for an unknown id, and that `dataclasses.replace` on the base context swaps the provider (its own `Two` fixture is the shape to copy). `test/test_cloud_handlers.py::TestProvisionerSeam` covers the handler behaviour: that `GET /api/cloud/provisioners` lists your row, that `POST /api/cloud/launch` with your `provider_id` reaches your engine, and that an unknown id is a 400 before a job file exists.
+
+Add two of your own that the existing suites cannot cover for you: that `teardown` finds and removes a resource given only `tag`, and that a failed sign-in leaves the instance registered rather than raising.
 
 Inject a fake engine through `state.cloud_launch_engine`, which outranks the seam, when you want to exercise `run_launch` without composing a whole context.
 
@@ -208,7 +222,7 @@ The RFC's own per-method table, which is the shape any container-task lane takes
 
 `size_key` maps to a CPU and memory pair instead of an instance type, which is exactly the "generic wire" case from section B: the built-in ladder keys can keep their names while meaning something else, because `LaunchJobStore.create` only validates them for the built-in id.
 
-The RFC's own acceptance conditions are worth copying for any lane: `provision` returns an identity `register` accepts, `teardown` leaves nothing in use, and a partial teardown is recoverable — running it twice removes the remainder rather than erroring.
+The RFC's own acceptance conditions are worth copying for any lane: `provision` returns an identity `register` accepts, `teardown` leaves nothing in use, and a partial teardown is recoverable — running it twice removes the remainder rather than erroring. That last one is not optional politeness: rollback can call `teardown` for a `tag` whose `provision` created nothing at all.
 
 ### Example 2: a managed dev-environment service, reached over SSH
 
@@ -217,14 +231,14 @@ The setup: a service hands out a machine from a prebuilt image that already cont
 | Method | What it does |
 |---|---|
 | `preflight` | Check the service is reachable and the caller is entitled to an environment. Raise otherwise |
-| `provision` | Ask the service for an environment; return its id. No bootstrap — the image already carries the runtime |
+| `provision` | Ask the service for an environment, label it with `tag`, return its id. No bootstrap — the image already carries the runtime |
 | `begin_signin` | **Still required.** The image carries the runtime, not the user's model credential. Start the device-code flow on the new machine and return the handle |
 | `register` | `connection_method="ssh"`, `ssh_host` set to the address the service gave you, `remote_port` set to the port the image's gateway binds. `remote_bin` only if the binary is somewhere non-standard |
-| `teardown` | Release the environment back to the service. Return `True` only once the service confirms it is released |
+| `teardown` | Release the environment back to the service, looked up by `tag` — so `provision` must record `tag` on the environment. Return `True` only once the service confirms it is released |
 
 The two things people get wrong here:
 
-**Skipping `begin_signin` because "the image has everything".** It has the software. It does not have the user's credential, and a machine that comes up unsigned-in looks like a successful launch and behaves like a broken one. `run_launch` already handles the cheap path: set `already_logged_in` on the handle and the step completes immediately.
+**Skipping `begin_signin` because "the image has everything".** It has the software. It does not have the user's credential, and a machine that comes up unsigned-in looks like a successful launch and behaves like a broken one. `run_launch` already handles the cheap path: set `already_logged_in` on the handle and the step completes immediately. What it does not handle is a raise here — see the rollback blind spot in section B: raising out of `begin_signin` leaves a leased environment that is neither registered nor released.
 
 **Assuming a light bootstrap means a light `teardown`.** A prebuilt image makes `provision` fast; it does nothing for the confirmation `teardown` owes. A leased environment that was never released keeps billing exactly like an EC2 instance would.
 
