@@ -401,3 +401,88 @@ async def test_upload_unrelated_extension_still_rejected(
         assert "Unsupported file type" in body["error"]
     # Nothing reached disk.
     assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+_WEBP_HEAD = b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"\x00" * 8
+_HEIC_HEAD = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 8
+
+
+@pytest.mark.asyncio
+async def test_upload_jpeg_named_webp_body_is_relabelled_not_refused(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """A ``.jpeg`` whose bytes are WebP is stored as ``.webp``.
+
+    Browsers keep the URL's extension on "Save image as" while the body is
+    whatever the server negotiated, so a WebP wearing ``.jpeg`` is an
+    everyday file, not an attack. The bytes pass the same raster allowlist;
+    only the label is corrected, and the returned path carries the true
+    suffix so the ACP image inliner reads the right mime from it.
+    """
+    form = aiohttp.FormData()
+    form.add_field("file", _WEBP_HEAD, filename="photo.jpeg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    (path,) = body["paths"]
+    assert path.endswith("_photo.webp"), path
+    assert Path(path).read_bytes() == _WEBP_HEAD
+    assert [p.name for p in upload_dir.iterdir()] == [Path(path).name]
+
+
+@pytest.mark.asyncio
+async def test_upload_jpeg_with_matching_bytes_keeps_its_name(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """The relabel is a no-op for a truthful filename."""
+    jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 8
+    form = aiohttp.FormData()
+    form.add_field("file", jpeg, filename="photo.jpeg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    assert body["paths"][0].endswith("_photo.jpeg")
+
+
+@pytest.mark.asyncio
+async def test_upload_jpeg_that_is_heic_names_the_conversion_remedy(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """An iPhone HEIC photo wearing ``.jpeg`` is refused with a sentence
+    that says what it is and what to do, plus a machine-readable code."""
+    form = aiohttp.FormData()
+    form.add_field("file", _HEIC_HEAD, filename="IMG_0001.jpeg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "content_mismatch"
+    assert "HEIC/AVIF" in body["error"]
+    assert ".png" in body["error"] and ".jpg" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_upload_html_under_an_image_extension_is_still_refused(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """The CWE-434 property survives the relabel: bytes that are no raster
+    at all never reach disk under an image extension."""
+    form = aiohttp.FormData()
+    form.add_field(
+        "file", b"<html><script>1</script></html>", filename="x.png", content_type="image/png"
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "content_mismatch"
+    assert "not really a .png image" in body["error"]
+    assert "re-export" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
