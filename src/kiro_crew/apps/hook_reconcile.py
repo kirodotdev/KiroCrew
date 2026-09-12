@@ -50,6 +50,26 @@ lifecycle, so no new teardown/reimport logic is invented here:
   :func:`on_app_enable` (full evict + reimport under the new secret).
 * not loaded, now **enabled with hooks**      -> :func:`on_app_enable`.
 
+Backend PROCESSES are reconciled as well, for hookless and hook-declaring apps
+alike, in exactly ONE direction: a backend THIS gateway spawned under a
+``.app_secret`` that a CLI reinstall has since rotated is stopped and re-spawned
+under the new one -- for a hook app, between its ``on_shutdown`` and its
+``on_startup``. Without that transition the gateway kept signing requests with
+the NEW secret for a child that only knew the OLD one, and every proxied call
+failed ``PROXY_AUTH_FAILED`` until a full gateway restart. The reconciler never
+starts a backend it did not itself stop, and never stops one except to replace
+it: a first start belongs to boot and the dashboard, which vet policy before
+they spawn; a disabled or removed app's backend is left as the rest of the
+platform leaves it (the proxy refuses it with 403 before forwarding, and the CLI
+uninstall does not stop it either); and the process being replaced here was
+admitted when it started and is serving right now. A replacement whose respawn
+fails is retried under a per-app backoff, and enablement is re-read around the
+spawn so a CLI disable landing mid-spawn does not leave a disabled app serving.
+A respawn that outlives the shutdown drain and registers its child after
+``on_gateway_shutdown`` swept the tracked set stops that child itself (an adopted
+record is left alone, as the sweep leaves it), so shutdown leaves no
+unsupervised backend of this gateway's own making.
+
 ``on_app_disable`` refuses to tear down while a timed-out ``on_startup`` task is
 still owned (it clears the loaded-signature only past that guard), so the
 reconciler observes the record still present and simply retries next tick.
@@ -59,9 +79,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from functools import partial
 from typing import Any
 
+from kiro_crew.apps.backend import (
+    backend_secret_generation_matches,
+    get_app_process,
+    start_app_backend,
+    stop_app_backend,
+    tracked_backend_names,
+)
 from kiro_crew.apps.hooks_integration import (
     clear_loaded_hook_signature,
     compute_hook_signature,
@@ -75,7 +104,13 @@ from kiro_crew.apps.hooks_integration import (
     record_loaded_hook_signature,
 )
 from kiro_crew.apps.lifecycle import app_has_retained_startup, apps_with_retained_startup
-from kiro_crew.apps.manager import app_enabled_state, app_lifecycle_lock, get_app, list_apps
+from kiro_crew.apps.manager import (
+    app_dir,
+    app_enabled_state,
+    app_lifecycle_lock,
+    get_app,
+    list_apps,
+)
 from kiro_crew.apps.module_loader import unload_app_modules
 from kiro_crew.apps.teardown import forget_app_hooks
 
@@ -150,6 +185,180 @@ def _clear_inflight(app_name: str, task: asyncio.Task) -> None:
 _cron_service: Any = None
 _broadcast_fn: Any = None
 _spawn_impl: Any = None
+
+
+def _declares_gateway_backend(app_info: dict[str, Any]) -> bool:
+    """Whether *app_info* declares a backend process the gateway spawns."""
+    manifest = app_info.get("manifest", {}) or {}
+    backend = manifest.get("backend", {}) or {}
+    return app_info.get("resources", "gateway") == "gateway" and bool(backend.get("entryPoint"))
+
+
+#: Minimum spacing between two RESPAWN attempts the reconciler makes for one app
+#: after a failed one. Without this bound a replacement backend that cannot start
+#: (a crash on spawn, a port held by something else, execution refused for the
+#: reinstalled code) would be re-attempted and logged on every 15s tick forever.
+#: Only the reconciler consults it; a dashboard enable calls start_app_backend
+#: directly and is unaffected.
+START_RETRY_BACKOFF_SECS = 300.0
+
+#: app name -> (monotonic time of the failed respawn attempt, the install
+#: identity it ran against). An entry exists ONLY for an app whose stale backend
+#: this reconciler stopped for a rotated secret and whose replacement then failed
+#: to start; its presence is what authorises a later tick to try the respawn
+#: again. The reconciler never starts a backend it did not itself stop: first
+#: starts belong to boot and the dashboard, which vet policy before they spawn.
+#: The identity is the ``.app_secret`` inode + mtime, which every install mints
+#: afresh, so an entry left by one install does not hold down the install that
+#: replaced it, even when the two happen between ticks. Dropped when a process
+#: is observed tracked, or when the app is confirmed removed or disabled.
+_pending_respawn: dict[str, tuple[float, tuple[int, int] | None]] = {}
+
+
+def _install_identity(name: str) -> tuple[int, int] | None:
+    """The current install generation of *name*, or None when unreadable."""
+    try:
+        st = os.stat(app_dir(name) / ".app_secret")
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns)
+
+
+def _spawned_here(name: str) -> bool:
+    """Whether the tracked record for *name* is a child THIS gateway spawned.
+
+    An adopted record (``proc is None``) is an externally managed instance whose
+    contract is to survive gateway exit; nothing in this module ever signals one
+    on its own initiative.
+    """
+    ap = get_app_process(name)
+    return ap is not None and ap.proc is not None
+
+
+def _respawn_with_backoff(name: str) -> bool:
+    """Start the replacement for a backend this reconciler stopped. Blocking.
+
+    Runs OFF the event loop (the spawn provisions dependencies and waits on the
+    child's first bind). Returns True when a process is now tracked. Spawns only
+    for an app whose enablement ``app_enabled_state`` POSITIVELY confirms: the
+    caller read ``enabled`` under the lifecycle lock, but a CLI ``disable`` in
+    another process can land between that read and the spawn, so enablement is
+    read again immediately before spawning and once more after -- a child
+    spawned for an app that is by then positively disabled is stopped right here
+    rather than serving until the next tick. Governance and admission were
+    decided when the reinstalled files landed (``install_app`` runs the
+    admission gate in the installing process); execution trust for the exact
+    path spawned is vetted inside ``start_app_backend``.
+
+    Every reconciler spawn funnels through here, so this is also where the
+    shutdown race closes: the spawn can outlive the shutdown drain and register
+    its child AFTER ``on_gateway_shutdown`` swept the tracked set. ``_stopping``
+    is set before that sweep, so a child this gateway spawned while it is set was
+    missed by the sweep and is stopped right here. An ADOPTED record is left
+    alone: the sweep excludes adopted backends by contract, and so does this.
+    """
+    if _stopping:
+        return False
+    identity = _install_identity(name)
+    marked = _pending_respawn.get(name)
+    now = time.monotonic()
+    if marked is not None and marked[1] == identity and now - marked[0] < START_RETRY_BACKOFF_SECS:
+        return False
+    if app_enabled_state(name) is not True:
+        return False
+    logger.info("app runtime reconcile: starting replacement backend for %s", name)
+    if start_app_backend(name) is None:
+        _pending_respawn[name] = (now, identity)
+        return False
+    _pending_respawn.pop(name, None)
+    if not _spawned_here(name):
+        return True  # adopted: not this gateway's process to signal, whatever follows
+    if _stopping:
+        logger.info(
+            "app runtime reconcile: stopping backend for %s (spawned during shutdown)", name
+        )
+        stop_app_backend(name)
+        return False
+    if app_enabled_state(name) is False:
+        logger.info("app runtime reconcile: stopping backend for %s (disabled during spawn)", name)
+        stop_app_backend(name)
+        return False
+    return True
+
+
+async def _replace_stale_backend(name: str) -> None:
+    """Stop-then-start a backend THIS gateway spawned under a rotated secret.
+
+    Caller holds ``app_lifecycle_lock(name)`` and has established that the app
+    is enabled on disk. Acts ONLY on a positive generation mismatch of a child
+    this gateway spawned: ``None`` (adopted backend, legacy record, secret
+    absent mid-transaction) leaves the process alone and the next tick re-asks.
+    The process being replaced was admitted when it was started and is serving
+    right now; replacing it under the new secret changes which secret it holds,
+    not whether the app may run. The same transition the dashboard lifecycle
+    performs on update; nothing new is invented.
+    """
+    if _stopping or not _spawned_here(name):
+        return
+    if await asyncio.to_thread(backend_secret_generation_matches, name) is not False:
+        return
+    logger.info("app runtime reconcile: replacing stale backend generation for %s", name)
+    await asyncio.to_thread(stop_app_backend, name)
+    # A record that could not be released (an adopted backend restores its
+    # record when its owner cannot be signalled) must not get a competitor
+    # spawned onto the same fixed port.
+    if get_app_process(name) is not None:
+        return
+    await asyncio.to_thread(_respawn_with_backoff, name)
+
+
+async def _converge_enabled_backend(name: str, current: dict[str, Any]) -> None:
+    """Make an ENABLED app's backend hold the secret generation on disk.
+
+    Caller holds ``app_lifecycle_lock(name)`` and has established that
+    ``current`` is enabled. Replaces a tracked backend this gateway spawned
+    under a secret that has since been rotated, and finishes a replacement whose
+    respawn failed on an earlier tick (under the backoff). It never starts a
+    backend otherwise: an enabled app with nothing tracked and nothing owed is
+    left for boot or the dashboard, which vet policy before their first spawn
+    -- the reconciler only ever restores a generation it took down itself.
+    Shared by the plain path and the hook load branches so both classes
+    converge the same way.
+    """
+    if _stopping or not _declares_gateway_backend(current):
+        return
+    if get_app_process(name) is None:
+        if name in _pending_respawn:
+            await asyncio.to_thread(_respawn_with_backoff, name)
+        return
+    _pending_respawn.pop(name, None)
+    await _replace_stale_backend(name)
+
+
+async def _reconcile_plain_backend(name: str, current: dict[str, Any] | None) -> None:
+    """Converge a no-hook app's backend process to its on-disk generation.
+
+    The CALLER holds ``app_lifecycle_lock(name)``. Hook-declaring apps run the
+    same backend transitions from the hook branches of ``_reconcile_app`` so
+    ``on_shutdown`` runs while their backend is still alive; this owns the class
+    with nothing in-gateway to order around: an ordinary gateway-managed backend
+    with no Python hooks (e.g. Cost AI). A CLI uninstall/reinstall of such an
+    app rotates ``.app_secret`` while the gateway keeps proxying to the child
+    spawned under the OLD secret, so every signed request is refused as
+    ``PROXY_AUTH_FAILED`` until a gateway restart. Only that transition is
+    owned here: a removed or disabled app's backend is left as the rest of the
+    platform leaves it (the proxy refuses a disabled or removed app with 403
+    before any forwarding), and its pending respawn, if any, is dropped so a
+    later install under the same name is a first start, not this module's.
+    """
+    if current is None or not (current.get("enabled") and _declares_gateway_backend(current)):
+        # ``get_app`` folds absence and unreadability together; either way there
+        # is nothing to converge. The mark is dropped on a readable disabled
+        # record or a POSITIVELY confirmed absence, never on an unreadable one.
+        if current is not None or await asyncio.to_thread(app_enabled_state, name) is False:
+            _pending_respawn.pop(name, None)
+        return
+    await _converge_enabled_backend(name, current)
 
 
 async def _disable_loaded(name: str, app_info: dict[str, Any] | None) -> bool:
@@ -260,6 +469,21 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
         current = await asyncio.to_thread(get_app, name)
         loaded = loaded_hook_signature(name)
 
+        # A degraded/timed-out startup leaves the loaded-signature record CLEARED
+        # (so the wiring retries on recovery) yet its detached startup task keeps
+        # running. Such an app has ``loaded is None`` but still needs teardown when
+        # it goes away, or the task is orphaned after uninstall/trust removal.
+        retained = loaded is None and app_has_retained_startup(name)
+
+        # An app with no in-gateway hooks still has RUNTIME state: its backend
+        # process received one ``.app_secret`` at spawn. Converge that generation
+        # here and return; a retained startup task means hook code may still be
+        # live, so that app stays on the hook teardown path below.
+        if not retained and (current is None or not manifest_declares_hooks(current)):
+            if loaded is None:
+                await _reconcile_plain_backend(name, current)
+                return
+
         # --- teardown branch: loaded, but now gone / disabled / hookless ---
         # ``get_app`` cannot tell "no metadata" from "metadata I could not read":
         # ``_read_installed`` leads with ``Path.is_file()``, which answers a silent
@@ -287,13 +511,10 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
         turned_off = current is not None and (
             not current.get("enabled") or not manifest_declares_hooks(current)
         )
-        # A degraded/timed-out startup leaves the loaded-signature record CLEARED
-        # (so the wiring retries on recovery) yet its detached startup task keeps
-        # running. Such an app has ``loaded is None`` but still needs teardown when
-        # it goes away, or the task is orphaned after uninstall/trust removal.
-        retained = loaded is None and app_has_retained_startup(name)
-        if (loaded is not None or retained) and (gone or turned_off):
-            if await _disable_loaded(name, current):
+        if gone or turned_off:
+            if loaded is not None or retained:
+                if not await _disable_loaded(name, current):
+                    return
                 logger.info("hook reconcile: tore down hooks for %s", name)
                 # UNINSTALL only, matching the asymmetry forget_app_hooks
                 # documents: these registries are repopulated from each app's own
@@ -311,6 +532,14 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 # for an app that does not exist.
                 if gone:
                     forget_app_hooks(name)
+            # The backend PROCESS is not this module's to stop: a gone or
+            # disabled app's backend is left as the rest of the platform leaves
+            # it (the proxy refuses it with 403 before forwarding; the CLI
+            # uninstall does not stop it either). Only a respawn owed to the
+            # retired generation is dropped, so a later install under the same
+            # name is a first start rather than a replacement.
+            if gone or not (current or {}).get("enabled"):
+                _pending_respawn.pop(name, None)
             return
 
         # Past teardown, every remaining branch (re)starts app code. Once the
@@ -336,6 +565,12 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
             # admission under the lock -- if it is now admitted, fall through and
             # load it; if still denied, stay quiet (no per-tick churn).
             if loaded_hook_manifest(name) is not None:
+                # Hooks are current. The signature folds the secret's mtime, so a
+                # rotation normally lands in the reload branch below; this covers
+                # a backend that drifted without the hooks noticing (a record
+                # from before the digest existed, a same-mtime rewrite) and one
+                # that is simply not running under loaded hooks.
+                await _converge_enabled_backend(name, current)
                 return
             if await asyncio.to_thread(hook_enable_denied, name):
                 return
@@ -360,6 +595,10 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
             # per-tick churn.
             if loaded is not None and not await _disable_loaded(name, current):
                 return
+            # A respawn owed to the admitted generation is not paid to a denied
+            # one; the process itself is left as the platform leaves a denied
+            # app's backend today.
+            _pending_respawn.pop(name, None)
             await _enable_app(name, current)
             return
         if loaded is not None:
@@ -369,8 +608,20 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
             # keeps serving. If teardown does not settle, retry next tick.
             if not await _disable_loaded(name, current):
                 return
+            # on_shutdown has now run against the OLD backend. A reinstall also
+            # rotated the .app_secret the running child verifies with, so replace
+            # the process HERE -- after the old hooks are down and before the new
+            # on_startup runs, which is the order the dashboard update path keeps.
+            # Skipping it left hook-declaring apps with fresh hooks talking to a
+            # backend that refused every gateway-signed request.
+            await _converge_enabled_backend(name, current)
             logger.info("hook reconcile: reloading changed hooks for %s", name)
         else:
+            # A CLI enable reaches here with nothing running. The reconciler
+            # does not start a first backend (boot and the dashboard own that,
+            # and they vet policy before spawning); this only finishes a
+            # replacement of this app's backend that an earlier tick began.
+            await _converge_enabled_backend(name, current)
             logger.info("hook reconcile: loading hooks for newly-enabled %s", name)
         try:
             await _enable_app(name, current)
@@ -404,6 +655,23 @@ async def reconcile_once(installed: list[dict[str, Any]]) -> None:
         for name, info in by_name.items()
         if info.get("enabled") and manifest_declares_hooks(info)
     )
+    # Gateway-managed backends are runtime state even when the app declares no
+    # Python hooks: every tracked one and every enabled one that declares a
+    # backend, so the hook-free path re-reads it under the lock and replaces a
+    # child this gateway spawned under a since-rotated secret. It starts nothing
+    # that is not already a pending replacement. The per-app re-read under the
+    # lock decides the authoritative transition; this is only a superset.
+    candidates_set.update(
+        name
+        for name, info in by_name.items()
+        if info.get("enabled") and _declares_gateway_backend(info)
+    )
+    candidates_set.update(tracked_backend_names())
+    # An app whose respawn failed has no tracked process and, once uninstalled or
+    # disabled, is not enabled on disk either, so neither rule above would
+    # revisit it and its pending respawn would outlive the install that earned
+    # it. Revisiting it lets the plain path drop the mark.
+    candidates_set.update(_pending_respawn)
     # Also examine apps whose loaded record was cleared on a degraded startup but
     # whose detached startup task is still live -- they must be torn down when they
     # go away, not orphaned (see app_has_retained_startup / the teardown branch).

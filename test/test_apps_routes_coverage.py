@@ -31,6 +31,7 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import kiro_crew.apps.routes as routes_mod
 from conftest import requires_symlinks
+from kiro_crew.apps.backend import BackendTarget
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     AppResult,
@@ -3715,17 +3716,28 @@ class TestAppSecretCache:
         (app_dir / ".app_secret").write_text("s3cret\n", encoding="utf-8")
         assert _get_app_secret(APP) == "s3cret"
 
-    def test_cached_secret_survives_file_removal_until_invalidated(
+    def test_cache_follows_rotation_and_removal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A CLI reinstall rewrites .app_secret from another process, so a
+        name-keyed cache kept signing with the retired secret indefinitely. The
+        cache is keyed by the file's identity and follows the file."""
         home = _setup_env(tmp_path, monkeypatch)
         app_dir = home / "apps" / APP
         app_dir.mkdir(parents=True, exist_ok=True)
         secret_file = app_dir / ".app_secret"
         secret_file.write_text("cached-value", encoding="utf-8")
         assert _get_app_secret(APP) == "cached-value"
-        secret_file.unlink()
+        # Same generation -> served from cache (the file identity is unchanged).
         assert _get_app_secret(APP) == "cached-value"
+        # Rotation via atomic replace (what install writes): new inode, new value.
+        rotated = app_dir / ".app_secret.tmp"
+        rotated.write_text("rotated-value", encoding="utf-8")
+        rotated.replace(secret_file)
+        assert _get_app_secret(APP) == "rotated-value"
+        secret_file.unlink()
+        assert _get_app_secret(APP) == ""
+        # Explicit invalidation still works and is harmless.
         invalidate_app_secret_cache(APP)
         assert _get_app_secret(APP) == ""
 
@@ -3829,6 +3841,15 @@ async def _swap_proxy_session(app: web.Application, exc: BaseException) -> None:
     app["_proxy_session"] = _FakeSession(exc)
 
 
+def _target(port: int, pid: int, spawned_with: str | None) -> BackendTarget:
+    """A tracked-backend snapshot spawned under *spawned_with* (None: no digest
+    recorded, e.g. an adopted backend)."""
+    import hashlib
+
+    digest = hashlib.sha256(spawned_with.encode()).digest() if spawned_with else b""
+    return BackendTarget(port=port, pid=pid, proxy_secret_digest=digest)
+
+
 class TestApiProxyAuthorization:
     @pytest.mark.asyncio
     async def test_traversal_is_rejected_before_anything_else(
@@ -3919,6 +3940,121 @@ class TestApiProxyAuthorization:
             resp = await client.get(f"/apps/{APP}/api/ping")
             assert resp.status == 502
             assert (await resp.json())["error"] == "backend unreachable"
+
+    @pytest.mark.asyncio
+    async def test_rotated_secret_is_a_retryable_503_and_never_forwarded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact Cost AI failure: reinstall rotated .app_secret while the
+        tracked backend still verifies with the old one. Signing with the new
+        secret would surface the backend's PROXY_AUTH_FAILED to every client;
+        the host refuses first, with a code the UI can retry on."""
+        home = _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        (home / "apps" / APP / ".app_secret").write_text("rotated-key", encoding="utf-8")
+        invalidate_app_secret_cache(APP)
+        # The tracked child at port 1 was spawned under the PREVIOUS secret.
+        monkeypatch.setattr(
+            routes_mod, "tracked_backend_target", lambda n: _target(1, 42, "old-key")
+        )
+        app = _make_app()
+        async with TestClient(TestServer(app)) as client:
+
+            def _must_not_forward(*a: Any, **k: Any) -> Any:
+                raise AssertionError("a stale-generation request must never be forwarded")
+
+            await _swap_proxy_session(client.app, AssertionError("unused"))
+            client.app["_proxy_session"].request = _must_not_forward  # type: ignore[attr-defined]
+            resp = await client.get(f"/apps/{APP}/api/ping")
+            assert resp.status == 503
+            body = await resp.json()
+        assert body["code"] == "app_restarting"
+        assert "retryable" not in body  # the 503 status is the retry signal
+
+    @pytest.mark.asyncio
+    async def test_target_that_changed_before_forwarding_is_not_sent_the_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The body read and the secret read are await points. If the tracked
+        record is replaced across them (reconciler, lifecycle action) -- and an
+        ``auto`` port freed by the old process may by then belong to another
+        app -- the signed body must not go to whatever holds the captured port.
+        The snapshot verified is the only one forwarded to."""
+        home = _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        (home / "apps" / APP / ".app_secret").write_text("k", encoding="utf-8")
+        invalidate_app_secret_cache(APP)
+        snapshots = iter([_target(1, 42, "k"), _target(1, 77, "k")])
+        monkeypatch.setattr(
+            routes_mod, "tracked_backend_target", lambda n: next(snapshots)
+        )
+        app = _make_app()
+        async with TestClient(TestServer(app)) as client:
+
+            def _must_not_forward(*a: Any, **k: Any) -> Any:
+                raise AssertionError("a replaced target must never receive the body")
+
+            await _swap_proxy_session(client.app, AssertionError("unused"))
+            client.app["_proxy_session"].request = _must_not_forward  # type: ignore[attr-defined]
+            resp = await client.post(f"/apps/{APP}/api/run", json={"x": 1})
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "app_restarting"
+
+    @pytest.mark.asyncio
+    async def test_unchanged_target_forwards_to_the_captured_port(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two equal snapshots (same port, pid, generation) are the same record;
+        the request goes to the captured port, not a fresh by-name resolution."""
+        import aiohttp
+
+        home = _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        (home / "apps" / APP / ".app_secret").write_text("k", encoding="utf-8")
+        invalidate_app_secret_cache(APP)
+        monkeypatch.setattr(
+            routes_mod, "tracked_backend_target", lambda n: _target(1, 42, "k")
+        )
+        monkeypatch.setattr(
+            routes_mod,
+            "_resolve_app_backend_url",
+            lambda n: pytest.fail("by-name resolve used"),
+        )
+        app = _make_app()
+        async with TestClient(TestServer(app)) as client:
+            await _swap_proxy_session(client.app, aiohttp.ClientError("refused"))
+            resp = await client.get(f"/apps/{APP}/api/ping")
+            assert resp.status == 502  # reached the (dead) captured backend at port 1
+            assert (await resp.json())["error"] == "backend unreachable"
+
+    @pytest.mark.asyncio
+    async def test_unknown_generation_still_forwards(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``None`` (no tracked spawned process, e.g. an adopted or self-managed
+        backend) must not be read as a mismatch — those apps keep working."""
+        import aiohttp
+
+        home = _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        (home / "apps" / APP / ".app_secret").write_text("k", encoding="utf-8")
+        invalidate_app_secret_cache(APP)
+        monkeypatch.setattr(
+            routes_mod, "_resolve_app_backend_url", lambda n: "http://127.0.0.1:1"
+        )
+        monkeypatch.setattr(
+            routes_mod, "tracked_backend_target", lambda n: _target(1, 42, None)
+        )
+        app = _make_app()
+        async with TestClient(TestServer(app)) as client:
+            await _swap_proxy_session(client.app, aiohttp.ClientError("refused"))
+            resp = await client.get(f"/apps/{APP}/api/ping")
+            # Reached the forwarding step (and the fake dead backend), not the 503 gate.
+            assert resp.status == 502
 
     @pytest.mark.asyncio
     async def test_backend_timeout_is_504(

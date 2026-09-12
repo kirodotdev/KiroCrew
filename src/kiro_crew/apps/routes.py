@@ -35,6 +35,7 @@ from kiro_crew.apps.backend import (
     list_app_processes,
     start_app_backend,
     stop_app_backend,
+    tracked_backend_target,
 )
 from kiro_crew.apps.bridges import (
     RegistrationResult,
@@ -3509,24 +3510,36 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
 
 _PROXY_TIMEOUT = 30  # seconds
 
-# App secret cache — secrets don't change after install, no need to read
-# from disk on every proxied request.  Invalidated on install/uninstall.
-_app_secret_cache: dict[str, str] = {}
+# App secret cache keyed by the opened file's identity. The CLI can replace an
+# installed app from another process, so a name-only cache kept signing with a
+# retired generation indefinitely. The fstat key makes rotation/removal visible
+# on the first request after it lands. Invalidated on install/uninstall too.
+_app_secret_cache: dict[str, tuple[tuple[int, int, int, int], str]] = {}
 
 
 def _get_app_secret(name: str) -> str:
-    """Read the app secret, using an in-memory cache.
+    """Read the app secret, using a cache keyed by the file's identity.
 
-    Empty values are NOT cached — the secret may be provisioned after
-    the first proxy attempt (e.g. install-from-source race).
+    Blocking file I/O (one ``open`` + ``fstat`` per call): callers on the
+    event loop offload it. Empty values are NOT cached — the secret may be
+    provisioned after the first proxy attempt (e.g. install-from-source race).
     """
-    cached = _app_secret_cache.get(name)
-    if cached:
-        return cached
     path = apps_dir() / name / ".app_secret"
-    secret = path.read_text().strip() if path.is_file() else ""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            st = os.fstat(fh.fileno())
+            generation = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+            cached = _app_secret_cache.get(name)
+            if cached and cached[0] == generation:
+                return cached[1]
+            secret = fh.read().strip()
+    except OSError:
+        _app_secret_cache.pop(name, None)
+        return ""
     if secret:
-        _app_secret_cache[name] = secret
+        _app_secret_cache[name] = (generation, secret)
+    else:
+        _app_secret_cache.pop(name, None)
     return secret
 
 
@@ -3590,6 +3603,19 @@ def _resolve_app_backend_url(name: str) -> str | None:
     # app resolves a backend here and is then refused below with 502 "has no
     # secret", which is not detectable at registration time.
     return resolve_mcp_backend_url(manifest.mcpServers)
+
+
+def _app_restarting_response(name: str) -> web.Response:
+    """The bounded refusal the proxy answers instead of forwarding a request to
+    a backend generation it cannot vouch for. 503 is the retry signal; ``code``
+    is what a client switches on."""
+    return web.json_response(
+        {
+            "code": "app_restarting",
+            "error": f"app {name!r} is restarting after an update; retry shortly",
+        },
+        status=503,
+    )
 
 
 async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
@@ -3664,8 +3690,14 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             status=403,
         )
 
-    # Resolve backend URL
-    backend_url = _resolve_app_backend_url(name)
+    # Resolve the backend. For a gateway-managed backend this is ONE snapshot of
+    # the tracked process record -- the port a request goes to and the digest of
+    # the secret that same process was spawned with -- so the generation check
+    # below is about the process at this port, not about whatever process the
+    # app name resolves to by the time the body has been read. Everything else
+    # (self-managed, manifest or MCP-declared URLs) carries no generation.
+    target = tracked_backend_target(name)
+    backend_url = f"http://127.0.0.1:{target.port}" if target else _resolve_app_backend_url(name)
     if not backend_url:
         return web.json_response(
             {"error": f"app {name!r} has no reachable backend"},
@@ -3699,12 +3731,21 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     # using the app secret as key. Backend verifies by recomputing with its
     # copy of the secret and checking the timestamp is recent (±60s).
     try:
-        secret = _get_app_secret(name)
+        secret = await asyncio.to_thread(_get_app_secret, name)
         if not secret:
             return web.json_response(
                 {"error": f"app {name!r} has no secret — cannot authenticate proxy request"},
                 status=502,
             )
+        # Bind the proxy to the exact secret generation injected into the
+        # process at the captured port. A CLI uninstall/reinstall can rotate the
+        # file while the old child stays healthy; signing with the replacement
+        # secret would expose the backend's PROXY_AUTH_FAILED response to every
+        # client. Refuse at the host boundary instead. The runtime reconciler
+        # observes the same mismatch, stops the retired generation and starts a
+        # new one, so a client that retries lands on the replacement.
+        if target is not None and target.secret_matches(secret) is False:
+            return _app_restarting_response(name)
         ts = str(int(time.time()))
         body_hash = hashlib.sha256(body or b"").hexdigest()
         msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
@@ -3716,6 +3757,14 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             {"error": "proxy auth failed: cannot read app secret"},
             status=502,
         )
+
+    # The body read and the secret read above are await points; the reconciler
+    # or a lifecycle action can replace the tracked process across them, and an
+    # ``auto`` port freed by the old process can be claimed by another app.
+    # Forward only to the record that was verified: if the snapshot differs
+    # now, the signed body is not sent to whatever holds that port today.
+    if target is not None and tracked_backend_target(name) != target:
+        return _app_restarting_response(name)
 
     try:
         timeout = aiohttp.ClientTimeout(total=_PROXY_TIMEOUT)

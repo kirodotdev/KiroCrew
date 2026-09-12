@@ -21,6 +21,7 @@ and ``loopback_urlopen`` are stubbed, and the spawn body is frozen at the
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import logging
@@ -600,6 +601,110 @@ class TestAwaitInflightSpawn:
 
     def test_an_absent_entry_at_the_deadline_resolves_to_none(self) -> None:
         assert bmod._await_inflight_spawn("absent", timeout=0.0) is None
+
+
+# ---------------------------------------------------------------------------
+# Backend secret generation: the tracked process is bound to the secret it got
+# ---------------------------------------------------------------------------
+
+
+class TestBackendSecretGeneration:
+    """A CLI reinstall rotates ``.app_secret`` in another process. The gateway
+    must be able to tell that its tracked child was spawned under a different
+    secret than the one on disk — without keeping the secret itself around."""
+
+    def _tracked(self, name: str, secret: str, *, spawned: bool = True) -> AppProcess:
+        ap = AppProcess(
+            app_name=name,
+            port=9150,
+            pid=7,
+            proc=_fake_proc() if spawned else None,
+            proxy_secret_digest=hashlib.sha256(secret.encode()).digest(),
+        )
+        with bmod._lock:
+            bmod._processes[name] = ap
+        return ap
+
+    def test_same_secret_matches_and_rotated_secret_does_not(self) -> None:
+        self._tracked("cost-ai", "secret-A")
+        assert bmod.backend_proxy_secret_matches("cost-ai", "secret-A") is True
+        assert bmod.backend_proxy_secret_matches("cost-ai", "secret-B") is False
+
+    def test_untracked_adopted_or_unbound_backends_are_unknown_not_mismatched(self) -> None:
+        assert bmod.backend_proxy_secret_matches("nobody", "secret-A") is None
+        self._tracked("adopted", "secret-A", spawned=False)
+        assert bmod.backend_proxy_secret_matches("adopted", "secret-B") is None
+        with bmod._lock:
+            bmod._processes["legacy"] = AppProcess(
+                app_name="legacy", port=1, pid=2, proc=_fake_proc()
+            )
+        assert bmod.backend_proxy_secret_matches("legacy", "secret-B") is None
+        # An empty secret on disk is likewise not evidence of rotation.
+        self._tracked("cost-ai", "secret-A")
+        assert bmod.backend_proxy_secret_matches("cost-ai", "") is None
+
+    def test_on_disk_comparison_reads_the_current_secret(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "cost-ai"
+        root.mkdir()
+        monkeypatch.setattr(bmod, "app_dir", lambda _name: root)
+        self._tracked("cost-ai", "secret-A")
+        assert bmod.backend_secret_generation_matches("cost-ai") is None  # no file yet
+        (root / ".app_secret").write_text("secret-A\n", encoding="utf-8")
+        assert bmod.backend_secret_generation_matches("cost-ai") is True
+        (root / ".app_secret").write_text("secret-B\n", encoding="utf-8")
+        assert bmod.backend_secret_generation_matches("cost-ai") is False
+
+    def test_the_spawn_records_the_digest_and_never_the_secret(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / ".app_secret").write_text("spawn-secret\n", encoding="utf-8")
+        monkeypatch.setattr(bmod, "popen_limited", lambda *_a, **_k: _fake_proc())
+        monkeypatch.setattr(bmod, "_survived_spawn", lambda *_a, **_k: True)
+        monkeypatch.setattr(bmod, "_start_health_supervisor", lambda *_a, **_k: None)
+        monkeypatch.setattr(bmod, "_record_app_pid", lambda *_a, **_k: None)
+        ap = bmod._start_app_backend_body("spawned", _manifest("server.py"))
+        assert ap is not None
+        assert ap.proxy_secret_digest == hashlib.sha256(b"spawn-secret").digest()
+        assert "spawn-secret" not in repr(ap)
+        assert "spawn-secret" not in json.dumps(ap.to_dict())
+        assert bmod.backend_proxy_secret_matches("spawned", "spawn-secret") is True
+        assert bmod.backend_proxy_secret_matches("spawned", "rotated") is False
+        assert bmod.tracked_backend_names() == ["spawned"]
+
+    def test_target_snapshot_binds_the_port_to_the_generation(self) -> None:
+        """The proxy forwards to a port and verifies a generation; both must come
+        from ONE read of the same record, or a replacement between two by-name
+        lookups lets the check pass for a process other than the one at the port."""
+        ap = self._tracked("cost-ai", "secret-A")
+        assert bmod.tracked_backend_target("cost-ai") is None  # not yet healthy
+        ap.healthy = True
+        target = bmod.tracked_backend_target("cost-ai")
+        assert target is not None
+        assert (target.port, target.pid) == (9150, 7)
+        assert target.secret_matches("secret-A") is True
+        assert target.secret_matches("secret-B") is False
+        assert target.secret_matches("") is None
+        assert "secret-A" not in repr(target)
+        # The same record reads equal; a replacement (new pid, or a new
+        # generation on the same port) does not, however the port was reused.
+        assert bmod.tracked_backend_target("cost-ai") == target
+        replacement = self._tracked("cost-ai", "secret-B")
+        replacement.healthy = True
+        assert bmod.tracked_backend_target("cost-ai") != target
+        replacement.pid = 8
+        with bmod._lock:
+            bmod._processes["cost-ai"].proxy_secret_digest = target.proxy_secret_digest
+        assert bmod.tracked_backend_target("cost-ai") != target
+
+    def test_adopted_target_carries_no_generation(self) -> None:
+        ap = self._tracked("adopted", "secret-A", spawned=False)
+        ap.healthy = True
+        target = bmod.tracked_backend_target("adopted")
+        assert target is not None and target.proxy_secret_digest == b""
+        assert target.secret_matches("secret-B") is None
 
 
 # ---------------------------------------------------------------------------

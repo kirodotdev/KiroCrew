@@ -16,6 +16,7 @@ per-test to a deterministic answer.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ import pytest
 import kiro_crew.apps.hook_reconcile as hr
 import kiro_crew.apps.hooks_integration as hi
 import kiro_crew.apps.teardown as teardown
+from kiro_crew.apps.manager import app_enabled_state as real_app_enabled_state
 
 
 @pytest.fixture(autouse=True)
@@ -33,11 +35,13 @@ def _isolate_home(tmp_path, monkeypatch):
     hi._loaded_hook_signatures.clear()
     hi._loaded_hook_manifests.clear()
     hr._inflight_app_tasks.clear()
+    hr._pending_respawn.clear()
     hr._stopping = False
     yield
     hi._loaded_hook_signatures.clear()
     hi._loaded_hook_manifests.clear()
     hr._inflight_app_tasks.clear()
+    hr._pending_respawn.clear()
     hr._stopping = False
 
 
@@ -49,6 +53,28 @@ def _app_info(name: str, *, enabled: bool = True, version: str = "1.0.0", hooks:
         "version": version,
         "manifest": {"backend": backend, "permissions": {}},
     }
+
+
+def _plain_backend_app(name: str, *, enabled: bool = True):
+    """An app with a gateway-spawned backend and NO Python hooks (e.g. Cost AI)."""
+    info = _app_info(name, enabled=enabled, hooks=False)
+    info["manifest"]["backend"] = {"entryPoint": "backend/server.mjs", "port": "9200"}
+    info["resources"] = "gateway"
+    return info
+
+
+#: Backend-process double shared between ``_harness`` and the tests below.
+_BACKEND: dict[str, Any] = {}
+
+
+def _spawned():
+    """A tracked record for a child THIS gateway spawned (``proc`` set)."""
+    return SimpleNamespace(proc=object())
+
+
+def _adopted():
+    """A tracked record adopted from another supervisor (``proc`` is None)."""
+    return SimpleNamespace(proc=None)
 
 
 @pytest.fixture
@@ -87,13 +113,46 @@ def _harness(monkeypatch):
     def fake_get_app(name):
         return state["current"].get(name)
 
+    def fake_enabled_state(name):
+        # Tri-state like the real read: True/False from staged metadata; an app
+        # with nothing staged is confirmed ABSENT (False), which is what the real
+        # read answers under the throwaway home. Tests that need "unknown"
+        # (None) override this explicitly.
+        info = state["current"].get(name)
+        return False if info is None else bool(info.get("enabled"))
+
     def fake_denied(name):
         return state["denied"]
 
     monkeypatch.setattr(hr, "on_app_enable", fake_enable)
     monkeypatch.setattr(hr, "on_app_disable", fake_disable)
     monkeypatch.setattr(hr, "get_app", fake_get_app)
+    monkeypatch.setattr(hr, "app_enabled_state", fake_enabled_state)
     monkeypatch.setattr(hr, "hook_enable_denied", fake_denied)
+    # Backend process transitions are recorded, never executed: no test here
+    # may spawn or signal a real process. State lives in the module-level
+    # ``_BACKEND`` double so tests can stage a tracked process / generation
+    # verdict without changing the harness's return shape.
+    _BACKEND.clear()
+    _BACKEND.update({"process": None, "generation": None, "lifecycle": []})
+    monkeypatch.setattr(hr, "get_app_process", lambda name: _BACKEND["process"])
+    monkeypatch.setattr(hr, "tracked_backend_names", lambda: [])
+    monkeypatch.setattr(
+        hr, "backend_secret_generation_matches", lambda name: _BACKEND["generation"]
+    )
+
+    def fake_stop(name):
+        _BACKEND["lifecycle"].append("stop")
+        _BACKEND["process"] = None
+        return True
+
+    def fake_start(name):
+        _BACKEND["lifecycle"].append("start")
+        _BACKEND["process"] = _spawned()
+        return _BACKEND["process"]
+
+    monkeypatch.setattr(hr, "stop_app_backend", fake_stop)
+    monkeypatch.setattr(hr, "start_app_backend", fake_start)
 
     def set_current(*app_infos):
         state["current"] = {a["name"]: a for a in app_infos}
@@ -129,6 +188,664 @@ async def test_enabled_app_without_hooks_is_ignored(_harness):
     set_current(app)
     await hr.reconcile_once([app])
     assert calls == []
+    assert _BACKEND["lifecycle"] == []  # no backend declared -> nothing to converge
+
+
+# ---------------------------------------------------------------------------
+# No-hook gateway-managed backends: the process generation is runtime state too
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cli_reinstall_rotating_the_secret_replaces_a_hookless_backend(_harness):
+    """The Cost AI defect: ``kirocrew app uninstall`` + ``install`` rotated
+    ``.app_secret`` while the gateway kept the OLD child running and healthy,
+    so every gateway-signed request was refused as PROXY_AUTH_FAILED until a
+    full restart. The app declares no Python hooks, so the hook-only candidate
+    set never examined it. The reconciler must stop the retired generation and
+    spawn one under the current secret — without touching hook lifecycle."""
+    calls, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()  # tracked, spawned under the old secret
+    _BACKEND["generation"] = False  # on-disk secret differs from the spawn-time one
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == ["stop", "start"]
+    assert calls == []  # no hook enable/disable for a hookless app
+
+
+@pytest.mark.asyncio
+async def test_matching_or_unknown_generation_leaves_the_backend_alone(_harness):
+    """Only a POSITIVE mismatch is destructive. ``None`` covers an adopted
+    external backend and the window mid-transaction where the secret file is
+    absent; restarting on either would be the churn this reconciler avoids."""
+    calls, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    for verdict in (True, None):
+        _BACKEND["generation"] = verdict
+        await hr.reconcile_once([app])
+        assert _BACKEND["lifecycle"] == [], verdict
+
+
+@pytest.mark.asyncio
+async def test_cli_disable_leaves_a_tracked_hookless_backend_alone(_harness, monkeypatch):
+    """Stopping a disabled app's backend is not this module's transition: the
+    proxy refuses a disabled app with 403 before forwarding, and the reconciler
+    stops a process only to replace it. A respawn owed to that generation is
+    dropped, so a later re-enable is a first start (boot's / the dashboard's)."""
+    calls, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai", enabled=False)
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    hr._pending_respawn["cost-ai"] = (0.0, None)
+    monkeypatch.setattr(hr, "tracked_backend_names", lambda: ["cost-ai"])
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == [] and "cost-ai" not in hr._pending_respawn
+
+
+@pytest.mark.asyncio
+async def test_cli_uninstall_leaves_a_tracked_hookless_backend_alone(_harness, monkeypatch):
+    """The CLI uninstall does not stop a running backend and neither does the
+    reconciler (the proxy refuses a removed app with 403). Only a respawn owed
+    to the removed install is dropped -- and only on a POSITIVELY confirmed
+    absence; unreadable metadata is not absence."""
+    calls, (set_current, _, _) = _harness
+    set_current()  # get_app -> None
+    _BACKEND["process"] = _spawned()
+    hr._pending_respawn["cost-ai"] = (0.0, None)
+    monkeypatch.setattr(hr, "tracked_backend_names", lambda: ["cost-ai"])
+
+    monkeypatch.setattr(hr, "app_enabled_state", lambda name: None)
+    await hr.reconcile_once([])
+    assert _BACKEND["lifecycle"] == [] and "cost-ai" in hr._pending_respawn
+
+    monkeypatch.setattr(hr, "app_enabled_state", lambda name: False)
+    await hr.reconcile_once([])
+    assert _BACKEND["lifecycle"] == [] and "cost-ai" not in hr._pending_respawn
+
+
+@pytest.mark.asyncio
+async def test_reconciler_never_starts_a_backend_it_did_not_stop(_harness):
+    """An enabled app with nothing tracked is NOT started here: a first start
+    belongs to boot and the dashboard, which vet policy before they spawn. The
+    reconciler only restores a generation it took down itself."""
+    calls, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = None
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == [] and calls == []
+
+
+@pytest.mark.asyncio
+async def test_failed_respawn_is_retried_only_as_a_pending_replacement(_harness, monkeypatch):
+    """The stop half of a replacement succeeded but the start half did not. The
+    next ticks finish the replacement (under backoff) because this reconciler
+    began it; the same missing process without a pending replacement is left
+    alone (see the test above)."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+    real_start = hr.start_app_backend
+    monkeypatch.setattr(hr, "start_app_backend", lambda name: None)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(hr.time, "monotonic", lambda: clock["t"])
+
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop"] and "cost-ai" in hr._pending_respawn
+
+    # Inside the window: no retry.
+    monkeypatch.setattr(hr, "start_app_backend", real_start)
+    clock["t"] += 1.0
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop"]
+
+    # Window elapsed: the replacement is finished.
+    clock["t"] += hr.START_RETRY_BACKOFF_SECS
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop", "start"]
+    assert "cost-ai" not in hr._pending_respawn
+
+
+@pytest.mark.asyncio
+async def test_hookless_backend_is_not_spawned_once_shutdown_began(_harness):
+    calls, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = None
+    hr._pending_respawn["cost-ai"] = (0.0, None)  # a replacement is owed
+    hr._stopping = True
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == []
+
+
+@pytest.mark.asyncio
+async def test_unstoppable_adopted_backend_is_not_doubled(_harness, monkeypatch):
+    """stop_app_backend restores the tracking record when an adopted backend
+    cannot be signalled; spawning a competitor onto the same fixed port would
+    crash-loop on EADDRINUSE."""
+    calls, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    kept = _spawned()
+    _BACKEND["process"] = kept
+    _BACKEND["generation"] = False
+
+    def refusing_stop(name):
+        _BACKEND["lifecycle"].append("stop")
+        return False  # record restored, process still tracked
+
+    monkeypatch.setattr(hr, "stop_app_backend", refusing_stop)
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop"]
+
+
+@pytest.mark.asyncio
+async def test_a_backend_that_fails_to_start_is_not_retried_every_tick(_harness, monkeypatch):
+    """The boot path tries once; the reconciler must not turn a permanently
+    failing respawn (crash, held port, execution refused) into a 15s
+    retry-and-log loop."""
+    calls, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False  # a replacement is due
+    attempts: list[str] = []
+
+    def failing_start(name):
+        attempts.append(name)
+        return None
+
+    monkeypatch.setattr(hr, "start_app_backend", failing_start)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(hr.time, "monotonic", lambda: clock["t"])
+
+    await hr.reconcile_once([app])
+    await hr.reconcile_once([app])
+    await hr.reconcile_once([app])
+    assert attempts == ["cost-ai"], "only the first attempt inside the backoff window"
+
+    clock["t"] += hr.START_RETRY_BACKOFF_SECS + 1
+    await hr.reconcile_once([app])
+    assert attempts == ["cost-ai", "cost-ai"]
+
+
+# ---------------------------------------------------------------------------
+# Hook-declaring apps: the backend process converges around the hooks
+# ---------------------------------------------------------------------------
+
+
+def _hook_backend_app(name: str, *, enabled: bool = True):
+    """An app with BOTH Python hooks and a gateway-spawned backend."""
+    info = _app_info(name, enabled=enabled, hooks=True)
+    info["manifest"]["backend"]["entryPoint"] = "backend/server.py"
+    info["resources"] = "gateway"
+    return info
+
+
+@pytest.mark.asyncio
+async def test_cli_reinstall_of_a_hook_app_replaces_its_backend_between_the_hooks(
+    _harness, monkeypatch
+):
+    """Same defect as the hookless case, for an app whose hooks the reconciler
+    already reloaded: the hooks came back fresh while the backend kept the OLD
+    secret. Order is load-bearing -- on_shutdown against the live old backend,
+    then stop/start, then on_startup against the new one."""
+    calls, (set_current, _, _) = _harness
+    app = _hook_backend_app("watchtower")
+    set_current(app)
+    await hi.record_loaded_hook_signature("watchtower", app)  # hooks loaded, gen A
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False  # reinstall rotated the secret
+
+    # Force a signature change (what a reinstall's new .app_secret mtime does).
+    monkeypatch.setattr(hr, "compute_hook_signature", _async_return(("2.0.0", 0, 999)))
+    order: list[str] = []
+    monkeypatch.setattr(hr, "on_app_disable", _recording_disable(order, calls, hi))
+    monkeypatch.setattr(hr, "on_app_enable", _recording_enable(order, calls, hi))
+    real_stop, real_start = hr.stop_app_backend, hr.start_app_backend
+    monkeypatch.setattr(hr, "stop_app_backend", lambda n: order.append("stop") or real_stop(n))
+    monkeypatch.setattr(hr, "start_app_backend", lambda n: order.append("start") or real_start(n))
+
+    await hr.reconcile_once([app])
+
+    assert order == ["on_shutdown", "stop", "start", "on_startup"]
+    assert _BACKEND["lifecycle"] == ["stop", "start"]
+
+
+@pytest.mark.asyncio
+async def test_hook_app_with_unchanged_hooks_still_gets_a_drifted_backend_replaced(
+    _harness, monkeypatch
+):
+    calls, (set_current, _, _) = _harness
+    app = _hook_backend_app("watchtower")
+    set_current(app)
+    await hi.record_loaded_hook_signature("watchtower", app)
+    loaded = hi.loaded_hook_signature("watchtower")
+    monkeypatch.setattr(hr, "compute_hook_signature", _async_return(loaded))
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+
+    await hr.reconcile_once([app])
+
+    assert calls == []  # hooks untouched
+    assert _BACKEND["lifecycle"] == ["stop", "start"]
+
+
+@pytest.mark.asyncio
+async def test_hook_app_gone_tears_down_hooks_and_leaves_its_backend_alone(_harness, monkeypatch):
+    """Uninstall: the in-gateway hooks are this module's to tear down; the
+    backend PROCESS is not its to stop (the CLI uninstall leaves it running and
+    the proxy refuses a removed app with 403). A respawn owed to the removed
+    install is dropped."""
+    calls, (set_current, _, _) = _harness
+    app = _hook_backend_app("watchtower")
+    await hi.record_loaded_hook_signature("watchtower", app)
+    set_current()  # uninstalled
+    monkeypatch.setattr(hr, "app_enabled_state", lambda name: False)
+    _BACKEND["process"] = _spawned()
+    hr._pending_respawn["watchtower"] = (0.0, None)
+
+    await hr.reconcile_once([])
+
+    assert calls == [("disable", "watchtower")]
+    assert _BACKEND["lifecycle"] == [] and "watchtower" not in hr._pending_respawn
+
+
+@pytest.mark.asyncio
+async def test_hook_app_disabled_tears_down_hooks_and_leaves_its_backend_alone(_harness):
+    calls, (set_current, _, _) = _harness
+    app = _hook_backend_app("watchtower")
+    await hi.record_loaded_hook_signature("watchtower", app)
+    set_current(_hook_backend_app("watchtower", enabled=False))
+    _BACKEND["process"] = _spawned()
+    hr._pending_respawn["watchtower"] = (0.0, None)
+
+    await hr.reconcile_once([])
+
+    assert calls == [("disable", "watchtower")]
+    assert _BACKEND["lifecycle"] == [] and "watchtower" not in hr._pending_respawn
+
+
+@pytest.mark.asyncio
+async def test_hook_app_that_stops_declaring_hooks_keeps_its_backend(_harness):
+    """Still enabled, just hookless now: tear the hooks down, leave the process
+    for the plain path to own from the next tick."""
+    calls, (set_current, _, _) = _harness
+    app = _hook_backend_app("watchtower")
+    await hi.record_loaded_hook_signature("watchtower", app)
+    set_current(_plain_backend_app("watchtower"))
+    _BACKEND["process"] = _spawned()
+
+    await hr.reconcile_once([])
+
+    assert calls == [("disable", "watchtower")]
+    assert _BACKEND["lifecycle"] == []
+
+
+@pytest.mark.asyncio
+async def test_unsettled_hook_teardown_leaves_the_backend_running(_harness, monkeypatch):
+    """If on_shutdown could not settle (retained startup task), nothing else
+    moves either: the old backend stays up for the retry, never orphaned mid-swap."""
+    calls, (set_current, set_disable_result, _) = _harness
+    app = _hook_backend_app("watchtower")
+    set_current(app)
+    await hi.record_loaded_hook_signature("watchtower", app)
+    set_disable_result({"startup_cleanup": "failed: still running"})
+    monkeypatch.setattr(hr, "compute_hook_signature", _async_return(("2.0.0", 0, 999)))
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+
+    await hr.reconcile_once([app])
+
+    assert calls == [("disable", "watchtower")]
+    assert _BACKEND["lifecycle"] == []
+
+
+@pytest.mark.asyncio
+async def test_cli_enable_of_a_hook_app_loads_hooks_but_starts_no_backend(_harness, monkeypatch):
+    """Nothing loaded, nothing running: the reconciler loads the hooks (the
+    in-gateway state it owns) but does not start a first backend -- that is
+    boot's and the dashboard's, which vet policy before they spawn. The
+    reconciler only ever restores a generation it took down itself."""
+    calls, (set_current, _, _) = _harness
+    app = _hook_backend_app("watchtower")
+    set_current(app)
+    order: list[str] = []
+    monkeypatch.setattr(hr, "on_app_enable", _recording_enable(order, calls, hi))
+
+    await hr.reconcile_once([app])
+
+    assert order == ["on_startup"] and _BACKEND["lifecycle"] == []
+    assert hi.loaded_hook_signature("watchtower") is not None
+
+
+@pytest.mark.asyncio
+async def test_loaded_hook_app_with_a_missing_backend_is_left_alone(_harness, monkeypatch):
+    """Hooks current, process gone (crashed, or spawned before the digest
+    existed and reaped): not this module's to restart unless it stopped it."""
+    calls, (set_current, _, _) = _harness
+    app = _hook_backend_app("watchtower")
+    set_current(app)
+    await hi.record_loaded_hook_signature("watchtower", app)
+    monkeypatch.setattr(
+        hr, "compute_hook_signature", _async_return(hi.loaded_hook_signature("watchtower"))
+    )
+    _BACKEND["process"] = None
+
+    await hr.reconcile_once([app])
+
+    assert calls == [] and _BACKEND["lifecycle"] == []
+
+
+@pytest.mark.asyncio
+async def test_cli_disable_of_a_hook_app_whose_hooks_never_loaded_leaves_its_backend_alone(
+    _harness, monkeypatch
+):
+    """A hook-declaring app whose hooks did not wire (denied, degraded startup)
+    can still own the backend the dashboard enable spawned. A CLI disable is not
+    this module's cue to stop it; only a respawn owed to it is dropped."""
+    calls, (set_current, _, _) = _harness
+    set_current(_hook_backend_app("watchtower", enabled=False))
+    _BACKEND["process"] = _spawned()
+    hr._pending_respawn["watchtower"] = (0.0, None)
+    monkeypatch.setattr(hr, "tracked_backend_names", lambda: ["watchtower"])
+
+    await hr.reconcile_once([])
+
+    assert calls == []
+    assert _BACKEND["lifecycle"] == [] and "watchtower" not in hr._pending_respawn
+
+
+@pytest.mark.asyncio
+async def test_denied_hook_app_does_not_get_a_backend_started(_harness):
+    """Admission is checked before anything runs: a denied app gets neither
+    hooks nor a process from the reconciler."""
+    calls, (set_current, _, set_denied) = _harness
+    app = _hook_backend_app("watchtower")
+    set_current(app)
+    set_denied("trust withdrawn")
+
+    await hr.reconcile_once([app])
+
+    assert calls == [("enable", "watchtower")]  # routed through the denied enable path
+    assert _BACKEND["lifecycle"] == []
+
+
+@pytest.mark.asyncio
+async def test_uninstall_clears_a_pending_respawn_so_a_reinstall_is_a_fresh_install(
+    _harness, monkeypatch
+):
+    """The backoff belongs to the install whose respawn failed. A CLI uninstall +
+    reinstall inside the window is a NEW install; the reconciler owes it nothing
+    (a first start is boot's / the dashboard's) and must not hold a stale entry."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+    monkeypatch.setattr(hr, "start_app_backend", lambda name: None)
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop"] and "cost-ai" in hr._pending_respawn
+
+    # Uninstalled (confirmed absent): the entry goes with the install.
+    set_current()
+    monkeypatch.setattr(hr, "app_enabled_state", lambda name: False)
+    await hr.reconcile_once([])  # no tracked_backend_names stub: the entry is the only route
+    assert "cost-ai" not in hr._pending_respawn
+
+
+@pytest.mark.asyncio
+async def test_a_reinstall_between_ticks_is_not_held_by_the_old_installs_backoff(
+    _harness, monkeypatch
+):
+    """Uninstall + reinstall inside one 15s tick never shows the reconciler an
+    absent app, so nothing clears the entry. It is bound to the install identity
+    (the .app_secret every install mints afresh): a new identity means the
+    backoff does not apply, and the pending replacement is finished at once."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+    identity = {"v": (1, 100)}
+    monkeypatch.setattr(hr, "_install_identity", lambda name: identity["v"])
+    real_start = hr.start_app_backend
+    monkeypatch.setattr(hr, "start_app_backend", lambda name: None)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(hr.time, "monotonic", lambda: clock["t"])
+
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop"] and "cost-ai" in hr._pending_respawn
+
+    # Same install, inside the window: held back.
+    monkeypatch.setattr(hr, "start_app_backend", real_start)
+    clock["t"] += 1.0
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop"]
+
+    # Reinstalled between ticks (new secret file): attempted at once.
+    identity["v"] = (2, 200)
+    clock["t"] += 1.0
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop", "start"]
+
+
+# ---------------------------------------------------------------------------
+# Shutdown leaves no unsupervised backend of this gateway's own making
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backend_registered_after_the_shutdown_sweep_is_stopped(_harness, monkeypatch):
+    """A slow respawn can outlive the shutdown drain and register its child after
+    on_gateway_shutdown swept the tracked set. The spawn observes that shutdown
+    began while it ran and stops the child itself, so no unsupervised
+    third-party process this gateway spawned survives the gateway."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+
+    def slow_start(name):
+        _BACKEND["lifecycle"].append("start")
+        _BACKEND["process"] = _spawned()
+        hr._stopping = True  # shutdown began while the spawn was in flight
+        return _BACKEND["process"]
+
+    monkeypatch.setattr(hr, "start_app_backend", slow_start)
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == ["stop", "start", "stop"]
+    assert _BACKEND["process"] is None
+
+
+@pytest.mark.asyncio
+async def test_adopted_backend_registered_during_shutdown_is_left_alone(_harness, monkeypatch):
+    """start_app_backend may ADOPT an external instance already on the fixed
+    port instead of spawning. An adopted backend's contract is to survive
+    gateway exit (the shutdown sweep excludes it), so the shutdown guard here
+    must not signal it either."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+
+    def adopting_start(name):
+        _BACKEND["lifecycle"].append("adopt")
+        _BACKEND["process"] = _adopted()
+        hr._stopping = True
+        return _BACKEND["process"]
+
+    monkeypatch.setattr(hr, "start_app_backend", adopting_start)
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == ["stop", "adopt"]
+    assert _BACKEND["process"] is not None
+
+
+@pytest.mark.asyncio
+async def test_respawn_is_refused_once_shutdown_began(_harness):
+    """Checked at the chokepoint itself, not only in the callers."""
+    hr._stopping = True
+    hr._pending_respawn["cost-ai"] = (0.0, None)
+    assert hr._respawn_with_backoff("cost-ai") is False
+    assert _BACKEND["lifecycle"] == []
+
+
+@pytest.mark.asyncio
+async def test_adopted_backend_is_never_replaced(_harness):
+    """Replacement is for children THIS gateway spawned. An adopted record has
+    no generation the gateway can vouch for and is not its process to cycle."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _adopted()
+    _BACKEND["generation"] = False  # even a (fabricated) positive mismatch
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == []
+
+
+# ---------------------------------------------------------------------------
+# A tick landing inside a CLI uninstall + install must not decide the outcome
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_tick_between_uninstall_and_install_does_not_change_the_outcome(
+    _harness, monkeypatch
+):
+    """The reported workflow with the worst tick timing: the app is confirmed
+    absent between the two CLI steps. The reconciler does nothing to the still-
+    running child (a removed app's backend is not its to stop), so the reinstall
+    lands with the old process still tracked, its secret rotated, and the
+    replacement happens exactly as it would had the tick landed after both
+    steps. The outcome does not depend on where the tick lands."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    monkeypatch.setattr(hr, "tracked_backend_names", lambda: ["cost-ai"])
+
+    set_current()  # uninstalled: confirmed absent by the harness read
+    await hr.reconcile_once([])
+    assert _BACKEND["lifecycle"] == [] and _BACKEND["process"] is not None
+
+    set_current(app)  # installed again: new .app_secret, old child still tracked
+    _BACKEND["generation"] = False
+    await hr.reconcile_once([app])
+    assert _BACKEND["lifecycle"] == ["stop", "start"]
+
+
+@pytest.mark.asyncio
+async def test_a_disable_drops_a_pending_respawn_and_a_re_enable_starts_nothing(
+    _harness, monkeypatch
+):
+    """Disable retires the generation the respawn was owed to; a later re-enable
+    is a first start and not this module's to perform."""
+    _, (set_current, _, _) = _harness
+    set_current(_plain_backend_app("cost-ai", enabled=False))
+    hr._pending_respawn["cost-ai"] = (0.0, None)
+
+    await hr.reconcile_once([])
+    assert "cost-ai" not in hr._pending_respawn
+
+    set_current(_plain_backend_app("cost-ai"))
+    await hr.reconcile_once([_plain_backend_app("cost-ai")])
+    assert _BACKEND["lifecycle"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_disable_landing_during_the_respawn_stops_the_new_child(_harness, monkeypatch):
+    """``enabled`` was read under the lifecycle lock, but a CLI disable in
+    another process can land while the spawn is in flight. Enablement is read
+    again after the spawn and a positively disabled app's new child is stopped
+    at once, not left serving until the next tick."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+
+    def start_then_disable(name):
+        _BACKEND["lifecycle"].append("start")
+        _BACKEND["process"] = _spawned()
+        set_current(_plain_backend_app("cost-ai", enabled=False))  # lands mid-spawn
+        return _BACKEND["process"]
+
+    monkeypatch.setattr(hr, "start_app_backend", start_then_disable)
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == ["stop", "start", "stop"]
+    assert _BACKEND["process"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_disable_landing_before_the_respawn_skips_it(_harness, monkeypatch):
+    """Same race, earlier: the disable landed after the locked read but before
+    the spawn. Enablement is re-read immediately before spawning; nothing
+    starts, and the debt is dropped by the disable path on the next tick."""
+    _, (set_current, _, _) = _harness
+    app = _plain_backend_app("cost-ai")
+    set_current(app)
+    _BACKEND["process"] = _spawned()
+    _BACKEND["generation"] = False
+    real_stop = hr.stop_app_backend
+
+    def stop_then_disable(name):
+        set_current(_plain_backend_app("cost-ai", enabled=False))  # lands after the stop
+        return real_stop(name)
+
+    monkeypatch.setattr(hr, "stop_app_backend", stop_then_disable)
+
+    await hr.reconcile_once([app])
+
+    assert _BACKEND["lifecycle"] == ["stop"]
+
+
+def _async_return(value):
+    async def _f(*_a, **_k):
+        return value
+
+    return _f
+
+
+def _recording_disable(order, calls, hooks_mod):
+    async def _disable(name, app_info, **kwargs):
+        order.append("on_shutdown")
+        calls.append(("disable", name))
+        hooks_mod.clear_loaded_hook_signature(name)
+        return {}
+
+    return _disable
+
+
+def _recording_enable(order, calls, hooks_mod):
+    async def _enable(name, app_info, **kwargs):
+        order.append("on_startup")
+        calls.append(("enable", name))
+        await hooks_mod.record_loaded_hook_signature(name, app_info)
+
+    return _enable
 
 
 @pytest.mark.asyncio
@@ -572,7 +1289,7 @@ async def test_loaded_app_uninstalled_is_torn_down(_harness):
 
 
 @pytest.mark.asyncio
-async def test_unreadable_metadata_does_not_read_as_uninstalled(_harness, tmp_path):
+async def test_unreadable_metadata_does_not_read_as_uninstalled(_harness, tmp_path, monkeypatch):
     """``get_app`` returning None does not mean the app is gone.
 
     ``_read_installed`` leads with ``Path.is_file()``, which answers a silent False
@@ -583,6 +1300,8 @@ async def test_unreadable_metadata_does_not_read_as_uninstalled(_harness, tmp_pa
     the fault clears. Absence is confirmed through the tri-state read instead.
     """
     calls, (set_current, _, _) = _harness
+    # This test exercises the REAL tri-state read against a broken shape on disk.
+    monkeypatch.setattr(hr, "app_enabled_state", real_app_enabled_state)
     # A real broken shape on disk: something occupies the app directory's own path,
     # so app_enabled_state reports unknown rather than a definite False.
     apps = tmp_path / "home" / "apps"
