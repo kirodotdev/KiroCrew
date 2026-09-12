@@ -392,6 +392,14 @@ class SlackRenderer(Renderer):
         # Best-effort: MUST NOT raise. Decoration only.
         try:
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", _STATUS_WORKING)
+            # Agent Sessions API: mark the session `processing` so Slack renders a
+            # NATIVE stop button on the status line (requires the app to be
+            # declared as an agent and to subscribe to the agent_session_stopped
+            # event). Additive — a False return leaves the assistant.threads
+            # status above as the fallback surface.
+            await self.slack.set_agent_session_status(
+                self.channel, self.thread_ts or "", "processing"
+            )
         except Exception:
             logger.warning("Slack set_thread_status failed — skipping status", exc_info=True)
 
@@ -1175,6 +1183,10 @@ class SlackRenderer(Renderer):
         # recorded failure.
         try:
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
+            # Agent Sessions API: transition the session out of `processing` back
+            # to `active` so Slack removes the native stop button. Slack requires
+            # the app to move the session off `processing` explicitly. Additive.
+            await self.slack.set_agent_session_status(self.channel, self.thread_ts or "", "active")
         except Exception:
             logger.warning("Slack set_thread_status failed — skipping status clear", exc_info=True)
         # Timing footer (always posted at turn end), mirroring native.
