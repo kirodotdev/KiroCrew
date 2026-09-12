@@ -801,6 +801,50 @@ class TestAutoApproveIsFilteredAtTheWriteChokepoint:
         spec = {"srv": {"command": "x", "autoApprove": ["a"]}}
         assert gov.strip_ungoverned_auto_approve(spec)["srv"]["autoApprove"] == ["a"]
 
+    def test_unconditional_strip_ignores_governance_entirely(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``strip_auto_approve_unconditionally`` removes the key on an
+        ungoverned host too — the opposite of ``strip_ungoverned_auto_approve``
+        on the same input. Exists for a caller (the heartbeat agent) whose
+        reason to strip does not depend on a governance ceiling: the governed
+        helper is a no-op on the default public install (no ceiling), which is
+        exactly the bypass this caller exists to close.
+        """
+        from kiro_crew.platform import governance as gov
+
+        # Even with may_skip_gate_now answering True (ungoverned host, the
+        # governed helper's no-op case), the unconditional variant still strips.
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)
+        out = gov.strip_auto_approve_unconditionally(
+            {"srv": {"command": "x", "autoApprove": ["a"]}, "other": {"command": "y"}}
+        )
+        assert "autoApprove" not in out["srv"]
+        assert out["srv"]["command"] == "x"
+        assert out["other"] == {"command": "y"}
+
+    def test_unconditional_strip_emits_the_same_sel_event_shape(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A diff between the two strips' outputs should be exactly the
+        ceiling-gating difference, not a drifted audit record too — both route
+        through the same ``_pop_auto_approve_and_audit`` and emit
+        ``mcp_auto_approve_withheld``.
+        """
+        from kiro_crew.platform import governance as gov
+
+        calls: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(gov, "sel", lambda: _FakeSel())
+        gov.strip_auto_approve_unconditionally({"srv": {"command": "x", "autoApprove": ["a"]}})
+        assert len(calls) == 1
+        assert calls[0]["operation"] == "mcp_auto_approve_withheld"
+        assert calls[0]["source"] == "strip_auto_approve_unconditionally"
+
     def test_both_config_writers_run_the_pass(self) -> None:
         """The host agent writer and app-agent materialization, at the same point."""
         import inspect

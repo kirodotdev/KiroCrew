@@ -177,7 +177,6 @@ src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py
 src/kiro_crew/dashboard/handlers/knowledge.py
 src/kiro_crew/dashboard/handlers/mcp_apps.py
-src/kiro_crew/dashboard/handlers/mcp_custom.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/sso_login.py
@@ -709,7 +708,6 @@ test/test_mcp_cron_list_compact.py
 test/test_mcp_cron_orphan_validation.py
 test/test_mcp_cron_persistent_session.py
 test/test_mcp_cron_security.py
-test/test_mcp_custom_api.py
 test/test_mcp_gateway_apps_spool.py
 test/test_mcp_gateway_backend_coverage.py
 test/test_mcp_gateway_claim.py

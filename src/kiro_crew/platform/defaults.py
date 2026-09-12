@@ -325,6 +325,9 @@ class DefaultMcpToolingProvider:
     def extra_mcp_servers(self) -> Dict[str, dict]:
         return {}
 
+    def extra_heartbeat_mcp_servers(self) -> Dict[str, dict]:
+        return {}
+
     def extra_skills(self) -> List[Path]:
         return []
 
