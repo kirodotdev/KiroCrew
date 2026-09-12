@@ -8255,6 +8255,251 @@ class TestSubstitutionCloserReadsCommandGrammar:
         assert f"printf {self.VERB}" in body, body
 
 
+class TestCaseArmingRequiresCommandPosition:
+    """``case`` is a reserved word only in COMMAND POSITION, so the
+    pattern-paren rule must not arm on the word as data. Every vector is
+    bash-verified live: the non-arming forms are ones bash reads as data (or
+    refuses outright), and the arming forms are ones bash spans."""
+
+    @pytest.mark.parametrize(
+        ("command", "body"),
+        [
+            # ``case`` as an ARGUMENT: bash closes at the first unquoted ``)``.
+            ("echo $(echo case x in y) tail", "echo case x in y"),
+            ("echo $(echo then case x in y) tail", "echo then case x in y"),
+            # A quoted spelling is data even in command position.
+            ("echo $('case' x in y) tail", "'case' x in y"),
+            # An assignment prefix removes command position (bash: syntax
+            # error at the pattern paren, the line never parses).
+            ("echo $(v=1 case x in y) tail", "v=1 case x in y"),
+            # ``command case`` / ``eval case``: operands, not the keyword.
+            ("echo $(command case x in y) tail", "command case x in y"),
+        ],
+    )
+    def test_case_as_data_no_longer_over_arms(self, command: str, body: str) -> None:
+        assert security._substitution_bodies(command) == [body]
+        assert security.is_denied(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Command position hands through reserved words -- INHERITED, so
+            # each keeper must hold position itself.
+            "kill $(if true; then case x in x) : ;; esac; fi; pgrep -f kirocrew)",
+            "kill $({ case x in x) : ;; esac; }; pgrep -f kirocrew)",
+            # Both function-definition forms make the body command position.
+            "kill $(function f case x in x) : ;; esac; pgrep -f kirocrew)",
+            "kill $(f() case x in x) : ;; esac; f; pgrep -f kirocrew)",
+            "kill $(f ( ) case x in x) : ;; esac; f; pgrep -f kirocrew)",
+            # ``coproc [NAME] compound-command``.
+            "kill $(coproc c case x in x) : ;; esac; pgrep -f kirocrew)",
+            # A nested case in a clause body opens after ``)`` -> command position.
+            "kill $(case a in a) case b in b) : ;; esac ;; esac; pgrep -f kirocrew)",
+            # The MULTI-CLAUSE form: an outer pattern paren
+            # AFTER the inner esac is what a missed inner arm hands to the
+            # desynchronised counter as the closer -- this vector is red on a
+            # gate that skips the clause-body position.
+            "kill $(case a in a) case b in b) : ;; esac ;; c) : ;; esac; pgrep -f kirocrew)",
+            # ``case`` GLUED to a backtick opener: the
+            # opener both breaks the word and starts a command, so the word
+            # must still be recognised and armed.
+            "kill $(`case x in x) : ;; esac`; pgrep -f kirocrew)",
+        ],
+    )
+    def test_every_bash_spanning_form_still_arms(self, command: str) -> None:
+        (body,) = security._substitution_bodies(command)
+        assert "pgrep -f kirocrew" in body, body
+        assert security._is_self_kill(command)
+
+    def test_a_redirect_prefixed_case_is_not_armed(self) -> None:
+        """bash REFUSES a redirect prefix before a compound command (measured:
+        syntax error, the line never runs), so the exact reading closes at the
+        pattern paren rather than spanning a command that cannot execute."""
+        body, *_rest = security._substitution_bodies("echo $( > f case x in y) tail")
+        assert body == " > f case x in y", body
+
+    def test_esac_after_in_stays_safe_but_unproven(self) -> None:
+        """``$(case z in esac; echo after)`` -- bash ends the case at that
+        ``esac``, but disarming there needs subject/``in`` state the flat
+        counter deliberately does not carry: any cheaper rule (e.g. 'esac
+        after the word in') disarms on ``echo in esac`` inside a clause body,
+        which is the BYPASS direction. Pinned to the fail-closed fallback:
+        unproven span, whole remainder, extractors scan more."""
+        (body,) = security._substitution_bodies("$(case z in esac; echo after)")
+        assert "echo after" in body, body
+
+    def test_option_words_are_transparent_in_the_chain(self) -> None:
+        """Option words pass the decision through to what precedes them.
+
+        ``time -p case`` / ``time -- case``: bash's OWN substitution parser
+        refuses these spellings (measured live: syntax error, the tail prints
+        as literal text and never executes), so no executable bypass exists
+        either way -- but the grammar reads the reserved word there, and
+        arming keeps the walk uniform with the bare ``time case`` form at the
+        cost of a longer span on input bash never runs (the documented safe
+        direction). ``echo -n case`` chains to ``echo`` and stays data."""
+        from kiro_crew.security.shell_normalizer import _matching_close_paren
+
+        for text in (
+            "$(time -p case x in x) : ;; esac; pgrep -f kirocrew)",
+            "$(time -- case x in x) : ;; esac; pgrep -f kirocrew)",
+        ):
+            assert _matching_close_paren(text, 2) == (len(text), True), text
+        assert security._substitution_bodies("echo $(echo -n case x in y) tail") == [
+            "echo -n case x in y"
+        ]
+
+    def test_heredoc_bodies_extract_whole_and_the_consumer_convicts(self) -> None:
+        """A ``)`` inside heredoc DATA must not end the extracted body early.
+
+        These pins hold on this branch and on the base alike: the span is
+        unproven through the heredoc, so the extractor falls back to the whole
+        remainder (scan more, never less) and the payload after the heredoc IS
+        scanned — the self-kill consumer convicts. bash runs the tail in both
+        shapes (verified live)."""
+        for cmd in (
+            "kill $(echo <<X\ncase x in y)\nX\npgrep -f kirocrew)",
+            "kill $(cat <<X\ncase a in a) : ;; esac\nX\npgrep -f kirocrew)",
+        ):
+            (body,) = security._substitution_bodies(cmd)
+            assert "pgrep -f kirocrew" in body, body
+            assert security._is_self_kill(cmd)
+
+    def test_the_two_keyword_tables_are_cross_pinned(self) -> None:
+        """The command-position keepers and ``_SHELL_RESERVED_WORDS`` answer
+        the same 'is this word shell syntax?' question for different purposes
+        (grammar model here, fail-closed bail in the redirect skip). Every
+        membership difference is intentional and named, so an edit to one
+        table trips this pin and the editor rules on the other deliberately."""
+        from kiro_crew.security.argv_floor import _SHELL_RESERVED_WORDS
+        from kiro_crew.security.shell_normalizer import _KEEPS_COMMAND_POSITION
+
+        only_reserved = _SHELL_RESERVED_WORDS - _KEEPS_COMMAND_POSITION
+        only_keeps = _KEEPS_COMMAND_POSITION - _SHELL_RESERVED_WORDS
+        assert only_reserved == {
+            # handled structurally by the span walk, not as position-keepers:
+            "case",  # arms the pattern rule (command position gated)
+            "esac",  # disarms it (command position gated)
+            "in",  # case grammar, never hands position on
+            "function",  # name-consuming prefix, chained in _arms_case_context
+            # loop/conditional heads whose operands are NOT command position;
+            # their bodies re-enter it via do/then, which ARE in the set:
+            "for",
+            "select",
+            # bracket commands whose operands are test expressions:
+            "[[",
+            "]]",
+            # block ENDERS: bash refuses a keyword directly after each
+            # (``fi case`` / ``done case`` / ``} case`` are syntax errors,
+            # measured), so none of them hands command position on:
+            "fi",
+            "done",
+            "}",
+        }
+        assert only_keeps == set()
+
+    def test_block_enders_do_not_hand_position_on(self) -> None:
+        """``fi case`` / ``done case`` are bash SYNTAX ERRORS (measured), so
+        the exact reading closes at the first paren rather than spanning a
+        line that can never run."""
+        for command, body in (
+            ("echo $(if true; then :; fi case x in y) tail", "if true; then :; fi case x in y"),
+            (
+                "echo $(for i in 1; do :; done case x in y) tail",
+                "for i in 1; do :; done case x in y",
+            ),
+        ):
+            assert security._substitution_bodies(command)[0] == body, command
+
+    def test_a_continuation_split_keeper_still_arms(self) -> None:
+        """A keeper split by a line continuation hands command position on.
+
+        bash removes ``\\`` + newline while READING, so ``th\\`` + newline +
+        ``en case x in x) ...`` runs as ``then case ...`` (measured). The
+        backward word parser must join across the continuation the same way:
+        stopping at the raw newline reads the fragment ``en``, refuses to arm,
+        and the pattern ``)`` then closes substitution scanning early -- the
+        under-scan direction the self-protection consumers cannot afford.
+        """
+        from kiro_crew.security.shell_normalizer import _arms_case_context
+
+        for keeper_split in ("th\\\nen", "i\\\nf true; then", "d\\\no"):
+            head = {
+                "th\\\nen": f"if true; {keeper_split}",
+                "i\\\nf true; then": keeper_split,
+                "d\\\no": f"while true; {keeper_split}",
+            }[keeper_split]
+            text = f"{head} case x in x) echo BODY;; esac"
+            idx = text.rindex("case")
+            assert _arms_case_context(text, idx), text
+
+    def test_a_continuation_split_keeper_spans_the_whole_body(self) -> None:
+        """The substitution body survives the pattern ``)`` when the keeper is split."""
+        command = 'kill -9 $(if true; th\\\nen case x in x) pgrep -f "kiro""crew";; esac; fi)'
+        (body,) = security._substitution_bodies(command)
+        assert 'pgrep -f "kiro""crew"' in body, body
+        assert body.endswith("fi"), body
+        assert security.is_denied(command) is not None
+
+    def test_a_split_keeper_word_is_joined_not_fragmented(self) -> None:
+        """``_prev_word`` reads ``th\\`` + newline + ``en`` as one word.
+
+        The joined word must carry its continuation glue (so the arming walk
+        can classify it) and start at the FIRST fragment, so chained walks
+        (``then`` -> ``if``) resume before the whole keeper, not mid-word.
+        """
+        from kiro_crew.security.shell_normalizer import _prev_word
+
+        text = "th\\\nen case"
+        got = _prev_word(text, text.index("case"))
+        assert got is not None
+        word, start = got
+        assert word.replace("\\\n", "") == "then", got
+        assert start == 0, got
+
+    def test_a_keeper_word_as_function_name_still_arms(self) -> None:
+        """``function time case ...``: ``time`` is the definition NAME, not the keyword.
+
+        bash accepts any reserved word as a function name after ``function``
+        (``function do`` / ``function if`` parse, measured), and the definition
+        body is command position -- so the ``case`` there is bash's reserved
+        word and must arm.  The name-prefix check has to run BEFORE keeper
+        semantics: reading ``time`` as the keeper chains to ``function``, which
+        keeps nothing, and the refused arm truncates the substitution body at
+        the pattern ``)`` -- the under-scan direction.
+        """
+        from kiro_crew.security.shell_normalizer import _arms_case_context
+
+        for text in (
+            "function time case",
+            "function do case",
+            "function if case",
+            "coproc time case",
+        ):
+            assert _arms_case_context(text, text.rindex("case")), text
+
+    def test_a_function_named_keeper_body_spans_and_convicts(self) -> None:
+        """The review vector: the pgrep under a function-named keeper is scanned.
+
+        bash defines the function (never runs it) and the substitution result
+        still reaches the outer command (measured), so a truncated body hides
+        the pgrep from the scan while bash evaluates it.  The clause-position
+        spelling both spans and convicts.  The esac-tail spelling
+        (``... :;; esac; pgrep ...``) is pinned for SPAN only: its conviction
+        depends on how the consumer segments a command list after ``esac``,
+        which behaves the same with this gate present or absent (identical on
+        the base branch, measured) and is tracked separately.
+        """
+        clause = 'kill -9 $(function time case x in x) pgrep -f "kiro""crew";; esac)'
+        (body,) = security._substitution_bodies(clause)
+        assert 'pgrep -f "kiro""crew"' in body, body
+        assert security.is_denied(clause) is not None
+
+        tail = 'kill -9 $(function time case x in x) :;; esac; pgrep -f "kiro""crew")'
+        (body,) = security._substitution_bodies(tail)
+        assert 'pgrep -f "kiro""crew"' in body, body
+
+
 class TestSelfTokensFoldLineContinuations:
     """``_self_tokens`` folds ``\\`` + newline away BEFORE tokenizing.
 
