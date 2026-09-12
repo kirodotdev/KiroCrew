@@ -29,6 +29,7 @@ from pathlib import Path
 from kiro_crew import pinned_fs
 from kiro_crew import seed as seed_mod
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew.config.paths import isolated_kiro_home
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.instances import run_marker
@@ -2921,7 +2922,7 @@ def build_pod_env(
         # dir now resolves through ``kiro_sessions_dir()``; without that the pod
         # would write sessions somewhere KiroCrew never looks and lose resume.
         # Inside the pod HOME so ``pod down``'s teardown reclaims it.
-        "KIRO_HOME": str(home_dir / "kiro"),
+        "KIRO_HOME": str(isolated_kiro_home(home_dir)),
         # Give the pod its OWN workspace root. Without this, `workspace_root()`
         # finds no `KIROCREW_WORKSPACE` and no `config_dir()/workspace_dir` file in
         # a fresh pod home, so it falls through to the platform default under the

@@ -488,7 +488,7 @@ def _in_ephemeral_tree(path: Path, env: Mapping[str, str] | None = None) -> bool
     launcher aimed into it dangles the moment the app quits — the same hazard as
     :func:`_in_linked_git_worktree`, from a different direction.
 
-``$APPDIR`` (the mount point) is exported by the AppImage runtime and is the
+    ``$APPDIR`` (the mount point) is exported by the AppImage runtime and is the
     authoritative signal; ``$APPIMAGE`` names the outer image file rather than the
     mount, so it cannot answer an ancestry test. The ``.mount_`` path component is
     the fallback for a child process that inherited no environment, matched on the
@@ -632,16 +632,37 @@ def kiro_home() -> Path:
     rewriting costs: managed MCP servers that read one credential while calling a
     gateway that expects another, and 403 on every call).
 
-    SCOPE CAVEAT — read before setting this. ``KIRO_HOME`` redirects kiro-cli's
-    WHOLE user directory (agents, prompts, skills, steering, settings, sessions),
-    but KiroCrew currently resolves the host ``~/.kiro`` for most of those readers
-    (session transcripts in ``session_map.py`` / ``acp/*`` / ``providers/acp.py``
-    / ``dashboard/handlers/usage.py``, and the ``settings/mcp.json`` registry).
-    Setting ``KIRO_HOME`` therefore moves where kiro-cli WRITES sessions without
-    moving where KiroCrew READS them, which breaks session resume. Only the agents
-    directory follows it today, so this is not yet a supported way to isolate an
-    instance — ``build_pod_env()`` deliberately does not set it. Bringing the
-    remaining readers through this resolver is the prerequisite.
+    SCOPE — read before setting this. ``KIRO_HOME`` redirects kiro-cli's WHOLE
+    user directory (agents, prompts, skills, steering, settings, sessions). The
+    two subtrees Kiro Crew itself reads follow it through this resolver:
+    the agents dir (:func:`kiro_agents_dir`) and the chat transcripts
+    (:func:`kiro_sessions_dir`), so writer and reader stay in agreement and
+    session resume survives the redirect. That is what lets an isolated instance
+    own ``KIRO_HOME=<data home>/kiro`` -- ``build_pod_env`` sets it for a pod,
+    the E2E harness for its test gateway, and :func:`adopt_isolated_kiro_home`
+    for any other non-default data home. kiro-cli's login state lives
+    outside ``~/.kiro`` and is unaffected.
+
+    What does NOT follow it -- and therefore splits under a redirect, because
+    kiro-cli reads ``<KIRO_HOME>/<subtree>`` while Kiro Crew keeps reading the
+    HOST ``~/.kiro/<subtree>``:
+
+    * ``settings/mcp.json``, the kiro-cli global MCP registry
+      (``agent._KIRO_MCP_JSON``, ``apps/bridges.py``, ``mcp_discovery.py``,
+      ``dashboard/handlers/mcp.py``). Inert for the servers kiro-cli actually
+      connects: the specs Kiro Crew emits pin ``includeMcpJson`` off and carry
+      the host registry merged in, so only a user editing the registry by hand
+      and expecting kiro-cli's own reading of it to move would notice.
+      ``pod/runtime.py`` records the same residual for ``kirocrew app`` in a pod.
+    * ``skills`` (``agent.py`` skill-path discovery, ``dashboard/handlers/
+      _shared.py``), ``hooks`` (``agent._DEFAULT_KIRO_HOOKS_DIR``), ``steering``
+      (``dashboard/handlers/steering.py``) and ``prompts``
+      (``dashboard/handlers/prompts.py``): the dashboard shows and edits the host
+      copies while a redirected kiro-cli loads its own. For an install that
+      relocated its data home permanently this is the visible cost of
+      :func:`adopt_isolated_kiro_home`, and ``KIRO_HOME=~/.kiro`` is the opt-out;
+      routing those readers through this resolver is the follow-up that removes
+      it.
 
     Rejects the same unsafe targets as :func:`_valid_override_home` (a
     filesystem/drive root, or a known POSIX system directory) so a malformed
@@ -650,11 +671,48 @@ def kiro_home() -> Path:
     """
     override = os.environ.get("KIRO_HOME")
     if not override:
-        return Path.home() / ".kiro"
-    p = Path(override).expanduser().resolve()
+        return default_kiro_home()
+    p = explicit_kiro_home()
+    if p is None:
+        logger.warning("KIRO_HOME=%s is a system directory or unresolvable, ignoring", override)
+        return default_kiro_home()
+    return p
+
+
+def default_kiro_home() -> Path:
+    """The machine-wide kiro-cli home, ``~/.kiro``, regardless of ``KIRO_HOME``.
+
+    The one spelling of the host home, for the few callers that must name it
+    while the process itself reads another: the doctor line that says what the
+    host still holds, and the transcript reclaim that moves an adopted
+    instance's files out of it. Everything else goes through :func:`kiro_home`.
+    """
+    return Path.home() / ".kiro"
+
+
+def explicit_kiro_home() -> Path | None:
+    """The resolved ``KIRO_HOME`` override iff it is set AND valid; else ``None``.
+
+    The ``KIRO_HOME`` twin of :func:`_valid_override_home`. :func:`kiro_home`
+    falls back to the machine-wide ``~/.kiro`` when the override names a
+    filesystem root or a system directory, so any caller asking "did the
+    operator choose a kiro home?" must apply the SAME test -- reading the raw
+    variable would count ``KIRO_HOME=/etc`` as a choice while the resolver had
+    already discarded it. Resolving: not for the boot prologue.
+
+    A value that cannot be RESOLVED -- a symlink cycle (``RuntimeError`` from
+    pathlib), an unreadable ancestor (``OSError``) -- is invalid too, not a crash:
+    an environment variable is not a place a process may be aborted from.
+    """
+    override = os.environ.get("KIRO_HOME")
+    if not override:
+        return None
+    try:
+        p = Path(override).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
     if _is_unsafe_home(p):
-        logger.warning("KIRO_HOME=%s is a system directory, ignoring", override)
-        return Path.home() / ".kiro"
+        return None
     return p
 
 
@@ -738,6 +796,19 @@ def kiro_oauth_cache_home() -> Path:
     return p
 
 
+def isolated_kiro_home(data_home: Path) -> Path:
+    """The kiro-cli user home an ISOLATED instance owns: ``<data home>/kiro``.
+
+    The one recipe every isolated instance uses -- ``build_pod_env``, the offline
+    E2E harness and :func:`adopt_isolated_kiro_home` spell ``KIRO_HOME`` through
+    this function, and the GUI user-test rig (``scripts/gui-user-test/boot.sh``)
+    hand-spells the same ``<data home>/kiro`` -- so it is defined once and
+    :func:`isolated_agents_dir` derives from it rather than the two being
+    hand-written side by side.
+    """
+    return data_home / "kiro"
+
+
 def isolated_agents_dir(data_home: Path) -> Path:
     """The dedicated agents dir an ISOLATED instance may own: ``<data home>/kiro/agents``.
 
@@ -748,7 +819,190 @@ def isolated_agents_dir(data_home: Path) -> Path:
     happens to be an ancestor of it (``KIROCREW_HOME=$HOME`` is enough), which
     hands an ephemeral instance the shared specs.
     """
-    return data_home / "kiro" / "agents"
+    return isolated_kiro_home(data_home) / "agents"
+
+
+def _main_homes() -> tuple[Path, ...]:
+    """Lexical spellings of the data homes that OWN the machine-wide ``~/.kiro``.
+
+    Two, not one: the default ``~/.kiro/crew`` and the pre-move ``~/.kirocrew``.
+    An install still running on the legacy home (or one that names either
+    explicitly through ``KIROCREW_HOME``) is the operator's real, single
+    instance, and the shared kiro-cli home is its to write.
+
+    Deliberately NOT resolved: this is consulted from the CLI prologue of every
+    subcommand, before the gateway binds, and ``Path.resolve()`` on a roaming or
+    UNC-backed home is a network round-trip that can stall boot. The comparison in
+    :func:`foreign_data_home` is therefore lexical on both sides.
+    """
+    return (_default_home(), _legacy_home())
+
+
+def foreign_data_home() -> Path | None:
+    """The data home this process runs on iff it is NOT the operator's main one.
+
+    ``None`` on a default install, on the legacy home, and when ``KIROCREW_HOME``
+    merely re-spells either of those (``~``, a trailing slash, ``..`` segments) --
+    all of them are the machine's one real instance. A valid override pointing
+    anywhere else -- a ``.kirocrew-dev`` tree, a scratch home for a screenshot
+    run, a relocated data directory -- is returned as :func:`config_dir` resolved
+    it.
+
+    This is the predicate the agent-spec write guard and
+    :func:`adopt_isolated_kiro_home` share, so "which instance owns
+    ``~/.kiro/agents``" is answered in one place. The comparison is against the
+    default/legacy homes, not "override set vs unset": ``config_dir()`` honours a
+    valid override, so an override that merely names the default home must still
+    read as main.
+
+    Both the RESOLVED override and its RAW spelling (lexically normalised) are
+    tested, so ``KIROCREW_HOME=~/.kiro/crew`` reads as the main instance even
+    when ``$HOME`` sits behind a symlink and resolution would move it. The gap
+    this leaves is deliberate: an alias the filesystem alone can reveal
+    (``KIROCREW_HOME=~/my-link`` with ``my-link -> ~/.kiro/crew``) compares
+    unequal when ``$HOME`` is itself symlinked, and is then treated as foreign --
+    i.e. given its own kiro home. Closing that would need ``resolve()`` on the
+    default home, which is the boot-path network round-trip this function
+    refuses to add; an operator in that position spells the default home
+    literally, or unsets ``KIROCREW_HOME``, which IS the default.
+
+    Adds no filesystem work of its own: the override's resolution is
+    :func:`config_dir`'s, memoised by the ``ensure_data_home()`` call that
+    precedes this in every prologue, so this is a dictionary lookup.
+    """
+    raw = os.environ.get("KIROCREW_HOME", "")
+    if not raw:
+        return None
+    # ``config_dir()`` HONOURS the override when it is valid and falls back to the
+    # default home when it is not (a system directory) -- in which case the
+    # comparison below reads it as main, exactly like an unset override. Memoised
+    # on the raw env value, so after the prologue's ``ensure_data_home()`` this
+    # resolves nothing.
+    home = config_dir()
+    mains = _main_homes()
+    if home in mains:
+        return None
+    if Path(os.path.normpath(os.path.expanduser(raw))) in mains:
+        return None
+    return home
+
+
+def _reprime_kiro_home_memos(agents_root: Path) -> None:
+    """Refresh every already-loaded memo keyed on ``KIRO_HOME`` after we change it.
+
+    ``kiro_crew.hooks`` memoizes ``kiro_agents_dir()`` (the UNC gate's trusted
+    root) keyed on the raw ``KIRO_HOME`` and primes it at ITS import, which on the
+    CLI path precedes the prologue. Left alone after the export, the first gate
+    check would resolve the path on whatever thread asked -- on an async
+    validation path the event loop, and on a UNC-shaped home an SMB round-trip.
+    Re-resolving it here would move that round-trip onto the boot path instead,
+    ahead of the socket bind -- so the memo is SEEDED with *agents_root*, which
+    the caller already knows lexically from the resolved data home, and nothing
+    is stat'ed.
+
+    Coupled HERE, inside the one function that changes the variable, rather than
+    hand-spelled at each caller: a third entrypoint that adopts and forgets to
+    re-prime would reintroduce the stale memo silently. Reached through
+    ``sys.modules`` on purpose -- this module is a stdlib-only leaf and must not
+    import ``hooks``; a module that is not loaded yet has no stale memo, and its
+    import-time priming will see the adopted value.
+    """
+    hooks_mod = sys.modules.get("kiro_crew.hooks")
+    if hooks_mod is not None:
+        hooks_mod.seed_unc_agents_root(agents_root)
+
+
+def adopt_isolated_kiro_home() -> Path | None:
+    """Give a non-default data home its OWN kiro-cli home, unless one is declared.
+
+    Exports ``KIRO_HOME=<data home>/kiro`` into this process's environment when
+    the process runs on a foreign data home (:func:`foreign_data_home`) and no
+    ``KIRO_HOME`` is set. Returns the adopted home, or ``None`` when nothing
+    changed. Idempotent; call it once from a process's synchronous prologue,
+    before anything resolves :func:`kiro_home` or spawns kiro-cli.
+
+    Why the PROCESS environment rather than a resolver-side rule in
+    :func:`kiro_home`: the value has to reach kiro-cli, which reads ``KIRO_HOME``
+    from its own environment and inherits ours (``acp/client.py`` spawns with
+    ``{**os.environ}``), and every managed MCP shim under it inherits the same.
+    One export in the prologue makes the gateway, its kiro-cli children, their
+    ``kirocrew mcp-*`` stubs, and every ``kirocrew`` CLI verb run on this home
+    agree on one kiro home -- exactly what ``build_pod_env`` already arranges for
+    a pod by hand.
+
+    Why at all: the agents directory is ``<kiro home>/agents``, and the default
+    kiro home is the machine-wide ``~/.kiro`` -- NOT under ``KIROCREW_HOME``. A
+    gateway booted with ``KIROCREW_HOME=<scratch>`` and no ``KIRO_HOME`` would
+    otherwise rebuild the operator's shared ``~/.kiro/agents/*.json`` on boot and
+    pin its own scratch home into every managed MCP server's ``env``
+    (``agent._managed_mcp_env``). From then on every ``kirocrew-core`` stub the
+    REAL gateway's sessions spawn resolves ``config_dir()`` to the scratch home,
+    looks for its signed session-pid mapping there, finds nothing, and every
+    strict-identity tool is refused with "signed pid mapping did not verify" --
+    on a machine whose trust root is healthy. With its own kiro home the scratch
+    instance writes ``<scratch>/kiro/agents`` instead, the write guard's
+    private-target exemption admits that, and the shared specs stay the default
+    instance's.
+
+    What it deliberately does NOT do: touch a process that already carries a
+    ``KIRO_HOME`` (an explicit choice: the operator decides which kiro home
+    kiro-cli READS -- ``KIRO_HOME=~/.kiro`` keeps a relocated install on the
+    machine-wide steering, skills and transcripts, at the cost that its managed
+    MCP servers then follow the DEFAULT instance's specs, because a foreign data
+    home never writes the shared ones), or a process on the default or legacy
+    home. The declared value is NOT validated here: judging it means resolving
+    it, and this is the boot path. :func:`kiro_home` applies its test where the
+    value is read -- a ``KIRO_HOME`` naming ``/etc`` or an unresolvable path
+    falls back to the shared ``~/.kiro`` there, with a warning, which lands the
+    process exactly where the ``KIRO_HOME=~/.kiro`` opt-out does: reading the
+    default instance's specs, never writing them (the write guard's ownership
+    arm takes no environment variable as consent). And it is not a resolver:
+    :func:`kiro_home` keeps reading the environment, so a test that isolates it
+    with ``patch("pathlib.Path.home", ...)`` is unaffected.
+
+    Scope note for an install that relocated its data home permanently: its
+    kiro-cli children read agents, sessions, steering, skills and settings from
+    ``<data home>/kiro`` rather than ``~/.kiro`` (kiro-cli's login state lives
+    elsewhere and is unaffected). The adoption line names the opt-out above, and
+    ``kirocrew doctor`` (Data Home) lists what the host ``~/.kiro`` still holds
+    that such an instance does not read.
+
+    Filesystem-free, deliberately: the only resolution it relies on is the one
+    ``ensure_data_home()`` already paid for ``config_dir()``, and it neither stats
+    nor resolves the adopted path, the declared ``KIRO_HOME``, or anything else.
+    This runs before the gateway binds, and a probe on a roaming or UNC-backed
+    home is a network round-trip that would hold readiness hostage. Whether the
+    adopted path is a real directory is judged by the write guard before
+    anything is written there.
+    """
+    if os.environ.get("KIRO_HOME"):
+        return None
+    own_home = foreign_data_home()
+    if own_home is None:
+        return None
+    adopted = isolated_kiro_home(own_home)
+    # No filesystem access here, by rule: this is the shared CLI prologue, ahead
+    # of the gateway binding its socket, and a stat on a roaming or UNC-backed
+    # home is a network round-trip that would hold readiness hostage. What the
+    # adopted path IS on disk -- a real directory, a planted link to ``~/.kiro``,
+    # a stray regular file -- is judged where it matters, by the write guard
+    # (``agent._private_isolated_agents_dir``) before any spec is written there;
+    # until then the export only decides what kiro-cli READS.
+    os.environ["KIRO_HOME"] = str(adopted)
+    _reprime_kiro_home_memos(isolated_agents_dir(own_home))
+    logger.info(
+        "KIROCREW_HOME=%s is not the default data home, so this instance owns its own "
+        "kiro-cli home: KIRO_HOME=%s (kiro-cli reads agents, sessions, steering, skills "
+        "and settings there, not under ~/.kiro). If this install relocated its data "
+        "home on purpose and wants kiro-cli to keep reading ~/.kiro, export "
+        "KIRO_HOME=%s -- its Kiro Crew MCP servers then follow the default instance's "
+        "specs, since a non-default data home never writes the shared ones. "
+        "`kirocrew doctor` (Data Home) reports the same.",
+        own_home,
+        adopted,
+        Path.home() / ".kiro",
+    )
+    return adopted
 
 
 #: Test/tooling redirect for :func:`kiro_agents_dir`, consulted on every call

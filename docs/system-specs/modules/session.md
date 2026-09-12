@@ -1207,6 +1207,17 @@ no longer exists (the entry drops from memory immediately; the file write rides
 the deferred flush). `SessionMap.prune()` bulk-removes all stale entries at
 startup.
 
+**Adopted kiro home:** both stale paths stat `kiro_sessions_dir()`, which
+follows `KIRO_HOME`. When the CLI prologue gives a non-default `KIROCREW_HOME`
+its own kiro home ([config](config.md#kiro-home-of-a-non-default-data-home)),
+that directory is empty on the first start while the install's transcripts sit
+under the host `~/.kiro/sessions/cli`. `SessionMap.reclaim_adopted_transcripts()`
+runs as `SessionManager` constructs the map — before any `get()` or `prune()` —
+and moves this map's `<sid>.json` / `<sid>.jsonl` pairs into the adopted
+directory, so the mapping survives and resume keeps working. It moves only sids
+present in this instance's map, never copies or deletes anything else, is
+idempotent, and is a no-op unless `KIRO_HOME` equals the adopted path exactly.
+
 **Mapped-session enumeration:** `SessionMap.mapped_sids_by_key()` returns session
 key → kiro-cli session ID for every entry that has one. Disk accounting
 ([session-storage](session-storage.md)) needs both halves of that relation: the IDs

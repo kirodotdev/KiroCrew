@@ -849,10 +849,23 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
         return ""
     if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
         # The sandbox launcher declared a host pid, so the channel exists and
-        # the sidecar is what failed — a signing/trust-root problem, not routing.
+        # the sidecar is what failed — a signing/trust-root problem, OR this stub
+        # is looking in the wrong place. Name the data home the mapping was
+        # looked up under: a shim whose spec pinned a foreign KIROCREW_HOME
+        # verifies against a home the real gateway never writes to, and "check
+        # doctor" alone sends the operator to a gateway whose trust root is green.
+        from kiro_crew.config.paths import data_home
+
+        try:
+            looked_in = str(data_home())
+        except Exception:  # pragma: no cover - diagnosis must never raise
+            looked_in = os.environ.get("KIROCREW_HOME") or "<unresolved>"
         return (
             f" No identity channel: the signed pid mapping for this session did not "
-            f"verify. Check `kirocrew doctor` (trust root) — {server} does not need "
+            f"verify under data home {looked_in}. If that is not the running gateway's "
+            f"data home, the agent spec pinned a stale KIROCREW_HOME into {server}'s "
+            f"env — run `kirocrew setup --agent-only` from the gateway's home; "
+            f"otherwise check `kirocrew doctor` (trust root). {server} does not need "
             f"routing when this channel works."
         )
     return (

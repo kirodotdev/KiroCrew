@@ -170,17 +170,25 @@ lists them, and a session-control HTTP 403 as a gap, not successful proof.
 
 ### Agent/MCP specs are a separate isolation axis
 
-`KIROCREW_HOME` isolates config, DB and sessions, NOT machine-wide
-`~/.kiro/agents/*.json`. An ephemeral gateway refuses to rewrite that shared
-agent home so its MCP paths cannot outlive its venv. The warning is protection,
-not a failure: preview uses the real install's specs and MCP servers. A preview
-therefore does NOT exercise changes to `mcp-core`, `mcp-cron` or `mcp-computer`.
-Use unit tests; any temporary change to the real spec requires explicit user
-authorization and restoration afterwards.
+`KIROCREW_HOME` isolates config, DB and sessions. The agent specs
+(`<kiro home>/agents/*.json`, which define which MCP servers exist) live under
+kiro-cli's home, so for a non-default data home the `kirocrew` CLI prologue also
+exports `KIRO_HOME=<data home>/kiro` (`config.paths.adopt_isolated_kiro_home`).
+The worktree gateway writes its specs to `<data home>/kiro/agents`, its kiro-cli
+reads them there, and `mcp-core`, `mcp-cron` and `mcp-computer` run the
+worktree's own code against the worktree's data home. The machine-wide
+`~/.kiro/agents` is never touched; resume works because transcripts are read via
+`kiro_sessions_dir()`, which follows `KIRO_HOME`.
 
-Do not bypass this with `KIRO_HOME`: it also moves sessions, settings, skills
-and steering, while remaining host-path readers can break resume. It is not yet
-a complete preview-isolation switch.
+A worktree gateway WITHOUT a `KIROCREW_HOME` override instead hits the write
+guard ("Refusing to rewrite the shared agent home ..."). That warning is
+protection, not a failure, but the preview then uses the real install's specs
+and does NOT exercise managed-server changes. Prefer the isolated form.
+
+Do not export `KIRO_HOME=$HOME/.kiro` from a worktree to "share" the real
+specs: kiro-cli then READS the real install's specs (whose managed servers point
+at the real data home) and the guard still refuses to rewrite them from a
+non-default data home, so you get neither isolation nor a working preview.
 
 ## Review repair and publication authorization
 

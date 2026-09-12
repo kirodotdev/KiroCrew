@@ -2454,6 +2454,40 @@ def _unc_agents_root() -> Path | None:
 # start, off the loop, so the one resolution per configuration lands there.
 # Best-effort: a failure here memoizes root-absent exactly as a lazy miss would.
 _unc_agents_root()
+
+
+def seed_unc_agents_root(root: Path) -> None:
+    """Fill the memo with an already-known agents dir -- no filesystem access.
+
+    The memo above is keyed on the raw ``KIRO_HOME`` and primed at import, which
+    on the CLI path happens BEFORE the prologue decides the kiro home
+    (``config.paths.adopt_isolated_kiro_home`` exports ``KIRO_HOME`` for a
+    non-default data home). After that export the primed entry stops matching,
+    and the FIRST gate check would pay the resolving accessor on whatever thread
+    asked -- on an async validation path the event loop, on a UNC-shaped home an
+    SMB round-trip. The prologue knows the adopted agents dir lexically -- it is
+    ``<data home>/kiro/agents`` and the data home is the path ``config_dir()``
+    already resolved and memoised -- and re-resolving it would be the only
+    filesystem work on the gateway boot path, ahead of the socket bind. So the
+    prologue hands the value over and the memo is written under exactly the key
+    :func:`_unc_agents_root` would compute for the now-exported ``KIRO_HOME``.
+    The trusted root is therefore the lexical spelling, not a link target; a
+    linked ``<data home>/kiro`` gets no write exemption from
+    ``agent._private_isolated_agents_dir`` anyway, so nothing is ever written
+    under a spelling the gate did not admit.
+
+    A test/tooling ``_agents_dir_override`` outranks any seeded value (it is what
+    ``kiro_agents_dir()`` will return), so with one installed this defers to the
+    resolving prime and the redirect's own answer is what gets memoised.
+    """
+    global _unc_agents_root_cache
+    if getattr(_config_paths, "_agents_dir_override", None) is not None:
+        _unc_agents_root()
+        return
+    key: tuple[object, ...] = (os.environ.get("KIRO_HOME"), _config_paths.kiro_agents_dir, None)
+    _unc_agents_root_cache = (key, root)
+
+
 #: Upper bound on the Windows leaf link chain validate_file_path will walk
 #: hop-by-hop before refusing. Mirrors the kernels' own symlink-resolution
 #: ceilings (Linux SYMLOOP_MAX chains resolve to ELOOP at 40): a longer
