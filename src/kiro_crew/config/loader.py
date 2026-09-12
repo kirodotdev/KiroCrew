@@ -4325,6 +4325,14 @@ class KiroCrewConfig:
             ),
             instances=InstancesConfig(
                 enabled=bool(instances_data.get("enabled", False)),
+                # This flag is a second key for the pod-only verification seam,
+                # not a shipped product switch. The pod runtime sets the exact
+                # marker; config alone must never make a product gateway honor a
+                # loopback record. A non-bool remains fail-closed as well.
+                allow_loopback_transport=(
+                    os.environ.get("KIROCREW_POD") == "1"
+                    and _safe_bool(instances_data.get("allow_loopback_transport"), False)
+                ),
                 warm_set_cap=_safe_int(
                     instances_data.get("warm_set_cap", _DEFAULT_WARM_SET_CAP), _DEFAULT_WARM_SET_CAP
                 ),

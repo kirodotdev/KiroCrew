@@ -111,6 +111,15 @@ const CONNECTED_MANUAL: InstanceView = {
   ...MANUAL_INSTANCE,
   status: { instance_id: 'm1', state: 'connected' },
 }
+const LOOPBACK_INSTANCE: InstanceView = {
+  ...MANUAL_INSTANCE,
+  id: 'loopback-1',
+  name: 'same-host',
+  connection_method: ' LOOPBACK ' as never,
+  ssh_host: '',
+  remote_port: 5477,
+  status: { instance_id: 'loopback-1', state: 'disconnected' },
+}
 const DONE_JOB: LaunchJob = {
   id: 'j-done',
   tag: 'kc-3f9a',
@@ -686,6 +695,15 @@ describe('RemoteCrewPanel — disabled feature gate', () => {
 })
 
 describe('RemoteCrewPanel — editing a crew', () => {
+  it('hides pod-only loopback crews from Settings', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(list([MANUAL_INSTANCE, LOOPBACK_INSTANCE]))
+    renderWithProviders(<RemoteCrewPanel />)
+
+    expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
+    expect(screen.queryByText('same-host')).not.toBeInTheDocument()
+    expect(screen.queryByText('Loopback (same host)')).not.toBeInTheDocument()
+  })
+
   it('saves an edited host and port to the crew that was already configured', async () => {
     // Correcting a crew used to mean deleting it and adding it back, which threw
     // away the record (and its connect history) along with the typo.

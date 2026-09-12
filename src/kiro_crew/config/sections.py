@@ -5005,16 +5005,12 @@ class InstancesConfig:
     allow_loopback_transport: bool = field(
         default=False,
         metadata=_meta(
-            "Allow Loopback Transport",
-            "Allow instances with connection_method 'loopback' — a gateway reached on "
-            "THIS host's own loopback rather than over ssh or SSM, with no forwarder "
-            "process and no credential leaving the machine. Off by default: it is only "
-            "useful when you run more than one gateway on this host (or are verifying "
-            "the instances feature against this one), and keeping it opt-in means a "
-            "hand-edited instances.json cannot make the gateway dial its own loopback "
-            "ports on an install that never asked for it. The destination must be a "
-            "numeric loopback address (127.0.0.0/8); hostnames and every off-host "
-            "address are refused.",
+            "Allow Loopback Verification Transport",
+            "Permit pod verification records with connection_method 'loopback'. "
+            "This key is ignored unless the process carries the exact KIROCREW_POD=1 "
+            "marker set by Kiro Crew pod tooling. Product gateways cannot enable the "
+            "transport from config. The destination stays fixed at 127.0.0.1, and the "
+            "listener-ownership proof still applies inside a pod.",
         ),
     )
     tunnel_base_port: int = field(

@@ -13063,6 +13063,7 @@
         "connecting": "연결 중…",
         "connection_did_not_complete_try_diagnose_for_det": "연결이 완료되지 않았습니다. 자세한 내용은 진단을 실행하세요.",
         "connection_method": "연결 방식",
+        "loopback_same_host": "루프백(동일 호스트)",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "기본 자격 증명 체인",
         "diagnose": "진단",

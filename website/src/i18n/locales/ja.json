@@ -13063,6 +13063,7 @@
         "connecting": "接続中…",
         "connection_did_not_complete_try_diagnose_for_det": "接続が完了しませんでした。詳細は診断を試してください。",
         "connection_method": "接続方法",
+        "loopback_same_host": "ループバック（同じホスト）",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "デフォルト認証情報チェーン",
         "diagnose": "診断",

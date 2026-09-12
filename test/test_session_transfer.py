@@ -351,6 +351,9 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
     mgr._tokens = {"peer": "stale"}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -1042,6 +1045,9 @@ async def test_send_bundle_refuses_when_peer_not_connected():
     from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
     mgr.status = lambda _id: None  # type: ignore[method-assign]
     ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 1})
 
@@ -1058,6 +1064,9 @@ async def test_send_bundle_refuses_when_no_credential_is_held():
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
     mgr._tokens = {}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -1078,6 +1087,10 @@ async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundl
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
+    # A port nothing listens on: the POST fails at connect.
     mgr._tokens = {"peer": "irrelevant-credential"}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=1
@@ -1157,6 +1170,9 @@ async def test_send_bundle_names_an_older_peer_when_the_importer_is_missing(stat
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
     mgr._tokens = {"peer": "tok"}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2078,6 +2094,9 @@ async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
     mgr._tokens = {"peer": "tok"}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2141,6 +2160,9 @@ async def test_send_bundle_downgrades_only_once():
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
     mgr._tokens = {"peer": "tok"}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2319,6 +2341,9 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
+    # __init__ is bypassed here, so mirror the one attribute the peer-target
+    # resolution reads: the real manager always carries a tunnel registry.
+    mgr._tunnels = {}
     mgr._tokens = {"peer": "tok"}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778

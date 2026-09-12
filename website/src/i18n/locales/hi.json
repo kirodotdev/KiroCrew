@@ -13241,6 +13241,7 @@
         "connecting": "कनेक्ट हो रहा है…",
         "connection_did_not_complete_try_diagnose_for_det": "कनेक्शन पूरा नहीं हुआ। विवरण के लिए निदान आज़माएँ।",
         "connection_method": "कनेक्शन विधि",
+        "loopback_same_host": "लूपबैक (एक ही होस्ट)",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "डिफ़ॉल्ट क्रेडेंशियल चेन",
         "diagnose": "निदान",

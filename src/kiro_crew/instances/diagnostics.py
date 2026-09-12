@@ -22,14 +22,13 @@ import logging
 from dataclasses import dataclass, field
 
 from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.instances.constants import LOOPBACK_HOST as _LOOPBACK
 from kiro_crew.instances.token_mint import _build_ssh_argv
 from kiro_crew.instances.validation import (
-    LoopbackValidationError,
     SshValidationError,
     SsmValidationError,
     validate_aws_profile,
     validate_aws_region,
-    validate_loopback_host,
     validate_ssh_host,
     validate_ssm_run_as,
     validate_ssm_target,
@@ -37,7 +36,6 @@ from kiro_crew.instances.validation import (
 
 logger = logging.getLogger(__name__)
 
-_LOOPBACK = "127.0.0.1"
 # Fallback ssh ConnectTimeout when a caller doesn't pass one (matches
 # token_mint._build_ssh_argv's own fallback default). Real callers pass the
 # configured instances.connect_timeout_secs, capped for diagnostics use — see
@@ -186,17 +184,12 @@ async def _probe_remote_dashboard(
     return _dashboard_is_listening(await _run_stdout(argv, connect_timeout_secs + 5.0))
 
 
-async def _probe_local_forward(local_port: int, host: str = _LOOPBACK) -> bool:
-    """Return True if something accepts a TCP connect on the local forward.
-
-    *host* is the forward's own loopback address for ssh/ssm; the loopback
-    transport passes its validated destination address, which may be another
-    address in ``127.0.0.0/8``.
-    """
+async def _probe_local_forward(local_port: int) -> bool:
+    """Return True if something accepts a TCP connect on the local forward."""
     if not local_port:
         return False
     try:
-        fut = asyncio.open_connection(host, int(local_port))
+        fut = asyncio.open_connection(_LOOPBACK, int(local_port))
         _reader, writer = await asyncio.wait_for(fut, timeout=_LOCAL_CONNECT_TIMEOUT_SECS)
     except (OSError, asyncio.TimeoutError):
         return False
@@ -400,11 +393,7 @@ async def diagnose_instance_ssm(
     return DiagnosisResult(OK, _SSM_REASONS[OK], probes)
 
 
-async def diagnose_instance_loopback(
-    loopback_host: str,
-    remote_port: int,
-    local_port: int,
-) -> DiagnosisResult:
+async def diagnose_instance_loopback(remote_port: int, local_port: int) -> DiagnosisResult:
     """Loopback-transport diagnosis ladder — the shortest of the three.
 
         1. Gateway answering on the destination? TCP connect → no ⇒ remote_down
@@ -412,20 +401,18 @@ async def diagnose_instance_loopback(
         else                                                        ⇒ ok
 
     There is no third rung. The ssh and ssm ladders separate "the remote is up"
-    from "our forward to it is up" because a forward can fail on its own; this
-    transport HAS no forward, so the destination probe and the forward probe are
-    the same TCP connect and a ``tunnel_down`` verdict could never be true.
+    from "our forward to it is up" because a forwarder CHILD can fail on its own
+    while the remote stays healthy. This transport's relay is in-process: it
+    cannot be alive-but-not-forwarding independently of this gateway, so a
+    ``tunnel_down`` verdict could never be true and the destination probe is the
+    whole question.
 
-    Validates the destination first; a non-loopback value short-circuits to
-    UNKNOWN rather than dialling it.
+    The destination address is the fixed ``constants.LOOPBACK_HOST``, which is
+    the address the probe dials for every transport, so there is nothing to
+    validate before dialling.
     """
-    try:
-        host = validate_loopback_host(loopback_host)
-    except LoopbackValidationError as e:
-        return DiagnosisResult(code=UNKNOWN, reason=f"invalid loopback settings: {e}", probes=[])
-
     probes: list[dict] = []
-    up = await _probe_local_forward(remote_port, host)
+    up = await _probe_local_forward(remote_port)
     probes.append({"name": "local_gateway", "ok": up})
     if not up:
         return DiagnosisResult(REMOTE_DOWN, _LOOPBACK_REASONS[REMOTE_DOWN], probes)

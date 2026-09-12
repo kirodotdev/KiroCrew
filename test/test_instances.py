@@ -1389,6 +1389,8 @@ class _FakeTunnel:
         ssm_target="",
         aws_profile="",
         aws_region="",
+        own_port=0,
+        own_bind_host="",
     ):
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
@@ -1409,6 +1411,16 @@ class _FakeTunnel:
         self.ssh_host = ssh_host
         self.connect_timeout_secs = connect_timeout_secs
         self.status = TunnelStatus(instance_id=iid, local_port=lp, remote_port=rp)
+        # Mirrors _SshTunnel: the verdict the peer send path reads. Tests that
+        # exercise a condemned tunnel set it False.
+        self.ownership_ok = True
+        self._transport = transport
+
+    def loopback_ownership_ok(self):
+        return self.ownership_ok
+
+    async def revalidate_loopback_owner(self):
+        return self.ownership_ok
 
     async def start(self):
         self.status.state = self._S.CONNECTED if self.start_result else self._S.ERROR
@@ -2069,11 +2081,12 @@ class _ConnectedMgr:
         return None
 
 
-def _enable(tmp_path: Path, monkeypatch, *, enabled=True, warm_set_cap=None):
+def _enable(tmp_path: Path, monkeypatch, *, enabled=True, warm_set_cap=None, **section_overrides):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     section: dict = {"enabled": enabled}
     if warm_set_cap is not None:
         section["warm_set_cap"] = warm_set_cap
+    section.update(section_overrides)
     (tmp_path / "config.json").write_text(json.dumps({"instances": section}))
     from kiro_crew.config import loader
 
@@ -2971,6 +2984,67 @@ class TestHandlers:
             handlers.api_instances_add(_FakeReq(state, body={"name": "", "ssh_host": ""}))
         )
         assert rejected.status == 400 and _body(rejected)["code"] == "instance_invalid"
+
+    def test_the_edit_path_refuses_an_opted_out_loopback_record(self, tmp_path, monkeypatch):
+        """A PATCH must be gated on the EFFECTIVE method, not just create.
+
+        Otherwise an edit persists a record the manager then refuses to connect,
+        turning a rejected edit into a broken instance.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        _enable(tmp_path, monkeypatch)  # pod identity present, loopback flag off
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        state = _State(reg)
+
+        # Switching an ssh record to loopback.
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "cd-1"}, body={"connection_method": "loopback"})
+            )
+        )
+        assert r.status == 400
+        assert _body(r)["code"] == "loopback_transport_unavailable"
+        # Nothing was persisted.
+        assert reg.get("cd-1").connection_method != "loopback"
+        # The remedy is a live config write, so it must not tell the operator to
+        # restart: _loopback_allowed() re-reads config on every connect.
+        assert "restart" not in _body(r)["error"]
+
+    def test_the_edit_path_gates_any_edit_to_a_loopback_record(self, tmp_path, monkeypatch):
+        """The effective method comes from the record when the edit omits it."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="LB", instance_id="lb-1", connection_method="loopback")
+        state = _State(reg)
+
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "lb-1"}, body={"remote_port": 7911})
+            )
+        )
+        assert r.status == 400 and _body(r)["code"] == "loopback_transport_unavailable"
+
+    def test_the_edit_path_allows_loopback_once_opted_in(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        _enable(tmp_path, monkeypatch, allow_loopback_transport=True)
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        state = _State(reg)
+
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "cd-1"}, body={"connection_method": "loopback"})
+            )
+        )
+        assert r.status == 200 and _body(r)["connection_method"] == "loopback"
 
     def test_update_paths(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers
@@ -3982,6 +4056,258 @@ class TestTokenMintGeneric:
         assert proc.wait_calls == 0
 
 
+class TestLoopbackDiagnosisLadder:
+    """`diagnose_instance_loopback` — the transport's own two-rung ladder.
+
+    Its rungs read differently from ssh/ssm because the pane's port and the
+    destination's port are DIFFERENT things here: the hub binds `local_port` for
+    the iframe and dials `remote_port` to reach the sibling gateway. So the
+    destination probe must target `remote_port`, and `local_port` is only the
+    "is this instance connected" flag.
+    """
+
+    def _probe(self, monkeypatch, answering, seen=None):
+        from kiro_crew.instances import diagnostics as diag
+
+        async def _loc(port):
+            if seen is not None:
+                seen.append(port)
+            return answering
+
+        monkeypatch.setattr(diag, "_probe_local_forward", _loc)
+
+    def test_it_probes_the_destination_port_not_the_pane_port(self, monkeypatch):
+        """The round that gave the pane a hub-owned port made these two ports
+        differ; dialling the pane's port would only prove the hub's own relay is
+        up, never that a gateway answers behind it."""
+        from kiro_crew.instances.diagnostics import OK, diagnose_instance_loopback
+
+        seen: list[tuple] = []
+        self._probe(monkeypatch, True, seen)
+        r = asyncio.run(diagnose_instance_loopback(7910, 53991))
+        assert r.code == OK
+        assert seen == [7910]
+
+    def test_nothing_listening_is_remote_down(self, monkeypatch):
+        from kiro_crew.instances.diagnostics import REMOTE_DOWN, diagnose_instance_loopback
+
+        self._probe(monkeypatch, False)
+        r = asyncio.run(diagnose_instance_loopback(7910, 53991))
+        assert r.code == REMOTE_DOWN
+        assert r.ok is False
+        assert r.probes == [{"name": "local_gateway", "ok": False}]
+        assert "Nothing is listening" in r.reason
+
+    def test_a_live_destination_with_no_pane_port_is_not_connected(self, monkeypatch):
+        """Answering destination, `local_port` still 0: the instance was never
+        connected, which must not read as the destination being down."""
+        from kiro_crew.instances.diagnostics import NOT_CONNECTED, diagnose_instance_loopback
+
+        self._probe(monkeypatch, True)
+        r = asyncio.run(diagnose_instance_loopback(7910, 0))
+        assert r.code == NOT_CONNECTED
+        assert "click Connect" in r.reason
+        assert r.probes == [{"name": "local_gateway", "ok": True}]
+
+    def test_the_destination_is_not_an_argument(self):
+        """The ladder dials the fixed loopback constant: there is no address to
+        pass, so none can be wrong and none is validated."""
+        import inspect
+
+        from kiro_crew.instances.diagnostics import diagnose_instance_loopback
+
+        params = inspect.signature(diagnose_instance_loopback).parameters
+        assert list(params) == ["remote_port", "local_port"]
+
+    def test_there_is_no_tunnel_down_verdict(self):
+        """The in-process relay cannot be alive-but-not-forwarding independently
+        of this gateway, so the reason map deliberately carries no such rung."""
+        from kiro_crew.instances.diagnostics import (
+            _LOOPBACK_REASONS,
+            NOT_CONNECTED,
+            OK,
+            REMOTE_DOWN,
+            TUNNEL_DOWN,
+        )
+
+        assert set(_LOOPBACK_REASONS) == {OK, REMOTE_DOWN, NOT_CONNECTED}
+        assert TUNNEL_DOWN not in _LOOPBACK_REASONS
+
+
+class TestDiagnosticProbeFailurePaths:
+    """The refusal and error arms every ladder rung depends on."""
+
+    def test_a_zero_port_is_refused_without_a_connect(self, monkeypatch):
+        """`local_port == 0` means "no forward exists"; dialling port 0 would be
+        a nonsense syscall, so the probe answers False first."""
+        from kiro_crew.instances import diagnostics as diag
+
+        def _never(*a, **k):
+            pytest.fail("port 0 was dialled")
+
+        monkeypatch.setattr(asyncio, "open_connection", _never)
+        assert asyncio.run(diag._probe_local_forward(0)) is False
+
+    def test_a_refused_connect_is_not_an_error(self, monkeypatch):
+        from kiro_crew.instances import diagnostics as diag
+
+        async def _refused(host, port):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(asyncio, "open_connection", _refused)
+        assert asyncio.run(diag._probe_local_forward(7910)) is False
+
+    def test_a_spawn_failure_reads_as_a_failed_probe(self, monkeypatch):
+        """`asyncio.create_subprocess_exec` raising OSError (no ssh/curl on
+        PATH) must degrade to a verdict, never propagate out of a diagnosis."""
+        from kiro_crew.instances import diagnostics as diag
+
+        async def _boom(*a, **k):
+            raise OSError("No such file or directory: ssh")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _boom)
+        assert asyncio.run(diag._run_ok(["ssh"], 1.0)) is False
+        assert asyncio.run(diag._run_stdout(["curl"], 1.0)) is None
+
+    def test_a_hung_child_is_killed_and_reported_failed(self, monkeypatch):
+        """A child that outlives the timeout is killed rather than leaked, and
+        the rung reports failure instead of waiting forever."""
+        from kiro_crew.instances import diagnostics as diag
+
+        killed: list[str] = []
+
+        class _Hung:
+            returncode = None
+
+            async def wait(self):
+                await asyncio.sleep(3600)
+
+            async def communicate(self):
+                await asyncio.sleep(3600)
+
+            def kill(self):
+                killed.append("killed")
+
+        async def _exec(*a, **k):
+            return _Hung()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+        assert asyncio.run(diag._run_ok(["ssh"], 0.01)) is False
+        assert asyncio.run(diag._run_stdout(["curl"], 0.01)) is None
+        assert killed == ["killed", "killed"]
+
+    def test_a_dead_child_that_cannot_be_killed_is_still_a_failure(self, monkeypatch):
+        """The kill races the child's own exit, so ProcessLookupError is
+        suppressed rather than turned into a crash."""
+        from kiro_crew.instances import diagnostics as diag
+
+        class _Gone:
+            returncode = None
+
+            async def wait(self):
+                await asyncio.sleep(3600)
+
+            def kill(self):
+                raise ProcessLookupError
+
+        async def _exec(*a, **k):
+            return _Gone()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+        assert asyncio.run(diag._run_ok(["ssh"], 0.01)) is False
+
+    def test_a_failed_invocation_is_not_a_listening_dashboard(self):
+        """`None` is the ssh rung's "the invocation itself failed", which must
+        not read as a live dashboard."""
+        from kiro_crew.instances.diagnostics import _dashboard_is_listening
+
+        assert _dashboard_is_listening(None) is False
+        assert _dashboard_is_listening("") is False
+        assert _dashboard_is_listening("000") is False
+        assert _dashboard_is_listening("'000'") is False
+        assert _dashboard_is_listening("200") is True
+        assert _dashboard_is_listening("'403'\n") is True
+
+
+class TestSsmDiagnosticProbes:
+    """The SSM rungs' unreachability arms — every failure shape is one verdict."""
+
+    def test_an_unmanaged_target_is_unreachable(self, monkeypatch):
+        """Agent offline, wrong region/profile and an IAM denial all arrive here
+        as the same "the SSM path cannot reach it" answer."""
+        from kiro_crew.instances import diagnostics as diag
+
+        def _raise(target, profile, region):
+            raise RuntimeError("AccessDenied")
+
+        monkeypatch.setattr(diag.cloud_ssm, "instance_is_managed", _raise)
+        assert asyncio.run(diag._probe_ssm_managed("i-0123456789abcdef0")) is False
+
+    def test_a_managed_target_is_reachable(self, monkeypatch):
+        from kiro_crew.instances import diagnostics as diag
+
+        monkeypatch.setattr(
+            diag.cloud_ssm, "instance_is_managed", lambda target, profile, region: True
+        )
+        assert asyncio.run(diag._probe_ssm_managed("i-0123456789abcdef0")) is True
+
+    def test_a_send_command_failure_reads_as_no_answer(self, monkeypatch):
+        from kiro_crew.instances import diagnostics as diag
+
+        def _raise(*a, **k):
+            raise RuntimeError("send-command dispatch failed")
+
+        monkeypatch.setattr(diag.cloud_ssm, "run_command", _raise)
+        assert asyncio.run(diag._probe_remote_dashboard_ssm("i-0", 7777)) is False
+
+    def test_the_remote_probe_reads_the_curl_status_from_stdout(self, monkeypatch):
+        from kiro_crew.instances import diagnostics as diag
+
+        class _Result:
+            def __init__(self, out):
+                self.stdout = out
+
+        monkeypatch.setattr(diag.cloud_ssm, "run_command", lambda *a, **k: _Result("200"))
+        assert asyncio.run(diag._probe_remote_dashboard_ssm("i-0", 7777)) is True
+        monkeypatch.setattr(diag.cloud_ssm, "run_command", lambda *a, **k: _Result("000"))
+        assert asyncio.run(diag._probe_remote_dashboard_ssm("i-0", 7777)) is False
+        monkeypatch.setattr(diag.cloud_ssm, "run_command", lambda *a, **k: _Result(None))
+        assert asyncio.run(diag._probe_remote_dashboard_ssm("i-0", 7777)) is False
+
+    def test_a_malformed_port_raises_rather_than_reading_as_no_answer(self, monkeypatch):
+        """The remote command is built OUTSIDE the try, so a bad port is a
+        programming error rather than a silent "the remote is down"."""
+        from kiro_crew.instances import diagnostics as diag
+
+        def _never(*a, **k):
+            pytest.fail("send-command ran with a malformed port")
+
+        monkeypatch.setattr(diag.cloud_ssm, "run_command", _never)
+        with pytest.raises((TypeError, ValueError)):
+            asyncio.run(diag._probe_remote_dashboard_ssm("i-0", "not-a-port"))
+
+    def test_a_live_node_with_a_dead_forward_is_tunnel_down(self, monkeypatch):
+        """The SSM ladder's third rung: the node answers and its dashboard
+        answers, but our local forward does not."""
+        from kiro_crew.instances import diagnostics as diag
+        from kiro_crew.instances.diagnostics import TUNNEL_DOWN, diagnose_instance_ssm
+
+        async def _managed(*a, **k):
+            return True
+
+        async def _dash(*a, **k):
+            return True
+
+        async def _no_forward(port, host=diag._LOOPBACK):
+            return False
+
+        monkeypatch.setattr(diag, "_probe_ssm_managed", _managed)
+        monkeypatch.setattr(diag, "_probe_remote_dashboard_ssm", _dash)
+        monkeypatch.setattr(diag, "_probe_local_forward", _no_forward)
+        r = asyncio.run(diagnose_instance_ssm("i-0123456789abcdef0", 7777, 53991))
+        assert r.code == TUNNEL_DOWN and r.ok is False
+
+
 class TestDiagnostics:
     def _set_probes(self, monkeypatch, ssh, remote, local):
         from kiro_crew.instances import diagnostics as diag
@@ -4151,6 +4477,8 @@ class _ResilTunnel:
         ssm_target="",
         aws_profile="",
         aws_region="",
+        own_port=0,
+        own_bind_host="",
     ):
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
@@ -4541,6 +4869,27 @@ class TestSelfHealRefreshRestart:
         # unknown
         r = asyncio.run(mgr.restart_remote("ghost"))
         assert not r["ok"]
+
+    def test_restart_remote_resolves_transport_off_the_event_loop(self, tmp_path, monkeypatch):
+        """_resolve_transport reads config synchronously (the loopback gate), so
+        the async call sites hand it to a worker thread instead of running it on
+        the loop. A patched resolver records the thread it runs on and raises the
+        transport error, which the call site turns into a clean reply."""
+        from kiro_crew.instances.validation import LoopbackValidationError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        loop_thread = threading.current_thread()
+        seen = {}
+
+        def resolve_off_loop(inst):
+            seen["thread"] = threading.current_thread()
+            raise LoopbackValidationError("gate closed")
+
+        monkeypatch.setattr(mgr, "_resolve_transport", resolve_off_loop)
+        r = asyncio.run(mgr.restart_remote("cd-1"))
+        assert not r["ok"] and "gate closed" in r["message"]
+        assert seen["thread"] is not loop_thread
 
     def test_diagnose_caps_connect_timeout_at_the_diagnostics_ceiling(self, tmp_path, monkeypatch):
         """A user who raised instances.connect_timeout_secs for a
@@ -7510,53 +7859,1166 @@ class TestProxyHandlerPolicy:
         assert _body(await api_instances_proxy(req))["code"] == "instances_manager_unavailable"
 
 
-class TestLoopbackTransport:
-    """The loopback transport: destination validation and the config gate."""
+class TestLoopbackBrowserPortIsHubOwned:
+    """The port the IFRAME loads from must be the hub's, not the destination's.
 
-    # Every accepted spelling is a numeric IPv4 loopback literal; empty resolves
-    # to the default. The refusal list is the point of the test -- it pins the
-    # spellings a regex over dotted quads would have had to chase one at a time.
-    ACCEPTED = ("127.0.0.1", "127.0.0.2", "127.1.2.3", "", "  ", " 127.0.0.1 ")
-    REFUSED = (
-        "localhost",
-        "LOCALHOST",
-        "kirocrew.localhost",
-        "::1",
-        "0:0:0:0:0:0:0:1",
-        "::ffff:127.0.0.1",
-        "0.0.0.0",
-        "10.0.0.5",
-        "172.16.0.1",
-        "192.168.1.1",
-        "169.254.169.254",
-        "8.8.8.8",
-        "127.1",
-        "0177.0.0.1",
-        "127.0.0.1:7904",
-        "127.0.0.1%eth0",
-        "-oProxyCommand=x",
-        "127.0.0.256",
-    )
+    Rounds 3-4 proved ownership for the MANAGER's own sends. The browser is a
+    third sender nothing there covers: it carries the query token and the
+    host-scoped cookie itself. Handing it the destination gateway's port makes
+    the pane's origin a socket the hub does not hold, so once the sibling exits
+    and any local process binds that port, the browser authenticates to the
+    replacement with no ownership guard in the path at all.
+    """
 
-    def test_validator_accepts_only_numeric_loopback(self):
-        from kiro_crew.instances.validation import (
-            DEFAULT_LOOPBACK_HOST,
-            LoopbackValidationError,
-            validate_loopback_host,
+    OWNER_PID = 4242
+    FOREIGN_PID = 9999
+
+    def test_the_pane_port_is_not_the_destination_port(self, tmp_path, monkeypatch):
+        """`_acquire_local_port` must allocate rather than mirror the destination.
+
+        Mirroring is what put the destination's port in the iframe's origin. The
+        loopback transport allocates one like the forwarding transports do: the
+        pane's origin has to be a port the hub owns and can stop serving.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        mgr = stm.SshTunnelManager(InstancesRegistry(tmp_path), allow_loopback=True)
+        monkeypatch.setattr(stm, "_is_port_free", lambda port: True)
+        got = asyncio.run(mgr._acquire_local_port())
+        assert got != 7910
+
+    def test_the_pane_port_skips_stopped_loopback_destinations(self, tmp_path, monkeypatch):
+        """A pane must not occupy the port a configured sibling will bind."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.registry import (
+            CONNECTION_METHOD_LOOPBACK,
+            InstancesRegistry,
         )
 
-        for value in self.ACCEPTED:
-            got = validate_loopback_host(value)
-            assert got == (DEFAULT_LOOPBACK_HOST if not value.strip() else value.strip())
-        for value in self.REFUSED:
-            with pytest.raises(LoopbackValidationError):
-                validate_loopback_host(value)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        registry = InstancesRegistry(tmp_path / "instances.json")
+        mgr = stm.SshTunnelManager(registry, allow_loopback=True)
+        sibling_port = mgr._allocator.base_port
+        registry.add(
+            name="stopped sibling",
+            instance_id="stopped-sibling",
+            connection_method=CONNECTION_METHOD_LOOPBACK,
+            remote_port=sibling_port,
+        )
+        monkeypatch.setattr(stm, "_is_port_free", lambda port: True)
 
-    def test_validator_returns_the_canonical_form(self):
-        """A trailing newline cannot reach a caller: the return is re-serialized."""
-        from kiro_crew.instances.validation import validate_loopback_host
+        allocated = asyncio.run(mgr._acquire_local_port())
 
-        assert validate_loopback_host("127.0.0.1\n") == "127.0.0.1"
+        assert allocated != sibling_port
+
+    def _forwarder_tunnel(self, stm, monkeypatch, dest_port):
+        t = stm._SshTunnel(
+            "lb-1",
+            "",
+            0,  # local port assigned by the kernel below
+            dest_port,
+            transport=stm.CONNECTION_METHOD_LOOPBACK,
+            probe_failure_threshold=1,
+        )
+        t._loopback_owner_pid = self.OWNER_PID
+        # The dial re-proves ownership live, so every forwarder test has to say
+        # what the proof answers. Default: still ours, on both the pre-dial proof
+        # and the established socket's own peer attribution.
+        if monkeypatch is not None:
+            monkeypatch.setattr(stm, "_proven_loopback_owner", lambda port: self.OWNER_PID)
+            monkeypatch.setattr(stm, "_established_peer_pids", lambda near, far: [self.OWNER_PID])
+        return t
+
+    def test_self_heal_keeps_the_pane_port_bound_while_reproving(self, monkeypatch):
+        """Another local process cannot take the browser origin during recovery."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            async def _dest(reader, writer):
+                await reader.read()
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            tunnel = self._forwarder_tunnel(stm, monkeypatch, dest.sockets[0].getsockname()[1])
+            attacker = None
+            recovery = None
+            release_proof = threading.Event()
+            proof_started = threading.Event()
+
+            def _held_proof(_port):
+                proof_started.set()
+                release_proof.wait(timeout=5)
+                return self.OWNER_PID
+
+            try:
+                assert await tunnel._start_loopback_forwarder() is True
+                pane_port = tunnel.status.local_port
+                listener = tunnel._forwarder
+                tunnel.status.state = stm.TunnelState.ERROR
+                tunnel._ownership_condemned = True
+                monkeypatch.setattr(stm, "_proven_loopback_owner", _held_proof)
+
+                recovery = asyncio.create_task(tunnel.rearm_loopback())
+                for _ in range(200):
+                    if proof_started.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert proof_started.is_set(), "recovery never reached ownership proof"
+
+                try:
+                    attacker = await asyncio.start_server(
+                        lambda _r, _w: None, "127.0.0.1", pane_port
+                    )
+                except OSError:
+                    attacker = None
+                assert attacker is None, "pane port became bindable during recovery"
+
+                release_proof.set()
+                assert await asyncio.wait_for(recovery, timeout=2) is True
+                assert tunnel._forwarder is listener
+                assert tunnel.status.local_port == pane_port
+                assert tunnel.status.state == stm.TunnelState.CONNECTED
+            finally:
+                release_proof.set()
+                if attacker is not None:
+                    attacker.close()
+                if recovery is not None and not recovery.done():
+                    recovery.cancel()
+                    await asyncio.gather(recovery, return_exceptions=True)
+                await tunnel._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_the_forwarder_serves_a_hub_owned_socket_and_relays(self, monkeypatch):
+        """End to end over real sockets: the hub binds, the browser's bytes reach
+        the destination, and the reply comes back."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            seen: list[bytes] = []
+
+            async def _dest(reader, writer):
+                seen.append(await reader.read(5))
+                writer.write(b"PONG!")
+                await writer.drain()
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            try:
+                assert await t._start_loopback_forwarder() is True
+                # The hub owns the pane's port, and it is NOT the destination's.
+                assert t.status.local_port != dest_port
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                await writer.drain()
+                assert await reader.read(5) == b"PONG!"
+                writer.close()
+                assert seen == [b"PING!"]
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_the_forwarder_refuses_once_the_owner_is_condemned(self, monkeypatch):
+        """Requirement (b): a poisoned proof blocks the BROWSER's connection, not
+        just the manager's sends. The forwarder stays bound (so the pane gets a
+        closed connection rather than a port another process may grab) and
+        forwards nothing."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            reached: list[bytes] = []
+
+            async def _dest(reader, writer):
+                reached.append(await reader.read(5))
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            try:
+                assert await t._start_loopback_forwarder() is True
+                t._condemn_ownership("listener identity changed")
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                # Refused: EOF or a reset, depending on whether the discarded
+                # request bytes were already in the hub's receive buffer. Either
+                # is a refusal; what matters is that NOTHING was relayed.
+                got = b""
+                with contextlib.suppress(ConnectionResetError):
+                    got = await reader.read(5)
+                assert got == b""
+                writer.close()
+                assert reached == []
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_a_pid_change_between_probe_and_dial_refuses_the_forward(self, monkeypatch):
+        """The between-probe window: the cached verdict says ours, but the
+        listener was replaced since the last probe.
+
+        A pane forward is per-CONNECTION, not per-request — one dial per iframe
+        connection — so it can afford a fresh proof, and the cached verdict is not
+        good enough for it: a process that rebinds the freed port inside one probe
+        interval would receive the pane's query token and host-scoped cookie.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            reached: list[bytes] = []
+
+            async def _dest(reader, writer):
+                reached.append(await reader.read(5))
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            try:
+                assert await t._start_loopback_forwarder() is True
+                # Cache still says ours (no probe has run since establishment),
+                # but the live proof now attributes the port to another pid.
+                assert t.loopback_ownership_ok() is True
+                monkeypatch.setattr(stm, "_proven_loopback_owner", lambda port: self.FOREIGN_PID)
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                got = b""
+                with contextlib.suppress(ConnectionResetError):
+                    got = await reader.read(5)
+                assert got == b""
+                writer.close()
+                assert reached == []  # nothing was relayed
+                # And the tunnel is condemned, so later connections are refused
+                # without even re-proving.
+                assert t.loopback_ownership_ok() is False
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_an_unattributable_own_port_still_establishes(self, monkeypatch):
+        """The mint's carve-out, applied at establishment.
+
+        When the destination IS this process's own port and our bind answers on
+        loopback, attribution has nothing to add — so a lookup that cannot answer
+        (an unprivileged caller that cannot see its own socket) must not condemn
+        the tunnel. The identity pinned is this process's pid.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = stm._SshTunnel(
+                "lb-1",
+                "",
+                0,
+                7904,
+                transport=stm.CONNECTION_METHOD_LOOPBACK,
+                own_port=7904,
+                own_bind_host="127.0.0.1",
+            )
+            monkeypatch.setattr(stm, "_proven_loopback_owner", lambda port: None)
+            assert await t._loopback_owner_unchanged() is True
+            assert t._loopback_owner_pid == os.getpid()
+            assert t.loopback_ownership_ok() is True
+
+        asyncio.run(main())
+
+    def test_the_carve_out_needs_a_bind_that_covers_loopback(self, monkeypatch):
+        """Port equality alone is not enough — the same pair the mint requires.
+
+        A gateway bound to one non-loopback interface leaves 127.0.0.1:<port>
+        free, so its own port number says nothing about who answers there.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = stm._SshTunnel(
+                "lb-1",
+                "",
+                0,
+                7904,
+                transport=stm.CONNECTION_METHOD_LOOPBACK,
+                own_port=7904,
+                own_bind_host="192.168.1.5",
+            )
+            monkeypatch.setattr(stm, "_proven_loopback_owner", lambda port: None)
+            assert await t._loopback_owner_unchanged() is False
+            assert t.loopback_ownership_ok() is False
+
+        asyncio.run(main())
+
+    def test_the_carve_out_does_not_cover_another_gateways_port(self, monkeypatch):
+        """A sibling gateway's port has a second party, so it needs attribution."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = stm._SshTunnel(
+                "lb-1",
+                "",
+                0,
+                7910,
+                transport=stm.CONNECTION_METHOD_LOOPBACK,
+                own_port=7904,
+                own_bind_host="127.0.0.1",
+            )
+            monkeypatch.setattr(stm, "_proven_loopback_owner", lambda port: None)
+            assert await t._loopback_owner_unchanged() is False
+
+        asyncio.run(main())
+
+    def test_a_wildcard_bound_hub_runs_the_ownership_proof(self, monkeypatch):
+        """A wildcard bind cannot prove who answers at the exact loopback pair."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = stm._SshTunnel(
+                "lb-1",
+                "",
+                0,
+                7904,
+                transport=stm.CONNECTION_METHOD_LOOPBACK,
+                own_port=7904,
+                own_bind_host="0.0.0.0",
+            )
+            asked: list[int] = []
+            monkeypatch.setattr(
+                stm, "_proven_loopback_owner", lambda port: asked.append(port) or None
+            )
+            assert t._destination_is_self() is False
+            assert await t._loopback_owner_unchanged() is False
+            assert asked == [7904]
+            assert t.loopback_ownership_ok() is False
+
+        asyncio.run(main())
+
+    def test_a_wildcard_bound_hub_does_not_own_an_unattributable_peer(self, monkeypatch):
+        """The pane relay must not turn an empty peer proof into "ours"."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        class _Socket:
+            def getsockname(self):
+                return ("127.0.0.1", 49100)
+
+            def getpeername(self):
+                return ("127.0.0.1", 7904)
+
+        class _Writer:
+            def get_extra_info(self, name):
+                assert name == "socket"
+                return _Socket()
+
+        t = stm._SshTunnel(
+            "lb-1",
+            "",
+            0,
+            7904,
+            transport=stm.CONNECTION_METHOD_LOOPBACK,
+            own_port=7904,
+            own_bind_host="0.0.0.0",
+        )
+        t._loopback_owner_pid = os.getpid()
+        monkeypatch.setattr(stm, "_established_peer_pids", lambda near, far: [])
+
+        assert t._destination_is_self() is False
+        assert asyncio.run(t._pane_peer_verdict(_Writer())) == "unattributable"
+
+    def test_an_owner_swap_between_proof_and_dial_is_refused(self, monkeypatch):
+        """F1, the terminal TOCTOU: proof-then-dial is two steps, and the owner can
+        exit in between — a local attacker retry-looping the bind wins eventually.
+
+        The pre-dial proof answers "still ours" and the dial then lands on the
+        REPLACEMENT. Only attributing the peer of the ESTABLISHED socket catches
+        that, so this test lets the proof pass and swaps the attributed peer.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            reached: list[bytes] = []
+
+            async def _dest(reader, writer):
+                reached.append(await reader.read(5))
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            # The pre-dial proof is happy; the socket's real peer is not ours.
+            monkeypatch.setattr(stm, "_established_peer_pids", lambda near, far: [self.FOREIGN_PID])
+            try:
+                assert await t._start_loopback_forwarder() is True
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                got = b""
+                with contextlib.suppress(ConnectionResetError):
+                    got = await reader.read(5)
+                assert got == b""
+                writer.close()
+                assert reached == []  # not one byte relayed
+                assert t.loopback_ownership_ok() is False  # condemned
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_an_unattributable_established_peer_is_refused(self, monkeypatch):
+        """An unattributable peer refuses THIS connection and leaves the tunnel
+        alone: an empty answer is also what an already-closed connection looks
+        like, so it is absence of evidence, not evidence of a replacement."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            reached: list[bytes] = []
+
+            async def _dest(reader, writer):
+                reached.append(await reader.read(5))
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            monkeypatch.setattr(stm, "_established_peer_pids", lambda near, far: [])
+            try:
+                assert await t._start_loopback_forwarder() is True
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                with contextlib.suppress(ConnectionResetError):
+                    assert await reader.read(5) == b""
+                writer.close()
+                assert reached == []
+                # Refused, but not condemned — connection churn must not kill a
+                # healthy tunnel.
+                assert t.loopback_ownership_ok() is True
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_a_wedged_attribution_refuses_and_does_not_hold_teardown(self, monkeypatch):
+        """The attribution is BOUNDED, and teardown never waits on its thread.
+
+        The lookup runs in a worker thread no cancel can interrupt, so an
+        unbounded wait would let one wedged `lsof` hold a browser connection —
+        and the teardown behind it — open indefinitely. The bound expires, the
+        connection is refused rather than relayed unverified, and teardown
+        returns while the worker is still parked.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            reached: list[bytes] = []
+
+            async def _dest(reader, writer):
+                reached.append(await reader.read(5))
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            wedged = threading.Event()
+            entered = threading.Event()
+            monkeypatch.setattr(stm, "_OWNERSHIP_LOOKUP_TIMEOUT_SECS", 0.1)
+
+            def _wedge(near, far):
+                entered.set()
+                wedged.wait(timeout=10)  # released in the finally, never in time
+                return [self.OWNER_PID]
+
+            monkeypatch.setattr(stm, "_established_peer_pids", _wedge)
+            try:
+                assert await t._start_loopback_forwarder() is True
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                with contextlib.suppress(ConnectionResetError):
+                    assert await reader.read(5) == b""
+                writer.close()
+                assert entered.is_set()  # the lookup did start
+                assert reached == []  # and its late answer buys nothing
+                started = time.monotonic()
+                await t._stop_loopback_forwarder()
+                # Bounded by _FORWARDER_DRAIN_TIMEOUT_SECS, which is shorter than
+                # the lookup bound, and nowhere near the worker's 10s park.
+                assert time.monotonic() - started < 5
+            finally:
+                wedged.set()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_the_carve_out_covers_an_unattributable_own_port_relay(self, monkeypatch):
+        """The establishment carve-out, applied to the relay's gate.
+
+        When the destination IS this process's own port on a bind that answers at
+        127.0.0.1, the far end of the connection is this process, so there is no
+        second party for attribution to speak about — and a caller that cannot see
+        its own socket must not lose the pane. An answer naming another pid is
+        still refused there, which the next assertion pins.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            seen: list[bytes] = []
+
+            async def _dest(reader, writer):
+                seen.append(await reader.read(5))
+                writer.write(b"PONG!")
+                await writer.drain()
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = stm._SshTunnel(
+                "lb-1",
+                "",
+                0,
+                dest_port,
+                transport=stm.CONNECTION_METHOD_LOOPBACK,
+                own_port=dest_port,
+                own_bind_host="127.0.0.1",
+                probe_failure_threshold=1,
+            )
+            t._loopback_owner_pid = os.getpid()
+            monkeypatch.setattr(stm, "_proven_loopback_owner", lambda port: None)
+            monkeypatch.setattr(stm, "_established_peer_pids", lambda near, far: [])
+            try:
+                assert await t._start_loopback_forwarder() is True
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                await writer.drain()
+                assert await reader.read(5) == b"PONG!"
+                writer.close()
+                assert seen == [b"PING!"]
+                # An ANSWER naming another pid is still refused on our own port.
+                monkeypatch.setattr(
+                    stm, "_established_peer_pids", lambda near, far: [self.FOREIGN_PID]
+                )
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                with contextlib.suppress(ConnectionResetError):
+                    assert await reader.read(5) == b""
+                writer.close()
+                assert seen == [b"PING!"]  # no second exchange
+                assert t.loopback_ownership_ok() is False
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_a_connection_in_flight_during_stop_is_cancelled(self, monkeypatch):
+        """F2: the relay task must be in `_forward_tasks` BEFORE its first await,
+        or `_stop_loopback_forwarder`'s snapshot misses a connection still parked
+        in verification and it relays after the tunnel is gone."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            reached: list[bytes] = []
+
+            async def _dest(reader, writer):
+                reached.append(await reader.read(5))
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            parked = threading.Event()
+            registered = threading.Event()
+
+            def _park(port):
+                # Stand in for the proof, which runs via asyncio.to_thread: signal
+                # that the relay task exists, then park exactly where a slow port
+                # lookup would.
+                registered.set()
+                parked.wait(timeout=5)
+                return self.OWNER_PID
+
+            monkeypatch.setattr(stm, "_proven_loopback_owner", _park)
+            try:
+                assert await t._start_loopback_forwarder() is True
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                for _ in range(200):
+                    if registered.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert registered.is_set()
+                # The parked connection is visible to the teardown snapshot.
+                assert t._forward_tasks
+                # Release the worker so its answer arrives, then tear down.
+                # `_stop_loopback_forwarder` sets `_stopping` before it can yield,
+                # so the relay finds the door shut on the far side of the await
+                # even though its verification succeeded.
+                parked.set()
+                await t._stop_loopback_forwarder()
+                await asyncio.sleep(0.05)
+                assert reached == []  # nothing relayed after stop
+            finally:
+                parked.set()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_teardown_cancels_an_accepted_relay_before_waiting_for_server_close(self, monkeypatch):
+        """A long-lived pane connection cannot make forwarder teardown hang.
+
+        Python 3.12 ``Server.wait_closed()`` waits for accepted connections, so
+        teardown must cancel the relay before awaiting the server close.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            relay_active = asyncio.Event()
+            release_destination = asyncio.Event()
+
+            async def _dest(reader, writer):
+                assert await reader.readexactly(1) == b"X"
+                relay_active.set()
+                try:
+                    await release_destination.wait()
+                finally:
+                    writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            t = self._forwarder_tunnel(stm, monkeypatch, dest.sockets[0].getsockname()[1])
+            client_writer: asyncio.StreamWriter | None = None
+            relay_task: asyncio.Task | None = None
+            try:
+                assert await t._start_loopback_forwarder() is True
+                _client_reader, client_writer = await asyncio.open_connection(
+                    "127.0.0.1", t.status.local_port
+                )
+                client_writer.write(b"X")
+                await client_writer.drain()
+                await asyncio.wait_for(relay_active.wait(), timeout=1)
+                assert t._forward_tasks
+                relay_task = t._forward_tasks[0]
+                assert not relay_task.done()
+
+                await asyncio.wait_for(t._stop_loopback_forwarder(), timeout=0.5)
+
+                assert relay_task.done()
+                assert relay_task.cancelled()
+            finally:
+                release_destination.set()
+                if client_writer is not None:
+                    client_writer.close()
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_teardown_shuts_the_door_itself(self, monkeypatch):
+        """`_stop_loopback_forwarder` sets `_stopping` rather than relying on its
+        caller, so the bounded drain's guarantee holds however it is reached: a
+        relay that outlives the wait cannot go on to carry bytes."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            dest = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+            t = self._forwarder_tunnel(stm, monkeypatch, dest.sockets[0].getsockname()[1])
+            try:
+                assert await t._start_loopback_forwarder() is True
+                assert t._stopping is False
+                await t._stop_loopback_forwarder()
+                assert t._stopping is True
+            finally:
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_a_stopping_tunnel_refuses_a_new_connection(self, monkeypatch):
+        """`_stopping` is checked at entry, so a connection accepted during the
+        teardown window never reaches the dial."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            reached: list[bytes] = []
+
+            async def _dest(reader, writer):
+                reached.append(await reader.read(5))
+                writer.close()
+
+            dest = await asyncio.start_server(_dest, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            try:
+                assert await t._start_loopback_forwarder() is True
+                t._stopping = True
+                reader, writer = await asyncio.open_connection("127.0.0.1", t.status.local_port)
+                writer.write(b"PING!")
+                with contextlib.suppress(Exception):
+                    await writer.drain()
+                with contextlib.suppress(ConnectionResetError):
+                    assert await reader.read(5) == b""
+                writer.close()
+                assert reached == []
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    def test_stopping_the_tunnel_releases_the_pane_port(self, monkeypatch):
+        """The hub-owned socket must not outlive the tunnel: a bound-but-orphaned
+        port is exactly the squattable socket this fix exists to remove."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            dest = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+            assert await t._start_loopback_forwarder() is True
+            pane_port = t.status.local_port
+            await t._stop_loopback_forwarder()
+            dest.close()
+            with pytest.raises(OSError):
+                await asyncio.open_connection("127.0.0.1", pane_port)
+
+        asyncio.run(main())
+
+    def test_a_start_that_fails_readiness_releases_the_pane_port(self, monkeypatch):
+        """A failed readiness wait tears down the forwarder, not just the (absent)
+        child: otherwise every failed start leaks a bound port and its descriptors."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            dest = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+            dest_port = dest.sockets[0].getsockname()[1]
+            t = self._forwarder_tunnel(stm, monkeypatch, dest_port)
+
+            async def _never_ready():
+                return False
+
+            monkeypatch.setattr(t, "_wait_until_ready", _never_ready)
+            try:
+                assert await t.start() is False
+                pane_port = t.status.local_port
+                assert pane_port != 0
+                assert t._forwarder is None
+                with pytest.raises(OSError):
+                    await asyncio.open_connection("127.0.0.1", pane_port)
+            finally:
+                await t._stop_loopback_forwarder()
+                dest.close()
+
+        asyncio.run(main())
+
+    """The loopback transport's credential-bearing sends re-prove the listener.
+
+    A forwarding transport's credential travels into an ``ssh`` child whose exit
+    tears the socket down with it. The loopback transport has no child: the
+    destination is a port on this host, so if the gateway exits and any local
+    process binds the freed port, a TCP-only probe keeps the tunnel CONNECTED and
+    every later send hands the reusable ~20h bearer to the replacement.
+    """
+
+    OWNER_PID = 4242
+    FOREIGN_PID = 9999
+    PORT = 7910
+
+    def _tcp_accepts(self, stm, monkeypatch):
+        """Make the TCP leg of the probe succeed, so only ownership decides."""
+
+        class _Writer:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        async def _open(host, port):
+            return object(), _Writer()
+
+        monkeypatch.setattr(stm.asyncio, "open_connection", _open)
+
+    def _tunnel(self, stm):
+        t = stm._SshTunnel(
+            "lb-1",
+            "",
+            self.PORT,
+            self.PORT,
+            transport=stm.CONNECTION_METHOD_LOOPBACK,
+            probe_failure_threshold=1,
+        )
+        t.status.state = stm.TunnelState.CONNECTED
+        t.status.local_port = self.PORT
+        return t
+
+    def _owner(self, stm, monkeypatch, pid):
+        """Stub the address-scoped proof to answer with *pid* (None = unproven)."""
+        monkeypatch.setattr(stm, "_proven_loopback_owner", lambda port: pid, raising=False)
+
+    def test_a_replacement_listener_condemns_the_tunnel(self, monkeypatch):
+        """Owner gone, a foreign local process on the same port: TCP still
+        accepts, so only the ownership re-proof can catch it."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = self._tunnel(stm)
+            t._loopback_owner_pid = self.OWNER_PID
+
+            self._tcp_accepts(stm, monkeypatch)
+            self._owner(stm, monkeypatch, None)  # proof fails
+            assert await t._port_reachable() is False
+            assert t.loopback_ownership_ok() is False
+
+        asyncio.run(main())
+
+    def test_an_identity_change_condemns_the_tunnel(self, monkeypatch):
+        """A DIFFERENT pid now proven on the port is a new listener, not ours —
+        the verdict is failure, never a silent rebind onto the new identity."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = self._tunnel(stm)
+            t._loopback_owner_pid = self.OWNER_PID
+
+            self._tcp_accepts(stm, monkeypatch)
+            self._owner(stm, monkeypatch, self.FOREIGN_PID)
+            assert await t._port_reachable() is False
+            assert t.loopback_ownership_ok() is False
+            # The retained identity is NOT overwritten by the intruder's.
+            assert t._loopback_owner_pid == self.OWNER_PID
+
+        asyncio.run(main())
+
+    def test_the_healthy_path_is_unchanged(self, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = self._tunnel(stm)
+            t._loopback_owner_pid = self.OWNER_PID
+
+            self._tcp_accepts(stm, monkeypatch)
+            self._owner(stm, monkeypatch, self.OWNER_PID)
+            assert await t._port_reachable() is True
+            assert t.loopback_ownership_ok() is True
+
+        asyncio.run(main())
+
+    def test_establishment_records_the_proven_owner(self, monkeypatch):
+        """With no retained identity yet, a proven owner is ADOPTED rather than
+        compared, so the readiness wait is what pins it."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = self._tunnel(stm)
+            assert t._loopback_owner_pid is None
+
+            self._tcp_accepts(stm, monkeypatch)
+            self._owner(stm, monkeypatch, self.OWNER_PID)
+            assert await t._port_reachable() is True
+            assert t._loopback_owner_pid == self.OWNER_PID
+
+        asyncio.run(main())
+
+    def test_establishment_refuses_an_unprovable_listener(self, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = self._tunnel(stm)
+
+            self._tcp_accepts(stm, monkeypatch)
+            self._owner(stm, monkeypatch, None)
+            assert await t._port_reachable() is False
+            assert t._loopback_owner_pid is None
+
+        asyncio.run(main())
+
+    def test_a_forwarding_transport_is_not_ownership_gated(self, monkeypatch):
+        """ssh/ssm keep the TCP-only contract: their credential goes into a child
+        whose exit takes the socket with it, so there is no freed port to steal."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        async def main():
+            t = stm._SshTunnel("cd-1", "h", 7778, 7777)
+            t.status.state = stm.TunnelState.CONNECTED
+
+            self._tcp_accepts(stm, monkeypatch)
+
+            def _never(port):
+                pytest.fail("the ownership proof ran for a forwarding transport")
+
+            monkeypatch.setattr(stm, "_proven_loopback_owner", _never, raising=False)
+            assert await t._port_reachable() is True
+            assert t.loopback_ownership_ok() is True
+
+        asyncio.run(main())
+
+    def test_token_validates_refuses_a_condemned_loopback_tunnel(self, tmp_path, monkeypatch):
+        """The credential-establishing send proves FRESH, immediately before it."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        mgr = stm.SshTunnelManager(InstancesRegistry(tmp_path), allow_loopback=True)
+        t = self._tunnel(stm)
+        t._loopback_owner_pid = self.OWNER_PID
+        mgr._tunnels["lb-1"] = t
+
+        def _sent(*a, **k):
+            pytest.fail("the bearer was sent to an unproven listener")
+
+        monkeypatch.setattr(stm.aiohttp, "ClientSession", _sent)
+        self._owner(stm, monkeypatch, self.FOREIGN_PID)
+        assert asyncio.run(mgr.token_validates(self.PORT, "tok-1")) is False
+
+    def test_token_validates_proceeds_on_a_proven_loopback_tunnel(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        mgr = stm.SshTunnelManager(InstancesRegistry(tmp_path), allow_loopback=True)
+        t = self._tunnel(stm)
+        t._loopback_owner_pid = self.OWNER_PID
+        mgr._tunnels["lb-1"] = t
+        self._owner(stm, monkeypatch, self.OWNER_PID)
+
+        reached: list[str] = []
+
+        class _Resp:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return False
+
+        class _Session:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return False
+
+            def get(self, url, params=None):
+                reached.append(url)
+                return _Resp()
+
+        monkeypatch.setattr(stm.aiohttp, "ClientSession", _Session)
+        assert asyncio.run(mgr.token_validates(self.PORT, "tok-1")) is True
+        assert reached == [f"http://127.0.0.1:{self.PORT}/api/status"]
+
+    def test_a_condemned_tunnel_refuses_the_peer_send_path(self, tmp_path, monkeypatch):
+        """The per-request proxy path reads the probe-fresh cached verdict, so a
+        failed proof blocks sends without paying an lsof per request."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        mgr = stm.SshTunnelManager(InstancesRegistry(tmp_path), allow_loopback=True)
+        t = self._tunnel(stm)
+        t._loopback_owner_pid = self.OWNER_PID
+        t._ownership_condemned = True  # what a failed probe leaves behind
+        mgr._tunnels["lb-1"] = t
+
+        with pytest.raises(stm._PeerUnavailable):
+            mgr._peer_target("lb-1", "/api/status")
+
+
+class TestLoopbackProofDeniesOnNonPosix:
+    """Runs on EVERY platform, including the one it describes.
+
+    Windows exposes no ``process_owner_uid`` answer, and a ``KIROCREW_HOME``
+    another user can write lets them replace both the marker and the pid sidecar
+    — which is the file-permission argument the proof's first step rests on. So
+    the proof denies there rather than approximating, and a loopback instance on
+    Windows is refused instead of being trusted on two steps out of three.
+    """
+
+    def test_non_posix_denies_outright(self, monkeypatch):
+        from kiro_crew import platform_compat, port_resolution
+        from kiro_crew.platform_compat import PortListener
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(port_resolution.run_marker, "read_pid", lambda port: 4242)
+        monkeypatch.setattr(
+            platform_compat, "find_port_listeners", lambda port: [PortListener(4242, "127.0.0.1")]
+        )
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the proof denies outright on non-POSIX: process_owner_uid cannot "
+    "report an owner there, and a KIROCREW_HOME writable by another user "
+    "defeats the file-permission argument the pid sidecar rests on. The "
+    "Windows contract is pinned by TestLoopbackProofDeniesOnNonPosix.",
+)
+class TestLoopbackScopedOwnershipProof:
+    """The proof a loopback CREDENTIAL send needs: the recorded gateway must own
+    a listener that actually answers at ``127.0.0.1:<port>``.
+
+    ``find_listening_pids`` attributes by port alone, so on a host where the
+    gateway is bound to one interface (``KIROCREW_BIND=192.168.1.5``, supported
+    config) it accepts that gateway's pid while ``127.0.0.1:<port>`` is a free
+    socket any local process can take.
+    """
+
+    GATEWAY_PID = 4242
+    HOSTILE_PID = 9999
+
+    def _chain(self, monkeypatch, listeners):
+        """Stub only the sidecar read, the listener lookup and the uid/argv legs,
+        so the real proof logic runs.
+
+        The argv leg is reached through ``port_resolution._patchable``, which
+        prefers the attribute on ``_PATCH_NS`` (``cli_server``) whenever that
+        module is loaded — so patching only this module's own global is bypassed
+        in any run that imported the CLI, which is order-dependent. Both
+        namespaces are patched so the stub holds either way.
+        """
+        import sys
+
+        from kiro_crew import platform_compat, port_resolution
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(port_resolution.run_marker, "read_pid", lambda port: self.GATEWAY_PID)
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda port: listeners)
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda pid: os.getuid())
+        monkeypatch.setattr(port_resolution, "_is_kirocrew_process", lambda pid: True)
+        patch_ns = sys.modules.get(port_resolution._PATCH_NS)
+        if patch_ns is not None and hasattr(patch_ns, "_is_kirocrew_process"):
+            monkeypatch.setattr(patch_ns, "_is_kirocrew_process", lambda pid: True)
+
+    def _listener(self, pid, address, family="4"):
+        from kiro_crew.platform_compat import PortListener
+
+        return PortListener(pid, address, family)
+
+    def test_an_interface_bound_gateway_does_not_own_loopback(self, monkeypatch):
+        """The blocking case: our gateway answers on 192.168.1.5:P, a hostile
+        local process holds 127.0.0.1:P. The port-only proof accepts our pid; the
+        loopback-scoped proof must refuse, because the secret would go to the
+        process that actually answers 127.0.0.1."""
+        from kiro_crew import port_resolution
+
+        listeners = [
+            self._listener(self.GATEWAY_PID, "192.168.1.5"),
+            self._listener(self.HOSTILE_PID, "127.0.0.1"),
+        ]
+        self._chain(monkeypatch, listeners)
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+    def test_an_interface_bound_gateway_with_no_loopback_listener_is_refused(self, monkeypatch):
+        """Same bind, nothing on loopback: still no proof that a connect to
+        127.0.0.1 reaches us."""
+        from kiro_crew import port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.GATEWAY_PID, "192.168.1.5")])
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+    def test_an_exact_loopback_bind_is_proven(self, monkeypatch):
+        from kiro_crew import port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.GATEWAY_PID, "127.0.0.1")])
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is True
+
+    def test_an_ipv4_wildcard_bind_is_proven(self, monkeypatch):
+        """0.0.0.0:P answers a 127.0.0.1 connect."""
+        from kiro_crew import port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.GATEWAY_PID, "0.0.0.0")])
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is True
+
+    def test_a_dual_stack_wildcard_bind_is_proven(self, monkeypatch):
+        """``[::]`` accepts v4-mapped loopback, so it is the responder when
+        nothing more specific exists."""
+        from kiro_crew import port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.GATEWAY_PID, "::", "6")])
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is True
+
+    def test_a_v6_loopback_only_bind_is_refused(self, monkeypatch):
+        """``::1`` can never answer a probe addressed to 127.0.0.1."""
+        from kiro_crew import port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.GATEWAY_PID, "::1", "6")])
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+    def test_a_hostile_exact_loopback_bind_outranks_our_wildcard(self, monkeypatch):
+        """Most-specific-bind dispatch: with 127.0.0.1:P taken, our 0.0.0.0
+        socket never sees the connect, so ownership is not ours to claim."""
+        from kiro_crew import port_resolution
+
+        listeners = [
+            self._listener(self.GATEWAY_PID, "0.0.0.0"),
+            self._listener(self.HOSTILE_PID, "127.0.0.1"),
+        ]
+        self._chain(monkeypatch, listeners)
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+    def test_it_fails_closed_on_a_throwing_lookup(self, monkeypatch):
+        from kiro_crew import platform_compat, port_resolution
+
+        self._chain(monkeypatch, [])
+
+        def _boom(port):
+            raise OSError("lsof exploded")
+
+        monkeypatch.setattr(platform_compat, "find_port_listeners", _boom)
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+    def test_a_stale_recorded_pid_is_refused(self, monkeypatch):
+        from kiro_crew import port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.HOSTILE_PID, "127.0.0.1")])
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+    def test_a_foreign_uid_is_refused(self, monkeypatch):
+        """Closes pid recycling into another user's process."""
+        from kiro_crew import platform_compat, port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.GATEWAY_PID, "127.0.0.1")])
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda pid: os.getuid() + 1)
+        assert port_resolution.port_is_gateway_owned_on_loopback(7910) is False
+
+    def test_the_port_only_helper_still_accepts_an_interface_bind(self, monkeypatch):
+        """The unscoped proof keeps its contract for its other callers: it asks
+        whether our gateway holds the PORT, which an interface bind does."""
+        from kiro_crew import platform_compat, port_resolution
+
+        self._chain(monkeypatch, [self._listener(self.GATEWAY_PID, "192.168.1.5")])
+        monkeypatch.setattr(platform_compat, "find_listening_pids", lambda port: [self.GATEWAY_PID])
+        assert port_resolution.port_is_gateway_owned(7910) is True
+
+
+class TestLoopbackTransport:
+    """The loopback transport: a fixed destination behind pod-only admission."""
+
+    # The key a record hand-edited, or written by an earlier build, may still
+    # carry. The loader does not read it: the destination is the fixed
+    # ``constants.LOOPBACK_HOST``, and no record can point the transport elsewhere.
+    STRAY_KEY = "loopback_host"
 
     def test_record_roundtrips_and_defaults(self):
         from kiro_crew.instances.registry import (
@@ -7568,30 +9030,35 @@ class TestLoopbackTransport:
         assert CONNECTION_METHOD_LOOPBACK in CONNECTION_METHODS
         inst = Instance(id="lb", name="lb", connection_method=CONNECTION_METHOD_LOOPBACK)
         inst.validate()  # no ssh_host / ssm_target required
-        assert inst.loopback_host == "127.0.0.1"
-        # A record written before this feature has no key at all.
-        legacy = Instance.from_dict({"id": "old", "name": "old"})
-        assert legacy.loopback_host == "127.0.0.1"
-        assert Instance.from_dict(inst.to_dict()).loopback_host == "127.0.0.1"
+        # The record carries no destination field: nothing to default, nothing
+        # to serialize, nothing a round trip could lose.
+        assert self.STRAY_KEY not in inst.to_dict()
+        assert Instance.from_dict(inst.to_dict()) == inst
 
-    def test_record_rejects_an_off_host_destination(self):
-        from kiro_crew.instances.registry import (
-            CONNECTION_METHOD_LOOPBACK,
-            InvalidInstanceError,
-            Instance,
+    def test_a_record_naming_a_destination_loads_without_one(self):
+        """The loader reads only the keys it names, so a record hand-edited (or
+        written by an earlier build) to carry a destination loads without one:
+        the address it named is not stored, validated or re-serialized, and the
+        transport it resolves to dials the fixed constant regardless."""
+        from kiro_crew.instances.constants import LOOPBACK_HOST
+        from kiro_crew.instances.registry import CONNECTION_METHOD_LOOPBACK, Instance
+        from kiro_crew.instances.ssh_tunnel_manager import _TransportParams
+
+        stray = Instance.from_dict(
+            {
+                "id": "old",
+                "name": "old",
+                "connection_method": CONNECTION_METHOD_LOOPBACK,
+                self.STRAY_KEY: "10.0.0.5",
+            }
         )
+        stray.validate()
+        assert not hasattr(stray, self.STRAY_KEY)
+        assert self.STRAY_KEY not in stray.to_dict()
+        assert _TransportParams(method=stray.connection_method).target == LOOPBACK_HOST
 
-        inst = Instance(
-            id="lb",
-            name="lb",
-            connection_method=CONNECTION_METHOD_LOOPBACK,
-            loopback_host="10.0.0.5",
-        )
-        with pytest.raises(InvalidInstanceError):
-            inst.validate()
-
-    def test_connect_is_refused_while_the_transport_is_opted_out(self, tmp_path, monkeypatch):
-        """The authoritative gate: instances.json is agent-writable."""
+    def test_product_config_cannot_connect_a_stored_loopback_record(self, tmp_path, monkeypatch):
+        """A hand-written record cannot bypass the pod boundary."""
         from kiro_crew.instances.registry import (
             CONNECTION_METHOD_LOOPBACK,
             Instance,
@@ -7600,15 +9067,329 @@ class TestLoopbackTransport:
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
         from kiro_crew.instances.validation import LoopbackValidationError
 
-        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        reg = InstancesRegistry(tmp_path)
-        mgr = SshTunnelManager(reg, allow_loopback=False)
+        _enable(tmp_path, monkeypatch, allow_loopback_transport=True)
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
         inst = Instance(id="lb", name="lb", connection_method=CONNECTION_METHOD_LOOPBACK)
-        with pytest.raises(LoopbackValidationError):
-            mgr._resolve_transport(inst)
-        mgr_on = SshTunnelManager(reg, allow_loopback=True)
-        params = mgr_on._resolve_transport(inst)
+
+        with pytest.raises(LoopbackValidationError, match="pod-only verification"):
+            SshTunnelManager(InstancesRegistry(tmp_path), allow_loopback=True)._resolve_transport(
+                inst
+            )
+
+    def test_product_diagnosis_refuses_before_any_loopback_probe(self, tmp_path, monkeypatch):
+        """A stored record cannot use Diagnose to bypass pod admission."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        _enable(tmp_path, monkeypatch, allow_loopback_transport=True)
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        registry = InstancesRegistry(tmp_path / "instances.json")
+        registry.add(
+            name="lb",
+            instance_id="lb",
+            connection_method="loopback",
+            remote_port=7910,
+        )
+
+        async def unexpected_probe(*args, **kwargs):
+            raise AssertionError("loopback diagnosis probed before pod admission")
+
+        monkeypatch.setattr(stm, "diagnose_instance_loopback", unexpected_probe)
+        result = asyncio.run(stm.SshTunnelManager(registry, allow_loopback=True).diagnose("lb"))
+
+        assert result is not None
+        assert result["code"] == "loopback_transport_unavailable"
+        assert result["ok"] is False
+        assert result["probes"] == []
+
+    def test_product_api_cannot_create_a_loopback_record(self, tmp_path, monkeypatch):
+        """The owner API refuses the pod-only record before it reaches disk."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        _enable(tmp_path, monkeypatch, allow_loopback_transport=True)
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        registry = InstancesRegistry(tmp_path / "instances.json")
+
+        response = asyncio.run(
+            handlers.api_instances_add(
+                _FakeReq(
+                    _State(registry),
+                    body={
+                        "id": "lb",
+                        "name": "lb",
+                        "connection_method": "loopback",
+                        "remote_port": 7910,
+                    },
+                )
+            )
+        )
+
+        assert response.status == 400
+        assert _body(response)["code"] == "loopback_transport_unavailable"
+        assert registry.get("lb") is None
+
+    def test_pod_config_can_resolve_the_loopback_transport(self, tmp_path, monkeypatch):
+        """The pod verification seam remains usable at unit level."""
+        from kiro_crew.instances.constants import LOOPBACK_HOST
+        from kiro_crew.instances.registry import (
+            CONNECTION_METHOD_LOOPBACK,
+            Instance,
+            InstancesRegistry,
+        )
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        _enable(tmp_path, monkeypatch, allow_loopback_transport=True)
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        inst = Instance(id="lb", name="lb", connection_method=CONNECTION_METHOD_LOOPBACK)
+
+        params = SshTunnelManager(InstancesRegistry(tmp_path))._resolve_transport(inst)
+
         assert params.method == CONNECTION_METHOD_LOOPBACK
-        assert params.loopback_host == "127.0.0.1"
-        # The transport that DIALS a port never allocates one.
-        assert params.binds_local_port is False
+        assert params.target == LOOPBACK_HOST
+        assert not hasattr(params, self.STRAY_KEY)
+
+
+class _FakeMintResponse:
+    """One stubbed `GET /api/token/local` reply, usable as an async CM."""
+
+    def __init__(self, status=200, payload=None):
+        self.status = status
+        self._payload = {"token": "tok-1"} if payload is None else payload
+
+    async def json(self):
+        return self._payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeMintSession:
+    """Stands in for `aiohttp.ClientSession`, recording the one request made."""
+
+    requests: list[dict] = []
+    response = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def get(self, url, params=None, headers=None, allow_redirects=None):
+        type(self).requests.append(
+            {
+                "url": url,
+                "params": dict(params or {}),
+                "headers": dict(headers or {}),
+                "allow_redirects": allow_redirects,
+            }
+        )
+        return type(self).response or _FakeMintResponse()
+
+
+class TestLoopbackTokenMint:
+    """`mint_loopback_token`: what it refuses before the credential moves."""
+
+    def _stub_transport(self, monkeypatch, mod, *, owned=True, secret="s3cret"):
+        _FakeMintSession.requests = []
+        _FakeMintSession.response = None
+        monkeypatch.setattr(mod, "port_is_gateway_owned_on_loopback", lambda port: owned)
+        monkeypatch.setattr(mod, "read_secret", lambda port: secret)
+        monkeypatch.setattr(mod.aiohttp, "ClientSession", _FakeMintSession)
+
+    def test_the_proof_it_consults_is_address_scoped(self, monkeypatch):
+        """The mint dials 127.0.0.1:P, so a port-only proof is the wrong question:
+        it accepts an interface-bound gateway while another process holds
+        loopback. The mint must consult the loopback-scoped proof."""
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        asked: list[int] = []
+        self._stub_transport(monkeypatch, mod)
+        monkeypatch.setattr(
+            mod,
+            "port_is_gateway_owned_on_loopback",
+            lambda port: asked.append(port) or False,
+        )
+        # The port-only helper must not be what decides this send. Patched at its
+        # own layer, because the mint does not import it at all.
+        from kiro_crew import port_resolution
+
+        monkeypatch.setattr(
+            port_resolution,
+            "_gateway_owns_port",
+            lambda port: pytest.fail("port-only proof consulted"),
+        )
+        assert not hasattr(mod, "port_is_gateway_owned")
+        with pytest.raises(TokenMintError):
+            asyncio.run(mod.mint_loopback_token(7910, own_port=7904))
+        assert asked == [7910]
+        assert _FakeMintSession.requests == []
+
+    def test_the_destination_is_not_a_parameter(self):
+        """The proof attributes the listener a 127.0.0.1 connect reaches, so that
+        is the one address the mint can dial — fixed, never passed in. A second
+        loopback address (`127.0.0.2:P`) can be held by another process while a
+        real gateway holds `127.0.0.1:P`, which is why no caller gets to name one.
+        """
+        import inspect
+
+        from kiro_crew.instances import local_token_mint as mod
+
+        params = inspect.signature(mod.mint_loopback_token).parameters
+        assert list(params) == [
+            "port",
+            "own_port",
+            "own_bind_host",
+            "ttl",
+            "embed_parent_port",
+            "timeout_secs",
+        ]
+
+    def test_refuses_an_unproven_listener(self, monkeypatch):
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        self._stub_transport(monkeypatch, mod, owned=False)
+        with pytest.raises(TokenMintError) as exc:
+            asyncio.run(mod.mint_loopback_token(7910, own_port=7904))
+        message = str(exc.value)
+        assert "lsof" in message
+        assert "ssh transport" not in message
+        assert _FakeMintSession.requests == []
+
+    def test_skips_the_proof_only_for_its_own_port(self, monkeypatch):
+        """`own_port == port` means the listener IS this process, so no second
+        party exists to prove anything about — but only on an address this
+        gateway actually binds."""
+        from kiro_crew.instances import local_token_mint as mod
+
+        self._stub_transport(monkeypatch, mod, owned=False)
+        assert (
+            asyncio.run(mod.mint_loopback_token(7904, own_port=7904, own_bind_host="127.0.0.1"))
+            == "tok-1"
+        )
+
+    def test_a_wildcard_bind_runs_the_ownership_proof(self, monkeypatch):
+        """A more-specific loopback listener can outrank the wildcard socket.
+
+        Port equality therefore cannot prove that this process answers at
+        127.0.0.1:<port>. The ordinary listener proof must run, and an
+        unattributable listener must be refused before the credential is read.
+        """
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        reads: list[int] = []
+        self._stub_transport(monkeypatch, mod, owned=False)
+        monkeypatch.setattr(mod, "read_secret", lambda port: reads.append(port) or "s3cret")
+
+        with pytest.raises(TokenMintError):
+            asyncio.run(mod.mint_loopback_token(7904, own_port=7904, own_bind_host="0.0.0.0"))
+        assert reads == []
+        assert _FakeMintSession.requests == []
+
+    def test_an_interface_bound_gateway_does_not_carve_out_its_own_port(self, monkeypatch):
+        """A gateway bound to ONE non-loopback interface leaves 127.0.0.1:P free.
+
+        `own_port == port` then says nothing about who answers on loopback: a
+        foreign local process can hold `127.0.0.1:P` while this gateway serves
+        `192.168.1.5:P`. The carve-out's premise ("the listener is this very
+        process") is false there, so the ownership proof must run — and refuse,
+        because the foreign listener is not attributable to this user's gateway.
+        """
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        reads: list[int] = []
+        self._stub_transport(monkeypatch, mod, owned=False)
+        monkeypatch.setattr(mod, "read_secret", lambda port: reads.append(port) or "s3cret")
+
+        with pytest.raises(TokenMintError):
+            asyncio.run(mod.mint_loopback_token(7904, own_port=7904, own_bind_host="192.168.1.5"))
+        assert reads == []  # the credential was never read
+        assert _FakeMintSession.requests == []  # and never sent
+
+    def test_an_unstated_bind_host_does_not_carve_out(self, monkeypatch):
+        """No bind address means the carve-out's premise cannot be checked, so
+        the proof runs rather than being assumed inapplicable."""
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        self._stub_transport(monkeypatch, mod, owned=False)
+        with pytest.raises(TokenMintError):
+            asyncio.run(mod.mint_loopback_token(7904, own_port=7904))
+        assert _FakeMintSession.requests == []
+
+    def test_an_interface_bound_gateway_mints_on_a_proven_port(self, monkeypatch):
+        """The narrowing costs nothing when the listener IS attributable: the
+        proof passes and the mint proceeds."""
+        from kiro_crew.instances import local_token_mint as mod
+
+        self._stub_transport(monkeypatch, mod, owned=True)
+        assert (
+            asyncio.run(mod.mint_loopback_token(7904, own_port=7904, own_bind_host="192.168.1.5"))
+            == "tok-1"
+        )
+
+    def test_refuses_when_no_credential_is_recorded(self, monkeypatch):
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        self._stub_transport(monkeypatch, mod, secret="")
+        with pytest.raises(TokenMintError):
+            asyncio.run(mod.mint_loopback_token(7910, own_port=7904))
+        assert _FakeMintSession.requests == []
+
+    def test_sends_the_secret_in_a_header_and_returns_the_token(self, monkeypatch):
+        from kiro_crew.instances import local_token_mint as mod
+
+        self._stub_transport(monkeypatch, mod)
+        token = asyncio.run(
+            mod.mint_loopback_token(7910, own_port=7904, ttl="2h", embed_parent_port=7904)
+        )
+        assert token == "tok-1"
+        (req,) = _FakeMintSession.requests
+        assert req["url"] == "http://127.0.0.1:7910/api/token/local"
+        assert req["params"] == {"ttl": "2h", "embed_parent_port": "7904"}
+        assert req["headers"]["X-Local-Secret"] == "s3cret"
+        # A redirect must not carry the credential to another destination.
+        assert req["allow_redirects"] is False
+
+    def test_reports_a_refusal_and_an_empty_token_distinctly(self, monkeypatch):
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        self._stub_transport(monkeypatch, mod)
+        _FakeMintSession.response = _FakeMintResponse(status=403)
+        with pytest.raises(TokenMintError, match="403"):
+            asyncio.run(mod.mint_loopback_token(7910, own_port=7904))
+
+        self._stub_transport(monkeypatch, mod)
+        _FakeMintSession.response = _FakeMintResponse(payload={})
+        with pytest.raises(TokenMintError, match="empty token"):
+            asyncio.run(mod.mint_loopback_token(7910, own_port=7904))
+
+    def test_a_transport_failure_does_not_leak_the_request(self, monkeypatch):
+        """The error text names the exception TYPE only: an aiohttp message can
+        carry the request URL."""
+        from kiro_crew.instances import local_token_mint as mod
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        self._stub_transport(monkeypatch, mod)
+
+        def _boom(*args, **kwargs):
+            raise OSError("connect to http://127.0.0.1:7910/api/token/local failed")
+
+        monkeypatch.setattr(_FakeMintSession, "get", _boom)
+        with pytest.raises(TokenMintError) as excinfo:
+            asyncio.run(mod.mint_loopback_token(7910, own_port=7904))
+        assert "OSError" in str(excinfo.value)
+        assert "api/token/local" not in str(excinfo.value)

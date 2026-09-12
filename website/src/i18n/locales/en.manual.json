@@ -5379,6 +5379,7 @@
         "adding": "Adding…",
         "connect": "Connect",
         "connect_failed": "Connect to {{id}} failed: {{error}}",
+        "loopback_same_host": "Loopback (same host)",
         "connected_switch_from_tab_strip": "Connected “{{name}}”. Switch to it from the tab strip in the top header.",
         "connecting": "Connecting…",
         "connection_did_not_complete_try_diagnose_for_det": "Connection did not complete. Try Diagnose for details.",

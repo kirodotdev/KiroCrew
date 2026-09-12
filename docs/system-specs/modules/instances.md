@@ -5,7 +5,7 @@ Lets a single Kiro Crew gateway (the **hub**) manage and switch between several
 SSM Session Manager** tunnels, embedding each remote dashboard as an iframe pane
 below a switcher strip. Opt-in: off by default (`instances.enabled`). The transport is
 per-instance (`connection_method`) — see §13, and §16 for the same-host
-`loopback` transport that spawns no forwarder at all.
+`loopback` transport that spawns no forwarder CHILD.
 
 > **Naming — "Remote Instances".** The user-facing surfaces label this feature
 > **Remote Instances**: the Settings section (*Settings → Remote Instances*), the
@@ -50,7 +50,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
-- [16. The loopback connection method (same-host gateways)](#16-the-loopback-connection-method-same-host-gateways)
+- [16. The loopback verification method (pod-only)](#16-the-loopback-verification-method-pod-only)
 
 ---
 
@@ -304,7 +304,7 @@ cannot drift.
 | `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to an internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
 | `instances.ssh_compression` | `true` | Add `-C` to the tunnel argv. See §5.2. |
-| `instances.allow_loopback_transport` | `false` | Permit `connection_method="loopback"` — a gateway on this host's own loopback, with no forwarder child. Read live rather than at startup. See §16. |
+| `instances.allow_loopback_transport` | `false` | Second key for the pod-only `connection_method="loopback"` verification seam. Ignored unless `KIROCREW_POD` is exactly `"1"`; product config cannot enable it. Read live inside a pod. See §16. |
 | `instances.connect_timeout_secs` | unset (SSH `15.0`, SSM `25.0`) | How long (secs) to wait for the local forward port to accept connections before declaring a connect attempt failed. Hosts behind a ProxyCommand or jump host need longer (the proxy handshake runs before ssh begins the forward). An explicit value applies to both transports, including a value equal to either transport's default. Values below 1 fall back to the transport defaults; values above 120 are clamped to 120. |
 | `instances.mint_timeout_secs` | unset (SSH `30.0`, SSM `90.0`) | How long (secs) to wait for the remote `kirocrew token` mint before failing a connect. The mint rides the same ssh transport as the tunnel, so a host behind a ProxyCommand or jump host pays the proxy handshake here too (the connect flow spawns two proxy-bound ssh children: `connect_timeout_secs` budgets the first, this budgets the second). An explicit value applies to both transports, including a value equal to either transport's default — size it for the slowest transport in use. Values below 10 fall back to the transport defaults; values above 120 are clamped with a warning. |
 | `instances.max_recovery_attempts` | `8` | Consecutive self-heal attempts before the tunnel is left disconnected. Below 1 falls back to the default; above `MAX_RECOVERY_ATTEMPTS_CEILING` (100) is clamped with a warning, so a pathological setting cannot turn bounded self-heal into a near-infinite retry loop. |
@@ -1700,83 +1700,106 @@ neither resume nor delete it:
 
 ---
 
-## 16. The loopback connection method (same-host gateways)
+## 16. The loopback verification method (pod-only)
 
-A third `connection_method`, `"loopback"`, reaches a Kiro Crew gateway that is
-already listening on **this host's own loopback**. It is the one transport with
-**no child process**: there is nothing to forward, so no `ssh`, no
-`session-manager-plugin`, and no credential leaves the machine.
+`connection_method="loopback"` exists only to verify the Remote Instances path
+for #8175 inside a Kiro Crew pod. It is not a product transport. No shipped
+product configuration can make a normal gateway honor it.
 
-Opt-in and **off by default** (`instances.allow_loopback_transport`, §16.1).
+The verification needs this method because both product transports require an
+external machine. SSH self-connect fails host-key verification by design. SSM
+requires a managed node and the Session Manager plugin. Loopback lets the pod
+drive the same registry, manager, token, pane, health, and teardown code without
+turning either product transport into a test exception.
 
-**What it is for.** Two gateways on one host — a second `kirocrew gateway
---port 5477` beside the default, or a `kirocrew pod` serving an isolated
-`KIROCREW_HOME` — previously had no way to appear in each other's switcher.
-`CONNECTION_METHODS` held only `ssh` and `ssm`, and neither can name this host:
-an ssh self-connect fails host-key verification by design, and SSM requires a
-managed node plus a local plugin. A pod consuming this transport is how the
-instances feature becomes verifiable against a real gateway at all, which is
-the `Refs #8175` link — but the capability is not a test fixture: it is what a
-two-gateway host needs.
+The method has no child process. The destination gateway already listens on
+`127.0.0.1:RP`, so the hub binds its own pane port and relays to that fixed
+destination. No record or request can supply another address. The listener
+ownership proofs and wildcard-bind rules in §16.3 and §16.5 still apply after
+admission.
+
+Two independent keys admit the method:
+
+1. The process environment must contain the exact pod marker
+   `KIROCREW_POD="1"`. Kiro Crew pod tooling owns that marker. Empty strings,
+   `"0"`, `"false"`, `"true"`, and a missing value all refuse.
+2. The pod config must set `instances.allow_loopback_transport=true`.
+
+`KiroCrewConfig.load()` masks the flag to `false` when the exact marker is
+absent. `SshTunnelManager._loopback_allowed()` repeats the marker check before
+using either config or its unit-test override. This outer check prevents a
+constructor override, a hand-edited `config.json`, or a config API write from
+turning the method on in a product gateway.
+
+The pod may use a self-loopback record that points to its own bound port. It may
+also reach another gateway only when both processes share the same pod data
+home, because the mint reads `run/gateway-<port>.secret` and the pid sidecar from
+`config_dir()`. A gateway in another pod has another data home, so the credential
+and listener identity are absent and the mint refuses.
 
 | Method | Tunnel | Destination | Mint path |
 |--------|--------|-------------|-----------|
 | `ssh` | `ssh -N -L` child | `<ssh_host>:RP` | `ssh <host> kirocrew token` |
 | `ssm` | `aws ssm start-session` child | `<ssm_target>:RP` | `aws ssm send-command` → `kirocrew token` |
-| `loopback` | **none** | `<loopback_host>:RP` on this host | HTTP `GET /api/token/local` on that port |
+| `loopback` | in-process relay, pod verification only | fixed `127.0.0.1:RP` | HTTP `GET /api/token/local` on that port |
 
-Records stay back-compatible: an `instances.json` written before this feature
-has no `loopback_host` and loads as `127.0.0.1`.
+A loopback record names no address. `Instance.from_dict` reads only known keys,
+so a hand-written destination key is dropped and cannot redirect the dial.
 
-### 16.1 Configuration
+Settings canonicalizes each stored method with trim plus lowercase, then filters
+loopback records before counts, rows, actions, or edit drafts are built. The
+product UI cannot display or edit this method, including a hand-edited spelling
+such as `" LOOPBACK "`. The owner API can create or patch a loopback record only
+inside an admitted pod, which keeps the existing verification driver usable.
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `instances.allow_loopback_transport` | `false` | Permit `connection_method="loopback"`. Read **live**, not at startup, so turning it on takes effect without a gateway restart — unlike `instances.enabled`, which decides whether the manager exists at all. |
+### 16.1 Admission and refusal
 
-```bash
-kirocrew config set instances.allow_loopback_transport true
-```
+`POST /api/instances` and `PATCH /api/instances/{id}` reject a loopback record
+outside an admitted pod with HTTP 400 and
+`code="loopback_transport_unavailable"`. This is the early refusal before a
+record reaches disk.
 
-The flag is enforced in **two** places, and both matter. `POST /api/instances` /
-`PATCH` reject a loopback record with `400` / `code:
-"loopback_transport_disabled"`, which is the early reject an operator sees at the
-point they configure it. `SshTunnelManager._resolve_transport` refuses again at
-connect, and that one is authoritative: `instances.json` is agent-writable, so a
-hand-edited record reaches the tunnel without ever passing the API check. An
-unreadable config refuses (fail closed — absence of config is not consent).
+`SshTunnelManager._resolve_transport()` repeats the check at connect time. That
+check is authoritative because `instances.json` is agent-writable and a stored
+record may never have passed through the API. `diagnose()` runs the same resolver
+before the loopback probe and returns
+`code="loopback_transport_unavailable"` with no probes when admission fails. An
+unreadable config also refuses. Inside an admitted pod, the flag is read live, so
+changing it needs no gateway restart.
 
-### 16.2 Destination validation is loopback-TIGHT
+### 16.2 The destination is a constant, not a field
 
-`loopback_host` (registry field, default `127.0.0.1`) is checked by
-`validation.validate_loopback_host`, which is a **parse, not a pattern**:
-`ipaddress.IPv4Address(value).is_loopback`. A regex over dotted quads would be a
-spelling chase — the octal, short-form and IPv4-mapped-IPv6 spellings all have to
-be refused, and each one closed by hand narrows an unbounded set by exactly one.
-Parsing answers the actual question once, and the function returns the CANONICAL
-form (`str(IPv4Address(...))`), so a value carrying a trailing newline cannot
-reach a caller even in principle.
+The loopback transport carries **no destination address**. Every socket on the
+path — the in-process relay's dial, the readiness and health probes, the
+diagnosis ladder, the mint's `GET /api/token/local` — goes to
+`constants.LOOPBACK_HOST` (`127.0.0.1`), and no record, API body or
+`_TransportParams` value names another. There is no per-record host and no
+validator for one: `Instance`, `POST /api/instances`, `PATCH`,
+`diagnose_instance_loopback` and `mint_loopback_token` take no such value, and a
+record that carries a stray destination key loads without it (§16, above).
 
-Three refusals carry the weight:
+The constant is what the ownership proof speaks for. The mint's authorization,
+`port_resolution.port_is_gateway_owned_on_loopback`, attributes the listener a
+`127.0.0.1` connect reaches, so that is the one address a proven port can be
+dialled on. Anything else is a destination nothing attributed:
 
+- **Another address in `127.0.0.0/8`, `127.0.0.2` included.** A second local
+  process can hold `127.0.0.2:P` while a real gateway holds `127.0.0.1:P`, so a
+  destination settable there would receive the secret on the strength of a proof
+  about a different socket.
 - **Every hostname form, `localhost` included.** A name is resolved outside this
-  process — `/etc/hosts`, NSS, a resolver — so accepting one would put "is this
+  process — `/etc/hosts`, NSS, a resolver — so a settable name would put "is this
   destination local" in the hands of whoever edits that mapping.
 - **Every non-loopback address**, RFC-1918 and link-local included. This
   transport's whole safety argument is that the destination cannot be off-host;
   reaching a network peer is what `ssh` and `ssm` are for.
-- **IPv6, including `::1`.** Three URL builders on this path interpolate the host
-  unbracketed (the readiness/health probe, the stored-token probe, the chat
-  proxy), and the ssh transport already pins `AddressFamily=inet`. IPv4 loopback
-  is the family this package speaks; admitting `::1` would mean bracket-quoting
-  a security-sensitive URL builder for no real destination.
+- **IPv6, including `::1`.** The URL builders on this path interpolate the host
+  unbracketed and the ssh transport already pins `AddressFamily=inet`; IPv4
+  loopback is the family this package speaks.
 
-The exercised boundary, asserted by test: **accepted** — `127.0.0.1`,
-`127.0.0.2`, `127.1.2.3`, empty (→ default), surrounding whitespace;
-**refused** — `localhost`, `LOCALHOST`, `kirocrew.localhost`, `::1`,
-`0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1`, `0.0.0.0`, `10.0.0.5`, `172.16.0.1`,
-`192.168.1.1`, `169.254.169.254`, `8.8.8.8`, `127.1`, `0177.0.0.1`,
-`127.0.0.1:7904`, `127.0.0.1%eth0`, `-oProxyCommand=x`, `127.0.0.256`.
+A fixed constant closes that set by construction: there is no value to parse,
+canonicalize or refuse, and nothing an agent-writable `instances.json` can point
+elsewhere. The two-key pod admission in §16.1 is the transport's outer boundary.
 
 ### 16.3 The mint, and the self-connect ownership carve-out
 
@@ -1800,14 +1823,24 @@ explicit `--port` skips the ownership proof, and `read_local_secret` then falls
 back to the shared secret — so routing this feature through it would have turned
 an owner-only API field into "send this data home's internal secret to whatever
 is listening on an arbitrary loopback port". The mint therefore requires
-`port_resolution.port_is_gateway_owned(port)` and **refuses** when it cannot be
+`port_resolution.port_is_gateway_owned_on_loopback(port)` and **refuses** when it cannot be
 obtained, rather than degrading to send-and-see.
 
+**Host support.** A cross-process loopback record works only on POSIX hosts where
+`lsof` can attribute the exact `127.0.0.1:<port>` listener to the gateway pid.
+Non-POSIX hosts refuse this proof. A POSIX host also refuses when `lsof` is
+missing, fails, or returns no attributable listener. The exact self-connect case
+below does not need cross-process attribution.
+
 **The carve-out.** There is exactly one case where no proof is possible *or
-needed*: when the destination port is **this gateway's own bound port**, the
-listener is this very process. `mint_loopback_token` takes `own_port` and derives
-that itself rather than accepting a `require_proof` flag — a security-relevant
-boolean a caller can pass wrongly, versus a fact.
+needed*: when the destination port is **this gateway's own bound port** and the
+gateway binds the exact `127.0.0.1` address, the listener is this very process.
+`mint_loopback_token` takes `own_port` and derives that itself rather than
+accepting a `require_proof` flag — a security-relevant boolean a caller can pass
+wrongly, versus a fact. A wildcard `0.0.0.0` bind does not qualify: on macOS/BSD
+a more-specific `127.0.0.1:<port>` listener can coexist and wins dispatch, so a
+wildcard-bound hub runs the ordinary ownership proof before the mint or pane
+relay trusts the destination.
 
 That carve-out is not a convenience. `port_is_gateway_owned` needs
 `platform_compat.find_listening_pids`, which on POSIX needs `lsof` to attribute a
@@ -1835,12 +1868,22 @@ genuinely depended on a child:
 
 Consequences worth stating:
 
-- **`local_port == remote_port`.** `_acquire_local_port` allocates a free port
-  for a transport that BINDS one and returns the destination port verbatim for
-  the one that DIALS one — including the pre-flight, which is inverted between
-  them: a port to bind must be free, a port to dial must be occupied.
-- **Self-heal.** Tier 1 (rebuild the tunnel) is a no-op; Tier 2 (re-mint) is the
-  real recovery.
+- **The pane's port is the HUB's, on every transport.** `_acquire_local_port`
+  allocates a free loopback port for all three, because the iframe's origin has
+  to be a socket this gateway holds and can stop serving. ssh and ssm bind it
+  with a forwarder child; the loopback transport binds it in-process
+  (`_SshTunnel._start_loopback_forwarder`) and relays to the destination behind
+  it. Handing the browser the destination's port instead would put a socket the
+  hub does not hold in the pane's origin, and the browser carries the query
+  token and the host-scoped cookie itself — so none of the hub's own send guards
+  would be in that path.
+- **Self-heal retains the pane listener.** A failed destination generation
+  condemns sends and drops its relays, but the hub-owned browser port stays
+  bound. Tier 1 clears only the destination identity and re-proves a gateway
+  behind that same listener; Tier 2 re-mints the token and repeats the re-proof.
+  Explicit disconnect and failed initial readiness still release the listener.
+  This keeps a mounted iframe's host-scoped cookie from reconnecting to a local
+  process that won a transient port-release race.
 - **Forwarder reclaim never engages.** No child means `forwarder_pid` is the `0`
   sentinel, and the reclaim refuses an unrecorded identity outright. A record
   hand-edited to carry a pid fails the HMAC the gateway never wrote.
@@ -1852,8 +1895,13 @@ Consequences worth stating:
 
 ### 16.5 Security posture
 
-- **Nothing is exposed.** No listener is created, no port is bound, no forward
-  exists; the transport only DIALS a port on `127.0.0.0/8`.
+- **Only loopback is exposed, and only while the owner validates.** The
+  in-process relay binds `127.0.0.1` alone. Self-heal keeps that hub-owned
+  listener bound while it drops old relays and re-proves the destination behind
+  it, so the browser origin never becomes available to another local process.
+  Explicit `stop()` and a start that fails readiness release the listener, and
+  each connection is refused when the pinned destination owner no longer
+  validates.
 - **No new framing privilege.** The dashboard CSP already carries loopback
   origins in `frame-src` unconditionally for the Web Preview panel (§2), so a
   pane on a loopback port is not a new capability — only a new reason to have
@@ -1862,4 +1910,6 @@ Consequences worth stating:
   browser: the minted dashboard token follows the same two-route rule as the
   other transports (`connect` + `refresh-token`, §6), and the internal secret is
   read in-process and sent only to a proven listener.
-- **Off by default**, enforced at both the API write and the connect.
+- **Unreachable from product config.** The exact pod marker is required before
+  the config flag, API writer, or manager can admit a loopback record. Settings
+  filters the method out before it can render or be edited.

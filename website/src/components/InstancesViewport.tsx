@@ -937,7 +937,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     setPanelReport(reportInstanceFailure({
       id: activeId,
       name: inst?.name || activeId,
-      transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
+      transport: inst?.connection_method ?? 'ssh',
       // With the panel down the pane is healthy, so pass no status: the recorder's
       // no-failure path is what clears its de-dup signature, and gating this call
       // on `showPanel` would make that branch unreachable — leaving the signature

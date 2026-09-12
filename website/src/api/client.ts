@@ -1731,6 +1731,8 @@ export interface SsoStatus {
   reason: string
 }
 
+export type InstanceConnectionMethod = 'ssh' | 'ssm' | 'loopback'
+
 export interface InstanceView {
   id: string
   name: string
@@ -1740,7 +1742,7 @@ export interface InstanceView {
   ttl: string
   remote_bin: string
   /** Transport used to reach the instance. Older records default to 'ssh'. */
-  connection_method: 'ssh' | 'ssm'
+  connection_method: InstanceConnectionMethod
   /** SSM-only: EC2 instance id (i-...) or SSM managed-instance id (mi-...). */
   ssm_target: string
   /** SSM-only: named AWS profile ('' = default credential chain). */
@@ -1760,7 +1762,7 @@ export interface AddInstanceBody {
   ttl?: string
   remote_bin?: string
   /** Transport to reach the instance. Defaults to 'ssh' when omitted. */
-  connection_method?: 'ssh' | 'ssm'
+  connection_method?: InstanceConnectionMethod
   /** Required when connection_method is 'ssm': i-... / mi-... instance id. */
   ssm_target?: string
   aws_profile?: string

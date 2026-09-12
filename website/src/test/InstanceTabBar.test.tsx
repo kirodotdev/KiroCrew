@@ -254,6 +254,23 @@ describe('InstanceTabBar', () => {
     expect(row.textContent?.match(/clouddeskARM/g) ?? []).toHaveLength(1)
   })
 
+  it('identifies a loopback crew by method and fixed target', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([
+      conn({
+        id: 'loopback-1',
+        name: 'Same Host',
+        ssh_host: '',
+        connection_method: 'loopback',
+        remote_port: 5477,
+      }),
+    ]))
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />)
+
+    const row = await openSwitcher(u, /Same Host/i)
+    expect(row).toHaveTextContent('Loopback (same host) · 127.0.0.1')
+  })
+
   it('pins one crew out of the dropdown into an always-visible chip, and remembers it', async () => {
     // Nothing pinned by default: the crew lives behind the dropdown.
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))

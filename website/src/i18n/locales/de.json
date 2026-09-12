@@ -13240,6 +13240,7 @@
         "connecting": "Verbindung wird hergestellt…",
         "connection_did_not_complete_try_diagnose_for_det": "Die Verbindung wurde nicht abgeschlossen. Nutze Diagnose für Details.",
         "connection_method": "Verbindungsmethode",
+        "loopback_same_host": "Loopback (gleicher Host)",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "Standard-Anmeldeinformationskette",
         "diagnose": "Diagnose",

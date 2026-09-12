@@ -1,0 +1,20 @@
+
+=== 0. enable the transport via the dashboard's own config PATCH ===
+{"agent": {"approval_mode": "auto", "streaming": true, "model": "auto", "role_models": {}, "role_efforts": {}, "fallback_model": "auto", "reasoning_effort": "", "provider": "acp", "mcp_registry_mode":
+enabled=True allow_loopback_transport=True
+
+=== 1. declare a loopback instance pointing at this very gateway ===
+{"id": "self-loopback", "name": "self-loopback", "ssh_host": "", "remote_port": 7904, "local_port": 0, "ttl": "20h", "remote_bin": "", "connection_method": "loopback", "ssm_target": "", "aws_profile": "", "aws_region": "", "ssm_run_as": "ec2-user", "loopback_host": "127.0.0.1", "was_connected": false, "forwarder_pid": 0, "forwarder_start": "", "forwarder_sig": "", "status": {"instance_id": "self-l
+
+=== 2. loopback-tight: an off-host destination is refused ===
+{"error": "invalid loopback_host '10.0.0.5': not a loopback address. The loopback transport reaches a gateway on this same host; use the ssh or ssm transport for anything reachable over a network.", "code": "instance_invalid"}
+=== 3. loopback-tight: the hostname form is refused ===
+{"error": "invalid loopback_host 'localhost': must be a numeric IPv4 loopback address such as 127.0.0.1 (a hostname is not accepted, because resolving one would decide off-host reachability outside this gateway)", "code": "instance_invalid"}
+=== 4. connect through the self-connect carve-out ===
+{"instance_id": "self-loopback", "state": "connected", "local_port": 7904, "remote_port": 7904, "error": "", "connected_at": 1788858719.3924656, "token": "<redacted 263 chars>"}
+
+=== 5. tab-visibility inputs (was_connected || connected || warm) ===
+{"id": "self-loopback", "remote_port": 7904, "local_port": 7904, "connection_method": "loopback", "loopback_host": "127.0.0.1", "was_connected": true, "status": {"instance_id": "self-loopback", "state": "connected", "local_port": 7904, "remote_port": 7904, "error": "", "connected_at": 1788858719.3924656, "token_ttl_remaining": 71999}}
+
+=== 6. diagnose ladder ===
+{"instance_id": "self-loopback", "state": "connected", "local_port": 7904, "remote_port": 7904, "error": "", "connected_at": 1788858719.3924656, "diagnosis": {"code": "ok", "ok": true, "reason": "The gateway on this host's loopback port is answering.", "probes": [{"name": "local_gateway", "ok": true}]}, "token_ttl_remaining": 71999}

@@ -13417,6 +13417,7 @@
         "connecting": "Conectando…",
         "connection_did_not_complete_try_diagnose_for_det": "A conexão não foi concluída. Use Diagnosticar para ver os detalhes.",
         "connection_method": "Método de conexão",
+        "loopback_same_host": "Loopback (mesmo host)",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "cadeia de credenciais padrão",
         "diagnose": "Diagnosticar",

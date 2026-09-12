@@ -2977,6 +2977,110 @@ class TestLoopbackOwnerPids:
         assert pc.loopback_owner_pids(listeners) == []
 
 
+class TestEstablishedPeerPids:
+    """:func:`established_peer_pids` — attribution bound to ONE established socket.
+
+    A port-scoped lookup names whichever process holds the port when it runs,
+    which need not be the process on the other end of a socket already
+    connected. This answers the narrower question, so a caller that has just
+    dialled can gate on the peer of the connection it will actually use.
+    """
+
+    def _lsof(self, monkeypatch, blob: str, captured: dict | None = None):
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: f"/usr/bin/{name}")
+
+        def _run(argv, **kwargs):
+            if captured is not None:
+                captured["argv"] = list(argv)
+                captured["kwargs"] = kwargs
+            return blob
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _run)
+
+    def test_it_matches_the_reversed_four_tuple(self, monkeypatch):
+        # The -iTCP@addr:port filter matches a socket with EITHER endpoint on
+        # that address and port, so both ends of a loopback connection come
+        # back. Only the peer's own socket reads far->near, and only that row
+        # attributes the process the caller is connected TO.
+        blob = (
+            "p111\n"
+            "n127.0.0.1:54321->127.0.0.1:7777\n"  # our own end of the connection
+            "p222\n"
+            "n127.0.0.1:7777->127.0.0.1:54321\n"  # the peer's end
+            "p333\n"
+            "n127.0.0.1:7777->127.0.0.1:9999\n"  # same port, another client
+        )
+        self._lsof(monkeypatch, blob)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == [222]
+
+    def test_a_listen_row_caught_by_the_filter_is_ignored(self, monkeypatch):
+        # The LISTEN form carries no arrow; treating it as a match would
+        # re-introduce exactly the port-scoped attribution this replaces.
+        blob = "p111\nn*:7777\np222\nn127.0.0.1:7777\n"
+        self._lsof(monkeypatch, blob)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == []
+
+    def test_shared_sockets_dedupe_and_keep_order(self, monkeypatch):
+        # One socket can be reported once per fd, and a forked worker pair can
+        # legitimately hold the same connection.
+        blob = (
+            "p222\n"
+            "n127.0.0.1:7777->127.0.0.1:54321\n"
+            "n127.0.0.1:7777->127.0.0.1:54321\n"
+            "p223\n"
+            "n127.0.0.1:7777->127.0.0.1:54321\n"
+        )
+        self._lsof(monkeypatch, blob)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == [222, 223]
+
+    def test_a_malformed_pid_line_drops_its_rows(self, monkeypatch):
+        blob = "pbogus\nn127.0.0.1:7777->127.0.0.1:54321\n"
+        self._lsof(monkeypatch, blob)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == []
+
+    def test_v6_endpoints_are_bracketed_in_the_filter_and_compared_bare(self, monkeypatch):
+        # getsockname reports ``::1``; lsof prints ``[::1]`` and reads the
+        # filter only in bracketed form. Both sides normalize to the bare host.
+        captured: dict = {}
+        blob = "p222\nn[::1]:7777->[::1]:54321\n"
+        self._lsof(monkeypatch, blob, captured)
+        assert pc.established_peer_pids(("::1", 54321), ("::1", 7777)) == [222]
+        assert "-iTCP@[::1]:7777" in captured["argv"]
+
+    def test_a_v4_mapped_peer_matches_its_v4_form(self, monkeypatch):
+        # A dual-stack socket can report the v4-mapped spelling for a v4 peer.
+        blob = "p222\nn[::ffff:127.0.0.1]:7777->[::ffff:127.0.0.1]:54321\n"
+        self._lsof(monkeypatch, blob)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == [222]
+
+    def test_it_is_bounded_and_folds_every_failure_to_empty(self, monkeypatch):
+        # A wedged or missing lsof must answer "no attribution" — which every
+        # caller reads as a refusal — rather than raising into a relay path.
+        captured: dict = {}
+
+        def _wedge(argv, **kwargs):
+            captured["kwargs"] = kwargs
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/lsof")
+        monkeypatch.setattr(pc.subprocess, "check_output", _wedge)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == []
+        assert captured["kwargs"].get("timeout") == pc._LSOF_TIMEOUT_SECS
+
+    def test_a_missing_tool_yields_no_attribution(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: None)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == []
+
+    def test_non_posix_yields_no_attribution(self, monkeypatch):
+        # Windows is not approximated: port_resolution already denies the
+        # loopback ownership proof outright off POSIX.
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        assert pc.established_peer_pids(("127.0.0.1", 54321), ("127.0.0.1", 7777)) == []
+
+
 class TestKillAsyncVariants:
     """Regression guards for the async ``kill_pid_async`` / ``kill_process_tree_async``
     variants.

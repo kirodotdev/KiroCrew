@@ -13418,6 +13418,7 @@
         "connecting": "Conectando…",
         "connection_did_not_complete_try_diagnose_for_det": "La conexión no se completó. Usa Diagnosticar para ver los detalles.",
         "connection_method": "Método de conexión",
+        "loopback_same_host": "Bucle local (mismo host)",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "cadena de credenciales predeterminada",
         "diagnose": "Diagnosticar",

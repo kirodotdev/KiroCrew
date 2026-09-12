@@ -13241,6 +13241,7 @@
         "connecting": "সংযোগ করা হচ্ছে…",
         "connection_did_not_complete_try_diagnose_for_det": "সংযোগ সম্পূর্ণ হয়নি। বিস্তারিত জানতে Diagnose দেখো।",
         "connection_method": "সংযোগ পদ্ধতি",
+        "loopback_same_host": "লুপব্যাক (একই হোস্ট)",
         "dashboard_url": "dashboard.url",
         "default_credential_chain": "ডিফল্ট ক্রেডেনশিয়াল চেইন",
         "diagnose": "রোগনির্ণয়",

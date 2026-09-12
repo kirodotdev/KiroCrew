@@ -65,6 +65,25 @@ WARM_SET_CAP_AUTO_CEILING: int = 8
 # so a stock gateway's own port is never the first candidate.
 DEFAULT_TUNNEL_BASE_PORT: int = 7778
 
+# The address every socket in this package binds or dials on this host: the
+# ssh/ssm forward's local end, the in-process pane forwarder, the readiness and
+# health probes, and the loopback transport's DESTINATION. That destination is
+# this constant rather than a per-record field because the credential the
+# loopback mint sends is authorized by an ownership proof that attributes the
+# listener a 127.0.0.1 connect reaches
+# (``port_resolution.port_is_gateway_owned_on_loopback``), so this is the one
+# address the proof speaks for — another loopback address (``127.0.0.2``), a
+# hostname (``localhost``, resolved outside this process) or ``::1`` is each a
+# destination nothing attributed. IPv4 only, deliberately: the URL builders on
+# this path interpolate the host unbracketed, and the ssh transport already pins
+# ``AddressFamily=inet``.
+LOOPBACK_HOST: str = "127.0.0.1"
+
+# Stable wire/diagnosis code when the pod-only verification transport is not
+# admitted. Shared by the owner API and the manager's read-only diagnosis path
+# so clients do not need two spellings for the same policy refusal.
+LOOPBACK_TRANSPORT_UNAVAILABLE_CODE: str = "loopback_transport_unavailable"
+
 # Enable SSH transport compression (``ssh -C``) on instance tunnels. The whole
 # remote dashboard travels over this single forwarded stream: the SPA bundle on
 # first connect plus every subsequent API/WebSocket frame. That payload is
