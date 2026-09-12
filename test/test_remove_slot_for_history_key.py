@@ -853,7 +853,15 @@ class TestAFailedRemovalDoesNotLeakIntoTheNextSave:
 
         reloaded = CronService(base_dir=tmp_path)
         assert reloaded.get_job(parent.id) is None
-        assert reloaded.get_job(malformed.id).session_key == ["not", "a", "string"]
+        # The malformed row SURVIVES the unrelated removal -- that is the
+        # poison this test guards against. Its owner field does not survive
+        # verbatim: deserialization type-guards every string field,
+        # degrading a non-string session_key to "" so no consumer ever
+        # calls string methods on a list. "" is the field's documented
+        # unset value, not corruption.
+        survivor = reloaded.get_job(malformed.id)
+        assert survivor is not None
+        assert survivor.session_key == ""
 
     def test_a_failed_removal_is_not_persisted_by_an_unrelated_later_save(
         self, tmp_path, monkeypatch
