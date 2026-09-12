@@ -221,7 +221,7 @@ The member-facing tool surface is the ordinary `kirocrew-dashboard` `session_*`
 tool set, mounted **per session** rather than through the on-disk agent
 template: a member DM session's ACP `session/new` **and `session/load`** carry
 the dashboard server as a session-level `mcpServers` entry (built by
-`members.member_dispatch_session_server`, identity via `KIROCREW_SESSION_KEY`
+`members.member_session_servers`, identity via `KIROCREW_SESSION_KEY`
 in the entry's env, plus `KIROCREW_BOUND_PORT` — the entry's env is built from
 scratch rather than inherited, and a child left to rediscover the port falls
 through to the run-marker check, which needs an `lsof` view the sandbox's user

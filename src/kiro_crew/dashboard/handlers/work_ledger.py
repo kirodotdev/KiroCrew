@@ -49,7 +49,7 @@ from aiohttp import web
 
 from kiro_crew import session_ledger, work_ledger
 from kiro_crew.dashboard import session_control
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.handlers._shared import _is_restricted_session, internal_memory_scope
 
 # Module-scope like ``session_ledger.py``'s identical imports: the recognition
 # gate and the incognito classifier are this module's own load-bearing deps.
@@ -107,7 +107,7 @@ ROUTE_CODES: frozenset[str] = frozenset(
     }
 )
 
-#: Refused because the caller has no binding file. Its own code, distinct from
+#: Refused because the caller has no current binding. Its own code, distinct from
 #: ``no_ledger``, because the two answer different questions about the same
 #: session and a caller that is neither must be able to tell which half it is
 #: missing.
@@ -239,8 +239,22 @@ async def _caller_key(
         )
     state: DashboardState = request.app["state"]
     sk = request.headers.get("X-Session-Key", "")
-    refusal = await _recognize_session(
-        state, sk, operation, blocks_persisted_mode=is_incognito_transcript
+    _, refusal = await internal_memory_scope(request, operation, claimed_session=sk)
+    if refusal is not None:
+        return None, refusal
+    # A scoped spawned worker has no dashboard slot. Both binding records must
+    # agree before recognizing it; a surviving first write is not authority.
+    # Private process identity is checked above as for the member's own tools.
+    bound_run = (
+        sk.startswith("subagent:")
+        and await asyncio.to_thread(_confirmed_worker_binding, sk) is not None
+    )
+    refusal = (
+        None
+        if bound_run
+        else await _recognize_session(
+            state, sk, operation, blocks_persisted_mode=is_incognito_transcript
+        )
     )
     if refusal is not None:
         return None, refusal
@@ -286,6 +300,25 @@ async def _caller_key(
     return session_ledger.ledger_key(sk), None
 
 
+async def validate_work_dispatch(
+    request: web.Request, parent_session: str, item_id: str
+) -> web.Response | None:
+    """Preflight a spawn against only the verified caller's own ledger."""
+    key, refusal = await _caller_key(request, "work_ledger.dispatch")
+    if refusal is not None:
+        return refusal
+    if key != session_ledger.ledger_key(parent_session):
+        return _refuse_403("worker_not_owned", "The task must belong to the calling session.")
+    assert key is not None
+    try:
+        await asyncio.to_thread(work_ledger.require_dispatchable_item, key, item_id)
+    except WorkLedgerError as exc:
+        return _refuse_store_error(exc)
+    except OSError:
+        return _refuse_503("ledger_write_failed", "The task record could not be read.")
+    return None
+
+
 def _reaches_a_channel(request: web.Request, sk: str) -> bool:
     """Whether this caller's turns reach a messaging channel, mirror included.
 
@@ -325,16 +358,25 @@ def _reaches_a_channel(request: web.Request, sk: str) -> bool:
     return False
 
 
+def _confirmed_worker_binding(key: str) -> tuple[str, str] | None:
+    """Return only a binding whose item still names this worker."""
+    binding = work_ledger.read_binding(key)
+    if binding is None:
+        return None
+    item = work_ledger.read_work_item(*binding)
+    return binding if item is not None and item.worker_session_key == key else None
+
+
 async def _worker_binding(
     key: str, operation: str
 ) -> tuple[tuple[str, str], None] | tuple[None, web.Response]:
     """Resolve the caller's own binding, or refuse with ``not_bound``.
 
     The whole of a worker's addressing: the conductor key and item id come from
-    ``bindings/<the caller's digest>.json`` and from nowhere else, which is why
-    neither worker tool has a parameter that could name either.
+    ``bindings/<the caller's digest>.json`` and the item must name the caller
+    back. Neither worker tool has a parameter that could name either address.
     """
-    binding = await asyncio.to_thread(work_ledger.read_binding, key)
+    binding = await asyncio.to_thread(_confirmed_worker_binding, key)
     if binding is None:
         _audit(key, operation, "denied", error=CODE_NOT_BOUND)
         return None, _refuse_403(
@@ -400,9 +442,7 @@ async def api_work_brief(request: web.Request) -> web.Response:
             "so it is no longer a private surface to return it to.",
         )
     if brief is None:
-        # The binding names an item that is gone or unreadable. 404 on the ITEM,
-        # not 403 on the binding: the caller IS bound, and telling it otherwise
-        # would send a worker looking for a grant it already has.
+        # The item disappeared or became unreadable after binding confirmation.
         _audit(key, "work_brief", "denied", resources=item_id, error=work_ledger.CODE_UNKNOWN_ITEM)
         return _refuse_404(
             work_ledger.CODE_UNKNOWN_ITEM,
@@ -498,13 +538,23 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     can apply its own "``done`` only" filter without a second lookup — the filter stays
     the conductor's to apply.
     """
-    key, refusal = await _caller_key(request, "work_ledger_read")
+    snapshot, refusal = await read_own_ledger(request)
     if refusal is not None:
         return refusal
+    return web.json_response(snapshot)
+
+
+async def read_own_ledger(
+    request: web.Request,
+) -> tuple[dict[str, Any] | None, web.Response | None]:
+    """Read verified caller facts for the work tools and task snapshot publisher."""
+    key, refusal = await _caller_key(request, "work_ledger_read")
+    if refusal is not None:
+        return None, refusal
     assert key is not None
     record, lrefusal = await _own_ledger(key, "work_ledger_read")
     if lrefusal is not None:
-        return lrefusal
+        return None, lrefusal
     assert record is not None
 
     state: DashboardState = request.app["state"]
@@ -539,19 +589,17 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             "denied",
             resources="channel_agent_block_post_read",
         )
-        return _refuse_403(
+        return None, _refuse_403(
             "channel_session",
             "This session gained a channel mirror while the ledger was being read, "
             "so it is no longer a private surface to return it to.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
-    return web.json_response(
-        {
-            "conductor": record.to_dict(),
-            "items": rows,
-            "accept_batch": work_ledger.accept_batch(items),
-        }
-    )
+    return {
+        "conductor": record.to_dict(),
+        "items": rows,
+        "accept_batch": work_ledger.accept_batch(items),
+    }, None
 
 
 #: Events returned per item. The log is append-only and capped at 200 per item,
@@ -576,6 +624,14 @@ def _slot_running(state: DashboardState, key: str) -> bool:
     testing slot EXISTENCE here would never flag it. ``orphaned`` keeps the
     existence test, because a conductor's absence is what that flag means.
     """
+    if key.startswith("subagent:"):
+        manager = getattr(state, "subagents", None)
+        return bool(
+            manager
+            and any(
+                (info.conversation_key or f"subagent:{info.id}") == key for info in manager.running
+            )
+        )
     slot = _find_slot(state, key)
     return bool(getattr(slot, "running", False)) if slot is not None else False
 

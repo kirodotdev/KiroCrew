@@ -1,7 +1,27 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { buildSrcdoc, THEME_VAR_NAMES } from '../lib/widgetSrcdoc'
 
 describe('widgetSrcdoc', () => {
+  it.each([false, true])('keeps host context inert and before the body (SSR=%s)', (ssr) => {
+    const contextData = { locale: 'de', label: '</script><img src=x onerror="alert(1)">' }
+    let out: string
+    try {
+      if (ssr) {
+        vi.stubGlobal('document', undefined)
+        vi.stubGlobal('window', undefined)
+      }
+      out = buildSrcdoc({ html: '<p>body</p>', themeVars: {}, mode: 'dark', contextData })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    const doc = new DOMParser().parseFromString(out!, 'text/html')
+    const context = doc.head.querySelector('#kirocrew-context')!
+    expect(context.getAttribute('type')).toBe('application/json')
+    expect(JSON.parse(context.textContent!)).toEqual(contextData)
+    expect(doc.querySelector('img')).toBeNull()
+    expect(out!.indexOf('id="kirocrew-context"')).toBeLessThan(out!.indexOf('<body'))
+  })
+
   it('embeds the html body', () => {
     const out = buildSrcdoc({
       html: '<p>hello world</p>',

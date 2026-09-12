@@ -201,6 +201,45 @@ async def test_a_workers_report_reaches_its_own_item_and_no_other():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("worker", [WORKER_A, "subagent:interrupted"])
+@pytest.mark.parametrize("replaced", [False, True])
+async def test_interrupted_binding_cannot_read_or_report(worker, replaced, monkeypatch):
+    """A surviving binding file cannot authorize a worker the item never named."""
+    wl.ensure_conductor(CONDUCTOR_A)
+    item = wl.apply_conductor_action(
+        CONDUCTOR_A, "create", title="Private brief", acceptance={"kind": "human_approval"}
+    )["item"]
+    # The durable half-state left by termination between bind's two writes.
+    wl._write_binding(worker, CONDUCTOR_A, item.item_id)
+    current_worker = "subagent:replacement" if replaced else worker
+    if replaced:
+        wl.apply_conductor_action(
+            CONDUCTOR_A, "bind", item_id=item.item_id, worker_session_key=current_worker
+        )
+    before = wl.item_path(CONDUCTOR_A, item.item_id).read_bytes()
+
+    async def recognize_existing_session(state, key, operation, **kwargs):
+        if key.startswith("subagent:"):
+            return routes._refuse_403("unknown_session", "No dashboard slot")
+        return None
+
+    monkeypatch.setattr(routes, "_recognize_session", recognize_existing_session)
+    assert (await _brief(worker))[0] == 403
+    assert (await _report(worker, {"status": "done", "summary": "Obsolete report"}))[0] == 403
+    assert wl.item_path(CONDUCTOR_A, item.item_id).read_bytes() == before
+
+    if not replaced:
+        wl.apply_conductor_action(
+            CONDUCTOR_A, "bind", item_id=item.item_id, worker_session_key=current_worker
+        )
+    assert (await _brief(current_worker))[0] == 200
+    assert (await _report(current_worker, {"status": "progress", "summary": "Current worker"}))[
+        0
+    ] == 200
+    assert wl.read_work_item(CONDUCTOR_A, item.item_id).summary == "Current worker"
+
+
+@pytest.mark.asyncio
 async def test_a_worker_cannot_name_another_item_because_there_is_no_parameter():
     """The bound item is resolved, not supplied — naming one is an unknown field."""
     ids = await two_by_two()

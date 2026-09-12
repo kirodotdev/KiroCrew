@@ -574,6 +574,8 @@ interface BuildSrcdocOptions {
   html: string
   themeVars: Record<string, string>
   mode: 'dark' | 'light'
+  /** Host-supplied display context, available as JSON in #kirocrew-context. */
+  contextData?: Record<string, unknown>
   /** Include the height reporter script (used by inline WidgetFrame iframes
    * that auto-size to content). Standalone full-screen views set this false
    * since they use a fixed iframe height. */
@@ -601,11 +603,17 @@ export function buildSrcdoc({
   html,
   themeVars,
   mode,
+  contextData,
   includeHeightReporter = false,
   enableComments = false,
   showLoadingOverlay = false,
   loadingLabel = '',
 }: BuildSrcdocOptions): string {
+  // A script element's text is serialized verbatim: JSON must not contain a
+  // literal closing script tag when the iframe parses the resulting document.
+  const contextJSON = contextData === undefined
+    ? undefined
+    : JSON.stringify(contextData).replace(/</g, '\\u003c')
   // SSR / unit-test fallback: when there's no DOM (Node.js, vitest before
   // jsdom is set up), fall back to a minimal string-builder that does NOT
   // interpolate `html` — we wrap it in a textarea-escaped <template> so it
@@ -613,7 +621,7 @@ export function buildSrcdoc({
   // buildSrcdoc is only called from React components that mount in the
   // browser, but the guard keeps tests deterministic.
   if (typeof document === 'undefined' || typeof window === 'undefined') {
-    return buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter })
+    return buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter }, contextJSON)
   }
 
   // Build the iframe document programmatically. createHTMLDocument() returns
@@ -644,6 +652,14 @@ export function buildSrcdoc({
   csp.setAttribute('http-equiv', 'Content-Security-Policy')
   csp.setAttribute('content', cspFor(scriptOrigin))
   head.appendChild(csp)
+
+  if (contextJSON !== undefined) {
+    const context = doc.createElement('script')
+    context.type = 'application/json'
+    context.id = 'kirocrew-context'
+    context.textContent = contextJSON
+    head.appendChild(context)
+  }
 
   // Tailwind v4 dark-mode directives (compiled by the runtime on load). Placed
   // Directives precede the runtime script so the dark variant registers before
@@ -829,7 +845,10 @@ export function buildSrcdoc({
  * always goes through the DOM path above. Kept minimal — does NOT execute
  * scripts in the LLM body (just embeds it as a textContent-safe string
  * inside a <template> so the snapshot is deterministic and round-trips). */
-function buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter }: BuildSrcdocOptions): string {
+function buildSrcdocSSR(
+  { html, themeVars, mode, includeHeightReporter }: BuildSrcdocOptions,
+  contextJSON?: string,
+): string {
   const themeCss = buildThemeCss(themeVars, mode)
   const styleCss = themeCss ? `${BASE_BODY_CSS} ${themeCss}` : BASE_BODY_CSS
   // The `html` interpolation here is gated by typeof-document guard above
@@ -846,6 +865,8 @@ function buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter }: BuildS
     `<meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
     `<meta http-equiv="Content-Security-Policy" content="${cspFor('')}">` +
+    // The payload is JSON with every '<' escaped before reaching either builder.
+    (contextJSON === undefined ? '' : `<script type="application/json" id="kirocrew-context">${contextJSON}</script>`) +
     `<style type="text/tailwindcss">${TAILWIND_V4_DIRECTIVES}</style>` +
     // Theme style precedes the runtime <script src> for the same reason as the
     // DOM path: a head script blocks parsing, so a style behind it leaves the

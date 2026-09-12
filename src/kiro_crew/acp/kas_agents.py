@@ -449,8 +449,8 @@ def to_client_custom_agent(
     caller with no shared gateway: nothing is stubbed, so nothing is subtracted.
 
     *member_dispatch* widens the projection for a crew member's DM session:
-    ``@kirocrew-dashboard`` joins ``tools`` (the server itself arrives as a
-    session-level entry, but KAS grants only what ``tools`` names), and the
+    ``@kirocrew-dashboard``, ``@kirocrew-work`` and ``@kirocrew-panel`` join ``tools`` (their servers
+    arrive as session-level entries, but KAS grants only what ``tools`` names), and the
     member's approval-free dashboard verbs join the ``allowedTools`` input
     BEFORE the governance ceiling filter — the conductor grant set plus the
     write verbs the server-side ``created_by`` ownership fence bounds, passed
@@ -482,12 +482,17 @@ def to_client_custom_agent(
     }
     allowed_tools_input = spec.get("allowedTools")
     if member_dispatch:
-        # The dashboard server arrives as a session-level entry; naming it in
+        from kiro_crew.members import MEMBER_SESSION_SERVERS
+
+        # Member servers arrive as session-level entries; naming them in
         # ``tools`` is what grants its tools (KAS resolves ``tools ?? []``).
         # ``"*"`` already covers it.
         tools = out["tools"]
-        if isinstance(tools, list) and "@kirocrew-dashboard" not in tools:
-            out["tools"] = [*tools, "@kirocrew-dashboard"]
+        if isinstance(tools, list):
+            out["tools"] = [
+                *tools,
+                *(f"@{name}" for name in MEMBER_SESSION_SERVERS if f"@{name}" not in tools),
+            ]
         # circular import: agent imports the config loader, which sits below
         # this module; resolved at call time like the other heavy seams here.
         from kiro_crew.agent import _MEMBER_DASHBOARD_GRANTS

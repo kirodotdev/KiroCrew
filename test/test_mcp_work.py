@@ -1,7 +1,7 @@
 """The ``kirocrew-work`` MCP server — its surface, its identity gate, its registration.
 
 Pins the Phase 2 exit criteria that belong to the server rather than to the routes:
-a subagent (a lenient, PID-walked identity) is refused on either worker tool; the
+an unverified caller (including a lenient, PID-walked identity) is refused; the
 server carries no ``autoApprove`` key and cannot gain one without failing a test;
 the default agent's spec carries neither the entry nor an ``@kirocrew-work``
 reference, asserted on the output of BOTH loops that write specs; and
@@ -83,7 +83,7 @@ def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
 @pytest.mark.parametrize(
     "tool", ["work_brief", "work_report", "work_ledger_read", "work_ledger_record"]
 )
-def test_a_subagent_identity_is_refused_on_every_tool(tool, monkeypatch):
+def test_an_unverified_identity_is_refused_on_every_tool(tool, monkeypatch):
     """A subagent lives under its parent slot's process tree, so the lenient
     resolver's ancestor walk would hand it the PARENT's identity — letting it read
     the parent's brief or report against the parent's item. Simulated the way the
@@ -98,7 +98,7 @@ def test_a_subagent_identity_is_refused_on_every_tool(tool, monkeypatch):
 
     out = mcp_work._call_tool_inner(tool, {"status": "done", "summary": "x", "action": "goal"})
     assert out.startswith("Error:")
-    assert "subagent" in out
+    assert "own gateway-injected session identity" in out
 
 
 def test_the_strict_gate_is_the_only_resolver_this_module_uses():
@@ -117,10 +117,11 @@ def test_the_module_is_registered_as_reflexive():
     assert "mcp_work.py" in mcp_core.REFLEXIVE_TOOL_MODULES
 
 
-def test_the_verified_key_is_what_travels(monkeypatch):
+@pytest.mark.parametrize("session_key", ["chat-verified", "subagent:verified"])
+def test_the_verified_key_is_what_travels(monkeypatch, session_key):
     """Gating on the strict resolver and then letting the transport resolve again
     would authorize the check and the action as potentially different sessions."""
-    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-verified")
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: session_key)
     seen: dict[str, Any] = {}
 
     def _fake_get(path: str, session_key: str | None = None) -> dict:
@@ -130,7 +131,7 @@ def test_the_verified_key_is_what_travels(monkeypatch):
 
     monkeypatch.setattr(mcp_work, "_get", _fake_get)
     mcp_work._call_tool_inner("work_brief", {})
-    assert seen["session_key"] == "chat-verified"
+    assert seen["session_key"] == session_key
     assert seen["path"] == "/api/work-ledger/brief"
 
 

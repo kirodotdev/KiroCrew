@@ -4,6 +4,14 @@
 
 The ACP layer spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for `kiro-cli acp` or `claude-agent-acp`, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. All protocol constants in `acp/types.py`.
 
+Member DMs use `members.member_session_servers` to supply dashboard, work and
+panel MCP entries with one session envelope. The client append path and KAS
+session create/load paths replace entries by server name. KAS stubs the same
+set out of its custom-agent specs to avoid duplicate server launches.
+`ACP_BACKENDS_MEMBER_DISPATCH` and the owned-permission-surface checks still
+decide which sessions receive the entries; work and panel tools gain availability
+without gaining auto-approval.
+
 ## Backend Selection
 
 The trusted `private_memory` constructor flag is preserved from provider creation

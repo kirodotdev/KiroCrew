@@ -1,0 +1,153 @@
+<!--
+  Read-only task board for panel_publish(template="tasks").
+  Data: { conductor, items } from work_ledger_read, optionally with a summary.
+  The ledger owns state. Creation, steering and decisions happen in member chat.
+  Host-supplied kirocrew-context carries translated labels and publish time.
+  All published values enter the DOM as text; this template has no action bridge.
+-->
+<style>
+  .kt { box-sizing: border-box; padding: 20px; color: var(--text); font: 13px/1.5 system-ui, sans-serif; }
+  .kt * { box-sizing: border-box; }
+  .kt h1 { margin: 0 0 8px; font-size: 20px; color: var(--text-strong); }
+  .kt h2 { margin: 0; font-size: 13px; color: var(--text-strong); }
+  .kt p { margin: 0 0 10px; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .kt-note { color: var(--muted); font-size: 12px; }
+  .kt-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+  .kt-lane { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated); }
+  .kt-lane > header { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .kt-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .kt-card { padding: 12px; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); overflow-wrap: anywhere; }
+  .kt-card summary { cursor: pointer; font-weight: 600; color: var(--text-strong); }
+  .kt-card summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .kt-id { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 400; }
+  .kt-report { margin-top: 10px !important; }
+  .kt-facts { margin: 12px 0 0; }
+  .kt-facts dt { margin: 10px 0 3px; font-size: 11px; font-weight: 600; color: var(--muted); }
+  .kt-facts dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .kt-evidence { margin: 0; padding-left: 18px; }
+  .kt-warning { border-left: 3px solid var(--warn); padding-left: 8px; }
+  .kt-empty { padding: 16px; margin-top: 16px; border: 1px dashed var(--border); border-radius: 8px; }
+  @media (max-width: 800px) { .kt-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 480px) { .kt { padding: 12px; } .kt-board { grid-template-columns: minmax(0, 1fr); } }
+</style>
+<!--kirocrew:panel-data-->
+<main class="kt" id="kt-root"></main>
+<script>
+(function () {
+  'use strict';
+  const root = document.getElementById('kt-root');
+  const contextNode = document.getElementById('kirocrew-context');
+  const dataNode = document.getElementById('kirocrew-panel-data');
+  const context = contextNode ? JSON.parse(contextNode.textContent || '{}') : {};
+  const labels = context.labels || {};
+  const locale = context.locale || 'en';
+  document.documentElement.lang = locale;
+  const data = dataNode ? JSON.parse(dataNode.textContent || '{}') : {};
+  const MAX_ITEMS = 32;
+  const MAX_ARTIFACTS = 20;
+  const names = ['todo', 'progress', 'blocked', 'review', 'done', 'closed'];
+
+  function node(tag, text, className) {
+    const element = document.createElement(tag);
+    if (text != null) element.textContent = String(text);
+    if (className) element.className = className;
+    return element;
+  }
+  function label(key) {
+    return typeof labels[key] === 'string' ? labels[key] : key;
+  }
+  function text(value) {
+    if (value == null) return '\u2014';
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  }
+  function date(value) {
+    const parsed = new Date(value);
+    if (!value || !Number.isFinite(parsed.getTime())) return '\u2014';
+    return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(parsed);
+  }
+  function count(value) {
+    return new Intl.NumberFormat(locale).format(value);
+  }
+  function lane(item) {
+    if (item.state === 'accepted') return 'done';
+    if (item.state === 'rejected' || item.state === 'abandoned') return 'closed';
+    if (item.status === 'blocked' || item.status === 'question') return 'blocked';
+    if (item.status === 'done' && item.verdict !== 'fail') return 'review';
+    return item.has_worker ? 'progress' : 'todo';
+  }
+  function fact(list, heading, value) {
+    list.append(node('dt', label(heading)), node('dd', text(value)));
+  }
+  function card(item) {
+    const article = node('article', null, 'kt-card');
+    const details = node('details');
+    const title = node('summary', typeof item.title === 'string' ? item.title : label('untitled'));
+    title.append(node('span', text(item.item_id), 'kt-id'));
+    details.append(title);
+    const facts = node('dl', null, 'kt-facts');
+    const acceptance = item.acceptance;
+    fact(facts, 'criteria', acceptance && typeof acceptance.description === 'string' ? acceptance.description : acceptance);
+    if (item.decision) fact(facts, 'decision', item.decision);
+    if (item.verdict) {
+      const key = 'verdict_' + item.verdict;
+      fact(facts, 'acceptance', typeof labels[key] === 'string' ? labels[key] : item.verdict);
+    }
+    if (item.last_report_at) fact(facts, 'last_report', date(item.last_report_at));
+    if (item.pr) fact(facts, 'pull_request', item.pr);
+    if (item.artifacts && typeof item.artifacts === 'object' && !Array.isArray(item.artifacts)) {
+      const entries = Object.entries(item.artifacts);
+      if (entries.length) {
+        facts.append(node('dt', label('evidence')));
+        const values = node('dd');
+        const list = node('ul', null, 'kt-evidence');
+        entries.slice(0, MAX_ARTIFACTS).forEach(([name, value]) => {
+          list.append(node('li', name + ': ' + text(value)));
+        });
+        values.append(list);
+        if (entries.length > MAX_ARTIFACTS) values.append(node('p', label('truncated'), 'kt-note'));
+        facts.append(values);
+      }
+    }
+    details.append(facts);
+    article.append(details);
+    if (item.summary) article.append(node('p', text(item.summary), 'kt-report'));
+    if (item.has_worker && item.stale) {
+      article.append(node('p', label('stale'), 'kt-note kt-warning'));
+    }
+    return article;
+  }
+
+  root.append(node('h1', label('title')), node('p', label('chat_hint'), 'kt-note'));
+  const stamp = node('time', date(context.publishedAt));
+  if (context.publishedAt) stamp.dateTime = context.publishedAt;
+  const published = node('p', label('published') + ' ', 'kt-note');
+  published.append(stamp);
+  root.append(published, node('p', label('snapshot_hint'), 'kt-note'));
+  if (typeof data.summary === 'string') root.append(node('p', data.summary));
+  if (data.conductor && typeof data.conductor.goal === 'string') root.append(node('p', data.conductor.goal));
+  if (!Array.isArray(data.items)) {
+    root.append(node('p', label('unavailable'), 'kt-empty'));
+    return;
+  }
+  if (!data.items.length) {
+    root.append(node('p', label('empty'), 'kt-empty'));
+    return;
+  }
+  const items = data.items.slice(0, MAX_ITEMS);
+  if (data.items.length > MAX_ITEMS) root.append(node('p', label('truncated'), 'kt-note kt-warning'));
+  const board = node('div', null, 'kt-board');
+  names.forEach(name => {
+    const rows = items.filter(item => lane(item) === name);
+    if (name === 'closed' && !rows.length) return;
+    const section = node('section', null, 'kt-lane');
+    section.setAttribute('aria-label', label(name));
+    const header = node('header');
+    header.append(node('h2', label(name)), node('span', count(rows.length), 'kt-count'));
+    section.append(header);
+    if (name === 'done' || name === 'closed') section.append(node('p', label(name + '_hint'), 'kt-note'));
+    rows.forEach(item => section.append(card(item)));
+    board.append(section);
+  });
+  root.append(board);
+})();
+</script>

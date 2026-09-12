@@ -6,12 +6,14 @@ Three ledgers carry that name, and they are not interchangeable.
 module is the third: a record two parties write and neither owns, so that a
 conductor learns what a worker did as DATA instead of reading its transcript.
 
-This module is the STORAGE layer only. Its one importer is
-``dashboard/handlers/work_ledger.py``, which serves the ``/api/work-ledger``
+This module is the STORAGE layer only. ``dashboard/handlers/work_ledger.py``
+serves the ``/api/work-ledger``
 routes; the MCP tools in :mod:`kiro_crew.mcp_work` (``work_brief``,
 ``work_report``, ``work_ledger_read``, ``work_ledger_record``) reach it only
 through those routes. Every write therefore passes the two entry points below,
-so the writer-ownership rule is enforced in one place.
+so the writer-ownership rule is enforced in one place. The gateway's
+``subagent_manager/run.py`` binds fresh scoped workers after preparation and
+before their first prompt, using its verified parent and generated worker keys.
 
 WRITER OWNERSHIP is the whole design, and it is expressed as two entry points rather
 than one update function with a field allowlist:
@@ -726,6 +728,20 @@ def read_work_item(slot_key: str, item_id: str, *, strict: bool = False) -> Work
             "work ledger item %s stores id %s; treating as absent", item_id, item.item_id
         )
         return None
+    return item
+
+
+def require_dispatchable_item(
+    slot_key: str, item_id: str, *, worker_session_key: str = ""
+) -> WorkItem:
+    """Check without reserving: preparation can fail before the atomic bind."""
+    item = read_work_item(slot_key, item_id, strict=True)
+    if item is None:
+        raise WorkLedgerError("This task is unavailable.", code=CODE_UNKNOWN_ITEM)
+    if item.state != "open":
+        raise WorkLedgerError("A closed task cannot be dispatched.", code=CODE_ITEM_CLOSED)
+    if item.worker_session_key and item.worker_session_key != worker_session_key:
+        raise WorkLedgerError("This task already has a worker.", code=CODE_ALREADY_BOUND)
     return item
 
 

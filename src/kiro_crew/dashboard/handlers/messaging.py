@@ -236,6 +236,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 # below unreachable: the block, its unknown_crew refusal and its
                 # store resolution all ran off a value that was always None.
                 "crew": body.get("crew", ""),
+                "work_item_id": body.get("work_item_id", ""),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -255,6 +256,13 @@ async def api_spawn(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    work_item_id = cleaned.get("work_item_id") or ""
+    if work_item_id:
+        from kiro_crew.dashboard.handlers.work_ledger import validate_work_dispatch
+
+        refusal = await validate_work_dispatch(request, parent_session, work_item_id)
+        if refusal is not None:
+            return refusal
     # approval_mode and silent are HTTP API parameters passed by the SDK,
     # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
     # (mcp_core.py) does not expose these params — they are added by the
@@ -366,6 +374,8 @@ async def api_spawn(request: web.Request) -> web.Response:
         )
     except (OSError, ValueError) as exc:
         return web.json_response({"error": str(exc), "code": "memory_unavailable"}, status=409)
+    if work_item_id and not agent:
+        agent = "kirocrew-worker"
     max_turns = cleaned.get("max_turns") or 0
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
@@ -400,6 +410,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         include_lessons=cleaned.get("include_lessons", True) is not False,
         include_project=cleaned.get("include_project", True) is not False,
         memory_store=child_memory_store,
+        work_item_id=work_item_id,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but

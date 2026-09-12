@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
@@ -178,15 +179,15 @@ def select_provider_backend(
     return configured_default
 
 
-#: MCP server mounted per session into member DM threads — the delivery vehicle
-#: for the member operating model (dispatch work into worker sessions, patrol
-#: them). Session-level, so the on-disk agent template is untouched and every
+#: MCP servers mounted per session into member DM threads for dashboard session
+#: controls, the work ledger and published task snapshots.
+#: Session-level, so the on-disk agent template is untouched and every
 #: other session on the same template keeps its ordinary tool set.
-MEMBER_DISPATCH_SERVER = "kirocrew-dashboard"
+MEMBER_SESSION_SERVERS = ("kirocrew-dashboard", "kirocrew-work", "kirocrew-panel")
 
 
-def member_dispatch_session_server(session_key: str) -> dict[str, object] | None:
-    """ACP ``session/new`` ``mcpServers`` element mounting session control.
+def member_session_servers(session_key: str) -> list[dict[str, Any]]:
+    """Mount member tools under one identity without granting auto-approval.
 
     The entry carries ``KIROCREW_SESSION_KEY`` so the server's strict identity
     resolution names this member session — the same per-process trust channel
@@ -215,7 +216,7 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     as ``caller_unidentified``. On a default install the helper returns nothing
     and the entry is unchanged.
 
-    ``None`` when the server command cannot be resolved — the member thread
+    An empty list when the dashboard command cannot be resolved — the member thread
     then runs as plain chat and the caller logs the degradation.
     """
     # circular import: agent's module graph is heavy and imports config, which
@@ -230,9 +231,9 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
         command, args = _kirocrew_mcp_invocation("mcp-dashboard")
     except Exception:  # pragma: no cover - defensive; resolver logs its own reason
         logger.warning("member dispatch: could not resolve the dashboard server command")
-        return None
+        return []
     if not command:
-        return None
+        return []
     # The SAME home override every managed Crew server carries
     # (``_managed_mcp_env``): the server resolves the gateway to call from its
     # data home, so on an install with ``KIROCREW_HOME`` set (a pod, a second
@@ -247,13 +248,32 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     # port it bound" and "derive it" — and a malformed export is ignored rather
     # than forwarded.
     env.append({"name": "KIROCREW_BOUND_PORT", "value": str(resolve_serving_port())})
-    return {
-        "name": MEMBER_DISPATCH_SERVER,
-        "command": command,
-        "args": list(args),
-        "env": env,
-        "type": "stdio",
-    }
+    servers: list[dict[str, Any]] = [
+        {
+            "name": MEMBER_SESSION_SERVERS[0],
+            "command": command,
+            "args": list(args),
+            "env": env,
+            "type": "stdio",
+        }
+    ]
+    for name in MEMBER_SESSION_SERVERS[1:]:
+        try:
+            command, args = _kirocrew_mcp_invocation(name.replace("kirocrew-", "mcp-", 1))
+        except Exception:
+            logger.warning("member tools: could not resolve %s", name, exc_info=True)
+            continue
+        if command:
+            servers.append(
+                {
+                    "name": name,
+                    "command": command,
+                    "args": list(args),
+                    "env": env,
+                    "type": "stdio",
+                }
+            )
+    return servers
 
 
 # Same shape the artifact store enforces for its slugs: lowercase letters,

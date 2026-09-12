@@ -23,6 +23,7 @@ from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.providers.mirrors import claude_code as claude_mirror
 from kiro_crew.providers.mirrors import registry as mirrors_registry
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
@@ -71,6 +72,133 @@ def _write_project_spec(project_dir: Path, *, servers: dict, tools: list | None)
 
 def _by_name(elements: list[dict]) -> dict[str, dict]:
     return {e["name"]: e for e in elements}
+
+
+@pytest.mark.parametrize(
+    "refs,disabled,expected",
+    [
+        (["@kirocrew-work"], [], True),
+        (["@kirocrew-work/*"], [], True),
+        (["*"], [], True),
+        (["@kirocrew-work/work_brief", "@kirocrew-work/work_report"], [], True),
+        (["@kirocrew-work/work_brief"], [], False),
+        (["@kirocrew-work/work_report"], [], False),
+        (["@different-server"], [], False),
+        ([], [], False),
+        (None, [], False),
+        (["@kirocrew-work"], ["work_report"], False),
+        (["@kirocrew-work"], ["work_*"], False),
+        (["@kirocrew-work"], ["work_ledger_read"], True),
+    ],
+)
+def test_sdk_checks_scoped_worker_tool_exposure(agents_dir, refs, disabled, expected):
+    from kiro_crew.agent_sdk.drivers.acp import agent_exposes_mcp_tools
+    from kiro_crew.mcp_work import SERVER_NAME, WORKER_TOOLS
+
+    _write_spec(
+        agents_dir,
+        servers={
+            SERVER_NAME: {
+                "command": "kirocrew",
+                "args": ["mcp-work"],
+                "disabledTools": disabled,
+            }
+        },
+        tools=refs,
+    )
+    assert (
+        agent_exposes_mcp_tools(
+            "kirocrew", SERVER_NAME, WORKER_TOOLS, work_dir="", backend=ACP_BACKEND_KIRO
+        )
+        is expected
+    )
+
+
+def test_sdk_rejects_unmounted_reporting_server(agents_dir):
+    from kiro_crew.agent_sdk.drivers.acp import agent_exposes_mcp_tools
+    from kiro_crew.mcp_work import SERVER_NAME, WORKER_TOOLS
+
+    for servers in ({}, {SERVER_NAME: {"command": "kirocrew", "disabled": True}}):
+        _write_spec(agents_dir, servers=servers, tools=[f"@{SERVER_NAME}"])
+        assert not agent_exposes_mcp_tools(
+            "kirocrew", SERVER_NAME, WORKER_TOOLS, work_dir="", backend=ACP_BACKEND_KIRO
+        )
+
+
+@pytest.mark.parametrize(
+    "backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX]
+)
+@pytest.mark.parametrize(
+    "excluded,expected",
+    [
+        ([], True),
+        (["knowledge"], True),
+        (["@other/work_report"], True),
+        (["@kirocrew-work/work_ledger_read"], True),
+        (["@kirocrew-work/work_brief"], False),
+        (["@kirocrew-work/work_report"], False),
+        (["@kirocrew-work"], False),
+        (["@kirocrew-work/*"], False),
+        (["@kirocrew-*/work_*"], False),
+        (["*"], False),
+    ],
+)
+def test_sdk_reporting_check_honors_tool_exclusions(
+    agents_dir, monkeypatch, backend, excluded, expected
+):
+    from kiro_crew.agent_sdk.drivers.acp import agent_exposes_mcp_tools
+    from kiro_crew.config import paths
+    from kiro_crew.mcp_work import SERVER_NAME, WORKER_TOOLS
+
+    monkeypatch.setattr(paths, "kiro_agents_dir", lambda: agents_dir)
+    monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _: True)
+    _write_spec(
+        agents_dir,
+        servers={SERVER_NAME: {"command": "kirocrew", "args": ["mcp-work"]}},
+        tools=["*"],
+    )
+    path = agents_dir / "kirocrew.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec["excludedTools"] = excluded
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    if backend == ACP_BACKEND_KAS:
+        from kiro_crew.acp.kas_agents import build_kas_custom_agents
+
+        projected = build_kas_custom_agents(agents_dir, "kirocrew")[0]
+        assert projected.get("excludedTools", []) == excluded
+    assert (
+        agent_exposes_mcp_tools("kirocrew", SERVER_NAME, WORKER_TOOLS, work_dir="", backend=backend)
+        is expected
+    )
+
+
+@pytest.mark.parametrize("user_tools", ["*", ["*"], ["fs_read"]])
+@pytest.mark.parametrize("project_reports", [False, True])
+def test_kas_reporting_check_uses_its_user_spec_and_wildcard_projection(
+    agents_dir, tmp_path, monkeypatch, user_tools, project_reports
+):
+    from kiro_crew.acp.kas_agents import build_kas_custom_agents
+    from kiro_crew.agent_sdk.drivers.acp import agent_exposes_mcp_tools
+    from kiro_crew.config import paths
+    from kiro_crew.mcp_work import SERVER_NAME, WORKER_TOOLS
+
+    monkeypatch.setattr(paths, "kiro_agents_dir", lambda: agents_dir)
+    monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _: True)
+    servers = {SERVER_NAME: {"command": "kirocrew", "args": ["mcp-work"]}}
+    _write_spec(agents_dir, servers=servers, tools=user_tools)
+    project = tmp_path / "project"
+    _write_project_spec(
+        project, servers=servers, tools=[f"@{SERVER_NAME}"] if project_reports else ["fs_read"]
+    )
+    projected = build_kas_custom_agents(agents_dir, "kirocrew")[0]
+    expected = user_tools != ["fs_read"]
+    assert (projected["tools"] == "*") is expected
+    assert (
+        agent_exposes_mcp_tools(
+            "kirocrew", SERVER_NAME, WORKER_TOOLS, work_dir=str(project), backend=ACP_BACKEND_KAS
+        )
+        is expected
+    )
 
 
 class TestElementShape:

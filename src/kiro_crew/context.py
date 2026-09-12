@@ -3409,12 +3409,10 @@ class ContextBuilder:
         # session (mode carries the slot's mode; "member" slots are born only
         # through the members thread route). The member is a CONTROLLER: its
         # DM thread stays the identity/management loop while real work runs in
-        # worker sessions it dispatches and patrols. The session_* tools this
-        # block names arrive as a per-session mount of the dashboard
-        # session-control server (members.member_dispatch_session_server), and
-        # the server authorizes member callers automatically
-        # (dashboard/session_control.py), bounded to sessions the member
-        # created itself — so the instructions hold with zero configuration.
+        # worker sessions it dispatches and patrols. Dashboard, work and panel
+        # tools arrive through members.member_session_servers. Existing dashboard
+        # session controls remain bounded to sessions the member created;
+        # scoped spawn keeps its ordinary approval and private-memory checks.
         #
         # circular import: members' module graph is heavy and this file
         # sits below it in the layering (the same cycle-break
@@ -3432,16 +3430,35 @@ class ContextBuilder:
                 f"your DM thread with the user — your identity, your inbox, and your "
                 f"ledger. Keep it for decisions, reports, and escalations; do NOT run "
                 f"long or heavy work inline here.\n"
-                f"When real work arrives (a task to implement, an investigation to "
-                f"run), DISPATCH it: open a worker session with session_create, seed "
-                f"it with a self-contained brief via session_send (the worker has "
-                f"none of this thread's context), then PATROL your workers with "
-                f"session_read_message on a monitor_start loop — you own noticing a "
-                f"worker that stalled or died, restarting it, or escalating. Stop a "
-                f"runaway with session_stop. You can only control sessions you "
-                f"created.\n"
                 f"Report outcomes back in this thread when work completes or needs "
-                f"a decision only the user can make.\n\n"
+                f"a decision only the user can make.\n"
+                f"For work that needs a worker, use work_ledger_record to create one item per "
+                f"task with explicit acceptance criteria. Dispatch that item with "
+                f'spawn_run(work_item_id=<item id>, agent="kirocrew-worker", '
+                f"task=<self-contained brief>). This path preserves private memory; "
+                f"the worker uses work_brief and work_report for progress, questions, "
+                f"blockers and completion. Read work_ledger_read for recorded progress. "
+                f"Use spawn_steer for new instructions to a running worker. "
+                f"While workers run, patrol them with spawn_list and work_ledger_read "
+                f"on a monitor_start loop in THIS session. Name the tracked items, "
+                f"an exit condition and a max_runtime_secs budget. Use monitor_update "
+                f"to revise this patrol; do not replace an unrelated automation. "
+                f"Compare elapsed time, last activity and reports, follow up on stalled "
+                f"work with spawn_steer, and escalate unresolved blockers here. "
+                f"Call autonudge_stop when the tracked work is finished or only awaits "
+                f"the user's decision. "
+                f"A done report still needs review; record the user's decision and "
+                f"acceptance verdict before closing the item. Receive new tasks, "
+                f"changes and acceptance decisions in THIS chat.\n"
+                f"When the user wants a task board, call panel_publish with "
+                f'template="tasks" and data containing an optional short summary of '
+                f"what needs the user. The gateway fills conductor and item facts "
+                f"from your own ledger; do not copy them into the request. "
+                f"Publish again when processing worker updates or when asked for status. "
+                f"This is a published snapshot, not a live monitor. Never change the "
+                f"ledger merely to move a card, invent progress, or claim a refused "
+                f"publish succeeded. If the panel size limit refuses the snapshot, "
+                f"explain the limit in chat instead of silently dropping tasks.\n\n"
             )
 
         # Legacy member-DM identity. Private V2 has already derived its owner

@@ -83,7 +83,11 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import release_lock, try_acquire_lock
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    REDACTED_CREDENTIAL_TAG,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.validation import sanitize_string
 
 SCHEMA_VERSION = 1
@@ -599,7 +603,7 @@ class _RawEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-def _scrub(text: str) -> str:
+def _scrub(text: str, field_name: str = "") -> str:
     """Sanitize, then apply the shared credential + exfiltration-URL chain.
 
     Unicode sanitization comes FIRST, and the order is the whole point. Both
@@ -616,18 +620,24 @@ def _scrub(text: str) -> str:
     the crew as a 500 with no code to act on.
 
     Called on every value AND every key by :func:`_scrub_published`, and on the
-    title, so nesting depth cannot route a string around it.
+    title, so nesting depth cannot route a string around it. Values carry their
+    sanitized field name: some credentials are recognizable only in key/value
+    context. If a match consumes that prefix, replace the value with the shared
+    tag while retaining the field itself and its siblings.
 
     URLs before credentials, matching every other capture-side scrubber in the
     repo (see ``acp/mcp_session_report._clean``).
     """
     scrubbed = sanitize_string(text)
     scrubbed, _ = redact_exfiltration_urls(scrubbed)
-    scrubbed, _ = redact_credentials(scrubbed)
-    return scrubbed
+    prefix = f"{field_name}: " if field_name else ""
+    scrubbed, _ = redact_credentials(prefix + scrubbed)
+    if not scrubbed.startswith(prefix):
+        return REDACTED_CREDENTIAL_TAG
+    return scrubbed[len(prefix) :]
 
 
-def _scrub_published(value: Any) -> Any:
+def _scrub_published(value: Any, field_name: str = "") -> Any:
     """Recursively scrub every string a crew published -- KEYS included.
 
     A panel's data is assembled unattended from issue bodies, review comments and
@@ -647,7 +657,7 @@ def _scrub_published(value: Any) -> Any:
     ``publish`` runs ``_check_depth`` before calling it -- see the note there.
     """
     if isinstance(value, str):
-        return _scrub(value)
+        return _scrub(value, field_name)
     if isinstance(value, dict):
         scrubbed: dict[str, Any] = {}
         for k, v in value.items():
@@ -668,10 +678,10 @@ def _scrub_published(value: Any) -> Any:
                     f"two published field names both redact to {key!r}; "
                     "rename them so they stay distinguishable after redaction",
                 )
-            scrubbed[key] = _scrub_published(v)
+            scrubbed[key] = _scrub_published(v, key)
         return scrubbed
     if isinstance(value, list):
-        return [_scrub_published(v) for v in value]
+        return [_scrub_published(v, field_name) for v in value]
     return value
 
 

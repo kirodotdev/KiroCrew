@@ -325,8 +325,8 @@ def _strict_caller() -> tuple[str, str]:
     """
     return require_strict_session_key(
         "Error: this session's identity could not be verified strictly, so the work "
-        "ledger is not reachable from here. A subagent inherits no session identity "
-        "of its own — call the work tools from the dispatched session itself.",
+        "ledger is not reachable from here. Call the work tools with this worker's "
+        "own gateway-injected session identity.",
         server=SERVER_NAME,
     )
 

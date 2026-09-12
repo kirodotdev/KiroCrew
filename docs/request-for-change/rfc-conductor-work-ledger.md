@@ -111,7 +111,7 @@ flowchart LR
     W -->|work_brief<br/>own square + sibling digest + inbox| S
     S -.->|probe reads fingerprint| P[work-ledger gate]
     P -.->|WAKE only on<br/>new actionable event| C
-    S -.->|GET /api/work-ledger| U[Crew page item table]
+    S -.->|gateway reads on publish| U[Tasks template in Crew summary]
 ```
 
 Both agents reach the store through the dashboard HTTP API with a server-resolved session key, never by writing files directly. That is what makes identity unforgeable and what lets the Crew page read the same rows.
@@ -236,10 +236,11 @@ with no conductor in between — which is the same objection that keeps `session
 away from workers, at one remove. Q7 records that this is a decision and not an
 oversight.
 
-**No reader but the conductor sees a session key.** `worker_session_key` is the
-capability the binding rests on. It is absent from `work_brief`, absent from the
-sibling digest, and absent from the Crew page payload, so no amount of reading the
-board yields something to impersonate with.
+**Worker responses carry no sibling session keys.** `worker_session_key` is
+absent from `work_brief`, the sibling digest and the owner's Tasks snapshot.
+The snapshot uses `has_worker` to distinguish queued from dispatched tasks
+without exposing a worker session key. The routes verify the caller and its
+private-memory binding.
 
 **A worker never learns the goal.** A worker's definition of done is `title` plus
 `acceptance`. The conductor's `goal` is the thing being decomposed, and a worker that
@@ -566,7 +567,7 @@ When the conductor needs detail the summary does not carry, it uses `session_sen
 | `goal-conductor/scripts/accept_eval.py` | **Unchanged.** Its stdin contract is the reason `acceptance` is stored verbatim and the reason `verdict` reuses its five values. |
 | `issue_radar_crew_read` / `issue_radar_crew_record` | **Coexists, and is the model.** Reusable without change of meaning: the write transaction with rollback and a fixed lock order, the content-addressed event id and merge-on-read dedupe, per-item field merge with progress detection, the derived item list, and the strict identity resolver. Left behind as forge-specific: the `(owner, repo)` scope, `number` meaning an issue number, the thirteen-value phase vocabulary built around CI and merge states, the pull-request and label fields, and the contract that an event line is rendered into a public claim comment. |
 | `monitor_start`'s pull-request gate | **Coexists, and the ledger gate wins.** One monitor per session means a conductor cannot gate on both its ledger and a pull request at once. Resolved in v3: the ledger gate is the one a conductor arms, because a worker reports the pull request it produced anyway — so the ledger observes a superset of what the PR gate would, one hop later. A conductor that genuinely needs the PR gate is a conductor doing a worker's job. |
-| Crew Members page | **Extended.** It renders a roster, a pinned DM thread, and a client-side list of sessions a member drives, built from WebSocket slot frames and carrying only a title, a status dot and a relative time. No goal, no phase, no acceptance. The item table this RFC needs already exists one directory over, in Issue Radar's `CrewPageView`, which renders open items as Issue / Phase / Next / Last progress plus a ledger-line table. That component's shape is what Phase 4 copies. |
+| Crew Members page | **Extended.** The published Tasks template in Crew summary replaces the proposed native Phase 4 item table for the first release. Creation, steering and acceptance stay in the pinned member chat. See §Member template integration. |
 | [rfc-token-efficient-monitors.md](rfc-token-efficient-monitors.md) | **Depends on it.** This RFC's gate is a second probe kind inside the architecture that document proposes. Its index row reads "Nothing" while `probes/` and `irq.py` are on main, so that row is stale; correcting it is out of scope here. |
 | [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md) | **Different layer.** Crew Mode dispatches topics as subagents and creates no sessions, so it has no worker session to bind. This design is for the conductor path, where each item is a real top-level session. |
 
@@ -593,8 +594,8 @@ into another worker's context, which is the same objection that keeps `session_s
 away from workers, applied one level down.
 
 **A worker enumerates the board to find something to impersonate.** Prevented by the
-absence of the field: `worker_session_key` appears in no worker-facing payload, in no
-sibling digest and in no Crew page payload. What a sibling learns is that an item exists
+absence of the field: `worker_session_key` appears in no worker-facing payload,
+sibling digest or published member snapshot. What a sibling learns is that an item exists
 and where its output is, neither of which is a capability.
 
 **A worker names another item and writes on it.** `work_request` writes only on the
@@ -852,13 +853,16 @@ Exit criteria:
 
 ### Phase 4 — the surfaces
 
-Scope: the Crew page item table and event list, including the open channels with their expiry and remaining budget and any outstanding `request` awaiting a conductor's answer; the `goal-conductor/SKILL.md` rewrite replacing the transcript-reading patrol with a ledger read and adding the dispatch rule (leaf → `kirocrew-worker`, decomposable → `kirocrew-conductor` under the depth cap, specialist crew → that crew, with the transcript fallback named for a crew that does not mount `@kirocrew-work`); deletion of `ledger_entry.py` and its tests; a module spec in `docs/system-specs/modules/`, added to that directory's index.
+The first release uses the Tasks template and existing member chat in
+§Member template integration. This replaces the proposed native Crew page item
+table, event list and task controls. Future communication phases do not imply
+a second task UI in this release.
+
+Remaining scope: the `goal-conductor/SKILL.md` rewrite replacing the transcript-reading patrol with a ledger read and adding the dispatch rule (leaf → `kirocrew-worker`, decomposable → `kirocrew-conductor` under the depth cap, specialist crew → that crew, with the transcript fallback named for a crew that does not mount `@kirocrew-work`); deletion of `ledger_entry.py` and its tests; a module spec in `docs/system-specs/modules/`, added to that directory's index.
 
 Exit criteria:
-- The Crew page renders items and events from the same endpoint the conductor reads, asserted by a test that the payload shapes match.
-- An orphaned item renders as orphaned with take-over and stop affordances.
-- An open channel renders as a pair with its expiry and remaining messages, and a `request` with no answering `decision` renders as outstanding — so a user reading the page sees the same unanswered ask the wake gate fired on.
-- No Crew page payload carries `worker_session_key`, asserted against the endpoint's response shape.
+- The published Tasks snapshot contains no worker session keys; assignment is
+  represented by `has_worker`.
 - The skill no longer instructs `session_read_message` for liveness, and no bundled script encodes an item into an `artifacts` value.
 - The skill names an explicit `agent` for every dispatch case and never leaves it to the caller-inheritance fallback.
 - `docs-lint` passes with the new module spec indexed, and the spec's cited source paths all resolve — which they now can, because the code exists.
@@ -894,6 +898,38 @@ The one breaking step is Phase 4's deletion of `ledger_entry.py`, and it breaks 
 **Poll harder.** A shorter interval. Rejected: it multiplies the per-cycle turn cost by exactly the factor it divides the latency by, and it does not make a stalled worker distinguishable.
 
 **Let the worker write files directly.** Rejected: it puts path construction in the model's hands, loses the server-side identity resolution that makes impersonation impossible, and gives the Crew page no endpoint to read.
+
+## Member template integration
+
+Crew Members consumes the ledger through a published `tasks` webview, replacing
+the proposed native Phase 4 member item table for the first release. The member
+creates items and handles instructions and acceptance decisions in its DM.
+It calls `panel_publish(template="tasks", data={summary?})`; the gateway reads
+the caller's own ledger and supplies `conductor` and `items`, retaining only the
+optional summary from the supplied data. Lanes project those fields, with worker
+completion distinct from acceptance. The snapshot carries its publication time.
+Worker session keys and event history are omitted; `has_worker` carries only
+whether an item is assigned.
+A bounded member patrol uses `spawn_list` and `work_ledger_read` to follow up
+on stalls and publish updates. This does not implement Phase 3's wake gate.
+
+`spawn_run(work_item_id=...)` makes binding before execution a gateway invariant,
+instead of depending on a model following the separate create, bind and seed
+steps. It checks
+the verified caller's ledger before admission and after approval, then atomically
+binds the manager-generated worker immediately before its first provider stream.
+All fallible preparation precedes binding, so a failed preparation does not
+strand a task. The manager owns the prepared run and its generated identity;
+a bind endpoint accepting a supplied worker key cannot establish this timing
+without a new preparation/dispatch handshake. The store's only direct importers are its HTTP routes and
+`subagent_manager/run.py`; models still reach it through stateless MCP calls.
+Worker reads and reports require the binding and the item's `worker_session_key`
+to agree. A binding left by an interrupted write cannot authorize a worker after
+the item is assigned elsewhere. Private-memory proof is still required.
+
+The member session mounts work and panel tools on the existing member-capable
+backends without extra auto-approval grants. This does not change the two shipped
+conductor specs described below.
 
 ## Rollout note (v2.1)
 

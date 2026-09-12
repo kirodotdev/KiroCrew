@@ -2,7 +2,7 @@
 
 Pins the four seams the member-dispatch mount rides on:
 
-- ``members.member_dispatch_session_server`` — the session-level ``mcpServers``
+- ``members.member_session_servers`` — the session-level ``mcpServers``
   element, carrying strict identity via ``KIROCREW_SESSION_KEY`` in its env
   plus the gateway's bound port and its ``KIROCREW_HOME`` override, both of
   which the from-scratch env would otherwise drop.
@@ -37,9 +37,9 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_DISPATCH,
 )
 from kiro_crew.members import (
-    MEMBER_DISPATCH_SERVER,
+    MEMBER_SESSION_SERVERS,
     is_member_session_key,
-    member_dispatch_session_server,
+    member_session_servers,
 )
 
 MEMBER_KEY = "dashboard_member-autofix"
@@ -56,9 +56,9 @@ class TestCapabilitySet:
 
 class TestMemberDispatchSessionServer:
     def test_entry_shape(self):
-        entry = member_dispatch_session_server(MEMBER_KEY)
+        entry = member_session_servers(MEMBER_KEY)[0]
         assert entry is not None
-        assert entry["name"] == MEMBER_DISPATCH_SERVER
+        assert entry["name"] == MEMBER_SESSION_SERVERS[0]
         assert entry["type"] == "stdio"
         assert entry["command"]
         assert isinstance(entry["args"], list)
@@ -67,7 +67,7 @@ class TestMemberDispatchSessionServer:
         """The env pair IS the identity channel: the dashboard server's strict
         resolver reads ``KIROCREW_SESSION_KEY``, and the session-level param is
         the one path the KAS projection's env stripping never touches."""
-        entry = member_dispatch_session_server(MEMBER_KEY)
+        entry = member_session_servers(MEMBER_KEY)[0]
         assert entry is not None
         assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in entry["env"]
 
@@ -76,7 +76,7 @@ class TestMemberDispatchSessionServer:
         entry is built from scratch, so the port has to be handed over
         explicitly or the child dials the default one."""
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "7779")
-        entry = member_dispatch_session_server(MEMBER_KEY)
+        entry = member_session_servers(MEMBER_KEY)[0]
         assert entry is not None
         assert {"name": "KIROCREW_BOUND_PORT", "value": "7779"} in entry["env"]
 
@@ -89,7 +89,7 @@ class TestMemberDispatchSessionServer:
 
         monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
         monkeypatch.setattr(port_resolution, "resolve_serving_port", lambda: 6123)
-        entry = member_dispatch_session_server(MEMBER_KEY)
+        entry = member_session_servers(MEMBER_KEY)[0]
         assert entry is not None
         assert {"name": "KIROCREW_BOUND_PORT", "value": "6123"} in entry["env"]
 
@@ -98,7 +98,7 @@ class TestMemberDispatchSessionServer:
         operator asked for" and is persisted, so exporting it here would let a
         transient binding outlive this process."""
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "7779")
-        entry = member_dispatch_session_server(MEMBER_KEY)
+        entry = member_session_servers(MEMBER_KEY)[0]
         assert entry is not None
         names = [pair["name"] for pair in entry["env"]]
         assert "KIROCREW_SESSION_KEY" in names
@@ -115,7 +115,7 @@ class TestMemberDispatchSessionServer:
         import kiro_crew.agent as agent_mod
 
         monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": "/pods/x"})
-        entry = member_dispatch_session_server(MEMBER_KEY)
+        entry = member_session_servers(MEMBER_KEY)[0]
         assert entry is not None
         assert {"name": "KIROCREW_HOME", "value": "/pods/x"} in entry["env"]
         assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in entry["env"]
@@ -128,18 +128,18 @@ class TestMemberDispatchSessionServer:
 
         monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {})
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "7779")
-        entry = member_dispatch_session_server(MEMBER_KEY)
+        entry = member_session_servers(MEMBER_KEY)[0]
         assert entry is not None
         assert entry["env"] == [
             {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY},
             {"name": "KIROCREW_BOUND_PORT", "value": "7779"},
         ]
 
-    def test_unresolvable_command_degrades_to_none(self, monkeypatch):
+    def test_unresolvable_command_degrades_to_empty_list(self, monkeypatch):
         import kiro_crew.agent as agent_mod
 
         monkeypatch.setattr(agent_mod, "_kirocrew_mcp_invocation", lambda _sub: ("", []))
-        assert member_dispatch_session_server(MEMBER_KEY) is None
+        assert member_session_servers(MEMBER_KEY) == []
 
 
 class TestIsMemberSessionKey:
@@ -163,9 +163,12 @@ class TestIsMemberSessionKey:
 class TestKasMemberProjection:
     SPEC = {"tools": ["@kirocrew-core"], "allowedTools": ["@kirocrew-core"]}
 
-    def test_tools_gains_the_dashboard_server(self):
+    def test_tools_gains_the_member_servers_without_autoapproving_work_or_panel(self):
         out = to_client_custom_agent("a", dict(self.SPEC), "p", member_dispatch=True)
-        assert "@kirocrew-dashboard" in out["tools"]
+        assert all(f"@{name}" in out["tools"] for name in MEMBER_SESSION_SERVERS)
+        permissions = str(out.get("permissions") or {})
+        assert "kirocrew-work" not in permissions
+        assert "kirocrew-panel" not in permissions
 
     def test_default_projection_is_untouched(self):
         out = to_client_custom_agent("a", dict(self.SPEC), "p")
@@ -218,8 +221,16 @@ class TestClaudeMemberAppend:
 
     def test_member_session_gains_the_entry(self):
         out = self._run(_ClientStub())
-        assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
-        assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in out[-1]["env"]
+        assert [e["name"] for e in out][1:] == list(MEMBER_SESSION_SERVERS)
+        for entry in out[1:]:
+            assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in entry["env"]
+
+    def test_member_tools_share_the_private_process_envelope(self):
+        entries = member_session_servers(MEMBER_KEY)
+        assert len(entries) == 3
+        assert entries[0]["env"] == entries[1]["env"] == entries[2]["env"]
+        assert entries[1]["args"][-1] == "mcp-work"
+        assert entries[2]["args"][-1] == "mcp-panel"
 
     def test_non_member_session_is_untouched(self):
         stub = _ClientStub()
@@ -242,10 +253,10 @@ class TestClaudeMemberAppend:
     def test_same_named_entry_is_replaced_not_duplicated(self):
         stub = _ClientStub()
         servers = _base_servers() + [
-            {"name": MEMBER_DISPATCH_SERVER, "command": "old", "args": [], "env": []}
+            {"name": MEMBER_SESSION_SERVERS[0], "command": "old", "args": [], "env": []}
         ]
         out = AcpClient._append_member_dispatch_server(stub, servers)
-        matches = [e for e in out if e["name"] == MEMBER_DISPATCH_SERVER]
+        matches = [e for e in out if e["name"] == MEMBER_SESSION_SERVERS[0]]
         assert len(matches) == 1
         assert matches[0]["command"] != "old"
 
@@ -330,7 +341,7 @@ class TestMemberServerJoinsSubtraction:
 
         monkeypatch.setattr(runtime_mod, "build_kas_custom_agents", _capture)
         await rt._kas_custom_agents("kirocrew", member_dispatch=True)
-        assert seen == [frozenset({MEMBER_DISPATCH_SERVER})]
+        assert seen == [frozenset(MEMBER_SESSION_SERVERS)]
 
     @pytest.mark.asyncio
     async def test_non_member_set_is_unchanged(self, monkeypatch):
