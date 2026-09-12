@@ -28,13 +28,28 @@ import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
 from .redaction import _contains_fixed_credential, _text_contains_bare_secret
+from .shell_normalizer import (
+    _DATA_CONSUMER_PROGRAMS,
+    _GLOB_CHARS_RE,
+    BraceExpansionTooLarge,
+    _argv_programs,
+    _data_consumer_command_disqualified,
+    _decode_shell_quoted_literals,
+    _expand_brace_alternation,
+    _glob_could_expand_to,
+    _nested_shell_payloads,
+    _pipes_into_evaluator,
+    _program_basename,
+    _shell_tokens,
+    _split_unquoted_separators,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1392,97 +1407,575 @@ def oauth_url_contains_credential(url: str) -> bool:
 # to a remote" shapes, where a hijacked-agent block is worth the rare false
 # positive.
 #
-# Entries containing `*` are fnmatch globs (`*<pat>*`); the rest are
-# case-insensitive substrings, so they fire regardless of intervening flags /
-# token layout — `curl -d @f`, `curl -s -d @f`, `curl --data-binary @f` all
-# match. The `@` sigil on curl body/upload flags means "read from a local file"
-# (the tell-tale of egress); a bare `-d 'x=1'` inline body has no `@` and is not
-# matched. curl long options accept BOTH ` @` and `=@` separators, so both are
-# listed. `--data-raw` is deliberately EXCLUDED: it is the one --data variant
-# that does NOT interpret a leading `@` as a file reference, so `--data-raw @x`
-# posts the literal string `@x` (never reads a file) — including it would only
-# add false positives. Multipart uploads use a glob (`-F *=@`) so ANY field name
-# matches, not just a field literally named `file` (`curl -F x=@secret` exfils
-# just as well).
-_BASH_EXFIL_PATTERNS: list[str] = [
-    "-d @",  # curl POST body read from a local file (space + `=` separators)
-    "-d@",
-    "-d=@",
-    "--data @",
-    "--data=@",
-    "--data-binary @",
-    "--data-binary=@",
-    "--data-ascii @",
-    "--data-ascii=@",
-    "--data-urlencode @",  # also reads a local file when the value starts with @
-    "--data-urlencode=@",
-    "-F *=@",  # curl multipart file upload, any field name (glob)
-    "--form *=@",
-    "--upload-file",  # curl upload, long form
-    "wget --post-file",  # wget file upload
-    "/dev/tcp/",  # bash builtin reverse shell (>/dev/tcp/host/port)
-    "/dev/udp/",
-]
+# The gate is a deny gate over TWO views of the same command, and the views
+# only ever ADD denials:
+#
+#     raw command text ──────► raw matchers ──────┐
+#                                                 ├─► any hit ⇒ DENY
+#     per-segment argv view ──► capability ───────┘
+#     (shell-normalized)        matchers
+#
+# Raw matching runs first and covers the legacy/simple shapes — one scan, no
+# tokenizing. The normalized view closes what re-spelling opens: a shell
+# deletes quotes, empty-string splices and escaping backslashes before the
+# program runs, so `--in''put` reaches gh as `--input`, `g\h` invokes gh, and
+# `curl --data-bin''ary @f` posts a file — none of which the raw text shows.
+# CLI-shaped rules therefore match the NORMALIZED view, where the command's
+# real argv lives; the raw branch stays only for shapes that are not
+# argv-shaped (the nc/ncat redirects and the /dev/tcp/ //dev/udp/ builtins).
+# Both paths resolve every hit through the catalog (`_on`), so an operator
+# opt-out governs either view, and a normalized pass that fails costs the
+# pass, never the raw verdict — no command raw matching denies can stop being
+# denied. Matching stays near-linear: the raw regexes are tempered, and the
+# normalized pass is a fixed number of linear token walks per segment.
 
-# Exfil shapes where whitespace or flag CASE around an operator matters, so a
-# plain lowercased substring/glob would either miss a no-space variant or
-# false-positive. Matched via regex against the ORIGINAL (non-lowercased)
-# command. Each entry is (compiled pattern, human label).
-_BASH_EXFIL_RES: list[tuple[re.Pattern[str], str]] = [
-    # netcat reading a local file via input redirect — `nc host port < file` AND
-    # `nc host port <file` (no space after `<`, a valid shell redirect that the
-    # old `nc * < ` glob missed). `nc`/`ncat` is anchored at a word boundary so
-    # `sync`/`func` etc. do not match. Case-insensitive (command name).
-    (re.compile(r"(?:^|\s)nc(?:at)?\s+\S.*<", re.IGNORECASE), "nc/ncat file redirect"),
-    # netcat reverse shell `nc -e <prog>` / `ncat -e <prog>`. `nc`/`ncat` is
-    # anchored at a word boundary so `rsync -e ssh` (contains `nc -e`) and
-    # `vnc -e` do NOT match; a plain substring `"nc -e"` false-positived on them.
-    (re.compile(r"(?:^|\s)nc(?:at)?\s+-e\b", re.IGNORECASE), "nc/ncat reverse shell"),
-    # curl upload short form `-T <file>` / `-Tfile` (no space). CASE-SENSITIVE
-    # `-T`: curl's upload flag is uppercase, so this does NOT match lowercase long
-    # options such as `--trace-time`. `-T` must begin at a word boundary.
-    (re.compile(r"\bcurl\b.*(?:^|\s)-T\s*\S"), "curl -T upload"),
-]
+#: Which view of a command a rule matches: the text as written, or the
+#: shell-normalized per-segment argv view (:func:`audit_bash_exfiltration`).
+RAW_VIEW = "raw"
+NORMALIZED_VIEW = "normalized"
 
 
-# Which catalog rule each always-on exfil branch enforces, so a denial maps back
-# to a rule id and an operator opt-out is honoured. Patterns/labels absent from
-# these maps stay unconditional.
-_BASH_EXFIL_RULE_BY_PATTERN: dict[str, str] = {
-    "-d @": "data-exfil-curl-file-body",
-    "-d@": "data-exfil-curl-file-body",
-    "-d=@": "data-exfil-curl-file-body",
-    "--data @": "data-exfil-curl-file-body",
-    "--data=@": "data-exfil-curl-file-body",
-    "--data-binary @": "data-exfil-curl-file-body",
-    "--data-binary=@": "data-exfil-curl-file-body",
-    "--data-ascii @": "data-exfil-curl-file-body",
-    "--data-ascii=@": "data-exfil-curl-file-body",
-    "--data-urlencode @": "data-exfil-curl-file-body",
-    "--data-urlencode=@": "data-exfil-curl-file-body",
-    "-F *=@": "data-exfil-curl-multipart-upload",
-    "--form *=@": "data-exfil-curl-multipart-upload",
-    "--upload-file": "data-exfil-curl-upload",
-    "wget --post-file": "data-exfil-wget-post-file",
-    "/dev/tcp/": "reverse-shell-devtcp",
-    "/dev/udp/": "reverse-shell-devtcp",
-}
+class ExfilRule(NamedTuple):
+    """One data-egress capability and every spelling family that expresses it.
 
-# A single regex can span more than one catalog row, so this maps to a TUPLE. The
-# gate attributes each MATCH to one of those rows and honours that row's own
-# toggle — see _exfil_rule_id_for_match.
-_BASH_EXFIL_RULE_BY_LABEL: dict[str, tuple[str, ...]] = {
-    "nc/ncat file redirect": ("data-exfil-nc-file-redirect",),
-    "nc/ncat reverse shell": ("reverse-shell-nc", "reverse-shell-ncat"),
-    "curl -T upload": ("data-exfil-curl-upload",),
-}
+    *views* declares which of the gate's two views the rule matches, and the
+    matcher for each view lives right here on the rule: ``raw_glob`` (an
+    fnmatch glob when it carries ``*``, else a case-insensitive substring) and
+    ``raw_re`` (matched against the ORIGINAL text) for the raw view;
+    ``token_match`` (a predicate over one segment's argv tokens plus the
+    invocation map) for the normalized view. Declaring the view ON the rule is
+    what retires the parallel label lists — a new rule cannot forget to say
+    which view needs it, and a rule with a ``token_match`` automatically rides
+    the same segment/tokenizing pass as every other normalized rule.
+    """
 
-#: For a label whose regex spans several catalog rows, the token that identifies
-#: WHICH row a given match belongs to. Ordered longest-first so ``ncat`` is tested
-#: before ``nc`` — the reverse would classify every ``ncat`` hit as ``nc``.
-_BASH_EXFIL_ROW_DISCRIMINATORS: dict[str, tuple[tuple[str, str], ...]] = {
-    "nc/ncat reverse shell": (("ncat", "reverse-shell-ncat"), ("nc", "reverse-shell-nc")),
-}
+    label: str
+    rule_ids: "tuple[str, ...]"
+    views: "frozenset[str]"
+    raw_glob: "str | None" = None
+    raw_re: "re.Pattern[str] | None" = None
+    #: Substring raw matchers (legacy `_BASH_EXFIL_PATTERNS` entries): each is
+    #: compiled with IGNORECASE and matched against the original text. A rule
+    #: may carry both ``raw_re`` and ``raw_res`` — any hit denies. Case
+    #: semantics are PER MATCHER: each pattern chooses IGNORECASE or
+    #: case-sensitivity to match the capability it enforces (curl short
+    #: flags are case-sensitive; wget long options are not).
+    raw_res: "tuple[re.Pattern[str], ...] | None" = None
+    row_discriminators: "tuple[tuple[str, str], ...]" = ()
+    token_match: "Callable[[list[str], dict[str, list[int]]], bool] | None" = None
+
+
+#: The programs whose CLI surface carries a file-egress capability this gate
+#: enforces. The normalized pass only tokenizes segments where one of these
+#: names appears, so ordinary commands pay no tokenizer cost.
+_EXFIL_PROGRAMS = ("curl", "gh", "wget")
+
+#: The ``gh`` subcommands that accept ``--input`` / ``--field``.
+
+#: gh's persistent global flags that consume the NEXT token as their value and
+#: may legitimately sit between the program and its subcommand (``gh --hostname
+#: corp api …``, ``gh -t 30 api …``). The anchor walk skips each flag together
+#: with its value; a flag glued with ``=`` carries the value in the same token.
+#: Anything else the walk cannot recognize still anchors gh — fail closed.
+
+#: curl's LONG body flags whose ``@``-sigil value names a LOCAL file. ``--data-raw``
+#: is deliberately ABSENT: it is the one --data variant that does NOT interpret
+#: a leading ``@`` as a file reference, so ``--data-raw @x`` posts the literal
+#: string ``@x`` (never reads a file) — matching it would only add false
+#: positives. The ``@`` sigil is the tell-tale of egress; a bare ``-d 'x=1'``
+#: inline body has no ``@`` and is not matched. The short flag ``-d`` lives in
+#: the matcher itself, because curl's SHORT flags are case-sensitive (see
+#: :func:`_curl_body_file_tokens`).
+_CURL_BODY_FILE_LONG_FLAGS = ("--data", "--data-binary", "--data-ascii", "--data-urlencode")
+
+#: A short-option cluster ENDING in curl's upload flag (`-sT`): the ``T``
+#: consumes the next argv word as its file operand. CASE-SENSITIVE — curl's
+#: upload flag is uppercase, and folding in a lowercase ``-t``/``-f`` would
+#: match unrelated options (`sort -f`, `curl --trace-time`).
+_CURL_T_CLUSTER_RE = re.compile(r"-[A-Za-z]*T\Z")
+#: Cluster with the upload flag GLUED to its operand (`-sTfile`, `-Tfile`):
+#: curl runs `T file` — the letters after T are value text, not flags.
+_CURL_T_GLUED_RE = re.compile(r"-[A-Za-z]*T\S+")
+
+#: Same cluster shape for curl's multipart flag (`-sF`). CASE-SENSITIVE like
+#: ``-T``: ``-F`` is curl's uppercase short flag, and matching a lowercase
+#: ``-f`` (`sort -f … @x`, `curl -f @file`) would false-positive.
+_CURL_F_CLUSTER_RE = re.compile(r"-[A-Za-z]*F\Z")
+#: Cluster with the multipart flag GLUED to its value (`-sFk=@f`): same
+#: value-text reading as the `-T` glued form.
+_CURL_F_GLUED_RE = re.compile(r"-[A-Za-z]*F[^\s=]*(?:=@|=<)")
+
+#: The body flag GLUED to its ``@``-sigil value, short flag or short-option
+#: cluster (``-d@f``, ``-d=@f``, ``-sd@f``). Anchored at the token's START —
+#: an option cluster begins there, while a URL or a value carrying ``-d@``
+#: mid-word is data, not a flag. Matched against the RAW token so the trailing
+#: ``d`` is CASE-SENSITIVE: curl's ``-D`` dumps response headers to a file and
+#: reads no body, so ``-D@hdrs`` must not fold into ``-d@f``.
+_CURL_D_GLUED_RE = re.compile(r"-[A-Za-z]*d(?:=@|@)")
+
+#: A short-option cluster that ENDS in the body flag (``-d``, ``-sd``): the
+#: non-value flags before it consume nothing, so curl reads the body from the
+#: NEXT token (``-sd @f``). Trailing ``d`` is CASE-SENSITIVE like the glued
+#: spelling — a cluster ending in ``-D`` writes headers, it reads no body.
+_CURL_D_CLUSTER_RE = re.compile(r"-[A-Za-z]*d\Z")
+
+
+def _glob_admitted_programs(base: str) -> "list[str]":
+    """The exfil programs a glob- or brace-spelled program *base* could name.
+
+    The shell resolves a glob or brace group in the PROGRAM NAME before exec
+    (``cur[l]`` runs curl, ``c{url,at}`` runs curl or cat), so a literal
+    comparison records no invocation and the capability behind the name goes
+    unguarded. Admissibility is decided with
+    ``shell_normalizer._glob_could_expand_to`` for the bracket/asterisk/
+    question classes; brace ALTERNATION is expanded exactly (``_expand_brace_
+    alternation``), because the shared glob helper folds a brace group to
+    ``.*`` — coarse enough to admit ``cat`` from ``c{url,at}`` but not
+    ``curl``. The alternation expansion is bounded: a pattern whose product
+    would blow past the budget raises, and the overflow reads fail-closed
+    (every program admitted), never as "expands to nothing". A base with no
+    glob characters at all admits nothing, which is the branch every ordinary
+    token takes.
+    """
+    if not _GLOB_CHARS_RE.search(base):
+        return []
+    names: "list[str]" = []
+    try:
+        variants = _expand_brace_alternation(base)
+    except BraceExpansionTooLarge:
+        # Fail closed: an expansion past the budget (a stacked brace token
+        # that would materialize millions of strings) is never allowed to
+        # read as "expands to nothing" — that reading is the bypass. Treat
+        # the name as admitting every exfil program and let the matchers
+        # decide; the command pays for the scrutiny, not the expansion.
+        return list(_EXFIL_PROGRAMS)
+    for name in _EXFIL_PROGRAMS:
+        if _glob_could_expand_to(base, (name,)):
+            names.append(name)
+            continue
+        for variant in variants:
+            if variant.lower() == name or _glob_could_expand_to(variant, (name,)):
+                names.append(name)
+                break
+    return names
+
+
+def _exfil_invocations(tokens: "list[str]") -> "dict[str, list[int]]":
+    """Token indexes where one of :data:`_EXFIL_PROGRAMS` is actually INVOKED.
+
+    A program token names an invocation when it sits in COMMAND position for
+    its command: the boundary walk attributes every token to the program it
+    belongs to, skipping leading ``VAR=value`` assignments. A program name in
+    ARGUMENT position is a mention, not an execution — ``echo gh api --input
+    secret.json`` prints words, it runs nothing — so the data-consumer
+    exemption keeps such text inert. The exemption is withdrawn wherever the
+    words could still run: the command pipes into a shell or evaluator, a
+    substitution occupies program position, or a ``$( … )`` / backtick
+    substitution sits anywhere in the segment (its output becomes argv, so a
+    program spelled inside it really executes). Fail-closed the other way too:
+    a non-empty owner that is NOT a known data consumer (``sudo gh …``, ``ssh
+    host gh …``) counts as an invocation, and a glob- or brace-spelled program
+    name (``cur[l]``, ``g[h]``, ``c{url,at}``) counts as an invocation of every
+    program it could expand to — the shell resolves the name before exec, so
+    expandability, not literal equality, is what admits it — and an
+    expansion-held name (``$a`` after ``a=curl``) admits every program, since
+    which one runs is unknowable from the text.
+    """
+    programs = _argv_programs(tokens)
+    out: "dict[str, list[int]]" = {name: [] for name in _EXFIL_PROGRAMS}
+    disqualified = _data_consumer_command_disqualified(tokens)
+    substituted = any("$(" in tok or "`" in tok for tok in tokens)
+    for i, tok in enumerate(tokens):
+        owner = programs[i].lower()
+        if not owner:
+            # Past a comment marker or another argv-terminating boundary: the
+            # shell never executes it, so it is text, not a command.
+            continue
+        raw_base = _program_basename(tok)
+        base = raw_base.lower()
+        if base in out:
+            names = [base]
+        elif "$" in raw_base:
+            # An expansion-held program name (`a=curl; $a -d @f …`) resolves at
+            # runtime to a name this static walk cannot read, and the glob
+            # classes do not cover `$` — so without this branch the token
+            # admits nothing and the invocation check goes quiet over a
+            # command that runs one of these programs. Fail closed: the name
+            # could be any of them, so every program's matchers get a vote.
+            names = list(_EXFIL_PROGRAMS)
+        else:
+            names = _glob_admitted_programs(raw_base)
+            if not names:
+                continue
+        for name in names:
+            if (
+                owner != name
+                and owner in _DATA_CONSUMER_PROGRAMS
+                and not disqualified
+                and not substituted
+            ):
+                continue
+            out[name].append(i)
+    return out
+
+
+def _curl_body_file_tokens(tokens: "list[str]", invocations: "dict[str, list[int]]") -> bool:
+    """curl reading a POST body from a LOCAL FILE (the ``@`` sigil).
+
+    One walk covers every documented spelling: glued (``-d@f``, ``-d=@f``,
+    including inside a short-option cluster, ``-sd@f``), space-separated
+    (``-d @f``, ``--data-binary @f`` — curl long options accept BOTH `` @``
+    and ``=@`` separators), and ``=``-joined (``--data=@f``). Matched on the
+    argv view, so the shell has already resolved quoting — ``--data-bin''ary
+    @f`` arrives here as ``--data-binary``. Short flags compare RAW and long
+    flags lowercased: curl's short flags are CASE-SENSITIVE, and ``-D`` (dump
+    response headers to a file — it writes, never reads a body) must not fold
+    into ``-d`` and deny ``curl -D @hdrs`` for a capability it does not have.
+    """
+    if not invocations["curl"]:
+        return False
+    for i, tok in enumerate(tokens):
+        # Short flags are case-sensitive; compare the raw token. A cluster
+        # ending in the body flag reads its operand from the next token.
+        if tok == "-d" or _CURL_D_CLUSTER_RE.fullmatch(tok):
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if nxt.startswith("@") or nxt.startswith("=@"):
+                return True
+        elif _CURL_D_GLUED_RE.match(tok):
+            return True
+        # Long options: curl accepts any UNAMBIGUOUS prefix of a long option
+        # (`--data-bin` runs as `--data-binary`), so canonicalize the token
+        # against the body-file flag table before the folded comparison.
+        # A token spelling `=`-joined keeps its value attached.
+        low = tok.lower()
+        canonical = low
+        if low.startswith("--") and low not in _CURL_BODY_FILE_LONG_FLAGS:
+            name, sep, value = low.partition("=")
+            matches = [f for f in _CURL_BODY_FILE_LONG_FLAGS if f.startswith(name)]
+            if len(matches) == 1:
+                canonical = matches[0] + sep + value
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        for flag in _CURL_BODY_FILE_LONG_FLAGS:
+            if canonical.startswith(flag + "=@"):
+                return True
+        if canonical in _CURL_BODY_FILE_LONG_FLAGS and (
+            nxt.startswith("@") or nxt.startswith("=@")
+        ):
+            return True
+        # --data-urlencode reads the file named after the field's ``@``
+        # (``--data-urlencode name@f`` / ``--data-urlencode=name@f``); the
+        # name-only and name=value spellings read no file, so the ``@``
+        # sigil decides.
+        if low.startswith("--data-urlencode="):
+            if "@" in low[len("--data-urlencode=") :]:
+                return True
+        elif low == "--data-urlencode":
+            if "@" in nxt:
+                return True
+    return False
+
+
+def _curl_upload_tokens(tokens: "list[str]", invocations: "dict[str, list[int]]") -> bool:
+    """curl pushing a LOCAL FILE to a remote (``-T <file>`` / ``--upload-file``).
+
+    Covers the long flag glued or space-separated (``--upload-file=f``,
+    ``--upload-file f``), the bare short flag with its operand as the next
+    token, the glued short spelling (``-Tfile``) and short-option clusters
+    (``-sT file``). ``-T`` matching is CASE-SENSITIVE — lowercase long options
+    such as ``--trace-time`` and short clusters ending in ``-t`` are unrelated
+    options. A ``-T`` with no operand uploads nothing and is not matched,
+    mirroring the operand requirement of the raw spelling.
+    """
+    if not invocations["curl"]:
+        return False
+    for i, tok in enumerate(tokens):
+        low = tok.lower()
+        if low == "--upload-file" or low.startswith("--upload-file="):
+            return True
+        if tok.startswith("-T"):
+            if len(tok) > 2 or i + 1 < len(tokens):
+                return True
+        elif _CURL_T_GLUED_RE.match(tok):
+            return True  # glued cluster: `-sTfile` uploads `file`
+        elif _CURL_T_CLUSTER_RE.fullmatch(tok) and i + 1 < len(tokens):
+            return True
+    return False
+
+
+def _curl_multipart_tokens(tokens: "list[str]", invocations: "dict[str, list[int]]") -> bool:
+    """curl / gh multipart upload reading a field from a LOCAL FILE.
+
+    The two tools whose flag this is — gh's ``-F field=@file`` is the same
+    upload — so the match is scoped to their invocations and a bare
+    ``-Fk=@f`` in some other program's argv (``echo -Fk=@f``) stays inert.
+    One walk covers the space-separated (``-F key=@f`` — ANY field name,
+    including curl's SPACED names behind quotes, ``-F 'foo bar=@f'``, which
+    ``shlex`` fuses into one token), ``=``-joined (``--form=k=@f``,
+    ``--form="k=@f"``) and glued (``-Fk=@f``) spellings, plus short-option
+    clusters (``-sF 'k=@f'``). ``--form-string`` is EXCLUDED — it never reads
+    a file (``--form-string k=@f`` posts the literal string ``@f``). ``-F``
+    matching is CASE-SENSITIVE like curl's flag; a lowercase ``-f`` is the
+    fail flag, not a form field.
+    """
+    if not (invocations["curl"] or invocations["gh"]):
+        return False
+    for i, tok in enumerate(tokens):
+        if tok.startswith("--form-string"):
+            continue
+        if tok == "--form" or tok == "-F":
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if "=@" in nxt or "=<" in nxt:
+                return True
+        elif tok.startswith("--form=") or tok.startswith("-F"):
+            if "=@" in tok or "=<" in tok:
+                return True
+        elif _CURL_F_GLUED_RE.match(tok):
+            return True  # glued cluster: `-sFk=@f` uploads `f`
+        elif _CURL_F_CLUSTER_RE.fullmatch(tok):
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if "=@" in nxt or "=<" in nxt:
+                return True
+    return False
+
+
+def _gh_body_file_tokens(tokens: "list[str]", invocations: "dict[str, list[int]]") -> bool:
+    """gh reading a request body / field from a LOCAL FILE.
+
+    Scoped to a gh INVOCATION followed by one of the ``gh`` subcommands that
+    accepts the flags (``api``/``repo``/``release``) — the boundary walk and
+    program-name peel make that decision on the argv view, so path-qualified
+    (``/usr/bin/gh``, ``./gh``), escaped (``g\\h``), quote-spliced (``g''h``)
+    and substitution-wrapped (``$(gh …)``, backticks) spellings all resolve to
+    the same invocation, while a bare ``gh`` inside a word (``xgh``, ``nightly
+    gh-sync``, ``hover api``) or quoted decoy (``-H "xgh api"``) names no
+    invocation at all. The anchor tolerates gh's persistent global flags (and
+    their values) between program and subcommand — ``gh --hostname corp api …``
+    anchors like ``gh api …`` — and any unrecognized word there anchors too,
+    fail-closed.
+
+    ``--input`` denies unless its value is EXACTLY a lone ``-`` — stdin, which
+    reads no local file. The shell deletes quotes before gh sees the value, so
+    ``'-'`` arrives here as ``-`` and stays allowed, while ``'- secret.json'``
+    — a real file whose name starts with ``- `` — and any longer dash-leading
+    value (``--input=-body.json``) deny. ``--field`` denies when its value
+    carries the ``=@`` file sigil; the argv view preserves gh's SPACED field
+    specs behind quotes (``--field 'foo bar=@f'``) as one fused token, which a
+    raw scan halting at the space cannot reach.
+    """
+    # Scan only each gh SUBCOMMAND invocation window (gh api/repo/release …):
+    # `gh --input x` is not a gh capability (`gh extension exec demo --input x`
+    # passes --input to the extension, not to gh), so the flag scan must not
+    # reach past the invoked subcommand's own argument list. Each window ends
+    # at the next program word; windows are disjoint, so one linear pass over
+    # every window stays linear overall.
+    # Every invocation's window ends at the segment end, so the EARLIEST
+    # invocation that reaches a recognized subcommand defines the single scan
+    # start: `--input`/`--field` anywhere in the shared tail is within that
+    # invocation's reach, and one pass over the tail stays linear no matter
+    # how many `gh api` anchors repeat (the 16k-anchor watchdog shape).
+    scan_start = None
+    for gh_i in invocations["gh"]:
+        j = gh_i + 1
+        while j < len(tokens) and tokens[j].lower() not in _GH_SUBCOMMANDS:
+            j += 1
+        if j < len(tokens):
+            scan_start = j + 1
+            break
+    if scan_start is None:
+        return False  # no recognized subcommand -> no gh file-body capability
+    end = len(tokens)
+    for i in range(scan_start, end):
+        tok = tokens[i]
+        low = tok.lower()
+        if low == "--input" or low == "--input=":
+            # An empty value reads nothing; the lone dash is stdin.
+            value = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if value and value != "-":
+                return True
+        elif low.startswith("--input="):
+            if low[len("--input=") :] != "-":
+                return True
+        if low == "--field" or low == "--field=":
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if "=@" in nxt:
+                return True
+        elif low.startswith("--field="):
+            if "=@" in low[len("--field=") :]:
+                return True
+    return False
+
+
+def _wget_post_file_tokens(tokens: "list[str]", invocations: "dict[str, list[int]]") -> bool:
+    """wget uploading a LOCAL FILE as the POST body (``--post-file``)."""
+    if not invocations["wget"]:
+        return False
+    # wget accepts unambiguous long-option prefixes (`--post-f=file` runs as
+    # `--post-file=file`), so a token is a match if the option text before
+    # any `=` is an unambiguous prefix of `--post-file`.
+    for tok in tokens:
+        low = tok.lower()
+        name, sep, _value = low.partition("=")
+        if name == "--post-file" or (name.startswith("--") and "--post-file".startswith(name)):
+            return True
+    return False
+
+
+#: Every data-egress capability the gate enforces, in evaluation order: the
+#: raw view first (globs before regexes), then the normalized view. Each rule
+#: names the catalog rows it enforces so an operator opt-out is honoured on
+#: both paths — see :func:`audit_bash_exfiltration`.
+#: gh subcommands whose argument lists accept `--input`/`--field` file bodies.
+_GH_SUBCOMMANDS = frozenset({"api", "repo", "release"})
+
+#: Basenames whose glob-spelled variants name NO command-capable program:
+#: `curl[0-9]` expands to curl0..curl9 — none of them reads `-d @f` as a
+#: capability, so the raw tier's flag shapes would only false-positive.
+_GLOB_INERT_BASENAMES = ("curl", "wget", "echo", "cat", "ls")
+
+
+def _glob_known_inert(word: str) -> bool:
+    """True if a glob-spelled word provably names a NON-capability program.
+
+    Fail-closed by design: a glob word whose literal prefix is NOT a known
+    inert program (`/usr/bin/python[0-9]`, `ba[s]h`, unknown wrappers) keeps
+    the raw tier live — the wrapper may execute its payload, so every raw
+    matcher still runs.
+    """
+    basename = word.rsplit("/", 1)[-1]
+    if "[" not in basename:
+        return False
+    prefix = basename.split("[", 1)[0].lower()
+    return prefix in _GLOB_INERT_BASENAMES
+
+
+def fnmatch_glob_regex(pattern: str) -> str:
+    """Compile a base-catalog fnmatch glob to an equivalent regex.
+
+    The base exfil catalog expressed multi-spelling shapes as fnmatch globs
+    (`"-F *=@"` = any field name, ` @` separator). Carrying them verbatim as
+    regexes keeps the raw view's reach identical to base: `*` becomes `.*`,
+    every other character matches literally.
+    """
+    return ".*".join(re.escape(part) for part in pattern.split("*"))
+
+
+_EXFIL_RULES: "tuple[ExfilRule, ...]" = (
+    ExfilRule(
+        label="reverse shell /dev/tcp",
+        rule_ids=("reverse-shell-devtcp",),
+        views=frozenset({RAW_VIEW}),
+        raw_glob="/dev/tcp/",
+    ),
+    ExfilRule(
+        label="reverse shell /dev/udp",
+        rule_ids=("reverse-shell-devtcp",),
+        views=frozenset({RAW_VIEW}),
+        raw_glob="/dev/udp/",
+    ),
+    ExfilRule(
+        # netcat reading a local file via input redirect — `nc host port < file`
+        # AND `nc host port <file` (no space after `<`, a valid shell redirect).
+        # `nc`/`ncat` is anchored at a word boundary so `sync`/`func` etc. do
+        # not match. Case-insensitive (command name).
+        label="nc/ncat file redirect",
+        rule_ids=("data-exfil-nc-file-redirect",),
+        views=frozenset({RAW_VIEW}),
+        raw_re=re.compile(r"(?:^|\s)nc(?:at)?\s+\S.*<", re.IGNORECASE),
+    ),
+    ExfilRule(
+        # netcat reverse shell `nc -e <prog>` / `ncat -e <prog>`, word-boundary
+        # anchored so `rsync -e ssh` and `vnc -e` do not match.
+        label="nc/ncat reverse shell",
+        rule_ids=("reverse-shell-nc", "reverse-shell-ncat"),
+        views=frozenset({RAW_VIEW}),
+        raw_re=re.compile(r"(?:^|\s)nc(?:at)?\s+-e\b", re.IGNORECASE),
+        row_discriminators=(("ncat", "reverse-shell-ncat"), ("nc", "reverse-shell-nc")),
+    ),
+    ExfilRule(
+        label="curl POST body from file (-d/--data)",
+        rule_ids=("data-exfil-curl-file-body",),
+        # RAW view kept alongside normalized: a nested shell payload
+        # (`bash -c 'curl -d @secret …'`) never reaches command position in
+        # the outer argv, so the raw substring matcher is the only layer that
+        # still sees it. The match is anchored to a literal `curl` program
+        # word. The substring set is main's legacy curl-body pattern list
+        # (`-d @`, `--data=@`, …), which matches the payload text regardless
+        # of command position. Both views deny; either hit refuses.
+        views=frozenset({RAW_VIEW, NORMALIZED_VIEW}),
+        # CASE-SENSITIVE on purpose: curl's short flags are case-sensitive and
+        # `-D` dumps response HEADERS (writes, never reads a body) — folding it
+        # in via IGNORECASE (base's substring behaviour) denied
+        # `curl -D @hdrs` for a capability it does not have. The lowercased
+        # glob view below keeps the case-insensitive long-form reach.
+        raw_res=tuple(
+            re.compile(re.escape(p))
+            for p in (
+                "-d @",
+                "-d@",
+                "-d=@",
+                "--data @",
+                "--data=@",
+                "--data-binary @",
+                "--data-binary=@",
+                "--data-ascii @",
+                "--data-ascii=@",
+                "--data-urlencode @",
+                "--data-urlencode=@",
+            )
+        ),
+        token_match=_curl_body_file_tokens,
+    ),
+    ExfilRule(
+        label="curl file upload (-T/--upload-file)",
+        rule_ids=("data-exfil-curl-upload",),
+        views=frozenset({RAW_VIEW, NORMALIZED_VIEW}),
+        # Base's raw regex carried verbatim (CASE-SENSITIVE `-T`, no `@`
+        # requirement — `curl -T f url` uploads a named file just as well):
+        raw_re=re.compile(r"\bcurl\b.*(?:^|\s)-T\s*\S"),
+        raw_res=(re.compile(r"(?:^|\s)--upload-file[ =]", re.IGNORECASE),),
+        token_match=_curl_upload_tokens,
+    ),
+    ExfilRule(
+        label="curl/gh multipart file upload (-F/--form)",
+        rule_ids=("data-exfil-curl-multipart-upload",),
+        views=frozenset({RAW_VIEW, NORMALIZED_VIEW}),
+        # Base fnmatch globs ("-F *=@", "--form *=@") carried verbatim:
+        # any field name, ` @` separator required (the local-file sigil).
+        raw_res=(
+            # Case-sensitive: curl short flags are case-sensitive, and an
+            # IGNORECASE `-f` match would deny benign `curl -f k=@x`.
+            re.compile(fnmatch_glob_regex("-F *=@")),
+            re.compile(fnmatch_glob_regex("--form *=@")),
+        ),
+        token_match=_curl_multipart_tokens,
+    ),
+    # Same catalog row as curl's `-d`/`--data` spellings: gh reading a request
+    # body from a LOCAL FILE is the same capability — a body pulled off disk
+    # and pushed to a remote — so one toggle governs both.
+    ExfilRule(
+        label="gh request body from file (--input / --field)",
+        rule_ids=("data-exfil-curl-file-body",),
+        # Normalized-only BY DESIGN (tests pin `gh api --input -`, quoted
+        # stdin, and non-gh `--input` as allowed): the raw layer cannot
+        # express the anchor+flag+`@`-value co-occurrence without re-running
+        # the tokenizer, so nested-shell gh payloads are covered by keeping
+        # the gh program in _EXFIL_PROGRAMS for the invocation scan.
+        views=frozenset({NORMALIZED_VIEW}),
+        token_match=_gh_body_file_tokens,
+    ),
+    ExfilRule(
+        label="wget file upload (--post-file)",
+        rule_ids=("data-exfil-wget-post-file",),
+        views=frozenset({RAW_VIEW, NORMALIZED_VIEW}),
+        raw_res=(re.compile(r"(?:^|\s)--post-file\b", re.IGNORECASE),),
+        token_match=_wget_post_file_tokens,
+    ),
+)
+
+
+# A single raw regex can span more than one catalog row, so each rule's ids are
+# a TUPLE. The gate attributes each MATCH to one of those rows and honours that
+# row's own toggle — see _exfil_rule_id_for_match.
 
 
 def _exfil_rule_id_for_match(label: str, matched: str, rule_ids: tuple[str, ...]) -> str:
@@ -1490,66 +1983,320 @@ def _exfil_rule_id_for_match(label: str, matched: str, rule_ids: tuple[str, ...]
 
     One regex can cover more than one row, and the operator toggles rows, not
     regexes — so a match has to be attributed before its toggle can be honoured.
-    Falls back to the label's first row when nothing discriminates, which keeps the
-    single-row labels (the common case) on their existing behaviour and never
-    returns an id outside ``rule_ids``.
+    Falls back to the label's first row when nothing discriminates, which keeps
+    the single-row labels (the common case) on their existing behaviour and
+    never returns an id outside ``rule_ids``.
     """
-    low = matched.lower()
-    for token, rid in _BASH_EXFIL_ROW_DISCRIMINATORS.get(label, ()):
-        if token in low and rid in rule_ids:
-            return rid
+    for rule in _EXFIL_RULES:
+        if rule.label != label:
+            continue
+        low = matched.lower()
+        # Ordered longest-first so ``ncat`` is tested before ``nc`` — the
+        # reverse would classify every ``ncat`` hit as ``nc``.
+        for token, rid in rule.row_discriminators:
+            if token in low and rid in rule_ids:
+                return rid
+        break
     return rule_ids[0]
+
+
+_CARRIER_RECURSION_LIMIT = 8
+_CARRIER_PAYLOAD_BUDGET = 64
 
 
 def audit_bash_exfiltration(
     command: str, *, enabled_ids: "frozenset[str] | None" = None
 ) -> str | None:
+    """Public deny-gate entry: see the inner implementation."""
+    try:
+        return _audit_bash_exfiltration(
+            command, enabled_ids=enabled_ids, _depth=0, _budget=_CARRIER_PAYLOAD_BUDGET
+        )
+    except Exception:
+        # The gate's contract is infallible: a caller (tool approval) must
+        # receive a VERDICT, never an exception. Fail closed.
+        return "Blocked: command matches data-exfiltration pattern (carrier audit budget exhausted)"
+
+
+def _audit_bash_exfiltration(
+    command: str,
+    *,
+    enabled_ids: "frozenset[str] | None" = None,
+    _depth: int = 0,
+    _budget: int = _CARRIER_PAYLOAD_BUDGET,
+) -> str | None:
     """Return a denial reason if *command* matches a data-egress / reverse-shell
     shape that must be blocked at the tool-invocation gate, else None.
 
-    Scoped to _BASH_EXFIL_PATTERNS / _BASH_EXFIL_RES (exfil/reverse-shell only) so
-    it can be wired into the deny path in ``hooks.on_tool_call`` without blocking
-    benign local commands. The broader :func:`audit_bash_command` stays advisory.
+    The deny gate over the module's two views (see the block comment on
+    :data:`_EXFIL_RULES`): the raw text matches first and returns immediately;
+    the shell-normalized per-segment argv view can only ADD denials. Scoped to
+    the exfil/reverse-shell rules so it can be wired into the deny path in
+    ``hooks.on_tool_call`` without blocking benign local commands. The broader
+    :func:`audit_bash_command` stays advisory.
 
-    Every branch carries the id of the catalog rule it enforces, so *enabled_ids*
-    lets the caller honour an operator opt-out: a branch whose rule the operator
-    disabled is skipped. ``None`` (the default) means ALL enabled — fail-closed,
-    which is what keeps the callers that hold no effective set (cron command
-    vetting, computer-use input vetting) at full strength without a change.
+    Every rule carries the id of the catalog row(s) it enforces, so
+    *enabled_ids* lets the caller honour an operator opt-out: a rule whose row
+    the operator disabled is skipped on BOTH views. ``None`` (the default)
+    means ALL enabled — fail-closed, which is what keeps the callers that hold
+    no effective set (cron command vetting, computer-use input vetting) at
+    full strength without a change.
     """
     lower = command.lower()
+    if _depth > _CARRIER_RECURSION_LIMIT or _budget <= 0:
+        # Budget exhausted on adversarially nested carriers: fail closed.
+        return (
+            "Blocked: command matches data-exfiltration pattern "
+            "(carrier nesting beyond audit budget)"
+        )
 
     def _on(rule_id: str) -> bool:
         return enabled_ids is None or rule_id in enabled_ids
 
-    for pattern in _BASH_EXFIL_PATTERNS:
-        rule_id = _BASH_EXFIL_RULE_BY_PATTERN.get(pattern, "")
-        if rule_id and not _on(rule_id):
+    # 1. Raw view: the text as written. Globs/substrings first, then regexes —
+    # every match resolves to its catalog row before its toggle is honoured. A
+    # label can span more than one row (one regex covers both the nc and ncat
+    # rules): denying while EITHER is enabled would defeat the operator, so
+    # each match is attributed and every match is examined, not just the
+    # first, because a command can carry both spellings and the leading one
+    # may be the disabled row while the other is still enforced.
+    for rule in _EXFIL_RULES:
+        if RAW_VIEW not in rule.views:
             continue
-        pat = pattern.lower()
-        if "*" in pat:
-            if fnmatch.fnmatch(lower, f"*{pat}*"):
-                return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
-        elif pat in lower:
-            return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
-    for rx, label in _BASH_EXFIL_RES:
-        rule_ids = _BASH_EXFIL_RULE_BY_LABEL.get(label, ())
-        if not rule_ids:
+        if rule.raw_glob is not None:
+            pat = rule.raw_glob.lower()
+            hit = ("*" in pat and fnmatch.fnmatch(lower, f"*{pat}*")) or pat in lower
+            if hit and _on(rule.rule_ids[0]):
+                return f"Blocked: command matches data-exfiltration pattern '{rule.raw_glob}'"
+        elif rule.raw_re is not None:
+            for m in rule.raw_re.finditer(command):
+                matched_id = _exfil_rule_id_for_match(rule.label, m.group(0), rule.rule_ids)
+                if _on(matched_id):
+                    return f"Blocked: command matches data-exfiltration pattern ({rule.label})"
+        for rx in rule.raw_res or ():
+            # A glob-spelled PROGRAM word (`curl[0-9]`) belongs to the
+            # normalized pass; the substring view would misread it as a
+            # literal curl — UNLESS the glob names a shell carrier
+            # (`/bin/ba[s]h -c '…'`), whose quoted payload still needs the
+            # raw-tier recursion downstream. Suppress the raw skip only for
+            # such carrier programs; a glob in a later argument is unrelated.
+            first_word = command.split(None, 1)[0] if command.strip() else ""
+            if _GLOB_CHARS_RE.search(first_word) and _glob_known_inert(first_word):
+                break
             if rx.search(command):
-                return f"Blocked: command matches data-exfiltration pattern ({label})"
+                matched_id = _exfil_rule_id_for_match(rule.label, rx.pattern, rule.rule_ids)
+                if _on(matched_id):
+                    return f"Blocked: command matches data-exfiltration pattern ({rule.label})"
+
+    # 2. Normalized view. A shell deletes quotes, empty-string splices and
+    # escaping backslashes before the program runs, so `--in''put` reaches gh
+    # as `--input` while the raw scan reads the `''` and moves on — a spelling
+    # gap that turns a guardrail into a suggestion. Each rule's token_match
+    # runs against the per-segment argv view _shell_tokens renders
+    # (CASE-PRESERVED, because the `-F`/`-T` rules are deliberately
+    # case-sensitive and a lowercased view would deny `sort -f … @x`). The
+    # segment split is the QUOTE-AWARE one: a separator inside quotes is data
+    # (`-H "X:a&b"` is one header), so splitting on it would cut the `gh`
+    # invocation apart from the flag that follows and rebuild two views
+    # neither of which matches — the spelling gap would just move rather than
+    # close. A pass that fails costs the view, never the raw verdict — no
+    # command the raw view denies can stop being denied. Gated on the
+    # programs' anchors so ordinary commands pay no tokenizer cost.
+    #
+    # Backslash is stripped alongside the quotes for the same reason the gate
+    # runs at all: a shell drops an escaping backslash before the program runs
+    # (`g\h` invokes gh, `c\url` invokes curl), so a backslash-escaped program
+    # name must open this gate exactly like a quote-spliced one. Stripping is
+    # a deny-gate over-approximation: it can only open the gate on MORE
+    # commands, never close it on one the quote-only view admitted.
+    # The prefilter reads the DECODED text, not the literal one: an ANSI-C or
+    # locale-spelled program name ($'\x63url' runs curl) carries no program
+    # substring until the shell's quote decoding is applied, and skipping the
+    # normalized pass over it would drop a deny the raw gate misses.
+    stripped = (
+        _decode_shell_quoted_literals(command)
+        .lower()
+        .replace("'", "")
+        .replace('"', "")
+        .replace("\\", "")
+    )
+    # Line continuations (`g\<newline>h`) hide the program name from every
+    # view below: the fold joins the name before the substrings are tested.
+    folded = command.replace("\\\n", "")
+    if folded != command:
+        stripped = (
+            _decode_shell_quoted_literals(folded)
+            .lower()
+            .replace("'", "")
+            .replace('"', "")
+            .replace("\\", "")
+        )
+    # If glob characters appear at all, pay the tokenizer and let the
+    # invocation check decide — the matchers still require a real invocation,
+    # so the widened gate only widens what gets LOOKED at, never what gets
+    # denied on its own. A `$` in the command names a program through
+    # expansion (`a=g;b=h;"$a$b"` runs gh), carries no program substring in
+    # any decoded view, and routes to the expansion-held branch downstream.
+    if (
+        any(name in stripped for name in _EXFIL_PROGRAMS)
+        or _GLOB_CHARS_RE.search(stripped)
+        or "$" in stripped
+    ):
+        for seg in _split_unquoted_separators(command):
+            if not seg.strip():
+                continue
+            # Fold line continuations before tokenizing: the shell removes
+            # `\<newline>` while READING, so `g\<nl>h` is one word `gh` —
+            # shlex would otherwise keep the split name and hide the anchor.
+            seg = seg.replace("\\\n", "")
+            try:
+                tokens = _shell_tokens(seg)
+            except Exception:
+                continue
+            if not tokens:
+                continue
+            invocations = _exfil_invocations(tokens)
+            if not any(invocations.values()):
+                continue
+            for rule in _EXFIL_RULES:
+                if NORMALIZED_VIEW not in rule.views or rule.token_match is None:
+                    continue
+                if rule.token_match(tokens, invocations) and _on(rule.rule_ids[0]):
+                    return f"Blocked: command matches data-exfiltration pattern ({rule.label})"
+
+    # 3. Carrier payloads: `bash -c '…'`, `eval '…'`, herestrings, `env -S`,
+    # `$SHELL -c` etc. keep the inner command out of the outer argv's command
+    # position, so neither view above sees it. The shared extractor
+    # (:func:`_nested_shell_payloads`) recognizes every carrier spelling by
+    # construction; each literal payload is audited recursively as its own
+    # command. A failing pass costs the pass, never the raw verdict.
+    try:
+        all_tokens = _shell_tokens(command.replace("\\\n", ""))
+        pipes_into_evaluator = _pipes_into_evaluator(all_tokens)
+    except Exception:
+        all_tokens, pipes_into_evaluator = [], False
+    # Bounded same-command assignments: `CMD='gh api --input f'; bash -c "$CMD"`
+    # carries the payload through a variable, so a literal-only rescan misses
+    # it. Resolve simple NAME=literal pairs (single-quoted, double-quoted, or
+    # bare, no expansions) and substitute their uses before auditing carriers.
+    assignments: "dict[str, str]" = {}
+
+    def _collect(m: "re.Match[str]") -> str:
+        # Shell semantics: the LATEST assignment before use wins.
+        name, value = m.group("name"), m.group("value")
+        assignments[name] = value
+        return " "
+
+    assign_re = re.compile(
+        r"(?<![=\w])(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
+        r"(?P<value>'[^']*\n?|\"[^\"]*\n?\"|[^\s|;&<>()\n']*)"
+    )
+    expanded = assign_re.sub(_collect, command)
+    for name, value in assignments.items():
+        if value.startswith(("'", '"')):
+            value = value[1:-1]
+        # `${NAME}` needs no trailing boundary; bare `$NAME` must not eat
+        # into a longer name (`$CMDX` is not `$CMD`).
+        expanded = re.sub(rf"\$(?:\{{{name}\}}|{name}(?!\w))", value.replace("\\", "\\"), expanded)
+    # Only pay for the expansion pass when a variable is actually USED and at
+    # least one assignment was collected — otherwise plain `key=value`-looking
+    # text (URLs, flags) would re-trigger this tier forever.
+    if assignments and "$" in command and expanded != command:
+        # The expanded text carries payloads the original spelling hides:
+        # audit it as its own command (depth-guarded via the public wrapper).
+        verdict = _audit_bash_exfiltration(
+            expanded, enabled_ids=enabled_ids, _depth=_depth + 1, _budget=_budget
+        )
+        if verdict is not None:
+            return verdict
+    for seg in _split_unquoted_separators(command):
+        if not seg.strip():
             continue
-        # A label can span more than one catalog row (one regex covers both the nc
-        # and ncat rules). Denying while EITHER is enabled defeats the operator:
-        # switching `reverse-shell-nc` off left `nc` blocked by its sibling. So
-        # resolve each MATCH to the row it actually belongs to and honour that
-        # row's own toggle. Every match is examined, not just the first, because a
-        # command can carry both spellings and the leading one may be the disabled
-        # row while the other is still enforced.
-        for m in rx.finditer(command):
-            matched_id = _exfil_rule_id_for_match(label, m.group(0), rule_ids)
-            if _on(matched_id):
-                return f"Blocked: command matches data-exfiltration pattern ({label})"
+        try:
+            tokens = _shell_tokens(seg.replace("\\\n", ""))
+            payloads = _nested_shell_payloads(tokens)
+        except Exception:
+            continue
+        for payload in payloads:
+            if not payload.strip():
+                continue
+            verdict = _audit_bash_exfiltration(
+                payload, enabled_ids=enabled_ids, _depth=_depth + 1, _budget=_budget - 1
+            )
+            if verdict is not None:
+                return verdict
+        # Pipe-to-evaluator carriers: `printf %s '<script>' | bash` hands the
+        # literal to a shell as stdin — the script never appears in any argv.
+        # When this segment pipes into an evaluator, its last quoted literal
+        # is the executed script; audit it recursively. A segment with no
+        # quoted literal (the canonical `curl … | bash` installer) has no
+        # visible script and yields no verdict here.
+        if not pipes_into_evaluator:
+            continue
+        # The last quoted literal in the writing segment is the executed
+        # script; audit it recursively. No quoted literal (the canonical
+        # `curl … | bash` installer) yields no verdict here.
+        try:
+            quoted = list(re.finditer(r"(['\"])(.*?)\1", seg, re.DOTALL))
+        except Exception:
+            quoted = []
+        if not quoted:
+            continue
+        # The script may be ASSEMBLED from several arguments
+        # (`printf %s 'gh api ' '--input f' | bash` concatenates stdout), so
+        # audit the complete literal stream, not just the final piece. For
+        # printf, the FIRST quoted literal is the FORMAT — it does not reach
+        # stdout (its % specifiers are replaced by the later arguments), so
+        # it is excluded; a stale `%s` prefix would corrupt the audited view.
+        writer_head = seg.split(None, 1)[0].strip().lower() if seg.strip() else ""
+        views = ["".join(m.group(2) for m in quoted)]
+        if writer_head == "printf" and len(quoted) > 1:
+            # The format literal may contribute only `%`-specifier positions
+            # that the later arguments fill — the arguments alone are what a
+            # `%s`-style format emits. Audit BOTH readings: the joined stream
+            # and the arguments-without-format; whichever the shell really
+            # produces, one of the two views contains it.
+            views.insert(0, "".join(m.group(2) for m in quoted[1:]))
+        for script in views:
+            if not script.strip():
+                continue
+            verdict = _audit_bash_exfiltration(
+                script, enabled_ids=enabled_ids, _depth=_depth + 1, _budget=_budget - 1
+            )
+            if verdict is not None:
+                return verdict
         continue
+
+    # 4. Process substitutions (`>( … )` / `<( … )`): the body runs as its own
+    # command concurrently, but the token pass sees it as an echo/arg token —
+    # the data-consumer exemption then hides the gh invocation. Audit each
+    # body recursively as its own command so its own rules fire.
+    # Nesting-aware extraction: `>(gh api "$(echo x)" --input f)` carries
+    # parentheses inside the body, which a flat `[^()]*` regex cannot span.
+    # Walk the command once, tracking paren DEPTH after each `>(`/`<(` opener,
+    # and take the body as the span to the MATCHING closer.
+    procsub_bodies: "list[str]" = []
+    try:
+        for m in re.finditer(r"[<>]\(", command):
+            depth = 1
+            j = m.end()
+            while j < len(command) and depth:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                j += 1
+            if depth == 0:
+                procsub_bodies.append(command[m.end() : j - 1])
+    except Exception:
+        procsub_bodies = []
+    for body in procsub_bodies:
+        if body.strip():
+            verdict = _audit_bash_exfiltration(
+                body, enabled_ids=enabled_ids, _depth=_depth + 1, _budget=_budget - 1
+            )
+            if verdict is not None:
+                return verdict
     return None
 
 

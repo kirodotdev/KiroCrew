@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 _SHELL_ACTIVE_CHARS = frozenset("$`(){}<>|;&\n\r")
 
 
-# Used to *split* a command into independently-evaluatable segments.
+# *Splits* a command into independently-evaluatable segments.
 # Splits on every shell separator that can chain commands or carve out a
 # subshell:
 #   ;  - sequential
@@ -186,6 +186,54 @@ def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") 
     except re.error:
         return False
     return any(expandable.fullmatch(name) for name in names)
+
+
+def _expand_brace_alternation(pattern: str, *, _budget: int = 1024) -> "list[str]":
+    """Expand brace ALTERNATION in *pattern* (``c{url,at}`` -> ``curl``, ``cat``).
+
+    Brace groups are alternation, not a character class: ``c{url,at}`` produces
+    ``curl`` OR ``cat`` and nothing else, while :func:`_glob_to_regex` folds a
+    brace group to ``.*`` — a coarse over-approximation that admits ``cat``
+    but not ``curl``. Callers that need to know WHICH names a pattern can
+    produce expand the alternation exactly. Nested groups expand recursively;
+    a brace with no closing ``}`` stays literal, as bash treats it.
+
+    The product is bounded: a pattern whose expansion would materialize more
+    than ``_budget`` strings (``x{a,b}`` stacked 24 times is 16M) raises
+    :class:`BraceExpansionTooLarge` instead of building the product, so an
+    adversarial token cannot turn the gate into a memory sink. Callers decide
+    the fail-closed reading of the overflow.
+    """
+    if "{" not in pattern:
+        return [pattern]
+    if pattern.count("{") > 32 or len(pattern) > 4096:
+        # Depth/length coherence check: a pathological pattern (hundreds of stacked
+        # groups) must fail as a BUDGET error, not as a Python RecursionError,
+        # so the caller's fail-closed handler stays the single outcome.
+        raise BraceExpansionTooLarge(pattern)
+    for i, ch in enumerate(pattern):
+        if ch != "{":
+            continue
+        close = pattern.find("}", i + 1)
+        if close == -1:
+            break
+        head, alts, tail = (
+            pattern[:i],
+            pattern[i + 1 : close].split(","),
+            pattern[close + 1 :],
+        )
+        out: "list[str]" = []
+        for alt in alts:
+            expanded = _expand_brace_alternation(head + alt + tail, _budget=_budget)
+            if len(out) + len(expanded) > _budget:
+                raise BraceExpansionTooLarge(pattern)
+            out.extend(expanded)
+        return out
+    return [pattern]
+
+
+class BraceExpansionTooLarge(ValueError):
+    """A brace pattern's expansion exceeds the bounded budget (fail-closed)."""
 
 
 #: Interpreter names that accept ``-m <module>``. Versioned spellings (``python3``,
@@ -601,7 +649,7 @@ def _argv_programs(tokens: "list[str]") -> "list[str]":
 
     Walks the argv tracking command boundaries (``_ends_argv``) and skipping
     leading ``VAR=value`` assignments, which precede the program rather than being
-    it.  Used to ask "what command is this name an argument OF?" -- the difference
+    it.  It answers "what command is this name an argument OF?" -- the difference
     between ``echo <name> <verb>`` (data) and ``ssh host <name> <verb>`` (executed).
     """
     programs: list[str] = []
@@ -1567,6 +1615,16 @@ class _ShellChar(NamedTuple):
     #: The text ended on a backslash with nothing to escape -- so whatever split
     #: this text off was itself escaped, and the word continues past it.
     trailing_escape: bool
+    #: Depth of open substitution frames AFTER this step: a ``$(`` body, an
+    #: active backtick pair, and a ``>( … )`` / ``<( … )`` process substitution
+    #: each occupy one frame, and bare parens nest inside an open body. Only
+    #: ACTIVE characters count — a quoted or escaped paren is data, which is the
+    #: whole reason the counter lives in this machine rather than beside a
+    #: consumer. A NEGATIVE depth records stray closers; test frame presence
+    #: with ``> 0``. Only meaningful when the walk starts at a command
+    #: boundary — a resumed walk cannot know how many frames a skipped prefix
+    #: opened, and no consumer reads this field off a resumed walk.
+    subst: int = 0
 
 
 def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterator[_ShellChar]":
@@ -1594,18 +1652,34 @@ def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterato
 
     *state* and *ansi* resume a walk, which is what lets a quoted word spanning
     whitespace be read without desyncing.
+
+    The walk also counts substitution frames (the ``subst`` field): an active
+    ``$(``, an active backtick pair, and a process substitution ``>( … )`` /
+    ``<( … )`` each occupy one, and bare parens nest inside an open body.
+    Process substitution is the reading bash itself gives ``gh api gists >
+    >(cat; true)`` — the ``;`` inside the frame is part of the frame's command,
+    not a boundary of the surrounding one, so a separator consumer that cannot
+    see the frame splits one command in two. Stray closers push the depth
+    NEGATIVE instead of clamping, which lets a consumer tell "this ``)`` closed
+    the frame" (post-depth 0) from "this ``)`` found nothing to close"
+    (post-depth below 0) — the difference between a complete substitution and an
+    early-closed one, which fail closed.
     """
     i = 0
     n = len(text)
     dollar_run = 0  # consecutive LITERAL ``$`` immediately before this char
+    subst = 0  # open substitution frames; negative = stray closers
+    in_backtick = False
+    prev_active = ""  # the character of the previous ACTIVE step ('' otherwise)
     while i < n:
         ch = text[i]
         if ch == "\\" and (state != 1 or ansi):
             dollar_run = 0  # an escaped ``$`` is data and introduces nothing
+            prev_active = ""  # an escaped ``>`` is not a redirection operator
             if i + 1 >= n:
-                yield _ShellChar(i, ch, ch, False, state, ansi, True)
+                yield _ShellChar(i, ch, ch, False, state, ansi, True, subst)
                 return
-            yield _ShellChar(i, text[i : i + 2], text[i + 1], False, state, ansi, False)
+            yield _ShellChar(i, text[i : i + 2], text[i + 1], False, state, ansi, False, subst)
             i += 2
             continue
         was_unquoted = state == 0
@@ -1629,8 +1703,43 @@ def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterato
                 state = 0
         elif ch == '"':
             state = 0
+        if was_unquoted or state == 2:
+            # Substitution frames are tracked unquoted AND inside double
+            # quotes: ``"`…`"`` still runs the substitution, so a ``;`` it
+            # emits splits the command and must keep the frame accounting.
+            # Parens never open frames from within double quotes (the shell
+            # reads them literally), hence the ``state == 0`` conditions.
+            if ch == "(":
+                if state == 0:
+                    if dollar_run:
+                        # An opener cancels a stray-closer record: the stray
+                        # belonged to the previous statement and must not
+                        # offset the depth of this new frame.
+                        subst = max(subst, 0) + 1  # command substitution ``$(``
+                    elif prev_active in "<>":
+                        # process substitution ``>( … )`` / ``<( … )``: the frame's
+                        # parens and separators belong to the frame's own command.
+                        subst = max(subst, 0) + 1
+                    elif subst > 0:
+                        subst += 1  # a bare paren nested inside an open body
+            elif ch == ")":
+                if state == 0:
+                    if subst > 0:
+                        subst -= 1
+                    else:
+                        subst = -1  # a closer with no open frame: record the stray
+                elif subst > 0:
+                    subst -= 1  # a closer closing an open frame from inside dq
+            elif ch == "`":
+                if in_backtick:
+                    in_backtick = False
+                    subst -= 1
+                else:
+                    in_backtick = True
+                    subst = max(subst, 0) + 1
+        prev_active = ch if was_unquoted else ""
         dollar_run = dollar_run + 1 if was_unquoted and ch == "$" else 0
-        yield _ShellChar(i, ch, ch, was_unquoted, state, ansi, False)
+        yield _ShellChar(i, ch, ch, was_unquoted, state, ansi, False, subst)
         i += 1
 
 
@@ -2091,7 +2200,7 @@ def _push_option_matches(token: str, names: "frozenset[str]") -> bool:
     return bool(name) and any(opt.startswith(name) for opt in names)
 
 
-# TRUE shell command separators (NOT command-substitution boundaries). Used to
+# TRUE shell command separators (NOT command-substitution boundaries). They
 # scan the PRE-SPLIT text for substitution glued into a push target — see
 # ``_is_push_to_protected_branch``. Applied through
 # ``_split_push_command_segments``, which honours quoting; the pattern itself is
@@ -2170,6 +2279,178 @@ def _split_push_command_segments(text: str) -> list[str]:
         if resume_at is None:
             return segments
         rest = rest[resume_at:]
+
+
+def _split_unquoted_separators(text: str) -> list[str]:
+    """Split *text* at shell command separators that sit OUTSIDE quotes and
+    substitutions.
+
+    ``;``, ``&`` (and ``&&``), ``|`` (and ``||``) and newlines END one command
+    and begin another only when the shell reads them as operators; the same
+    characters inside ``'…'`` / ``"…"`` are DATA — ``-H "X:a&b"`` hands curl one
+    header, not two commands. The quote-unaware split the deny tiers use cannot
+    see that difference, and a view built over its segments let
+    ``gh api repos/o/r/issues -H "X:a&b" --in''put secrets.json`` hide the flag in
+    a segment without the ``gh`` anchor. This walk goes through
+    :func:`_iter_shell_chars` — the ONE quote/escape state machine — so an
+    escaped or quoted separator cannot split, and a backslash-escaped character
+    is carried whole.
+
+    A command substitution is part of the SAME command, not a boundary: the
+    backtick is NOT a separator, and while any substitution frame is open — a
+    backtick pair, a ``$( … )`` body, or a process substitution ``>( … )`` /
+    ``<( … )``, whose body is a command of its own that runs CONCURRENTLY with
+    the surrounding one — no separator splits at all. Splitting there severed
+    the anchor from the flag — ``gh api repos/o/r/issues `true` --in''put
+    secrets.json``, ``gh api $(echo x; echo y) --in''put secrets.json`` and
+    ``gh api gists > >(cat; true) --in''put secrets.json`` put the flag in a
+    segment without the ``gh`` anchor — while fusing the substitution body into
+    its command only denies more. An unterminated substitution keeps the tail
+    fused, which errs the same way — and so does an unbalanced ``)`` after a
+    substitution opened: an unparenthesized ``case`` pattern (``a)``) eats the
+    closer while the separators AFTER it arrive before the tell-tale stray
+    (``esac)``), so a fail-closed pre-pass looks for the stray and, on a hit,
+    the walk fuses everything past the FIRST close instead of trusting any
+    later split. A stray ``)`` with no substitution ever opened keeps the plain
+    reading (only ``;`` ``&`` ``|`` newline split, as below).
+
+    The frame depth itself is the machine's: :func:`_iter_shell_chars` counts
+    ``$(``, backticks and process substitutions on its ``subst`` field, quote
+    and escape aware, and this walk reads that field instead of keeping a
+    second counter to drift out of sync.
+
+    A substitution OPENED INSIDE a double quote (``"$( … )"``) is invisible to
+    the machine's flat quote state — the ``"`` characters of the body's own
+    quoting toggle the OUTER state — so a frame is opened for it instead: while
+    a ``$(`` body opened inside a double quote is open, no separator splits at
+    all, because bash parses the body with its own quoting and fusing it into
+    the surrounding command only denies more.
+
+    Unterminated quotes keep the tail as one segment (state never closes), which
+    is the reading bash cannot parse either — the degraded view, never a silent
+    half.
+    """
+    # Fail-closed pre-pass: an ACTIVE ``)`` with no open substitution body but
+    # one opened earlier proves the body closed EARLY — mirror the machine's
+    # depth rule exactly.
+    early_closed = False
+    if "$(" in text or "<(" in text or ">(" in text:
+        saw_subst = False
+        subst_depth = 0
+        open_paren_counted = False
+        for step in _iter_shell_chars(text, 0, False):
+            if not step.active:
+                continue
+            nxt = text[step.offset + 1 : step.offset + 2]
+            if step.char == "$" and nxt == "(":
+                subst_depth += 1
+                open_paren_counted = True
+                saw_subst = True
+            elif step.char in "<>" and nxt == "(":
+                subst_depth += 1
+                open_paren_counted = True
+                saw_subst = True
+            elif step.char == "(" and subst_depth:
+                if open_paren_counted:
+                    open_paren_counted = False
+                else:
+                    subst_depth += 1
+            elif step.char == ")":
+                if subst_depth:
+                    subst_depth -= 1
+                elif saw_subst:
+                    early_closed = True
+                    break
+
+    segments: list[str] = []
+    buf: list[str] = []
+    state, ansi = 0, False
+    #: A substitution was opened in this text, so a stray ``)`` is an EARLY
+    #: close, not a complete substitution — fail closed on the remainder.
+    saw_subst = False
+    #: Set once the first body close is reached in an early-closed text:
+    #: everything after it is fused, deny-more.
+    fused_remainder = False
+    #: A ``$(`` opened while INSIDE a double quote. The machine reports those
+    #: characters INACTIVE (they carry quote state 2), so its flat quote state
+    #: cannot see the substitution at all — and the body's own ``"`` characters
+    #: then toggle the OUTER quote state, desyncing it. A frame is opened
+    #: instead and tracks the body's OWN quoting; while the frame is open no
+    #: separator splits, because bash parses the body with its own quoting and
+    #: fusing it into the surrounding command only denies more.
+    dq_subst_frame = False
+    #: The frame's OWN double-quote state, read off raw unescaped ``"``
+    #: characters inside the body.
+    dq_subst_inner_quote = False
+    #: Nested ``(`` / ``$(`` depth INSIDE the frame; the frame closes on an
+    #: unescaped ``)`` at depth 0 while not inside an inner quote.
+    dq_subst_depth = 0
+    for step in _iter_shell_chars(text, state, ansi):
+        state, ansi = step.state, step.ansi
+        if dq_subst_frame:
+            # Frame bookkeeping reads the RAW stream — escaped spellings carry
+            # two-character ``text`` and never count.
+            if step.text == '"':
+                dq_subst_inner_quote = not dq_subst_inner_quote
+            elif not dq_subst_inner_quote:
+                if step.text == "$" and text[step.offset + 1 : step.offset + 2] == "(":
+                    dq_subst_depth += 1
+                elif step.text == "(":
+                    dq_subst_depth += 1
+                elif step.text == ")":
+                    if dq_subst_depth:
+                        dq_subst_depth -= 1
+                    else:
+                        dq_subst_frame = False
+        elif (
+            step.text == "$" and text[step.offset + 1 : step.offset + 2] == "(" and step.state == 2
+        ):
+            dq_subst_frame = True
+            dq_subst_inner_quote = False
+            dq_subst_depth = 0
+        if step.active and step.char == ")":
+            # The machine records a frame-closing ``)`` at post-depth 0 and a
+            # STRAY one below it, so the early close is recognisable here: in
+            # an early-closed text the first close fuses the remainder, and a
+            # stray closer (the machine already went negative) does too — but
+            # only when a substitution actually opened, so plain ``echo a) b``
+            # keeps splitting normally.
+            if step.subst < 0 and saw_subst:
+                fused_remainder = True
+            elif early_closed and step.subst == 0:
+                fused_remainder = True
+        if step.subst > 0:
+            saw_subst = True
+        if (
+            step.active
+            and step.char in ";&|\n"
+            and step.subst <= 0
+            and not dq_subst_frame
+            and not fused_remainder
+        ):
+            if step.char == "&":
+                # `&` beside a redirection is FD DUPLICATION, not background:
+                # `gh api 2>&1 --input secrets.json` runs ONE command whose
+                # stderr goes to stdout — splitting at that `&` severed the
+                # `gh` anchor from the flag that followed it and both
+                # fragments read as unrelated commands. Adjoining (`>&`, `<&`)
+                # or leading (`&>`, `&>>`) redirection operators keep the `&`
+                # glued to its `>`/`<` and inside the same segment. When this
+                # errs, it errs by FUSING what bash separates — a longer
+                # view, deny-more — never by dividing one command in two.
+                prev_ch = text[step.offset - 1] if step.offset else ""
+                next_ch = text[step.offset + 1] if step.offset + 1 < len(text) else ""
+                if prev_ch in "><" or next_ch == ">":
+                    buf.append(step.text)
+                    continue
+            if buf:
+                segments.append("".join(buf))
+                buf = []
+            continue
+        buf.append(step.text)
+    if buf:
+        segments.append("".join(buf))
+    return segments
 
 
 # Shell expansions that fuse text INTO a word, so the literal command hides the

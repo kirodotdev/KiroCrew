@@ -231,17 +231,13 @@ from .diagnostics import (
     refusal_span_shape,
 )
 from .exfil import (
-    _BASH_EXFIL_PATTERNS,
-    _BASH_EXFIL_RES,
-    _BASH_EXFIL_ROW_DISCRIMINATORS,
-    _BASH_EXFIL_RULE_BY_LABEL,
-    _BASH_EXFIL_RULE_BY_PATTERN,
     _CREDENTIAL_RE,
     _ENDPOINT_EXTENSION_CAP,
     _ENDPOINT_EXTENSION_ENTRIES_KEY,
     _EXFIL_PATTERNS,
     _EXFIL_PERCENT_RE,
     _EXFIL_QUERY_MIN_LEN,
+    _EXFIL_RULES,
     _HARD_CREDENTIAL_RE,
     _IMDS_IP,
     _IMDS_IPV6,
@@ -1150,9 +1146,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                     seen_views.add(candidate)
                     views.append(candidate)
             joined_here: set[str] = set()
-            payloads = _nested_shell_payloads(
-                tokens, allow_join=allow_join, joined_out=joined_here
-            )
+            payloads = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
             programs = _argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -1401,9 +1395,7 @@ def is_denied(
         agent cannot diagnose at all. The span is the whole subject because a floor
         decides on the argv's SHAPE rather than at an offset.
         """
-        diagnostic = (
-            refusal_diagnostic(rule, component, tool_name) if rule and component else None
-        )
+        diagnostic = refusal_diagnostic(rule, component, tool_name) if rule and component else None
         return _deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )
