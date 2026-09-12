@@ -24,6 +24,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -36,11 +37,13 @@ from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_CODEX,
+    PROVIDER_LABEL_DEEPSEEK,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     PROVIDER_LABEL_OPENCODE,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
+    effort_option_id,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk import host_auth
@@ -514,6 +517,11 @@ class AcpProvider(LLMProvider):
     def is_opencode_backend(self) -> bool:
         """True when this ACP provider talks to OpenCode (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_OPENCODE
+
+    @property
+    def is_deepseek_backend(self) -> bool:
+        """True when this ACP provider talks to DeepSeek Harness (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_DEEPSEEK
 
     @property
     def is_kas_backend(self) -> bool:
@@ -1195,21 +1203,22 @@ class AcpProvider(LLMProvider):
         the push entirely — there is nothing to set, and attempting it would
         spam errors and trigger a session reset on every turn.
         """
-        if not self._client.supports_config_option("effort"):
-            logger.debug("adapter exposes no 'effort' config option; skipping effort push")
+        option_id = effort_option_id(self._client.backend)
+        if not self._client.supports_config_option(option_id):
+            logger.debug("adapter exposes no %r config option; skipping effort push", option_id)
             return
         # Descend from the requested level through lower levels (e.g.
         # max → xhigh → high). Never escalate above what was asked.
         try:
             start = EFFORT_LEVELS.index(level)
         except ValueError:
-            await self._client.set_config_option("effort", level)
+            await self._client.set_config_option(option_id, level)
             return
         ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
         last_exc: Exception | None = None
         for candidate in ladder:
             try:
-                await self._client.set_config_option("effort", candidate)
+                await self._client.set_config_option(option_id, candidate)
                 if candidate != level:
                     logger.info(
                         "CC effort %r unsupported by model %s — applied %r instead",
@@ -1262,8 +1271,9 @@ class AcpProvider(LLMProvider):
         # An adapter build may advertise no 'effort' config option; attempting to
         # push would fail with 'Unknown config option' and reset the session.
         # Report unsupported so the dashboard leaves the UI as-is.
-        if via_config_option and not self._client.supports_config_option("effort"):
-            logger.info("change_effort skipped — adapter build exposes no 'effort' option")
+        effort_option = effort_option_id(self._client.backend)
+        if via_config_option and not self._client.supports_config_option(effort_option):
+            logger.info("change_effort skipped — adapter build exposes no %r option", effort_option)
             return False
         # Accept any level the dynamic validation set knows about — ACP backends
         # can report levels beyond the canonical five (effort.py), and those are
@@ -1801,4 +1811,6 @@ def provider_label(provider: Any) -> str:
         return PROVIDER_LABEL_CODEX
     if backend == ACP_BACKEND_OPENCODE:
         return PROVIDER_LABEL_OPENCODE
+    if backend == ACP_BACKEND_DEEPSEEK:
+        return PROVIDER_LABEL_DEEPSEEK
     return PROVIDER_LABEL_DEFAULT

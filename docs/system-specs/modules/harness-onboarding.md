@@ -316,6 +316,85 @@ want of a read-back, and this harness has one. Adding a member to the vocabulary
 a heavier edit than joining a set, and it is the right one when the alternative is
 a guarantee nobody performs.
 
+## Worked example: the DeepSeek Harness
+
+The run to read for what happens when a harness passes every mechanical stage and
+fails the one that matters. It is `ACP_BACKENDS_KNOWN` and it is NOT selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_DEEPSEEK`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_DEEPSEEK`, policy name mapped, its own model-registry namespace. |
+| 2 capability sets | Decided for every set. In the model channel, the effort channel and the advertised-model capture; in the session MCP array, which is the first membership won by a PROBE rather than by the advertisement (it advertises `mcpCapabilities: {"http": true}`, and stdio is ACP v1's baseline rather than an omission — a stdio entry naming an unrunnable command comes back as a failed MCP handshake, so the transport mounted). Out of steer, both compaction sets, the internal sandbox and member dispatch. |
+| 3 spawn path | Done — one binary plus a profile selector, `dsh --profile acp`, resolved override → mise → PATH. The ACP package is a plugin with no executable, so what resolves is the HOST that boots the profile it lives in. |
+| 4 handshake | Done — `PROTOCOL_VERSION_DEEPSEEK`, its own literal, integer `1`, captured off its own wire. |
+| 5 auth declaration | Done — `own_credential_file`, and less auth than any harness so far: `authMethods: []` and an `authenticate` that returns immediate success, so the ACP layer authenticates nothing and the secret it needs is a PROVIDER key. Two leaves on the floor, `~/.dsh/.credentials.yaml` and the `~/.dsh/.env` fallback, `DSH_HOME` re-anchored, `adapter_own_leaves` EMPTY. |
+| 6 install probe | Done — `_probe_deepseek` names `dsh` and `npm i -g @deepseek-ai/dsh`, with `restart_required` from the spawn path's own cache. |
+| 7 selectability | **Not selectable.** Named in `NOT_SHIPPED_SELECTABLE` with its reason. |
+| routing | `UNVERIFIED`, on observation rather than for want of looking. |
+| residual | The whole of it. Crew's PreToolUse gate does not run for what a session does, and there is no compensating mask either, because the mask is gated on `ENFORCED_ROUTINGS`. |
+| 8 live spill | Reached, and it is what produced the verdict: a live turn, and a corpus live for six of the seven required classes. The seventh is synthesized, because the harness produced no `session/request_permission` frame in four captures. |
+
+Two things this run produced that the checklist did not ask for.
+
+The first is a protocol divergence that turned out not to be one. This harness
+REJECTS `session/load` with `-32601` and serves `session/resume` instead. The
+reflex is to read that as a quirk and branch on the harness id; the ACP schema says
+otherwise — `session/resume` restores "an existing session without returning
+previous messages (unlike `session/load`)" and exists "for agents that can resume
+sessions but don't implement full session loading". Both are standard, and their
+requests and responses carry the same fields. So the cost was one membership set
+keying BOTH varying reads (the capability advertised and the verb sent) plus one
+method constant, and the two sets that already described a harness owning its own
+sessions were reused unchanged. Read a "divergence" against the specification
+before writing a branch: a fourth harness lacking `session/load` pays nothing.
+
+The second is the harder lesson, and it is about what Stage 7 is FOR. Every
+mechanical stage passed. What failed is the question underneath the switch: does a
+tool call reach Crew's gate? This harness's sandbox decides that itself — an
+in-policy action runs silently, an out-of-policy one is DENIED with the denial
+inside the tool result and a `status` of `completed` — and
+`session/request_permission` carries only a MODEL-INITIATED request to escalate
+past the sandbox, refused outright when the model omits its justification.
+
+That shape is dangerous to onboard because it looks routable. The harness has a
+real approval policy, Crew can pin it, and a read-back can confirm it in force. A
+`VERIFIED_SEEDED_SETTINGS` entry would have gone green through every gate in this
+document while gating escalations rather than tool calls. The thing that caught it
+was Stage 8: four live captures across both non-permissive postures, none of which
+raised a permission request. Do not let a setting's existence stand in for the
+observation — a harness with a permission vocabulary is not the same as a harness
+that asks, and only the wire can tell you which you have.
+
+The onward consequence is worth naming because it is a benefit. `UNVERIFIED` keeps
+this harness outside `ENFORCED_ROUTINGS`, so `adapter_own_leaves` must be empty,
+so it removes nothing from the OS credential deny list for its process tree. A
+harness shipping `bash` with a carve-out is a harness whose shell can `open()` the
+carved-out token; retreating to the honest verdict avoided that by construction
+rather than by a second control.
+
+**The unselectable state is conditional, not terminal, and it is worth saying what
+would lift it.** Stage 7 becomes passable when a tool call reaches Kiro Crew's gate
+per call rather than only when the model asks to escalate. Three routes would do it,
+in ascending cost. The harness could route its sandbox's own decision through the
+approval seam instead of deciding it internally, which would make every in-policy
+action ask and put this harness on the same footing as OpenCode — an upstream change,
+and the cheapest if it happens. Or a Kiro Crew plugin could be composed into the
+harness's `approval/request` waterfall as the terminal answerer, which would make
+every request Crew's to decide — that means shipping a plugin into a third-party
+composition, a new kind of artifact for this repository. Or the sandbox mode could be
+pinned to a posture where the actions Crew cares about are all escalations, which is
+the weakest of the three because it depends on the model choosing to ask.
+
+Until one of those exists the verdict stands. What must NOT happen is the fourth
+route: reading the approval policy back and calling it routed. That verifies a real
+setting about the wrong thing, and it would go green through every gate in this
+document.
+
+There is one further gap this run recorded rather than closed, in
+`tool_gate.ENFORCED_ROUTINGS`'s own comment: `is_enforced()` answers both "does a
+non-ROUTED verdict refuse this session" and "does this harness get the OS credential
+mask", and those only coincide for the harnesses carried today.
+
 The other is what onboarding a harness with a *different shape* of credential home
 surfaced. Every earlier harness's override variable stood in for its token's parent
 directory, so the credential floor re-anchored a relocated token by its final

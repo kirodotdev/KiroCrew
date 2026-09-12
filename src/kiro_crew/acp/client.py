@@ -82,6 +82,7 @@ from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rule
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -92,6 +93,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
@@ -128,6 +130,7 @@ from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_RESUME,
     METHOD_SESSION_UPDATE,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
@@ -147,6 +150,7 @@ from kiro_crew.acp.types import (
     AcpPromptStats,
     JsonRpcMessage,
     JsonRpcRequest,
+    effort_option_id,
     model_registry_namespace,
 )
 from kiro_crew.agent import (
@@ -224,6 +228,10 @@ PROTOCOL_VERSION_CODEX = 1
 # H10): a divergence should be a one-line edit here, not a silent downgrade of
 # whichever harness moved first.
 PROTOCOL_VERSION_OPENCODE = 1
+# DeepSeek Harness answers ``initialize`` with an integer ``protocolVersion`` of 1,
+# so it speaks the SPEC dialect too. Verified off its own wire, and its own literal
+# for the same reason the two above have one (harness-parity H10).
+PROTOCOL_VERSION_DEEPSEEK = 1
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
@@ -232,6 +240,7 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     ACP_BACKEND_CLAUDE: PROTOCOL_VERSION_CLAUDE,
     ACP_BACKEND_CODEX: PROTOCOL_VERSION_CODEX,
     ACP_BACKEND_OPENCODE: PROTOCOL_VERSION_OPENCODE,
+    ACP_BACKEND_DEEPSEEK: PROTOCOL_VERSION_DEEPSEEK,
 }
 DEFAULT_MODEL = "auto"
 
@@ -319,6 +328,36 @@ _OPENCODE_CONFIG_READBACK_ARGS = ("debug", "config")
 # Bounded so a wedged harness cannot hold the spawn open: the read-back is a
 # short-lived child, measured at ~2.3s on a loaded dev desktop.
 _OPENCODE_READBACK_TIMEOUT_S = 30.0
+
+# ── deepseek (ACP_BACKEND_DEEPSEEK) ──
+# DeepSeek Harness is a plugin host, and ACP is one of the profiles it boots. So the
+# argv is the harness's own binary plus the profile selector -- the plain-binary
+# ladder again, with no adapter package and no Node entry script to resolve. The
+# profile is shipped: it is created on first use, and both of its bundles are inside
+# the installed package's own dependency closure, so a global install needs no
+# workspace checkout and no per-profile dependency step.
+DEEPSEEK_BIN = "dsh"
+DEEPSEEK_ACP_PROFILE_ARGS = ("--profile", "acp")
+# Explicit override, spelled the way this harness's own environment variables are.
+_ENV_DEEPSEEK_BIN = "DSH_BIN"
+# The harness home. Named because the credential declaration names it as the
+# ``$HOME``-override for this harness's own store, so the credential floor and the
+# sandbox mask both re-anchor on it.
+_ENV_DEEPSEEK_HOME = "DSH_HOME"
+# The one variable the shipped ACP profile composes its whole permission posture
+# from: it selects a sandbox mode AND an approval policy together. Pinned so the
+# posture never depends on an ambient value. A config layer can set the composed rows
+# directly and never read this variable, which weakens confinement -- and changes
+# nothing about whether Crew is consulted, because it never is.
+_ENV_DEEPSEEK_PERMISSION_MODE = "DSH_PERMISSION_MODE"
+# The posture Crew pins: confined to the workspace rather than unconfined. Defence
+# in depth and nothing more, because it does not make this harness's tool calls reach
+# Crew's gate.
+DEEPSEEK_PERMISSION_MODE = "workspace-write"
+# The harness's own installer. The ACP plugin package itself has no executable --
+# it is a plugin with peer dependencies on the harness core -- so what is installed
+# is the host binary that boots the profile it lives in.
+DEEPSEEK_INSTALL_COMMAND = "npm i -g @deepseek-ai/dsh"
 
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
@@ -728,6 +767,36 @@ def _resolve_opencode_bin() -> tuple[str | None, str]:
         return mise_resolved, search_path
 
     on_path = shutil.which(OPENCODE_BIN, path=search_path)
+    if on_path:
+        return _normalize_exe_casing(on_path) or on_path, search_path
+
+    return None, search_path
+
+
+_deepseek_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
+
+
+def _resolve_deepseek_bin() -> tuple[str | None, str]:
+    """Find the ``dsh`` executable and the PATH searched for it.
+
+    The same three-rung plain-binary ladder the sibling harness takes -- explicit
+    override, then mise, then the augmented PATH -- because this harness is a
+    binary that boots a profile, not a Node script to resolve.
+
+    Returns ``(None, search_path)`` when it is absent, so the caller reports what
+    was searched rather than raising from inside the resolver.
+    """
+    search_path = augmented_path(os.environ.get("PATH", ""))
+
+    override = os.environ.get(_ENV_DEEPSEEK_BIN)
+    if override and platform_compat.is_executable_file(override):
+        return _normalize_exe_casing(override) or override, search_path
+
+    mise_resolved = _mise_which(DEEPSEEK_BIN)
+    if mise_resolved:
+        return mise_resolved, search_path
+
+    on_path = shutil.which(DEEPSEEK_BIN, path=search_path)
     if on_path:
         return _normalize_exe_casing(on_path) or on_path, search_path
 
@@ -3904,6 +3973,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_OPENCODE
 
     @property
+    def _is_deepseek(self) -> bool:
+        return self.backend == ACP_BACKEND_DEEPSEEK
+
+    @property
     def _model_registry_namespace(self) -> str:
         """The model_registry namespace key for this backend (``claude_code`` /
         ``acp``). A registry index selector, NOT a provider-identity check — see
@@ -5145,15 +5218,53 @@ class AcpClient:
                     self._model_registry_namespace, self._advertised_model_ids()
                 )
 
+    @staticmethod
+    def _select_options(entries: object) -> list[dict]:
+        """Flatten one level of provider GROUPS out of a select's option list.
+
+        ACP lets a select group its options: an entry may carry no ``value`` of its
+        own and hold its real choices in a nested ``options`` list instead. A filter
+        that keeps only entries with a ``value`` therefore empties on a grouped
+        select, and an empty list reads as "this harness advertised no models" --
+        which for a harness whose advertised list is the ONLY vocabulary its
+        ``set_config_option`` accepts means no model can ever be offered or resolved.
+
+        ONE level, deliberately: a group holding groups is not a shape any harness
+        here serves, and recursing without bound would let a malformed payload spin.
+        """
+        flattened: list[dict] = []
+        # Narrowed rather than trusted, at BOTH levels. Everything here is read
+        # straight out of a wire payload, so a select whose ``options`` is a string,
+        # a mapping or a number must answer "no options" rather than iterate into
+        # characters, into keys, or raise. The nested list needs the same check as
+        # the outer one and for a sharper reason: a truthy non-iterable there --
+        # ``{"name": "g", "options": 123}`` -- raises ``TypeError`` from inside
+        # ``session/new`` handling, so a malformed response would fail session
+        # initialization instead of degrading to "this harness advertised no
+        # models".
+        if not isinstance(entries, list):
+            return flattened
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("value"):
+                flattened.append(entry)
+                continue
+            nested_entries = entry.get("options")
+            if not isinstance(nested_entries, list):
+                continue
+            for nested in nested_entries:
+                if isinstance(nested, dict) and nested.get("value"):
+                    flattened.append(nested)
+        return flattened
+
     def _models_from_config_options(self, session_resp: dict) -> dict | None:
         """Synthesize a ``models`` envelope from a configOptions model select, or None."""
         if not self._uses_advertised_model_selection:
             return None
         for opt in session_resp.get("configOptions") or []:
             if isinstance(opt, dict) and opt.get("id") == "model" and opt.get("type") == "select":
-                options = [
-                    o for o in opt.get("options") or [] if isinstance(o, dict) and o.get("value")
-                ]
+                options = self._select_options(opt.get("options"))
                 if not options:
                     return None
                 envelope: dict = {
@@ -5627,13 +5738,18 @@ class AcpClient:
     def get_valid_effort_levels(self) -> list[str]:
         """Return valid effort levels from ACP config, preserving ACP order.
 
-        Parses configOptions for the entry with id="effort" and extracts its
-        options[].value list in the order ACP reported them.
+        Parses configOptions for the entry whose id this backend advertises effort
+        under -- ``effort_option_id``, because the spelling is per harness -- and
+        extracts its ``options[].value`` list in the order ACP reported them. A
+        hard-coded id here would return an empty list for a harness that spells it
+        differently, and an empty list reads as "this session offers no effort
+        levels" rather than as a lookup that missed.
         """
+        wanted = effort_option_id(self.backend)
         for opt in self._acp_config_options:
             if not isinstance(opt, dict):
                 continue
-            if opt.get("id") == "effort":
+            if opt.get("id") == wanted:
                 options = opt.get("options", [])
                 if isinstance(options, list):
                     return [o["value"] for o in options if isinstance(o, dict) and "value" in o]
@@ -5976,6 +6092,58 @@ class AcpClient:
                     )
                 except acp_tool_gate.ToolGateUnroutable as exc:
                     raise AcpToolGateUnroutable(str(exc)) from None
+        elif self._is_deepseek:
+            # This harness is a plugin host and ACP is one of the profiles it boots,
+            # so the argv is its own binary plus the profile selector: no adapter
+            # entry script, no node, and no npm package to resolve at spawn time.
+            global _deepseek_bin_cache  # noqa: PLW0603
+            if _deepseek_bin_cache is _UNRESOLVED:
+                _deepseek_bin_cache = await asyncio.to_thread(_resolve_deepseek_bin)
+            cached_deepseek_resolution = _deepseek_bin_cache
+            deepseek_bin, deepseek_search_path = (
+                cached_deepseek_resolution
+                if isinstance(cached_deepseek_resolution, tuple)
+                else (None, "")
+            )
+            if not isinstance(deepseek_bin, str) or not deepseek_bin:
+                raise AcpError(
+                    f"{DEEPSEEK_BIN} not found "
+                    f"({describe_search_path(deepseek_search_path)}). Install it with "
+                    f"'{DEEPSEEK_INSTALL_COMMAND}', or set {_ENV_DEEPSEEK_BIN} to the "
+                    f"executable. The ACP plugin package alone does not serve ACP: it "
+                    f"is a plugin, and this binary is the host that boots the profile "
+                    f"it lives in."
+                )
+            # No spec translation is warmed here, and its absence is the declared
+            # state rather than an omission: this harness has no mirror, so
+            # ``_resolve_session_mcp_servers`` would answer with an empty list, and
+            # warming it would buy a disk read and a thread hop for that answer. What
+            # DOES reach the session is the shared broker append, which stays on the
+            # composition path for every mirror-less backend. See
+            # ``providers/mirrors/registry`` for the projection this harness declares.
+            #
+            # And no refuse-then-mask preflight, which is the visible cost of the
+            # routing verdict rather than an oversight. That preflight resolves the OS
+            # credential mask, and the mask is gated on
+            # ``tool_gate.ENFORCED_ROUTINGS`` -- so for a harness whose routing is
+            # ``UNVERIFIED`` it would resolve to nothing, and
+            # ``test_every_enforced_harness_reaches_the_spawn_preflight`` counts one
+            # call site per ENFORCED harness, so a call here would break that count.
+            # This harness therefore starts with Crew's ordinary sandbox tier and no
+            # credential mask, which is one of the reasons it is not offered on the
+            # switch.
+            #
+            # No permission overlay, and no read-back, because there is nothing this
+            # client can verify: the harness decides its own tool calls. Its sandbox
+            # permits an in-policy action silently and DENIES an out-of-policy one,
+            # and ``session/request_permission`` carries only a model-initiated
+            # request to escalate past that sandbox. So the approval policy is real
+            # and readable and still does not route a tool call here, which is why
+            # this harness's ``ACP_BACKEND_ROUTING`` entry is ``UNVERIFIED`` and why
+            # it is absent from ``BASELINE_SELECTABLE_BACKENDS``. A read-back would
+            # confirm a setting that governs escalations alone and read as a
+            # guarantee nothing performs.
+            argv = [deepseek_bin, *DEEPSEEK_ACP_PROFILE_ARGS]
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -6111,6 +6279,11 @@ class AcpClient:
             # merge in ``_opencode_routing_config`` already preserved every key the
             # operator set, and this value is the one the host gate depends on.
             env[_ENV_OPENCODE_CONFIG_CONTENT] = self._opencode_config_content
+        if self._is_deepseek:
+            # Pinned rather than left to the ambient value, so a variable inherited
+            # from the operator's shell cannot select the unconfined mode. Defence in
+            # depth: nothing here routes a tool call to Crew's gate.
+            env[_ENV_DEEPSEEK_PERMISSION_MODE] = DEEPSEEK_PERMISSION_MODE
         if self._session_key:
             env["KIROCREW_SESSION_KEY"] = self._session_key
         else:
@@ -6254,7 +6427,11 @@ class AcpClient:
                 else (
                     f"{OPENCODE_BIN} {OPENCODE_ACP_SUBCMD}"
                     if self._is_opencode
-                    else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
+                    else (
+                        f"{DEEPSEEK_BIN} {' '.join(DEEPSEEK_ACP_PROFILE_ARGS)}"
+                        if self._is_deepseek
+                        else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
+                    )
                 )
             )
         )
@@ -6391,7 +6568,11 @@ class AcpClient:
                 else (
                     CODEX_ACP_BIN
                     if self._is_codex
-                    else OPENCODE_BIN if self._is_opencode else KIRO_CLI_BIN
+                    else (
+                        OPENCODE_BIN
+                        if self._is_opencode
+                        else DEEPSEEK_BIN if self._is_deepseek else KIRO_CLI_BIN
+                    )
                 )
             )
             logger.warning("%s stderr: %s", _bin_label, redacted)
@@ -6933,8 +7114,21 @@ class AcpClient:
         init_resp = await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
         logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
 
-        # Check if kiro-cli supports session/load
-        self._can_load_session = init_resp.get("agentCapabilities", {}).get("loadSession", False)
+        # Whether this harness can restore a session at all, asked of whichever
+        # capability the harness advertises it under. Both spellings are standard ACP
+        # v1: ``loadSession`` is the flag for ``session/load``, and
+        # ``sessionCapabilities.resume`` is the object -- an empty one means supported
+        # -- for ``session/resume``. Keyed on the membership set rather than probing
+        # both, so a harness cannot be read as restorable through a capability it
+        # never advertised and then sent a verb it does not serve.
+        capabilities = init_resp.get("agentCapabilities") or {}
+        if self.backend in ACP_BACKENDS_RESUME_WITHOUT_LOAD:
+            session_capabilities = capabilities.get("sessionCapabilities")
+            self._can_load_session = isinstance(session_capabilities, dict) and isinstance(
+                session_capabilities.get("resume"), dict
+            )
+        else:
+            self._can_load_session = bool(capabilities.get("loadSession", False))
         # Which MCP transports this agent will accept in the session array. Only the
         # codex projection consults it (see _codex_session_mcp_servers); every other
         # backend either reads no array or accepts the shapes Crew already sends.
@@ -6971,6 +7165,23 @@ class AcpClient:
                 session_file = str(kiro_sessions_dir() / f"{resume_sid}.json")
                 file_ok = Path(session_file).exists()
             if file_ok:
+                # WHICH restore verb, from the same membership set that chose the
+                # capability above. The two calls share a contract --
+                # ``ResumeSessionRequest`` carries the same fields as
+                # ``LoadSessionRequest``, and their responses carry the same fields --
+                # so the params built below and every check after them are unchanged,
+                # and only the method name differs. That is why this is a set and a
+                # constant rather than a restore path per harness (harness-parity
+                # H13).
+                #
+                # Resolved BEFORE the try, not inside it: the failure log in the
+                # handler names this method, and a params-building failure would
+                # otherwise reach that log with the name unbound.
+                restore_method = (
+                    METHOD_SESSION_RESUME
+                    if self.backend in ACP_BACKENDS_RESUME_WITHOUT_LOAD
+                    else METHOD_SESSION_LOAD
+                )
                 try:
                     load_params: dict = {
                         "sessionId": resume_sid,
@@ -7000,11 +7211,11 @@ class AcpClient:
                     # A resumed session re-declares its whole MCP surface, so it can
                     # be short of a referenced server exactly as a fresh one can.
                     self._guard_unresolved_mcp_refs(load_params.get("mcpServers"))
-                    load_id = await self._send_request(METHOD_SESSION_LOAD, load_params)
+                    load_id = await self._send_request(restore_method, load_params)
                     load_resp = await self._wait_for_response(
                         load_id,
                         timeout=_INIT_TIMEOUT,
-                        method=METHOD_SESSION_LOAD,
+                        method=restore_method,
                         expected_mcp=load_params.get("mcpServers"),
                     )
                     # A ``modes`` block is the shape kiro-cli and claude return on a
@@ -7025,7 +7236,9 @@ class AcpClient:
                         logger.info("ACP session resumed: %s", resume_sid)
                 except (AcpError, AcpTimeoutError):
                     logger.info(
-                        "session/load failed for %s, falling back to session/new", resume_sid
+                        "%s failed for %s, falling back to session/new",
+                        restore_method,
+                        resume_sid,
                     )
             else:
                 logger.info("Session file missing for %s, skipping load", resume_sid)
@@ -7529,7 +7742,12 @@ class AcpClient:
         _reinject()
         label = method or f"request {req_id}"
         message = f"ACP {label} timed out after {timeout:.0f}s"
-        if method in {METHOD_SESSION_NEW, METHOD_SESSION_LOAD}:
+        # Both restore verbs, not just one: a harness in
+        # ``ACP_BACKENDS_RESUME_WITHOUT_LOAD`` reaches this with
+        # ``method=session/resume`` and the same ``expected_mcp`` detail, and an
+        # omission here silently drops that detail from the only message an operator
+        # sees when a restore stalls.
+        if method in {METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME}:
             progress = self._mcp_timeout_progress(expected_mcp)
             if progress:
                 message += f" ({progress})"

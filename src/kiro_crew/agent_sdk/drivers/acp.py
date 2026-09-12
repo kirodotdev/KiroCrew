@@ -341,6 +341,53 @@ def opencode_install_command() -> str:
     return OPENCODE_INSTALL_COMMAND
 
 
+def deepseek_resolves() -> bool:
+    """Whether the DeepSeek Harness binary resolves on this host right now.
+
+    One seam, like the sibling harness's: what resolves IS what runs. The ACP plugin
+    package has no executable of its own -- it is a plugin with peer dependencies on
+    the harness core -- so the host binary that boots its profile is the only thing
+    whose absence is a verdict.
+    """
+    from kiro_crew.acp.client import _resolve_deepseek_bin
+
+    binary, _searched_path = _resolve_deepseek_bin()
+    return bool(binary)
+
+
+def deepseek_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved the DeepSeek binary as absent?
+
+    Same hazard and same resolution as every seam above: the path is resolved once
+    per process behind an ``_UNRESOLVED`` sentinel and never invalidated, so a probe
+    reporting "installed" after an install would disagree with every spawn until a
+    restart. Consulted, never invalidated -- a dashboard GET must not mutate a global
+    on the spawn path.
+    """
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_deepseek_bin_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        binary, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not binary
+
+
+def deepseek_install_command() -> str:
+    """The harness's own installer, read from the spawn path's constant.
+
+    Imported rather than restated, for the reason every sibling states: the command
+    an operator is told to run and the binary the ladder searches for must not be
+    able to drift apart.
+    """
+    from kiro_crew.acp.client import DEEPSEEK_INSTALL_COMMAND
+
+    return DEEPSEEK_INSTALL_COMMAND
+
+
 def claude_adapter_install_command() -> str:
     """``npm i -g <adapter package>`` -- the adapter's remedy, from the repo.
 

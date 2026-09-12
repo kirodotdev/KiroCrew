@@ -60,6 +60,7 @@ from pathlib import PurePosixPath
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_OPENCODE,
     Routing,
     permission_config_for,
@@ -75,6 +76,21 @@ logger = logging.getLogger(__name__)
 #: harness declaring an implemented mechanism is enforced automatically, and
 #: adding a mechanism here without implementing it would assert a guarantee
 #: nothing performs.
+#:
+#: KNOWN SEAM GAP, recorded here because this is where a reader meets it.
+#: :func:`is_enforced` reads this set to answer TWO different questions: "does a
+#: non-ROUTED verdict refuse this session?" and, through
+#: :func:`adapter_hidden_credential_dirs`, "does this harness get the OS credential
+#: mask?". Those are not the same question. The mask compensates for a harness whose
+#: passive READS bypass the gate, which is a property of the harness, not of whether
+#: its routing verdict is capable of refusing. They agree for every harness carried
+#: today, so nothing is wrong now and nothing here is a workaround -- but a harness
+#: that needs the mask while declaring a mechanism that cannot refuse would get
+#: neither, and one that refuses without doing passive reads would carry a mask it
+#: does not need. Splitting them is a change to a security control and belongs in its
+#: own change; tracked at
+#: docs/system-specs/modules/harness-onboarding.md#worked-example-the-deepseek-harness,
+#: which records the run that surfaced it.
 ENFORCED_ROUTINGS: frozenset = frozenset({Routing.SESSION_CONFIG, Routing.VERIFIED_SEEDED_SETTINGS})
 
 #: What is NOT consulted when a harness's tool calls bypass the gate. Named in
@@ -90,6 +106,7 @@ UNENFORCED_CONTROLS = (
 _LABELS: dict = {
     ACP_BACKEND_CODEX: "OpenAI Codex",
     ACP_BACKEND_OPENCODE: "OpenCode",
+    ACP_BACKEND_DEEPSEEK: "DeepSeek Harness",
 }
 
 #: The credential store each enforced harness must still be able to read.

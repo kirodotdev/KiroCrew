@@ -111,12 +111,16 @@ than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
 ## Provenance of what is committed today
 
-Every fixture here is `synthesized` except the four under `opencode/`, which
-are captures. Stated plainly because it bounds what the corpus proves: a
-synthesized fixture locks the dispatch layer's behaviour against refactoring,
-which is what it was built for, and it does **not** prove that the backend really
-emits those shapes. Only the live files carry that second proof, and for opencode
-they reach all seven required classes.
+Every fixture here is `synthesized` except those under `opencode/` and
+`deepseek/`, which are captures. Stated plainly because it bounds what the corpus
+proves: a synthesized fixture locks the dispatch layer's behaviour against
+refactoring, which is what it was built for, and it does **not** prove that the
+backend really emits those shapes. Only the live files carry that second proof.
+For opencode they reach all seven required classes. For deepseek they reach six,
+and the seventh is synthesized because that harness produced no
+`session/request_permission` frame in any capture -- which is a fact about the
+harness, recorded in `deepseek/README.md` and in the host contract, not a gap in
+the recording.
 
 | Directory | Backend id | Provenance | Why |
 |---|---|---|---|
@@ -125,6 +129,8 @@ they reach all seven required classes.
 | `claude/` | `claude` | synthesized | `claude-agent-acp` was not installed on the recording host. |
 | `codex/` | `codex` | synthesized | `codex-acp` was not installed on the recording host. |
 | `opencode/` | `opencode` | **live** | Four captures off `opencode acp` 1.18.30 driving a local Ollama model, all seven required classes reached live, plus a `session/load` result (`session-load-live.jsonl`: replayed conversation, `configOptions`, no `modes`). `session-live.jsonl`: the initialize response, the `session/new` response, an `agent_message_chunk` turn, a `usage_update` and the `stopReason` response, verbatim and in order. `tool-call-live.jsonl`: a `tool_call` and two `tool_call_update` frames from a call the harness rejected against its own argument schema. `permission-request-live.jsonl`: `tool_call`, the `session/request_permission` frame OpenCode sent with `permission: ask` in force, and the `tool_call_update` frames through `completed` with the command's real output. Slices of longer turns, with the home directory redacted to `~`. |
+
+| `deepseek/` | `deepseek` | **live**, except one frame | Four captures off `dsh --profile acp` 0.0.1 driving a locally served model. `handshake-live.jsonl`: the initialize response, a `session/new` response, the `session/load` **rejection** (`-32601`, the observation `ACP_BACKENDS_RESUME_WITHOUT_LOAD` rests on) and the `session/list` result. `turn-live.jsonl`: one real turn end to end -- `usage_update`, `tool_call`, `tool_call_update`, `agent_message_chunk` and the `stopReason` response. `mcp-stdio-mount-live.jsonl`: a stdio MCP mount completing a ROUND TRIP -- a broker-stub-shaped element pointing at a real server, then the `tool_call` and result for `mcp__crew-probe__crew_probe_echo` -- which is the observation `ACP_BACKENDS_SESSION_MCP_ARRAY` membership rests on. `mcp-stdio-rollback-live.jsonl`: the same element with an unstartable command, which fails `session/new` WHOLE rather than being dropped. `permission-request-synthesized.jsonl` is the exception and is labelled `synthesized`: four live captures across this harness's confined and read-only postures produced no permission request, because its sandbox decides a tool call itself and the permission frame carries only a model-initiated escalation. Host data pruned under a sweep that refuses to finish if any survives; see `deepseek/README.md`. |
 
 Replacing any row with a live capture is a strict improvement and needs no
 change to the test. Record it, set `recorded` to `live`, fill in the real
