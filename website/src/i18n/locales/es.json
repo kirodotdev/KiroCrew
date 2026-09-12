@@ -14901,6 +14901,10 @@
       "plainDiff": {
         "description": "Muestra los diffs como texto unified diff sin resaltado de sintaxis. Usa menos memoria en diffs grandes.",
         "label": "Diffs en texto plano"
+      },
+      "diffLayout": {
+        "description": "Muestra el código antiguo y el nuevo en dos columnas; desactivado muestra una sola columna unificada. Cambiarlo aquí o en cualquier diff lo aplica en todas partes.",
+        "label": "Diffs divididos (en paralelo)"
       }
     },
     "display": {

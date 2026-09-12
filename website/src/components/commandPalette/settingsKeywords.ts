@@ -23,6 +23,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.show-timestamps': ['time', 'clock', 'message time'],
   'chat.merge-queued-messages': ['queue', 'batch', 'combine messages'],
   'chat.quick-send': ['fast send', 'enter to send', 'hotkey'],
+  'chat.split-side-by-side-diffs': ['split', 'unified', 'split view', 'unified view', 'diff layout', 'side by side'],
 
   // Voice
   'voice.enabled': ['tts', 'speak', 'read aloud', 'narrate', 'text-to-speech'],

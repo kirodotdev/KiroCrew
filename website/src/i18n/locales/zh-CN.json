@@ -14518,6 +14518,10 @@
       "plainDiff": {
         "description": "以普通 unified diff 文本显示差异，不使用语法高亮着色。在大型差异上占用更少内存。",
         "label": "纯文本 diff"
+      },
+      "diffLayout": {
+        "description": "分两栏显示旧代码和新代码；关闭则显示单栏统一视图。在这里或在任意差异上更改，都会应用到各处。",
+        "label": "拆分（并排）差异"
       }
     },
     "display": {
