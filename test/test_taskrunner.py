@@ -2089,6 +2089,77 @@ class TestExtractLesson:
         assert "lowercase" in lessons[0].rule.lower()
 
     @pytest.mark.asyncio
+    async def test_volatile_lesson_is_not_reported_as_learned(self, tmp_path: Path) -> None:
+        """A refused JSONL write must not notify or update the run ledger."""
+        from kiro_crew.learn import LessonStore
+
+        store = LessonStore(base_dir=tmp_path)
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False, lesson_store=store)
+        runner._notify = AsyncMock()
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s")
+        step = Step(index=1, title="X", description="d", error="boom")
+
+        with patch.object(
+            runner,
+            "_call_llm_for_lesson",
+            return_value={
+                "rule": "use automatic model selection",
+                "negative": "use gpt-5.6-sol",
+                "category": "preference",
+            },
+        ):
+            await runner._extract_lesson(step, run)
+
+        assert store.load_all() == []
+        assert run.lessons_learned == []
+        runner._notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_private_volatile_lesson_is_not_reported_as_learned(self, tmp_path: Path) -> None:
+        """A refused private vector write must not notify or update the run ledger."""
+        from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
+
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        runner._notify = AsyncMock()
+        context = MagicMock()
+        context.ensure_store = AsyncMock(return_value=MagicMock())
+        runner._ctx = context
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", task_id="private")
+        step = Step(index=1, title="X", description="d", error="boom")
+
+        with (
+            patch(
+                "kiro_crew.member_memory_auth.read_private_session_store",
+                return_value="member-store",
+            ),
+            patch("kiro_crew.context.inherit_session_memory", new=AsyncMock()),
+            patch.object(
+                runner,
+                "_call_llm_for_lesson",
+                return_value={
+                    "rule": "use automatic model selection",
+                    "negative": "use gpt-5.6-sol",
+                    "category": "preference",
+                },
+            ),
+            patch(
+                "kiro_crew.taskrunner.run_in_embed_pool",
+                new=AsyncMock(
+                    return_value=LessonWriteResult(
+                        LessonWriteOutcome.REFUSED,
+                        "volatile_session_fact",
+                    )
+                ),
+            ),
+        ):
+            await runner._extract_lesson(step, run)
+
+        assert run.lessons_learned == []
+        runner._notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_extract_lesson_no_store(self) -> None:
         """No lesson_store → does nothing."""
         sessions = _make_mock_sessions()

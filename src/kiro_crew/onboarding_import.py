@@ -43,6 +43,7 @@ from kiro_crew.embeddings import make_sync_embed_fn
 from kiro_crew.frontmatter import ONBOARDING_IMPORT, parse_block_scalar_header, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
+from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform.context import current_context, safe_context_call
 from kiro_crew.security import (
@@ -4257,6 +4258,8 @@ def _write_instruction(
     rule = str(item.payload.get("rule", "")).strip()
     if not rule:
         return _WriteOutcome("rejected")
+    if contains_volatile_lesson_fact(rule):
+        return _WriteOutcome("rejected")
 
     # ContextBuilder reads lesson.* from the VECTOR store when it holds any, and
     # then never reads lessons.jsonl (context.py: `if memory.vector_store and
@@ -4308,14 +4311,14 @@ def _write_instruction(
         # so an import can never delete a lesson the user taught the agent.
         if len(existing_lessons) >= _MAX_LESSONS_TOTAL:
             return _WriteOutcome("rejected")
-    lesson_store.save(
+    outcome = lesson_store.save(
         Lesson(
             ts=datetime.now(timezone.utc).isoformat(),
             rule=rule,
             category="preference",
         )
     )
-    return _WriteOutcome("imported")
+    return _WriteOutcome("rejected" if outcome == "refused" else "imported")
 
 
 def _write_memory(

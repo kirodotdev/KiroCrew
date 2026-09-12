@@ -1958,20 +1958,24 @@ class TaskRunner:
             if private_store:
                 if private_vectors is None:
                     raise UnknownMemoryStore("The task's private lesson store is unavailable")
-                await run_in_embed_pool(
+                write_result = await run_in_embed_pool(
                     private_vectors.write_lesson, rule, category, negative, "task_runner"
                 )
+                if write_result.outcome.value == "refused":
+                    return
             elif self._consolidator and self._consolidator._vector_store:
                 # write_lesson embeds via blocking urllib (Ollama); offload to
                 # keep the gateway event loop responsive (same pattern as
                 # dashboard/handlers/cron.py api_lessons_create).
-                await run_in_embed_pool(
+                write_result = await run_in_embed_pool(
                     self._consolidator._vector_store.write_lesson,
                     rule,
                     category,
                     negative,
                     "task_runner",
                 )
+                if write_result.outcome.value == "refused":
+                    return
             else:
                 if lesson_store is None:
                     return
@@ -1981,7 +1985,7 @@ class TaskRunner:
                 # it across its read-and-rewrite would stall this loop if save()
                 # ran here. The lock is what makes the write atomic, so the fix is
                 # to move the caller off the loop rather than to weaken it.
-                await asyncio.to_thread(
+                outcome = await asyncio.to_thread(
                     lesson_store.save,
                     Lesson(
                         ts=datetime.now(tz=timezone.utc).isoformat(),
@@ -1990,6 +1994,8 @@ class TaskRunner:
                         negative=negative,
                     ),
                 )
+                if outcome == "refused":
+                    return
             logger.info("Lesson extracted from task %d: %s", task.index, rule)
             if run:
                 run.lessons_learned.append(rule)

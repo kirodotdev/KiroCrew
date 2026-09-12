@@ -64,10 +64,16 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "learn_add",
             "description": (
-                "Save a learned correction or preference that persists across all "
-                "future sessions. MUST be called when the user corrects you, says "
-                "'always do X', 'never do Y', or 'remember that'. Include both "
-                "the rule (what to do) and negative (what not to do)."
+                "Save a learned correction or preference that changes behavior in "
+                "unrelated future sessions. MUST be called only when a user correction "
+                "defines reusable behavior, including 'always do X', 'never do Y', or "
+                "'remember that'. Do NOT save volatile session or task facts such as "
+                "the active model identity or what the assistant is running as. The "
+                "tool rejects recognized runtime identity assertions and concrete-ID "
+                "model-selection imperatives in the rule or negative clause. A model "
+                "version mentioned by itself is allowed. Free-form wording is a "
+                "best-effort check, so do not disguise either refused class. Include "
+                "both the rule (what to do) and negative (what not to do)."
             ),
             "inputSchema": {
                 "type": "object",
@@ -261,6 +267,16 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             "wording that shares few significant words with it can coexist."
         )
     if outcome == "refused":
+        if reason == "volatile_session_fact":
+            return (
+                "Error: volatile_session_fact: lesson was NOT saved. Runtime model "
+                "identity assertions and concrete-ID model-selection imperatives "
+                "become stale between sessions. A model version mentioned by itself "
+                "is allowed. Remove the volatile assertion or imperative and state a "
+                "reusable behavioral rule instead. Put a concrete background or "
+                "subagent model choice in config under agent.role_models.<role>, not "
+                "in learned memory."
+            )
         return (
             f"Lesson was NOT saved{scope_note}: the memory store refused this "
             f"value{detail}. Nothing was stored, so the correction is not in effect. "
@@ -349,7 +365,12 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
         return "No lessons saved."
     lines = []
     for le in lessons:
-        lines.append(f"[{le.get('category', '?')}] {le['rule']}")
+        withheld = (
+            " [WITHHELD: volatile_session_fact]"
+            if le.get("withheld_reason") == "volatile_session_fact"
+            else ""
+        )
+        lines.append(f"[{le.get('category', '?')}] {le['rule']}{withheld}")
     return "\n".join(lines)
 
 

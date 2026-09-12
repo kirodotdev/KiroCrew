@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.memory_startup import require_memory_ready
 from kiro_crew.memory_stores import named_store_operation
 from kiro_crew.project_scope import canonical_scope, project_scope_satisfied
@@ -237,7 +238,7 @@ class LessonStore:
         self._cache = None  # invalidate
 
     @named_store_operation
-    def save(self, lesson: Lesson) -> None:
+    def save(self, lesson: Lesson) -> str:
         """Insert *lesson*, skipping a rule that is already stored.
 
         Deliberately does NOT enrich. Most callers here are automatic --
@@ -246,14 +247,17 @@ class LessonStore:
         explicit refinement (the /api/lessons route, ``kirocrew learn add``)
         should attach a clause, and those call :meth:`save_or_enrich`.
 
-        Kept returning ``None`` so every existing caller is unaffected.
+        Returns the same outcome string as the shared body. Automatic callers use
+        ``refused`` to avoid counting, notifying, or ledgering a lesson that did not
+        persist; callers that ignore the return remain unaffected.
         """
-        self._insert_or_enrich(lesson, enrich=False)
+        return self._insert_or_enrich(lesson, enrich=False)
 
     @named_store_operation
     def save_or_enrich(self, lesson: Lesson) -> str:
         """Insert *lesson*, or attach its NOT-clause to the record holding the same
-        rule, in ONE lock acquisition. Returns ``inserted``/``enriched``/``unchanged``.
+        rule, in ONE lock acquisition. Returns
+        ``inserted``/``enriched``/``unchanged``/``refused``.
 
         For EXPLICIT refinement only -- see :meth:`save` for why automatic writers
         must not reach this.
@@ -290,6 +294,8 @@ class LessonStore:
         A re-submit carrying NO clause never strips one that is already stored --
         it reports ``unchanged``, matching the vector store for the same case.
         """
+        if contains_volatile_lesson_fact(lesson.rule, lesson.negative):
+            return "refused"
         with self._lock:
             # A whitespace-only clause is no clause. Same defect as the vector store's:
             # `--negative "   "` is truthy, so it would replace a real stored clause
@@ -427,18 +433,18 @@ class LessonStore:
         return lessons
 
     def _applicable(self, lessons: list[Lesson], project_dir: str | Path | None) -> list[Lesson]:
-        """Drop lessons whose ``repo_scope`` does not cover *project_dir*.
+        """Drop volatile lessons and lessons outside *project_dir*.
 
-        A lesson with no scope applies everywhere, so an existing store is
-        unaffected. A scoped one is withheld unless the session's project is
-        positively inside the named tree -- the gate fails closed, so a surface
-        with no project loses the scoped lessons rather than inheriting another
-        repository's rules.
+        Existing volatile rows remain readable through ``load_all`` and removable by
+        the user, but never reach a prompt. A lesson with no scope applies everywhere;
+        a scoped one is withheld unless the session's project is positively inside the
+        named tree.
         """
         return [
             le
             for le in lessons
-            if not le.repo_scope or project_scope_satisfied(le.repo_scope, project_dir)
+            if not contains_volatile_lesson_fact(le.rule, le.negative)
+            and (not le.repo_scope or project_scope_satisfied(le.repo_scope, project_dir))
         ]
 
     @named_store_operation

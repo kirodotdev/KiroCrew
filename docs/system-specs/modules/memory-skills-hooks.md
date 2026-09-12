@@ -2502,6 +2502,37 @@ reworded instead of presenting a rejected write as success.
 3. **Consolidation** (background): extracts corrections not already saved via `learn_add`. V1 and V2 call `write_lesson(source="consolidation")` at confidence 0.9.
 4. **Dashboard/CLI** (manual): `POST /api/lessons` → `write_lesson()`
 
+**Durable lesson volatile-fact boundary.** The primary `write_lesson()` writer and the
+JSONL `LessonStore` fallback call one shared predicate before persistence. It refuses
+exactly two classes in either the `rule` or `negative` field, in every category:
+runtime model-identity assertions recognized by `_VOLATILE_MODEL_FACT_RE`, and
+concrete-ID model-selection imperatives recognized by `_BEHAVIORAL_MODEL_PIN_RE`.
+The imperative can start the field or follow `.`, `!`, `?`, or a newline, with optional
+`please` / `kindly`, emphatic `do`, and bounded `for ... ,` / `when ... ,` prefixes.
+This grammar is best-effort for free-form wording; callers must not disguise either
+refused class. A model-version literal by itself is not volatile. Durable compatibility,
+tooling, and preference text can name a version in any category or in a NOT-clause.
+The vector writer returns `outcome="refused", reason="volatile_session_fact"` before
+embedding or deduplication; the JSONL route maps the same refusal to that wire outcome
+and reason.
+Automatic JSONL callers read the returned outcome before counting, notifying, ledgering,
+or reporting an imported lesson. Onboarding applies the same predicate before either its
+vector or JSONL instruction branch, so a rejected directive is never reported as
+imported. Both context renderers apply the predicate again. Mapping rows expose their
+fields directly. Legacy vector strings use the row's MD5-derived key to prove which
+in-band separator splits the rule from its NOT-clause; rows keyed by another writer
+remain one rule rather than being guessed apart. A legacy volatile row stays
+available to listing and manual deletion, never reaches a prompt, and carries
+`withheld_reason="volatile_session_fact"` in the lessons API so `learn_list` marks it
+`WITHHELD`. Vector population checks use the same renderability predicate, so a store
+containing only withheld rows does not suppress the JSONL lesson fallback.
+The `learn_add` MCP handler, task runner, consolidation, dashboard POST route, headless
+`--slack-only` route, and direct writers therefore enforce the same boundary. The MCP
+handler renders the reason as `Error: volatile_session_fact: ...` and asks for a reusable
+behavioral rule instead. An imperative concrete model choice belongs in
+`agent.role_models.<role>`. Model-family guidance and plain model-version references
+remain durable.
+
 **Migration**: `migrate_from_markdown()` reads `lessons.jsonl` and writes each entry as `lesson.*` semantic key with `source=migration, confidence=0.9`. User-explicit lessons (confidence 1.0) can't be overwritten by migration.
 
 Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block. V1 session context retains query-ranked, project-scoped lessons; V2 selects bounded, project-scoped lessons without a query embedding. Explicit lesson readers can use hybrid relevance and fill the caller's character budget, reporting shown and omitted counts; the JSONL path caps at `_MAX_LESSONS_IN_CONTEXT = 50`. The JSONL store retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that.
