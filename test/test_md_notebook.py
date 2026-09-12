@@ -2494,6 +2494,35 @@ async def test_probe_detects_a_checkout_filter_driver(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+async def test_probe_allows_worktree_extension_without_config_file(fixtures) -> None:
+    """`extensions.worktreeConfig=true` with no `config.worktree` on disk is a
+    healthy EMPTY scope (git creates the file lazily). Probing it anyway exits
+    128 with a non-empty stderr, which reads as "unprobeable config" for a
+    filter-free vault."""
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        _git("config", "--local", "extensions.worktreeConfig", "true", cwd=root)
+        assert not (root / ".git" / "config.worktree").exists()
+        assert await git_ops.repo_supplied_driver(str(root)) == ""
+
+
+@pytest.mark.asyncio
+async def test_probe_still_refuses_worktree_scoped_driver(fixtures) -> None:
+    """The gate narrows WHEN the `--worktree` scope is probed, never what a
+    probed scope may declare: writing a worktree-scoped key creates the file,
+    and a driver in it must still refuse."""
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        _git("config", "--local", "extensions.worktreeConfig", "true", cwd=root)
+        _git("config", "--worktree", "filter.evil.smudge", "sh -c ':'", cwd=root)
+        assert "filter.evil.smudge" in await git_ops.repo_supplied_driver(str(root))
+
+
+@pytest.mark.asyncio
 async def test_probe_rejects_url_pushinsteadof_rewrite(fixtures) -> None:
     """`url.<attacker>.pushInsteadOf` rewrites the effective push URL at git's
     transport layer, so the trusted-remote check (which reads remote.origin.url)

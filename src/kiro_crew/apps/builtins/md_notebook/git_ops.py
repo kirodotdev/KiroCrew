@@ -31,6 +31,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.git_worktree_scope import worktree_scope_active
 
 logger = logging.getLogger(__name__)
 
@@ -899,7 +900,19 @@ async def repo_supplied_driver(dir_: str) -> str:
         check=False,
     )
     if code == 0 and out.strip().lower() == "true":
-        scopes.append("--worktree")
+        # The --worktree scope is probed only when git will actually read it:
+        # the shared decision in kiro_crew.git_worktree_scope explains why a
+        # missing config.worktree is an EMPTY scope, not an unreadable one,
+        # and why an unlocatable git dir keeps the scope in (the listing
+        # below then fails closed as "unprobeable config"). The decision
+        # stats the filesystem, so it runs off the event loop.
+        code, out, _ = await run_git(
+            ["rev-parse", "--absolute-git-dir"], dir_, check=False
+        )
+        if await asyncio.to_thread(
+            worktree_scope_active, out if code == 0 else "", dir_
+        ):
+            scopes.append("--worktree")
 
     for scope in scopes:
         code, out, err = await run_git(

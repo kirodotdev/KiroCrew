@@ -452,6 +452,88 @@ class TestFilterDriverRefusal:
         assert data["repo"] is True
 
 
+class TestWorktreeConfigScopeGate:
+    """``extensions.worktreeConfig=true`` with no ``config.worktree`` on disk is
+    a normal healthy state (git creates the file lazily; ``git worktree add``
+    leaves it behind routinely). Probing the ``--worktree`` scope there exits
+    128, which a fail-closed guard reads as "declares a filter driver",
+    silently emptying the Git panel for filter-free repos."""
+
+    @staticmethod
+    def _guard(repo) -> bool:
+        from kiro_crew.dashboard.handlers.files import _repo_declares_filter_driver
+
+        env = {
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+        return _repo_declares_filter_driver(["git"], str(repo), env)
+
+    def test_extension_on_without_config_worktree_is_not_refused(self, repo):
+        """The reported defect: extension on, file absent, no filter anywhere."""
+        _git(repo, "config", "extensions.worktreeConfig", "true")
+        git_dir = repo / ".git"
+        assert not (git_dir / "config.worktree").exists()
+        assert self._guard(repo) is False
+
+    def test_worktree_scoped_filter_is_still_refused(self, repo):
+        """Writing a worktree-scoped key creates the file; a driver in it must
+        still refuse — the gate narrows WHEN the scope is probed, never what a
+        probed scope may declare."""
+        _git(repo, "config", "extensions.worktreeConfig", "true")
+        _git(repo, "config", "--worktree", "filter.evil.smudge", "sh -c ':'")
+        assert self._guard(repo) is True
+
+    def test_extension_on_with_empty_config_worktree_is_not_refused(self, repo):
+        """File present and readable, no filter declared: probed, and clean."""
+        _git(repo, "config", "extensions.worktreeConfig", "true")
+        (repo / ".git" / "config.worktree").write_text("")
+        assert self._guard(repo) is False
+
+    def test_garbled_config_worktree_still_refuses(self, repo):
+        """Present-but-unreadable stays fail-closed: only the MISSING-file case
+        is an empty scope; a scope git errors on cannot be proven filter-free."""
+        _git(repo, "config", "extensions.worktreeConfig", "true")
+        (repo / ".git" / "config.worktree").write_text("[broken\n")
+        assert self._guard(repo) is True
+
+    def test_extension_off_never_probes_worktree_scope(self, repo, monkeypatch):
+        """Without the extension the ``--worktree`` scope is never issued."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        real = files_mod._run_git_bounded
+        seen: list[list[str]] = []
+
+        def recording(argv, **kw):
+            seen.append(list(argv))
+            return real(argv, **kw)
+
+        monkeypatch.setattr(files_mod, "_run_git_bounded", recording)
+        assert self._guard(repo) is False
+        assert not any("--worktree" in argv for argv in seen)
+
+    @pytest.mark.asyncio
+    async def test_status_populates_with_extension_on_and_no_file(self, repo, mock_sel):
+        """End to end: the panel shows the dirty file instead of going empty."""
+        _git(repo, "config", "extensions.worktreeConfig", "true")
+        (repo / "a.txt").write_text("modified\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            data = await resp.json()
+        assert data["repo"] is True
+        assert any(f["path"] == "a.txt" for f in data["files"])
+
+    @pytest.mark.asyncio
+    async def test_log_populates_with_extension_on_and_no_file(self, repo, mock_sel):
+        _git(repo, "config", "extensions.worktreeConfig", "true")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/log?path={repo}")
+            data = await resp.json()
+        assert data["repo"] is True
+        assert len(data["commits"]) >= 1
+
+
 class TestArrowFilename:
     @pytest.mark.skipif(os.name == "nt", reason="'>' is not a legal NTFS filename character")
     @pytest.mark.asyncio

@@ -74,6 +74,7 @@ import subprocess
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
+from kiro_crew.git_worktree_scope import worktree_scope_active
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 from kiro_crew.security import is_sensitive_path
@@ -389,14 +390,7 @@ def _worktree_config_active(root: str) -> bool:
     if ext.returncode != 0 or ext.stdout.strip() != "true":
         return False
     gitdir = _run_git(["rev-parse", "--absolute-git-dir"], root)
-    path = gitdir.stdout.strip() if gitdir.returncode == 0 else ""
-    if not path:
-        # Cannot locate GIT_DIR: assume the scope is live, so the probe below
-        # runs and any failure there fails closed.
-        return True
-    if not os.path.isabs(path):
-        path = os.path.join(root, path)
-    return os.path.isfile(os.path.join(path, "config.worktree"))
+    return worktree_scope_active(gitdir.stdout if gitdir.returncode == 0 else "", root)
 
 
 def _checkout_filter(root: str) -> str:
