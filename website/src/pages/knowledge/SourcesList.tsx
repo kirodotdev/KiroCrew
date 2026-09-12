@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
+import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Database, Circle } from 'lucide-react'
+import ErrorNotice from '../../components/ErrorNotice'
+import { api, type AwsConsentStatus } from '../../api/client'
+import AwsConsentGate from '../../components/AwsConsentGate'
 import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
@@ -272,11 +275,34 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [showAdd, setShowAdd] = useState(false)
-  const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
+  const [addType, setAddType] = useState<'local_file' | 'local_folder' | 'bedrock_kb'>('local_file')
   const [addUri, setAddUri] = useState('')
   const [addName, setAddName] = useState('')
   const [addIgnorePatterns, setAddIgnorePatterns] = useState('')
   const [addRecursive, setAddRecursive] = useState(true)
+  // Bedrock KB fields. No secrets: the profile is a NAME resolved by the AWS
+  // credential chain on the gateway host at query time.
+  const [addKbIds, setAddKbIds] = useState('')
+  const [addKbRegion, setAddKbRegion] = useState('')
+  const [addKbProfile, setAddKbProfile] = useState('')
+  // The consent card's target binds to the BLUR-committed profile, not the
+  // live keystrokes: per-keystroke targets churned the identity probe and
+  // could record a grant for a half-typed profile.
+  const [addKbProfileCommitted, setAddKbProfileCommitted] = useState('')
+  // Submit gates on the SAME consent query the card polls (identical key =
+  // react-query dedupes to one fetch): saving refuses server-side without a
+  // grant for exactly this (profile, region), so an enabled submit before
+  // the grant would walk a first-time user into an error the button's
+  // ready-state never warned of. The card above is the disabled-state
+  // explanation, and its grant mutation invalidates this key, so the
+  // button frees the moment consent lands.
+  const addKbRegionShapeOk = /^[a-z]{2}(-[a-z]+)+-\d$/.test(addKbRegion.trim())
+  const addKbConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 'bedrock-kb', addKbProfileCommitted, addKbRegion.trim()],
+    queryFn: () => api.awsConsent('bedrock-kb', { profile: addKbProfileCommitted, region: addKbRegion.trim() }),
+    enabled: showAdd && addType === 'bedrock_kb' && addKbRegionShapeOk,
+  })
+  const addKbConsentGranted = addKbConsentQ.data?.granted === true
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; uri: string; fileCount: number } | null>(null)
   const [expandedSource, setExpandedSource] = useState<string | null>(null)
   // The global staleTime is Infinity, so a reopened expanded view would serve the
@@ -343,9 +369,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
       if (res.status === 'pending_confirmation') {
         setPendingConfirm({ id: res.id, uri: addUri, fileCount: res.file_count ?? 0 })
         setShowAdd(false); setAddUri(''); setAddName(''); setAddIgnorePatterns('')
+        setAddKbIds(''); setAddKbRegion(''); setAddKbProfile('')
         queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
       } else {
         setShowAdd(false); setAddUri(''); setAddName(''); setAddIgnorePatterns('')
+        setAddKbIds(''); setAddKbRegion(''); setAddKbProfile('')
         queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
         if (res.id) syncSource(res.id)
       }
@@ -408,6 +436,20 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   })
 
   const handleAdd = () => {
+    if (addType === 'bedrock_kb') {
+      const kbIds = addKbIds.split(',').map(s => s.trim()).filter(Boolean)
+      const region = addKbRegion.trim()
+      if (kbIds.length === 0 || !region) return
+      addMutation.mutate({
+        // The uri is a stable logical handle (dedup key), derived rather than
+        // user-typed; the connector reads kb_ids/region/profile from properties.
+        name: addName || `Bedrock KB ${kbIds[0]}`,
+        source_type: 'bedrock_kb',
+        uri: `bedrock-kb://${region}/${kbIds[0]}`,
+        properties: { kb_ids: kbIds.join(','), region, profile: addKbProfile.trim() },
+      })
+      return
+    }
     if (!addUri.trim()) return
     const body: Record<string, unknown> = { name: addName || addUri, source_type: addType, uri: addUri }
     if (addType === 'local_folder') {
@@ -439,14 +481,20 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
           <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
           <div className="flex gap-2 flex-wrap">
-            {(['local_file', 'local_folder'] as const).map(t => (
+            {(['local_file', 'local_folder', 'bedrock_kb'] as const).map(t => (
               <button key={t} onClick={() => setAddType(t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
-                {t === 'local_file' ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</> : <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>}
+                {t === 'local_file' ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</>
+                  : t === 'local_folder' ? <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>
+                  : <><Database size={12} /> {i18nT('pages.knowledge.sourcesList.bedrock_kb')}</>}
               </button>
             ))}
           </div>
-          <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />
+          {/* Namespaces scope INGESTED items; a remote KB holds none, so the
+              picker would be a dead control on the bedrock_kb branch. */}
+          {addType !== 'bedrock_kb' && (
+            <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />
+          )}
           {addType === 'local_file' ? (
             <>
               <DropZone onFiles={(files) => { onIngest(files); setShowAdd(false) }} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} caption={i18nT('pages.knowledge.helpers.supported_formats', { formats: supportedFormatsDisplay })} />
@@ -456,6 +504,59 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 {' ' + i18nT('pages.knowledge.sourcesList.max_file_size')}
                 {acceptsNoExtension && ' ' + i18nT('pages.knowledge.sourcesList.files_with_no_extension_e_g_readme_are_ingested')}
               </div>
+            </>
+          ) : addType === 'bedrock_kb' ? (
+            <>
+              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+                aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
+                className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+              <input value={addKbIds} onChange={e => setAddKbIds(e.target.value)}
+                placeholder={i18nT('pages.knowledge.sourcesList.kb_ids_comma_separated_id_or_arn')}
+                aria-label={i18nT('pages.knowledge.sourcesList.knowledge_base_ids')}
+                className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+              <div className="flex gap-2">
+                <input value={addKbRegion} onChange={e => setAddKbRegion(e.target.value.toLowerCase())}
+                  placeholder={i18nT('pages.knowledge.sourcesList.aws_region_e_g_us_east_1')}
+                  aria-label={i18nT('pages.knowledge.sourcesList.aws_region')}
+                  className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+                <input value={addKbProfile} onChange={e => setAddKbProfile(e.target.value)}
+                  onBlur={() => setAddKbProfileCommitted(addKbProfile.trim())}
+                  placeholder={i18nT('pages.knowledge.sourcesList.aws_profile_optional')}
+                  aria-label={i18nT('pages.knowledge.sourcesList.aws_profile')}
+                  className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+              </div>
+              <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.queried_live_at_search_time_from_your_aws_account')}</div>
+              {addKbRegion.trim() !== '' && !addKbRegionShapeOk && (
+                /* The submit gate and the consent card both key on this shape;
+                   without an inline reason a typo ("useast-1") leaves the form
+                   dead with the placeholder hint long overwritten. */
+                <div className="text-[11px] text-warn">{i18nT('pages.knowledge.sourcesList.region_format_hint')}</div>
+              )}
+              {/* Paid-service consent: adding the source refuses server-side
+                  without a grant for exactly this (profile, region), so the
+                  card must be grantable HERE, where the target is being typed.
+                  Mounted only once the region has a full AWS-region shape —
+                  mounting per keystroke would churn the identity probe
+                  through "u", "us", "us-"… */}
+              {addKbRegionShapeOk && (
+                <AwsConsentGate service="bedrock-kb" compact
+                  target={{ profile: addKbProfileCommitted, region: addKbRegion.trim() }} />
+              )}
+              {addKbIds.trim() !== '' && addKbRegionShapeOk && !addKbConsentGranted && !addMutation.isPending && (
+                /* The disabled submit's adjacent reason: without it, a user
+                   whose consent card scrolled off sees a filled form with a
+                   dead button and no path forward (UX round-48). */
+                <div className="text-[11px] text-muted text-right">{i18nT('pages.knowledge.sourcesList.confirm_account_to_enable')}</div>
+              )}
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
+                <button onClick={handleAdd} disabled={addMutation.isPending || !addKbIds.trim() || !addKbRegionShapeOk || !addKbConsentGranted}
+                  className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_knowledge_base')}</button>
+              </div>
+              {/* No askAgent hand-off: the agent cannot see the unsaved KB ids,
+                  region, and profile still sitting in this form, so a hand-off
+                  would arrive without the context needed to act on it. */}
+              {addMutation.isError && <ErrorNotice variant="inline" message={addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')} testId="bedrock-kb-add-error" />}
             </>
           ) : (
             <>
@@ -515,6 +616,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         sources.map(s => {
           const isDeleting = deleteMutation.isPending && deleteMutation.variables === s.id
           const isFolderType = s.source_type === 'local_folder' || s.source_type === 'obsidian_vault'
+          // Live-retrieval sources hold no local items and never sync: their
+          // row shows a Live badge instead of sync status, item count,
+          // staleness, or a Sync button that could never do anything.
+          const isLiveSource = s.source_type === 'bedrock_kb'
           const isExpanded = expandedSource === s.id
           const failedCount = s.spend?.files_failed ?? 0
           const isPaused = s.sync_status === 'paused'
@@ -559,6 +664,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}>{i18nT('pages.knowledge.sourcesList.auto')}</span>
                     : isFolderType
                     ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
+                    : isLiveSource
+                    ? <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.queried_live_at_search_time_from_your_aws_account')}><Circle className="lucide-inline" size={8} fill="currentColor" aria-hidden /> {i18nT('pages.knowledge.sourcesList.live_query')}</span>
                     : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}>{i18nT('pages.knowledge.sourcesList.manual')}</span>}
                   {/* The count names a problem whose detail (which files, and why)
                       lives in the row's expanded view, so on folder rows it is the
@@ -593,17 +700,24 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   action button outside the card border and squeezed the source name to
                   nothing at mid widths. */}
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end shrink-0 pl-6 sm:pl-0 sm:max-w-[70%]">
-              {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : (
+              {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : isLiveSource ? (
+                /* No status badge: the meta chip already labels the MODE
+                   ("● Live" + tooltip), and a green badge here asserted a
+                   health this row never checks (a revoked grant fails open
+                   with only a log line). Status returns when a real
+                   last-retrieval health surface exists (declared follow-up). */
+                null
+              ) : (
                 <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : s.sync_status}</Badge>
               )}
-              <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>
+              {!isLiveSource && <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>}
               {/* The failed count renders on the identity meta line (the parent owns
                   it for every row type) — this stats group shares its visual group
                   with the row's action buttons, where a third button breaks the
                   max-two-buttons-per-row rule. */}
               <SourceSpendDisplay spend={s.spend} />
               {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
-              <StalenessIndicator lastSynced={s.last_synced} />
+              {!isLiveSource && <StalenessIndicator lastSynced={s.last_synced} />}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
                 <button aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')} onClick={() => confirmMutation.mutate(s.id)}
@@ -625,7 +739,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   </button>
                 )
               )}
-              {!isFolderType && (
+              {!isFolderType && !isLiveSource && (
                 <button aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)} disabled={isDeleting || syncingIds.has(s.id)}
                   className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
                   {syncingIds.has(s.id)

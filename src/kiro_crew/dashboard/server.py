@@ -748,6 +748,10 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/cron-folders",
         "/api/taskrunner",
         "/api/artifacts",
+        # The sandboxed MCP server's Bedrock remote leg: consent must be
+        # evaluated in the gateway process (the sandbox pins the consent
+        # file's inode, so a withdrawal is invisible in-sandbox).
+        "/api/knowledge/remote-search",
         # The 5 artifact_folder_* MCP tools authenticate via X-Internal-Secret.
         # token_auth prefix-matching is (path == p or path.startswith(p + "/")),
         # so "/api/artifact-folders" is NOT covered by the "/api/artifacts"

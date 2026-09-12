@@ -91,14 +91,31 @@ def _requested_service(request: web.Request) -> str | None:
     return service if service in aws_consent.GATED_SERVICES else None
 
 
-async def _effective_target(service: str) -> tuple[str, str]:
+async def _effective_target(
+    service: str, requested: tuple[str, str] | None = None
+) -> tuple[str, str]:
     """The (profile, region) that ``service`` would actually use right now.
 
     Read from live config rather than taken from the request, so a confirmation
     can only ever be recorded against the settings the code will really use. A
     client-supplied profile/region would let the confirmation and the request
     disagree -- the operator would be shown one account and bill another.
+
+    ``SERVICE_BEDROCK_KB`` is the one exception, and it inverts the reasoning
+    rather than weakening it: a Bedrock KB source's target exists only in the
+    add-source form until the source is saved, and saving REQUIRES the grant
+    (validate_config refuses first), so there is no config to read yet. The
+    requested target is therefore accepted -- but the account shown is probed
+    fresh from THAT target, the POST 409s unless the echo matches, and
+    ``is_granted`` demands exact (profile, region) equality at every gated
+    call, so a grant recorded for a target no source uses can never authorize
+    anything. Shown-vs-billed cannot diverge; a wrong grant is merely inert.
+    With no requested target there is nothing to confirm: the empty target
+    resolves to an unusable probe and the card renders nothing grantable.
     """
+    if service == aws_consent.SERVICE_BEDROCK_KB:
+        return requested if requested is not None else ("", "")
+
     if service == aws_consent.SERVICE_POLLY:
         from kiro_crew.slack.handler import _vc
 
@@ -157,6 +174,55 @@ async def _effective_target(service: str) -> tuple[str, str]:
     return cfg.stt.transcribe_profile, cfg.stt.transcribe_region
 
 
+class _TargetConflict(Exception):
+    """Internal: carries the held-target rendering out of the locked write."""
+
+    def __init__(self, held: str) -> None:
+        super().__init__(held)
+        self.held = held
+
+
+def _registered_bedrock_kb_target_mismatch(
+    request: web.Request, profile: str, region: str
+) -> str | None:
+    """Delegates to the connector's shared one-account compare.
+
+    Sync -- callers run it under the target-change lock via
+    ``asyncio.to_thread``. An ABSENT store (knowledge subsystem off) means no
+    sources can exist, so None; a FAILING lookup propagates
+    ``TargetLookupError`` and the caller refuses (fail closed).
+    """
+    from kiro_crew.knowledge.connectors.bedrock_kb import registered_target_mismatch
+
+    state = request.app.get("state")
+    store = getattr(state, "knowledge_store", None) if state is not None else None
+    if store is None:
+        return None
+    return registered_target_mismatch(store, profile, region)
+
+
+def _requested_target_from_query(request: web.Request, service: str) -> tuple[str, str] | None:
+    """Explicit (profile, region) query params -- honored for bedrock-kb only."""
+    if service != aws_consent.SERVICE_BEDROCK_KB:
+        return None
+    profile = (request.rel_url.query.get("profile") or "").strip()
+    region = (request.rel_url.query.get("region") or "").strip()
+    if not region:
+        return None
+    return profile, region
+
+
+def _requested_target_from_body(body: dict, service: str) -> tuple[str, str] | None:
+    """Explicit (profile, region) body fields -- honored for bedrock-kb only."""
+    if service != aws_consent.SERVICE_BEDROCK_KB:
+        return None
+    profile = str(body.get("targetProfile") or "").strip()
+    region = str(body.get("targetRegion") or "").strip()
+    if not region:
+        return None
+    return profile, region
+
+
 def _grant_payload(grant: aws_consent.Grant | None) -> dict[str, object] | None:
     return grant.to_dict() if grant is not None else None
 
@@ -172,12 +238,33 @@ async def api_aws_consent_get(request: web.Request) -> web.Response:
             {"error": "unknown service", "code": _CODE_UNKNOWN_SERVICE}, status=400
         )
 
-    profile, region = await _effective_target(service)
+    profile, region = await _effective_target(
+        service, requested=_requested_target_from_query(request, service)
+    )
+    # Capture the grant BEFORE the probe: the probe is a multi-second
+    # suspension, and drift evidence gathered during it is about the grant
+    # that existed when it started. reconcile_drift is pinned to this
+    # grant's id, so a replacement recorded mid-probe — even one for the
+    # SAME target — is never judged by its predecessor's evidence.
+    pre_probe = await asyncio.to_thread(aws_consent.read_grant, service)
     identity = await aws_consent.probe_identity(profile, region)
 
     # Drift check BEFORE reading the grant back, so a revoked-as-stale grant is
     # reported as absent in this same response instead of one request later.
-    drifted = await asyncio.to_thread(aws_consent.reconcile_drift, service, identity)
+    # The probed target is passed through so reconcile_drift only judges a
+    # grant for THAT target -- checked inside reconcile's own read, because a
+    # handler-side pre-check and reconcile's read are two reads with a gap a
+    # concurrent grant POST can land in.
+    drifted = False
+    if pre_probe is not None:
+        drifted = await asyncio.to_thread(
+            aws_consent.reconcile_drift,
+            service,
+            identity,
+            probed_profile=profile,
+            probed_region=region,
+            expected_grant_id=pre_probe.grant_id,
+        )
     grant = await asyncio.to_thread(aws_consent.read_grant, service)
     granted, reason = await asyncio.to_thread(
         aws_consent.is_granted, service, profile=profile, region=region
@@ -244,7 +331,9 @@ async def api_aws_consent_post(request: web.Request) -> web.Response:
             {"error": "unknown service", "code": _CODE_UNKNOWN_SERVICE}, status=400
         )
 
-    profile, region = await _effective_target(service)
+    profile, region = await _effective_target(
+        service, requested=_requested_target_from_body(body, service)
+    )
     # Fresh probe, cache bypassed: the operator is agreeing to THIS account, so
     # the value recorded must not be one read from a window that opened earlier.
     identity = await aws_consent.probe_identity(profile, region, use_cache=False)
@@ -279,15 +368,63 @@ async def api_aws_consent_post(request: web.Request) -> web.Response:
         )
 
     granted_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
-    grant = await asyncio.to_thread(
-        aws_consent.record_grant,
-        service,
-        profile=profile,
-        region=region,
-        account=identity.account,
-        arn=identity.arn,
-        granted_at=granted_at,
-    )
+
+    def _record() -> "aws_consent.Grant":
+        # bedrock-kb: the one-account compare and the grant write form ONE
+        # critical section under the connector's target-change lock -- the
+        # same lock add_source holds across its recheck + insert -- so a
+        # concurrent add cannot land between this check and this write and
+        # then lose its authorization. The slow identity
+        # probe stayed OUTSIDE the lock above. Lookup failures propagate:
+        # a broken store must refuse, not read as "no conflict".
+        from kiro_crew.knowledge.connectors.bedrock_kb import target_change_lock
+
+        if service == aws_consent.SERVICE_BEDROCK_KB:
+            with target_change_lock:
+                held = _registered_bedrock_kb_target_mismatch(request, profile, region)
+                if held is not None:
+                    raise _TargetConflict(held)
+                return aws_consent.record_grant(
+                    service,
+                    profile=profile,
+                    region=region,
+                    account=identity.account,
+                    arn=identity.arn,
+                    granted_at=granted_at,
+                )
+        return aws_consent.record_grant(
+            service,
+            profile=profile,
+            region=region,
+            account=identity.account,
+            arn=identity.arn,
+            granted_at=granted_at,
+        )
+
+    try:
+        grant = await asyncio.to_thread(_record)
+    except _TargetConflict as tc:
+        return web.json_response(
+            {
+                "error": (
+                    "a registered Bedrock Knowledge Base source already uses "
+                    f"{tc.held}; confirming a different account would disable it. "
+                    "Remove that source first."
+                ),
+                "code": "bedrock_kb_target_conflict",
+            },
+            status=409,
+        )
+    except Exception as e:
+        # Includes TargetLookupError: the compare could not run, so the
+        # confirmation is refused rather than recorded unverified.
+        return web.json_response(
+            {
+                "error": f"could not verify the one-account rule, nothing was confirmed: {e}",
+                "code": "bedrock_kb_conflict_check_failed",
+            },
+            status=503,
+        )
     logger.info(
         "operator confirmed %s use for account %s via %s",
         aws_consent.SERVICE_LABELS[service],

@@ -77,6 +77,397 @@ def _grant(service=aws_consent.SERVICE_POLLY, *, profile="", region="us-east-1",
     )
 
 
+class TestBedrockTargetedGet:
+    """GET with an explicit bedrock-kb target must not judge an unrelated grant."""
+
+    @pytest.mark.asyncio
+    async def test_probing_a_second_target_does_not_revoke_the_first_grant(self):
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        # Probe a DIFFERENT target that resolves to a different account.
+        other = aws_consent.Identity(ok=True, account="999988887777", arn="arn:x")
+        req = _consent_request(
+            query={"service": "bedrock-kb", "profile": "team-b", "region": "eu-west-1"}
+        )
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=other)):
+            resp = await handler.api_aws_consent_get(req)
+        assert resp.status == 200
+        # The stored grant survived: target B's account says nothing about A.
+        kept = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert kept is not None and kept.account == "111122223333"
+
+    @pytest.mark.asyncio
+    async def test_get_spares_a_same_target_grant_reconfirmed_mid_probe(self):
+        """Race: a SAME-target re-confirmation lands while the
+        GET's probe runs. The target match alone would judge it; the
+        pre-probe grant_id pin must spare it."""
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        moved = aws_consent.Identity(ok=True, account="999988887777", arn="arn:x")
+
+        async def probe_and_reconfirm(profile, region, use_cache=True):
+            aws_consent.record_grant(
+                aws_consent.SERVICE_BEDROCK_KB,
+                profile="team-a",
+                region="us-east-1",
+                account="111122223333",
+                arn="arn:aws:iam::111122223333:user/x",
+                granted_at="2026-09-07T01:00:00+00:00",
+            )
+            return moved
+
+        req = _consent_request(
+            query={"service": "bedrock-kb", "profile": "team-a", "region": "us-east-1"}
+        )
+        with patch.object(aws_consent, "probe_identity", probe_and_reconfirm):
+            resp = await handler.api_aws_consent_get(req)
+        assert resp.status == 200
+        survivor = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert survivor is not None
+        assert survivor.granted_at == "2026-09-07T01:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_probing_the_grants_own_target_still_reconciles_drift(self):
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        moved = aws_consent.Identity(ok=True, account="999988887777", arn="arn:x")
+        req = _consent_request(
+            query={"service": "bedrock-kb", "profile": "team-a", "region": "us-east-1"}
+        )
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=moved)):
+            resp = await handler.api_aws_consent_get(req)
+        assert resp.status == 200
+        # Same target, different account underneath -> the repoint IS drift.
+        assert aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB) is None
+
+
+def _kb_source_row(profile: str, region: str, name: str = "Team KB") -> dict:
+    import json as _json
+
+    return {
+        "name": name,
+        "properties": _json.dumps({"kb_ids": "KBX", "profile": profile, "region": region}),
+    }
+
+
+def _wire_kb_sources(req, rows) -> None:
+    """Give the MagicMock app state a queryable bedrock_kb sources table."""
+    req.app["state"].knowledge_store.db.execute.return_value.fetchall.return_value = rows
+
+
+class TestBedrockConfirmConflict:
+    """POST confirm for a target that differs from a registered source's is
+    refused: recording it would overwrite the single per-service grant and
+    silently disable that source."""
+
+    @pytest.mark.asyncio
+    async def test_confirming_a_different_target_is_refused_and_grant_survives(self):
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        req = _consent_request(
+            body={
+                "service": "bedrock-kb",
+                "targetProfile": "team-b",
+                "targetRegion": "eu-west-1",
+                "expectedProfile": "team-b",
+                "expectedRegion": "eu-west-1",
+                "expectedAccount": "999988887777",
+            }
+        )
+        _wire_kb_sources(req, [_kb_source_row("team-a", "us-east-1")])
+        # The check now lives INSIDE the locked write (after the probe), so
+        # the probe runs — but the write must be refused and grant A intact.
+        other = aws_consent.Identity(
+            ok=True, account="999988887777", arn="arn:aws:iam::999988887777:user/x"
+        )
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=other)):
+            resp = await handler.api_aws_consent_post(req)
+        assert resp.status == 409
+        import json as _json
+
+        payload = _json.loads(resp.text)
+        assert payload["code"] == "bedrock_kb_target_conflict"
+        kept = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert kept is not None and kept.account == "111122223333"
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_fails_closed(self):
+        """A broken sources table refuses the confirmation (503) instead of
+        reading as no-conflict."""
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        req = _consent_request(
+            body={
+                "service": "bedrock-kb",
+                "targetProfile": "team-b",
+                "targetRegion": "eu-west-1",
+                "expectedProfile": "team-b",
+                "expectedRegion": "eu-west-1",
+                "expectedAccount": "999988887777",
+            }
+        )
+        req.app["state"].knowledge_store.db.execute.side_effect = RuntimeError("db locked")
+        other = aws_consent.Identity(
+            ok=True, account="999988887777", arn="arn:aws:iam::999988887777:user/x"
+        )
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=other)):
+            resp = await handler.api_aws_consent_post(req)
+        assert resp.status == 503
+        import json as _json
+
+        assert _json.loads(resp.text)["code"] == "bedrock_kb_conflict_check_failed"
+        assert aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB) is None
+
+    def test_both_gates_share_the_target_change_lock(self):
+        """The race fix is one lock: the consent write and the add insert
+        must serialize on the SAME object."""
+        import inspect
+
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handler
+        from kiro_crew.dashboard.handlers import knowledge as knowledge_handler
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        assert bedrock_kb.target_change_lock is not None
+        for mod, fn in (
+            (consent_handler, "api_aws_consent_post"),
+            (knowledge_handler, "add_source"),
+        ):
+            src = inspect.getsource(getattr(mod, fn))
+            assert "target_change_lock" in src, f"{fn} does not take the shared lock"
+        # And the locked insert must re-check the LIVE grant for its exact
+        # target: a target-B confirmation landing after validation must not
+        # leave source A registered but grantless.
+        src = inspect.getsource(knowledge_handler.add_source)
+        assert "is_granted" in src, "add_source's locked insert skips the live-grant check"
+        assert "bedrock_kb_grant_changed" in src
+
+    @pytest.mark.asyncio
+    async def test_same_target_reconfirmation_passes_the_guard(self):
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        req = _consent_request(
+            body={
+                "service": "bedrock-kb",
+                "targetProfile": "team-a",
+                "targetRegion": "us-east-1",
+                "expectedProfile": "team-a",
+                "expectedRegion": "us-east-1",
+                "expectedAccount": "111122223333",
+            }
+        )
+        _wire_kb_sources(req, [_kb_source_row("team-a", "us-east-1")])
+        same = aws_consent.Identity(
+            ok=True, account="111122223333", arn="arn:aws:iam::111122223333:user/x"
+        )
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=same)):
+            resp = await handler.api_aws_consent_post(req)
+        assert resp.status == 200
+        kept = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert kept is not None and kept.account == "111122223333"
+
+    @pytest.mark.asyncio
+    async def test_first_grant_with_no_registered_sources_flows(self):
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        req = _consent_request(
+            body={
+                "service": "bedrock-kb",
+                "targetProfile": "team-a",
+                "targetRegion": "us-east-1",
+                "expectedProfile": "team-a",
+                "expectedRegion": "us-east-1",
+                "expectedAccount": "111122223333",
+            }
+        )
+        _wire_kb_sources(req, [])
+        ident = aws_consent.Identity(
+            ok=True, account="111122223333", arn="arn:aws:iam::111122223333:user/x"
+        )
+        with patch.object(aws_consent, "probe_identity", AsyncMock(return_value=ident)):
+            resp = await handler.api_aws_consent_post(req)
+        assert resp.status == 200
+        assert aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB) is not None
+
+    def test_reconcile_with_probed_target_ignores_foreign_grant_atomically(self):
+        """The TOCTOU shape: a grant for target B lands between a caller's
+        pre-read and reconcile's own read. With the probed target passed in,
+        reconcile's OWN read sees B != probed A and refuses to judge it."""
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-b",
+            region="eu-west-1",
+            account="999988887777",
+        )
+        identity_a = aws_consent.Identity(ok=True, account="111122223333", arn="arn:x")
+        revoked = aws_consent.reconcile_drift(
+            aws_consent.SERVICE_BEDROCK_KB,
+            identity_a,
+            probed_profile="team-a",
+            probed_region="us-east-1",
+        )
+        assert not revoked
+        kept = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert kept is not None and kept.account == "999988887777"
+
+    def test_revoke_on_drift_spares_a_grant_replaced_after_the_read(self, monkeypatch):
+        """The revoke-side race: reconcile reads grant A and decides to
+        revoke, but grant B lands on the same store key before the delete.
+        The compare-and-delete must spare B (stale evidence about A)."""
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        real_revoke_if_matches = aws_consent.revoke_if_matches
+
+        def replace_then_revoke(service, **kwargs):
+            # Simulate the concurrent POST landing between reconcile's read
+            # and the delete: grant B replaces A on the same key.
+            _grant(service, profile="team-b", region="eu-west-1", account="555566667777")
+            return real_revoke_if_matches(service, **kwargs)
+
+        monkeypatch.setattr(aws_consent, "revoke_if_matches", replace_then_revoke)
+        moved = aws_consent.Identity(ok=True, account="999988887777", arn="arn:x")
+        revoked = aws_consent.reconcile_drift(
+            aws_consent.SERVICE_BEDROCK_KB,
+            moved,
+            probed_profile="team-a",
+            probed_region="us-east-1",
+        )
+        assert not revoked
+        survivor = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert survivor is not None and survivor.account == "555566667777"
+
+    def test_revoke_on_drift_spares_a_same_target_reconfirmation(self, monkeypatch):
+        """Even a replacement for the SAME target and account is a different
+        grant (fresh granted_at) — the narrowed race — and must be spared."""
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        real = aws_consent.revoke_if_matches
+
+        def reconfirm_then_revoke(service, **kwargs):
+            aws_consent.record_grant(
+                service,
+                profile="team-a",
+                region="us-east-1",
+                account="111122223333",
+                arn="arn:aws:iam::111122223333:user/x",
+                granted_at="2026-09-06T19:30:00+00:00",  # fresh re-confirmation
+            )
+            return real(service, **kwargs)
+
+        monkeypatch.setattr(aws_consent, "revoke_if_matches", reconfirm_then_revoke)
+        moved = aws_consent.Identity(ok=True, account="999988887777", arn="arn:x")
+        revoked = aws_consent.reconcile_drift(
+            aws_consent.SERVICE_BEDROCK_KB,
+            moved,
+            probed_profile="team-a",
+            probed_region="us-east-1",
+        )
+        assert not revoked
+        survivor = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert survivor is not None and survivor.granted_at == "2026-09-06T19:30:00+00:00"
+
+    def test_revoke_spares_a_byte_identical_same_second_reconfirmation(self):
+        """granted_at is second-granular, so a re-confirmation within one
+        second is byte-identical to its predecessor. grant_id (unique per
+        RECORDING) still tells them apart: the old grant's identity never
+        matches the replacement, so stale drift evidence cannot delete it."""
+        first = _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        replacement = _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )  # identical content (same fixed granted_at in _grant), new grant_id
+        assert first.grant_id and replacement.grant_id
+        assert first.grant_id != replacement.grant_id
+        revoked = aws_consent.revoke_if_matches(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile=first.profile,
+            region=first.region,
+            account=first.account,
+            arn=first.arn,
+            granted_at=first.granted_at,
+            grant_id=first.grant_id,
+        )
+        assert not revoked
+        assert aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB) is not None
+
+    @pytest.mark.asyncio
+    async def test_authorize_mismatch_spares_a_replacement_grant(self, monkeypatch):
+        """authorize()'s account-mismatch revoke must also be compare-and-
+        delete: a grant recorded while its STS probe ran is not the grant the
+        mismatch evidence is about."""
+        _grant(
+            aws_consent.SERVICE_BEDROCK_KB,
+            profile="team-a",
+            region="us-east-1",
+            account="111122223333",
+        )
+        moved = aws_consent.Identity(ok=True, account="999988887777", arn="arn:x")
+
+        async def probe_and_reconfirm(profile, region, use_cache=True):
+            # The replacement lands during the probe suspension point.
+            aws_consent.record_grant(
+                aws_consent.SERVICE_BEDROCK_KB,
+                profile="team-b",
+                region="eu-west-1",
+                account="555566667777",
+                arn="arn:aws:iam::555566667777:user/y",
+                granted_at="2026-09-06T20:00:00+00:00",
+            )
+            return moved
+
+        monkeypatch.setattr(aws_consent, "probe_identity", probe_and_reconfirm)
+        ok, reason = await aws_consent.authorize(
+            aws_consent.SERVICE_BEDROCK_KB, profile="team-a", region="us-east-1"
+        )
+        assert not ok  # the stale grant's authorization still refuses
+        survivor = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+        assert survivor is not None and survivor.account == "555566667777"
+
+
 # ── Step 1: the default provider is local ──
 
 
@@ -253,7 +644,7 @@ class TestGrantIsOnTheKeystoneFloor:
         assert aws_consent_path().read_bytes() == before, "the previous store was altered"
         assert (
             aws_consent.read_grant(aws_consent.SERVICE_POLLY) is not None
-        ), "a failed new grant destroyed the previously recorded authorization"
+        ), "a failed new grant destroyed the recorded authorization"
 
     def test_a_failed_payload_write_preserves_the_previous_store(self, home, monkeypatch):
         """Same property for an ordinary write failure (disk full while creating

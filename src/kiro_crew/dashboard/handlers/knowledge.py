@@ -1272,7 +1272,13 @@ async def add_source(request: web.Request) -> web.Response:
     if sync_scheduler:
         connector = sync_scheduler.get_connector(source_type)
         if connector:
-            valid, err = connector.validate_config({**properties, "url": uri})
+            # Off the loop: bedrock_kb validation issues live network probes
+            # (boto session + one Retrieve per KB, ~seconds worst case), and
+            # even folder validation touches the filesystem. Same discipline
+            # as the discovery walk below.
+            valid, err = await asyncio.to_thread(
+                connector.validate_config, {**properties, "url": uri}
+            )
             if not valid:
                 return web.json_response({"error": err}, status=400)
 
@@ -1280,7 +1286,7 @@ async def add_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "uri required"}, status=400)
 
     # Sandbox guard: reject sensitive paths for any local source
-    if not uri.startswith(("https://", "http://", "upload://", "code://")):
+    if not uri.startswith(("https://", "http://", "upload://", "code://", "bedrock-kb://")):
         resolved_uri = str(Path(uri).resolve())
         if is_sensitive_path(resolved_uri):
             _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
@@ -1387,9 +1393,85 @@ async def add_source(request: web.Request) -> web.Response:
             status=201,
         )
 
-    sid, created = await asyncio.to_thread(
-        _create_source_audited, store, source_type, name=name or uri, uri=uri,
-        properties=properties)
+    if source_type == "bedrock_kb":
+        # Recheck-and-insert under the connector's target-change lock — the
+        # same lock the consent POST holds across its check + grant write —
+        # so a grant confirmed between this handler's earlier check and this
+        # insert cannot interleave. The slow validation
+        # above stayed outside the lock; this section is sqlite-only.
+        def _locked_insert():
+            from kiro_crew import aws_consent as consent_mod
+            from kiro_crew.knowledge.connectors.bedrock_kb import (
+                registered_target_mismatch,
+                target_change_lock,
+            )
+
+            new_profile = str(properties.get("profile") or "").strip()
+            new_region = str(properties.get("region") or "").strip()
+            with target_change_lock:
+                held = registered_target_mismatch(store, new_profile, new_region)
+                if held is not None:
+                    return None, "conflict", held
+                # The grant this source depends on must match ITS target AT
+                # INSERT TIME, under the same lock the consent write holds:
+                # validation ran seconds ago against the then-current grant,
+                # and a target-B confirmation landing in between would leave
+                # this source registered but grantless — dark while its row
+                # says Live. Same-target re-confirmation
+                # (fresh grant_id, same target) passes: retrieval demands
+                # target equality, not grant identity.
+                if not consent_mod.is_granted(
+                    consent_mod.SERVICE_BEDROCK_KB, profile=new_profile, region=new_region
+                ):
+                    return None, "grant_changed", None
+                sid, created = _create_source_audited(
+                    store, source_type, name=name or uri, uri=uri,
+                    properties=properties)
+                return (sid, created), None, None
+
+        from kiro_crew.knowledge.connectors.bedrock_kb import TargetLookupError
+
+        try:
+            inserted, refusal, held = await asyncio.to_thread(_locked_insert)
+        except TargetLookupError as e:
+            # Fail CLOSED: an unreadable sources table must refuse the add,
+            # not wave it through as "no conflict".
+            return web.json_response(
+                {
+                    "error": f"could not verify the one-account rule: {e}",
+                    "code": "bedrock_kb_conflict_check_failed",
+                },
+                status=503,
+            )
+        if refusal == "conflict":
+            return web.json_response(
+                {
+                    "error": (
+                        "Only one AWS (profile, region) is supported for Bedrock "
+                        f"Knowledge Base sources right now; {held} already uses a "
+                        "different one."
+                    ),
+                    "code": "bedrock_kb_target_conflict",
+                },
+                status=400,
+            )
+        if refusal == "grant_changed":
+            return web.json_response(
+                {
+                    "error": (
+                        "the AWS account confirmation changed while this source was "
+                        "being validated — confirm the account for this exact "
+                        "profile and region, then add again"
+                    ),
+                    "code": "bedrock_kb_grant_changed",
+                },
+                status=409,
+            )
+        sid, created = inserted
+    else:
+        sid, created = await asyncio.to_thread(
+            _create_source_audited, store, source_type, name=name or uri, uri=uri,
+            properties=properties)
     if not created:
         return web.json_response(
             {"error": "source already exists", "id": sid,
@@ -2776,6 +2858,19 @@ async def search_for_context(request: web.Request) -> web.Response:
     # the shared model.
     results = await run_in_embed_pool(retriever.search, q, limit=limit)
 
+    # Remote bedrock_kb sources are queried live under a hard timeout and
+    # fail OPEN (empty on any failure), then interleaved by rank inside the
+    # shared helper. to_thread keeps the boto round trips off the event
+    # loop; the bound lives inside the helper. The deferred import ALSO runs
+    # inside the thread: importing boto3 on first use takes long enough to
+    # stall every gateway task if it ran on the loop.
+    def _augment_in_thread():
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        return bedrock_kb.augment_with_remote(store, q, limit, results)
+
+    results = await asyncio.to_thread(_augment_in_thread)
+
     cards = []
     total_tokens = 0
     for r in results:
@@ -2855,6 +2950,83 @@ async def _shutdown_knowledge_pools(app: web.Application) -> None:
             logger.exception("Knowledge pool shutdown failed: %s", key)
 
 
+async def remote_search(request: web.Request) -> web.Response:
+    """POST /api/knowledge/remote-search — raw bedrock_kb results (INTERNAL).
+
+    Exists for exactly one caller: the sandboxed MCP server's remote leg.
+    The sandbox seals ``aws_service_consent.json`` with a file-level
+    self-bind, which PINS THE INODE — a host-side withdrawal replaces the
+    file by atomic rename, so a sandboxed process keeps reading the old,
+    still-granted bytes. Consent must therefore be evaluated in THIS
+    process, which reads the live keystone store; the MCP process receives
+    results, never a consent verdict of its own. Loopback +
+    X-Internal-Secret via the mixed-internal registry, and STRICT-internal
+    on top: the mixed registry also admits cookie-authenticated browsers,
+    but these results are RAW connector output (un-redacted content), so a
+    browser session is refused — the dashboard's own surfaces get remote
+    results through search-for-context, which redacts.
+    """
+    if request.get("internal_auth") is not True:
+        # Best-effort SEL denial, mirroring every peer internal-auth handler:
+        # an ordinary cookie session CAN reach this refusal through the
+        # mixed-path middleware, and an unaudited denial is invisible to
+        # `kirocrew security events`. Late-binding sel() is the package's
+        # standing circular-import exception.
+        try:
+            import kiro_crew.dashboard.handlers as _pkg
+
+            _pkg.sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="knowledge_remote_search",
+                outcome="denied",
+                source="dashboard",
+                resources=request.path,
+                error="internal secret required",
+            )
+        except Exception:
+            pass
+        return web.json_response(
+            {"error": "internal callers only", "code": "internal_only"}, status=403
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        # ``[]`` or a bare scalar is valid JSON but reaches ``.get`` otherwise.
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+    query = str(body.get("query") or "").strip()
+    try:
+        limit = max(1, min(int(body.get("limit") or 5), 20))
+    except (TypeError, ValueError):
+        limit = 5
+    source_id = body.get("source_id")
+    if not query:
+        return web.json_response({"results": []})
+    store = _store(request)
+
+    def _run() -> list[dict]:
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        # The BOUNDED variant: the connector's admission semaphore caps
+        # concurrent remote legs and its wall-clock budget cancels laggards —
+        # calling the raw search here bypassed both, so repeated MCP searches
+        # could queue unbounded threads that keep issuing paid calls after
+        # their caller timed out.
+        return bedrock_kb.search_remote_sources_bounded(
+            store, query, limit, source_id=str(source_id) if source_id else None
+        )
+
+    try:
+        results = await asyncio.to_thread(_run)
+    except Exception as e:
+        logger.info("remote-search leg failed open: %s", e.__class__.__name__)
+        results = []
+    return web.json_response({"results": results})
+
+
 def setup_knowledge_routes(app: web.Application) -> None:
     # Initialize pipeline and sync scheduler if not already set
     if "knowledge_pipeline" not in app:
@@ -2890,6 +3062,35 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+
+        # Amazon Bedrock KB: live-retrieval source with no local items. The
+        # proxy keeps the optional subsystem OFF the gateway boot path
+        # (no-new-work-on-gateway-boot-path): constructing it does no work,
+        # and the bedrock_kb module (and, inside it, boto3) loads on the
+        # first validate/sync call. The connector reports the missing
+        # [bedrock] extra itself when boto3 is absent.
+        class _LazyBedrockKBConnector(BaseConnector):
+            def _real(self) -> "BaseConnector":
+                from kiro_crew.knowledge.connectors import bedrock_kb
+
+                return bedrock_kb.BedrockKBConnector()
+
+            def source_type(self) -> str:
+                return "bedrock_kb"
+
+            def validate_config(self, config: dict) -> tuple[bool, str]:
+                return self._real().validate_config(config)
+
+            async def detect_changes(self, source: dict) -> bool:
+                # Mirrors the real connector: a live-retrieval source never
+                # syncs, and answering False here avoids loading the module
+                # from SyncScheduler.sync_all sweeps.
+                return False
+
+            async def fetch(self, source: dict) -> tuple[str, dict]:
+                return await self._real().fetch(source)
+
+        connectors["bedrock_kb"] = _LazyBedrockKBConnector()
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
@@ -2961,6 +3162,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/embedding/status", get_embedding_status)
     app.router.add_post("/api/knowledge/embedding/generate", batch_embed_items)
     app.router.add_get("/api/knowledge/search-for-context", search_for_context)
+    app.router.add_post("/api/knowledge/remote-search", remote_search)
 
     # Pool lifecycle: lazy start on first request, shutdown on app exit
     app.on_cleanup.append(_shutdown_knowledge_pools)

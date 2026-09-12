@@ -110,7 +110,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/retrieval.py` | `HybridRetriever` — FTS5 + graph + vector search fused with RRF |
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration |
 | `knowledge/dedup.py` | Cross-source deduplication |
-| `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
+| `knowledge/connectors/` | `BaseConnector`, `local_folder` + `bedrock_kb` source connectors |
 | `mcp_core.py` | `local_knowledge_search` MCP tool + cached store/embedder |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search, source-scoped list + `/source-counts`) |
 | `agent.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
@@ -448,6 +448,102 @@ The retrieval benchmark builds a disposable corpus with one embedding callable
 for both ingestion and queries. It explicitly uses `ANY_EMBEDDING_SPACE` because
 those synthetic rows have no persisted model signature and never share a store
 with user data. Production retrieval still requires the active signature.
+
+### Remote sources: `bedrock_kb` (`knowledge/connectors/bedrock_kb.py`)
+
+A `bedrock_kb` source points at one or more **Amazon Bedrock Knowledge Bases**
+in the user's own AWS account and holds **no local items**: the KB keeps its
+own index and embeddings, so Kiro Crew queries it live at search time instead
+of ingesting it (issue #7947). Consequences, in the order the code enforces
+them:
+
+- **Config, no secrets.** `properties` carry `kb_ids` (comma-separated; a
+  full KB ARN is accepted and normalized to its trailing ID, because the
+  Retrieve API's `knowledgeBaseId` field is ID-only), `region`,
+  optional `profile`. Credentials resolve through the standard AWS
+  chain for the named profile at call time; nothing credential-shaped is
+  stored. boto3 ships in the optional `[bedrock]` extra (same pin as
+  `[voice-aws]`) and is imported lazily; without it the source reports the
+  missing extra on add instead of breaking core imports.
+- **Consent precedes every request.** Bedrock KB retrieval is registered as a
+  gated paid service in `kiro_crew.aws_consent` (`SERVICE_BEDROCK_KB`): the
+  add-time probe and every retrieval first pass the account-bound
+  authorization check (grant keyed on service+profile+region, live account
+  re-checked), refusing fail-closed — a repointed profile cannot receive so
+  much as an access check, and a revoked grant silently removes the source
+  from search results (logged by the consent layer) instead of billing an
+  unconfirmed account. **The sandboxed MCP server never evaluates consent
+  in-process**: the sandbox seals `aws_service_consent.json` with an
+  inode-pinning self-bind, so a host-side withdrawal (atomic rename) is
+  invisible to a sandboxed reader — its remote leg therefore calls the
+  gateway's internal `POST /api/knowledge/remote-search` (loopback +
+  `X-Internal-Secret`), and authorization, credential freeze-verify, and
+  per-retrieve rechecks all run in the gateway process against the live
+  keystone store. The grant is recorded from the **add-source form's own
+  consent card**: `bedrock-kb` is the one service whose target is taken from
+  the request (the source exists only in the form until saved), which is safe
+  because the shown account is probed fresh from that exact target, the POST
+  409s on any echo mismatch, and `is_granted` demands exact (profile, region)
+  equality at call time — a grant for a target nothing uses is inert. The
+  form's submit stays disabled until that grant exists (it subscribes to the
+  same consent query the card polls), so the server-side refusal is never a
+  first-time user's first signal — the card above the button is the visible
+  reason and the order. The
+  consent store holds ONE grant per service, so v1 supports one Bedrock
+  account at a time — ENFORCED at add: a second source whose (profile,
+  region) differs from a registered bedrock_kb source is refused with
+  `bedrock_kb_target_conflict`, because letting it in would let its
+  re-confirmation silently disable the first source's retrievals — and
+  ENFORCED at confirm: the consent POST refuses (409, same code) a
+  bedrock-kb target that differs from a registered source's, since
+  recording it would overwrite the single per-service grant in place: the
+  registered source would go silently dark while the new target still
+  could not be added past the add-time guard. Same-target re-confirmation
+  stays allowed (the mid-probe re-confirmation path depends on it). Both
+  gates run their compare-and-write as ONE critical section under the
+  connector's `target_change_lock` (the slow probes/validation stay
+  outside), so a concurrent add and confirm cannot interleave between check
+  and write; the locked insert also re-checks the LIVE grant for the
+  source's exact target (`bedrock_kb_grant_changed`, 409) so a source can
+  never be registered against a grant that moved during validation; and the compare FAILS CLOSED — a sources-table lookup error
+  refuses with `bedrock_kb_conflict_check_failed` (503) rather than reading
+  as "no conflict". The remote-leg
+  budget (`REMOTE_SEARCH_TIMEOUT_SECS`) explicitly absorbs the uncached
+  per-search STS consent probe, and is enforced INSIDE the worker as a
+  monotonic deadline checked before each per-source and per-KB request —
+  the pool future's `result(timeout)` alone only abandons the waiter,
+  leaving the worker issuing paid Retrieve calls it can no longer deliver.
+  A budget skip is fail-open silence, never a validate-visible KB failure.
+- **Probe on add.** `validate_config` issues a 1-result `Retrieve` per KB, so
+  a bad id, region, or profile is refused at add time. Authorization-class
+  errors fail validation; service-side errors (throttling, 5xx) prove the KB
+  exists and pass.
+- **Retrieve with the managed fallback.** Retrieval tries
+  `vectorSearchConfiguration` first and retries with
+  `managedSearchConfiguration` only when the ValidationException names it —
+  MANAGED-type KBs reject the vector key (`implicitFilterConfiguration` is
+  never sent on the managed path). Multi-KB sources fan out one Retrieve per
+  KB and merge by relevance score; one unreachable KB is logged and skipped
+  rather than sinking the others.
+- **Citations from document metadata.** Each result's URL comes from the
+  `source_uri` metadata attribute (the convention KB-building crawlers write),
+  falling back to the reserved `x-amz-bedrock-kb-source-uri` key and then the
+  raw storage location — so hits cite the original document, not an S3 object.
+- **Query path: async callers only, bounded, fail-open.** The remote leg runs
+  in `local_knowledge_search` (MCP) and `search_for_context` (dashboard) via
+  `search_remote_sources_bounded` — a shared worker pool plus
+  `REMOTE_SEARCH_TIMEOUT_SECS` wall-clock budget over per-request boto
+  connect/read timeouts. Any failure or timeout returns `[]` and local results
+  stand alone. It never runs inside `HybridRetriever.search` (sync, and the
+  scoped-search exhaustion loop would multiply remote round trips). An
+  install with no `bedrock_kb` rows pays one indexed `SELECT ... LIMIT 1` and
+  no thread.
+- **Merge by rank, not score.** Local RRF scores (~0.01–0.06) and Bedrock
+  relevance scores (0–1) are not comparable, so `merge_by_rank` interleaves
+  the two legs positionally (local first) instead of sorting on raw score.
+- **Sync is a no-op.** `detect_changes` is always `False`, so `SyncScheduler`
+  never ingests the source; the dashboard shows it as connected rather than
+  synced.
 
 ### On-loop connection guard (`on_loop_db.py`)
 
