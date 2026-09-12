@@ -32,6 +32,14 @@ from kiro_crew.eval.bench.member_v2 import (
     structural_failures,
 )
 
+# One xdist worker for the whole module: every read-only and mutation test here
+# derives from ONE module-cached ``evaluate()`` report (35-50 s on a CI runner).
+# Under ``--dist loadgroup`` an unmarked module is spread across workers and each
+# worker re-pays that report -- measured at 4 workers x ~45 s per shard, which is
+# how this file topped every shard's ``--durations`` list. Grouping keeps the
+# report single-copy per run, the same way the tree_scan_* modules do.
+pytestmark = pytest.mark.xdist_group(name="member_v2_bench_report")
+
 
 def _fake_vector(text: str, dim: int = 8) -> list[float]:
     """A deterministic, text-derived unit vector -- no model, no randomness."""
@@ -64,11 +72,36 @@ def home() -> Path:
     return config_dir()
 
 
+@pytest.fixture(scope="module")
+def sound_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
+    """One sound ``evaluate()`` report shared by every read-only / mutation test.
+
+    ``evaluate()`` is deterministic for the fake embedder (same corpus, same
+    text-derived vectors) but costs 35-50 s on a CI runner: 3 modes x 50 topics
+    x (2 searches + 7 bounded recalls) through the real V2 store. Running it once
+    per module instead of once per test is what keeps this file from dominating
+    the shard's ``--durations`` list. Tests that mutate the report MUST
+    ``copy.deepcopy`` it first; nothing here hands out the shared dict for writes.
+
+    The home is a module-scoped temp dir, and ``KIROCREW_HOME`` is pointed at it
+    for the duration of the call through a private ``MonkeyPatch`` context: the
+    V2 store only opens as owned (``algorithm_version == "v2"``) when its
+    ``memory_stores/<name>`` directory sits under the resolved data home, and the
+    per-test ``KIROCREW_HOME`` pin is function-scoped, so a module fixture cannot
+    lean on it. ``evaluate()`` closes every store it opens, so nothing outlives
+    the context that still refers to this home.
+    """
+    home = tmp_path_factory.mktemp("member-v2-bench-home")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("KIROCREW_HOME", str(home))
+        return evaluate(_make_embed(), home)
+
+
 class TestEvaluateReportShape:
     """``evaluate()`` against a deterministic fake embedder in an isolated home."""
 
-    def test_full_report_shape(self, home: Path) -> None:
-        report = evaluate(_make_embed(), home)
+    def test_full_report_shape(self, sound_report: dict) -> None:
+        report = sound_report
 
         assert report["schema_version"] == 1
         assert isinstance(report["policy_revision"], str) and report["policy_revision"]
@@ -113,19 +146,17 @@ class TestEvaluateReportShape:
         # A sound report from a sound run must have no structural failures.
         assert structural_failures(report) == []
 
-    def test_short_vectors_missing_mode_still_embeds_queries(self, home: Path) -> None:
+    def test_short_vectors_missing_mode_still_embeds_queries(self, sound_report: dict) -> None:
         # `mode == "short_vectors_missing"` withholds vectors only for the
         # "short" ingested fragments (see `_mode_report`'s per-fragment branch);
         # queries are still embedded for every mode except "no_embeddings". A
         # deterministic embedder that never returns None for real corpus text
         # is enough to exercise that branch end to end.
-        report = evaluate(_make_embed(), home)
-        mode_report = next(m for m in report["modes"] if m["mode"] == "short_vectors_missing")
+        mode_report = next(m for m in sound_report["modes"] if m["mode"] == "short_vectors_missing")
         assert mode_report["admission"]["tp"] + mode_report["admission"]["fn"] == 100
 
-    def test_no_embeddings_mode_runs_with_no_vectors_at_all(self, home: Path) -> None:
-        report = evaluate(_make_embed(), home)
-        mode_report = next(m for m in report["modes"] if m["mode"] == "no_embeddings")
+    def test_no_embeddings_mode_runs_with_no_vectors_at_all(self, sound_report: dict) -> None:
+        mode_report = next(m for m in sound_report["modes"] if m["mode"] == "no_embeddings")
         # Every query is still scored (lexical/relevance-filter path only).
         assert len(mode_report["per_query"]) == 50
         assert mode_report["context_bounds_passed"] is True
@@ -262,48 +293,36 @@ class TestMainCli:
 
 
 class TestStructuralFailures:
-    """Mutating a sound report must surface the specific failing check."""
+    """Mutating a sound report must surface the specific failing check.
 
-    @pytest.fixture(scope="class")
-    def sound_report(self, request) -> dict:
-        # A fresh isolated home per class-scoped call would fight the
-        # function-scoped autouse KIROCREW_HOME fixture, so this fixture stays
-        # function-scoped in effect: pytest reuses the outer `home` fixture's
-        # value only within one test's call graph. Building the report once per
-        # test (cheap: 8-dim fake vectors, no model) keeps every mutation test
-        # independent and avoids sharing mutable state across tests.
-        return None
+    Every test deep-copies the module-scoped ``sound_report`` before mutating
+    it, so the tests stay independent without each paying for its own
+    ``evaluate()`` run.
+    """
 
-    def _sound(self, home: Path) -> dict:
-        return evaluate(_make_embed(), home)
-
-    def test_context_bounds_failure_is_named_by_mode(self, home: Path) -> None:
-        report = self._sound(home)
-        assert structural_failures(report) == []
-        mutated = copy.deepcopy(report)
+    def test_context_bounds_failure_is_named_by_mode(self, sound_report: dict) -> None:
+        assert structural_failures(sound_report) == []
+        mutated = copy.deepcopy(sound_report)
         mutated["modes"][0]["context_bounds_passed"] = False
         failures = structural_failures(mutated)
         assert f"{mutated['modes'][0]['mode']}: context bounds" in failures
 
-    def test_missing_mode_is_treated_as_a_bounds_failure(self, home: Path) -> None:
-        report = self._sound(home)
-        mutated = copy.deepcopy(report)
+    def test_missing_mode_is_treated_as_a_bounds_failure(self, sound_report: dict) -> None:
+        mutated = copy.deepcopy(sound_report)
         removed = mutated["modes"].pop(0)
         failures = structural_failures(mutated)
         assert f"{removed['mode']}: context bounds" in failures
 
     @pytest.mark.parametrize("check", ["episode_hit", "fact_hit", "within_budget"])
-    def test_cjk_edge_case_failure_is_named(self, home: Path, check: str) -> None:
-        report = self._sound(home)
-        mutated = copy.deepcopy(report)
+    def test_cjk_edge_case_failure_is_named(self, sound_report: dict, check: str) -> None:
+        mutated = copy.deepcopy(sound_report)
         mutated["edge_cases"]["zh"][check] = False
         failures = structural_failures(mutated)
         assert f"zh: {check}" in failures
 
     @pytest.mark.parametrize("case", ["bounded_oversized_isolated", "forgotten_excluded"])
-    def test_binary_edge_case_failure_is_named(self, home: Path, case: str) -> None:
-        report = self._sound(home)
-        mutated = copy.deepcopy(report)
+    def test_binary_edge_case_failure_is_named(self, sound_report: dict, case: str) -> None:
+        mutated = copy.deepcopy(sound_report)
         mutated["edge_cases"][case]["passed"] = False
         failures = structural_failures(mutated)
         assert case in failures
@@ -311,16 +330,14 @@ class TestStructuralFailures:
     @pytest.mark.parametrize(
         "check", ["total_chars_matches", "within_context_cap", "within_transport_budget"]
     )
-    def test_bounded_oversized_check_failure_is_named(self, home: Path, check: str) -> None:
-        report = self._sound(home)
-        mutated = copy.deepcopy(report)
+    def test_bounded_oversized_check_failure_is_named(self, sound_report: dict, check: str) -> None:
+        mutated = copy.deepcopy(sound_report)
         mutated["edge_cases"]["bounded_oversized"]["checks"][check] = False
         failures = structural_failures(mutated)
         assert f"bounded_oversized: {check}" in failures
 
-    def test_missing_edge_cases_key_fails_every_edge_check(self, home: Path) -> None:
-        report = self._sound(home)
-        mutated = copy.deepcopy(report)
+    def test_missing_edge_cases_key_fails_every_edge_check(self, sound_report: dict) -> None:
+        mutated = copy.deepcopy(sound_report)
         mutated["edge_cases"] = {}
         failures = structural_failures(mutated)
         # Every language/case check is reported missing rather than raising.
