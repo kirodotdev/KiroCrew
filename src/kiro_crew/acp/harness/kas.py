@@ -40,7 +40,7 @@ from kiro_crew.acp.types import (
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_SESSION_DELETE,
 )
-from kiro_crew.agent import ForkGovernanceUnresolved
+from kiro_crew.agent import ForkGovernanceUnresolved, LoginWithholdUnresolved
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 
@@ -152,6 +152,9 @@ class KasHarness(MembershipHarness):
 
         def _build() -> list[dict[str, Any]]:
             agent_mod.require_fork_governance(agent, work_dir)
+            # Login posture: an app agent still carrying withheld MCP on disk
+            # must not be projected either (agent.require_login_withhold).
+            agent_mod.require_login_withhold(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
             except Exception:
@@ -190,7 +193,7 @@ class KasHarness(MembershipHarness):
 
         try:
             return SessionExtras(custom_agents=await asyncio.to_thread(_build))
-        except ForkGovernanceUnresolved as exc:
+        except (ForkGovernanceUnresolved, LoginWithholdUnresolved) as exc:
             raise AcpRuntimeError(str(exc)) from exc
         except KasAgentTranslationError as exc:
             raise AcpRuntimeError(f"cannot project agent {agent!r} onto KAS: {exc}") from exc

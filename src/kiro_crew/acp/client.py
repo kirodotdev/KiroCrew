@@ -152,8 +152,10 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import (
     ForkGovernanceUnresolved,
+    LoginWithholdUnresolved,
     ensure_agent_materialized,
     require_fork_governance,
+    require_login_withhold,
 )
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.atomic_write import atomic_write
@@ -6037,6 +6039,14 @@ class AcpClient:
             try:
                 await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
             except ForkGovernanceUnresolved as exc:
+                raise AcpError(str(exc)) from exc
+            # Same shape for the login posture: an app agent whose on-disk
+            # spec still carries the MCP a login rebuild should have withheld
+            # (rematerialize AND neutralize failed) must not spawn -- the file
+            # is the second load path and kiro-cli would run its command.
+            try:
+                await asyncio.to_thread(require_login_withhold, self._agent, self._work_dir)
+            except LoginWithholdUnresolved as exc:
                 raise AcpError(str(exc)) from exc
             # The agents-tree seal is a launcher rule, and a spawn delegated to
             # kiro-cli's internal sandbox never sees the launcher — so on those

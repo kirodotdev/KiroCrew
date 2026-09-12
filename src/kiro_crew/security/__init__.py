@@ -292,6 +292,7 @@ from .exfil import (
     _slack_manifest_re_slot,
     _valid_oauth_extension_path,
     _validate_operator_oauth_entries,
+    allow_agentcore_consent_url,
     audit_bash_exfiltration,
     canonicalize_ip,
     diagnose_oauth_url_credential,

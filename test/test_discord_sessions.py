@@ -1398,6 +1398,40 @@ async def test_resumed_session_runs_under_its_own_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resumed_session_stages_gateway_under_its_own_agent(monkeypatch) -> None:
+    """The Gateway bind is staged against the agent the turn will RUN as.
+
+    ``prepare_turn_gateway`` authorizes AgentCore against a crew profile. For a
+    resumed dashboard conversation that profile is the persisted one, so it must
+    be resolved before the stage -- staging under Discord's default and then
+    switching agents would let a crew whose profile denies the Gateway start with
+    credentials the default was granted.
+    """
+    from kiro_crew.discord import transport_dispatch as td
+
+    staged: list[str] = []
+
+    async def fake_prepare(sessions, session_key, bind_kwargs, *, agent=""):
+        staged.append(agent)
+
+    monkeypatch.setattr(td, "prepare_turn_gateway", fake_prepare)
+    log = _log()
+    log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
+    log.metadata["dashboard:chat-1"] = {"agent": "research-agent"}
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    sessions.is_new_result = True
+    staged.clear()
+    await dispatcher.handle_message(_message("continue here"))
+
+    assert staged == ["research-agent"]
+    assert sessions.last_agent == "research-agent"
+
+
+@pytest.mark.asyncio
 async def test_resumed_session_without_recorded_agent_falls_back() -> None:
     log = _log()
     log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
