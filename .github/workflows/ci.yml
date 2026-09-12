@@ -55,12 +55,12 @@ jobs:
     name: Detect changed surface
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # dorny/paths-filter reads the PR's changed-file list from the GitHub REST
-    # API on pull_request events -> needs pull-requests:read. Job-level
-    # permissions REPLACE the top-level grant, so contents:read is restated.
+    # dorny/paths-filter runs with `token: ''` (below), so it detects changes
+    # with local git instead of the REST API and needs no pull-requests:read.
+    # Job-level permissions REPLACE the top-level grant, so contents:read is
+    # restated.
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
@@ -88,6 +88,27 @@ jobs:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
+          # An empty token switches the action to LOCAL git change detection on
+          # pull_request events (documented on the `token` input; the default is
+          # the shared installation token). The pinned v4.0.3 build then runs
+          # getChanges(pull_request.base.sha, HEAD): a plain two-dot
+          # `git diff` -- the checkout above already has the base commit
+          # (fetch-depth: 0), so no fetch and no API call happen. This matters
+          # because the REST list-files call spends the per-hour installation
+          # quota shared by EVERY workflow in this repo, and at dozens of
+          # ci.yml runs per hour it exhausted the quota and failed this job
+          # repo-wide (#10434). With an empty token the `base` input stays
+          # empty on purpose: the action falls back to the PR base SHA from
+          # the event payload. Both diff endpoints are frozen when the run is
+          # created (base.sha from the payload, HEAD at the event's merge
+          # commit), so a base-branch move after that changes nothing. The
+          # result is the NET change the merge introduces relative to base.sha:
+          # a PR-listed file whose identical change already landed in base
+          # drops out, which is correct for surface detection -- that surface
+          # is unchanged relative to base -- and any wider change set still
+          # pushes toward the full matrix. push events never consult `token`,
+          # so main builds are unchanged.
+          token: ''
           # 'some-with-excludes': a file matches a filter when it matches at
           # least one pattern AND none of the negated ones. That lets `backend`
           # be a true CATCH-ALL ("every changed file that is not frontend, not
