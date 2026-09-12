@@ -33,6 +33,11 @@ vi.mock('../components/AppIcon', () => ({ default: () => null }))
 
 import { PierreWorkspaceTreeImpl } from '../pierre/PierreWorkspaceTreeImpl'
 import { api } from '../api/client'
+import {
+  recallExpandedPaths,
+  rememberExpandedPaths,
+  __resetTreeExpansionMemoryForTests,
+} from '../pierre/treeExpansionMemory'
 import { treeMock } from './__mocks__/pierreTreesReact'
 import type { MenuItem, MenuContext } from './__mocks__/pierreTreesReact'
 
@@ -842,5 +847,247 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
 
     const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
     expect(notice).toHaveTextContent('endpoint refused')
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — expansion persistence', () => {
+  // The Files tab mounts only while active, so opening a file remounts the
+  // whole tree; `persistExpansion` remembers the expanded directories (keyed
+  // by projectDir) and restores them through `resetPaths`'
+  // `initialExpandedPaths`. Off by default: the other hosts of this shared
+  // tree keep their collapsed-by-default behavior.
+  const TREE_PATHS = ['src/a.ts', 'src/lib/b.ts', 'README.md']
+  // `@pierre/trees` materializes DIRECTORY row paths with a trailing slash
+  // (`src/`, not `src`); the helper emits that canonical shape so these tests
+  // exercise what the real library hands the capture. Shape verified against
+  // @pierre/trees 1.0.0-beta.6 (path-store materializeNodePath appends `/`
+  // to directory nodes) — re-verify on an upgrade.
+  const expandedDir = (path: string) => ({ kind: 'directory' as const, path: path + '/', isExpanded: true })
+
+  beforeEach(() => {
+    __resetTreeExpansionMemoryForTests()
+    localStorage.clear()
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: TREE_PATHS }))
+  })
+
+  it('passes no expansion options on a first mount with nothing remembered', async () => {
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([TREE_PATHS])
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('restores the expanded directories on a remount of the same projectDir', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => {
+      treeMock.last().simulateVisibleRows([
+        expandedDir('src'),
+        expandedDir('src/lib'),
+        { kind: 'file', path: 'src/a.ts', isExpanded: false },
+      ])
+    })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src', 'src/lib'] },
+    ])
+  })
+
+  it('gives a different projectDir nothing', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true, projectDir: '/repo/other' })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('drops remembered directories absent from the new payload', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    unmount()
+
+    // `src/lib` no longer exists in the new payload: a stale path must be
+    // filtered out rather than handed to the controller.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['src/a.ts'] }))
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('snapshots nothing while a search is active', async () => {
+    // The search session expands matches transiently; persisting that would
+    // restore an unrelated expansion after the filter is cleared.
+    const { unmount } = renderTree({ persistExpansion: true, searchQuery: 'lib' })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('neither reads nor writes the memory in changed mode', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/src/a.ts', 'M')]),
+    )
+    rememberExpandedPaths(ROOT, ['src'])
+
+    const { unmount } = renderTree({ persistExpansion: true, mode: 'changed' })
+    await waitForTree()
+    // Changed mode starts fully open by design: the remembered set must not
+    // narrow it.
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/x')]) })
+    unmount()
+
+    // And the changed-mode notification must not have overwritten the memory.
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('carries a remembered directory through a payload that temporarily lacks it', async () => {
+    // The backend truncates large payloads and a branch switch can drop a
+    // subtree: a remembered directory absent from the current payload is not
+    // evidence of a collapse, so a capture during that window must not erase
+    // it, and it must restore once the payload carries it again.
+    const first = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    first.unmount()
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['src/a.ts'] }))
+    const second = renderTree({ persistExpansion: true })
+    await waitForTree()
+    // Only the still-present directory is passed to the controller…
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+    // …and a capture during this window keeps the absent one remembered.
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    second.unmount()
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: TREE_PATHS }))
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src', 'src/lib'] },
+    ])
+  })
+
+  it('does not erase the memory when the model transiently holds no rows', async () => {
+    // A `project-tree` poll can answer with an empty payload (re-indexing,
+    // transient backend miss); the resulting empty visible set must not
+    // overwrite the remembered expansion.
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    act(() => { treeMock.last().simulateVisibleRows([]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('evicts the least recently written project from storage past the dir cap', () => {
+    // One storage key holds every project's entry; without eviction a long
+    // session would grow the origin's quota use without bound.
+    for (let i = 0; i <= 20; i++) rememberExpandedPaths(`/repo/p${i}`, ['src'])
+    __resetTreeExpansionMemoryForTests()
+
+    expect(recallExpandedPaths('/repo/p0')).toEqual([])
+    expect(recallExpandedPaths('/repo/p1')).toEqual(['src'])
+    expect(recallExpandedPaths('/repo/p20')).toEqual(['src'])
+  })
+
+  it('restores from the localStorage mirror after a page reload', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    unmount()
+
+    // A page reload drops the module-scope session map; the localStorage
+    // mirror is what carries the expansion across it.
+    __resetTreeExpansionMemoryForTests()
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('tolerates localStorage throwing on both write and read', async () => {
+    // Private mode / quota: storage access is best-effort, the module-scope
+    // session map still covers the remount case.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    try {
+      const first = renderTree({ persistExpansion: true })
+      await waitForTree()
+      act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+      first.unmount()
+
+      const second = renderTree({ persistExpansion: true })
+      await waitForTree()
+      expect(treeMock.last().calls.resetPathsOptions).toEqual([
+        { initialExpandedPaths: ['src'] },
+      ])
+      second.unmount()
+
+      // With the session map gone (a fresh page load) the throwing read falls
+      // back to nothing remembered rather than crashing.
+      __resetTreeExpansionMemoryForTests()
+      const third = renderTree({ persistExpansion: true })
+      await waitForTree()
+      expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+      third.unmount()
+    } finally {
+      setItem.mockRestore()
+      getItem.mockRestore()
+    }
+  })
+
+  it('leaves the memory alone when persistExpansion is off (the default)', async () => {
+    rememberExpandedPaths(ROOT, ['src'])
+
+    const { unmount } = renderTree()
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/x')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
   })
 })

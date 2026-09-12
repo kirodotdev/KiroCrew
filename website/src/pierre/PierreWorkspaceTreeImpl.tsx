@@ -27,6 +27,7 @@ import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { i18nT } from '../i18n/t'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel, type ContributedFileMenuItem, type ReportFileMenuError } from '../apps/fileMenuContributions'
 import { normalizeWindowsPath } from '../utils/fileTokens'
+import { recallExpandedPaths, rememberExpandedPaths } from './treeExpansionMemory'
 import { TreeSkeleton } from './tree'
 
 /** The kind vocabulary the composer's `@`-mention plumbing speaks: a file is
@@ -265,7 +266,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   }
 }
 
-export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath }: {
+export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath, persistExpansion = false }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
   /** Right-click "Add to context" on a row: hands the host the ABSOLUTE path
@@ -284,6 +285,11 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
    *  selection (and scrolled into view). Selection changes caused by this
    *  prop never re-fire `onFileOpen`. */
   selectedPath?: string | null
+  /** Remember and restore the expanded directories across remounts (keyed by
+   *  `projectDir`, see `./treeExpansionMemory`). Opt-in per host so the other
+   *  hosts of this shared tree keep their collapsed-by-default behavior.
+   *  Applies to `all` mode only: `changed` mode starts fully open by design. */
+  persistExpansion?: boolean
 }) {
   // Whether any app contributes a 'tree-context' row at all — gates whether the
   // tree wires a context menu (per-node `when` filtering happens in the menu).
@@ -379,15 +385,114 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // the same pre-paint pass so the first visible frame is already correct.
   const pathsKey = useMemo(() => paths.join('\n'), [paths])
   const lastPathsKey = useRef<string | null>(null)
+  // Expansion persists for `all` mode only: `changed` mode starts fully open
+  // by design and holds a handful of paths, so there is nothing to remember.
+  const remembersExpansion = persistExpansion && mode === 'all'
+  // Directory set of the current payload, for the capture below: remembered
+  // directories NOT in this set are temporarily absent (truncated payload,
+  // another branch checked out) and must survive a snapshot rather than be
+  // erased by it.
+  const payloadDirsRef = useRef<Set<string> | null>(null)
   useLayoutEffect(() => {
     if (!ready) return
     if (lastPathsKey.current === pathsKey) return
     lastPathsKey.current = pathsKey
-    model.resetPaths(paths)
-  }, [ready, paths, pathsKey, model])
+    if (!remembersExpansion) {
+      model.resetPaths(paths)
+      return
+    }
+    const dirs = new Set<string>()
+    for (const p of paths) {
+      const segments = p.split('/')
+      for (let i = 1; i < segments.length; i++) dirs.add(segments.slice(0, i).join('/'))
+    }
+    payloadDirsRef.current = dirs
+    // Restore the remembered expansion (see `./treeExpansionMemory`): the rail
+    // remounts on in-place tab navigation and the model is created per mount,
+    // so without this every file open collapses the tree back to the root.
+    // The ARGUMENT is filtered to directories present in this payload (the
+    // controller tolerates unknown paths, but there is nothing to expand);
+    // the remembered set itself keeps absent entries — see the capture below.
+    const remembered = recallExpandedPaths(projectDir)
+    const alive = remembered.filter(d => dirs.has(d))
+    if (alive.length > 0) {
+      model.resetPaths(paths, { initialExpandedPaths: alive })
+    } else {
+      model.resetPaths(paths)
+    }
+  }, [ready, paths, pathsKey, model, remembersExpansion, projectDir])
   useEffect(() => {
     model.setGitStatus(statusEntries)
   }, [statusEntries, model])
+
+  // Capture the expanded directory set on every model notification so the next
+  // mount can restore it. Skipped while a search is active: the search session
+  // expands matches transiently, and persisting that would restore an
+  // unrelated expansion after the filter is cleared. Known limitation, noted
+  // deliberately: a directory expanded under a collapsed ancestor is not
+  // visible, so it drops out of the remembered set — acceptable, since
+  // re-expanding the ancestor is what the user does on return anyway.
+  const searchQueryRef = useRef(searchQuery)
+  searchQueryRef.current = searchQuery
+  const lastSnapshotKey = useRef<string | null>(null)
+  const lastVisibleCount = useRef<number | null>(null)
+  useEffect(() => {
+    if (!remembersExpansion) return
+    const unsubscribe = model.subscribe(() => {
+      if (searchQueryRef.current) {
+        // A search session expands matches transiently, so nothing is
+        // captured while it is active — and the count on exit may match the
+        // count on entry, so the pre-filter below must not swallow the first
+        // post-search notification.
+        lastVisibleCount.current = null
+        return
+      }
+      const count = model.getVisibleCount()
+      // A model that currently holds no rows — a transient empty `project-tree`
+      // payload, or the window before the first payload lands — carries no
+      // expansion information: writing its empty set would erase the memory.
+      // In `all` mode a non-empty payload always keeps top-level rows visible,
+      // so zero visible rows can only mean an empty model, never the user
+      // collapsing everything.
+      if (count === 0) return
+      // Focus, selection, and git-status notifications far outnumber
+      // expansion changes, and materializing every visible row on each one
+      // defeats the tree's virtualization on a large workspace. With
+      // `flattenEmptyDirectories` an expand/collapse always changes the
+      // visible count, so an unchanged count means an unchanged expansion —
+      // skip the O(visible rows) scan entirely.
+      if (lastVisibleCount.current === count) return
+      lastVisibleCount.current = count
+      const rows = model.getVisibleRows(0, count)
+      const expanded: string[] = []
+      for (const row of rows) {
+        // Directory rows come back with the library's canonical trailing
+        // slash; strip it so the remembered paths compare equal to the
+        // payload-derived directory prefixes on restore.
+        if (row.kind === 'directory' && row.isExpanded) expanded.push(row.path.replace(/\/$/, ''))
+      }
+      // A visible-row scan can only see directories the current payload
+      // holds. A remembered directory absent from the payload — beyond the
+      // backend's truncation cap, or gone on the currently checked-out
+      // branch — is not evidence of a collapse: carry it forward so a
+      // transient absence cannot permanently erase it. A genuinely deleted
+      // directory is carried indefinitely and dropped only when the
+      // per-project path cap truncates the tail — the cost of never being
+      // able to tell "deleted" from "temporarily absent" here.
+      const payloadDirs = payloadDirsRef.current
+      if (payloadDirs) {
+        for (const d of recallExpandedPaths(projectDir)) {
+          if (!payloadDirs.has(d)) expanded.push(d)
+        }
+      }
+      // Skip the write when the set is unchanged to avoid storage churn.
+      const key = expanded.join('\n')
+      if (lastSnapshotKey.current === key) return
+      lastSnapshotKey.current = key
+      rememberExpandedPaths(projectDir, expanded)
+    })
+    return unsubscribe
+  }, [remembersExpansion, model, projectDir])
 
   // Forward the panel's shared search box into the tree's search session.
   useLayoutEffect(() => {
