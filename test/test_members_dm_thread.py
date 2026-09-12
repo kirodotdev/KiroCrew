@@ -423,6 +423,26 @@ class TestMemberRoutes:
         assert [r["name"] for r in bound_rows] == ["Review_Agent"]
 
     @pytest.mark.asyncio
+    async def test_colliding_slug_honors_a_binding_naming_the_later_crew(self, tmp_path):
+        """A corroborated binding OUTRANKS config order, it does not tie it.
+
+        Binding the second of two colliding names is the only case where the
+        bound member and the config-order fallback differ, so it is the only
+        case that can observe which of the two the handler picks. Every other
+        binding in this suite names the sole owner, where both answers agree.
+        """
+        state = _make_state(tmp_path)
+        write_dm_binding(
+            "review-agent", member="review-agent", slot_key=member_slot_key("review-agent")
+        )
+        with _patched_config(["Review_Agent", "review-agent"], default="Review_Agent"):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                opened = await (await client.post("/api/members/review-agent/thread")).json()
+        # Config order answers Review_Agent; the binding answers review-agent.
+        assert opened["member"] == "review-agent"
+        assert read_dm_binding("review-agent")["member"] == "review-agent"
+
+    @pytest.mark.asyncio
     async def test_app_tokens_are_denied(self, tmp_path):
         state = _make_state(tmp_path)
 

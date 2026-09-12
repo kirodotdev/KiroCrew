@@ -330,15 +330,19 @@ async def api_member_thread(request: web.Request) -> web.Response:
     # The bound member wins as long as it still exists AND still derives this
     # slug — dm.json's `member` field is operator-editable state, so it is
     # honored only when the registry independently corroborates it (the name
-    # exists and folds to the slug being opened). Otherwise fall back to the
-    # first crew (config order) whose name derives this slug. This keeps a
-    # colliding slug's thread stably attributed to whoever bound it first.
+    # exists and folds to the slug being opened). This keeps a colliding
+    # slug's thread stably attributed to whoever bound it first. With no
+    # binding at all, the first crew in config order whose name derives this
+    # slug takes the thread. An uncorroborated binding resolves to that same
+    # crew here — but only far enough to look up its slot; the branches below
+    # refuse the open rather than rebinding the slug to it.
     slug_owners = _member_names_for_slug(cfg, slug)
-    member_name = (
-        binding["member"]
-        if binding is not None and binding.get("member") in slug_owners
-        else (slug_owners[0] if slug_owners else "")
-    )
+    if binding is not None and binding.get("member") in slug_owners:
+        member_name = binding["member"]
+    elif slug_owners:
+        member_name = slug_owners[0]
+    else:
+        member_name = ""
     slot_key, generation = "", ""
     if member_name:
         try:
@@ -350,19 +354,19 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
             return _store_unavailable_response(cfg.agents[member_name].memory_store, exc)
     if binding is not None:
-        if binding.get("member") in slug_owners:
-            member_name = binding["member"]
-        else:
-            # The binding names a crew that no longer derives this slug
-            # (renamed, or deleted with a same-slug successor). Falling
-            # through to the successor here would hand it the SAME derived
-            # key — and with it the previous crew's entire transcript,
-            # rendered under the successor's name with the pin chip vouching
-            # for it. The live-slot mismatch check below cannot catch this
-            # (after a restart no live slot exists), so the refusal must
-            # key off the BINDING itself. Fail closed, leave dm.json
-            # untouched (re-entrant), and let the user resolve it in the
-            # crew manager.
+        if binding.get("member") not in slug_owners:
+            # The binding names a crew absent from the registry (renamed, or
+            # deleted). It still derives this slug — `read_dm_binding`
+            # refuses any binding that does not — so falling through to a
+            # same-slug successor here would hand it the SAME derived key,
+            # and with it the previous crew's entire transcript, rendered
+            # under the successor's name with the pin chip vouching for it.
+            # The live-slot mismatch check below cannot catch this (after a
+            # restart no live slot exists), so the refusal must key off the
+            # BINDING itself. Fail closed, leave dm.json untouched
+            # (re-entrant), and let the user resolve it in the crew manager.
+            # A binding whose slug has no owner left lands here too, and is
+            # refused the same way rather than reaching the 404 below.
             try:
                 _sel().log_api_access(
                     caller=request.remote or "",
@@ -382,7 +386,6 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 status=409,
             )
     else:
-        member_name = slug_owners[0] if slug_owners else ""
         # No binding, but the canonical history key already holds a
         # transcript: rebinding here would hand whoever currently derives the
         # slug the PREVIOUS occupant's entire conversation (ChatPane hydrates
