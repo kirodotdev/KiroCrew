@@ -152,13 +152,20 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
     return True, sorted(rows)
 
 
-def backend_mcp_projection(backend: str) -> tuple[str, str, str] | None:
+def backend_mcp_projection(backend: str) -> tuple[str, str, str, str] | None:
     """How *backend* is declared to receive Crew's MCP servers, as plain data.
 
-    Returns ``(kind, channel, tracking)`` -- the kind spelled as its wire value
-    (``native`` / ``mirror`` / ``external`` / ``no-channel``) -- or ``None`` for a
-    backend with no declaration, which is a state the parity test refuses rather
-    than one a consumer should render.
+    Returns ``(kind, channel, tracking, per_tool_deny)`` -- the kind spelled as its
+    wire value (``native`` / ``mirror`` / ``external`` / ``no-channel``) -- or
+    ``None`` for a backend with no declaration, which is a state the parity test
+    refuses rather than one a consumer should render.
+
+    ``per_tool_deny`` is the reach of the spec's per-TOOL MCP restriction on this
+    backend, ``""`` where the declaration carries none (every kind but ``mirror``).
+    It rides along because it answers an operator's question that the other three
+    fields cannot: whether switching ONE tool off removes that tool or the whole
+    server. The kind says the servers arrive; this says what a restriction on them
+    is worth when it does.
 
     The record's ``reason`` is deliberately NOT projected. It is written for the
     reader of the registry, at registry length, and the consumer renders the two
@@ -180,7 +187,13 @@ def backend_mcp_projection(backend: str) -> tuple[str, str, str] | None:
         declared = projection_for(backend)
     except Exception:
         return None
-    return (str(declared.kind.value), declared.channel, declared.tracking)
+    reach = declared.per_tool_deny
+    return (
+        str(declared.kind.value),
+        declared.channel,
+        declared.tracking,
+        str(reach.value) if reach is not None else "",
+    )
 
 
 def kiro_cli_resolves() -> bool:

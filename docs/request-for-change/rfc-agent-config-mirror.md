@@ -348,6 +348,7 @@ rediscover.
 | 4 | **Move** the kiro-cli overlay into `mirrors/kiro_cli.py`, and correct `providers.md` | low |
 | 5 | Hooks H2 (Claude Code settings `hooks`) | behavioural |
 | 6 | Hooks H3 (KAS disk profile) + H4 parity test | behavioural |
+| — | **opencode's mirror** (`mirrors/opencode.py`), unplanned: the registry entry declaring it `no-channel` was wrong, so this is a gap CLOSED rather than a relocation. See below | behavioural |
 
 PRs 2–4 are deliberately one-backend-each and pure relocation. A move that also
 changes logic is the shape that makes a mechanical refactor unreviewable, and
@@ -363,6 +364,33 @@ After PR 6 the folder is the complete inventory: every backend Crew drives has
 exactly one file there, or a registry entry stating it needs no mirror and why.
 That property is what makes the next backend cheap, and it is the deliverable —
 not the interface itself.
+
+**The opencode row, and why it is not in the numbered plan.** The plan assumed the
+only outstanding work was relocation, because every backend's channel was believed
+to be known. opencode's was not: it was declared `no-channel` on the reading that
+its `initialize` advertises `mcpCapabilities` of `http` and `sse` and *no stdio*, so
+the `session/new` array could not carry Crew's stdio servers. ACP's
+`McpCapabilities` has exactly those two boolean fields and **no `stdio` field**, so
+no conforming agent can advertise stdio and `{"http": true, "sse": true}` is what
+full support looks like. The absence was never evidence, and the array carries the
+element `acp/session_mcp.py` already emits — measured against opencode 1.18.30,
+with the child spawned, its tools listed and the element's `env` delivered.
+
+Two things this changes about the record above, both worth keeping:
+
+- The typed registry did its job and still let this through, because every rule it
+  enforces is about whether a declaration is ADDRESSABLE — a `no-channel` names a
+  channel and a tracking pointer — and this one was. A `no-channel` whose *premise*
+  is false is well-formed. The guard that would have caught it is not another field
+  but a measurement: `no-channel` is the one kind that asserts something about a
+  live adapter, so it is the one kind that should have to cite a driven test the way
+  a mirror's transport rules now do.
+- It was also self-contradictory in a way a reader could have caught: the same entry
+  said the array carries the shared gateway's broker stubs, and those are stdio
+  elements too (`mcp_gateway/session_servers.py` emits `command`/`args`/`env`), which
+  `_pooled_mcp_servers` had been appending to that very array for opencode whenever
+  pooling was on. "The array cannot carry stdio" and "the array carries these stdio
+  stubs" cannot both be true.
 
 ## 6. Open questions, with dispositions
 

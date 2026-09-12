@@ -538,19 +538,120 @@ class TestSelectedBackendProjectionRow:
     def _cfg(self, backend: str):
         return SimpleNamespace(agent=SimpleNamespace(acp_backend=backend))
 
-    def test_the_selected_no_channel_backend_gets_a_row_with_its_channel(self, capsys):
-        """Reads the shipped declaration, not a stub.
+    def test_a_no_channel_backend_gets_a_row_with_its_channel(self, monkeypatch, capsys):
+        """Driven through a stubbed declaration, because no backend ships one now.
 
-        A stub would pass on a build where opencode's own entry has drifted back
-        to claiming a projection it does not have, which is the drift the typed
-        record exists to make visible.
+        This read the SHIPPED opencode entry, which was the one ``no-channel``
+        declaration -- on the reading that its ``initialize`` advertising
+        ``mcpCapabilities`` of http and sse and no stdio meant the array could not
+        carry Crew's stdio servers. Measured against a real ``opencode acp``, it
+        carries them, so opencode became a mirror and the shipped tables hold no
+        ``no-channel`` entry at all. The ROW still has to render for the next
+        harness that legitimately has no channel, so the declaration is supplied
+        here rather than the test being deleted with the backend it happened to be
+        demonstrated on.
         """
-        cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        monkeypatch.setattr(
+            acp_driver,
+            "backend_mcp_projection",
+            lambda _b: (
+                "no-channel",
+                "an http or sse MCP endpoint the shared gateway serves",
+                "docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+                # A no-channel backend has no mirror, so it declares no reach.
+                "",
+            ),
+        )
+        cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
         out = capsys.readouterr().out
-        assert "opencode" in out
+        assert "some-harness" in out
         assert "none of Kiro Crew's own tools" in out
         assert "Would need:" in out
         assert "Tracked at:" in out
+
+    def test_a_whole_server_deny_backend_gets_a_row_about_the_consequence(self, capsys):
+        """The reader this declaration exists for.
+
+        `per_tool_deny` is a claim about what a RESTRICTION costs, not about whether
+        the servers arrive, so it prints independently of the kind. It earns a row
+        because its consequence is the one an operator meets by accident: switching
+        one tool off is an ordinary dashboard action that says nothing about servers,
+        and on such a harness it removes the whole server — Crew's own control plane
+        included, which leaves that session unable to report back at all.
+        """
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        monkeypatch = pytest.MonkeyPatch()
+        try:
+            monkeypatch.setattr(
+                acp_driver,
+                "backend_mcp_projection",
+                lambda _b: ("mirror", "", "", "whole-server"),
+            )
+            cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
+        finally:
+            monkeypatch.undo()
+        out = capsys.readouterr().out
+        assert "withholds the whole server" in out
+        assert "kirocrew-core" in out
+        # A mirror is not a no-channel backend, so the OTHER row must stay silent.
+        assert "carries none of Kiro Crew's own tools" not in out
+
+    def test_a_backend_whose_deny_reaches_one_tool_prints_no_such_row(self, capsys):
+        """Silence for the reaches that hold no surprise.
+
+        `settings-file` and `per-call` both honour the restriction per TOOL, so the
+        server stays available and there is nothing an operator needs warning about.
+        A row on every install is a row people stop reading.
+        """
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        monkeypatch = pytest.MonkeyPatch()
+        try:
+            for reach in ("settings-file", "per-call"):
+                monkeypatch.setattr(
+                    acp_driver,
+                    "backend_mcp_projection",
+                    lambda _b, _r=reach: ("mirror", "", "", _r),
+                )
+                cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
+                assert capsys.readouterr().out == "", reach
+        finally:
+            monkeypatch.undo()
+
+    def test_the_real_opencode_declaration_drives_that_row(self, capsys):
+        """Read off the SHIPPED declaration, not a stub.
+
+        The stubbed cases above pin the rendering; this pins that the field the
+        registry actually carries for opencode is the one that reaches this row. A
+        declaration nothing reads is what the first-principles lane flagged, so the
+        wiring is asserted end to end rather than assumed.
+        """
+        cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        out = capsys.readouterr().out
+        assert "withholds the whole server" in out
+
+    def test_the_shipped_tables_hold_no_unaddressed_no_channel_backend(self):
+        """The row's own subject, read off the SHIPPED tables rather than a stub.
+
+        Silence on every shipped backend is the correct state, and it is worth
+        pinning rather than leaving implicit: the case above supplies its
+        declaration, so nothing else in this class touches the real one. A
+        ``no-channel`` entry appearing here is not a failure of the row -- it must
+        simply be addressable, which ``McpProjection`` enforces and
+        ``test_provider_mirrors`` asserts -- but it IS the state an operator gets
+        told about, so a new one should be a deliberate change to this assertion.
+        """
+        from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
+
+        gaps = {
+            backend
+            for backend, declared in PROJECTIONS.items()
+            if declared.kind is ProjectionKind.NO_CHANNEL
+        }
+        assert not gaps, f"a no-channel backend ships: {sorted(gaps)}"
 
     def test_a_backend_that_does_receive_its_servers_prints_nothing(self, capsys):
         """Silence is the whole point on a stock install.
@@ -578,9 +679,9 @@ class TestSelectedBackendProjectionRow:
         monkeypatch.setattr(
             acp_driver,
             "backend_mcp_projection",
-            lambda _b: ("no-channel", "http\x1b]0;pwned\x07", "tracked"),
+            lambda _b: ("no-channel", "http\x1b]0;pwned\x07", "tracked", ""),
         )
-        cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
         out = capsys.readouterr().out
         assert "\x1b" not in out
         assert "http" in out

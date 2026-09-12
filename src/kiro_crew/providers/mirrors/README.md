@@ -183,13 +183,31 @@ A mirror declares and routes; a helper translates.
 Declared in `PROJECTIONS` (`registry.py`); this table is a reading of it, not a
 second source.
 
-| Backend | Kind | Where it goes, and what is outstanding |
-|---|---|---|
-| `` (kiro-cli) | `native` | reads the spec itself via `--agent`. Its only native-config write is the small `cli.json` overlay, whose home is a separate decision |
-| `claude` | `mirror` | `claude_code.py`, both faces; `hooks` is its one open `no-channel` disposition |
-| `codex` | `mirror` | `codex.py`, wire face only — Crew writes no codex file, so the `session/new` array is its whole channel. `hooks` is its one open `no-channel` disposition; `disabledTools` is honoured by withholding a third-party server it narrows, and by refusing the call at the approval request for Crew's own control plane; the array, the withhold set and the deny pairs all come from one spec parse |
-| `kas` | `external` | `acp/kas_agents.py` (+ `acp/kas_permissions.py`), travelling as `_meta.kiro.customAgents`. The most complete projection of any backend, down a real channel — what is outstanding is only WHERE the code sits, and the RFC schedules that as a pure relocation of its own so a live harness's projection is not moved and changed in one diff |
-| `opencode` | `no-channel` | its `initialize` advertises `http` and `sse` MCP transports and no stdio, so the array cannot carry Crew's stdio servers, and its own config file lives in the operator's checkout. The shared MCP gateway does not reach it either: a broker stub is shaped as a stdio element too, so it lands in the same array. Its sessions hold none of Crew's own tools, gateway on or off |
+Two columns, because a reader wants two different things: `Kind` says whether the
+spec reaches the backend at all, and `Per-tool deny` says how much of a *restriction*
+survives the trip. The second is a `PerToolDeny` member on the same record
+(`registry.py`), declared per mirror and cross-checked against behaviour by
+`test/test_provider_mirrors.py::TestPerToolDenyIsDeclaredAndTrue` — so it is a
+checkable claim rather than prose that can rot. **Per-tool MCP deny is not a
+requirement on every provider**; the point of declaring it is that a reader learns
+which of the three states they are getting before a session runs, rather than after
+a tool they switched off answers anyway.
+
+- `settings-file` — the restriction becomes a per-tool rule in a file Crew writes,
+  so the narrowed server stays **mounted** and the harness refuses the tool.
+- `per-call` — no per-tool slot on the wire, but the backend asks permission per MCP
+  call with an identity Crew can match, so Crew refuses the call. The narrowed server
+  may stay mounted where that channel is complete.
+- `whole-server` — no channel at all. The only faithful action is **withholding the
+  whole server**, so the restriction costs availability rather than being dropped.
+
+| Backend | Kind | Per-tool deny | Where it goes, and what is outstanding |
+|---|---|---|---|
+| `` (kiro-cli) | `native` | — | reads the spec itself via `--agent`. Its only native-config write is the small `cli.json` overlay, whose home is a separate decision |
+| `claude` | `mirror` | `settings-file` | `claude_code.py`, both faces; `hooks` is its one open `no-channel` disposition |
+| `codex` | `mirror` | `per-call` | `codex.py`, wire face only — Crew writes no codex file, so the `session/new` array is its whole channel. `hooks` is its one open `no-channel` disposition; `disabledTools` is honoured by withholding a third-party server it narrows, and by refusing the call at the approval request for Crew's own control plane; the array, the withhold set and the deny pairs all come from one spec parse |
+| `kas` | `external` | — | `acp/kas_agents.py` (+ `acp/kas_permissions.py`), travelling as `_meta.kiro.customAgents`. The most complete projection of any backend, down a real channel — what is outstanding is only WHERE the code sits, and the RFC schedules that as a pure relocation of its own so a live harness's projection is not moved and changed in one diff |
+| `opencode` | `mirror` | `whole-server` | `opencode.py`, wire face only — the `session/new` array is its whole channel, because Crew's one config write there (the permission routing) MERGES with the user's config and declaring a server in both channels double-mounts it. `hooks` is its one open `no-channel` disposition. This entry read `no-channel` until the claim was MEASURED: its `initialize` advertises `http` and `sse` and no stdio, which was taken as a refusal — but ACP's `McpCapabilities` has only those two fields, so no conforming agent can advertise stdio and the array carries them fine. The stdio `type` tag the shared translator emits is DROPPED here rather than left to the adapter to discard: its mapping branches on whether `type` is present, so a tag surviving a schema change would be routed as a remote server and fail the whole `session/new`. `disabledTools` is honoured by withholding the server it narrows — and unlike codex that includes Crew's own control plane, because codex's exemption for it rests on a per-call refusal keyed on `rawInput.server`/`tool` that this harness does not emit. The cost is paid only by an operator who narrowed the control plane deliberately |
 
 ## Verify against the adapter, not against the last mirror
 
@@ -206,3 +224,15 @@ So a new mirror's transport and environment rules are MEASURED. `codex.py` cites
 what was run and `test/test_codex_session_mcp.py` pins it against an installed
 adapter, skipping cleanly when there is none. Copying the neighbouring mirror's
 shape is the cheap half; only the adapter can tell you whether it is accepted.
+
+opencode is the same lesson in the OTHER direction, and it is the more expensive
+half. Codex's docstring over-feared a refusal and shipped an empty array behind an
+explanation; opencode's declaration inferred a refusal **from an advertisement that
+cannot express the thing** — `mcpCapabilities` has exactly two boolean fields,
+`http` and `sse`, so the missing `stdio` flag was never a flag a conforming agent
+could have set. That reading made a whole harness's tool surface empty, kept every
+check green, and even contradicted the shipped code beside it: the shared gateway's
+broker stubs are stdio elements too, and `_pooled_mcp_servers` had been appending
+them to that same array for opencode all along. So the rule is narrower than
+"measure a refusal": **an absence in a capability advertisement is not evidence
+until you have read the schema that would carry it.**
