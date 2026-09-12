@@ -522,6 +522,26 @@ class McpToolingProvider(Protocol):
 
     def extra_mcp_servers(self) -> Dict[str, dict]: ...
 
+    def extra_heartbeat_mcp_servers(self) -> Dict[str, dict]:
+        """Edition MCP servers wired into the unattended heartbeat agent.
+
+        ``_install_heartbeat_agent`` merges the returned mapping ADD-only after
+        ``kirocrew-core``; the public default is ``{}``, so standalone behavior is
+        unchanged. Args are used verbatim, including an edition's narrowing
+        filters, and are supplied only by the companion adapter — never config.
+        ``autoApprove`` is the one field NOT preserved: it would let kiro-cli
+        approve matching calls locally, bypassing the gateway's
+        ``_heartbeat_approval`` callback (and with it ``HEARTBEAT_SAFE_TOOLS``
+        and SEL audit) on this unattended session, so ``_install_heartbeat_agent``
+        strips it from each contributed spec before merging.
+
+        v1 method addition; no ``CONTRACT_VERSION`` bump. A companion subclassing
+        ``DefaultMcpToolingProvider`` inherits ``{}``; a structural older
+        companion's ``AttributeError`` degrades to no servers via
+        ``safe_context_call``. ``PlatformCompositionError`` still re-raises.
+        """
+        ...
+
     def extra_skills(self) -> List[Path]:
         """Extra SKILL.md source roots the edition contributes.
 

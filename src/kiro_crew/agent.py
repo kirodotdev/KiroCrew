@@ -38,7 +38,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Literal, MutableMapping
+from typing import Any, Iterator, Literal, MutableMapping, cast
 
 from kiro_crew import agent_state, platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_names
@@ -97,13 +97,14 @@ from kiro_crew.mcp_provenance import (
     without_marker,
 )
 from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
-from kiro_crew.platform import current_context
+from kiro_crew.platform import PlatformCompositionError, current_context
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.platform import safe_context_call
 from kiro_crew.platform.governance import (
     CU_MCP_SERVER,
     agentcore_posture,
     may_skip_gate_now,
+    strip_auto_approve_unconditionally,
     strip_ungoverned_auto_approve,
 )
 from kiro_crew.platform.governance_profiles import governance_permits
@@ -1204,6 +1205,32 @@ def _extra_mcp_servers() -> dict[str, dict]:
         lambda: current_context().mcp_tooling.extra_mcp_servers(),
         fallback={},
         log_message="extra_mcp_servers lookup failed; using none",
+    )
+    return dict(extra) if extra else {}
+
+
+def _extra_heartbeat_mcp_servers() -> dict[str, dict]:
+    """Edition-contributed MCP servers scoped to the heartbeat agent only.
+
+    Mirrors ``_extra_mcp_servers()`` exactly (same fail-closed /
+    degrade-to-empty split via ``safe_context_call``), but reads
+    ``McpToolingProvider.extra_heartbeat_mcp_servers()`` instead of
+    ``extra_mcp_servers()``. Kept as a dedicated seam rather than reusing the
+    generic one so heartbeat's MCP surface stays independently controllable by
+    editions: a server contributed here reaches only the heartbeat agent, not
+    the research or main agent configs (and vice versa).
+
+    v1 method addition, no ``CONTRACT_VERSION`` bump: a companion built
+    against a core that predates this seam has no ``extra_heartbeat_mcp_servers``
+    attribute at all, so the lookup raises ``AttributeError`` — a non-composition
+    error that ``safe_context_call`` degrades to ``{}`` rather than re-raising,
+    so the heartbeat agent still installs with ``kirocrew-core`` alone against
+    an older companion.
+    """
+    extra: dict[str, dict] = safe_context_call(
+        lambda: current_context().mcp_tooling.extra_heartbeat_mcp_servers(),
+        fallback={},
+        log_message="extra_heartbeat_mcp_servers lookup failed; using none",
     )
     return dict(extra) if extra else {}
 
@@ -5047,8 +5074,21 @@ def rebuild_agent_config(
         logger.debug("kirocrew-research agent install failed", exc_info=True)
 
     # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
+    #
+    # PlatformCompositionError propagates rather than being caught here: it is
+    # the fail-closed signal from _extra_heartbeat_mcp_servers() that a
+    # non-standalone host could not compose its context at all. Swallowing it
+    # in this generic wrapper would leave the PRIOR on-disk heartbeat config
+    # in place with no rewrite -- and the base heartbeat installer copies the
+    # kirocrew-core entry verbatim, so a prior config can carry an
+    # operator-set autoApprove that never reaches the strip in
+    # _install_heartbeat_agent(), bypassing gateway approval and SEL audit on
+    # the unattended session. Every other exception still degrades to a
+    # debug log, matching every sibling agent installer below.
     try:
         _install_heartbeat_agent()
+    except PlatformCompositionError:
+        raise
     except Exception:
         logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
 
@@ -6897,19 +6937,26 @@ the response — the operator will add it after observing the SEL `denied` event
 def _install_heartbeat_agent() -> None:
     """Generate and install the kirocrew-heartbeat agent config.
 
-    A dedicated agent for HeartbeatService.  Minimal MCP surface — only
-    ``kirocrew-core`` (learn/cron/spawn list, recall, artifacts read) on
-    public installs.  Tool approval is enforced gateway-side against
-    ``HEARTBEAT_SAFE_TOOLS`` regardless; the per-agent MCP narrowing here
-    keeps cold-start cost low and reduces the surface the gateway has to
-    police.
+    A dedicated agent for HeartbeatService.  Base MCP surface is
+    ``kirocrew-core`` (learn/cron/spawn list, recall, artifacts read), plus an
+    ADD-only mapping from ``McpToolingProvider.extra_heartbeat_mcp_servers()``.
+    The default is ``{}``, so standalone installs are unchanged.
 
-    (The Amazon-internal MCP server code-review/ticket/pipeline read wiring is
-    omitted on public installs, matching ``_install_research_agent`` /
-    ``_install_knowledge_agent``.)
+    This is deliberately narrower than ``extra_mcp_servers()``, the interactive
+    main-agent set: editions name only heartbeat-relevant servers. Tool approval
+    remains gateway-side in ``HEARTBEAT_SAFE_TOOLS`` regardless of what is wired.
 
-    SEL audit logging stays at the gateway side — see
-    ``GatewayOrchestrator._heartbeat_approval``.
+    ``_install_research_agent`` already builds through ``build_agent_config()``,
+    which merges ``extra_mcp_servers()``. ``_install_knowledge_agent`` ships an
+    empty ``mcpServers`` by design (LLMPool document extraction).
+
+    SEL audit logging for actual tool-call approval/denial stays at the
+    gateway side — see ``GatewayOrchestrator._heartbeat_approval``. Any
+    ``autoApprove`` stripped from the assembled MCP map here (either source) is
+    separately audited by ``strip_auto_approve_unconditionally`` itself, which
+    logs ``mcp_auto_approve_withheld`` per removal — unconditionally, not
+    gated on a governance ceiling, because the approval bypass this strip
+    closes exists on every install, ceiling or not.
     """
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / _HEARTBEAT_AGENT_FILENAME
@@ -6958,6 +7005,45 @@ def _install_heartbeat_agent() -> None:
                 filtered.append(arg)
             cleaned["args"] = filtered
         mcp[name] = cleaned
+
+    # Edition-contributed servers for the heartbeat agent (CPP seam), ADD-only.
+    # Args are used VERBATIM — deliberately NOT run through ``_strip_flags``
+    # above.  That stripping exists to widen ``kirocrew-core``, whose narrowing
+    # args belong to the main agent and are irrelevant here; an edition's
+    # ``--include-tools``/``--exclude-tools`` are instead a purposeful first
+    # defense in front of ``HEARTBEAT_SAFE_TOOLS``, so they are preserved.
+    for name, spec in _extra_heartbeat_mcp_servers().items():
+        mcp.setdefault(name, dict(spec))
+
+    # LAST pass over the assembled map, covering BOTH sources above: the
+    # ``kirocrew-core`` copy (which can carry a user-set ``autoApprove`` — the
+    # main-agent refresh path deliberately preserves that customization) and
+    # edition-contributed specs (which may carry one verbatim, e.g. copied from
+    # a main-agent config where local approval is normal). ``autoApprove`` is a
+    # first-class kiro-cli ``mcpServers`` field (a bare ``"*"`` approves every
+    # tool) that makes kiro-cli approve matching calls locally — the call never
+    # reaches the gateway's ``_heartbeat_approval`` callback, so it bypasses
+    # both ``HEARTBEAT_SAFE_TOOLS`` and SEL audit logging on this unattended
+    # session. Filtering the assembled map once here, rather than per-source,
+    # means a third source added later is covered automatically instead of
+    # needing its own strip.
+    #
+    # Deliberately ``strip_auto_approve_unconditionally``, NOT the governance-
+    # conditional ``strip_ungoverned_auto_approve``: the latter is a no-op on an
+    # ungoverned host (``may_skip_gate_now`` answers True with no ceiling
+    # installed — the DEFAULT public install), which would leave this exact
+    # bypass open on the most common installation. The bypass this strip
+    # closes does not depend on governance being configured — it is the
+    # approval callback being skipped, not a ceiling being exceeded — so the
+    # strip must not depend on governance either.
+    #
+    # cast, not a narrower helper signature: strip_auto_approve_unconditionally
+    # is a shared governance helper typed generically over Mapping[str,
+    # object] -> Dict[str, object] for every caller; every value it returns
+    # here is still a dict (it only pops a key, never changes a value's
+    # type), so the narrower ``dict[str, dict]`` this function already
+    # declares for ``mcp`` remains true after the call.
+    mcp = cast(dict[str, dict], strip_auto_approve_unconditionally(mcp))
 
     config: dict[str, object] = {
         "name": "kirocrew-heartbeat",

@@ -565,6 +565,10 @@ Wired sites:
   returns `frozenset()` so standalone redaction is byte-identical.
 - `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
   additively (`setdefault`) into the agent config build + dynamic refresh.
+- `agent.py` — `current_context().mcp_tooling.extra_heartbeat_mcp_servers()`
+  merged ADD-only (`setdefault`) after `kirocrew-core` into the unattended
+  heartbeat agent; a core name wins a collision and edition specs are used
+  verbatim (including narrowing tool filters).
 - `slack/events.py` / `slack/handler.py` / `dashboard/handlers_system.py` —
   Slack enterprise gate + SSO status route through `slack_gate` / `identity`.
 - `mcp_gateway/manager.py` — `GatewayManager._spawn_once` resolves
@@ -767,6 +771,16 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 - `SlackEnterpriseGate.heartbeat_safe_tools() -> frozenset[str]` — unioned into
   `slack/gateway.py::_is_heartbeat_safe_tool` after the core `HEARTBEAT_SAFE_TOOLS`
   exact-match. Default `frozenset()`. ADD-only; never sourced from config.
+- `McpToolingProvider.extra_heartbeat_mcp_servers() -> Dict[str, dict]` — read
+  through `safe_context_call` by `agent.py::_install_heartbeat_agent` and merged
+  ADD-only after `kirocrew-core`; a core name wins a collision and contributed
+  specs preserve their narrowing tool filters, EXCEPT `autoApprove`, which is
+  stripped before merging — that field would let kiro-cli approve matching
+  calls locally, bypassing `_heartbeat_approval` (and with it
+  `HEARTBEAT_SAFE_TOOLS` and SEL audit) on this unattended session. Default `{}`.
+  v1 method addition with no `CONTRACT_VERSION` bump: a predating structural
+  companion's `AttributeError` degrades to `{}`, while `PlatformCompositionError`
+  is still re-raised.
 - `AppsLoader.registry_rows() -> List[Dict]` — ADD-only merged by
   `apps/registry.py::_load_registry_file` after bundled `app-registry.json`
   (same-`name` core row wins). Default `[]`.
@@ -1091,8 +1105,9 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   fork. v1 addition; `Default` returns `[]`.
 
 **`McpToolingProvider` is intentionally scoped to MCP tooling only** —
-`extra_mcp_servers()`, `extra_skills()`, and `extra_mcp_scopes()`. Agent
-catalogs, prompt sources and capability management each own a dedicated Protocol
+`extra_mcp_servers()`, `extra_heartbeat_mcp_servers()`, `extra_skills()`, and
+`extra_mcp_scopes()`. Agent catalogs, prompt sources and capability management
+each own a dedicated Protocol
 (`AgentCatalogProvider`, `PromptSourceProvider`, `CapabilityManager`) so the CPP
 layer keeps its "one adapter per concern" shape; every edition hook lands on its
 own interface rather than accreting onto the nearest existing one.
