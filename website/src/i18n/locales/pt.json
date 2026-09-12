@@ -8476,6 +8476,16 @@
       "label": "alterações exigem reinício",
       "tooltip": "Esta configuração não pode mudar enquanto o {{productName}} está em execução. O valor salvo é mantido e aplicado na próxima vez que o {{productName}} reiniciar (Configurações → Sobre, ou o terminal de onde você o iniciou).",
       "schema_unavailable": "Não foi possível verificar se esta configuração exige reinicialização."
+    },
+    "framelessTipBanner": {
+      "title": "Menu do aplicativo indisponível",
+      "body": "Seu ambiente de desktop não desenha bordas de janela, portanto o menu do aplicativo (Arquivo, Exibir, Tamanho do texto, Conexão) não tem onde ser renderizado. Ative as bordas de janela nativas para desbloquear o menu.",
+      "enable": "Ativar bordas de janela",
+      "dismiss": "Não lembrar novamente",
+      "restartTitle": "Reiniciar para aplicar?",
+      "restartBody": "As bordas de janela têm efeito após uma reinicialização. Suas sessões e trabalho aberto são preservados.",
+      "restart": "Reiniciar agora",
+      "later": "Mais tarde"
     }
   },
   "hooks": {

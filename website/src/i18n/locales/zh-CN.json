@@ -8246,6 +8246,16 @@
       "label": "修改后需重启",
       "tooltip": "{{productName}} 运行期间无法更改此设置。已保存的值会保留，并在 {{productName}} 下次重启后应用（设置 → 关于，或启动它的终端）。",
       "schema_unavailable": "无法检查此设置是否需要重启。"
+    },
+    "framelessTipBanner": {
+      "title": "无法显示应用菜单",
+      "body": "你的桌面环境不绘制窗口边框，因此应用菜单（文件、视图、内容文字大小、连接）没有可显示的位置。请启用原生窗口边框以解锁菜单。",
+      "enable": "启用窗口边框",
+      "dismiss": "不再提醒",
+      "restartTitle": "是否重启以应用？",
+      "restartBody": "窗口边框将在重启后生效。你的会话和打开的工作会被保留。",
+      "restart": "立即重启",
+      "later": "稍后"
     }
   },
   "hooks": {

@@ -8361,6 +8361,16 @@
       "label": "Änderungen erfordern Neustart",
       "tooltip": "Diese Einstellung kann sich nicht ändern, während {{productName}} läuft. Der gespeicherte Wert bleibt erhalten und gilt beim nächsten Neustart von {{productName}} (Einstellungen → Über, oder das Terminal, aus dem du es gestartet hast).",
       "schema_unavailable": "Es konnte nicht geprüft werden, ob diese Einstellung einen Neustart braucht."
+    },
+    "framelessTipBanner": {
+      "title": "App-Menü nicht verfügbar",
+      "body": "Ihre Desktop-Umgebung zeichnet keine Fensterrahmen, daher hat das App-Menü (Datei, Ansicht, Inhaltstextgröße, Verbindung) keinen Platz zum Anzeigen. Aktivieren Sie native Fensterrahmen, um das Menü freizuschalten.",
+      "enable": "Fensterrahmen aktivieren",
+      "dismiss": "Nicht mehr erinnern",
+      "restartTitle": "Zum Anwenden neu starten?",
+      "restartBody": "Fensterrahmen werden nach einem Neustart wirksam. Ihre Sitzungen und offenen Arbeiten bleiben erhalten.",
+      "restart": "Jetzt neu starten",
+      "later": "Später"
     }
   },
   "hooks": {

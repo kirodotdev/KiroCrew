@@ -8476,6 +8476,16 @@
       "label": "le modifiche richiedono un riavvio",
       "tooltip": "Questa impostazione non può cambiare mentre {{productName}} è in esecuzione. Il valore salvato viene conservato e applicato al prossimo riavvio di {{productName}} (Impostazioni → Informazioni, oppure il terminale da cui lo hai avviato).",
       "schema_unavailable": "Impossibile verificare se questa impostazione richiede un riavvio."
+    },
+    "framelessTipBanner": {
+      "title": "Menu dell'app non disponibile",
+      "body": "Il tuo ambiente desktop non disegna i bordi delle finestre, quindi il menu dell'app (File, Vista, Dimensione del testo, Connessione) non ha un posto dove essere visualizzato. Abilita i bordi delle finestre nativi per sbloccare il menu.",
+      "enable": "Abilita bordi finestra",
+      "dismiss": "Non ricordarmelo più",
+      "restartTitle": "Riavviare per applicare?",
+      "restartBody": "I bordi delle finestre hanno effetto dopo un riavvio. Le sessioni e il lavoro aperto vengono preservati.",
+      "restart": "Riavvia ora",
+      "later": "Più tardi"
     }
   },
   "hooks": {

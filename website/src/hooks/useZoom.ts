@@ -31,6 +31,22 @@ const FAMILY_MAP: Record<FontFamily, string> = {
 // so the UI falls back to a keyboard-shortcut hint (`zoomSupported: false`).
 const zoomAPI = (): ZoomAPI | undefined => window.zoomAPI
 
+// Font SIZE ownership: the Electron desktop shell owns default font size,
+// seeded at window construction via `WebPreferences.defaultFontSize` and
+// rippled live via the Chrome DevTools Protocol
+// (`webContents.debugger.sendCommand("Page.setFontSizes", …)`). There is
+// NO `webContents.setDefaultFontSize()` API in Electron — the CDP path is
+// the only runtime-mutable one. Ripple is scoped to shell-owned dashboard
+// windows via a WeakSet tag set at construction; the embedded browser
+// panel is deliberately excluded from both the construction-time seed
+// AND the runtime ripple. Persisted in electron-store under
+// `displayPreferences.fontSize`. See `electron/display-preferences/` for
+// the module. The dashboard MUST NOT write `html.style.fontSize` — that
+// would compound with the shell's setting into unpredictable multi-scale
+// behaviour, which is exactly why `mc-font-scale` was withdrawn (see the
+// legacy comment below). Font FAMILY (Sans / Mono / OpenDyslexic) remains
+// a dashboard concern; font SIZE is a shell concern.
+
 // Legacy page-side scaling (removed): a CSS `zoom` on #root ('mc-zoom') and an
 // html font-size scale ('mc-font-scale') that stacked with native zoom into
 // three multiplying mechanisms. One-time migration: fold the combined legacy

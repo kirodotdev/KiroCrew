@@ -198,6 +198,22 @@ contextBridge.exposeInMainWorld("zoomAPI", {
   step: (dir) => ipcRenderer.invoke("zoom:step", dir),
 });
 
+// Frame-preferences bridge for the Wayland/CSD Linux discoverability tip
+// added in PR #10247's UX-concern response. The renderer reads the current
+// frame decision (isFrameless / isWayland / reason) + the tip's dismissal
+// flag, and can request the shell to flip the `linuxFrameless` store key
+// (needs a restart to apply) or restart the app on user consent. Absent in
+// a plain browser tab — the renderer treats a missing bridge as "no tip
+// available" and renders nothing. Framed Linux users don't need any tip
+// (their menu bar renders normally on the OS-drawn frame), which is why
+// `showMenuBarNow` was removed in the Fable First-Principles response.
+contextBridge.exposeInMainWorld("framePrefsAPI", {
+  getState: () => ipcRenderer.invoke("frame-prefs:get"),
+  markTipShown: (kind) => ipcRenderer.invoke("frame-prefs:mark-tip-shown", kind),
+  enableFrames: () => ipcRenderer.invoke("frame-prefs:enable-frames"),
+  restartApp: () => ipcRenderer.invoke("frame-prefs:restart-app"),
+});
+
 // Native browser panel bridge. The Browser side panel is a real embedded
 // Chromium view owned by the main process, composited over the panel rect —
 // not an iframe and not in the React tree. So the renderer has to (a) report

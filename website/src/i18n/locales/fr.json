@@ -8476,6 +8476,16 @@
       "label": "modifications : redémarrage requis",
       "tooltip": "Ce réglage ne peut pas changer pendant que {{productName}} est en cours d'exécution. La valeur enregistrée est conservée et s'applique au prochain redémarrage de {{productName}} (Réglages → À propos, ou le terminal depuis lequel vous l'avez lancé).",
       "schema_unavailable": "Impossible de vérifier si ce réglage nécessite un redémarrage."
+    },
+    "framelessTipBanner": {
+      "title": "Menu de l'application indisponible",
+      "body": "Votre environnement de bureau ne dessine pas de bordures de fenêtre, le menu de l'application (Fichier, Affichage, Taille du texte, Connexion) n'a donc pas d'endroit où s'afficher. Activez les bordures de fenêtre natives pour débloquer le menu.",
+      "enable": "Activer les bordures de fenêtre",
+      "dismiss": "Ne plus me rappeler",
+      "restartTitle": "Redémarrer pour appliquer ?",
+      "restartBody": "Les bordures de fenêtre prennent effet après un redémarrage. Vos sessions et votre travail ouvert sont préservés.",
+      "restart": "Redémarrer maintenant",
+      "later": "Plus tard"
     }
   },
   "hooks": {

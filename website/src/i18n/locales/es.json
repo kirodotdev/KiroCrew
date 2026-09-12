@@ -8476,6 +8476,16 @@
       "label": "los cambios requieren reinicio",
       "tooltip": "Este ajuste no puede cambiar mientras {{productName}} se está ejecutando. El valor guardado se conserva y se aplica la próxima vez que {{productName}} se reinicie (Ajustes → Acerca de, o la terminal desde la que lo iniciaste).",
       "schema_unavailable": "No se pudo comprobar si este ajuste requiere reiniciar."
+    },
+    "framelessTipBanner": {
+      "title": "Menú de la aplicación no disponible",
+      "body": "Tu entorno de escritorio no dibuja bordes de ventana, por lo que el menú de la aplicación (Archivo, Ver, Tamaño del texto, Conexión) no tiene dónde mostrarse. Activa los bordes de ventana nativos para desbloquear el menú.",
+      "enable": "Activar bordes de ventana",
+      "dismiss": "No volver a recordar",
+      "restartTitle": "¿Reiniciar para aplicar?",
+      "restartBody": "Los bordes de ventana surten efecto tras un reinicio. Tus sesiones y trabajo abierto se conservan.",
+      "restart": "Reiniciar ahora",
+      "later": "Más tarde"
     }
   },
   "hooks": {

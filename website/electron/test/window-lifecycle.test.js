@@ -358,3 +358,184 @@ describe("main window frame-load diagnostics", () => {
     );
   });
 });
+
+describe("reconcileFontSizeChecks — Font Size menu radio state", () => {
+  // Helper: build a minimal menu whose radio items match `font-size-<tier.name>`
+  // ids. Records every .checked assignment (with the tier's name) so tests can
+  // assert exactly which items were touched — the whole point of the bug #3
+  // fix is that ONLY the target should be touched, not the siblings.
+  function makeMenuMock(tiers) {
+    const items = new Map();
+    const assignments = [];
+    for (const tier of tiers) {
+      const id = `font-size-${tier.name}`;
+      const item = { id };
+      Object.defineProperty(item, "checked", {
+        set(value) { assignments.push([id, value]); },
+        get() { return false; },
+      });
+      items.set(id, item);
+    }
+    return {
+      menu: { getMenuItemById: (id) => items.get(id) || null },
+      assignments,
+    };
+  }
+
+  const TIERS = [
+    { name: "verySmall", px: 9 },
+    { name: "small", px: 12 },
+    { name: "medium", px: 16 },
+    { name: "large", px: 20 },
+    { name: "veryLarge", px: 24 },
+  ];
+
+  it("sets ONLY the target item's checked=true and leaves siblings untouched", () => {
+    // Idiomatic Electron: the radio group auto-toggles when one item is set
+    // to true. Explicit .checked=false on siblings conflicts with the
+    // "exactly one checked" invariant and on some platforms leaves the OS
+    // display showing the LAST-touched item rather than the actual target
+    // — that was the observed bug ("always says Very Large").
+    const { reconcileFontSizeChecks } = require("../window-lifecycle");
+    const { menu, assignments } = makeMenuMock(TIERS);
+
+    reconcileFontSizeChecks(menu, TIERS, 12);
+
+    assert.deepEqual(assignments, [["font-size-small", true]]);
+  });
+
+  it("no-ops when the menu is null (Menu.getApplicationMenu returned nothing yet)", () => {
+    const { reconcileFontSizeChecks } = require("../window-lifecycle");
+    assert.doesNotThrow(() => reconcileFontSizeChecks(null, TIERS, 16));
+  });
+
+  it("no-ops when px does not match any tier (defensive against a stale IPC call)", () => {
+    const { reconcileFontSizeChecks } = require("../window-lifecycle");
+    const { menu, assignments } = makeMenuMock(TIERS);
+
+    reconcileFontSizeChecks(menu, TIERS, 999);
+
+    assert.deepEqual(assignments, [], "no radio touched for an unknown px");
+  });
+
+  it("no-ops when the matching item id is not in the menu yet (menu built without Font Size)", () => {
+    const { reconcileFontSizeChecks } = require("../window-lifecycle");
+    const emptyMenu = { getMenuItemById: () => null };
+    assert.doesNotThrow(() => reconcileFontSizeChecks(emptyMenu, TIERS, 16));
+  });
+});
+
+// ── Shell-owned window construction contract (PR #10247 Design Review response) ──
+// Every `new BrowserWindow` and `new WebContentsView` in window-lifecycle.js
+// must either (a) live inside createShellBrowserWindow / createShellWebContentsView,
+// or (b) carry an explicit `SHELL-BARE:` marker documenting the exclusion
+// (currently: only the embedded browser panel's WebContentsView).
+//
+// This contract keeps the "seeded at construction ↔ rippled at runtime"
+// invariant (see display-preferences/index.js SHELL_OWNED_WC) machine-
+// checkable — a future contributor adding a new shell window who forgets
+// to tag it would fail this test rather than silently ship a window that
+// gets its font size seeded but never rippled on runtime tier changes.
+describe("shell-owned window construction contract", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const SOURCE = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+
+  it("createShellBrowserWindow helper exists and is the only `new BrowserWindow(` in the file (SHELL-BARE marker exempts otherwise)", () => {
+    assert.ok(
+      /function createShellBrowserWindow\s*\(/.test(SOURCE),
+      "createShellBrowserWindow helper must be defined",
+    );
+
+    const lines = SOURCE.split("\n");
+    const offenders = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!/\bnew BrowserWindow\(/.test(line)) continue;
+      // Exempt: (a) the wrapper's own definition line; (b) any line
+      // carrying the explicit SHELL-BARE marker on the same or previous
+      // non-blank line.
+      if (/function createShellBrowserWindow/.test(lines[Math.max(0, i - 1)])) continue;
+      if (/const win = new BrowserWindow\(opts\);/.test(line)) continue; // wrapper body
+      if (/SHELL-BARE/.test(line)) continue;
+      // Look one line back for a same-block SHELL-BARE marker.
+      if (i > 0 && /SHELL-BARE/.test(lines[i - 1])) continue;
+      offenders.push(`  L${i + 1}: ${line.trim()}`);
+    }
+    assert.strictEqual(
+      offenders.length,
+      0,
+      `Found bare \`new BrowserWindow(\` calls in window-lifecycle.js — route them through createShellBrowserWindow or add a SHELL-BARE marker:\n${offenders.join("\n")}`,
+    );
+  });
+
+  it("createShellWebContentsView helper exists and is the only `new WebContentsView(` in the file (SHELL-BARE marker exempts otherwise)", () => {
+    assert.ok(
+      /function createShellWebContentsView\s*\(/.test(SOURCE),
+      "createShellWebContentsView helper must be defined",
+    );
+
+    const lines = SOURCE.split("\n");
+    const offenders = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!/\bnew WebContentsView\(/.test(line)) continue;
+      if (/const view = new WebContentsView\(opts\);/.test(line)) continue; // wrapper body
+      if (/SHELL-BARE/.test(line)) continue;
+      if (i > 0 && /SHELL-BARE/.test(lines[i - 1])) continue;
+      offenders.push(`  L${i + 1}: ${line.trim()}`);
+    }
+    assert.strictEqual(
+      offenders.length,
+      0,
+      `Found bare \`new WebContentsView(\` calls in window-lifecycle.js — route them through createShellWebContentsView or add a SHELL-BARE marker:\n${offenders.join("\n")}`,
+    );
+  });
+
+  it("SHELL-BARE marker documents at least the browser panel exemption (regression guard)", () => {
+    // If someone rewrites the browser panel path and forgets the marker,
+    // the two tests above would refuse the change — this test just
+    // confirms the marker is still discoverable in the file. If the
+    // browser panel gets its own module later and vanishes from
+    // window-lifecycle.js entirely, this test should be relaxed / removed.
+    assert.ok(
+      /SHELL-BARE:/.test(SOURCE),
+      "at least one SHELL-BARE marker (the browser panel) should live in window-lifecycle.js",
+    );
+  });
+
+  it("every `defaultFontSize:` seed sits inside a createShell* helper — the seeded ↔ rippled invariant", () => {
+    // Complementary check: every construction-time `defaultFontSize`
+    // seed's containing block must be either a createShell* factory or
+    // the wrapper itself. Right now the invariant is enforced by the
+    // simpler check "bare `new BrowserWindow/WebContentsView` is
+    // forbidden without SHELL-BARE" above; this test walks the source
+    // to confirm no seed accidentally lives inside a SHELL-BARE block.
+    const lines = SOURCE.split("\n");
+    const offenders = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!/defaultFontSize:/.test(lines[i])) continue;
+      // Walk back up to 20 lines to find the containing `new … (` call.
+      let container = null;
+      for (let j = i; j >= Math.max(0, i - 20); j--) {
+        const m = lines[j].match(/(new (?:BrowserWindow|WebContentsView)\(|createShell(?:BrowserWindow|WebContentsView)\()/);
+        if (m) { container = { line: j, ctor: m[1] }; break; }
+      }
+      if (!container) continue; // seed with no obvious container — skip
+      if (/^createShell/.test(container.ctor)) continue; // OK
+      // A bare `new BrowserWindow/WebContentsView(` container is only OK if
+      // it carries a SHELL-BARE marker — but that would mean seeding a
+      // wc we're deliberately excluding, which is contradictory. Flag it.
+      const ctorLine = lines[container.line];
+      const prevLine = container.line > 0 ? lines[container.line - 1] : "";
+      if (/SHELL-BARE/.test(ctorLine) || /SHELL-BARE/.test(prevLine)) {
+        offenders.push(`  L${i + 1}: defaultFontSize seed inside SHELL-BARE container at L${container.line + 1} — contradiction (either drop the SHELL-BARE or drop the seed)`);
+      }
+    }
+    assert.strictEqual(
+      offenders.length,
+      0,
+      `Seed-vs-marker contradictions:\n${offenders.join("\n")}`,
+    );
+  });
+});

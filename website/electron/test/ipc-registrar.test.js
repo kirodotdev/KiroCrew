@@ -34,6 +34,10 @@ const SHELL_HANDLES = [
   "crash-reports:get",
   "crash-reports:reveal",
   "dashboard:open-file",
+  "frame-prefs:enable-frames",
+  "frame-prefs:get",
+  "frame-prefs:mark-tip-shown",
+  "frame-prefs:restart-app",
   "global-hotkey:get",
   "local-gateway:get",
   "local-gateway:set",
@@ -231,6 +235,16 @@ function harness({
   const liveContents = {
     isDestroyed: () => false,
     send: (...args) => sentUpdates.push(args),
+    // display-preferences.js live-applies via the CDP debugger; the harness
+    // stubs the surface so async ripples don't blow up in tests that don't
+    // otherwise care about font size (a `TypeError: Cannot read properties
+    // of undefined (reading 'isAttached')` would fire on an unhandled
+    // promise otherwise).
+    debugger: {
+      isAttached: () => false,
+      attach: () => {},
+      sendCommand: async () => {},
+    },
   };
   const destroyedContents = {
     isDestroyed: () => true,
@@ -243,6 +257,10 @@ function harness({
       getVersion: () => "9.8.7",
       focus: (...args) => appCalls.push(["focus", ...args]),
       setBadgeCount: (...args) => appCalls.push(["setBadgeCount", ...args]),
+      // relaunch + quit are used by frame-prefs:restart-app (PR #10247).
+      // Order matters — quit BEFORE relaunch would exit with nothing queued.
+      relaunch: (...args) => appCalls.push(["relaunch", ...args]),
+      quit: (...args) => appCalls.push(["quit", ...args]),
     },
     dialog: { fake: "dialog" },
     Notification: FakeNotification,
@@ -281,6 +299,7 @@ function harness({
       items: recordWindow("menu.items"),
       execute: recordWindow("menu.execute"),
       setDevMode: recordWindow("menu.setDevMode"),
+      updateFontSizeChecks: recordWindow("menu.updateFontSizeChecks"),
     },
     chrome: {
       setThemeAccent: recordWindow("chrome.setThemeAccent"),
@@ -452,13 +471,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 35);
+  assert.equal(h.handlers.size + h.listeners.size, 39);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 36);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 40);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -583,6 +602,16 @@ function crashScanResult(overrides = {}) {
 }
 
 const CRASH_CHANNELS = ["crash-reports:get", "crash-reports:reveal"];
+
+// ── display-prefs behavioural wiring ─────────────────────────────────────
+// The display-prefs:get and display-prefs:set IPC handlers were removed in
+// the Fable First-Principles response (PR #10247, `8cf1176fc` → next SHA):
+// zero consumers in website/src/ meant the IPC bridge was scaffolding for a
+// hypothetical Settings-page control that wasn't in this PR. The Content Text
+// Size feature reaches changeFontSize directly from window-lifecycle.js's
+// menu click handler, so no IPC round-trip is needed. See
+// display-preferences.test.js for the in-process function-level tests that
+// still exercise changeFontSize + resolveTier + tier boundaries.
 
 test("crash-reports channels reject wrong and unreadable sender origins", async () => {
   for (const channel of CRASH_CHANNELS) {
@@ -1203,4 +1232,170 @@ test("pane:clear-http-cache is gated to the local dashboard sender", async () =>
     /restricted to the local dashboard/,
   );
   assert.equal(purges.length, 0);
+});
+
+// ── Frame-preferences IPC handlers (PR #10247 UX-concern response) ──
+// The FramelessTipBanner (Wayland/CSD Linux discoverability tip) uses these
+// handlers to read the current frame decision, mark the tip as dismissed,
+// flip the linuxFrameless override, and restart the app on user consent.
+// Wired via createIpcRegistrar, contract-pinned by SHELL_HANDLES above;
+// behavior asserted here.
+//
+// The MenuBarF10TipBanner and its `show-menu-bar-now` handler that existed
+// on 2a00fa154 were removed in the Fable First-Principles response:
+// framed-Linux users no longer boot with a hidden menu bar, so the reveal
+// path is not needed. The `mark-tip-shown` handler still uses a `kind`
+// discriminator (accepts `frameless` only now) so a future tip can plug in
+// without changing its shape.
+
+test("frame-prefs:get: on Linux, returns the actual frame decision + tip dismissal flag", async () => {
+  // Simulate a Wayland/CSD session by setting the env var the shell reads.
+  const savedSessionType = process.env.XDG_SESSION_TYPE;
+  const savedDesktop = process.env.XDG_CURRENT_DESKTOP;
+  const savedPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  try {
+    process.env.XDG_SESSION_TYPE = "wayland";
+    process.env.XDG_CURRENT_DESKTOP = "GNOME";
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    const h = harness({ storeValues: { framelessTipShown: false } });
+    h.registrar.registerShell();
+    const state = await h.handlers.get("frame-prefs:get")(wslEvent());
+
+    assert.strictEqual(state.platform, "linux");
+    assert.strictEqual(state.isWayland, true, "Wayland detected via XDG_SESSION_TYPE");
+    assert.strictEqual(state.isFrameless, true, "GNOME + Wayland → frameless CSD");
+    assert.strictEqual(state.tipShown.frameless, false);
+  } finally {
+    if (savedSessionType === undefined) delete process.env.XDG_SESSION_TYPE;
+    else process.env.XDG_SESSION_TYPE = savedSessionType;
+    if (savedDesktop === undefined) delete process.env.XDG_CURRENT_DESKTOP;
+    else process.env.XDG_CURRENT_DESKTOP = savedDesktop;
+    if (savedPlatform) Object.defineProperty(process, "platform", savedPlatform);
+  }
+});
+
+test("frame-prefs:get: on non-Linux platforms, reports platform + isFrameless=false regardless of env", async () => {
+  const savedPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  try {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const h = harness({});
+    h.registrar.registerShell();
+    const state = await h.handlers.get("frame-prefs:get")(wslEvent());
+    assert.strictEqual(state.platform, "darwin");
+    assert.strictEqual(state.isFrameless, false);
+    assert.strictEqual(state.isWayland, false);
+    assert.strictEqual(state.frameDecisionReason, "not-linux");
+  } finally {
+    if (savedPlatform) Object.defineProperty(process, "platform", savedPlatform);
+  }
+});
+
+test("frame-prefs:get: tip-shown flag reflects store state", async () => {
+  const savedPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  try {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    const h = harness({ storeValues: { framelessTipShown: true } });
+    h.registrar.registerShell();
+    const state = await h.handlers.get("frame-prefs:get")(wslEvent());
+    assert.strictEqual(state.tipShown.frameless, true);
+  } finally {
+    if (savedPlatform) Object.defineProperty(process, "platform", savedPlatform);
+  }
+});
+
+test("frame-prefs:mark-tip-shown: writes framelessTipShown=true for kind='frameless'", async () => {
+  const h = harness({});
+  h.registrar.registerShell();
+  const result = await h.handlers.get("frame-prefs:mark-tip-shown")(wslEvent(), "frameless");
+  assert.deepStrictEqual(result, { ok: true });
+  assert.strictEqual(h.store.data.framelessTipShown, true);
+});
+
+test("frame-prefs:mark-tip-shown: unknown kind is a silent no-op (does not throw)", async () => {
+  // The `menuBarF10` kind that existed on 2a00fa154 is now unknown — its
+  // banner was removed in the Fable First-Principles response. Any other
+  // kind name is also unknown.
+  const h = harness({});
+  h.registrar.registerShell();
+  for (const kind of ["menuBarF10", "unknown-tip-name", ""]) {
+    const result = await h.handlers.get("frame-prefs:mark-tip-shown")(wslEvent(), kind);
+    assert.deepStrictEqual(result, { ok: false, reason: "unknown-kind" });
+  }
+  assert.deepStrictEqual(h.store.writes, [], "no store writes for unknown kinds");
+});
+
+test("frame-prefs:enable-frames: writes linuxFrameless=false AND auto-marks framelessTipShown=true, signals restartRequired", async () => {
+  const h = harness({});
+  h.registrar.registerShell();
+  const result = await h.handlers.get("frame-prefs:enable-frames")(wslEvent());
+  assert.deepStrictEqual(result, { restartRequired: true });
+  assert.strictEqual(h.store.data.linuxFrameless, false);
+  // Auto-marking the tip shown means the tip cannot re-fire on the next
+  // boot after the user has already acted on it.
+  assert.strictEqual(h.store.data.framelessTipShown, true);
+});
+
+test("frame-prefs:restart-app: calls app.relaunch then app.quit — never one without the other", async () => {
+  const h = harness({});
+  h.registrar.registerShell();
+  const result = await h.handlers.get("frame-prefs:restart-app")(wslEvent());
+  assert.deepStrictEqual(result, { ok: true });
+  const relaunchIdx = h.appCalls.findIndex((c) => c[0] === "relaunch");
+  const quitIdx = h.appCalls.findIndex((c) => c[0] === "quit");
+  assert.notStrictEqual(relaunchIdx, -1, "app.relaunch called");
+  assert.notStrictEqual(quitIdx, -1, "app.quit called");
+  assert.ok(relaunchIdx < quitIdx, "relaunch queued BEFORE quit — otherwise the process exits without a restart target");
+});
+
+test("frame-prefs handlers reject a REMOTE-origin sender (PR #10247 review response — GPT 5.6 + Opus 4.8 both flagged the gap on d40b0518d)", async () => {
+  // The security invariant: a connection window pointed at a remote gateway
+  // shares the same preload.js and its exposed `framePrefsAPI`. Without the
+  // gate, a compromised remote gateway's page could call
+  // `frame-prefs:restart-app` to force-relaunch the local process, or
+  // `frame-prefs:enable-frames` to flip a local config key. That is
+  // precisely the boundary `assertLocalDashboard` defends. This test pins
+  // that all four surviving handlers refuse the wrong-origin sender
+  // identically to `crash-reports:*`, `wsl:detect`,
+  // `pane:clear-http-cache`, and `dashboard:open-file`.
+  //
+  // The `frame-prefs:show-menu-bar-now` handler that existed on 2a00fa154
+  // was removed in the Fable First-Principles response (framed-Linux hide
+  // reverted → no need for a "show menu now" reveal), and the two
+  // `display-prefs:*` handlers that existed there were also removed
+  // (Fable #2, zero-consumer YAGNI). So the channel list here is 4, not 7.
+  const h = harness();
+  h.registrar.registerShell();
+
+  // A remote sender: the frame's URL is NOT this shell's backend origin.
+  // Also passes through the wslOwner mock so gate 2 (window lookup) is
+  // reachable, but gate 1 (URL origin) short-circuits first.
+  const remote = {
+    sender: { id: "remote-connection-window-sender" },
+    senderFrame: { url: "https://someone.else.example/dashboard" },
+  };
+
+  const channels = [
+    "frame-prefs:get",
+    "frame-prefs:mark-tip-shown",
+    "frame-prefs:enable-frames",
+    "frame-prefs:restart-app",
+  ];
+  for (const channel of channels) {
+    const handler = h.handlers.get(channel);
+    await assert.rejects(
+      // Second argument (`kind`) is ignored — gate throws first.
+      () => handler(remote, "frameless"),
+      new RegExp(`${channel.replace(/[-:]/g, "[-:]")} is restricted to the local dashboard`),
+      `${channel} did not reject a remote-origin sender`,
+    );
+  }
+
+  // Companion: the write-side handlers must NOT have mutated the store if
+  // the gate rejected them. Verifies the gate short-circuits BEFORE side
+  // effects rather than after.
+  assert.deepStrictEqual(
+    h.store.writes, [],
+    "no store writes when every handler rejected the remote sender",
+  );
 });

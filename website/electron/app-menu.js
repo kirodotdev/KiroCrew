@@ -14,9 +14,12 @@
 // and the click wiring are unit-testable without a display server.
 // Menu.buildFromTemplate stays in main.js.
 
+const { TIERS } = require("./display-preferences");
+
 function buildMenuTemplate(deps) {
   const {
     isMac,
+    isLinux, // gate for the F10 menu-bar toggle (see the hidden accelerator below)
     appName,
     openSettings, // navigate dashboard to /settings
     openAbout, // navigate dashboard to /settings/about (version + updates)
@@ -34,6 +37,9 @@ function buildMenuTemplate(deps) {
     promptRemoteHost,
     refreshToken,
     openConfigFile,
+    currentFontSize, // current fontSize px, used to check the matching radio item
+    setFontSize, // click handler for View > Font Size > <tier>
+    toggleMenuBar, // click handler for the hidden F10 menu-bar toggle
   } = deps;
 
   // Shared destinations. CmdOrCtrl+, is the Settings convention on macOS and
@@ -84,6 +90,54 @@ function buildMenuTemplate(deps) {
         { label: "Actual Size", accelerator: "CmdOrCtrl+0", click: zoomActualSize },
         { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: zoomIn },
         { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: zoomOut },
+        { type: "separator" },
+        // Content Text Size ladder — flat rather than nested. The Windows custom
+        // titlebar popup renders only one level (see windows-menu-model.js /
+        // windows-titlebar-contract.test.js), so a `Content Text Size` submenu
+        // would appear as a dead item there. Kept flat for now; if the
+        // titlebar renderer ever teaches nesting, this can collapse into a submenu.
+        //
+        // The label reads "Content Text Size" rather than "Font Size" —
+        // Fable First-Principles review pointed out that "Font Size" implies
+        // universal scope (chrome + content), which this feature can't
+        // deliver: 4096 px-pinned text-[NNpx] literals across website/src
+        // ignore Chromium's defaultFontSize. Renaming to "Content Text Size"
+        // is the honest scope: this ladder grows ambient DOM text (chat
+        // messages, markdown, dialog copy) — not sidebars, tab strips,
+        // buttons, or menu chrome. Internal API names (`fontSize`,
+        // `changeFontSize`, `defaultFontSize`) unchanged — those speak
+        // Chromium's own vocabulary at the technical layer.
+        //
+        // Each item carries an id (`font-size-<tier.name>`) so an in-process
+        // change (via updateFontSizeChecks in window-lifecycle.js) can reach
+        // into the built menu and update the `checked` state after the fact.
+        // Menu-driven clicks auto-update the radio via Electron.
+        ...TIERS.map((tier) => ({
+          id: `font-size-${tier.name}`,
+          label: `Content Text Size: ${tier.label}`,
+          type: "radio",
+          checked: currentFontSize === tier.px,
+          click: () => setFontSize(tier.px),
+        })),
+        // Linux-only "Toggle Menu Bar (F10)" item — added in PR #10247.
+        // Framed Linux users have a visible menu bar by default (the
+        // else-if hide branch was reverted per Fable First-Principles
+        // review), so F10 here is a user opt-in to HIDE the bar if they
+        // prefer, rather than a required reveal shortcut. On Windows we
+        // deliberately show no item here — the custom titlebar hamburger
+        // owns menu discoverability. macOS has no per-window menu bar
+        // to toggle.
+        ...(isLinux
+          ? [
+              { type: "separator" },
+              {
+                id: "view-toggle-menu-bar",
+                label: "Toggle Menu Bar",
+                accelerator: "F10",
+                click: toggleMenuBar,
+              },
+            ]
+          : []),
         { type: "separator" },
         { role: "togglefullscreen" },
         // Checkable, no accelerator: there is no cross-platform convention for
@@ -145,6 +199,15 @@ function buildMenuTemplate(deps) {
         },
     // Windows/Linux home for About (Help > About <app>).
     ...(isMac ? [] : [{ id: "help-menu", label: "Help", submenu: [aboutItem] }]),
+    // Note: the F10 "Toggle Menu Bar" accelerator lives INSIDE the View menu
+    // (see the `view-toggle-menu-bar` item above), Linux-only. Electron
+    // fires an item's accelerator even when the menu bar is not visible,
+    // as long as the menu template is registered via
+    // Menu.setApplicationMenu — so the in-View item is sufficient to keep
+    // F10 bound globally on Linux AND to give the user a visible entry
+    // point once they see the menu. No hidden top-level accelerator
+    // carrier is needed (PR #10247 originally added one; removed as part
+    // of the UX-concern response to prevent double-binding).
   ];
 }
 

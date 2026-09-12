@@ -38,6 +38,35 @@ const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
 const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
 const { buildMenuTemplate } = require("./app-menu");
+const displayPrefs = require("./display-preferences/index");
+
+// Reconcile the Font Size menu radios to reflect `px`. Called from both the
+// menu-click path (window-lifecycle.js buildApplicationMenu deps.setFontSize)
+// and the IPC-driven path (ipc-registrar.js display-prefs:set handler) so
+// the OS menu stays in sync with either mutation origin.
+//
+// Idiomatic Electron radio-group behavior: set ONLY the target item's
+// checked=true and let the radio group auto-toggle its siblings. Setting
+// .checked=false explicitly on non-target items conflicts with the
+// "exactly one checked" invariant on some platforms — the OS display then
+// shows the LAST-touched item rather than the actual target, which was the
+// observed bug ("always says Very Large" regardless of the picked tier).
+// Docs: https://www.electronjs.org/docs/api/menu-item#menuitemchecked
+//
+// Kept as a top-level pure function (menu + tiers + px in, side effects on
+// the target item only) so it is unit-testable in isolation — see
+// test/window-lifecycle.test.js "reconcileFontSizeChecks — Font Size menu
+// radio state". `tiers` is passed in rather than sourced from
+// displayPrefs.TIERS at the top level so the test can stub the schema
+// without dragging the whole module.
+function reconcileFontSizeChecks(menu, tiers, px) {
+  if (!menu) return;
+  const target = tiers.find((tier) => tier.px === px);
+  if (!target) return;
+  const item = menu.getMenuItemById(`font-size-${target.name}`);
+  if (item) item.checked = true;
+}
+const { makeToggleMenuBar, applyMenuBarVisibilityFromStore } = require("./menu-bar");
 const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 const {
   paintTitleBarOverlay,
@@ -139,6 +168,36 @@ function createWindowLifecycle(options) {
     ? decideLinuxFrame({ env, override: store.get("linuxFrameless") })
     : null;
   const LINUX_FRAMELESS = !!(LINUX_FRAME_DECISION && LINUX_FRAME_DECISION.frameless);
+
+  // Seed the fontSize cache from the store BEFORE any window is created, so
+  // the four `defaultFontSize: displayPrefs.getCurrentFontSize()` reads in
+  // `webPreferences` land on the persisted value instead of the pre-init
+  // fallback. Called once here rather than from main.js because the factory
+  // owns every window-creation site — a future window added below would
+  // otherwise silently boot at 16px on the first paint.
+  displayPrefs.initCurrentFontSize(store);
+
+  // Shell-window construction helpers. Route EVERY BrowserWindow /
+  // WebContentsView the shell creates through these two functions so the
+  // runtime font-size ripple can filter to shell-owned WebContents (see
+  // display-preferences/index.js SHELL_OWNED_WC). The one exception is the
+  // embedded browser panel's WebContentsView (search for the
+  // `SHELL-BARE:` marker) which hosts arbitrary user-browsed sites and is
+  // deliberately excluded from both the construction-time defaultFontSize
+  // seed AND the runtime ripple. A contract test in
+  // `test/window-lifecycle.test.js` forbids bare `new BrowserWindow` /
+  // `new WebContentsView` in this file without a SHELL-BARE marker.
+  function createShellBrowserWindow(opts) {
+    const win = new BrowserWindow(opts);
+    displayPrefs.markShellOwned(win.webContents);
+    return win;
+  }
+
+  function createShellWebContentsView(opts) {
+    const view = new WebContentsView(opts);
+    displayPrefs.markShellOwned(view.webContents);
+    return view;
+  }
 
   let mainWindow = null;
   let tray = null;
@@ -352,11 +411,16 @@ function createWindowLifecycle(options) {
     const windowPort = new URL(windowBackendUrl).port;
     let customName = null;
 
-    const view = new WebContentsView({
+    const view = createShellWebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
+        // Chromium's default UI base font size. The user picks a tier via
+        // View → Font Size (see display-preferences/); the cache is seeded at
+        // boot from electron-store so the first paint already sits at the
+        // persisted size instead of flashing 16 then re-laying-out.
+        defaultFontSize: displayPrefs.getCurrentFontSize(),
         // Frameless Linux is a launch-time decision, not a platform constant.
         // The preload reads this argument to reserve caption-control space.
         additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
@@ -484,7 +548,7 @@ function createWindowLifecycle(options) {
 
       const entry = { id, agentAct: false };
       entry.manager = createBrowserViewManager({
-        createView: () => new WebContentsView({
+        createView: () => new WebContentsView({ // SHELL-BARE: browser panel — deliberately excluded from font-size seed AND ripple (Design Review PR #10247 confirmed this is the right split)
           webPreferences: {
             // Persistent for ordinary browser logins, but isolated from the
             // dashboard's host-scoped mc_token_<port> cookie jar.
@@ -868,6 +932,13 @@ function createWindowLifecycle(options) {
       // menu bar above the dashboard's own header.
       opts.autoHideMenuBar = true;
     }
+    // NOTE: framed Linux (X11 / Wayland+SSD) intentionally does NOT autohide the
+    // menu bar. Fable First-Principles review (PR #10247, `2a00fa154`) pointed
+    // out that hiding it was collateral scope with no reported user impact —
+    // the original motivation (matching Windows) doesn't hold on Linux where
+    // no custom hamburger titlebar exists to compensate. Framed users keep
+    // their visible bar; the Wayland/CSD case (no frame at all) is handled by
+    // FramelessTipBanner offering "Enable window borders".
     if (includeIcon && (IS_WIN || IS_LINUX)) {
       const iconFile = identityFamily(app.getVersion()) === "nightly"
         && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
@@ -915,9 +986,13 @@ function createWindowLifecycle(options) {
     }
 
     mainWindow = new BaseWindow(opts);
-    if (IS_WINDOWS && typeof mainWindow.setMenuBarVisibility === "function") {
-      mainWindow.setMenuBarVisibility(false);
-    }
+    // `autoHideMenuBar: true` (set in applyDashboardChrome for Windows / Linux)
+    // hides the menu bar by default but reveals it on Alt-tap and on F10 (the
+    // hidden accelerator in app-menu.js). We deliberately do NOT call
+    // setMenuBarVisibility(false) here — that override wins over autoHide and
+    // blocks Alt-tap on Windows. If the user previously chose to show the bar
+    // (persisted via the F10 toggle), restore that state now.
+    applyMenuBarVisibilityFromStore(mainWindow, store);
     setupWindowContents(mainWindow, backendUrl);
 
     // Persist continuously (debounced), then synchronously on real quit so the
@@ -1132,7 +1207,7 @@ function createWindowLifecycle(options) {
       .replace(/"/g, "&quot;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
-    const promptWin = new BrowserWindow({
+    const promptWin = createShellBrowserWindow({
       width: 480,
       height: 400,
       resizable: false,
@@ -1140,7 +1215,13 @@ function createWindowLifecycle(options) {
       parent: focused,
       modal: true,
       backgroundColor: "#00000000",
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        // Modals inherit the dashboard's font-size tier so an accessibility
+        // choice reaches every window authored by Kiro Crew, not just the main one.
+        defaultFontSize: displayPrefs.getCurrentFontSize(),
+      },
     });
     const html = `<!DOCTYPE html><html><head><style>
       ${css}
@@ -1264,9 +1345,10 @@ function createWindowLifecycle(options) {
       backgroundColor: "#0f1117",
     });
     const connWin = new BaseWindow(connOpts);
-    if (IS_WINDOWS && typeof connWin.setMenuBarVisibility === "function") {
-      connWin.setMenuBarVisibility(false);
-    }
+    // Same rationale as createWindow(): autoHideMenuBar wins for cross-platform
+    // Alt-tap behaviour. A prior forced hide via setMenuBarVisibility(false)
+    // blocked F10 recovery on Windows for connection windows too.
+    applyMenuBarVisibilityFromStore(connWin, store);
     setupWindowContents(connWin, connectionBackendUrl);
 
     // initialPath can carry a one-shot intent (/chat?new=1). The retry target
@@ -1311,7 +1393,7 @@ function createWindowLifecycle(options) {
     mainWindow.show();
 
     const css = await getModalCSS();
-    const promptWin = new BrowserWindow({
+    const promptWin = createShellBrowserWindow({
       width: 400,
       height: 180,
       resizable: false,
@@ -1319,7 +1401,13 @@ function createWindowLifecycle(options) {
       parent: mainWindow,
       modal: true,
       backgroundColor: "#00000000",
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        // Modals inherit the dashboard's font-size tier so an accessibility
+        // choice reaches every window authored by Kiro Crew, not just the main one.
+        defaultFontSize: displayPrefs.getCurrentFontSize(),
+      },
     });
     const html = `<!DOCTYPE html><html><head><style>
       ${css}
@@ -1384,7 +1472,7 @@ function createWindowLifecycle(options) {
       const css = vars && vars.bg
         ? modalCSSFromVars(vars)
         : modalCSSForMode(nativeTheme.shouldUseDarkColors);
-      const promptWin = new BrowserWindow({
+      const promptWin = createShellBrowserWindow({
         width: 400,
         height: 200,
         resizable: false,
@@ -1392,7 +1480,13 @@ function createWindowLifecycle(options) {
         parent: focused,
         modal: true,
         backgroundColor: "#00000000",
-        webPreferences: { nodeIntegration: false, contextIsolation: true },
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          // Modals inherit the dashboard's font-size tier so an accessibility
+          // choice reaches every window authored by Kiro Crew, not just the main one.
+          defaultFontSize: displayPrefs.getCurrentFontSize(),
+        },
       });
       const html = `<!DOCTYPE html><html><head><style>
         ${css}
@@ -1635,6 +1729,7 @@ function createWindowLifecycle(options) {
   function buildApplicationMenu() {
     appMenu = Menu.buildFromTemplate(buildMenuTemplate({
       isMac: IS_MAC,
+      isLinux: IS_LINUX,
       appName: app.name,
       openSettings: () => openSettingsPage(),
       openAbout: () => openSettingsPage("about"),
@@ -1665,6 +1760,33 @@ function createWindowLifecycle(options) {
       promptRemoteHost: () => promptRemoteHost(),
       refreshToken: () => refreshToken(),
       openConfigFile: () => openPathHardened(shell, store.path),
+      // Font-size deps. currentFontSize is read from the module-level cache
+      // (hydrated at boot in main.js via initCurrentFontSize) so the correct
+      // radio is checked on first paint. setFontSize routes through
+      // changeFontSize — validate + persist + live-apply — matching the IPC
+      // handler's path exactly, so a menu-driven change is indistinguishable
+      // from a dashboard-driven one.
+      //
+      // After changeFontSize, we call updateFontSizeChecks(applied) so BOTH
+      // entry points (menu click here, IPC set in ipc-registrar.js) leave
+      // the menu radios in a consistent state. Electron auto-toggles the
+      // clicked radio, but a dashboard-driven change would otherwise leave
+      // the menu displaying the previous selection.
+      currentFontSize: displayPrefs.getCurrentFontSize(),
+      setFontSize: (px) => {
+        const applied = displayPrefs.changeFontSize(store, webContents, px);
+        updateFontSizeChecks(applied);
+        return applied;
+      },
+      // F10 toggles the auto-hidden menu bar on Windows/Linux. macOS is a
+      // no-op — the app-menu template omits the accelerator on darwin
+      // because the menu bar is OS-managed. Bound to the focused dashboard
+      // window so multi-window setups toggle the bar the user is looking at.
+      toggleMenuBar: () => {
+        const win = focusedDashboardWindow();
+        if (!win || win.isDestroyed()) return;
+        makeToggleMenuBar(win, store)();
+      },
     }));
     Menu.setApplicationMenu(appMenu);
     return appMenu;
@@ -1698,6 +1820,23 @@ function createWindowLifecycle(options) {
     const menu = Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById("devtools-toggle");
     if (item) item.visible = !!enabled;
+  }
+
+  // Reconcile the Font Size radio group's `checked` state with the given
+  // px. Called from BOTH entry points:
+  //   1. The menu-click closure (Electron auto-updates the OS-visible radio,
+  //      but we also flip the template items so a subsequent template read
+  //      via serializeMenuItems returns the right shape for the Windows
+  //      custom-titlebar renderer).
+  //   2. The IPC handler in ipc-registrar.js — a dashboard-driven change
+  //      would otherwise leave the menu radio stuck on the previous
+  //      selection, lying to the user next time they open View.
+  //
+  // Missing item ids are ignored: this runs before every setFontSize
+  // completes, and the menu may not yet exist during boot (initCurrentFontSize
+  // runs before buildApplicationMenu on the first tick).
+  function updateFontSizeChecks(px) {
+    reconcileFontSizeChecks(Menu.getApplicationMenu(), displayPrefs.TIERS, px);
   }
 
   function setThemeAccent(hex) {
@@ -1994,6 +2133,7 @@ function createWindowLifecycle(options) {
       items: menuItems,
       execute: executeMenu,
       setDevMode,
+      updateFontSizeChecks,
       openSettings: openSettingsPage,
       toggleAlwaysOnTop,
     },
@@ -2039,4 +2179,5 @@ module.exports = {
   HEADER_CSS_PX,
   WINDOWS_TITLEBAR_MENU_IDS,
   createWindowLifecycle,
+  reconcileFontSizeChecks,
 };

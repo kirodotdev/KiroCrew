@@ -17,7 +17,13 @@ const { initAutoUpdate } = require("./auto-update");
 const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
+const { decideLinuxFrame, isWaylandSession } = require("./linux-frame");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
+// display-preferences is no longer imported here — the display-prefs:get/set
+// IPC handlers were removed in the Fable First-Principles response (zero
+// consumers in website/src/). The View menu's Content Text Size feature
+// reaches changeFontSize directly from window-lifecycle.js's menu click
+// handler; ipc-registrar.js has no need for it.
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -381,6 +387,97 @@ function createIpcRegistrar({
       windows.chrome.setZoom(event.sender, factor));
     ipcMain.handle("zoom:step", (event, direction) =>
       windows.chrome.stepZoom(event.sender, direction));
+
+    // Content Text Size feature (renamed from "Font Size" in PR #10247's
+    // Fable First-Principles response — user-facing label speaks scope
+    // honestly, internal API keeps Chromium's `defaultFontSize` vocabulary).
+    // The View menu handler calls `changeFontSize(store, webContents, px)`
+    // directly in-process; there is no IPC channel for this feature because
+    // the SPA has no need to drive it (the ONE renderer that would need it
+    // — a Settings page control — doesn't exist and would ship with its
+    // own bridge when it does). The `display-prefs:get` + `display-prefs:set`
+    // handlers that existed on 16d827598 were deleted here: they had zero
+    // consumers in website/src/ and shipping scaffolding for a hypothetical
+    // future caller is YAGNI. The change is invisible to users — the menu
+    // ladder works identically because it never used IPC to begin with.
+
+    // Frame preferences — the Wayland/CSD Linux discoverability tip added
+    // in PR #10247. The Electron shell knows things the SPA cannot infer
+    // from `window`: whether the session is Wayland (no native menu bar
+    // reachable on GNOME/KDE CSD), whether the user forced a specific
+    // linuxFrameless override, whether the tip has been dismissed.
+    //
+    // EVERY handler below MUST go through `assertLocalDashboard` before it
+    // mutates local state or reads local config. A connection window pointed
+    // at a REMOTE gateway loads the SPA through the SAME preload.js and would
+    // otherwise be able to force-quit the local process or flip the frame
+    // decision without the human at the machine ever opting in. This is the
+    // same three-gate boundary crash-reports:*, wsl:detect, dashboard:open-file,
+    // and pane:clear-http-cache use — added here after the GPT 5.6 + Opus 4.8
+    // review on d40b0518d flagged the gap.
+    //
+    // Framed Linux (X11 / Wayland+SSD) does NOT need a discoverability tip
+    // — their menu bar renders normally on the OS-drawn frame. The
+    // MenuBarF10TipBanner and `frame-prefs:show-menu-bar-now` handler that
+    // existed here on 16d827598 were deleted in the Fable First-Principles
+    // response: framed users had a visible bar before this PR and no
+    // reported user harm, so hiding it was collateral scope. The `mark-tip-
+    // shown` handler still takes a `kind` discriminator so a future tip
+    // can plug in without changing its shape.
+    ipcMain.handle("frame-prefs:get", async (event) => {
+      await assertLocalDashboard(event, "frame-prefs:get");
+      const env = process.env;
+      const override = store.get("linuxFrameless");
+      const decision = decideLinuxFrame({ env, override });
+      const isLinuxProcess = process.platform === "linux";
+      return {
+        // Ambient facts the SPA can't otherwise learn.
+        platform: process.platform,
+        isFrameless: isLinuxProcess ? decision.frameless : false,
+        isWayland: isLinuxProcess ? isWaylandSession(env) : false,
+        // Reason string is stable for tests and useful in bug reports.
+        frameDecisionReason: isLinuxProcess ? decision.reason : "not-linux",
+        // Tip dismissal state. Coerced through Boolean so a legacy
+        // string or missing key resolves cleanly to false.
+        tipShown: {
+          frameless: Boolean(store.get("framelessTipShown")),
+        },
+      };
+    });
+
+    ipcMain.handle("frame-prefs:mark-tip-shown", async (event, kind) => {
+      await assertLocalDashboard(event, "frame-prefs:mark-tip-shown");
+      // Discriminator switch — a malformed kind is a silent no-op rather
+      // than an error. Only `frameless` is defined; `menuBarF10` was
+      // removed with the framed-Linux hide revert.
+      if (kind === "frameless") store.set("framelessTipShown", true);
+      else return { ok: false, reason: "unknown-kind" };
+      return { ok: true };
+    });
+
+    ipcMain.handle("frame-prefs:enable-frames", async (event) => {
+      await assertLocalDashboard(event, "frame-prefs:enable-frames");
+      // Writes the override BUT does NOT restart — the renderer prompts the
+      // user for a restart. The store key mirrors the LinuxFrameless
+      // convention: `false` = native window frame + native menu bar.
+      store.set("linuxFrameless", false);
+      // Auto-mark the frameless tip shown too — the user just acted on it
+      // by enabling borders, so there is nothing left for that tip to say
+      // on the next boot (they already know).
+      store.set("framelessTipShown", true);
+      return { restartRequired: true };
+    });
+
+    ipcMain.handle("frame-prefs:restart-app", async (event) => {
+      await assertLocalDashboard(event, "frame-prefs:restart-app");
+      // User accepted the restart prompt. app.relaunch queues the restart
+      // path; app.quit performs the actual quit which the OS then relaunches.
+      // Called by the renderer only after the user explicitly clicked
+      // [Restart now] on the enable-frames confirmation.
+      app.relaunch();
+      app.quit();
+      return { ok: true };
+    });
 
     // The window façade resolves every request from event.sender and keeps the
     // native panel/control-plane internals private to that owning window.
