@@ -1959,7 +1959,41 @@ class AcpPermissionNeeded(AcpError):  # noqa: N818
 
 
 class AcpProcessDied(AcpError):  # noqa: N818
-    """kiro-cli process exited unexpectedly."""
+    """kiro-cli process exited unexpectedly.
+
+    ``resubmit_safe`` answers the one question a caller that wants to RE-RUN the
+    turn has to ask, and answers it at the raise site rather than making that
+    caller reason about the death taxonomy. Mirrors :attr:`AcpError.transient`:
+    the layer that raises knows the classification, so it states it instead of
+    exporting a class hierarchy for consumers to re-derive. Application code
+    outside the agent-SDK boundary can then read one attribute without importing a
+    second ACP symbol -- which ``scripts/check_agent_sdk_boundary.py`` refuses.
+
+    THE INVARIANT is about WHEN the death was discovered, not about which
+    subsystem noticed:
+
+    * ``True`` -- discovered with NO turn in flight, so nothing the turn asked for
+      can have run. Only a transport write that never reached the child, and the
+      pre-conversation liveness check, qualify: no tool was ever dispatched.
+    * ``False`` (the default) -- a turn may have been in flight. A tool may
+      already have completed its side effects, so resubmitting the prompt can
+      repeat a mutation.
+
+    The default REFUSES, so a site that never considered the question fails
+    closed. Defaulting to ``True`` and having each in-flight site opt out is only
+    correct while the set of in-flight sites is completely enumerated, and that
+    set is not locally checkable: most raise sites here can be reached with a turn
+    live, and some only through indirection --
+    ``session_provider._translate_dead`` builds one for any runtime-touching
+    handle call. Charging the few safe sites an explicit kwarg buys a correctness
+    that does not depend on such an enumeration being exhaustive.
+    """
+
+    resubmit_safe: bool = False
+
+    def __init__(self, *args: object, resubmit_safe: bool = False, **kw: object) -> None:
+        super().__init__(*args, **kw)  # type: ignore[arg-type]
+        self.resubmit_safe = resubmit_safe
 
 
 class AcpAuthRequired(AcpError):  # noqa: N818
@@ -8888,15 +8922,39 @@ class AcpClient:
     async def _send_prompt(self, message: str) -> int:
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
         # cannot drift.
-        return await self._send_request(
-            METHOD_PROMPT,
-            {
-                "sessionId": self._session_id,
-                # Offloaded: see the note in session_handle.prompt -- image
-                # reads and base64 encoding must not block the event loop.
-                "prompt": await asyncio.to_thread(build_prompt_blocks, message),
-            },
-        )
+        try:
+            return await self._send_request(
+                METHOD_PROMPT,
+                {
+                    "sessionId": self._session_id,
+                    # Offloaded: see the note in session_handle.prompt -- image
+                    # reads and base64 encoding must not block the event loop.
+                    "prompt": await asyncio.to_thread(build_prompt_blocks, message),
+                },
+            )
+        except AcpProcessDied as exc:
+            # THE one write that STARTS a turn, so the only place that may claim a
+            # death is safe to resubmit.
+            #
+            # The claim belongs here rather than at the transport write, because
+            # turn state is not knowable there. The same `_send_request` also
+            # carries `session/steer` and `commands/execute`, and its siblings
+            # `_send_response` / `_send_error` exist ONLY to answer requests the
+            # child raises mid-turn (tool-permission replies, unknown-method
+            # rejections) -- a broken pipe on any of those means a turn WAS in
+            # flight and an earlier tool may already have completed.
+            #
+            # Why a failure HERE implies nothing ran, which is not obvious: the
+            # death surfaces from `drain()`, never from `write()`, and `drain()`
+            # fails only while unflushed bytes remain -- a child that consumed the
+            # whole payload drains clean even if it dies immediately after. Wire
+            # messages are newline-delimited JSON-RPC, so bytes still queued mean
+            # the child never received a complete `session/prompt` line, and it
+            # cannot dispatch a tool for a request it has not finished reading.
+            # Partial consumption IS reachable (a child that reads a prefix then
+            # dies raises here), but a prefix is not a parseable request.
+            exc.resubmit_safe = True
+            raise
 
     async def _read_prompt_response(self, req_id: int, timeout: float) -> str:
         output: list[str] = []
