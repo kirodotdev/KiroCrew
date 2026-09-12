@@ -8,7 +8,7 @@ import { useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../api/client'
 import { useProvider } from '../providers'
-import { useAvailableModels } from '../hooks/useAvailableModels'
+import { useAvailableModels, useModelOrderLoadFailed } from '../hooks/useAvailableModels'
 import { FOLDER_COLOR_PALETTE } from '../components/folderColorCatalog'
 import { Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
@@ -888,6 +888,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // picker so the list is fetched once. INHERIT_MODEL leads so "no pin" is the
   // obvious choice rather than an absent option.
   const availableModels = useAvailableModels()
+  const modelOrderLoadFailed = useModelOrderLoadFailed()
   const modelOptions = [
     INHERIT_MODEL,
     ...(availableModels || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
@@ -2253,6 +2254,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                           variant="inline"
                           testId="crew-template-switch-error"
                         />
+                        {/* Saved model order failed to load: the template
+                            detail's model picker shows backend order as a
+                            fallback. No hand-off: this editor holds unsaved
+                            agent-config edits (dirtyPanes), and the state
+                            self-clears when the config read retries. */}
+                        {modelOrderLoadFailed && (
+                          <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} />
+                        )}
                         <AgentTemplateDetail
                           template={kiroAgent}
                           models={(availableModels || []).map((m: { name: string }) => m.name).filter(Boolean)}

@@ -3049,6 +3049,9 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "modelDropdownList": {
+      "order_load_failed": "Couldn't load your saved model order — showing the default order until it loads."
     }
   },
   "hooks": {
@@ -6099,6 +6102,17 @@
         "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
         "label": "Default Memory Mode",
         "persistent": "Persistent"
+      },
+      "modelOrder": {
+        "autoLabel": "Auto",
+        "autoPinned": "Always first",
+        "degraded": "The model list is unavailable. Your saved order is shown, and reordering resumes once models load.",
+        "description": "Drag to set the order models appear in across every picker. Auto always stays first.",
+        "label": "Model order",
+        "loadFailed": "Couldn't load the saved model order. Reordering resumes once it loads.",
+        "reorder": "Reorder {{model}}",
+        "reset": "Reset to default order",
+        "saveFailed": "Couldn't save the model order. Please try again."
       },
       "plainDiff": {
         "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",

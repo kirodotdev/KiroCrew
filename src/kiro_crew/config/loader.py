@@ -3338,6 +3338,20 @@ class KiroCrewConfig:
                 approval_mode=agent_data.get("approval_mode", "auto"),
                 streaming=agent_data.get("streaming", True),
                 model=agent_data.get("model", DEFAULT_MODEL),
+                # Coerce like apps_trusted below (the list[str] precedent in
+                # this constructor): keep only strings. Additionally
+                # de-duplicate preserving first occurrence so a hand-edited file
+                # loads the SAME normalized order the PATCH validator writes — a
+                # repeat is meaningless in an order and its first position is the
+                # one that counts. No grammar/entitlement filtering here: a
+                # stale or unknown-but-well-formed id is ignored at render, never
+                # dropped on load, so a saved order survives a degraded model
+                # list.
+                model_order=(
+                    list(dict.fromkeys(m for m in _model_order if isinstance(m, str)))
+                    if isinstance(_model_order := agent_data.get("model_order"), list)
+                    else []
+                ),
                 role_models=coerce_role_models(agent_data.get("role_models")),
                 role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
                 fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),

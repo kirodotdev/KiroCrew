@@ -27,6 +27,8 @@ vi.mock('../api/client', () => ({
 }))
 
 vi.mock('../hooks/useAvailableModels', () => ({
+  // The order-load-failure flag the hosts now render; false = not failed.
+  useModelOrderLoadFailed: () => false,
   useAvailableModels: () => [
     { name: 'auto', description: '' },
     { name: 'claude-haiku-4.5', description: 'Haiku' },

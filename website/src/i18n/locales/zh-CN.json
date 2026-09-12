@@ -6746,7 +6746,8 @@
       "auto_default": "默认",
       "credit_multiplier": "积分消耗为 Auto 的 {{value}}",
       "credit_multiplier_baseline": "{{value}}，积分消耗基准",
-      "no_matches": "无匹配项"
+      "no_matches": "无匹配项",
+      "order_load_failed": "无法加载你保存的模型顺序 — 加载完成前将显示默认顺序。"
     },
     "modelEffortDropdown": {
       "default_for_agent": "<agent/> 的默认模型",
@@ -14514,6 +14515,17 @@
         "description": "持久模式会使用已知信息并保存新记忆。隐身模式会使用已知信息，但不保存新记忆。临时模式从空白开始，不保存任何记忆。所有聊天仍会显示在历史记录中。你可以更改任意聊天的模式。",
         "label": "默认记忆模式",
         "persistent": "持久"
+      },
+      "modelOrder": {
+        "autoLabel": "Auto",
+        "autoPinned": "始终排在最前",
+        "degraded": "模型列表暂时不可用。已显示你保存的顺序，模型加载后即可重新排序。",
+        "description": "拖动即可设置模型在各个选择器中显示的顺序。Auto 始终排在最前。",
+        "label": "模型顺序",
+        "loadFailed": "无法加载已保存的模型顺序。加载完成后即可继续重新排序。",
+        "reorder": "重新排序 {{model}}",
+        "reset": "重置为默认顺序",
+        "saveFailed": "无法保存模型顺序，请重试。"
       },
       "plainDiff": {
         "description": "以普通 unified diff 文本显示差异，不使用语法高亮着色。在大型差异上占用更少内存。",

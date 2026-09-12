@@ -825,6 +825,20 @@ class AgentConfig:
         default=DEFAULT_MODEL,
         metadata=_meta("Model", "LLM model identifier. 'auto' resolves from agent config."),
     )
+    model_order: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Model order",
+            "Display order for the model-selection dropdown, as a list of model "
+            "ids in the order they should appear. Models named here are shown "
+            "first, in this order; any live model not named appends after them "
+            "in the backend's own order, and a saved id the live list no longer "
+            "advertises is skipped at render (never rejected on save — kiro "
+            "renames and re-prices models, so a saved order must outlive a "
+            "briefly-degraded list). 'auto' stays pinned first regardless of "
+            "this order. Empty (the default) means the backend's own order.",
+        ),
+    )
     role_models: dict[str, str] = field(
         default_factory=dict,
         metadata=_meta(

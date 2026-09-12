@@ -6848,7 +6848,8 @@
       "auto_default": "Standard",
       "credit_multiplier": "{{value}} der Credit-Kosten von Auto",
       "credit_multiplier_baseline": "{{value}}, die Basis-Credit-Kosten",
-      "no_matches": "Keine Treffer"
+      "no_matches": "Keine Treffer",
+      "order_load_failed": "Ihre gespeicherte Modell-Reihenfolge konnte nicht geladen werden — bis dahin wird die Standardreihenfolge angezeigt."
     },
     "modelEffortDropdown": {
       "default_for_agent": "Standardmodell für <agent/>",
@@ -14705,6 +14706,17 @@
         "description": "Dauerhaft nutzt vorhandenes Wissen und speichert neue Erinnerungen. Inkognito nutzt vorhandenes Wissen, speichert aber nichts Neues. Temporär startet ohne Vorwissen und speichert nichts. Jeder Chat bleibt im Verlauf sichtbar. Du kannst den Modus für jeden Chat ändern.",
         "label": "Standard-Speichermodus",
         "persistent": "Dauerhaft"
+      },
+      "modelOrder": {
+        "autoLabel": "Auto",
+        "autoPinned": "Immer zuerst",
+        "degraded": "Die Modellliste ist nicht verfügbar. Deine gespeicherte Reihenfolge wird angezeigt, und du kannst neu anordnen, sobald die Modelle geladen sind.",
+        "description": "Zieh, um die Reihenfolge festzulegen, in der Modelle in jeder Auswahl erscheinen. Auto steht immer an erster Stelle.",
+        "label": "Modellreihenfolge",
+        "loadFailed": "Die gespeicherte Modell-Reihenfolge konnte nicht geladen werden. Das Umsortieren wird fortgesetzt, sobald sie geladen ist.",
+        "reorder": "{{model}} neu anordnen",
+        "reset": "Auf Standardreihenfolge zurücksetzen",
+        "saveFailed": "Die Modellreihenfolge konnte nicht gespeichert werden. Bitte versuche es erneut."
       },
       "plainDiff": {
         "description": "Diffs als einfachen Unified-Diff-Text ohne Syntaxhervorhebung anzeigen. Benötigt bei großen Diffs weniger Speicher.",
