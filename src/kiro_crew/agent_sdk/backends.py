@@ -796,12 +796,22 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
 # and codex adapters advertise, so every reader keeps its current answer without an
 # entry. deepseek advertises ``reasoning_effort``.
 #
-# Read rather than hard-coded at every site that asks -- the levels parser in
-# ``acp/client.py``, and the advertised-option check plus the two pushes in
-# ``providers/acp.py`` -- because a literal at any one of them turns a harness whose
+# Read rather than hard-coded at every site that asks. All six: the levels parser in
+# ``acp/client.py``; the advertised-option check plus the two pushes in
+# ``providers/acp.py``; and the support probe plus the push in
+# ``knowledge/llm_pool.py``. A literal at any one of them turns a harness whose
 # channel is spelled differently into a silent no-op: the option is reported
 # unsupported, the level list comes back empty, and the operator's effort choice
 # never reaches the session even though the dropdown offered it.
+#
+# The two ``llm_pool`` sites are the ones a reader is most likely to think are
+# exempt, and they are the reason to state the count. That pool builds its client
+# with the DEFAULT backend, which spells the option ``effort``, so the literal and
+# this table agree there and no test could tell them apart -- which is precisely
+# what makes the literal a latent no-op rather than a visible bug. It is pinned by
+# ``test_llm_pool.py::TestAcpWorkerEffort::
+# test_asks_each_harness_for_its_own_effort_option_id``, which drives that pool with
+# a backend spelling the option differently.
 _EFFORT_OPTION_ID_DEFAULT = "effort"
 
 ACP_BACKEND_EFFORT_OPTION_ID: dict = {

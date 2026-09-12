@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_KIRO,
+)
 from kiro_crew.knowledge.llm_pool import (
     DEFAULT_IDLE_TTL_SECS,
     WORKER_RECYCLE_CALLS,
@@ -768,6 +772,31 @@ class TestAcpWorkerEffort:
             await worker.start()
 
         client.set_config_option.assert_awaited_once_with("effort", "high")
+        client.send_command.assert_not_awaited()
+        assert worker._effective_effort == "high"
+
+    @pytest.mark.asyncio
+    async def test_asks_each_harness_for_its_own_effort_option_id(self, tmp_path):
+        """The option ID is per harness, so the pool must read it, not assume it.
+
+        The two backends the rest of this class covers both spell the option
+        ``effort``, so a literal and ``effort_option_id`` agree on them and no
+        assertion here can tell the two apart. deepseek advertises the same
+        channel under ``reasoning_effort``, which is what makes the difference
+        observable: with the literal restored, the support probe asks about an
+        option this harness does not advertise, the push never happens, and the
+        requested effort is silently dropped.
+        """
+        client = _mock_effort_client(["low", "high"])
+        client.backend = ACP_BACKEND_DEEPSEEK
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        # Probed and pushed under the harness's own spelling, never "effort".
+        client.supports_config_option.assert_called_once_with("reasoning_effort")
+        client.set_config_option.assert_awaited_once_with("reasoning_effort", "high")
         client.send_command.assert_not_awaited()
         assert worker._effective_effort == "high"
 
