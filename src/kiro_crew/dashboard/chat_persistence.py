@@ -14,11 +14,13 @@ import uuid
 from collections import OrderedDict, deque
 from collections.abc import Iterator, Mapping
 from itertools import islice
+from pathlib import Path
 
 from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import agent_model_map
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.chat_attachments import persist_inline_images
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -2186,7 +2188,7 @@ def _approx_window_payload_bytes(window: list[dict]) -> int:
     return total
 
 
-def _build_message_entry(m: dict) -> dict | None:
+def _build_message_entry(m: dict, *, attachments: tuple[Path, str] | None = None) -> dict | None:
     """Memoised front door to :func:`_build_message_entry_uncached`.
 
     The cached value is the POST-redaction entry, never the raw input, so a hit
@@ -2204,14 +2206,20 @@ def _build_message_entry(m: dict) -> dict | None:
         payload = json.dumps(m, sort_keys=True, default=str)
     except Exception:
         # An unserializable message must still persist; fall back to computing it.
-        return _build_message_entry_uncached(m)
+        return _build_message_entry_uncached(m, attachments=attachments)
     key = hashlib.sha256(payload.encode()).hexdigest()
+    # *attachments* is part of the cache KEY, not just of the computation: the
+    # entry it produces names a path inside ONE session's attachment directory,
+    # so serving it to another session would point that session's transcript at
+    # a file its own delete will never reclaim. Folded in AFTER the digest rather
+    # than into its input, so the message payload keeps exactly one hashing site.
+    key = f"{attachments}\x00{key}"
     size = len(payload)
     with _entry_cache_lock:
         if key in _entry_cache:
             _entry_cache.move_to_end(key)
             return _entry_cache[key][0]
-    entry = _build_message_entry_uncached(m)
+    entry = _build_message_entry_uncached(m, attachments=attachments)
     if size > _ENTRY_MAX_CACHEABLE_BYTES:
         return entry
     # Refuse to STORE a pairing whose key and entry may describe different states.
@@ -2241,12 +2249,23 @@ def _build_message_entry(m: dict) -> dict | None:
     return entry
 
 
-def _build_message_entry_uncached(m: dict) -> dict | None:
+def _build_message_entry_uncached(
+    m: dict, *, attachments: tuple[Path, str] | None = None
+) -> dict | None:
     """Build one persisted JSONL message dict from an in-memory slot message.
 
     Returns None for transient roles that are never persisted. Applies the
     same redaction the overwrite path used so append and rewrite produce
     byte-identical lines for the same message.
+
+    *attachments* is ``(sessions directory, transcript stem)`` when the caller
+    knows which session this row belongs to, which turns on inline-image
+    preservation: the image a ``![alt](/abs/path.png)`` names is copied into that
+    session's attachment directory and the PERSISTED destination is rewritten to
+    point there (see :mod:`kiro_crew.chat_attachments`). The in-memory row keeps
+    the original path -- this is the write boundary, and the only copy that has to
+    outlive the agent's scratch directory is the one on disk. ``None`` skips the
+    step, which is what a caller with no session context (a test, a preview) gets.
     """
     role = m.get("role", "assistant")
     if role in ("chunk", "done", "streaming", "queued", "permission"):
@@ -2260,6 +2279,14 @@ def _build_message_entry_uncached(m: dict) -> dict | None:
     if role != "user":
         content, _ = redact_exfiltration_urls(content)
         content, _ = redact_credentials(content)
+        # After redaction, so the path that lands on disk is the one redaction
+        # already passed; before serialization, so the row is durable the first
+        # time it is written. Idempotent, so the re-serialization this function
+        # gets on every flush does not re-copy anything.
+        if attachments is not None:
+            content = persist_inline_images(
+                content, sessions_dir=attachments[0], stem=attachments[1]
+            )
     entry: dict = {
         "role": role,
         "content": content,
@@ -2284,6 +2311,12 @@ def _build_message_entry_uncached(m: dict) -> dict | None:
             vc = v.get("content", "")
             vc, _ = redact_exfiltration_urls(vc)
             vc, _ = redact_credentials(vc)
+            # A variant is an alternate reply the user can switch BACK to, so its
+            # images break in exactly the way this rewrite exists to stop. It is
+            # persisted and redacted here, so it is rewritten here too; each
+            # variant carries its own per-message copy budget.
+            if attachments is not None and role != "user":
+                vc = persist_inline_images(vc, sessions_dir=attachments[0], stem=attachments[1])
             redacted_variants.append({**v, "content": vc})
         entry["variants"] = redacted_variants
         entry["variant_idx"] = m.get("variant_idx", 0)
@@ -3537,7 +3570,12 @@ def _save_slot_to_history(
                 or _approx_window_payload_bytes(window) > cache_max_bytes
                 else _build_message_entry
             )
-            window_entries = [e for m in window if (e := build_entry(m)) is not None]
+            # ``path`` is this session's transcript, so its directory and stem are
+            # what pairs an attachment with the session that will delete it.
+            attachments = (path.parent, path.stem)
+            window_entries = [
+                e for m in window if (e := build_entry(m, attachments=attachments)) is not None
+            ]
             window_lines = [json.dumps(e) + "\n" for e in window_entries]
             frozen_prefix, foreign_lines, dedup_dropped = _frozen_prefix_and_foreign_appends(
                 slot, path, disk_older, window_entries, collect_foreign=not rewrite
