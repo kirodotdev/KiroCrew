@@ -68,6 +68,15 @@ jobs:
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
+      # Where the routed Linux jobs run: the CodeBuild-hosted runner for this
+      # repository's own runs, `ubuntu-latest` for forks. Computed ONCE here
+      # (five jobs consume them) so a drifted copy cannot reroute one job. Every
+      # consumer reads it as `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`:
+      # if this job fails or is cancelled the output is empty, and a job that
+      # runs anyway (`coverage-gate` fails closed with `if: always()`) must still
+      # get a runner rather than error out before its own checks execute.
+      linux_runner: ${{ steps.runner.outputs.linux_runner }}
+      linux_runner_large: ${{ steps.runner.outputs.linux_runner_large }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -201,6 +210,28 @@ jobs:
             printf '%s\n' "$gates"
             echo "GATE_EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # CodeBuild-hosted runner pilot (docs/ci/ci-and-reviews.md). A run in any
+      # repository other than kirodotdev/KiroCrew (a fork's own CI), or a
+      # pull_request whose head repository is not this one, stays on
+      # ubuntu-latest; everything else gets the per-run CodeBuild label. The
+      # webhook on the AWS side independently allowlists the triggering actor,
+      # so this expression is the routing decision, not the trust boundary.
+      # `instance-size:large` is the documented CodeBuild label override
+      # (8 vCPU / 15 GB) for the memory-bound test shards.
+      - name: Pick the Linux runner label
+        id: runner
+        env:
+          IS_FORK: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) }}
+          LABEL: codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if [ "$IS_FORK" = "true" ]; then
+            echo "linux_runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
+            echo "linux_runner_large=ubuntu-latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "linux_runner=$LABEL" >> "$GITHUB_OUTPUT"
+            echo "linux_runner_large=$LABEL instance-size:large" >> "$GITHUB_OUTPUT"
+          fi
 
   # Build the Linux desktop packages and install them for real, but ONLY when the
   # diff could change what a package installs. The check is expensive (a PBS
@@ -489,6 +520,13 @@ jobs:
   backend-test:
     name: Backend Tests
     needs: [changes, await-fast-gate]
+    # NOT on the CodeBuild-hosted runner (yet). The pilot's first run routed
+    # these shards there and every shard failed 37-42 tests: the CodeBuild runner
+    # executes the job as root, and this suite asserts permission semantics
+    # (read-only refusals, root-owned checks, PermissionError) that root does not
+    # have; the standard:7.0 image also lacks the hosted toolchain (jq 1.7). They
+    # move once a non-root custom image exists -- see docs/ci/ci-and-reviews.md,
+    # "CodeBuild-hosted runner (pilot)".
     runs-on: ubuntu-latest
     # Full coverage shards need room for collection, tests and artifact upload.
     # The 120-second per-test timeout still bounds a stalled individual test.
@@ -1099,7 +1137,8 @@ jobs:
     if: >-
       needs.changes.outputs.only_frontend != 'true'
       && needs.changes.outputs.leaf_tests != 'true'
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1161,7 +1200,8 @@ jobs:
   # requires it is still satisfied.
   coverage-gate:
     name: Coverage Gate
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, changes]
     # Single source of truth for the floors -- referenced by the check steps,
@@ -1648,13 +1688,12 @@ jobs:
     # The templates it lints live under src/kiro_crew/deploy/, which the
     # paths-filter counts as backend, so a frontend-only diff cannot touch one.
     if: needs.changes.outputs.only_frontend != 'true'
-    # PILOT: this one job runs on a CodeBuild-hosted runner (project
-    # `kirocrew-gha-linux`, Ubuntu 22.04) instead of ubuntu-latest. Only runs
-    # inside kirodotdev/KiroCrew that are not fork PRs get the codebuild label;
-    # a fork's own CI and fork PRs stay on ubuntu-latest, because the runner
-    # never serves them. Rollback: `ubuntu-latest`. Policy, image caveat and
-    # exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
-    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
+    # PILOT (first wave): runs on a CodeBuild-hosted runner (project
+    # `kirocrew-gha-linux`, Ubuntu 22.04) instead of ubuntu-latest. The label is
+    # chosen once in `changes` (forks and fork PRs get ubuntu-latest, because the
+    # runner never serves them). Rollback: `ubuntu-latest`. Policy, image caveat
+    # and exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1724,7 +1763,11 @@ jobs:
   frontend-test:
     name: Frontend Tests
     needs: [changes, await-fast-gate]
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot, second wave). `instance-size:large` for the
+    # vitest --coverage shards' memory; routing and rollback as for cfn-lint. See
+    # docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
+    # Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Per-shard budget. The whole suite was ~23 min on one runner; split four
     # ways each shard is well under this, and a hung shard fails fast.
     timeout-minutes: 25
@@ -1873,7 +1916,9 @@ jobs:
       ${{ !cancelled()
       && needs.frontend-test.result != 'skipped'
       && needs.changes.outputs.only_backend != 'true' }}
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot), default size: a merge is one process
+    # re-reading four blobs, not a test run. Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1896,6 +1941,19 @@ jobs:
           path: website/.vitest-reports
           pattern: frontend-blob-*
           merge-multiple: true
+
+      - name: Normalize blob paths to this runner's workspace
+        # A blob stores every path absolute, and vitest's coverage map is keyed
+        # by those paths. Hosted runners all check out under the same root, so
+        # the shards and this job agree by accident; the CodeBuild-hosted runner
+        # gives every build its own root (/codebuild/output/src<random>/...), so
+        # four shards arrive with four roots and the merge unions nothing: each
+        # file is reported four times with one shard's numbers and the step
+        # exits non-zero with no failing test (pilot runs 1 and 2, 2026-09-12).
+        # This rewrites each blob's root to this checkout's; a no-op when they
+        # already match, so hosted runs are unaffected.
+        working-directory: website
+        run: node "$GITHUB_WORKSPACE/.github/scripts/frontend-blob-normalize-paths.mjs" .vitest-reports
 
       - name: Merge reports and coverage
         id: merge

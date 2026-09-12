@@ -269,15 +269,15 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one that completes non-success. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One extra ~1-minute job buys the whole matrix the right to not start |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
-| `backend-test` | 4 pytest-split shards on Python 3.12, `-n auto` within each; 50-minute job budget includes coverage upload, with the 120-second per-test timeout retained |
+| `backend-test` | 4 pytest-split shards on Python 3.12, `-n auto` within each; 50-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Stays on `ubuntu-latest`: the CodeBuild runner runs jobs as root and this suite asserts permission semantics root does not have (pilot, below) |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
-| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block) |
+| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks |
 | `frontend-lint` | `tsc -b`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
-| `frontend-test` | `vitest run --coverage` |
-| `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report |
+| `frontend-test` | `vitest run --coverage`. **CodeBuild-hosted runner, `instance-size:large`** (pilot, below) except for forks |
+| `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report. **CodeBuild-hosted runner** (pilot, below) except for forks |
 | `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint`. **Runs on the CodeBuild-hosted runner** (pilot, below) except for fork PRs |
 | `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
@@ -297,8 +297,50 @@ Details worth knowing:
   org's Actions consumption, so the wait is a fair-use ceiling no workflow change
   can lift. The runner infrastructure (project, role, webhook filters) is
   modelled in the maintainers' internal `KiroCrewPublishCDK` package, not here.
-  Three things to know when touching it:
-  - **Forks never see it.** The `runs-on` value is an expression: a run in any
+  **Second wave:** `frontend-test` (4 shards), `frontend-coverage-merge`,
+  `coverage-combine` and `coverage-gate` are routed the same way. The frontend
+  shards add an `instance-size:large` label suffix (8 vCPU / 15 GB, the hosted
+  runner's memory class; the default CodeBuild size has 7 GB) because `vitest
+  --coverage` is memory-bound; the merge and the two Python coverage jobs use
+  the project default. One thing the runner changes for the merge: every
+  CodeBuild build has its own workspace root (`/codebuild/output/src<random>/…`),
+  and a vitest blob stores paths absolute, so the four shards' blobs arrive with
+  four different roots and `--merge-reports --coverage` unions nothing (each
+  file reported four times, non-zero exit, no failing test named — the pilot's
+  first two runs). `frontend-coverage-merge` therefore rewrites each blob's
+  root to its own checkout before merging
+  (`.github/scripts/frontend-blob-normalize-paths.mjs`); on hosted runners the
+  roots already match and the step is a no-op. The Python side has the same
+  seam — the `backend-test` shards (hosted) record coverage under
+  `/home/runner/work/…` and `coverage-combine` (CodeBuild) runs under another
+  root — closed at the source instead: `[coverage:run] relative_files = true`
+  in `setup.cfg`, so shard data files carry repo-relative paths and combine
+  wherever the repo is checked out. A third effect of that root: vitest matches
+  `coverage.include` against the absolute path with picomatch `contains`, so
+  `src/**` is satisfied by the `/src/actions-runner/` segment of every
+  CodeBuild checkout and non-`src/` files loaded by tests (integration mocks,
+  `scripts/`) gained coverage numbers of their own, which the per-file gate
+  failed. `website/vite.config.ts` now excludes every non-`src/` directory of
+  `website/` by name, anchored on `website/`, which is a no-op on hosted paths.
+  **`backend-test` stays on `ubuntu-latest`**, and not for lack
+  of trying: the first pilot run routed its four shards to CodeBuild large and
+  each failed 37–42 tests (25k passed), because the CodeBuild runner executes
+  the job as root — this suite asserts permission semantics (read-only
+  refusals, root-owned-ancestor checks, `PermissionError`) that root does not
+  have, and the code refuses to run providers as root by design — and because
+  the `standard:7.0` image ships jq 1.6 where the hosted image has 1.7. AWS
+  documents no non-root mode for the CodeBuild GitHub Actions runner, so those
+  shards move only once a custom image (non-root user, hosted-parity tools)
+  exists. Peak-hour measurement behind the move (2026-09-11, 38 runs):
+  backend shards queued p90 521 s / max 763 s, frontend shards p90 569 s / max
+  813 s, with 103 of these jobs running at once. Things to know when touching it:
+  - **Forks never see it.** The label is computed once, in the `changes` job
+    (outputs `linux_runner` and `linux_runner_large`), and the routed jobs read
+    it as `runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`,
+    so there is one copy of the decision rather than one per job, and a job
+    that runs after `changes` failed (`coverage-gate` fails closed with
+    `if: always()`) still gets a runner instead of erroring out before its own
+    checks execute: a run in any
     repository other than `kirodotdev/KiroCrew` (a fork's own CI on its `main`),
     or a `pull_request` whose head repository is not this one, gets
     `ubuntu-latest`; everything else gets the CodeBuild label. The webhook on the AWS side is
@@ -311,8 +353,10 @@ Details worth knowing:
     (Ubuntu 22.04). Anything a job assumed pre-installed must come from a
     `setup-*` action; `cfn-lint` already installs its own Python. Moving another
     job here means checking that first.
-  - **Rollback is one line:** set `runs-on` back to `ubuntu-latest`. A CodeBuild
-    project that receives webhooks for jobs it does not match starts nothing.
+  - **Rollback is one line:** in the `changes` job's `Pick the Linux runner
+    label` step, set both outputs to `ubuntu-latest` (or, for one job, replace
+    its `runs-on` reference with `ubuntu-latest`). A CodeBuild project that
+    receives webhooks for jobs it does not match starts nothing.
   - **A queued job is not bounded by `timeout-minutes`.** That budget starts when a
     runner picks the job up. A job whose log shows the `codebuild-…` label and no
     runner means the webhook did not start a build — the project name in the label
@@ -335,11 +379,18 @@ Details worth knowing:
     owner), and a check that the App installation is scoped to this repository
     alone (needs repository-settings access).
   - **Pilot exit condition.** The pilot ends on whichever comes first: **50
-    non-fork `CI` runs** on this job or **2026-10-10**. Expand to more Linux jobs
-    only if the median queue-to-start on CodeBuild is under 60 s and no run waited
-    longer than the hosted baseline's mean (155 s) for a runner; otherwise roll it
-    back. Either way the outcome is recorded here so this entry does not become a
-    permanent one-off.
+    non-fork `CI` runs** with the second wave in place or **2026-10-10**. The
+    second wave went in one day after the first, on the first wave's early data
+    (every `cfn-lint` build started 18–21 s after the job was queued) plus the
+    second wave's own first run (all ten jobs it routed, same 18–21 s); that is a
+    small sample, which is why the criterion below now covers the whole routed
+    set rather than gating a further expansion. Keep the routing only if the
+    median queue-to-start on CodeBuild stays under 60 s and no routed job waits
+    longer than the hosted baseline's mean (155 s) for a runner; otherwise roll
+    it back. The remaining `ubuntu-latest` jobs (`backend-test`, `changes`, the
+    lint jobs, `electron-test`, `bundle-size`, `linux-packaging`) stay where
+    they are until that window closes. Either way the outcome is recorded here so this entry
+    does not become a permanent one-off.
 
 - **The macOS peer-identity canary is asserted by name.** `pytest -q` does not name
   passing tests and a skip exits 0, so a canary that quietly stopped running (a

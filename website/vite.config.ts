@@ -750,6 +750,34 @@ export default defineConfig({
         'src/**/*.stories.{ts,tsx}',
         'src/**/*.d.ts',
         'src/vite-env.d.ts',
+        // Everything in website/ that is NOT src/, spelled out. Vitest matches
+        // `include` against the ABSOLUTE file path with picomatch
+        // `{ contains: true }`, so `src/**` is satisfied by any `src/` segment
+        // anywhere in the path -- and the CodeBuild-hosted CI runner checks out
+        // under `/codebuild/output/src<random>/src/actions-runner/...`. There,
+        // every loaded file under website/ (integration mocks, scripts/) matched
+        // `src/**` and landed in the merged report with its own coverage number,
+        // which the per-file gate then failed. GitHub-hosted runners have no
+        // such segment, which is why this never showed before. Anchoring on
+        // `website/` keeps these correct on every checkout path; they are
+        // no-ops where the include already did not match.
+        //
+        // Why a blocklist and not an anchored include (`**/website/src/**`):
+        // vitest reuses `include` as a filesystem glob RELATIVE to root to add
+        // never-imported source files at 0% (getUntestedFilesByRoot), and from
+        // website/ that anchored form matches nothing, so untested files would
+        // silently drop out of the report and the per-file gate. A new
+        // top-level website/ directory whose files tests import needs an entry
+        // here -- the symptom is a non-src path in the merged report on the
+        // CodeBuild runner only.
+        '**/website/integration/**',
+        '**/website/scripts/**',
+        '**/website/capture/**',
+        '**/website/playwright/**',
+        '**/website/electron/**',
+        '**/website/eslint-rules/**',
+        '**/website/docs/**',
+        '**/website/*.ts',
       ],
     },
   },
