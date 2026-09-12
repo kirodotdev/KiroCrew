@@ -20,6 +20,7 @@ import dataclasses
 import io
 import json
 import os
+import struct
 import subprocess
 import sys
 import urllib.error
@@ -1834,6 +1835,25 @@ class TestMemoryCli:
         assert json.loads(out_file.read_text())["episodic"] == []
         assert "Exported to" in capsys.readouterr().out
 
+    def test_export_ships_vectors_as_lists_with_a_space_signature(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        blob = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
+        with _MemHarness() as h:
+            h.store.get_all_semantic.return_value = [
+                {"key": "a", "embedding": blob},
+                {"key": "b", "embedding": None},
+            ]
+            h.store.get_episodic_list.return_value = []
+            h.store.get_events.return_value = []
+            h.store.recorded_embedding_space.return_value = "space-1"
+            cc._memory_cmd(_ns(mem_action="export", output=None))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["embedding_space_sig"] == "space-1"
+        rows = {r["key"]: r for r in payload["semantic"]}
+        assert rows["a"]["embedding"] == list(struct.unpack("4f", blob))
+        assert "embedding" not in rows["b"]
+
     def test_migrate_prints_counts(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _MemHarness() as h:
             h.store.migrate_from_markdown.return_value = {
@@ -1865,6 +1885,34 @@ class TestMemoryCli:
             cc._memory_cmd(_ns(mem_action="import", file=str(src)))
         h.store.import_memory.assert_called_once_with({"semantic": []})
         assert "Import complete" in capsys.readouterr().out
+
+    def test_import_prints_the_unembedded_caveat_only_when_rows_landed_null(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps({"semantic": []}), encoding="utf-8")
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {
+                "semantic": 5,
+                "episodic": 0,
+                "skipped": 0,
+                "semantic_unembedded": 2,
+            }
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "Semantic rows without a vector: 2" in out
+        assert "re-embed sweep" in out
+
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {
+                "semantic": 5,
+                "episodic": 0,
+                "skipped": 0,
+                "semantic_unembedded": 0,
+            }
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "re-embed sweep" not in out
 
     def test_unknown_action_prints_usage_and_closes(
         self, capsys: pytest.CaptureFixture[str]

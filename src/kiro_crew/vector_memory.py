@@ -60,6 +60,7 @@ except ImportError:
 
 import time
 
+from kiro_crew import embeddings
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, memory_v2, platform_compat
 from kiro_crew.config import live
@@ -581,6 +582,22 @@ _LESSON_NEGATIVE_SEP = " — NOT: "
 def _lesson_slug(rule: str) -> str:
     """The key slug write_lesson derives for *rule*. Single source of truth."""
     return hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
+def embedding_blob_to_list(blob: object) -> list[float] | None:
+    """Decode a stored embedding BLOB into a JSON-safe ``list[float]``.
+
+    Export surfaces use this so a payload carries vectors that a later
+    ``import_memory`` can persist verbatim; serializing the raw bytes through
+    ``json.dumps(..., default=str)`` would ship an unrestorable ``repr``
+    string. Returns None for a NULL column and for anything that is not a
+    whole, non-empty sequence of packed 4-byte floats.
+    """
+    if not isinstance(blob, (bytes, bytearray)):
+        return None
+    if len(blob) == 0 or len(blob) % 4:
+        return None
+    return list(struct.unpack(f"{len(blob) // 4}f", bytes(blob)))
 
 
 def _lesson_key(rule: str, repo_scope: str | None = None) -> str:
@@ -1807,6 +1824,8 @@ class VectorMemoryStore:
         metadata: dict | None = None,
         expected_revision: int | None = None,
         correction: record_meta.CorrectionEvidence | None = None,
+        embedding: list[float] | None = None,
+        embedding_space: str | None = None,
     ) -> tuple[SemanticRejectCode, str] | None:
         """Write a semantic memory entry with full validation pipeline.
 
@@ -1815,7 +1834,26 @@ class VectorMemoryStore:
         *facets* stamps the crew lineage's carve axes and is ignored on v1. It is
         applied only on a SUCCESSFUL write, so a rejected value leaves no axis
         behind pointing at a row that does not exist.
+
+        *embedding* is a pre-computed vector for this row, mirroring
+        ``write_episodic``'s parameter of the same name (an import carrying a
+        matching-space export is the caller that needs it). A valid vector —
+        exactly ``self._embedding_dim`` wide, every element a finite,
+        float32-packable number — is persisted verbatim and the write-tail
+        embed is skipped; anything else is dropped, so a malformed value
+        degrades to the ``embedding=None`` behaviour rather than poisoning
+        vector search. When *metadata* names a subject/predicate identity the
+        key can be remapped below, and the vector lands on the RESOLVED row —
+        a supplied vector must describe that row's value. *embedding_space*
+        names the signature the vector was produced under: when given, the
+        vector is persisted only while the store still records exactly that
+        signature, re-checked inside the persisting transaction so a
+        reconcile landing mid-call cannot strand a foreign-space vector on a
+        row the backfill sweep (which only revisits NULL rows) would never
+        repair.
         """
+        embedding = self._valid_supplied_embedding(embedding) if embedding is not None else None
+        embedding_generation = self._space_generation
         value_json = json.dumps(value)
         result = self.validate_semantic(key, value, confidence, source, value_json=value_json)
         if result is not None:
@@ -1845,6 +1883,9 @@ class VectorMemoryStore:
             metadata=metadata,
             expected_revision=expected_revision,
             correction=correction,
+            embedding=embedding,
+            embedding_space=embedding_space,
+            embedding_generation=embedding_generation,
         )
         if conflict is not None:
             logger.info("Semantic write rejected for %r: %s", key, conflict)
@@ -2126,9 +2167,23 @@ class VectorMemoryStore:
         metadata: dict | None = None,
         expected_revision: int | None = None,
         correction: record_meta.CorrectionEvidence | None = None,
+        embedding: list[float] | None = None,
+        embedding_space: str | None = None,
+        embedding_generation: int | None = None,
     ) -> str | None:
-        """Retain V1 conflict scoring; propose inferred changes in private V2."""
+        """Retain V1 conflict scoring; propose inferred changes in private V2.
+
+        *embedding* is a caller-supplied, already-validated vector (see
+        ``set_semantic``): when present it is persisted in place of the
+        step-8.5 embed tail's own inference, guarded by *embedding_space*
+        (durable signature, re-read under the write lock) and
+        *embedding_generation* (the in-process space generation sampled at
+        ``set_semantic`` entry, same contract as ``write_lesson``'s
+        ``rule_emb_generation``).
+        """
         private_policy = self.algorithm_version == "v2"
+        if embedding_generation is None:
+            embedding_generation = self._space_generation
         with self._db_lock:
             self.db.execute("BEGIN IMMEDIATE")
             try:
@@ -2301,7 +2356,64 @@ class VectorMemoryStore:
             and existing["value_json"] == value_json
             and existing["embedding"] is not None
         )
-        if self.embed_fn is not None and not key.startswith("lesson.") and not already_embedded:
+        # A validated caller-supplied vector is persisted verbatim: it spares
+        # the inference the tail below would spend, and it covers stores with
+        # no ``embed_fn`` bound at all (the CLI's import path). ``lesson.``
+        # keys are NOT excluded on this branch — the supplied vector is the
+        # source store's own stored row vector, so carrying it verbatim
+        # preserves whatever contract wrote it there (write_lesson's raw-rule
+        # text for lessons). Two guards keep a superseded-space vector out of
+        # a row the backfill sweep would never revisit: the in-process
+        # generation sampled at set_semantic entry (a live swap announces
+        # itself via begin_space_change before reconciling), and — when the
+        # caller named the space the vector came from — a re-read of the
+        # durable signature under the same lock as the persist, which also
+        # covers a reconcile performed by ANOTHER process on this database.
+        # The residual window is reconcile's own clear-then-stamp gap, the
+        # same exposure the embed tail below carries.
+        if embedding is not None and not already_embedded:
+            supplied_blob = struct.pack(f"{len(embedding)}f", *embedding)
+            with self._db_lock:
+                # Best-effort, matching the embed tail below: the semantic row
+                # is already committed, so NOTHING here may escape — a raise
+                # would discard a batched caller's remaining items and report a
+                # committed row as failed. The signature read and the UPDATE
+                # share one immediate transaction, so a reconcile running in
+                # another process cannot interleave between them.
+                try:
+                    if self._space_generation != embedding_generation:
+                        logger.debug("Dropping a supplied semantic embedding: superseded space")
+                    else:
+                        self.db.execute("BEGIN IMMEDIATE")
+                        stored_row = self.db.execute(
+                            "SELECT value FROM memory_meta WHERE key = ?", (_EMBED_SIG_KEY,)
+                        ).fetchone()
+                        stored_sig = None if stored_row is None else str(stored_row["value"])
+                        if embedding_space is None or stored_sig == embedding_space:
+                            self.db.execute(
+                                f"UPDATE {self._sem_rel} SET embedding = ? "
+                                f"WHERE key = ? AND value_json = ? AND is_deleted = 0"
+                                f"{self._sem_guard}",
+                                (supplied_blob, key, value_json),
+                            )
+                        else:
+                            logger.debug("Dropping a supplied semantic embedding: store re-signed")
+                        self.db.commit()
+                except Exception:
+                    logger.warning(
+                        "Embedding persist failed for %r (semantic write kept; "
+                        "vector left NULL for backfill)",
+                        key,
+                        exc_info=True,
+                    )
+                    try:
+                        self.db.rollback()
+                    except Exception:
+                        logger.debug(
+                            "Rollback after failed embedding persist failed",
+                            exc_info=True,
+                        )
+        elif self.embed_fn is not None and not key.startswith("lesson.") and not already_embedded:
             embed_generation = self._space_generation
             vec = self._try_embed(f"{key} {value_json}", PRIORITY_BULK)
             if vec:
@@ -5684,6 +5796,30 @@ class VectorMemoryStore:
             return 0
 
         with self._db_lock:
+            # The stale index files go first, so whether the new signature may
+            # be stamped is known while the clear transaction is still open:
+            # the stamp lands in the SAME transaction as the clear. Committing
+            # them separately leaves a window in which the durable signature
+            # still names the retiring space while its vectors are already
+            # gone — a concurrent import that re-checks the signature against
+            # that read (set_semantic's supplied-vector persist) would commit
+            # a retiring-space vector onto a row the backfill sweep, which
+            # only revisits NULL rows, could never repair.
+            stale_removal_failed = False
+            for stale in (self._faiss_path, self._faiss_path.with_suffix(".ids.json")):
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    # A surviving index file is NOT cosmetic: load_faiss_index()
+                    # prefers the persisted pair when its content digests and
+                    # id-map length line up — checks that all pass here, since
+                    # both files and their stamp are intact — so the next start
+                    # would load OLD vectors and score them against new-model
+                    # queries. Reachable on a read-only directory and on Windows,
+                    # where unlink fails while another process holds the index
+                    # mapped.
+                    stale_removal_failed = True
+                    logger.warning("Could not remove stale FAISS file %s", stale, exc_info=True)
             try:
                 episodic = self.db.execute(
                     f"UPDATE {self._epi_rel} SET embedding = NULL WHERE embedding IS NOT NULL"
@@ -5693,6 +5829,13 @@ class VectorMemoryStore:
                     f"UPDATE {self._sem_rel} SET embedding = NULL WHERE embedding IS NOT NULL"
                     f"{self._sem_guard}"
                 ).rowcount
+                if not stale_removal_failed:
+                    self.db.execute(
+                        "INSERT INTO memory_meta (key, value, updated_at) VALUES (?, ?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                        "updated_at = excluded.updated_at",
+                        (_EMBED_SIG_KEY, signature, _now_iso()),
+                    )
                 self.db.commit()
             except Exception:
                 self.db.rollback()
@@ -5700,27 +5843,14 @@ class VectorMemoryStore:
             self._faiss_index = None
             self._faiss_id_map = []
             self._invalidate_episodic_scoring()
-            stale_removal_failed = False
-            for stale in (self._faiss_path, self._faiss_path.with_suffix(".ids.json")):
-                try:
-                    stale.unlink(missing_ok=True)
-                except OSError:
-                    # A surviving index file is NOT cosmetic: load_faiss_index()
-                    # prefers the persisted pair, and its only consistency check
-                    # is index-vs-id-map (both intact here), so the next start
-                    # would load OLD vectors and score them against new-model
-                    # queries. Reachable on a read-only directory and on Windows,
-                    # where unlink fails while another process holds the index
-                    # mapped.
-                    stale_removal_failed = True
-                    logger.warning("Could not remove stale FAISS file %s", stale, exc_info=True)
         invalidated = max(0, episodic) + max(0, semantic)
         if stale_removal_failed:
-            # Deliberately do NOT stamp the signature. Stamping would mark the
-            # reconciliation done while a stale index survives on disk, making
-            # the corruption permanent. Leaving the old signature makes the next
-            # boot retry — the embeddings are already NULL, so the retry is a
-            # cheap no-op UPDATE plus another unlink attempt.
+            # Deliberately left unstamped in the transaction above. Stamping
+            # would mark the reconciliation done while a stale index survives
+            # on disk, making the corruption permanent. Leaving the old
+            # signature makes the next boot retry — the embeddings are already
+            # NULL, so the retry is a cheap no-op UPDATE plus another unlink
+            # attempt.
             logger.error(
                 "Embedding vector space NOT reconciled: stale FAISS files could not be "
                 "removed. Stored embeddings were cleared, but the signature is left "
@@ -5729,7 +5859,6 @@ class VectorMemoryStore:
                 self._faiss_path,
             )
             return invalidated
-        self._write_meta(_EMBED_SIG_KEY, signature)
         if invalidated:
             logger.warning(
                 "Embedding model changed (vector space %s -> %s) — invalidated %d stored "
@@ -6291,9 +6420,106 @@ class VectorMemoryStore:
         )
         return counts
 
+    def _valid_supplied_embedding(self, embedding: object) -> list[float] | None:
+        """Normalize a caller-supplied vector, or None when it is unusable.
+
+        Usable means a list of finite, float32-packable numbers at exactly
+        this store's embedding width. Anything else — a ``repr`` string from a
+        legacy export that serialized the raw BLOB, a foreign-width vector,
+        NaN/inf contamination, booleans — is refused, so the row lands NULL
+        (repaired by the gateway's backfill sweep, or by the write tail where
+        a ready ``embed_fn`` is bound) rather than carrying a vector that can
+        never rank correctly.
+        """
+        if not isinstance(embedding, list) or len(embedding) != self._embedding_dim:
+            return None
+        vec: list[float] = []
+        for item in embedding:
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                return None
+            value = float(item)
+            if not math.isfinite(value):
+                return None
+            vec.append(value)
+        # A finite Python float can still exceed float32 range (e.g. 1e308),
+        # and the persist packs with "f". struct.pack alone is NOT a reliable
+        # guard: depending on the build it either raises OverflowError or
+        # silently saturates to +/-inf — and a saturated vector stores as inf,
+        # the exact contamination the isfinite check above refuses. Round-trip
+        # through float32 and refuse anything that comes back non-finite,
+        # which is correct under either pack behaviour.
+        try:
+            packed = struct.unpack(f"{len(vec)}f", struct.pack(f"{len(vec)}f", *vec))
+        except (OverflowError, ValueError, struct.error):
+            return None
+        if not all(math.isfinite(item) for item in packed):
+            return None
+        return vec
+
+    def _semantic_row_embedded(self, key: str) -> bool:
+        """Whether the active semantic row for *key* holds a stored vector."""
+        row = self._fetch_one_locked(
+            f"SELECT embedding FROM {self._sem_rel} "
+            f"WHERE key = ? AND is_deleted = 0{self._sem_guard}",
+            (key,),
+        )
+        return bool(row is not None and row["embedding"] is not None)
+
     def import_memory(self, data: dict) -> dict[str, int]:
-        """Import memory from an export dict with 'semantic' and 'episodic' arrays."""
-        counts = {"semantic": 0, "episodic": 0, "skipped": 0}
+        """Import memory from an export dict with 'semantic' and 'episodic' arrays.
+
+        A payload written by ``kirocrew memory export`` carries each semantic
+        row's stored vector as a plain list plus a top-level
+        ``embedding_space_sig``. Those vectors are persisted verbatim ONLY on a
+        store that cannot re-derive them itself (no ``embed_fn`` — the CLI's
+        store) AND whose recorded space matches the payload signature: vectors
+        are comparable within one space, so a foreign-space vector would rank
+        against queries it can never match, and a store that CAN embed keeps
+        the invariant that every semantic vector is a function of the row's own
+        text (an imported payload travels between installs, so its vectors are
+        not trusted where they can be recomputed). A fresh store — nothing
+        recorded, no stored vectors — adopts the payload's space when it is the
+        space the active backend produces, so the CLI's import (and a gateway
+        restore whose embedder is not yet ready) carries vectors instead of
+        landing NULL. Rows written without a vector
+        take the write tail's own embed (same text, after the commit, only
+        where ``embed_fn`` is bound); rows that land with a NULL vector are
+        reported under ``semantic_unembedded`` so the caller can say so instead
+        of silently importing keyword-only rows. A legacy payload whose
+        ``embedding`` is a ``repr`` string of the raw BLOB fails vector
+        validation and lands NULL for the sweep.
+        """
+        counts = {"semantic": 0, "episodic": 0, "skipped": 0, "semantic_unembedded": 0}
+        space_sig = data.get("embedding_space_sig")
+        if (
+            space_sig is not None
+            and self.recorded_embedding_space() is None
+            and not self.has_stored_embeddings()
+            and (self.embed_fn is None or self.embed_fn is embeddings.make_sync_embed_fn())
+        ):
+            # An empty, unsigned store has no legacy vectors to protect — the
+            # same precedent _try_embed applies before a first write, including
+            # its singleton gate: a store bound to some OTHER callable must not
+            # be stamped with the shared backend's identity. Adopt the
+            # payload's space only when the ACTIVE backend produces it, so the
+            # rows imported here and everything embedded afterwards share one
+            # space. Signature resolution is metadata-only (no model load).
+            try:
+                if space_sig == embeddings.active_embedding_space_signature():
+                    self.reconcile_embedding_space(space_sig)
+            except Exception:
+                logger.debug("Active embedding space unresolved; not adopting", exc_info=True)
+        space_ok = space_sig is not None and space_sig == self.recorded_embedding_space()
+        # Carry payload vectors only where the store cannot re-derive them from
+        # the row's own text RIGHT NOW: no embed_fn at all (the CLI's store),
+        # or an embed_fn whose shared backend is not ready (model absent, still
+        # downloading, or a rejected custom path) — the tail would land those
+        # rows NULL even though same-space vectors are in hand. Where the
+        # backend IS ready, the tail re-embeds, keeping the invariant that a
+        # rederivable store's vectors are a function of the row's own text.
+        carry_vectors = space_ok and (
+            self.embed_fn is None or embeddings.peek_ready_shared_embedder() is None
+        )
         for entry in data.get("semantic", []):
             try:
                 val = (
@@ -6303,8 +6529,31 @@ class VectorMemoryStore:
                 )
                 conf = float(entry.get("confidence", 0.85))
                 src = entry.get("source", "import")
-                if self.set_semantic(entry["key"], val, conf, src) is None:
+                key = entry["key"]
+                vec = None
+                if carry_vectors:
+                    vec = self._valid_supplied_embedding(entry.get("embedding"))
+                if (
+                    self.set_semantic(
+                        key,
+                        val,
+                        conf,
+                        src,
+                        embedding=vec,
+                        embedding_space=space_sig if vec is not None else None,
+                    )
+                    is None
+                ):
                     counts["semantic"] += 1
+                    # Separate guard: the row is committed at this point, so a
+                    # failed verification read must degrade to an approximate
+                    # count, never fall to the per-entry handler and report the
+                    # committed row as skipped as well.
+                    try:
+                        if not self._semantic_row_embedded(key):
+                            counts["semantic_unembedded"] += 1
+                    except Exception:
+                        logger.debug("Post-import vector check failed for %r", key, exc_info=True)
                 else:
                     counts["skipped"] += 1
             except Exception:
