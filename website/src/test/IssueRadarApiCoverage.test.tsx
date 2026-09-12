@@ -481,6 +481,7 @@ describe('DEFAULT_REPO_SETTINGS', () => {
       unlabeled_is_untriaged: true,
       good_first_issue_labels: [],
       notify_on_new_issue: false,
+      workspace_path: '',
       revision: 0,
     })
   })

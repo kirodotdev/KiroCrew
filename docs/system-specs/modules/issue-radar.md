@@ -236,6 +236,25 @@ triage prompt. When the agent concludes it writes its verdict back into the
 item's investigation record — that is what puts a verdict + summary on the
 issue's card instead of leaving it in chat scrollback.
 
+The session opens in the repo's configured **`workspace_path`** (a per-repo,
+local-only triage setting stored in `config.json`, alongside `triage_labels` and
+`notify_on_new_issue`, and normalized by `store._normalize_settings`) so the agent
+sees the repo's real source instead of the gateway's default cwd. The frontend forwards it as the new slot's
+`project` on `createSlot`, which sets the working directory via `chatSlotProject`
+after create. An empty setting passes `null`, leaving the slot on the default cwd
+(the pre-workspace behavior). It is applied only when a FRESH session is opened;
+a resumed slot keeps the working directory it was born with, so changing the
+setting never moves the cwd of a conversation already running — which is why the
+Repo Settings readout says "New Investigate sessions will run in …", not that the
+next click will. The path is stored verbatim and never validated against the
+filesystem — the path resolves on the machine running the gateway (which may be a
+different host than the operator's), and a not-yet-checked-out path is a
+legitimate empty state. Because it is unvalidated, `chatSlotProject` can still
+reject it at slot-create time (missing dir on the gateway host, or a sensitive
+path), which would otherwise delete the slot and fail the whole Investigate;
+`agentSession.openSession` therefore retries once WITHOUT the project, degrading a
+bad path to a session on the default cwd rather than a dead button.
+
 That write goes through the **`issue_radar_record_investigation` MCP tool**, not
 a raw HTTP call. An agent session holds no dashboard credential:
 

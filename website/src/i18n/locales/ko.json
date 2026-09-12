@@ -2453,6 +2453,14 @@
             "agent_language_follow": "대시보드와 동일({{language}})"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "작업 공간 폴더 찾아보기",
+            "browse": "찾아보기",
+            "workspace": "작업 공간",
+            "local_workspace_path": "로컬 작업 공간 경로",
+            "where_this_repo_is_checked_out_investigate_cwd": "게이트웨이를 실행하는 컴퓨터에서 이 저장소가 체크아웃된 위치입니다. 조사는 이 디렉터리에서 채팅 세션을 열어 에이전트가 저장소의 실제 소스를 볼 수 있도록 합니다. 로컬 전용 — 소스 호스트로 전송되지 않습니다.",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "새 조사 세션은 다음 위치에서 실행됩니다:",
+            "leave_empty_to_use_the_default_working_directory": "기본 작업 디렉터리를 사용하려면 비워 두세요.",
             "ai_label_recommendations": "AI 레이블 추천",
             "also_treat_issues_with": "다음이 붙은 이슈도",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "이며 여기서는 변경할 수 없습니다 — 멤버나\n 공동 작업자를 추가하거나 제거하려면 다음에서 액세스를 관리하세요:",

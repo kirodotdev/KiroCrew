@@ -1,4 +1,5 @@
 import { useIssueRadar } from '../context'
+import { repoScopeKey } from '../lib/links'
 import GeneralSettings from './settings/GeneralSettings'
 import RepoSettings from './settings/RepoSettings'
 
@@ -11,8 +12,13 @@ export default function SettingsView() {
   return (
     <div className="h-full overflow-y-auto bg-bg text-text scrollbar-none" style={{ scrollbarWidth: 'none' }}>
       {settingsTarget.kind === 'repo' ? (
+        // Key by the FULL provider-qualified scope, not owner/repo alone: the same
+        // slug can exist on two providers (github.com vs a GitLab instance), and a
+        // bare owner/repo key would reuse this instance across that switch. Its
+        // persistent draft/revision/dirtyKeys refs would then carry repo A's
+        // pending edit into a write to repo B — silent cross-repo corruption.
         <RepoSettings
-          key={`${settingsTarget.owner}/${settingsTarget.repo}`}
+          key={repoScopeKey(settingsTarget)}
           repoRef={settingsTarget}
         />
       ) : (
