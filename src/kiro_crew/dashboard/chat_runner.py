@@ -79,6 +79,8 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
 from kiro_crew.dashboard.chat_summary import generate_session_summary
+from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
+from kiro_crew.dashboard.chat_tags import resolve_board_tags
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
     _maybe_auto_title,
@@ -7968,6 +7970,26 @@ async def _run_chat(
             if is_new or slot._folder_changed:
                 folder_path = state.folder_breadcrumb(slot.folder_id) or None
                 slot._folder_changed = False
+            # Board tags: resolve the slot's tag ids to (id, agent-policy) via
+            # the live vocabulary so the [BOARD] context line can list the tags
+            # and which are agent-writable. Canonical IDs, never the free-form
+            # ``name`` field: names are agent-writable prose and an
+            # instruction-shaped name must never enter trusted model context;
+            # ids are also the exact handles the ``chat_tag``
+            # directive consumes. Best-effort — a resolution failure must never
+            # break message assembly.
+            board_tags: list[tuple[str, str]] | None = None
+            try:
+                _slot_tags = list(getattr(slot, "tags", None) or [])
+                if _slot_tags:
+                    # Grants-store read+parse off the loop; the per-tag
+                    # resolutions below serve from the warmed cache.
+                    await asyncio.to_thread(refresh_tag_grants_cache)
+                    # Row-backed resolution: only ids with a protected grant
+                    # row reach the trusted rail — see resolve_board_tags.
+                    board_tags = resolve_board_tags(_slot_tags, state._tags) or None
+            except Exception:
+                logger.debug("board_tags resolution failed", exc_info=True)
             _color_theme = getattr(slot, "color_theme", "")
             # Governance gate: installed-pack persona injection
             # is a governable capability. A policy can force-disable it wholesale
@@ -8062,6 +8084,7 @@ async def _run_chat(
                 request_prefix_context=_request_prefix_context or None,
                 exclude_last_n=1,
                 folder_path=folder_path,
+                board_tags=board_tags,
                 model_window=model_window,
                 # Member DM threads get the four-layer member identity block.
                 # `slot.agent` is the member the human picked (the crew name);
