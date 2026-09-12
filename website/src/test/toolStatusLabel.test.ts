@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 
 describe('toolStatusLabel', () => {
-  const toolDetail = { kind: 'tool', text: 'Looking up the mic permission handler', toolName: 'grep' }
+  const toolDetail = { kind: 'tool', purpose: 'Looking up the mic permission handler', label: 'grep' }
 
   it('returns the agent purpose when simplified names are on', () => {
     expect(toolStatusLabel(toolDetail, true)).toBe('Looking up the mic permission handler')
@@ -18,17 +18,17 @@ describe('toolStatusLabel', () => {
   })
 
   it('falls back to the purpose in raw mode when no tool title was recorded', () => {
-    // Details restored from before toolName was carried, or a status whose
+    // A malformed or legacy status whose
     // tool title was empty: showing the purpose beats blanking the row.
-    expect(toolStatusLabel({ kind: 'tool', text: 'Reading gateway.log' }, false)).toBe('Reading gateway.log')
+    expect(toolStatusLabel({ kind: 'tool', purpose: 'Reading gateway.log' }, false)).toBe('Reading gateway.log')
   })
 
   it('passes non-tool phases through unchanged in both modes', () => {
     for (const simplified of [true, false]) {
-      expect(toolStatusLabel({ kind: 'thinking', text: 'Thinking…' }, simplified)).toBe('Thinking…')
-      expect(toolStatusLabel({ kind: 'streaming', text: 'Streaming' }, simplified)).toBe('Streaming')
-      // Server-supplied chat_status carries only `text`, never a tool title.
-      expect(toolStatusLabel({ kind: 'thinking', text: 'Compacting…' }, simplified)).toBe('Compacting…')
+      expect(toolStatusLabel({ kind: 'thinking', label: 'Thinking…' }, simplified)).toBe('Thinking…')
+      expect(toolStatusLabel({ kind: 'streaming', label: 'Streaming' }, simplified)).toBe('Streaming')
+      // Server-supplied chat_status carries a display label, never a purpose.
+      expect(toolStatusLabel({ kind: 'thinking', label: 'Compacting…' }, simplified)).toBe('Compacting…')
     }
   })
 

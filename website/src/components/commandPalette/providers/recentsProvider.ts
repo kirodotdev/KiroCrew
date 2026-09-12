@@ -180,7 +180,7 @@ function shortMsg(slot: ChatSlot): string {
 export function sessionStatus(
   slot: ChatSlot,
   unread: string[],
-  statusDetail?: { kind?: string; text?: string; toolName?: string },
+  statusDetail?: { kind?: string; label?: string; purpose?: string },
   // Defaults to the ChatSettings default (on) so callers that don't care about
   // the preference keep the purpose-first behavior.
   simplifiedToolNames = true,
@@ -212,12 +212,17 @@ export function sessionStatus(
     }
   }
   if (slot.running) {
+    const fixedPhaseLabel = statusDetail?.kind === 'streaming'
+      ? i18nT('pages.chatSidebar.streaming')
+      : statusDetail?.kind === 'thinking'
+        ? i18nT('components.commandPalette.providers.recentsProvider.thinking')
+        : ''
     return {
       style: 'dot',
       colorVar: '--accent',
       pulse: true,
       label:
-        toolStatusLabel(statusDetail, simplifiedToolNames, i18next.language) ||
+        fixedPhaseLabel || toolStatusLabel(statusDetail, simplifiedToolNames, i18next.language) ||
         i18nT('components.commandPalette.providers.recentsProvider.thinking'),
     }
   }
