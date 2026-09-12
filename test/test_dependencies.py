@@ -224,7 +224,7 @@ class TestCapabilitySeamResolution:
 
     async def test_clean_dependencies_uninstalls_through_seam(self, fake_manager):
         mgr = fake_manager()
-        cleaned = await clean_dependencies(
+        cleaned, unrecorded = await clean_dependencies(
             "test-app",
             [{"id": "capability/mcp/some-mcp", "type": "capability.mcp"}],
         )
@@ -235,7 +235,7 @@ class TestCapabilitySeamResolution:
         """A ledger row written before the rename still carries ``aim.mcp``; its
         cleanup must still dispatch, or the dep leaks forever."""
         mgr = fake_manager()
-        cleaned = await clean_dependencies(
+        cleaned, unrecorded = await clean_dependencies(
             "test-app", [{"id": "capability/mcp/old", "type": "aim.mcp"}],
         )
         assert mgr.calls == [("uninstall_mcp", "old")]
@@ -243,7 +243,7 @@ class TestCapabilitySeamResolution:
 
     async def test_clean_skips_unknown_type(self, fake_manager):
         mgr = fake_manager()
-        cleaned = await clean_dependencies(
+        cleaned, unrecorded = await clean_dependencies(
             "test-app", [{"id": "capability/bogus/x", "type": "capability.bogus"}],
         )
         assert mgr.calls == []
@@ -345,14 +345,14 @@ class TestCleanDependenciesFailurePaths:
 
     async def test_unavailable_manager_cleans_nothing(self, monkeypatch):
         monkeypatch.setattr("kiro_crew.apps.dependencies._capability_manager", lambda: None)
-        cleaned = await clean_dependencies(
+        cleaned, unrecorded = await clean_dependencies(
             "test-app", [{"id": "capability/mcp/x", "type": "capability.mcp"}],
         )
         assert cleaned == []
 
     async def test_failed_uninstall_is_not_reported_clean(self, fake_manager):
         fake_manager(ok=False)
-        cleaned = await clean_dependencies(
+        cleaned, unrecorded = await clean_dependencies(
             "test-app", [{"id": "capability/mcp/x", "type": "capability.mcp"}],
         )
         assert cleaned == []
@@ -364,14 +364,14 @@ class TestCleanDependenciesFailurePaths:
 
         mgr = _Exploding()
         monkeypatch.setattr("kiro_crew.apps.dependencies._capability_manager", lambda: mgr)
-        cleaned = await clean_dependencies(
+        cleaned, unrecorded = await clean_dependencies(
             "test-app", [{"id": "capability/mcp/x", "type": "capability.mcp"}],
         )
         assert cleaned == []
 
     async def test_skill_uninstall_dispatches(self, fake_manager):
         mgr = fake_manager()
-        cleaned = await clean_dependencies(
+        cleaned, unrecorded = await clean_dependencies(
             "test-app", [{"id": "capability/skills/Pkg", "type": "capability.skills"}],
         )
         assert mgr.calls == [("uninstall_skill", "Pkg")]
@@ -379,7 +379,7 @@ class TestCleanDependenciesFailurePaths:
 
     async def test_blank_id_is_skipped(self, fake_manager):
         mgr = fake_manager()
-        assert await clean_dependencies("test-app", [{"id": "", "type": "capability.mcp"}]) == []
+        assert await clean_dependencies("test-app", [{"id": "", "type": "capability.mcp"}]) == ([], [])
         assert mgr.calls == []
 
 
@@ -397,3 +397,49 @@ class TestLedgerTypeRecorded:
         skill_entry = get_entry("capability/skills/s")
         assert mcp_entry is not None and mcp_entry.type == "capability.mcp"
         assert skill_entry is not None and skill_entry.type == "capability.skills"
+
+
+@pytest.mark.asyncio
+class TestLedgerRefusalSurfacing:
+    """A ledger refusal must surface in each flow's own contract instead of
+    tearing through it: resolve_dependencies is failures-don't-prevent-install
+    by contract, and clean_dependencies has already performed the irreversible
+    uninstall by the time it records. The ledger file itself stays intact --
+    the refusal is never published over."""
+
+    async def test_install_reports_a_ledger_refusal_as_failed(
+        self, fake_manager, monkeypatch
+    ):
+        mgr = fake_manager()
+
+        def _refuse(*args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr("kiro_crew.apps.dependencies.record_install", _refuse)
+        deps = Dependencies(capabilities=CapabilityDependencies(mcp=["some-mcp"]))
+        result = await resolve_dependencies("test-app", deps)
+        # The real install happened and shows in `installed`; the refused
+        # bookkeeping shows in `unrecorded`, NOT in `failed` -- a failed entry
+        # renders as "Failed to install" for a dependency that is on disk.
+        assert mgr.calls == [("install_mcp", "some-mcp")]
+        assert result.installed == ["capability/mcp/some-mcp"]
+        assert result.unrecorded == ["capability/mcp/some-mcp"]
+        assert result.failed == []
+
+    async def test_clean_reports_a_ledger_refusal_and_keeps_the_result(
+        self, fake_manager, monkeypatch
+    ):
+        mgr = fake_manager()
+
+        def _refuse(*args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr("kiro_crew.apps.dependencies.record_uninstall", _refuse)
+        cleaned, unrecorded = await clean_dependencies(
+            "test-app", [{"id": "capability/mcp/some-mcp", "type": "capability.mcp"}]
+        )
+        # Uninstalled, but NOT counted as cleaned: the ledger row still names
+        # this app, and a "Cleaned N" claim over it would hide a ghost owner.
+        assert cleaned == []
+        assert unrecorded == ["capability/mcp/some-mcp"]
+        assert mgr.calls == [("uninstall_mcp", "some-mcp")]

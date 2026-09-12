@@ -14,6 +14,7 @@ unresolved instead of shelling out to any named binary.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from dataclasses import dataclass, field
@@ -46,6 +47,12 @@ class DependencyResult:
     # these never join `missing`, where a caller may treat an entry as a failure.
     missing_optional: list[str] = field(default_factory=list)
 
+    #: Installed but refused by the ledger's bookkeeping (an unreadable or
+    #: corrupt ledger must not be published over). Separate from `failed`:
+    #: those deps ARE on disk, and a renderer must be able to say "installed,
+    #: unrecorded" instead of "failed to install".
+    unrecorded: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
         if self.installed:
@@ -54,6 +61,8 @@ class DependencyResult:
             d["skipped"] = self.skipped
         if self.failed:
             d["failed"] = self.failed
+        if self.unrecorded:
+            d["unrecorded"] = self.unrecorded
         if self.missing:
             d["missing"] = self.missing
         if self.missing_optional:
@@ -206,8 +215,28 @@ async def resolve_dependencies(
                 continue
             if ok:
                 result.installed.append(dep_key)
-                record_install(dep_key, app_name, capability_dep_type(dep_type))
-                logger.info("Installed dependency %s for app %s", dep_key, app_name)
+                try:
+                    record_install(dep_key, app_name, capability_dep_type(dep_type))
+                except (OSError, json.JSONDecodeError) as exc:
+                    # The dependency IS installed, but the ledger refused to
+                    # record it: a corrupt or unreadable document must not be
+                    # published over. Report it in installed AND unrecorded,
+                    # never in `failed` -- a failed entry renders as "Failed
+                    # to install" for a dependency that is on disk, and the
+                    # caller cannot tell which half went wrong. A retry after
+                    # the ledger is repaired re-records it; until then the
+                    # dependency reads as untracked.
+                    result.unrecorded.append(dep_key)
+                    logger.warning(
+                        "Installed dependency %s for app %s but the ledger refused to "
+                        "record it (%s); repair dependency-ledger.json and re-run "
+                        "install to track it",
+                        dep_key,
+                        app_name,
+                        exc,
+                    )
+                else:
+                    logger.info("Installed dependency %s for app %s", dep_key, app_name)
             else:
                 result.failed.append(dep_key)
                 logger.warning(
@@ -252,8 +281,14 @@ async def resolve_dependencies(
 async def clean_dependencies(
     app_name: str,
     removable_deps: list[dict[str, Any]],
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Uninstall removable dependencies and update the ledger.
+
+    Returns ``(cleaned, unrecorded)``: the keys whose bookkeeping landed in
+    the ledger, and the keys that were UNINSTALLED but whose ledger record
+    was refused -- an unrecorded key still names this app in the ledger, so
+    reporting it as cleaned would claim bookkeeping that does not exist and
+    leave a ghost owner no future uninstall can remove.
 
     Args:
         app_name: The app being uninstalled.
@@ -264,6 +299,7 @@ async def clean_dependencies(
         List of successfully uninstalled dependency keys.
     """
     cleaned: list[str] = []
+    unrecorded: list[str] = []
     mgr: Any = None
     mgr_probed = False
 
@@ -299,8 +335,36 @@ async def clean_dependencies(
             logger.warning("Failed to uninstall %s: %s", dep_id, message[:200])
             continue
 
-        record_uninstall(dep_id, app_name)
+        # Refused bookkeeping is reported, not folded into `cleaned`: the
+        # dependency IS uninstalled, but the ledger row still names this app,
+        # so counting it as cleaned would let the uninstall log claim a
+        # bookkeeping state that does not exist and leave a ghost owner that
+        # no future uninstall can ever remove. The row stays intact, the
+        # refusal is visible, and re-running the uninstall after the ledger
+        # is repaired re-records it.
+        try:
+            record_uninstall(dep_id, app_name)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Uninstalled dependency %s for app %s but the ledger refused to "
+                "record it (%s); the ledger row still names this app -- repair "
+                "dependency-ledger.json and re-run the uninstall to finish the "
+                "bookkeeping",
+                dep_id,
+                app_name,
+                exc,
+            )
+            unrecorded.append(dep_id)
+            continue
         cleaned.append(dep_id)
         logger.info("Cleaned dependency %s for app %s", dep_id, app_name)
 
-    return cleaned
+    if unrecorded:
+        logger.warning(
+            "%d dependency(ies) were uninstalled for %s but left unrecorded in the "
+            "ledger: %s",
+            len(unrecorded),
+            app_name,
+            ", ".join(unrecorded),
+        )
+    return cleaned, unrecorded

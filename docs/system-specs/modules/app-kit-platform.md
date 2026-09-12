@@ -670,9 +670,22 @@ sync.
 ## 10. Teardown order is a precondition chain, not a cleanup list
 
 Uninstall is irreversible, so the whole sequence runs inside the per-app
-lifecycle lock and the one step that can safely refuse runs FIRST:
+lifecycle lock and the steps that can safely refuse run FIRST, before anything
+destructive:
 
-1. **Cron cleanup** (gateway-managed apps). Owned jobs are removed in one atomic
+1. **Dependency-ledger pre-flight** (when the request does not keep
+   dependencies). The dependency cleanup in step 5 rewrites the whole ledger
+   from what it reads, and that read refuses an unreadable document rather
+   than publishing emptiness over every app's refcounts -- but past the
+   script and deregistration below, a refusal would strand a half-removed
+   app. So the handler reads the ledger up front and aborts with a retryable
+   409 (`dependency_ledger_unreadable`) having changed nothing. The ledger can
+   still go unreadable DURING teardown (the script is arbitrary code); that
+   later refusal degrades instead -- the uninstall finishes without ledger
+   cleanup and says so in its log, because an unrecorded dependency reads as
+   user-installed and is skipped by every future cleanup, never removed while
+   still in use.
+2. **Cron cleanup** (gateway-managed apps). Owned jobs are removed in one atomic
    transaction. A contended store aborts the uninstall with a retryable 409
    having changed nothing. This must precede everything else: past this point
    deregistration drops the per-app cron manifest and the final step deletes the
@@ -680,11 +693,11 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
    scheduler keeps firing with nothing left that knows they belong to a removed
    app. "Durably disable the jobs instead" is not a fallback, because disabling
    is itself a store mutation needing the very lock that is contended.
-2. `onUninstall` script, reached only once cron cleanup succeeded, so a
+3. `onUninstall` script, reached only once both preconditions succeeded, so a
    non-idempotent teardown never runs on an uninstall that will be retried.
-3. Backend stop and resource deregistration (gateway-managed only).
-4. Dependency cleanup (see §11).
-5. File removal, preserving `data/` unless the caller asked to purge.
+4. Backend stop and resource deregistration (gateway-managed only).
+5. Dependency cleanup (see §11).
+6. File removal, preserving `data/` unless the caller asked to purge.
 
 The lock spans the script deliberately: the script may itself be destructive, so
 holding the lock across it stops a racing enable or update from starting a
@@ -726,6 +739,14 @@ A dependency type with no cleanup operation (`capability.agents`) keeps its
 ledger row and only loses this app's ownership even when classified removable:
 dropping the row for something nothing can uninstall would orphan the installed
 package untraceably.
+
+The classify-and-update refuses to run on an unreadable ledger (only a MISSING
+file reads as empty; an unreadable or corrupt document, or one whose root is
+not an object, propagates and the mutation is abandoned -- mirroring the
+merged corrupt-read refusal readers). A dependency that is uninstalled while
+its ledger record is refused is reported as unrecorded, never counted as
+cleaned: its row still names the app, so re-running the uninstall after the
+ledger is repaired finishes the bookkeeping.
 
 Client-supplied `keep_specific` ids are normalized to canonical keys before the
 membership test, because a dashboard session that loaded its uninstall preview

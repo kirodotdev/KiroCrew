@@ -1520,8 +1520,8 @@ class TestUninstallRefusals:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path, dependencies={"python": ["somepkg"]})
 
-        async def _clean(name: str, removable: list[dict[str, Any]]) -> list[str]:
-            return [d["id"] for d in removable]
+        async def _clean(name: str, removable: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+            return [d["id"] for d in removable], []
 
         monkeypatch.setattr(
             routes_mod,
