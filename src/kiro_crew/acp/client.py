@@ -9655,6 +9655,7 @@ class AcpClient:
                 wire_title=_wire_title,
                 tool_kind=kind,
                 tool_purpose=purpose,
+                tool_pending=update.get("status") == "pending",
                 tool_input=input_str,
                 tool_input_redacted=input_redacted,
                 tool_call_id=tool_call_id,

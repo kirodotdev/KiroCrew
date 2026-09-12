@@ -12,6 +12,7 @@
         "tool_call_id": "call_xsro2n3p",
         "tool_input": "{\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-f4308721/oc-proj\"\n}",
         "tool_kind": "execute",
+        "tool_pending": true,
         "wire_title": "bash"
       }
     ],

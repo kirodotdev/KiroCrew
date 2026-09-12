@@ -17,9 +17,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import platform
 from typing import Any
 
 import aiohttp
+
+from kiro_crew import __version__ as _kirocrew_version
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,24 @@ DEFAULT_API_BASE = "https://wakatime.com/api/v1"
 # WakaTime's own recommended cap on heartbeats per request. Callers batching
 # more than this should chunk; the client does not silently drop the tail.
 MAX_HEARTBEATS_PER_REQUEST = 25
+
+
+def _user_agent() -> str:
+    """A WakaTime-plugin-style User-Agent.
+
+    WakaTime resolves the editor and operating system for its dashboard from
+    this header, not from a heartbeat body field, so identifying Kiro Crew here
+    is what keeps activity from landing under ``Unknown OS`` / ``Unknown``. The
+    shape mirrors the official plugins:
+    ``wakatime/<ver> (<os>-<release>) kirocrew/<ver>``.
+    """
+    try:
+        os_name = platform.system() or "unknown"
+        os_release = platform.release() or ""
+    except Exception:
+        os_name, os_release = "unknown", ""
+    return f"wakatime/unset ({os_name}-{os_release}) kirocrew/{_kirocrew_version}"
+
 
 _DEFAULT_TIMEOUT_SECS = 30
 
@@ -68,7 +89,7 @@ class WakaTimeClient:
     def _headers(self) -> dict[str, str]:
         # WakaTime Basic auth: the API key is the username, password empty.
         token = base64.b64encode(f"{self._api_key}:".encode()).decode("ascii")
-        return {"Authorization": f"Basic {token}"}
+        return {"Authorization": f"Basic {token}", "User-Agent": _user_agent()}
 
     # ── Session lifecycle ──
 

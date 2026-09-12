@@ -521,6 +521,14 @@ class AcpEvent:
     wire_title: str = ""
     tool_kind: str = ""
     tool_purpose: str = ""
+    #: True when this EVENT_TOOL_CALL was built from a ``tool_call`` frame that
+    #: carried ``status: "pending"`` -- the tool is awaiting a permission decision
+    #: and has NOT executed yet, so a later ``session/request_permission`` will
+    #: approve or deny it. False for an auto-approved tool, whose one-way
+    #: ``tool_call`` notification means kiro-cli is already running it (no
+    #: permission request follows). Display/telemetry only, never a security
+    #: signal: the governance gate reads the permission event, not this flag.
+    tool_pending: bool = False
     context_usage_pct: float = 0.0
     stop_reason: str = ""
     #: Set on ``EVENT_COMPLETE`` when the turn ended in a model-side refusal.

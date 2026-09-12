@@ -3830,6 +3830,7 @@ class KiroCrewConfig:
             wakatime=WakaTimeConfig(
                 enabled=bool(wakatime_data.get("enabled", False)),
                 api_base_url=str(wakatime_data.get("api_base_url", "") or ""),
+                send_heartbeats=_safe_bool(wakatime_data.get("send_heartbeats", False), False),
             ),
             imessage=IMessageConfig(
                 session_folder=_coerce_session_folder(imessage_data.get("session_folder")),

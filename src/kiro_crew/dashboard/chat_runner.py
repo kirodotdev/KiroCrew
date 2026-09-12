@@ -6870,6 +6870,8 @@ async def _run_chat(
     # subtract them (see _answer_text_only) without re-parsing the prose.
     _compaction_notice_chunks: list[str] = []
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
+    _turn_coding_activity = False  # a fs-write/shell tool EXECUTED this turn (wakatime)
+    _wt_pending_coding: set[str] = set()  # coding tool_call_ids awaiting a result
     # Snapshot of slot._stop_generation at turn start. `_stop_state` snaps back
     # to "idle" once a Stop resolves, so a Stop pressed AND resolved during the
     # turn is invisible to a point-in-time state check at completion. This
@@ -8477,6 +8479,28 @@ async def _run_chat(
                 _turn_thought = True
             elif event.kind == EVENT_TOOL_CALL:
                 _turn_tool_calls += 1
+                if event.tool_call_id:
+                    from kiro_crew.wakatime.heartbeats import is_coding_event
+
+                    if is_coding_event(
+                        event.tool_name or "", event.tool_kind or "", bool(event.is_shell)
+                    ):
+                        # A coding tool_call arrives here for BOTH paths, so the
+                        # promotion has to split on event.tool_pending:
+                        #   - running (auto-approved): kiro-cli sends a one-way
+                        #     tool_call and is already executing it, with no
+                        #     permission request to follow, so it must be counted
+                        #     as coding activity HERE or the common auto-approved
+                        #     case emits no heartbeat.
+                        #   - pending: the tool is awaiting a permission decision;
+                        #     a later session/request_permission approves or denies
+                        #     it. Counting it here would credit a tool that is then
+                        #     DENIED and never runs. So a pending id is only
+                        #     recorded, and promoted at the approve_tool sites below
+                        #     (a denied one is rejected there and never promotes).
+                        _wt_pending_coding.add(event.tool_call_id)
+                        if not event.tool_pending:
+                            _turn_coding_activity = True
                 # Flush pre-tool text silently (no broadcast) so it persists,
                 # but keep the streaming message in place for correct tool ordering.
                 _flush_text_stream()
@@ -9507,6 +9531,8 @@ async def _run_chat(
                                 )
                                 continue
                             await client.approve_tool(event.request_id)
+                            if event.tool_call_id in _wt_pending_coding:
+                                _turn_coding_activity = True
                             _tool_title = _broadcast_auto_tool(state, slot, event)
                             # Defense-in-depth: _broadcast_auto_tool already
                             # returns a redacted title, but re-redact before this
@@ -9598,6 +9624,8 @@ async def _run_chat(
                         event.request_id,
                     )
                     await client.approve_tool(event.request_id)
+                    if event.tool_call_id in _wt_pending_coding:
+                        _turn_coding_activity = True
                     _tool_title = _broadcast_auto_tool(state, slot, event)
                     # Defense-in-depth: re-redact before this second external
                     # surface (activity feed + sel log). event.title is
@@ -9715,6 +9743,8 @@ async def _run_chat(
                             )
                             continue
                         await client.approve_tool(event.request_id)
+                        if event.tool_call_id in _wt_pending_coding:
+                            _turn_coding_activity = True
                         _tool_title = _broadcast_auto_tool(state, slot, event)
                         _tool_title, _ = redact_exfiltration_urls(_tool_title)
                         _tool_title, _ = redact_credentials(_tool_title)
@@ -9789,6 +9819,8 @@ async def _run_chat(
                             )
                             continue
                         await client.approve_tool(event.request_id)
+                        if event.tool_call_id in _wt_pending_coding:
+                            _turn_coding_activity = True
                         _tool_title = _broadcast_auto_tool(state, slot, event)
                         slot.append(
                             "tool",
@@ -9870,6 +9902,8 @@ async def _run_chat(
                     # always=False — KiroCrew owns trust scope; per-call request_permission
                     # is required for PreToolUse hooks to run on every tool invocation.
                     await client.approve_tool(event.request_id)
+                    if event.tool_call_id in _wt_pending_coding:
+                        _turn_coding_activity = True
                     _tool_title = _broadcast_auto_tool(state, slot, event)
                     # Defense-in-depth: re-redact before the sel log (idempotent).
                     _tool_title, _ = redact_exfiltration_urls(_tool_title)
@@ -10372,6 +10406,8 @@ async def _run_chat(
                         if event.is_shell and cmd:
                             await asyncio.to_thread(pin_human_approval, cmd)
                         await client.approve_tool(event.request_id)
+                        if event.tool_call_id in _wt_pending_coding:
+                            _turn_coding_activity = True
                         _approved_title = _redact_display_text(event.title)
                         slot.append(
                             "tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event)
@@ -10762,6 +10798,71 @@ async def _run_chat(
                 # is asymmetric (a duplicate re-announce versus a pruned result).
                 if event.stop_reason == STOP_REASON_END_TURN:
                     await _report_consumed()
+                    # A restricted (incognito/temporary) session persists no
+                    # durable state, and a heartbeat is an external, irreversible
+                    # write of session metadata (project label, token and
+                    # line-change deltas). Gate on the same slot.is_restricted
+                    # signal the artifact and history writers key off, so the
+                    # privacy-mode guarantee holds for this path too. Also skip
+                    # app-owned slots (slot._app): the config help scopes this
+                    # feature to the gateway chat loop and states the app /
+                    # task-runner exclusion as deliberate, and a persistent
+                    # app slot would otherwise emit despite that.
+                    if _turn_coding_activity and not slot.is_restricted and not slot._app:
+                        from kiro_crew.wakatime.heartbeats import (
+                            line_changes_from_file_changes,
+                            note_coding_activity,
+                        )
+
+                        # The opt-in gate, the config load, the per-file
+                        # snapshot reads, and the line-change diff all touch
+                        # disk or run quadratic work, so they run OFF the event
+                        # loop (the file's own idiom, e.g. _safe_read_snapshot
+                        # offload above). The loaded config and the precomputed
+                        # line-change count are returned and threaded through
+                        # note_coding_activity, so the enqueue neither re-loads
+                        # the config nor diffs on the loop. Only the enqueue
+                        # itself, which needs the running loop, stays on it.
+                        def _wt_collect() -> tuple[Any, int] | None:
+                            from kiro_crew.config.loader import KiroCrewConfig
+
+                            _cfg = KiroCrewConfig.load()
+                            if not (_cfg.wakatime.enabled and _cfg.wakatime.send_heartbeats):
+                                return None
+                            _changes = getattr(slot, "_file_changes", None)
+                            _seen: set[str] = set()
+                            _resolved: list[dict[str, str]] = []
+                            if isinstance(_changes, list):
+                                for _fc in _changes:
+                                    if not isinstance(_fc, dict):
+                                        continue
+                                    _p = _fc.get("path")
+                                    if not isinstance(_p, str) or _p in _seen:
+                                        continue
+                                    _seen.add(_p)
+                                    _after = _safe_read_snapshot(_p)
+                                    # An unreadable after-snapshot is unknown, not
+                                    # an empty file: skip it rather than diff the
+                                    # before against "" and fabricate a full-file
+                                    # deletion in the line-change count.
+                                    if _after is None:
+                                        continue
+                                    _resolved.append(
+                                        {"content": _fc.get("content") or "", "after": _after}
+                                    )
+                            return _cfg, line_changes_from_file_changes(_resolved)
+
+                        _wt_out = await asyncio.to_thread(_wt_collect)
+                        if _wt_out is not None:
+                            _wt_cfg, _wt_line_changes = _wt_out
+                            _wt_usage = event.usage
+                            note_coding_activity(
+                                slot.project or None,
+                                ai_input_tokens=getattr(_wt_usage, "input_tokens", 0) or 0,
+                                ai_output_tokens=getattr(_wt_usage, "output_tokens", 0) or 0,
+                                ai_line_changes=_wt_line_changes,
+                                config=_wt_cfg,
+                            )
                 # Turn-end diagnostics. Read only from `event`, which nothing in
                 # this arm mutates, so the position is free — kept below the
                 # consumption gate because that gate's adjacency to the arm's start

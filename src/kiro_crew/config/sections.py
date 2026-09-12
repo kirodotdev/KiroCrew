@@ -6876,3 +6876,19 @@ class WakaTimeConfig:
             tags=["wakatime"],
         ),
     )
+    send_heartbeats: bool = field(
+        default=False,
+        metadata=_meta(
+            "Send coding-activity heartbeats",
+            "Send a heartbeat to WakaTime after each agent turn that edited "
+            "files or ran a command, so your Kiro Crew coding time shows up in "
+            "WakaTime alongside your editor. Off by default: sending activity "
+            "outward is a separate opt-in from reading your own stats. Requires "
+            "the WakaTime integration to be enabled. Covers dashboard chat and "
+            "the messaging channels that run through it (Slack and the other "
+            "chat surfaces); the task runner, subagents, installed apps, and "
+            "the standalone kirocrew chat CLI each run their own turn loop and "
+            "do not emit heartbeats yet.",
+            tags=["wakatime"],
+        ),
+    )

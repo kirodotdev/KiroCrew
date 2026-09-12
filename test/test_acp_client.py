@@ -5663,6 +5663,31 @@ class TestExtractToolEvent:
         assert event is not None
         assert event.kind == EVENT_TOOL_CALL
         assert event.title == "Read"
+        # No status on the wire => running (auto-approved), not pending.
+        assert event.tool_pending is False
+
+    def test_tool_call_pending_status_sets_tool_pending(self):
+        client = AcpClient()
+        from kiro_crew.acp.types import EVENT_TOOL_CALL, JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            method="session/update",
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "title": "write",
+                    "kind": "tool_use",
+                    "toolCallId": "tc-pending",
+                    "input": {"path": "/tmp/file.txt"},
+                    "status": "pending",
+                }
+            },
+        )
+        event = client._extract_tool_event(msg)
+        assert event is not None
+        assert event.kind == EVENT_TOOL_CALL
+        # status:pending => awaiting a permission decision, not yet executing.
+        assert event.tool_pending is True
 
     def test_tool_call_with_diff_content(self):
         client = AcpClient()

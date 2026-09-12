@@ -1447,6 +1447,7 @@ class AcpProvider(LLMProvider):
             wire_title=e.wire_title,
             tool_kind=e.tool_kind,
             tool_purpose=e.tool_purpose,
+            tool_pending=e.tool_pending,
             context_usage_pct=e.context_usage_pct,
             stop_reason=e.stop_reason,
             refusal=e.refusal,
