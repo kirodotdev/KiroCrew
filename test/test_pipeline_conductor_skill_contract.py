@@ -1275,6 +1275,112 @@ class TestWorkOrderBriefClauses:
         assert "pre-push hook" in brief
         assert "before naming a cause" in brief
 
+    def test_the_push_gate_is_mandatory_and_names_its_scripts(self):
+        """A gate the brief never names is a gate no worker runs. The clause has
+        to name both scripts, because the conductor copies this skeleton into
+        every worker's seed and a worker cannot infer a script path."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "push gate (mandatory, every push)" in brief
+        assert "preflight.py" in brief
+        assert "push_guard.py" in brief
+        # The gate is only a gate if a non-zero exit stops the push.
+        assert "do not push" in brief
+
+    def test_an_inoperable_gate_is_reported_not_silently_stalled(self):
+        """Both scripts document exit 2 as an environment error rather than a
+        verdict. Collapsing it into "do not push" turns a worker whose sandbox
+        cannot reach the scripts into an indefinite silent stall on every item,
+        which is worse than the unguarded push it replaces -- so the clause has
+        to separate a gate that REFUSED from one that could not RUN."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "could not run" in brief
+        assert "blocked: push gate inoperative" in brief
+
+    def test_the_gate_is_invokable_on_both_shells(self):
+        """A worker on PowerShell cannot run a POSIX-only one-liner, and the
+        conductor copies this skeleton verbatim into every seed. Startup already
+        carries the two-shell pattern for ``spec_check.py``; the gate follows it
+        rather than inventing a third convention."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "on posix" in brief
+        assert "on powershell" in brief
+        assert "kirocrew_runtime_python" in brief
+
+    def test_the_gate_does_not_copy_isolated_mode_from_startup(self):
+        """``preflight.py`` imports its sibling ``push_guard``, and ``-I`` drops
+        the script's own directory from ``sys.path``, so copying Startup's ``-I``
+        would make the mandatory gate raise ``ModuleNotFoundError`` on every push
+        -- a fleet-wide push refusal. The clause carries the exception and its
+        reason, because an unexplained omission gets 'fixed' back in."""
+        gate_scripts = REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts"
+        preflight = (gate_scripts / "preflight.py").read_text(encoding="utf-8")
+        assert "from push_guard import" in preflight, "the sibling import this guards is gone"
+        brief = _flat(_skill_section(self.HEADING))
+        assert "do not add `-i` here" in brief
+        assert "modulenotfounderror" in brief
+
+    def test_the_push_gate_checks_the_tree_it_claims_to_check(self):
+        """``push_guard.py`` inspects base and commit structure, never the index,
+        so the clause has to demand the clean tree itself -- otherwise it promises
+        a check no mandated script performs and unstaged work reaches the PR."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "git status --porcelain" in brief
+
+    def test_the_push_gate_does_not_out_strict_the_commit_policy(self):
+        """This repository admits two commits per PR, so requiring
+        ``HEAD~1 == origin/<base>`` unconditionally would refuse a legitimate
+        two-commit branch on the fleet's default brief. The flag stays, but only
+        as a post-squash option."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "only when you actually squashed" in brief
+
+    def test_the_push_gate_pins_the_ceiling_it_actually_enforces(self):
+        """``push_guard.py`` defaults to a ceiling looser than a typical PR
+        commit-count gate, so an unpinned invocation passes a branch the target
+        repository's own gate rejects and the worker reads that pass as licence.
+        The mandated line has to carry the flag, not merely describe it."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "--max-ahead" in brief
+
+    def test_the_commit_ceiling_is_templated_not_this_repos_number(self):
+        """This skeleton ships to every install and the conductor points it at an
+        arbitrary repository, so a literal ceiling would make the fleet's default
+        brief refuse legitimate branches elsewhere to protect a gate that repo
+        does not have. It is filled from the spec, like ``{default_branch}``."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "--max-ahead {max_commits}" in brief
+        assert not re.search(r"--max-ahead \d", brief), "ceiling hardcoded in a shipped skill"
+        # The placeholder is only fillable if the spec section declares the field.
+        assert "max_commits" in _skill_section("## The pipeline spec")
+
+    def test_the_briefs_stated_default_tracks_the_script_it_describes(self):
+        """The clause tells the worker what ``push_guard.py`` defaults to. That is
+        a duplicated literal, and by this change's own argument an unpinned
+        duplicate drifts silently -- so it is asserted against the script rather
+        than against a number written here. Both ship from this tree, so the
+        dependency runs skill-prose to skill-script and not to any one
+        repository's CI."""
+        script = (
+            REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py"
+        ).read_text(encoding="utf-8")
+        declared = re.search(r"^DEFAULT_MAX_AHEAD = (\d+)", script, re.M)
+        assert declared, "DEFAULT_MAX_AHEAD not found in push_guard.py"
+        brief = _flat(_skill_section(self.HEADING))
+        stated = re.search(r"defaults to (\d+)", brief)
+        assert stated, "the clause does not state the script's default"
+        assert stated.group(1) == declared.group(1), (
+            f"brief says the script defaults to {stated.group(1)} but "
+            f"DEFAULT_MAX_AHEAD is {declared.group(1)}"
+        )
+
+    def test_the_suite_wrapper_ban_excludes_the_push_gate(self):
+        """The ban and the gate live in the same brief, and the ban is the more
+        emphatic of the two. Without the stated scope a worker reads "of any
+        kind" as covering the gate and pushes unguarded."""
+        brief = _flat(_skill_section(self.HEADING))
+        assert "the ban is on suite wrappers, not on the push gate" in brief
+        assert "run no test at all" in brief
+
     def test_babysit_polling_is_staggered_and_prefers_rest(self):
         brief = _flat(_skill_section(self.HEADING))
         assert "stagger" in brief
