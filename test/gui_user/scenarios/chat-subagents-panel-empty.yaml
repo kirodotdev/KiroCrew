@@ -1,0 +1,32 @@
+# Nightly: the Subagents view of the chat side panel, reached through the
+# visible controls -- the conversation header's "Open activity panel" button and
+# the panel strip's "+" (Open side panel tab) menu. Ctrl+G opens the same view
+# but the harness key-chord allowlist in x11.py does not admit it. The fake ACP
+# backend never spawns a background run, so this asserts the reachable half of
+# the surface -- the tab and its "No subagents running" empty state -- not the
+# collapsed run cards in the transcript, which need a seeded spawn the target
+# cannot produce yet.
+name: chat-subagents-panel-empty
+tier: nightly
+feature: chat
+user_story: >-
+  As a user, I want a panel that lists the background agent runs a session has
+  spawned, so that I can follow delegated work -- and see plainly when there is
+  none.
+docs_url: docs/system-specs/modules/subagent.md
+summary: Open the side panel from the conversation header, add the Subagents view and read its empty state
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the left sidebar click the pinned session "Welcome to KiroCrew" so a conversation is open.  # brand-ok: verbatim seeded session title from the rich fixture
+  - In the row of small icon buttons at the top right of the conversation, click the one whose tooltip reads "Open activity panel" (a rectangle with its right third filled in). A side panel slides in to the right of the conversation with a row of tabs along its top.
+  - Look at that tab row. If a tab named "Subagents" is already there, click it. Otherwise click the "+" button at the right end of the tab row (tooltip "Open side panel tab") and choose "Subagents" from the menu that opens.
+  - Read the panel body.
+expectations:
+  - A side panel is open beside the conversation and its "Subagents" tab is the active one.
+  - The panel body reads "No subagents running" and lists no runs.
+  - The conversation transcript is still visible to the left of the panel and has not been covered by it.
+max_steps: 12
+max_seconds: 300
