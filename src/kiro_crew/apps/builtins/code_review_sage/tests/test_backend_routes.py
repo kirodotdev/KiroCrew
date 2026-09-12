@@ -456,6 +456,11 @@ class TestHandlers(unittest.IsolatedAsyncioTestCase):
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
         self.mod._RUNS = []
+        # Starting a review is gated on the app being enabled, the same way the
+        # chat surface is. These cases are about what an ENABLED app does, so they
+        # state that precondition rather than depending on a real installed.json --
+        # mirroring the followup-route class's own setUp.
+        self.mod.is_app_enabled = lambda name: True
 
     def tearDown(self):
         if self._old_home is None:
@@ -493,6 +498,28 @@ class TestHandlers(unittest.IsolatedAsyncioTestCase):
                 return {}
         resp = await self.mod._handle_review(_Req())
         self.assertEqual(resp.status, 400)
+
+    async def test_review_is_refused_while_the_app_is_disabled(self):
+        """Starting a review is authority, so it needs the gate the chat surface has.
+
+        Routes stay registered after a disable — the platform's convention is that
+        handlers check enabled state themselves — and this one had no such check,
+        so a disabled app would still accept a review, register the run, and let it
+        reach the pool.
+        """
+        self.mod.is_app_enabled = lambda name: False
+        started = []
+        self.mod._run_review_bg = lambda run, changes: started.append(run)
+
+        class _Req:
+            async def json(self):
+                return {"links": "https://github.com/kirodotdev/KiroCrew/pull/20"}
+
+        resp = await self.mod._handle_review(_Req())
+        self.assertEqual(resp.status, 403)
+        self.assertEqual(json.loads(resp.body)["code"], "app_disabled")
+        self.assertEqual(self.mod._RUNS, [], "a refused review must not be registered")
+        self.assertEqual(started, [])
 
     async def test_review_starts_run_and_inits_progress(self):
         async def _noop(run, changes):
