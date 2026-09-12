@@ -540,8 +540,7 @@ class AcpRuntimeProtocol(Protocol):
         """
         ...
 
-    def death_summary(self) -> str | None:
-        ...
+    def death_summary(self) -> str | None: ...
 
 
 class AcpSessionHandle:
