@@ -226,6 +226,29 @@ def tag_refusal(text: str) -> str:
     return f"{text}\n{_REFUSAL_SENTINEL}"
 
 
+def _bounded_marker_payload(full: str, probe: int) -> str | None:
+    """The marker LINE starting at *probe* (sentinel included), or ``None`` when
+    the line is too long to be a marker.
+
+    The bound is :data:`MAX_TOOL_RESULT_CHARS`, and it is a semantic bar, not a
+    shortcut, for three independent reasons: :func:`encode` refuses any directive
+    over :data:`MAX_DIRECTIVE_CHARS` (far below it), a tail this long fails
+    :func:`preserve_tail_marker`'s own room check so it could never be
+    re-attached, and the transport cuts every frame to the same budget so no
+    consumer ever reads a marker line past it. A longer line is model-authored
+    bytes wearing the sentinel, and treating it as bytes is what keeps this walk
+    O(occurrences): the frame is unbounded, so per-occurrence work must not
+    scale with the frame.
+    """
+    limit = probe + MAX_TOOL_RESULT_CHARS
+    end = full.find("\n", probe, limit)
+    if end < 0:
+        if len(full) > limit:
+            return None
+        end = len(full)
+    return full[probe:end]
+
+
 def preserve_tail_marker(full: str, truncated: str) -> str:
     """Re-attach a tail-anchored marker that truncating *full* into *truncated* cut.
 
@@ -238,9 +261,42 @@ def preserve_tail_marker(full: str, truncated: str) -> str:
     Mirrors the MCP App render marker's re-injection at the same seam, for the
     same reason: a control token that decides how a frame is interpreted must not
     be a casualty of a length cut applied to the frame's prose.
+
+    The marker is located by scanning sentinel occurrences left to right and
+    keeping the RIGHTMOST whose own line actually reads (:func:`peek` for the
+    directive sentinel; exact tail anchoring for the refusal tag, which
+    :func:`tag_refusal` appends as the final line). ``rfind`` alone picked the
+    last occurrence of the sentinel *substring* -- and the payload is
+    model-authored, JSON string escaping leaves ``[`` alone, so a directive whose
+    own arguments carry the sentinel bytes embeds a later occurrence inside the
+    payload. Preserving from there re-attached a tail that began mid-payload,
+    unreadable to every consumer: the helper built to save the marker was what
+    corrupted it (#8962). Each occurrence is judged on a BOUNDED line
+    (:func:`_bounded_marker_payload`), never on a suffix of the frame: ``full``
+    is unbounded, so per-occurrence suffix slices are O(N*L) -- an event-loop
+    stall reachable by one command that repeats the sentinel bytes.
+    Occurrences reading as genuinely DIFFERENT markers are refused outright --
+    the ambiguity bar ``_repair_escaped_marker`` already holds, kept here so a
+    length cut cannot launder a two-marker frame into a clean one. When nothing
+    reads, nothing is re-attached: a garbage tail protects no consumer and costs
+    the prose the cut had kept.
     """
     for sentinel in (_SENTINEL, _REFUSAL_SENTINEL):
-        idx = full.rfind(sentinel)
+        if sentinel is _SENTINEL:
+            idx, lines = -1, set()
+            probe = full.find(sentinel)
+            while probe >= 0:
+                line = _bounded_marker_payload(full, probe)
+                if line is not None and peek(line) is not None:
+                    idx = probe
+                    lines.add(line)
+                probe = full.find(sentinel, probe + 1)
+            if len(lines) > 1:
+                return truncated
+        else:
+            # The genuine refusal tag is tail-anchored by construction; an
+            # embedded occurrence mid-prose is bytes, not a tag.
+            idx = len(full) - len(sentinel) if full.endswith(sentinel) else -1
         if idx < 0:
             continue
         tail = full[idx:]
