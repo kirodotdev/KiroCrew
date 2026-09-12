@@ -252,8 +252,12 @@ _MAX_STT_WORKERS = 2
 # the wait does NOT free the worker, so this is its OWN tiny pool: a wedged
 # resolution can only ever starve other path resolution, never the sweeps or
 # the default executor's DNS.  Two workers is deliberate -- healthy resolution is
-# microseconds, so the cap only bites when the filesystem is wedged, which is
-# exactly when queueing behind a wedged sibling is the correct outcome.
+# microseconds, so sustained queueing means the filesystem is wedged, and
+# queueing behind a wedged sibling can only time out.  The cap also bites under
+# plain concurrency (simultaneous cron fires submitting at once); a queued
+# resolution that never starts is cancelled on timeout and refused for that
+# call alone, charging no prefix cooldown (see
+# ``security.paths._run_resolution_bounded``).
 _MAX_PATH_RESOLVE_WORKERS = 2
 
 _lock = threading.Lock()

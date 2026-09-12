@@ -1290,13 +1290,15 @@ def _load_arm_budget_spent(prefix: str) -> bool:
 def _mark_stalled(prefix: str, budget: float) -> None:
     """Record an OBSERVED stall under *prefix*: back off exponentially on repeats.
 
-    Only a resolution that actually timed out is recorded.  A refusal issued
-    because every worker was already pinned costs nothing (nothing is
-    submitted) and must not charge the refused prefix -- often the local
-    workspace -- a backoff it never earned, or a transient dual-mount outage
-    would keep refusing healthy paths for the accrued window after the mounts
-    recover.  The log line deliberately omits the path: the token is
-    agent-supplied and is what the gates exist to keep out of clear-text logs.
+    Only a resolution that actually RAN and timed out is recorded.  A refusal
+    issued because every worker was already pinned (nothing is submitted), or
+    because a submitted resolution never left the queue (its future cancelled
+    on timeout), says nothing about the filesystem and must not charge the
+    refused prefix -- often the local workspace -- a backoff it never earned,
+    or a transient dual-mount outage would keep refusing healthy paths for the
+    accrued window after the mounts recover.  The log line deliberately omits
+    the path: the token is agent-supplied and is what the gates exist to keep
+    out of clear-text logs.
     """
     now = _path_resolve_clock()
     with _path_resolve_lock:
@@ -1369,6 +1371,15 @@ def _run_resolution_bounded(
     rarely and can never pin the whole pool.  Never blocks the caller for longer
     than ``_PATH_RESOLVE_TIMEOUT_SECS``.
 
+    A stall is charged only to a resolution that RAN.  A future that times out
+    still QUEUED (the pool saturated by concurrent callers, e.g. simultaneous
+    cron fires) is cancelled and refuses this call alone: queue wait is
+    evidence about load, not about the mount, so it opens no cooldown and pins
+    no worker in :func:`_wedged_workers`.  A future claimed by a freeing worker
+    in the very instant the deadline fires is abandoned by handshake -- the
+    worker returns without entering the resolution -- so the never-ran
+    classification is binding, not a race.
+
     The UNC shortcut is NOT here: skipping a ``\\\\server\\share`` token is a
     stance about agent-supplied CANDIDATES (:func:`_resolved_forms_bounded`),
     whose fence targets a UNC realpath never produces.  The anchors are the
@@ -1400,12 +1411,21 @@ def _run_resolution_bounded(
         raise PathResolutionStalled(expanded, prefix)
     try:
         started = threading.Event()
+        abandoned = threading.Event()
+        handoff = threading.Lock()
         worker_tid: list[int] = []
 
         @functools.wraps(worker)
-        def _tracked(arg: str) -> _ResolvedT:
+        def _tracked(arg: str) -> _ResolvedT | None:
             worker_tid.append(threading.get_native_id())
-            started.set()
+            with handoff:
+                if abandoned.is_set():
+                    # The caller classified this future as never-run at its
+                    # deadline: return without touching the filesystem, so a
+                    # late claim can neither probe a wedged mount nor pin a
+                    # worker _wedged_workers() is not tracking.
+                    return None
+                started.set()
             return worker(arg)
 
         future = path_resolve_executor().submit(_tracked, expanded)
@@ -1415,9 +1435,28 @@ def _run_resolution_bounded(
     try:
         value = future.result(timeout=budget)
     except FutureTimeoutError:
-        if not started.is_set() and future.cancel():
-            # Only a future proven dead by cancel() may go untracked: one that refuses
-            # cancellation is running, and would pin a worker _wedged_workers() cannot see.
+        if future.cancel():
+            # Never claimed by a worker: the pool was saturated and the
+            # resolution never started -- evidence about load, not the mount.
+            logger.debug(
+                "sensitive-path symlink resolution refused: the resolver pool was "
+                "saturated and the resolution never started; prefix not charged"
+            )
+            raise PathResolutionStalled(expanded, prefix) from None
+        with handoff:
+            ran = started.is_set()
+            if not ran:
+                abandoned.set()
+        if not ran:
+            # Claimed by a freeing worker in the instant the deadline fired,
+            # before entering the resolution.  The handshake makes the
+            # classification binding: the worker sees ``abandoned`` and returns
+            # without probing, so it pins nothing and there is nothing to
+            # charge -- the same conclusion as the queued arm above.
+            logger.debug(
+                "sensitive-path symlink resolution refused: the resolver pool was "
+                "saturated and the resolution never started; prefix not charged"
+            )
             raise PathResolutionStalled(expanded, prefix) from None
         with _path_resolve_lock:
             _path_resolve_wedged.append(future)

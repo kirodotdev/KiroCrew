@@ -22,6 +22,7 @@ which must fence a symlinked ``$HOME`` by its logical spelling.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import re
 import threading
@@ -711,11 +712,25 @@ def test_the_discriminator_reads_a_running_thread_as_not_blocked() -> None:
     assert _REAL_BLOCKED_IN_FILESYSTEM(2**31 - 1) is True
 
 
-def test_an_uncancellable_queued_future_is_still_tracked_as_wedged(monkeypatch) -> None:
-    # An uncancellable queued future is already running, so an untracked pinned worker makes
-    # the pool-exhaustion guard undercount -- surfacing later as unrelated exhaustion.
-    class _QueuedNeverCancels:
-        """Times out having never run, and refuses to be cancelled."""
+def test_a_future_claimed_at_the_deadline_aborts_instead_of_probing(monkeypatch) -> None:
+    # A queued future can be claimed by a freeing worker in the same instant the
+    # budget fires: cancel() fails, yet the resolution has not begun.  The
+    # timeout arm classifies it never-run, and the handshake makes that binding:
+    # the late worker sees the abandonment and returns WITHOUT touching the
+    # filesystem -- so it cannot probe a wedged mount while untracked, and there
+    # is nothing to charge or to count as wedged.
+    probes: list[str] = []
+
+    def _resolver(expanded: str) -> set[str]:
+        probes.append(expanded)
+        return {expanded}
+
+    monkeypatch.setattr(security, "_resolved_spellings", _resolver)
+
+    captured: list = []
+
+    class _ClaimedAtDeadline:
+        """Times out, and refuses cancellation as a just-claimed future does."""
 
         def result(self, timeout=None):  # noqa: ANN001, ANN202, ARG002
             raise FutureTimeoutError
@@ -727,10 +742,11 @@ def test_an_uncancellable_queued_future_is_still_tracked_as_wedged(monkeypatch) 
             return False
 
     class _Pool:
-        def submit(self, fn, arg):  # noqa: ANN001, ANN202, ARG002
-            # The callable is deliberately never invoked, so `started` stays unset and the
-            # queued arm is the one under test.
-            return _QueuedNeverCancels()
+        def submit(self, fn, arg):  # noqa: ANN001, ANN202
+            # Hold the callable instead of running it: the worker has claimed
+            # the future but not yet entered it when the deadline fires.
+            captured.append((fn, arg))
+            return _ClaimedAtDeadline()
 
     tracked: list = []
     monkeypatch.setattr(security.paths, "_path_resolve_wedged", tracked)
@@ -739,9 +755,50 @@ def test_an_uncancellable_queued_future_is_still_tracked_as_wedged(monkeypatch) 
     with pytest.raises(security.PathResolutionStalled):
         security._candidate_forms("/home/someone/ws/file")
 
-    assert (
-        security.paths._wedged_workers() == 1
-    ), "an uncancellable queued future must stay visible to the pool-exhaustion guard"
+    assert security._path_resolve_degraded == {}, "a late claim must not open a cooldown"
+    assert security.paths._wedged_workers() == 0
+    # The worker only now gets around to running the future's callable: the
+    # handshake sends it straight back without a filesystem probe.
+    fn, arg = captured[0]
+    assert fn(arg) is None
+    assert probes == [], "an abandoned resolution must never touch the filesystem"
+
+
+def test_a_saturated_pool_refuses_without_charging_or_tracking(caplog) -> None:
+    # THE QUEUED ARM, end to end on the real pool.  kirodotdev/KiroCrew#9482:
+    # simultaneous cron fires pin both ``mc-pathres`` workers, so a third
+    # resolution times out having never STARTED.  Queue wait is evidence about
+    # load, not the mount: the call is still refused (fail-closed, unchanged),
+    # but no cooldown opens, nothing lands in ``_path_resolve_wedged``, and the
+    # pool-exhaustion guard reads 0 -- otherwise one busy morning refuses every
+    # path under the home prefix without a single slow filesystem operation.
+    gate = threading.Event()
+    pinned = threading.Semaphore(0)
+
+    def _pin_worker() -> None:
+        pinned.release()
+        gate.wait()
+
+    pool = ex.path_resolve_executor()
+    blockers = [pool.submit(_pin_worker) for _ in range(ex._MAX_PATH_RESOLVE_WORKERS)]
+    try:
+        for _ in blockers:
+            assert pinned.acquire(timeout=5.0), "blocker never reached a worker"
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.security.paths"):
+            with pytest.raises(security.PathResolutionStalled):
+                security._candidate_forms("/home/someone/ws/file")
+        assert security._path_resolve_degraded == {}, "queue wait must open no cooldown"
+        assert security._path_resolve_wedged == [], "a never-started future is not wedged"
+        assert security._wedged_workers() == 0
+        assert any("the resolution never started" in r.message for r in caplog.records)
+    finally:
+        gate.set()
+        for blocker in blockers:
+            blocker.result(timeout=5.0)
+    # The pool freed: the very next call under the SAME prefix resolves
+    # normally, with no inherited backoff from the refusal above.
+    forms = security._candidate_forms("/home/someone/ws/file")
+    assert os.path.normpath("/home/someone/ws/file") in forms
 
 
 def test_a_thread_stuck_in_a_monitored_syscall_reads_as_blocked(monkeypatch) -> None:
