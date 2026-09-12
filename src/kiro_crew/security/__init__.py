@@ -61,6 +61,7 @@ from . import (
     diagnostics,
     exfil,
     helpers,
+    inline_payload,
     paths,
     redaction,
     shell_normalizer,
@@ -78,7 +79,6 @@ from .argv_floor import (
     _GIT_PUBLISH_SUBST_PROGRAM_RE,
     _HOSTNAME_SUBSTITUTION_HINTS,
     _HOSTNAME_VARIABLE_FORMS,
-    _INLINE_DYNAMIC_EXEC_RE,
     _LOOPBACK_HOST_NAMES,
     _PROCESS_SUBSTITUTION_SAFE_CHARS,
     _PROTECTED_BRANCHES,
@@ -107,7 +107,6 @@ from .argv_floor import (
     _git_push_args,
     _has_self_importing_inline_program,
     _host_is_self,
-    _inline_payload_reaches_cli,
     _is_credential_mint,
     _is_dev_mode_out_of_root_confirm,
     _is_git_publish,
@@ -308,6 +307,10 @@ from .helpers import (
     apply_resource_limits,
     contains_injection,
     resource_limit_spec,
+)
+from .inline_payload import (
+    _INLINE_DYNAMIC_EXEC_RE,
+    _inline_payload_reaches_cli,
 )
 from .paths import (
     _CREW_HOME_PREFIXES,
@@ -1150,9 +1153,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                     seen_views.add(candidate)
                     views.append(candidate)
             joined_here: set[str] = set()
-            payloads = _nested_shell_payloads(
-                tokens, allow_join=allow_join, joined_out=joined_here
-            )
+            payloads = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
             programs = _argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -1401,9 +1402,7 @@ def is_denied(
         agent cannot diagnose at all. The span is the whole subject because a floor
         decides on the argv's SHAPE rather than at an offset.
         """
-        diagnostic = (
-            refusal_diagnostic(rule, component, tool_name) if rule and component else None
-        )
+        diagnostic = refusal_diagnostic(rule, component, tool_name) if rule and component else None
         return _deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )
@@ -1582,7 +1581,15 @@ def is_denied(
         pattern = _SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
             continue
-        if predicate(lower):
+        # The mint predicate also gets the command AS SUBMITTED: it decodes base64
+        # literals to read the name they hide, and base64 does not survive the
+        # lower-casing every other predicate reads.
+        hit = (
+            _is_credential_mint(lower, raw_text=tool_name)
+            if predicate is _is_credential_mint
+            else predicate(lower)
+        )
+        if hit:
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id —
             # plus a second line saying the match was STRUCTURAL, because a floor
@@ -2605,6 +2612,7 @@ _SUBMODULES: tuple[ModuleType, ...] = (
     denied_rules,
     redaction,
     exfil,
+    inline_payload,
     argv_floor,
 )
 
