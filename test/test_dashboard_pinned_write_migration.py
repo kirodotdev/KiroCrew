@@ -569,6 +569,12 @@ async def test_skill_crud_handlers_do_not_run_on_the_event_loop(monkeypatch):
     """
     recorder = _ThreadRecordingSkills()
     monkeypatch.setattr(prompts_mod, "_get_skills", lambda _state: recorder)
+    # The skill CRUD writes are owner-only; the gate itself is covered in
+    # test_skill_write_guard.py, and here it would only stand between the test
+    # and the thread the work runs on.
+    monkeypatch.setattr(
+        prompts_mod, "is_owner_dashboard_request", lambda _request: True, raising=False
+    )
     loop_ident = threading.get_ident()
 
     assert (await prompts_mod.api_skill_detail(_FakeRequest("DELETE", name="gone"))).status == 200

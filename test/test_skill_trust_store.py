@@ -1785,7 +1785,7 @@ class TestTrustEndpointAuthorization:
         monkeypatch.setattr(prompts, "_sel", lambda: audit)
         request = SimpleNamespace(get=lambda key, default=None: {"user": "owner"}.get(key, default))
 
-        assert prompts._deny_non_owner_skill_trust(request, "skill_trust_read") is None
+        assert prompts._deny_non_owner_skill_operation(request, "skill_trust_read") is None
         assert audit.log_api_access.call_args.kwargs == {
             "caller": "owner",
             "operation": "skill_trust_read",

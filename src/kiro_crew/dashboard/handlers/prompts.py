@@ -82,8 +82,18 @@ _CODE_SLOT_NOT_FOUND = "slot_not_found"
 _DASHBOARD_SURFACE_KEY = "dashboard:ui"
 
 
-def _deny_non_owner_skill_trust(request: web.Request, operation: str) -> web.Response | None:
-    """Restrict project-skill consent state to the configured dashboard owner."""
+def _deny_non_owner_skill_operation(request: web.Request, operation: str) -> web.Response | None:
+    """Restrict owner-only skill state to the configured dashboard owner.
+
+    Covers the project-skill consent endpoints and every mutating skill
+    handler: CRUD writes, pending approve/dismiss/dismiss-all, pin, and
+    inject-on-trigger. Skill content is injected into agent context, so any
+    skill mutation is an instruction-injection surface: only the dashboard
+    owner may perform it.
+    ``is_owner_dashboard_request`` already refuses app tokens (any non-empty
+    app identity) and non-owner dashboard subjects, and both outcomes are
+    SEL-audited here.
+    """
     if is_owner_dashboard_request(request):
         try:
             _sel().log_api_access(
@@ -2254,7 +2264,7 @@ def _trust_snapshot(project_dir: Path | None) -> dict[str, Any]:
 
 async def api_skills_trust(request: web.Request) -> web.Response:
     """Report the requesting chat's project-skills trust state and all grants."""
-    denied = _deny_non_owner_skill_trust(request, "skill_trust_read")
+    denied = _deny_non_owner_skill_operation(request, "skill_trust_read")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
@@ -2280,7 +2290,7 @@ async def api_skills_trust_grant(request: web.Request) -> web.Response:
     the directory still comes from the slot, and a missing or mismatched key is
     refused. This covers slot changes and mutable aliases between review and click.
     """
-    denied = _deny_non_owner_skill_trust(request, "skill_trust_grant")
+    denied = _deny_non_owner_skill_operation(request, "skill_trust_grant")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
@@ -2356,7 +2366,7 @@ async def api_skills_trust_revoke(request: web.Request) -> web.Response:
     from the settings list. Removing trust only ever narrows what loads, so a
     caller-supplied path is safe here.
     """
-    denied = _deny_non_owner_skill_trust(request, "skill_trust_revoke")
+    denied = _deny_non_owner_skill_operation(request, "skill_trust_revoke")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
@@ -2617,6 +2627,9 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
 
 async def api_skill_pending_approve(request: web.Request) -> web.Response:
     """POST /api/skills/-/pending/{slug}/approve — promote candidate to live."""
+    denied = _deny_non_owner_skill_operation(request, "skill_pending_approve")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     slug = request.match_info["slug"]
@@ -2703,6 +2716,9 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
 
 async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
     """POST /api/skills/-/pending/{slug}/dismiss — delete a candidate."""
+    denied = _deny_non_owner_skill_operation(request, "skill_pending_dismiss")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     slug = request.match_info["slug"]
@@ -2755,6 +2771,9 @@ async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
     deleted).  When the body is absent or ``slugs`` is empty, ALL pending
     candidates are dismissed (back-compat / fallback).
     """
+    denied = _deny_non_owner_skill_operation(request, "skill_pending_dismiss_all")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     try:
@@ -2813,6 +2832,9 @@ async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
 async def api_skill_pin(request: web.Request) -> web.Response:
     """POST /api/skills/-/pin — body {name, pinned:bool}. Pin/unpin an auto-skill
     so the lifecycle never archives it."""
+    denied = _deny_non_owner_skill_operation(request, "skill_pin")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     try:
@@ -2885,6 +2907,9 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     changes what the agent is guaranteed to see when the skill matches, so "who
     made this skill advisory, and when" has to be answerable.
     """
+    denied = _deny_non_owner_skill_operation(request, "skill_inject_on_trigger")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     try:
@@ -3016,17 +3041,35 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         )
 
     if request.method == "DELETE":
+        denied = _deny_non_owner_skill_operation(request, "skill_delete")
+        if denied is not None:
+            return denied
         # Off the loop: delete_skill walks a pinned parent chain and then rmtrees
         # the skill directory, and update_skill below stages a temp file, carries
         # the ACL and renames it into place. On network-backed storage either can
         # stall long enough to matter to every other session sharing this loop, so
         # both go to a thread the way discover.py already routes the same two calls.
         ok = await asyncio.to_thread(skills.delete_skill, name)
+        try:
+            _sel().log_tool_invocation(
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_skill_delete",
+                tool_kind="skill",
+                outcome="ok" if ok else "rejected",
+                metadata={"name": name},
+            )
+        except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
+            logger.debug("Could not audit skill delete outcome", exc_info=True)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
 
     if request.method == "PUT":
+        denied = _deny_non_owner_skill_operation(request, "skill_update")
+        if denied is not None:
+            return denied
         try:
             body = await request.json()
         except Exception:
@@ -3035,6 +3078,18 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
         ok = await asyncio.to_thread(skills.update_skill, name, content)
+        try:
+            _sel().log_tool_invocation(
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_skill_update",
+                tool_kind="skill",
+                outcome="ok" if ok else "rejected",
+                metadata={"name": name},
+            )
+        except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
+            logger.debug("Could not audit skill update outcome", exc_info=True)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
@@ -3128,6 +3183,9 @@ async def api_skill_detail(request: web.Request) -> web.Response:
 
 async def api_skills_create(request: web.Request) -> web.Response:
     """POST /api/skills — create a new skill."""
+    denied = _deny_non_owner_skill_operation(request, "skill_create")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -3169,6 +3227,18 @@ async def api_skills_create(request: web.Request) -> web.Response:
     # Off the loop for the same reason api_skill_detail offloads its two calls:
     # create_skill walks a pinned parent chain and writes the SKILL.md.
     ok = await asyncio.to_thread(skills.create_skill, safe_name, content)
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skills_create",
+            tool_kind="skill",
+            outcome="ok" if ok else "rejected",
+            metadata={"name": safe_name},
+        )
+    except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
+        logger.debug("Could not audit skill create outcome", exc_info=True)
     if not ok:
         return web.json_response(
             {"error": f"skill '{safe_name}' already exists", "code": "skill_exists"}, status=409
