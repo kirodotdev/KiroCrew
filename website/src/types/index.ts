@@ -1319,6 +1319,8 @@ export interface ToolActivity {
   rejected?: boolean     // true when approval was rejected
   kind?: string          // ACP tool kind; execute is the legacy shell signal
   is_shell?: boolean     // shell tools can expose an indeterminate live status
+  tool_name?: string     // trusted programmatic tool name (_meta.kiro.toolName), when sent
+  mcp_server?: string    // MCP server that served the call (_meta.kiro.mcpServerName), when sent
 }
 
 /** Parsed content block produced by the block assembler. */

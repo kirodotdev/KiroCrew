@@ -402,6 +402,18 @@
     "components.pendingDecisionCard.submit_n_answers": "Primary button label when several options are toggled; {{count}} is the number of picked options, e.g. 'Submit 2 answers'.",
     "components.pendingDecisionCard.add_to_message_box": "Secondary button on that card; puts the toggled option(s) into the message box below without sending.",
     "components.pendingDecisionCard.add_to_message_box_hint": "Tooltip of that secondary button; uses the same 'message box' term as the label.",
-    "components.pendingDecisionCard.dismiss_hint": "Tooltip of the X button stating the outcome: the card hides without answering, the decision stays in the chat, the loop keeps running."
+    "components.pendingDecisionCard.dismiss_hint": "Tooltip of the X button stating the outcome: the card hides without answering, the decision stays in the chat, the loop keeps running.",
+    "utils.toolCallTitle.build": "Tool-call row title in the chat transcript. Verb: compile or bundle the project (a build step), not a building.",
+    "utils.toolCallTitle.lint": "Tool-call row title in the chat transcript. Verb: run a linter over the code. The loanword is fine where the language's developers say it.",
+    "utils.toolCallTitle.print": "Tool-call row title in the chat transcript for a lone echo/printf that only writes text to the terminal. Verb, not a printer.",
+    "utils.toolCallTitle.git": "Tool-call row title. {{sub}} is a git sub-command such as status or diff; it stays in English, as does Git.",
+    "utils.toolCallTitle.git_path": "Tool-call row title. {{sub}} is a git sub-command such as status or diff (stays in English, as does Git); {{path}} is the file or directory it was run on.",
+    "utils.toolCallTitle.request": "Tool-call row title for an HTTP call. {{method}} is an HTTP method such as POST (stays in English); {{host}} is the host name that was called.",
+    "utils.toolCallTitle.fetch": "Tool-call row title. Verb: download a web page or URL from the host {{host}}.",
+    "utils.toolCallTitle.mcp_with_arg": "Tool-call row title for a generic tool. {{title}} is the tool's display name, {{arg}} its most telling argument. Use the locale's colon.",
+    "utils.toolCallTitle.and_more_one": "Collapsed tool-call row. {{title}} is another already-rendered title from this same table; {{count}} further actions were folded into this one row.",
+    "utils.toolCallTitle.and_more_other": "Collapsed tool-call row. {{title}} is another already-rendered title from this same table; {{count}} further actions were folded into this one row.",
+    "utils.toolCallTitle.read_range": "Tool-call row title for reading part of a file. {{from}} and {{to}} are 1-based line numbers; keep the en dash between them.",
+    "utils.toolCallTitle.search_web": "Tool-call row title for a web search. {{query}} is the search text, shown inside the locale's quotation marks."
   }
 }

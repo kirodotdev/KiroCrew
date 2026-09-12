@@ -10,6 +10,7 @@ import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { isStopEvent } from '../lib/stopEvent'
 import { isNoteRow } from '../lib/noteContract'
+import type { ToolAction } from '../utils/toolAction'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
@@ -726,7 +727,7 @@ interface ChatState {
   slotRunning: boolean
   slotStopping: boolean
   slotState: SlotState
-  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
+  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -4327,7 +4328,7 @@ const chatSlice = createSlice({
      *  merged into it (see the `tool_call` case in useWebSocket) without a
      *  refinement of one call inheriting a sibling's purpose when tools run in
      *  parallel. */
-    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>) {
+    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>) {
       const { slot, ...detail } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
@@ -5127,7 +5128,7 @@ const chatSlice = createSlice({
         if (cached) apply(cached)
       }
     },
-    sseToolActivity(state, action: PayloadAction<{ slot: string; tool: string; kind: string; purpose: string; input_preview: string; auto?: boolean; tool_call_id?: string; is_update?: boolean; is_shell?: boolean }>) {
+    sseToolActivity(state, action: PayloadAction<{ slot: string; tool: string; kind: string; purpose: string; input_preview: string; auto?: boolean; tool_call_id?: string; is_update?: boolean; is_shell?: boolean; tool_name?: string; mcp_server?: string }>) {
       if (isUnsafeKey(action.payload.slot)) return
       const log = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).toolLog
@@ -5147,13 +5148,15 @@ const chatSlice = createSlice({
           if (action.payload.input_preview) existing.input = action.payload.input_preview
           if (action.payload.kind) existing.kind = action.payload.kind
           if (action.payload.is_shell !== undefined) existing.is_shell = action.payload.is_shell
+          if (action.payload.tool_name) existing.tool_name = action.payload.tool_name
+          if (action.payload.mcp_server) existing.mcp_server = action.payload.mcp_server
           // Update ts for recency sorting but NEVER overwrite executionStartedAt
           // — the elapsed timer must reflect real wall time since the tool began.
           existing.ts = Date.now()
           return
         }
       }
-      log.push({ type: 'tool', text: action.payload.tool, purpose: action.payload.purpose, input: action.payload.input_preview, kind: action.payload.kind, ts: Date.now(), auto: action.payload.auto, tool_call_id: action.payload.tool_call_id, is_shell: action.payload.is_shell })
+      log.push({ type: 'tool', text: action.payload.tool, purpose: action.payload.purpose, input: action.payload.input_preview, kind: action.payload.kind, ts: Date.now(), auto: action.payload.auto, tool_call_id: action.payload.tool_call_id, is_shell: action.payload.is_shell, tool_name: action.payload.tool_name, mcp_server: action.payload.mcp_server })
       if (log.length > 100) log.splice(0, log.length - 100)
     },
     sseActivityEvent(state, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string }>) {

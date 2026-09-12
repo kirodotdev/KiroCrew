@@ -442,6 +442,28 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     return first_word.lower() not in QUICK_PROMPTS
 
 
+def _tool_identity_fields(event: "LLMEvent") -> dict[str, str]:
+    """``tool_name`` / ``mcp_server`` for a tool_call frame, present only when known.
+
+    Read from the trusted ``_meta.kiro`` identity the dispatcher extracted, never
+    from the title. Omitted rather than sent empty so a consumer merging a
+    refinement field-by-field keeps what the initial frame supplied, and so a
+    frame from a backend that sends no ``_meta`` carries nothing to misread. The
+    dashboard's title derivation treats both as optional and falls back to
+    parsing the title, so an absent pair never breaks a row.
+    """
+    out: dict[str, str] = {}
+    name = getattr(event, "tool_name", "")
+    server = getattr(event, "mcp_server_name", "")
+    # Only a real string is an identity; any other value (an event shape that
+    # lacks the attribute, a stand-in object) is treated as unknown.
+    if isinstance(name, str) and name:
+        out["tool_name"] = _redact_tool_field(name, limit=200)
+    if isinstance(server, str) and server:
+        out["mcp_server"] = _redact_tool_field(server, limit=200)
+    return out
+
+
 def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEvent") -> str:
     """Broadcast an auto-approved tool call via WS with redacted title. Returns redacted title."""
     title, _ = redact_exfiltration_urls(event.title)
@@ -460,6 +482,7 @@ def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEven
             "tool_call_id": tcid,
             "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
             "input_preview": _redact_tool_field(event.tool_input),
+            **_tool_identity_fields(event),
         },
     )
     return title

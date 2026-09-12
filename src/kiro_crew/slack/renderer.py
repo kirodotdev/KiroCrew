@@ -56,7 +56,12 @@ from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
-from kiro_crew.slack.format import SLACK_MSG_LIMIT, extract_options, strip_thinking_tags
+from kiro_crew.slack.format import (
+    SLACK_MSG_LIMIT,
+    extract_options,
+    is_wait_identity,
+    strip_thinking_tags,
+)
 from kiro_crew.slack.handler import (
     _APPROVAL_TIMEOUT,
     _CURSOR,
@@ -1007,8 +1012,17 @@ class SlackRenderer(Renderer):
         self._start_tool_timer()
         # The `wait` tool blocks MCP for up to 30min — finalize the streaming
         # message now so Slack doesn't show an error; the next text chunk opens
-        # a fresh stream when wait returns.
-        if tool_name == "wait" and self._use_slack_stream and self._stream_ts:
+        # a fresh stream when wait returns. Keyed on the tool's programmatic
+        # identity (Renderer.current_tool_name, from the transport's
+        # `_meta.kiro.toolName`): `title` is display copy — the derived
+        # `Wait` / `Wait: <reason>` — and must not drive behaviour. The title
+        # equality is the fallback for a transport that sent no identity.
+        is_wait = (
+            is_wait_identity(self.current_tool_name)
+            if self.current_tool_name
+            else tool_name == "wait"
+        )
+        if is_wait and self._use_slack_stream and self._stream_ts:
             if self._active_task_id:
                 elapsed = self._tool_elapsed_str()
                 self._cancel_tool_timer()

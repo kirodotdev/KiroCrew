@@ -71,7 +71,14 @@ class OutputEvent:
     # tool_call announces it, prompt_choice asks permission for it. Carrying them
     # on the prompt is what lets a renderer name the tool the request is actually
     # about instead of the last one it happened to see.
-    title: str = ""  # tool_call / prompt_choice (tool name / "Running: X")
+    title: str = ""  # tool_call / prompt_choice (display title: derived, or "Running: X")
+    # tool_call: the tool's PROGRAMMATIC identity (`_meta.kiro.toolName`), kept
+    # apart from ``title`` because the title is display copy — derived from the
+    # arguments, localisable, and free to change — while a renderer's behaviour
+    # rules (the Slack `wait` stream rollover) must key on what the tool IS.
+    # Empty when the transport sent no identity; renderers then fall back to the
+    # title, which is what they matched on before the identity travelled.
+    tool_name: str = ""
     tool_kind: str = ""  # tool_call (e.g. "read"/"execute" — drives phase emoji)
     tool_purpose: str = ""  # tool_call / prompt_choice (human-readable purpose)
     options: list[dict[str, Any]] = field(default_factory=list)  # prompt_choice
@@ -545,6 +552,13 @@ class Renderer(ABC):
     """Maps abstract ``OutputEvent``s onto a transport's native surface."""
 
     channel_type: str = ""
+    #: Programmatic identity of the tool call ``on_tool_call`` is currently
+    #: rendering (``OutputEvent.tool_name``), set by :meth:`dispatch` before the
+    #: hook runs. ``on_tool_call`` receives the DISPLAY title; a renderer whose
+    #: behaviour depends on which tool ran (Slack's ``wait`` stream rollover)
+    #: reads this instead of matching the title. ``""`` when the transport sent
+    #: no identity.
+    current_tool_name: str = ""
 
     def __init__(self, capabilities: TransportCapabilities) -> None:
         self.capabilities = capabilities
@@ -725,6 +739,7 @@ class Renderer(ABC):
         elif event.kind == THINKING:
             await self.on_thinking(event.text)
         elif event.kind == TOOL_CALL:
+            self.current_tool_name = event.tool_name or ""
             await self.on_tool_call(
                 event.tool_call_id, event.title, event.tool_kind, event.tool_purpose
             )
