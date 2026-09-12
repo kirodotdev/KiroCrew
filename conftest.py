@@ -116,8 +116,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import warnings
 
+import _pytest.outcomes
+import _pytest.runner
 import pytest
 
 # ── ACP frame recorder switch (rootdir floor) ───────────────────────────────
@@ -1583,6 +1586,133 @@ def _join_test_loop_executor(item) -> None:
                     setattr(loop, name, reset)
     except Exception:  # pragma: no cover - a wedged loop must not turn teardown red
         return
+
+
+# Durations and phases pytest_runtest_logreport has already seen for the item whose
+# runtest protocol is in flight, keyed by node id. The escape guard uses both to
+# preserve one report per phase and to charge only time no logged report covers.
+_escape_logged_reports: dict[str, tuple[float, set[str]]] = {}
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_logreport(report):
+    """Track logged phases and durations for the in-flight escape guard."""
+    logged = _escape_logged_reports.get(report.nodeid)
+    if logged is not None:
+        duration, phases = logged
+        _escape_logged_reports[report.nodeid] = (
+            duration + max(report.duration, 0.0),
+            phases | {report.when},
+        )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    """Stop the item timeout before teardown report processing begins.
+
+    All three timed phases are finished once teardown's ``CallInfo`` completes.
+    Report serialization and ``logfinish`` must not be interrupted by that timer:
+    those hooks run outside every ``CallInfo``, where an alarm would escape the
+    protocol instead of becoming a normal test report.
+    """
+    if call.when == "teardown" and hasattr(item.ihook, "pytest_timeout_cancel_timer"):
+        item.ihook.pytest_timeout_cancel_timer(item=item)
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Turn a ``Failed`` that escapes the runtest protocol into that test's failure.
+
+    Every ``pytest.fail`` raised inside setup, call or teardown is caught by
+    ``CallInfo.from_call`` and becomes a report. The one that is NOT is
+    pytest-timeout's: with ``timeout_func_only`` off, its SIGALRM handler can fire
+    anywhere in the protocol -- while pytest is rendering a failure report, between
+    phases -- and ``pytest.fail("Timeout >120.0s")`` then propagates out of
+    ``pytest_runtest_protocol`` with no report logged. Under xdist that is fatal
+    to the whole session, not the test: ``xdist.remote`` sends
+    ``runtest_protocol_complete`` only when this hook RETURNS, so the controller
+    either takes the worker's traceback as an INTERNALERROR or, when the worker
+    goes on to finish, trips ``dsession.worker_workerfinished``'s
+    ``assert not crashitem`` for the still-assigned item. Either way one slow
+    test on an overloaded runner erases the shard's results.
+
+    Outermost wrapper (``tryfirst``), so it sees what every inner wrapper --
+    pytest-timeout's own included, which has already cancelled its timer by the
+    time the outcome reaches here -- let through. Only ``Failed`` is repaired: an
+    ``Exit`` escaping here is ``pytest.exit`` doing its job.
+
+    The invariant is one report per phase. The earliest of setup and call without a
+    logged report carries the escape, and teardown always runs unless it already
+    logged. This leaves three branches: no call report synthesizes the earliest
+    missing setup/call report, a call report without teardown puts the escape on the
+    teardown report, and a logged teardown emits nothing extra.
+
+    The teardown ``makereport`` hook disarms pytest-timeout before teardown report
+    logging starts. All timed phases are complete there, so serialization and
+    ``logfinish`` cannot create another timer escape. A logged teardown therefore
+    reached the controller before branch three can be entered. An alarm in the setup
+    or call logreport chain after this tracker runs but before xdist sends the report
+    can still leave that original phase absent on the controller. The synthesized
+    failure or teardown error makes that item fail loudly rather than pass green.
+
+    ``_escape_logged_reports`` records phases and durations at the start of each
+    logreport chain. ``pytest-split`` sums report durations by node id, so a
+    synthesized report owns only protocol time not charged to a logged phase. A
+    normal call keeps its elapsed time, while the replacement teardown owns only
+    teardown time. The hook then returns normally so xdist completes the item.
+
+    Teardown is required because live fixtures left on ``SetupState`` break the next
+    item on the worker. A clean teardown receives the escaped failure. Its own error
+    wins when teardown fails. Control-flow exceptions keep pytest's normal reraise
+    and interactive handling.
+    """
+    protocol_start_perf = time.perf_counter()
+    _escape_logged_reports[item.nodeid] = (0.0, set())
+    try:
+        outcome = yield
+    finally:
+        already_logged, logged_phases = _escape_logged_reports.pop(item.nodeid, (0.0, set()))
+    protocol_stop = time.time()
+    protocol_duration = time.perf_counter() - protocol_start_perf
+    excinfo = outcome.excinfo
+    if excinfo is None or not isinstance(excinfo[1], _pytest.outcomes.Failed):
+        return
+    escaped = excinfo[1]
+    if "call" not in logged_phases:
+        carrier = next(phase for phase in ("setup", "call") if phase not in logged_phases)
+
+        def _reraise():
+            raise escaped
+
+        call = _pytest.runner.CallInfo.from_call(_reraise, carrier)
+        call.duration = max(protocol_duration - already_logged, 0.0)
+        call.stop = protocol_stop
+        call.start = protocol_stop - call.duration
+        report = item.ihook.pytest_runtest_makereport(item=item, call=call)
+        item.ihook.pytest_runtest_logreport(report=report)
+        _pytest.runner.call_and_report(item, "teardown", log=True, nextitem=nextitem)
+    elif "teardown" not in logged_phases:
+        call = _pytest.runner.CallInfo.from_call(
+            lambda: item.ihook.pytest_runtest_teardown(item=item, nextitem=nextitem),
+            "teardown",
+            reraise=_pytest.runner.get_reraise_exceptions(item.config),
+        )
+        if call.excinfo is None:
+            call = _pytest.runner.CallInfo(
+                None,
+                pytest.ExceptionInfo.from_exc_info(excinfo),
+                start=call.start,
+                stop=call.stop,
+                duration=call.duration,
+                when="teardown",
+                _ispytest=True,
+            )
+        report = item.ihook.pytest_runtest_makereport(item=item, call=call)
+        item.ihook.pytest_runtest_logreport(report=report)
+        if _pytest.runner.check_interactive_exception(call, report):
+            item.ihook.pytest_exception_interact(node=item, call=call, report=report)
+    item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    outcome.force_result(True)
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)

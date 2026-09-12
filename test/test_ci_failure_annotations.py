@@ -405,3 +405,53 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
             "a second definition in test/conftest.py would shadow nothing but would "
             "annotate twice for `test/` and not at all for the in-package suites"
         )
+
+
+class TestDurationRefreshRequiresACompleteSession:
+    """A duration refresh may publish only when every collected item was reported."""
+
+    @staticmethod
+    def _measure_script() -> str:
+        document = yaml.safe_load((_WORKFLOWS / "test-durations.yml").read_text(encoding="utf-8"))
+        steps = document["jobs"]["refresh"]["steps"]
+        return next(step["run"] for step in steps if step.get("name") == "Measure test durations")
+
+    def test_the_duration_file_contains_only_this_sessions_reports(self) -> None:
+        script = self._measure_script()
+
+        assert re.search(
+            r"pytest[^\n]*--store-durations[^\n]*--clean-durations", script
+        ), "stale duration keys can hide tests that the xdist session never scheduled"
+
+    def test_collection_is_an_independent_serial_completion_marker(self) -> None:
+        script = self._measure_script()
+        collection_line = next(
+            line for line in script.splitlines() if "pytest --collect-only" in line
+        )
+
+        assert "-n" not in collection_line.split(), collection_line
+        # `-qq` prints only per-file counts when addopts lacks `--verbose`, so
+        # the tally regex below would fail closed on every run.
+        assert "-q" in collection_line.split(), collection_line
+        assert "-qq" not in collection_line.split(), collection_line
+        assert 'tally = re.search(r"(\\d+) tests? collected", collected_text)' in script
+        assert "collected_count = int(tally.group(1))" in script
+        assert "recorded_count = len(json.load(durations_file))" in script
+        assert "if collected_count != recorded_count:" in script
+
+    def test_exit_zero_and_one_both_reach_the_completion_marker(self) -> None:
+        script = self._measure_script()
+        accepted = script.index("0|1) ;;")
+        case_end = script.index("esac", accepted)
+        marker = script.index("if collected_count != recorded_count:")
+
+        assert accepted < case_end < marker
+        assert "exit" not in script[accepted:case_end].splitlines()[0]
+
+    def test_a_mismatch_reports_both_counts_and_refuses_publication(self) -> None:
+        script = self._measure_script()
+        mismatch = script[script.index("if collected_count != recorded_count:") :]
+
+        assert "collected {collected_count} test ids" in mismatch
+        assert "recorded {recorded_count} durations" in mismatch
+        assert "raise SystemExit(1)" in mismatch
