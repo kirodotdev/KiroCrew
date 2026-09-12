@@ -57,6 +57,7 @@ from kiro_crew.effort import (
 )
 from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.platform_compat import SpawnedProcessGroup
 from kiro_crew.providers.base import (
     CancelOutcome,
     LLMEvent,
@@ -1672,6 +1673,16 @@ class AcpProvider(LLMProvider):
     def is_process_alive(self) -> bool:
         """True if the underlying OS process has not exited (ignores I/O staleness)."""
         return self._client.is_process_alive()
+
+    def spawned_process_group(self) -> SpawnedProcessGroup | None:
+        """Forward the client seam's group (see base).
+
+        A direct read, matching ``process_instance`` below: both the placeholder
+        ``AcpClient`` and the ``AcpSessionProvider`` that replaces it on the
+        shared-runtime path answer this, so a hedge would only hide a wiring
+        break as "teardown never has a group".
+        """
+        return self._client.spawned_process_group()
 
     @property
     def process_instance(self) -> str:

@@ -1600,6 +1600,7 @@ class SessionManager:
                 get_sync_kill_provider=lambda: _sync_kill_provider,
                 get_subprocess_executor=lambda: subprocess_executor(),
                 get_pid_exists=lambda: platform_compat.pid_exists,
+                get_pgroup_authorized=lambda: platform_compat.pgroup_matches_incarnation,
                 get_identity_predicate=lambda: _provider_uses_kiro_identity_store,
                 get_discard_timeout=lambda: self._POOL_DISCARD_TIMEOUT,
                 get_health_interval=lambda: self._POOL_HEALTH_INTERVAL,

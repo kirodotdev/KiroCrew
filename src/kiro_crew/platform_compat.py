@@ -31,7 +31,7 @@ import time
 import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
 
 from kiro_crew import windows_acl
 from kiro_crew.executors import subprocess_executor
@@ -3797,6 +3797,328 @@ def kill_pid(pid: int, sig: int = SIGTERM) -> bool:
         raise OSError(f"taskkill invocation failed: {exc}") from exc
     if r.returncode != 0:
         _raise_taskkill_error(pid, r.returncode, r.stderr or r.stdout)
+    return True
+
+
+class ProcessGroupMember(NamedTuple):
+    """A pid witnessed inside a process group, bound to its own incarnation.
+
+    ``start_id`` is :func:`get_process_start_id` of ``pid``, read while ``pid``
+    was provably a member of the group, so a later check can tell "still that
+    process" from "that number was reused".
+    """
+
+    pid: int
+    start_id: str
+
+
+class SpawnedProcessGroup(NamedTuple):
+    """A process group id bound to the spawn incarnation that created it.
+
+    ``pgid`` alone is not an identity: it IS a pid, so once the group empties the
+    kernel may hand it to an unrelated session leader, and a liveness probe would
+    then happily authorize a signal to that stranger's whole group.
+    ``leader_start_id`` pins it to one incarnation --
+    :func:`get_process_start_id` of the leader, read at spawn while the leader
+    was provably alive.
+
+    ``members`` are non-leader pids witnessed inside the group while it was
+    provably ours. They are what makes a LEADERLESS group decidable: liveness
+    cannot separate our own surviving descendants from a stranger who inherited
+    the id and then lost its own leader, but a member that is still alive, still
+    the same incarnation and still in this group proves the group never emptied,
+    and a pgid cannot be reallocated before it does. Empty by default, which
+    means a leaderless group is refused.
+
+    :func:`pgroup_matches_incarnation` is the gate every signal goes through.
+    """
+
+    pgid: int
+    leader_start_id: str
+    members: tuple[ProcessGroupMember, ...] = ()
+
+
+def capture_spawned_process_group(pid: int) -> SpawnedProcessGroup | None:
+    """Bind *pid*'s process group to its start identity, or ``None``.
+
+    Call immediately after a ``start_new_session=True`` spawn, while the leader
+    is provably alive: ``os.getpgid`` raises once it is reaped, and a teardown
+    that derives the group at signal time therefore loses every descendant that
+    outlived the leader.
+
+    The group starts with no member witnesses -- the child has not forked yet --
+    so a caller that needs the leaderless case decidable feeds descendants to
+    :func:`record_process_group_members` as they appear.
+
+    ``None`` on Windows (no process group in this sense), when the group cannot
+    be read, when the leader is not its own group leader, and when the start
+    identity is unreadable -- an unwitnessed group can never be authorized, so
+    refusing it here keeps the caller on its pid-scoped path.
+
+    The group read is BRACKETED by identity reads and both must agree. A child
+    that exits immediately can have its pid reaped and handed to a replacement
+    leader between the two reads, and a replacement of its own new session reads
+    back ``pgid == pid`` exactly as ours does -- so the shape alone cannot
+    separate them, and a single identity read would bind the stranger's group to
+    our witness. Reading the identity FIRST also means an unreadable one refuses
+    before the group is read at all.
+    """
+    if not IS_POSIX or type(pid) is not int or pid <= 1:
+        return None
+    try:
+        before = get_process_start_id(pid)
+        if not before:
+            return None
+        pgid = os.getpgid(pid)
+        # start_new_session makes the child its own group leader, so pgid == pid
+        # and the leader's start identity is the group's witness. Anything else is
+        # not a group this process owns.
+        if pgid != pid or pgid <= 1:
+            return None
+        if get_process_start_id(pid) != before:
+            return None
+    except (OSError, ValueError):
+        return None
+    return SpawnedProcessGroup(pgid, before)
+
+
+def witness_process_group_members(pgid: int, pids: Iterable[int]) -> tuple[ProcessGroupMember, ...]:
+    """Which of *pids* are members of group *pgid* right now, with identities.
+
+    Non-blocking on every platform: :func:`pgroup_of` is one ``os.getpgid`` and
+    :func:`get_process_start_id` is documented in-process, so a caller may run
+    this on the event loop. DISCOVERING candidate pids is the blocking half and
+    belongs to the caller.
+
+    The group read is bracketed by two identity reads. A pid that exits between
+    them would otherwise be recorded with one incarnation's start identity and
+    another's group membership -- a witness that authorizes a group it was never
+    in. A pid that reads differently across the bracket is skipped rather than
+    retried; the next refresh sees the settled state.
+
+    Reserved and non-int pids are skipped outright: ``True`` is an ``int``
+    subclass that would coerce to pid 1, and a witness at pid 1 would make every
+    leaderless group authorized. Every remaining in-group pid is recorded --
+    there is no ceiling, because only one witness has to survive teardown and a
+    cap would drop whichever descendant happens to sort past it. ``()`` on
+    Windows.
+    """
+    if not IS_POSIX or type(pgid) is not int or pgid <= 1:
+        return ()
+    witnessed: list[ProcessGroupMember] = []
+    seen: set[int] = set()
+    for pid in pids:
+        if type(pid) is not int or pid <= 1 or pid == pgid or pid in seen:
+            continue
+        seen.add(pid)
+        before = get_process_start_id(pid)
+        if not before:
+            continue
+        if pgroup_of(pid) != pgid:
+            continue
+        if get_process_start_id(pid) != before:
+            continue
+        witnessed.append(ProcessGroupMember(pid, before))
+    return tuple(witnessed)
+
+
+def _group_leader_is_current(group: SpawnedProcessGroup) -> bool:
+    """True when the pid at ``group.pgid`` is still this group's captured leader.
+
+    Three facts, all required: the pid exists, it still leads THIS group, and its
+    start identity equals the one captured at spawn. A leaderless group answers
+    False -- it is decided by member witnesses instead
+    (:func:`pgroup_matches_incarnation`), never by this predicate.
+    """
+    if not group.leader_start_id or not pid_exists(group.pgid):
+        return False
+    if pgroup_of(group.pgid) != group.pgid:
+        return False
+    return get_process_start_id(group.pgid) == group.leader_start_id
+
+
+def record_process_group_members(
+    group: SpawnedProcessGroup | None, pids: Iterable[int]
+) -> SpawnedProcessGroup | None:
+    """*group* extended with whichever of *pids* are in it right now.
+
+    ``None`` in, ``None`` out: no group was ever captured, and a caller relies on
+    that answer staying distinguishable from a group that merely has no witnesses.
+
+    BLOCKING: the per-pid identity reads are unbounded in the number of
+    descendants, so an async caller runs this in an executor.
+
+    **Only ever called while the leader is alive**, and it proves that
+    (:func:`_group_leader_is_current`) both BEFORE and AFTER the scan. Once
+    without the other is not enough. The pre-proof stops a group whose id the
+    kernel already handed to an unrelated session leader from taking that
+    stranger's descendants as witnesses. The post-proof covers the same swap
+    happening DURING the walk: the scan is unbounded, so the leader can be reaped,
+    recycled or moved out of the group while it runs, and every pid read after
+    that moment belongs to the stranger. A failed post-proof discards ALL fresh
+    witnesses together rather than the ones read late, because the scan records no
+    per-pid ordering that could tell them apart.
+
+    Either failure records NOTHING and leaves the existing witnesses exactly as
+    they were; the group is returned unchanged rather than emptied, so a witness
+    taken while the leader was provably alive keeps its authority.
+
+    Witnesses accumulate rather than replace. The scans that feed this walk the
+    LEADER's descendants, so a member reparented to init drops out of them -- and
+    that member is exactly the survivor a reaped-leader teardown depends on. A
+    pid witnessed twice keeps its current identity, because one number cannot
+    hold two incarnations at once and the fresh read is the true one. The total is
+    unbounded, matching the descendant records the owner already keeps.
+    """
+    if group is None:
+        return None
+    if not IS_POSIX or type(group.pgid) is not int or group.pgid <= 1:
+        return group
+    if not _group_leader_is_current(group):
+        logger.error(
+            "record_process_group_members: pgid %d does not name the captured leader; "
+            "recording no new member witnesses",
+            group.pgid,
+        )
+        return group
+    fresh = witness_process_group_members(group.pgid, pids)
+    if not fresh:
+        return group
+    if not _group_leader_is_current(group):
+        logger.error(
+            "record_process_group_members: pgid %d stopped naming the captured leader while "
+            "its members were being read; discarding %d fresh witness(es)",
+            group.pgid,
+            len(fresh),
+        )
+        return group
+    merged = list(fresh)
+    known = {member.pid for member in merged}
+    for member in group.members:
+        if isinstance(member, ProcessGroupMember) and member.pid not in known:
+            merged.append(member)
+            known.add(member.pid)
+    return group._replace(members=tuple(merged))
+
+
+def _member_still_witnesses(pgid: int, member: object) -> bool:
+    """True when *member* is still the same process AND still inside *pgid*.
+
+    Every arm fails closed, because the answer authorizes ``killpg`` against
+    every process in the group. A shape that is not a :class:`ProcessGroupMember`
+    is not a witness -- a bare tuple or a ``Mock`` would otherwise reach the
+    liveness probe with a pid the type system never checked. A reserved pid is
+    refused before that probe: a witness at pid 1 would authorize every
+    leaderless group.
+
+    An unreadable identity, an identity that moved, and an unreadable or
+    different current group are all refused -- the last of those is the
+    descendant that ``setsid``'d out, which proves nothing about this group.
+
+    The membership read is BRACKETED by identity reads, and all three must agree
+    with the captured one. A sole witness can exit, be recycled or leave the
+    group between two reads, and one identity read plus one group read would then
+    pair one incarnation's identity with another's membership -- evidence that
+    authorizes ``killpg`` against every process in a group.
+    """
+    if not isinstance(member, ProcessGroupMember):
+        return False
+    if type(member.pid) is not int or member.pid <= 1 or member.pid == pgid:
+        return False
+    if not isinstance(member.start_id, str) or not member.start_id:
+        return False
+    if not pid_exists(member.pid):
+        return False
+    before = get_process_start_id(member.pid)
+    if before != member.start_id:
+        return False
+    current = pgroup_of(member.pid)
+    if get_process_start_id(member.pid) != before:
+        return False
+    return current == pgid
+
+
+def pgroup_matches_incarnation(group: SpawnedProcessGroup) -> bool:
+    """True when *group* still names the incarnation it was captured from.
+
+    Fails CLOSED. Three cases, in the order they are checked:
+
+    - **Empty group** -- refuse. Nothing of ours is left, and the id is now a
+      bare pid the kernel may reuse.
+    - **A process exists at ``pid == pgid``** -- that is either our leader or a
+      stranger who was handed the recycled id. Require its start identity to be
+      readable AND equal to the captured witness; an unreadable identity is
+      refused exactly like a mismatch.
+    - **Leader gone, group still populated** -- allow only when one of
+      ``group.members`` is still alive, still the same incarnation and still in
+      this group. Liveness cannot decide this case on its own: our own group can
+      empty, the kernel can hand the id to an unrelated session leader, and that
+      leader can fork and then exit -- leaving a populated group with no leader,
+      the same shape our own surviving tree has. A member witnessed while the
+      group was ours proves it never emptied, and a pgid cannot be reallocated
+      before it does. No surviving witness, or none recorded at all, refuses.
+    """
+    if not IS_POSIX:
+        return False
+    if type(group.pgid) is not int or group.pgid <= 1 or not group.leader_start_id:
+        return False
+    if not pgroup_exists(group.pgid):
+        return False
+    if not pid_exists(group.pgid):
+        members = group.members
+        if isinstance(members, tuple) and any(
+            _member_still_witnesses(group.pgid, member) for member in members
+        ):
+            return True
+        logger.error(
+            "pgroup_matches_incarnation: pgid %d has no surviving member witness; "
+            "refusing signal",
+            group.pgid,
+        )
+        return False
+    current = get_process_start_id(group.pgid)
+    if not current:
+        logger.error(
+            "pgroup_matches_incarnation: leader %d start identity unreadable; refusing signal",
+            group.pgid,
+        )
+        return False
+    if current != group.leader_start_id:
+        logger.error(
+            "pgroup_matches_incarnation: pgid %d was recycled; refusing signal",
+            group.pgid,
+        )
+        return False
+    return True
+
+
+def kill_pgroup(pgid: int, sig: int = SIGTERM) -> bool:
+    """Signal process group ``pgid`` directly, without deriving it from a pid.
+
+    The escalation half of :func:`process_group_id`: ``killpg`` resolves a group
+    for as long as any member is alive, so a group whose leader has already been
+    reaped is still reachable. Only ever pass an id captured at spawn, and only
+    inside that process's own bounded teardown -- the id is a pid, and the kernel
+    may hand it to an unrelated session leader once the group has emptied.
+    :func:`pgroup_exists` is the check that keeps an empty group unsignalled.
+
+    Returns ``False`` WITHOUT signalling anything when the group cannot be used:
+    on Windows (:func:`kill_process_tree`'s ``taskkill /T`` walks the tree there),
+    for a non-int or reserved id, or for our own group -- where ``killpg`` would
+    signal the gateway itself. ``False`` says only that no group signal happened;
+    it does NOT license a pid-scoped retry. For a caller holding a group captured
+    at spawn the refusal is TERMINAL, because on POSIX the leader is its own group
+    leader (``pgid == pid``), so signalling the pid would reach the very process
+    the refusal declined to trust. Only a caller that never captured a group has a
+    pid to fall back to. ``ProcessLookupError`` / ``OSError`` from ``killpg``
+    propagate, the shape :func:`kill_process_tree` already gives its callers.
+    """
+    if not IS_POSIX:
+        return False
+    if type(pgid) is not int or pgid <= 1 or pgid == _OWN_PGID:
+        logger.error("kill_pgroup: refusing broadcast/self/reserved pgid %r", pgid)
+        return False
+    os.killpg(pgid, sig)
     return True
 
 

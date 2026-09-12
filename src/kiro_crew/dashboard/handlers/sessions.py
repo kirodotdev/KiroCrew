@@ -3004,7 +3004,15 @@ async def _reset_all_sessions(request: web.Request) -> int:
                         _timeout,
                     )
                     try:
-                        _h._sync_kill_provider(p)
+                        # Off-loop: the kill authorizes a saved process group,
+                        # which re-reads one /proc identity per member witness --
+                        # unbounded in the width of the tree -- and can escalate
+                        # SIGTERM to SIGKILL with a waitpid in between. Awaited,
+                        # so start_pool below cannot re-spawn while the old tree
+                        # is still being torn down.
+                        await asyncio.get_running_loop().run_in_executor(
+                            subprocess_executor(), _h._sync_kill_provider, p
+                        )
                     except Exception:
                         logger.exception("Force-kill fallback also failed for %r", p)
                 except Exception:

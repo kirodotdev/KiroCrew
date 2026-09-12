@@ -3154,6 +3154,23 @@ def _get_child_pids(parent_pid: int | None, _visited: set[int] | None = None) ->
     return all_pids
 
 
+def _witness_group_members(
+    group: platform_compat.SpawnedProcessGroup | None, parent_pid: int | None
+) -> platform_compat.SpawnedProcessGroup | None:
+    """*group* extended with the descendants of *parent_pid* that are in it.
+
+    BLOCKING: the descendant scan reads ``/proc`` on Linux and spawns ``pgrep``
+    elsewhere, so callers run this in ``subprocess_executor()``. A caller that
+    already holds a descendant list calls
+    ``platform_compat.record_process_group_members`` directly instead -- that half
+    is syscalls only and needs no hop. Call while the leader is alive: the
+    recorder re-proves its incarnation and records nothing once it is gone.
+    """
+    if group is None:
+        return None
+    return platform_compat.record_process_group_members(group, _get_child_pids(parent_pid))
+
+
 def _direct_children(pid: int) -> list[int]:
     """Return direct child PIDs. Uses /proc on Linux, pgrep on other POSIX.
 
@@ -3674,6 +3691,10 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
+        # The POSIX process group this spawn was placed in, bound to the leader's
+        # start identity so a recycled pgid can never be signalled. None on
+        # Windows and whenever it could not be witnessed.
+        self._process_group: platform_compat.SpawnedProcessGroup | None = None
         self._start_time: int | None = None  # process start time for PID recycling detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
@@ -4936,6 +4957,18 @@ class AcpClient:
     def is_process_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._is_process_alive()
+
+    def spawned_process_group(self) -> platform_compat.SpawnedProcessGroup | None:
+        """The incarnation-bound group captured at spawn, or ``None``.
+
+        A pure read: ``None`` means no group was ever captured, and any other
+        answer means one WAS. Teardown needs that distinction intact, because on
+        POSIX ``pgid == pid`` -- so a caller told "no group" for a group that
+        merely failed its gate would fall back to killing that same recyclable
+        number. Authorization belongs to the moment of the signal, where
+        ``platform_compat.pgroup_matches_incarnation`` runs before every one.
+        """
+        return self._process_group
 
     @property
     def process_instance(self) -> str:
@@ -6240,6 +6273,9 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Witness while the leader is provably alive: os.getpgid raises once it is
+        # reaped, and the group outlives it for as long as a descendant holds it.
+        self._process_group = platform_compat.capture_spawned_process_group(self._pid)
         # Minted with the process it names, random rather than pid-derived: a
         # pid can be reused by the OS, and the start-time disambiguator is not
         # readable on every platform, so equality on a fresh random id is the
@@ -6331,6 +6367,19 @@ class AcpClient:
                 logger.info(
                     "Early tracking %d descendants of PID %d", len(self._child_pids), self._pid
                 )
+                # Witness them inside the spawn group too. The leader alone cannot
+                # authorize a signal once it is reaped, and a member recorded here
+                # is what tells our surviving tree from a stranger who inherited
+                # the id. Off-loop: one identity read per descendant is unbounded
+                # in the width of the tree, and this runs on the loop that serves
+                # every other session. Sound here because the leader is provably
+                # alive -- the recorder re-proves that around its own scan.
+                self._process_group = await _loop.run_in_executor(
+                    subprocess_executor(),
+                    platform_compat.record_process_group_members,
+                    self._process_group,
+                    early_descendants,
+                )
 
             if self._process.stderr:
                 self._stderr_task = asyncio.ensure_future(self._drain_stderr(self._process.stderr))
@@ -6405,6 +6454,12 @@ class AcpClient:
 
         Merges with any early snapshot taken in _spawn().  MCP servers
         (the internal MCP server, node) may not exist until after _initialize_session().
+
+        Also the refresh point for the spawn group's member witnesses: these are
+        the long-lived children that outlive a reaped leader, so witnessing them
+        here is what keeps the group decidable at teardown. Sound at this point
+        because the leader is still alive -- the recorder re-proves its
+        incarnation and accepts nothing once it is gone.
         """
         _loop = asyncio.get_running_loop()
         descendants = await _loop.run_in_executor(subprocess_executor(), _get_child_pids, self._pid)
@@ -6420,6 +6475,15 @@ class AcpClient:
             self._child_pids.update(
                 await _loop.run_in_executor(subprocess_executor(), _capture_child_records, new_pids)
             )
+
+        # Off-loop: one identity read per descendant, unbounded in the width of
+        # the tree.
+        self._process_group = await _loop.run_in_executor(
+            subprocess_executor(),
+            platform_compat.record_process_group_members,
+            self._process_group,
+            list(self._child_pids),
+        )
 
         if self._child_pids:
             from kiro_crew.session import _track_child_pids
@@ -6464,6 +6528,28 @@ class AcpClient:
             merged.update(
                 await _loop.run_in_executor(subprocess_executor(), _capture_child_records, new_pids)
             )
+
+        # Last chance to witness this group's members: the fresh scan above is the
+        # only place a descendant forked after the post-initialize snapshot becomes
+        # visible, and one that ignores SIGTERM is exactly what a later pooled
+        # discard must still be able to authorize. Refresh BEFORE the signal below
+        # reaps the leader, because only a live leader proves the group is ours.
+        # Off-loop and best-effort: a failure costs the late witness, never the
+        # witnesses already held.
+        if self._process_group is not None:
+            try:
+                self._process_group = await _loop.run_in_executor(
+                    subprocess_executor(),
+                    platform_compat.record_process_group_members,
+                    self._process_group,
+                    list(merged),
+                )
+            except Exception:
+                logger.debug(
+                    "Could not refresh spawn group members for PID %s before teardown",
+                    pid,
+                    exc_info=True,
+                )
 
         if not force:
             try:

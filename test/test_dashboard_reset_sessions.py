@@ -9,6 +9,7 @@ correct order.
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -137,6 +138,47 @@ class TestResetAllSessionsShutdown:
 
         # The hung provider should have been force-killed; the healthy one should not.
         mock_kill.assert_called_once_with(hung)
+        assert sessions.start_pool_called is True
+
+    @pytest.mark.asyncio
+    async def test_force_kill_runs_off_loop_and_is_awaited(self, monkeypatch) -> None:
+        """The fallback kill may not run on the event loop, and must be awaited.
+
+        ``_sync_kill_provider`` authorizes a saved process group, which re-reads
+        one ``/proc`` identity per member witness -- unbounded in the width of the
+        tree -- and can escalate SIGTERM to SIGKILL with a ``waitpid`` in between.
+        Running it inline stalls the loop that serves every other session.
+
+        Awaiting it is the other half: a fire-and-forget offload lets
+        ``start_pool`` re-spawn while the old tree is still being torn down.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
+
+        async def _never_returns() -> None:
+            await asyncio.sleep(60)
+
+        hung = MagicMock()
+        hung.shutdown = MagicMock(side_effect=lambda: _never_returns())
+        sessions = _FakeSessionManager([hung])
+        request, state = _make_request(sessions)
+
+        killed: list[object] = []
+
+        def _kill_off_loop(p: object) -> None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                time.sleep(0.05)
+                killed.append(p)
+                return
+            raise AssertionError("must not run on the event loop")
+
+        with patch("kiro_crew.dashboard.handlers._sync_kill_provider", side_effect=_kill_off_loop):
+            await _reset_all_sessions(request)
+            for task in list(state._background_tasks):
+                await task
+
+        assert killed == [hung], "the fallback kill did not complete before the task ended"
         assert sessions.start_pool_called is True
 
     @pytest.mark.asyncio

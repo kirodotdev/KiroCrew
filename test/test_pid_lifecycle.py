@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import logging
 import os
 import signal
 import subprocess
 import sys
 import threading
+import time
+import warnings
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -1215,6 +1220,692 @@ class TestSyncKillProvider:
 
         # Loop stops after the first (SIGTERM) signal raises ProcessLookupError
         assert sigs == [platform_compat.SIGTERM]
+
+
+class _SpawnedGroupStub:
+    """Provider stand-in exposing the public ``spawned_process_group`` capability.
+
+    Carries a ``_client`` only to satisfy ``_sync_kill_provider``'s PID
+    resolution; the group is read from the provider itself, never from that seam.
+    """
+
+    def __init__(self, pid: int | None, group: object) -> None:
+        self._client = SimpleNamespace(_pid=pid)
+        self._proc = None
+        self._active_proc = None
+        self._group = group
+
+    def spawned_process_group(self) -> object:
+        return self._group
+
+
+def _witnessed(pgid: int, leader_start_id: str = "77123") -> platform_compat.SpawnedProcessGroup:
+    """A group bound to a fixed leader start identity, carrying one member witness."""
+    return platform_compat.SpawnedProcessGroup(
+        pgid, leader_start_id, (platform_compat.ProcessGroupMember(pgid + 1, "88456"),)
+    )
+
+
+#: Grandchild of the group leader: ignores SIGTERM, marks itself ready, then polls
+#: a stop sentinel so the test can always end it.
+#: Two orderings matter. The ready marker is written AFTER the handler is
+#: installed -- written first, a plain SIGTERM wins the race and greens a broken
+#: kill path. And the stop sentinel is a path no signal can be confused with, so
+#: cleanup never depends on the gate the test is exercising.
+_TERM_RESISTANT_CHILD = """\
+import os
+import signal
+import sys
+import time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+ready_path, stop_path = sys.argv[1], sys.argv[2]
+with open(ready_path, "w", encoding="utf-8") as fh:
+    fh.write("ready")
+    fh.flush()
+    os.fsync(fh.fileno())
+while not os.path.exists(stop_path):
+    time.sleep(0.05)
+"""
+
+#: Group leader: spawns the resistant grandchild into its own group, publishes
+#: that pid, waits for the ready marker, then exits so the test can reap it.
+_GROUP_LEADER = """\
+import os
+import subprocess
+import sys
+import time
+
+child_script, ready_path, child_pid_path, stop_path = sys.argv[1:5]
+proc = subprocess.Popen([sys.executable, child_script, ready_path, stop_path])
+with open(child_pid_path, "w", encoding="utf-8") as fh:
+    fh.write(str(proc.pid))
+    fh.flush()
+    os.fsync(fh.fileno())
+deadline = time.monotonic() + 20.0
+while time.monotonic() < deadline and not os.path.exists(ready_path):
+    time.sleep(0.01)
+"""
+
+
+def _wait_for(predicate, timeout: float = 20.0) -> bool:
+    """Poll ``predicate`` under a bound. True when it became truthy."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return bool(predicate())
+
+
+@_POSIX_ONLY
+class TestSyncKillProviderReachesTheSavedGroup:
+    """A group outlives its leader, and teardown must still reach it."""
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _witnessed_leaderless_group(tmp_path: Path):
+        """A real leaderless group holding one SIGTERM-resistant member.
+
+        Yields ``(group, grandchild_pid, leader_pid)`` with the leader already
+        reaped, so the caller sees exactly the state teardown must decide on.
+
+        Cleanup is INDEPENDENT of the authorization gate. The grandchild polls a
+        stop sentinel, so writing that file ends it whatever the gate answers --
+        which is what lets a test break the gate on purpose without leaking a
+        process. The identity-pinned group signal stays only as a last resort for
+        a child that never reached its polling loop, and a bare pid or pgid is
+        never signalled: both numbers are recyclable once the leader is reaped.
+        """
+        child_script = tmp_path / "resistant_child.py"
+        child_script.write_text(_TERM_RESISTANT_CHILD, encoding="utf-8")
+        leader_script = tmp_path / "group_leader.py"
+        leader_script.write_text(_GROUP_LEADER, encoding="utf-8")
+        ready_path = tmp_path / "child.ready"
+        child_pid_path = tmp_path / "child.pid"
+        stop_path = tmp_path / "child.stop"
+
+        leader = subprocess.Popen(
+            [
+                sys.executable,
+                str(leader_script),
+                str(child_script),
+                str(ready_path),
+                str(child_pid_path),
+                str(stop_path),
+            ],
+            cwd=str(tmp_path),
+            start_new_session=True,
+        )
+        grandchild_pid: int | None = None
+        captured: platform_compat.SpawnedProcessGroup | None = None
+        try:
+            # Witness the group FIRST, while the leader is alive and unreaped.
+            # Every later reference to this tree goes through `captured`; a bare
+            # pid or pgid read after the reap could name a stranger.
+            captured = platform_compat.capture_spawned_process_group(leader.pid)
+            assert captured is not None, "could not witness the leader's own group"
+
+            assert _wait_for(ready_path.exists), "resistant grandchild never became ready"
+            grandchild_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+
+            # Witness the grandchild as a member while the leader is STILL alive
+            # and holding the group. This mirrors what the owner does at its own
+            # lifecycle points, and it is the only ordering that is sound: after
+            # the reap, a group read could already describe a stranger.
+            captured = platform_compat.record_process_group_members(captured, [grandchild_pid])
+            assert captured is not None
+            assert captured.members == (
+                platform_compat.ProcessGroupMember(
+                    grandchild_pid, platform_compat.get_process_start_id(grandchild_pid) or ""
+                ),
+            ), "the resistant grandchild was not witnessed inside the spawn group"
+
+            # Reap the leader explicitly: a leaderless group is the state under
+            # test, and only a witnessed member can authorize it.
+            leader.wait(timeout=20)
+            assert not platform_compat.pid_exists(leader.pid)
+            with pytest.raises(ProcessLookupError):
+                os.getpgid(leader.pid)
+            # The group is still live because the grandchild still holds it.
+            assert platform_compat.pgroup_exists(captured.pgid)
+
+            yield captured, grandchild_pid, leader.pid
+        finally:
+            # The sentinel first, because it works with no signal at all and with
+            # the gate forced to refuse.
+            try:
+                stop_path.write_text("stop", encoding="utf-8")
+            except OSError:
+                pass
+            gone = grandchild_pid is None or _wait_for(
+                lambda: not platform_compat.pid_exists(grandchild_pid), timeout=10.0
+            )
+            if not gone and captured is not None:
+                # The child never reached its polling loop. The witnessed group is
+                # the only identity-pinned handle left, so use it -- and only
+                # while the real gate still authorizes it.
+                if platform_compat.pgroup_matches_incarnation(captured):
+                    try:
+                        platform_compat.kill_pgroup(captured.pgid, platform_compat.SIGKILL)
+                    except OSError:
+                        pass
+            if leader.poll() is None:
+                leader.kill()
+            leader.wait(timeout=10)
+
+    def test_reaped_leader_still_lets_the_group_be_killed(self, tmp_path: Path) -> None:
+        """Reap the group leader, then prove the resistant grandchild dies.
+
+        ``os.getpgid(leader)`` raises once the leader is reaped, so a teardown
+        that derives the group from the leader pid signals nothing and the
+        grandchild survives. The group id captured at spawn is the only handle
+        left, and ``killpg`` still resolves it while any member is alive -- but
+        only a member witnessed while the group was ours can authorize that
+        signal, since a stranger's group can reach the same leaderless shape.
+        """
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        with self._witnessed_leaderless_group(tmp_path) as (captured, grandchild_pid, leader_pid):
+            # A reaped leader over a WITNESSED member is authorized: that member
+            # is still the same incarnation and still in this group, so the group
+            # never emptied and its id was never available for reuse.
+            assert platform_compat.pgroup_matches_incarnation(captured)
+
+            _sync_kill_provider(_SpawnedGroupStub(leader_pid, captured))
+
+            assert _wait_for(
+                lambda: not platform_compat.pid_exists(grandchild_pid)
+            ), "SIGTERM-resistant grandchild survived the saved-group escalation"
+
+    def test_cleanup_leaves_no_child_when_the_gate_refuses(self, tmp_path: Path) -> None:
+        """Break the gate on purpose and prove cleanup still ends the child.
+
+        Cleanup that signals only what the gate authorizes cannot clean up after a
+        gate that is broken, wrong, or being mutated -- exactly the runs where a
+        leaked SIGTERM-resistant process costs the most. The stop sentinel is the
+        path that does not go through it.
+        """
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        survivor: int | None = None
+        with patch("kiro_crew.platform_compat.pgroup_matches_incarnation", return_value=False):
+            with self._witnessed_leaderless_group(tmp_path) as (
+                captured,
+                grandchild_pid,
+                leader_pid,
+            ):
+                survivor = grandchild_pid
+                # The refusal is what the mutation forces, and no signal follows it.
+                _sync_kill_provider(_SpawnedGroupStub(leader_pid, captured))
+                assert platform_compat.pid_exists(
+                    grandchild_pid
+                ), "the probe is vacuous: the child died without the gate authorizing anything"
+
+        assert survivor is not None
+        assert not platform_compat.pid_exists(survivor), "cleanup leaked the resistant child"
+
+
+class TestSyncKillProviderGroupSelection:
+    """Which identity teardown signals, and which it refuses to signal."""
+
+    def test_saved_group_is_signalled_when_it_is_live(self) -> None:
+        """A live, correctly-witnessed group takes the signal, not the leader pid."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(4242, _witnessed(4242))
+
+        groups: list[tuple[int, int]] = []
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pgroup",
+                side_effect=lambda pgid, sig: (groups.append((pgid, sig)), True)[1],
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+            patch("kiro_crew.session_pid.os.waitpid", side_effect=ChildProcessError()),
+        ):
+            _sync_kill_provider(provider)
+
+        assert groups == [
+            (4242, platform_compat.SIGTERM),
+            (4242, platform_compat.SIGKILL),
+        ]
+        mock_kill_pid.assert_not_called()
+
+    def test_the_incarnation_is_rechecked_before_every_signal(self) -> None:
+        """The pgid can be recycled during the SIGTERM grace window.
+
+        Authorizing once at resolve time would let the SIGKILL land on whatever
+        session leader inherited the id, so the gate runs per signal. The second
+        check refuses, and the escalation stops there: it must NOT degrade to
+        ``kill_pid(pid)``, which on POSIX is that same recycled number.
+        """
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(4242, _witnessed(4242))
+
+        groups: list[int] = []
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                side_effect=[True, False],
+            ) as gate,
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pgroup",
+                side_effect=lambda pgid, sig: (groups.append(pgid), True)[1],
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+            patch("kiro_crew.session_pid.os.waitpid", side_effect=ChildProcessError()),
+        ):
+            _sync_kill_provider(provider)
+
+        assert gate.call_count == 2
+        assert groups == [4242]
+        mock_kill_pid.assert_not_called()
+
+    def test_no_saved_group_falls_back_to_the_leader_pid(self) -> None:
+        """Without a group the escalation is pid-scoped, exactly as before."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(4242, None)
+
+        sigs: list[int] = []
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda pid, sig: sigs.append(sig) or True,
+            ),
+            patch("kiro_crew.session_pid.os.waitpid", return_value=(0, 0)),
+        ):
+            _sync_kill_provider(provider)
+
+        assert sigs == [platform_compat.SIGTERM, platform_compat.SIGKILL]
+        mock_kill_group.assert_not_called()
+
+    def test_an_unauthorized_saved_group_is_not_signalled(self) -> None:
+        """An empty, recycled or unwitnessable group is never signalled."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(4242, _witnessed(4242))
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                return_value=False,
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            _sync_kill_provider(provider)
+
+        mock_kill_group.assert_not_called()
+        mock_kill_pid.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "gate, kill_group",
+        [
+            (False, None),
+            (True, ProcessLookupError()),
+            (True, OSError()),
+            (True, False),
+        ],
+        ids=["gate-refuses", "killpg-vanished", "killpg-errno", "killpg-refused"],
+    )
+    def test_a_captured_group_never_degrades_to_the_leader_pid(
+        self, gate: bool, kill_group: object
+    ) -> None:
+        """Once a group WAS captured, the pid is off limits on every outcome.
+
+        On POSIX the leader is its own group leader, so ``pgid == pid``. A gate
+        refusal means that number does not name our incarnation, so falling back
+        to ``kill_pid(pid)`` would signal exactly the replacement leader the gate
+        just rejected -- an unrelated session's whole tree.
+        """
+        from kiro_crew.session_pid import _signal_teardown_target
+
+        group = _witnessed(4242)
+        group_patch: dict[str, object] = (
+            {"side_effect": kill_group}
+            if isinstance(kill_group, BaseException)
+            else {"return_value": kill_group}
+        )
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                return_value=gate,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pgroup", **group_patch
+            ) as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            assert _signal_teardown_target(4242, group, platform_compat.SIGTERM) is False
+
+        mock_kill_pid.assert_not_called()
+        assert mock_kill_group.called is gate
+
+    @pytest.mark.parametrize("sig", [platform_compat.SIGTERM, platform_compat.SIGKILL])
+    def test_a_rejected_group_blocks_both_term_and_kill(self, sig: int) -> None:
+        """The rule is per signal, so the KILL escalation is fenced too."""
+        from kiro_crew.session_pid import _signal_teardown_target
+
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                return_value=False,
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            assert _signal_teardown_target(4242, _witnessed(4242), sig) is False
+
+        mock_kill_group.assert_not_called()
+        mock_kill_pid.assert_not_called()
+
+    def test_no_captured_group_still_uses_the_leader_pid(self) -> None:
+        """``group is None`` is the only state where the pid is the right handle."""
+        from kiro_crew.session_pid import _signal_teardown_target
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation") as gate,
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            assert _signal_teardown_target(4242, None, platform_compat.SIGTERM) is True
+
+        gate.assert_not_called()
+        mock_kill_group.assert_not_called()
+        mock_kill_pid.assert_called_once_with(4242, platform_compat.SIGTERM)
+
+    def test_only_the_owning_providers_group_is_signalled(self) -> None:
+        """A concurrently live sibling session's group is left alone."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        doomed = _SpawnedGroupStub(5000, _witnessed(5000))
+        winner_group = 6000
+
+        groups: list[int] = []
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pgroup",
+                side_effect=lambda pgid, sig: (groups.append(pgid), True)[1],
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pid"),
+            patch("kiro_crew.session_pid.os.waitpid", side_effect=ChildProcessError()),
+        ):
+            _sync_kill_provider(doomed)
+
+        assert set(groups) == {5000}
+        assert winner_group not in groups
+
+    def test_a_provider_without_the_capability_reports_no_group(self) -> None:
+        """The base LLMProvider answers None, so a non-process provider is safe."""
+        from kiro_crew.session_pid import _provider_process_group
+
+        assert _provider_process_group(object()) is None
+
+    def test_every_registered_provider_declares_the_capability(self) -> None:
+        """Teardown asks ONE public question, so every harness must answer it.
+
+        The base default is what keeps a provider with no child process safe;
+        without it this leaf would be back to probing a private client seam,
+        which silently answers "no group" for any harness that renames it.
+        """
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.providers.base import LLMProvider
+
+        for cls in (LLMProvider, AcpProvider, AcpSessionProvider):
+            assert callable(getattr(cls, "spawned_process_group", None)), cls.__name__
+        assert LLMProvider.spawned_process_group(MagicMock()) is None
+
+    def test_a_mock_capability_is_refused(self) -> None:
+        """An auto-generated Mock return must never reach killpg."""
+        from kiro_crew.session_pid import _provider_process_group
+
+        assert _provider_process_group(MagicMock()) is None
+
+    def test_a_bare_async_mock_is_never_called(self) -> None:
+        """A bare AsyncMock declares no capability, so nothing is invoked.
+
+        A Mock double synthesizes any attribute on ACCESS, so an instance-level
+        lookup would find a capability on a stand-in that has none -- and an
+        AsyncMock answers with a coroutine this synchronous resolver cannot await,
+        leaking ``RuntimeWarning: coroutine ... was never awaited`` into unrelated
+        session tests. Resolving from the CLASS is what keeps the double silent.
+        """
+        from kiro_crew.session_pid import _provider_process_group
+
+        provider = AsyncMock()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert _provider_process_group(provider) is None
+            gc.collect()
+
+        assert provider.spawned_process_group.call_count == 0
+        assert provider.spawned_process_group.await_count == 0
+        never_awaited = [w for w in caught if "never awaited" in str(w.message)]
+        assert not never_awaited, [str(w.message) for w in never_awaited]
+
+    def test_a_raising_capability_is_refused(self) -> None:
+        """A provider whose declared capability raises reports no group."""
+        from kiro_crew.session_pid import _provider_process_group
+
+        class _Wedged:
+            def spawned_process_group(self) -> object:
+                raise RuntimeError("wedged")
+
+        assert _provider_process_group(_Wedged()) is None
+
+    @pytest.mark.parametrize("group", [0, 1, -1, True, "4242", None])
+    def test_reserved_and_non_int_groups_are_refused(self, group: object) -> None:
+        """Only a real, positive, non-reserved, witnessed group id is usable."""
+        from kiro_crew.session_pid import _provider_process_group
+
+        candidate = group if group is None else platform_compat.SpawnedProcessGroup(group, "77123")
+        assert _provider_process_group(_SpawnedGroupStub(4242, candidate)) is None
+
+    def test_an_unwitnessed_group_is_refused(self) -> None:
+        """A group with no leader start identity can never be authorized."""
+        from kiro_crew.session_pid import _provider_process_group
+
+        provider = _SpawnedGroupStub(4242, platform_compat.SpawnedProcessGroup(4242, ""))
+
+        assert _provider_process_group(provider) is None
+
+    @pytest.mark.parametrize(
+        "members",
+        [
+            MagicMock(),
+            (("plain", "tuple"),),
+            (platform_compat.ProcessGroupMember(4300, "88456"), MagicMock()),
+        ],
+    )
+    def test_a_malformed_member_costs_the_witnesses_not_the_group(self, members: object) -> None:
+        """Junk in ``members`` drops the witnesses; the group itself survives.
+
+        Answering ``None`` here would say "nothing was ever captured", which is
+        the one answer that licenses the pid-scoped fallback -- onto the very
+        recyclable number the group exists to keep unsignalled. What is kept
+        instead is a group that a reaped leader cannot authorize.
+        """
+        from kiro_crew.session_pid import _provider_process_group
+
+        provider = _SpawnedGroupStub(
+            4242, platform_compat.SpawnedProcessGroup(4242, "77123", members)  # type: ignore[arg-type]
+        )
+
+        resolved = _provider_process_group(provider)
+
+        assert resolved is not None
+        assert resolved.pgid == 4242
+        assert all(
+            isinstance(member, platform_compat.ProcessGroupMember) for member in resolved.members
+        )
+
+    def test_well_formed_member_witnesses_are_preserved(self) -> None:
+        """The witnesses are what makes a reaped-leader group signalable."""
+        from kiro_crew.session_pid import _provider_process_group
+
+        group = _witnessed(4242)
+        assert _provider_process_group(_SpawnedGroupStub(4242, group)) == group
+
+    def test_windows_keeps_single_tree_kill(self) -> None:
+        """Windows has no process groups in this sense: taskkill /T still owns it."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(4242, _witnessed(4242))
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            _sync_kill_provider(provider)
+
+        mock_kill_group.assert_not_called()
+        mock_kill_pid.assert_called_once_with(4242, platform_compat.SIGKILL)
+
+
+class TestSyncKillProviderWithAClearedPid:
+    """A cleared leader pid does not mean an empty tree.
+
+    ``AcpProvider.shutdown()`` -> ``AcpClient._reset_state()`` sets ``_pid = None``
+    and leaves the group captured at spawn in place, and the warm-pool discard
+    then dispatches this hard kill expecting that group. Returning on the pid
+    alone is what leaks a descendant that ignored SIGTERM.
+    """
+
+    def test_a_cleared_pid_still_reaches_the_retained_group(self) -> None:
+        """TERM then KILL land on the saved group, and nothing lands on a pid."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(None, _witnessed(4242))
+
+        groups: list[tuple[int, int]] = []
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pgroup",
+                side_effect=lambda pgid, sig: (groups.append((pgid, sig)), True)[1],
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+            patch("kiro_crew.session_pid.os.waitpid") as mock_waitpid,
+        ):
+            _sync_kill_provider(provider)
+
+        assert groups == [
+            (4242, platform_compat.SIGTERM),
+            (4242, platform_compat.SIGKILL),
+        ]
+        mock_kill_pid.assert_not_called()
+        # No pid is known, so there is no child of ours to reap and no number
+        # safe to pass: os.waitpid(None) would raise, and os.waitpid(pgid) would
+        # wait on whatever process now holds that recyclable id.
+        mock_waitpid.assert_not_called()
+
+    def test_the_cleared_pid_escalation_rechecks_the_incarnation(self) -> None:
+        """The gate runs before EVERY signal, so a mid-escalation recycle stops it.
+
+        The leader is already reaped here, so its pgid can be handed to an
+        unrelated session leader between the two signals. Authorizing once would
+        let the SIGKILL take down that stranger's whole tree.
+        """
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(None, _witnessed(4242))
+
+        groups: list[int] = []
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                side_effect=[True, False],
+            ) as gate,
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pgroup",
+                side_effect=lambda pgid, sig: (groups.append(pgid), True)[1],
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            _sync_kill_provider(provider)
+
+        assert gate.call_count == 2
+        assert groups == [4242]
+        mock_kill_pid.assert_not_called()
+
+    def test_a_cleared_pid_with_a_rejected_group_signals_nothing(self) -> None:
+        """An empty or recycled group is not signalled, and there is no pid to try."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(None, _witnessed(4242))
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation",
+                return_value=False,
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            _sync_kill_provider(provider)
+
+        mock_kill_group.assert_not_called()
+        mock_kill_pid.assert_not_called()
+
+    def test_a_cleared_pid_and_no_group_returns_unchanged(self) -> None:
+        """Neither handle exists, so teardown signals nothing — the old behavior."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(None, None)
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch("kiro_crew.session_pid.platform_compat.pgroup_matches_incarnation") as mock_gate,
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            _sync_kill_provider(provider)
+
+        mock_gate.assert_not_called()
+        mock_kill_group.assert_not_called()
+        mock_kill_pid.assert_not_called()
+
+    def test_windows_ignores_a_retained_group_when_the_pid_is_cleared(self) -> None:
+        """Windows captures no group and ``taskkill /T`` owns its tree, so it returns."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = _SpawnedGroupStub(None, _witnessed(4242))
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch("kiro_crew.session_pid.platform_compat.kill_pgroup") as mock_kill_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill_pid,
+        ):
+            _sync_kill_provider(provider)
+
+        mock_kill_group.assert_not_called()
+        mock_kill_pid.assert_not_called()
 
 
 class TestCleanupOrphanedMcpServersExtra:
