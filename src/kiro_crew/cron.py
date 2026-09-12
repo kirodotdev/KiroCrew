@@ -5127,6 +5127,8 @@ class CronService:
                 job.fire_time_denied or job.run_never_started
             )
             removed_one_shot = False
+            restore: list[tuple[CronJob, str]] = []
+            consumed_row = False
             if delete_owed:
                 # Presence check keeps the audit honest: a Done-script one-shot
                 # already removed by the gateway path leaves nothing to delete
@@ -5159,31 +5161,57 @@ class CronService:
                     self._pending_removals.add(job.id)
                 else:
                     self._jobs = [j for j in self._jobs if j.id != job.id]
+                    consumed_row = True
+                    # Consuming the one-shot retires its principal cron:<job id>,
+                    # so a child that job created is released in the SAME save --
+                    # the fifth removal core alongside the four locked cores. Runs
+                    # after the row is filtered out so the job cannot release
+                    # itself; rolled back below if the save fails.
+                    restore = self._release_children_of_removed({job.id})
             # BACKGROUND writer: a job has already run, so an unreadable store
             # must not surface as a job-runner crash. The run result is lost,
             # which is strictly better than clobbering the store.
             try:
                 self._save()
-            except CronStoreUnreadable as exc:
-                # Return WITHOUT auditing: the emit below records only a SAVED
-                # removal, and nothing was saved. Auditing here would file a
-                # removal record for a delete that never reached disk.
-                #
-                # But hand the CONSUME to the deferred queue on the way out, so
-                # the drain retries it once the store is readable. The one-shot
-                # is gone from _jobs and absent from the queue otherwise, so the
-                # next _sync restores it from disk and it runs again. Only when
-                # a delete was actually owed: a job already removed elsewhere
-                # leaves nothing to retry.
-                # Keyed on delete_owed, NOT presence: the store could not be
-                # read, so an absent id proves nothing about whether the delete
-                # is owed. An id that really was removed elsewhere is harmless
-                # here -- the drain intersects the queue with what is present
-                # and drops the rest.
+            except BaseException as exc:
+                # EVERY save failure rolls back the child release, not just
+                # CronStoreUnreadable: the release lives in memory only until the
+                # save lands it, so a bare OSError (ENOSPC/EROFS/EIO out of
+                # atomic_write) that left the cleared owners in place while disk
+                # still named the old owner would let the next successful save
+                # persist a release nothing asked for, from a consume that never
+                # reached disk.
+                if consumed_row:
+                    for child, previous_owner in restore:
+                        child.session_key = previous_owner
+                    # The consumed row is still filtered out of self._jobs and
+                    # only a reload can put it back, so drop the fingerprint to
+                    # force one -- otherwise the next _save skips the reload and
+                    # persists the removal this path was told had failed,
+                    # completing the parent's removal while its children keep the
+                    # ownership just rolled back.
+                    self._reset_fingerprint()
+                # Queue the consume for EVERY save failure, not just the
+                # store-unreadable one: the fingerprint reset above forces a
+                # reload, and the save never landed, so the disk copy is still
+                # enabled. Without a queue entry the reloaded one-shot comes back
+                # enabled and runs a second time on the next tick. Keyed on
+                # delete_owed, NOT presence: an absent id proves nothing about
+                # whether the delete is owed, and the drain intersects the queue
+                # with what is present and drops the rest.
                 if delete_owed:
                     self._pending_removals.add(job.id)
-                logger.warning("Cron job result not persisted: %s", exc)
-                return
+                if isinstance(exc, CronStoreUnreadable):
+                    # Return WITHOUT auditing: the emit below records only a SAVED
+                    # removal, and nothing was saved. Auditing here would file a
+                    # removal record for a delete that never reached disk. The
+                    # drain retries the queued consume once the store is readable.
+                    logger.warning("Cron job result not persisted: %s", exc)
+                    return
+                # Anything else is a real write fault, not the tolerated
+                # store-unreadable case: surface it rather than reporting a quiet
+                # no-op after the disk refused the write.
+                raise
         if removed_one_shot:
             # The delete_after_run consume is an automated removal with no
             # handler-level caller, so the emit lives with the removal.
