@@ -700,15 +700,6 @@ class TestPortAllocation:
         )
         assert displaced == shared, "the second pod should report what it moved off"
 
-    @pytest.mark.skipif(
-        rt.fcntl is None,
-        reason=(
-            "pod_name_mutex -- which pod_plane_mutex borrows -- degrades to a no-op "
-            "without fcntl, so nothing serializes these threads there. Not a gap: "
-            "require_backend refuses pods on any host without systemd/launchd, so "
-            "production never reaches the no-op. Only this test could."
-        ),
-    )
     def test_concurrent_allocations_never_hand_out_one_port_twice(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -3341,6 +3332,36 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
             assert any(line.startswith(required) for line in rendered), required
 
 
+class TestPodNameMutexCrossPlatform:
+    """The name mutex serializes on every host.
+
+    Since the ``fcntl``-only implementation (a no-op without ``fcntl``) was
+    migrated to :func:`file_lock`, the primitive is real on Windows too, so
+    these pins run unskipped everywhere.
+    """
+
+    def test_acquiring_the_mutex_does_not_truncate_the_lock_file(self, cfg: PodConfig) -> None:
+        """The lock open must be non-truncating (GH-9248).
+
+        A ``"w"`` open erases the file before the acquire; on Windows the
+        subsequent ``msvcrt.locking`` acquire then races contenders watching
+        an empty file. The content is meaningless to the lock itself, but its
+        survival pins the non-truncating open on every platform.
+        """
+        lock_file = cfg.pods_dir / f"{cfg.unit_prefix}@demo.lock"
+        cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+        lock_file.write_bytes(b"sentinel")
+        with rt.pod_name_mutex(cfg, "demo"):
+            pass
+        assert lock_file.read_bytes() == b"sentinel"
+
+    def test_nested_acquire_in_one_thread_does_not_deadlock(self, cfg: PodConfig) -> None:
+        """Same-thread re-entry takes the in-thread counter, never the OS lock."""
+        with rt.pod_name_mutex(cfg, "demo"):
+            with rt.pod_name_mutex(cfg, "demo"):
+                pass
+
+
 @requires_posix_pod_lifecycle
 class TestPodNameMutexOnLinux:
     """Linux teardown runs on the ``down`` path, so Linux has the same down/up race
@@ -3368,10 +3389,6 @@ class TestPodNameMutexOnLinux:
         rt.stop_pod(cfg, "demo")
         assert held == ["enter:demo", "exit:demo"], "the sweep must run INSIDE the mutex"
 
-    @pytest.mark.skipif(
-        rt.fcntl is None,
-        reason="flock needs POSIX; without it the mutex is a documented no-op",
-    )
     def test_it_is_a_real_lock(self, cfg: PodConfig) -> None:
         with rt.pod_name_mutex(cfg, "demo"):
             pass
@@ -5125,10 +5142,6 @@ class TestReviewRound2Fix:
         assert rt.read_env_file(c, "y")["CHECKOUT"] == "/a/b"
 
 
-@pytest.mark.skipif(
-    rt.fcntl is None,
-    reason="flock needs POSIX; without it the mutex is a documented no-op",
-)
 class TestEnvFileConcurrentWrite:
     """``write_env_file`` merges, so it must serialize per pod name.
 
