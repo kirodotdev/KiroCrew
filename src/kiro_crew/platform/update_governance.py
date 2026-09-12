@@ -24,6 +24,7 @@ import re
 import subprocess
 
 from kiro_crew import platform_compat
+from kiro_crew.git_worktree_scope import worktree_scope_active
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -483,7 +484,13 @@ def repo_exec_config_reason(proj: str) -> str:
         "on",
         "1",
     ):
-        scopes.append("--worktree")
+        # The --worktree scope is probed only when git will actually read it:
+        # the shared decision in kiro_crew.git_worktree_scope explains why a
+        # missing config.worktree is an EMPTY scope, not an unreadable one,
+        # and why an unlocatable git dir keeps the scope in (the listing
+        # below then fails closed as _EXEC_CONFIG_UNREADABLE).
+        if worktree_scope_active(_git(proj, "rev-parse", "--absolute-git-dir"), proj):
+            scopes.append("--worktree")
     for scope in scopes:
         listing = _git_probe(proj, "config", scope, "--includes", "--name-only", "--list")
         if listing is None:

@@ -70,6 +70,7 @@ from kiro_crew.dashboard.state import (
     append_and_surface,
 )
 from kiro_crew.doc_parser import extract_text
+from kiro_crew.git_worktree_scope import worktree_scope_active
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import OutboundFile
@@ -5147,14 +5148,39 @@ _GIT_FILTER_KEY_RE = re.compile(
 )
 
 
+def _worktree_config_scope_active(git_cmd: list[str], base: str, env: dict) -> bool:
+    """True when git will actually read a ``--worktree`` config scope here.
+
+    Runs this handler's two probes through its own bounded runner and feeds
+    the results to :func:`kiro_crew.git_worktree_scope.worktree_scope_active`,
+    the one shared decision all four filter-driver guards use. See that
+    module's docstring for why a missing ``config.worktree`` is an EMPTY
+    scope, not an unreadable one.
+    """
+    ext_rc, ext_out, _ = _run_git_bounded(
+        [*git_cmd, "config", "--bool", "--get", "extensions.worktreeConfig"],
+        cwd=base, env=env, timeout=5,
+    )
+    if ext_rc != 0 or ext_out.strip() != "true":
+        return False
+    gitdir_rc, gitdir_out, _ = _run_git_bounded(
+        [*git_cmd, "rev-parse", "--absolute-git-dir"],
+        cwd=base, env=env, timeout=5,
+    )
+    return worktree_scope_active(gitdir_out if gitdir_rc == 0 else "", base)
+
+
 def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bool:
     """True when repo-supplied config names a content-filter driver (or the
     probe cannot prove it does not).
 
     Mirrors ``worktree.py::_checkout_filter``: drivers can only come from a
     config file the repository supplies — ``--local`` (``.git/config``) and,
-    when ``extensions.worktreeConfig`` is on, ``--worktree``
-    (``$GIT_DIR/config.worktree``). ``--includes`` is mandatory: a specific-scope
+    when ``extensions.worktreeConfig`` is on AND ``$GIT_DIR/config.worktree``
+    exists, ``--worktree``. The existence gate matters: git creates that file
+    lazily, so a repo with the extension on but no file yet is filter-free in
+    that scope, and probing it would exit 128 and falsely refuse.
+    ``--includes`` is mandatory: a specific-scope
     query defaults include-following OFF, so a driver reached through
     ``include.path`` would be invisible to the probe yet still execute.
     Global/system config is deliberately not probed (the user's own machine
@@ -5163,11 +5189,7 @@ def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bo
     itself is safe — ``git config`` reads files and never runs drivers.
     """
     scopes = ["--local"]
-    ext_rc, ext_out, _ = _run_git_bounded(
-        [*git_cmd, "config", "--bool", "--get", "extensions.worktreeConfig"],
-        cwd=base, env=env, timeout=5,
-    )
-    if ext_rc == 0 and ext_out.strip() == "true":
+    if _worktree_config_scope_active(git_cmd, base, env):
         scopes.append("--worktree")
     for scope in scopes:
         rc, out, _ = _run_git_bounded(

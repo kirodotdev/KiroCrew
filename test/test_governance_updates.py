@@ -763,6 +763,15 @@ class TestRepoExecConfigRefusal:
         _git_config(repo, "--worktree", "filter.evil.process", "sh -c ':'")
         assert "filter.evil.process" in update_governance.repo_exec_config_reason(repo)
 
+    def test_worktree_extension_without_config_file_is_allowed(self, tmp_path):
+        """Extension on, `config.worktree` absent: git creates the file lazily,
+        so this is a healthy EMPTY scope, not an unreadable one. Probing it
+        anyway exits 128 and misreports a filter-free repo as unprobeable."""
+        repo = _init_repo(tmp_path / "wt-nofile")
+        _git_config(repo, "--local", "extensions.worktreeConfig", "true")
+        assert not (pathlib.Path(repo) / ".git" / "config.worktree").exists()
+        assert update_governance.repo_exec_config_reason(repo) == ""
+
     def test_included_driver_is_refused(self, tmp_path):
         """For a SPECIFIC scope query git defaults include-following OFF.
 
