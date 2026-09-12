@@ -8,7 +8,6 @@ regression guard for unknown fixture names. Non-empty target, main-home guardrai
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import pinned_fs
+from kiro_crew import cli, pinned_fs
 from kiro_crew import seed as seed_mod
 
 # A test here spawns a real `python -m kiro_crew gateway --help` child interpreter;
@@ -194,57 +193,45 @@ def test_seed_cmd_exit_code_on_unset(
     assert err.startswith("seed: error:")
 
 
-def test_seed_cli_flag_registered(tmp_path: Path) -> None:
-    """``kirocrew gateway --help`` mentions ``--seed FIXTURE``.
+def test_seed_cli_flag_registered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``kirocrew gateway --help`` documents ``--seed FIXTURE``.
 
-    Tracer-bullet acceptance from the ticket: prove the CLI
-    wiring end-to-end. In Phase 1.A the seed primitive is invoked as
-    ``kirocrew gateway --seed <fixture>`` (it seeds ``$KIROCREW_HOME``
-    and THEN continues into the gateway event loop) — we can't let the
-    subprocess actually run because ``run_gateway`` is a long-lived
-    server. ``--help`` exits 0 after printing usage, which is enough to
-    verify the flag is registered and the seed_cmd wiring imports clean.
+    The seed primitive is invoked as ``kirocrew gateway --seed <fixture>``: it
+    seeds ``$KIROCREW_HOME`` and THEN continues into the gateway event loop, so
+    the flag has to be registered on the ``gateway`` subparser specifically.
+    ``--seed`` is registered TWICE in the CLI — once here and once on ``pod
+    up`` — so this renders the gateway subcommand's own help rather than
+    searching the whole parser, which would still pass if this registration
+    were deleted.
+
+    ``cli.main()`` builds the parser and argparse answers ``--help`` by printing
+    usage and raising ``SystemExit(0)``, which is the in-process equivalent of
+    the exit code a child process would report. The environment is pinned
+    because ``main()`` reads it before parsing: ``KIROCREW_PORT`` is validated
+    (and exits 1 when unparseable), ``KIROCREW_PROJECT_DIR`` short-circuits a
+    filesystem probe for the project root, and the two sandbox markers are
+    popped outright. ``ensure_utf8_console`` is stubbed because it reconfigures
+    the interpreter's stdout on Windows, which would disturb pytest's capture.
     """
-    repo_root = Path(__file__).resolve().parent.parent
-    import os as _os
+    monkeypatch.setattr(cli.platform_compat, "ensure_utf8_console", lambda: None)
+    monkeypatch.delenv("KIROCREW_PORT", raising=False)
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(Path(__file__).resolve().parent.parent))
+    # main() pops these; let monkeypatch own them so the caller's values return.
+    monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "")
+    monkeypatch.setenv("KIROCREW_SANDBOX_LEVEL", "")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--help"])
 
-    env = {**_os.environ, "HOME": str(tmp_path)}
-    # Preserve user site-packages: overriding HOME loses ~/.local/lib/pythonX.Y
-    # where deps like croniter/cron_descriptor live when not system-installed.
-    real_home = _os.environ.get("HOME", "")
-    if real_home:
-        import site
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
 
-        user_site = site.getusersitepackages()
-        if isinstance(user_site, str) and _os.path.isdir(user_site):
-            existing_pp = env.get("PYTHONPATH", "")
-            if existing_pp:
-                env["PYTHONPATH"] = user_site + _os.pathsep + existing_pp
-            else:
-                env["PYTHONPATH"] = user_site
-    # Guard against trailing separator when PYTHONPATH is unset — a trailing
-    # ":" on POSIX adds CWD to sys.path, which would import unexpected
-    # modules depending on where pytest runs.
-    existing_pypath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(repo_root / "src") + (
-        _os.pathsep + existing_pypath if existing_pypath else ""
-    )
-    env["KIROCREW_PROJECT_DIR"] = str(repo_root)
-
-    result = subprocess.run(
-        [sys.executable, "-m", "kiro_crew", "gateway", "--help"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, (
-        f"expected exit 0 from --help, got {result.returncode}\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}"
-    )
+    assert exit_info.value.code == 0, f"expected exit 0 from --help, got {exit_info.value.code}"
+    help_text = capsys.readouterr().out
     # The flag must be registered and documented.
-    assert "--seed" in result.stdout
-    assert "FIXTURE" in result.stdout
+    assert "--seed" in help_text
+    assert "FIXTURE" in help_text
 
 
 # ------------------------------------------------------------------
