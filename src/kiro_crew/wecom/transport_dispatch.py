@@ -44,6 +44,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     DM_SCOPE_UNIFIED,
     UNBIND_REASON_ORIGIN_REBIND,
@@ -164,6 +165,12 @@ class WeComDispatcher:
             return
         userid = inbound.userid
         text = inbound.text
+        # Captured BEFORE ingestion, which rewrites the prompt with attachment
+        # context and clears ``inbound.attachments``. The durable inbound spool
+        # quotes what the user sent, so it needs the pre-ingestion text and the
+        # original media count.
+        original_text = inbound.text
+        original_attachments = len(inbound.attachments or ())
         logger.info("WeCom inbound from %s: %d chars", userid, len(text or ""))
 
         # ── Command intercept (no LLM session needed) ──
@@ -300,6 +307,19 @@ class WeComDispatcher:
                 ChannelTurn(
                     channel_type="wecom",
                     session_key=session_key,
+                    # Durable inbound spool: the ``userid`` is the reply target --
+                    # ``send_message`` pushes to it over ``aibot_send_msg`` and
+                    # ``may_send_to`` re-checks it against the allow-list -- so it
+                    # is the addressable ``conversation_id`` here, not the
+                    # ``wecom:{userid}`` attribution id below. ``text`` is the
+                    # pre-ingestion original, not the ingested prompt with its
+                    # temp paths.
+                    inbound_route=InboundRoute(
+                        conversation_id=userid,
+                        text=original_text,
+                        user_id=userid,
+                        attachments_dropped=original_attachments,
+                    ),
                     # Session-directive consumer: monitor_start / autonudge_stop /
                     # ... return a marker TurnDriver decodes; apply it against THIS
                     # turn's session key (dashboard-only directives stay refused

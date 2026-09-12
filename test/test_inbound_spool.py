@@ -1442,3 +1442,337 @@ def test_no_transport_still_carries_a_replay_hook() -> None:
     assert not hasattr(S, "ReplayOutcome")
     assert not hasattr(S, "conversation_moved_on")
     assert S.__all__ == ["InboundRoute", "replay_spooled", "spool_refused_turn"]
+
+
+# ── Each newly adopting channel declares a route at its dispatch site ────────
+#
+# These drive the REAL dispatcher up to its ``drive_turn`` call and read the
+# ``ChannelTurn.inbound_route`` it built, so they pin the reply target each
+# channel spools -- the addressable id its own ``send_message``/``may_send_to``
+# take, never the ``<channel>:<id>`` session-attribution id. A capture stub
+# stands in for ``drive_turn`` so no session or context machinery is needed:
+# the site under test is the route construction, and that is all that runs.
+
+
+def _capture_channel_turn(monkeypatch: pytest.MonkeyPatch, module: Any) -> list[ChannelTurn]:
+    """Replace *module*.drive_turn with a capture, returning the captured turns."""
+    captured: list[ChannelTurn] = []
+
+    async def _capture(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
+        captured.append(turn)
+
+    monkeypatch.setattr(module, "drive_turn", _capture)
+
+    async def _permit(_channel: str) -> bool:
+        return True
+
+    monkeypatch.setattr(module, "inbound_permitted", _permit)
+    return captured
+
+
+class _PreTurnSessions:
+    """Just enough SessionManager for a not-busy pre-turn resolution."""
+
+    def is_busy(self, key: str) -> bool:
+        return False
+
+    def get_provider(self, key: str) -> Any:
+        return None
+
+    def max_generation(self, *_a: object, **_k: object) -> int:
+        return 0
+
+    def has_session(self, key: str) -> bool:
+        return False
+
+    def dequeue(self, key: str) -> Any:
+        # Teams drains a queue after its turn; nothing is queued in this test.
+        return None
+
+
+def _cfg() -> Any:
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    return KiroCrewConfig()
+
+
+def test_imessage_dispatch_site_declares_the_handle_as_the_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.imessage import transport_dispatch as M
+    from kiro_crew.imessage.client import IMessageInbound
+
+    captured = _capture_channel_turn(monkeypatch, M)
+
+    class _Client:
+        async def send(self, to: str, text: str) -> str:
+            return "g"
+
+        async def send_typing(self, selector: Any) -> None:
+            return None
+
+        async def mark_read(self, selector: Any) -> None:
+            return None
+
+    dispatcher = M.IMessageDispatcher(
+        sessions=_PreTurnSessions(),  # type: ignore[arg-type]
+        ctx_builder=object(),  # type: ignore[arg-type]
+        cfg=_cfg(),
+    )
+    dispatcher.client = _Client()  # type: ignore[assignment]
+    inbound = IMessageInbound(handle="+15551234567", text="please check CI", chat_id=7)
+
+    asyncio.run(dispatcher.handle_message(inbound))
+
+    assert len(captured) == 1
+    route = captured[0].inbound_route
+    assert route is not None, "iMessage declared no inbound route"
+    assert route.conversation_id == "+15551234567", "the handle IS the reply target"
+    assert route.text == "please check CI"
+    assert route.user_id == "+15551234567"
+
+
+def test_wecom_dispatch_site_declares_the_userid_as_the_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.wecom import transport_dispatch as M
+    from kiro_crew.wecom.client import WeComInbound
+
+    captured = _capture_channel_turn(monkeypatch, M)
+
+    class _Client:
+        async def say(self, inbound: Any, text: str) -> None:
+            return None
+
+    async def _bind(self: Any, session_key: str, inbound: Any) -> None:
+        return None
+
+    monkeypatch.setattr(M.WeComDispatcher, "_bind_origin_mirror", _bind, raising=True)
+
+    dispatcher = M.WeComDispatcher(
+        sessions=_PreTurnSessions(),  # type: ignore[arg-type]
+        ctx_builder=object(),  # type: ignore[arg-type]
+        cfg=_cfg(),
+    )
+    dispatcher.client = _Client()  # type: ignore[assignment]
+    inbound = WeComInbound(userid="user-42", text="please check CI", req_id="r1")
+
+    asyncio.run(dispatcher.handle_message(inbound))
+
+    assert len(captured) == 1
+    route = captured[0].inbound_route
+    assert route is not None, "WeCom declared no inbound route"
+    assert route.conversation_id == "user-42", "the userid IS the reply target"
+    assert route.text == "please check CI"
+    assert route.user_id == "user-42"
+
+
+def test_webex_dm_dispatch_site_declares_the_room_with_no_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.webex import transport_dispatch as M
+    from kiro_crew.webex.client import WebexInbound
+
+    def _dispatcher(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[ChannelTurn]]:
+        captured = _capture_channel_turn(monkeypatch, M)
+        dispatcher = M.WebexDispatcher(
+            sessions=_PreTurnSessions(),  # type: ignore[arg-type]
+            ctx_builder=object(),  # type: ignore[arg-type]
+            cfg=_cfg(),
+        )
+
+        class _Client:
+            async def send_message(self, *a: Any, **k: Any) -> str:
+                return "m"
+
+        dispatcher.client = _Client()  # type: ignore[assignment]
+        # Origin-mirror bind is not the site under test.
+        monkeypatch.setattr(
+            M.WebexDispatcher, "_origin_mirror_link", lambda self, room_id: None, raising=True
+        )
+        # Force reply-in-thread ON, so a DM would carry a thread unless the site
+        # suppresses it -- the exact condition this test pins.
+        monkeypatch.setattr(
+            M.WebexDispatcher, "_reply_parent", lambda self, inbound: "thread-root", raising=True
+        )
+        return dispatcher, captured
+
+    dispatcher, captured = _dispatcher(monkeypatch)
+    dm = WebexInbound(
+        person_email="dev@example.com",
+        room_id="ROOM123",
+        text="please check CI",
+        room_type="direct",
+        message_id="msg-1",
+        parent_id="thread-root",
+    )
+    asyncio.run(dispatcher.handle_message(dm))
+
+    assert len(captured) == 1
+    route = captured[0].inbound_route
+    assert route is not None, "Webex declared no inbound route"
+    assert route.conversation_id == "ROOM123", "the reply target is the room id, not webex:{route}"
+    assert route.text == "please check CI"
+    assert route.user_id == "dev@example.com"
+    assert route.thread_id == "", "a DM must declare no thread, or replay withholds its principal"
+
+
+def test_a_webex_dm_entry_survives_replay_and_is_noticed(spool_home: Path) -> None:
+    """Against the REAL Webex egress gate: a DM route keeps principal authorization.
+
+    RED-BEFORE: with ``thread_id`` set on a DM route, ``_route_authorized`` reads
+    it as a threaded route and passes ``principal=""``, so ``may_send_to`` denies
+    and the entry is DROPPED with no notice -- the silent loss this PR closes.
+    """
+    from kiro_crew.webex.transport import WebexTransport
+
+    transport = WebexTransport.__new__(WebexTransport)
+    transport._allowed = frozenset({"dev@example.com"})
+    transport._allow_group_rooms = False
+    transport._allowed_rooms = frozenset()
+    from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+
+    transport.capabilities = WEBEX_CAPABILITIES
+    sent: list[tuple[str, str | None]] = []
+
+    async def _send(conversation_id: str, content: str, thread_id: str | None = None) -> str:
+        sent.append((conversation_id, thread_id))
+        return "mid"
+
+    transport.send_message = _send  # type: ignore[method-assign]
+    # A DM entry as the fixed dispatch site now writes it: room id, principal, NO thread.
+    _spool(
+        spool_home,
+        channel_type="webex",
+        conversation_id="ROOM123",
+        user_id="dev@example.com",
+        text="please check CI",
+    )
+
+    report = asyncio.run(replay_spooled(transports={"webex": transport}))
+
+    assert report.notified and not report.dropped, "the DM notice was dropped instead of delivered"
+    assert sent == [("ROOM123", None)]
+
+
+def test_a_webex_space_entry_keeps_its_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.webex import transport_dispatch as M
+    from kiro_crew.webex.client import WebexInbound
+
+    captured = _capture_channel_turn(monkeypatch, M)
+    dispatcher = M.WebexDispatcher(
+        sessions=_PreTurnSessions(),  # type: ignore[arg-type]
+        ctx_builder=object(),  # type: ignore[arg-type]
+        cfg=_cfg(),
+    )
+
+    class _Client:
+        async def send_message(self, *a: Any, **k: Any) -> str:
+            return "m"
+
+    dispatcher.client = _Client()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        M.WebexDispatcher, "_origin_mirror_link", lambda self, room_id: None, raising=True
+    )
+    monkeypatch.setattr(
+        M.WebexDispatcher, "_reply_parent", lambda self, inbound: "thread-root", raising=True
+    )
+    # A space delivers the bot's own name in the text; the dispatch strips it.
+    monkeypatch.setattr(M, "strip_bot_mention", lambda text, name: text, raising=False)
+
+    space = WebexInbound(
+        person_email="dev@example.com",
+        room_id="SPACE9",
+        text="please check CI",
+        room_type="group",
+        message_id="msg-2",
+        parent_id="thread-root",
+        mentioned_people=("bot",),
+    )
+    asyncio.run(dispatcher.handle_message(space))
+
+    assert len(captured) == 1
+    route = captured[0].inbound_route
+    assert route is not None
+    assert route.conversation_id == "SPACE9"
+    assert route.thread_id == "thread-root", "a non-direct room must keep its reply thread"
+    assert route.user_id == "", "a space route must carry no principal, or replay falls through"
+
+
+def test_a_webex_revoked_space_gets_no_notice_from_an_allowed_sender(spool_home: Path) -> None:
+    """Against the REAL Webex egress gate: an unthreaded space route falls through to denial.
+
+    RED-BEFORE: with ``user_id=email`` on a space route, replay passes the
+    principal (no thread), and ``may_send_to``'s space arm fails
+    ``room_id not in _allowed_rooms`` but FALLS THROUGH to ``principal in
+    _allowed``, which is True for the still-allowed sender -- so the notice, which
+    quotes the user's message, posts into a space the operator de-authorized.
+    With the fix a space route carries no principal, so the fall-through has
+    nothing to grant and the entry is DROPPED.
+    """
+    from kiro_crew.webex.transport import WEBEX_CAPABILITIES, WebexTransport
+
+    transport = WebexTransport.__new__(WebexTransport)
+    transport._allowed = frozenset({"dev@example.com"})  # sender still allow-listed
+    transport._allow_group_rooms = True
+    transport._allowed_rooms = frozenset()  # the space was dropped while down
+    transport.capabilities = WEBEX_CAPABILITIES
+    sent: list[Any] = []
+
+    async def _send(conversation_id: str, content: str, thread_id: str | None = None) -> str:
+        sent.append((conversation_id, thread_id))
+        return "mid"
+
+    transport.send_message = _send  # type: ignore[method-assign]
+    # A space entry as the fixed dispatch site writes it: room id, NO principal.
+    _spool(spool_home, channel_type="webex", conversation_id="SPACE9", text="please check CI")
+
+    report = asyncio.run(replay_spooled(transports={"webex": transport}))
+
+    assert report.dropped and not report.notified, "a de-authorized space was still noticed"
+    assert sent == [], "the notice posted into a revoked space"
+
+
+def test_feishu_declares_no_route_because_it_cannot_be_noticed(spool_home: Path) -> None:
+    """Feishu is deliberately NOT adopted: it has no durable reply target.
+
+    ``FeishuTransport.may_send_to`` returns False unconditionally (there is no
+    proactive send in the v1 integration -- ``send_message`` takes an inbound
+    ``message_id`` that is stale after a restart), so the replay pass would DROP
+    every Feishu entry as route-revoked and the restart notice could never land.
+    Declaring a route would write disk that only ever posts nowhere, so the
+    honest state is to declare none -- the same 'inheriting False is the honest
+    degradation' rule the issue applies to ``replay_inbound``.
+    """
+    from kiro_crew.feishu.transport import FeishuTransport
+
+    transport = FeishuTransport.__new__(FeishuTransport)
+    assert transport.may_send_to("any-message-id", None, principal="user") is False
+
+    # A route declared for Feishu would be dropped, not noticed: prove the pass
+    # never sends into it.
+    _spool(spool_home, channel_type="feishu", conversation_id="msg-id", text="please check CI")
+    report = asyncio.run(replay_spooled(transports={"feishu": transport}))
+    assert report.dropped and not report.notified, "a Feishu notice can never be delivered"
+
+
+def test_teams_declares_no_route_because_its_drain_folds_participants() -> None:
+    """Teams is deliberately NOT adopted here.
+
+    Its unified-queue drain rebuilds one combined turn that joins several
+    participants' queued messages while keeping the first sender's envelope, so a
+    single route for the combined turn either quotes one participant's message to
+    another (declaring it) or loses the queued messages on a shutdown-refused
+    drain (withholding it). Adopting Teams honestly needs per-message route
+    preservation through the drain, which is a change to the drain and belongs in
+    its own PR. Until then the dispatch declares no route and imports neither
+    spool symbol, so its refusal path is byte-identical to before this seam.
+    """
+    import inspect
+
+    from kiro_crew.teams import transport_dispatch as M
+
+    source = inspect.getsource(M)
+    assert "inbound_route=InboundRoute" not in source, "Teams must declare no spool route"
+    assert "InboundRoute" not in source, "Teams must not import the spool route type"
+    assert "spool_refused_turn" not in source, "Teams must not call the spool directly"
