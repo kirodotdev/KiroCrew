@@ -840,7 +840,7 @@ class TestAFailedRemovalDoesNotLeakIntoTheNextSave:
     def _boom() -> None:
         raise OSError(28, "No space left on device")
 
-    def test_malformed_persisted_owner_does_not_poison_unrelated_removal(self, tmp_path):
+    def test_unrelated_removal_persists_a_sanitized_malformed_owner(self, tmp_path):
         crons = CronService(base_dir=tmp_path)
         parent = crons.add_job("parent", "ping", every_secs=3600)
         malformed = crons.add_job("malformed", "ping", every_secs=3600)
@@ -853,7 +853,9 @@ class TestAFailedRemovalDoesNotLeakIntoTheNextSave:
 
         reloaded = CronService(base_dir=tmp_path)
         assert reloaded.get_job(parent.id) is None
-        assert reloaded.get_job(malformed.id).session_key == ["not", "a", "string"]
+        # Loading sanitizes non-string metadata before any mutation. The
+        # unrelated removal persists that safe value instead of invalid data.
+        assert reloaded.get_job(malformed.id).session_key == ""
 
     def test_a_failed_removal_is_not_persisted_by_an_unrelated_later_save(
         self, tmp_path, monkeypatch
