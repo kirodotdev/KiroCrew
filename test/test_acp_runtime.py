@@ -9935,3 +9935,149 @@ class TestStoreSessionConfigParseConsolidation:
         assert [m["modelId"] for m in handle.available_models] == ["kiro-model-x"]
         handle.store_session_config({"models": {"availableModels": "nope"}})
         assert [m["modelId"] for m in handle.available_models] == ["kiro-model-x"]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_captures_a_between_turns_recap():
+    """A recap frame stranded in the between-turns gap (session load/resume
+    is exactly when KAS emits it) is not discarded with the stale frames:
+    the drain keeps the LAST one and the next turn's stream surfaces it
+    FIRST, so the returning user re-orients before the new output."""
+    import contextlib
+
+    from kiro_crew.acp.types import EVENT_SESSION_RECAP
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    q = _register(rt, "sR")
+    handle = AcpSessionHandle("sR", q["sR"], rt)
+
+    def _recap_frame(text):
+        return JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sR",
+                    "update": {
+                        "sessionUpdate": "session_info_update",
+                        "_meta": {"kiro": {"kind": "recap", "text": text}},
+                    },
+                },
+            }
+        )
+
+    # Two recaps stranded between turns: only the LAST survives (a newer
+    # recap supersedes an older one), plus an ordinary stale frame that
+    # still takes the silent-discard path.
+    q["sR"].put_nowait(_recap_frame("old recap"))
+    q["sR"].put_nowait(_recap_frame("Goal: ship. Next: fix the red test."))
+    q["sR"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"sessionId": "sR", "update": {"sessionUpdate": "plan"}},
+            }
+        )
+    )
+    rt.send_request = AsyncMock(return_value=9)
+
+    gen = handle.prompt("hi", timeout=0.2)
+    first = None
+    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+        first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await gen.aclose()
+
+    assert first is not None, "stream yielded nothing"
+    assert first.kind == EVENT_SESSION_RECAP
+    assert first.text == "Goal: ship. Next: fix the red test."
+    # Snapshot-and-clear: an abandoned stream must not replay it next turn.
+    assert handle._pending_recap is None
+
+
+@pytest.mark.asyncio
+async def test_load_window_recap_is_staged_and_survives_into_the_resumed_handle(monkeypatch):
+    """A KAS recap arriving DURING session/load — before the queue is
+    registered — must not take the flood-drop path: the reader loop stages
+    it with the init frames, _finish_session_init hands it to the freshly
+    registered queue, and the resumed handle's pre-turn drain captures it
+    for the next turn's stream start."""
+    import contextlib
+
+    from kiro_crew.acp.types import EVENT_SESSION_RECAP
+
+    rt, feed, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    rt._can_load_session = True
+
+    recap_frame = JsonRpcMessage.from_dict(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sid-77",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "_meta": {"kiro": {"kind": "recap", "text": "Goal: resume. Next: run tests."}},
+                },
+            },
+        }
+    )
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            # The recap arrives INSIDE the load window: the queue for sid-77
+            # is not registered yet, and inits are in flight — the reader
+            # loop's staging branch must retain it.
+            assert rt._session_inits_in_flight >= 1
+            assert "sid-77" not in rt._session_queues
+            rt._pending_init_notifications.append(recap_frame)
+            return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    handle = await rt.load_session(
+        "/home/u/.kiro/sessions/cli/sid-77.json", "sid-77", cwd="/w", agent="kirocrew"
+    )
+    # The staged recap was extracted BEFORE the queue (drain_init would eat a
+    # queued frame) and parked on the handle's pending slot...
+    assert handle._pending_recap == "Goal: resume. Next: run tests."
+
+    rt.send_request = AsyncMock(return_value=9)
+    gen = handle.prompt("hi", timeout=0.2)
+    first = None
+    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+        first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await gen.aclose()
+
+    # ...and the next turn's stream surfaced it as its first event.
+    assert first is not None and first.kind == EVENT_SESSION_RECAP
+    assert first.text == "Goal: resume. Next: run tests."
+
+
+def test_reader_loop_staging_branch_covers_recap_updates():
+    """The staging condition itself: with inits in flight on the KAS backend,
+    a recap session/update is shaped for the staging branch (the shared
+    kas_wire predicate), so it cannot take the flood-drop path."""
+    from kiro_crew.acp import kas_wire
+
+    params = {
+        "sessionId": "s",
+        "update": {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"kiro": {"kind": "recap", "text": "x"}},
+        },
+    }
+    assert kas_wire.is_recap_update(params)
+    assert not kas_wire.is_recap_update({"update": {"sessionUpdate": "plan"}})
+    assert not kas_wire.is_recap_update(
+        {
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"kiro": {"kind": "context_usage"}},
+            }
+        }
+    )
+    assert not kas_wire.is_recap_update("not a dict")

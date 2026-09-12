@@ -156,3 +156,80 @@ class TestConvertedSites:
         frame = state.chat_frames()[0]
         assert frame["meta"].get("mid") == row_mid(row)
         assert frame["meta"].get("crew_reply") is True
+
+
+class TestRecapNotice:
+    """The recap chokepoint mirrors the compaction one: tagged, redacted,
+    empty-dropped, single identity-carrying delivery."""
+
+    def test_recap_notice_is_tagged_and_delivered_once(self) -> None:
+        from kiro_crew.dashboard.chat_utils import _append_recap_notice
+
+        state = _StateStub()
+        slot, delivered = _slot_with_callback()
+        _append_recap_notice(state, slot, "Goal: X. Next: Y.")  # type: ignore[arg-type]
+        assert len(delivered) == 1
+        msg = delivered[0]
+        assert msg.get("meta", {}).get("kind") == "recap"
+        assert msg.get("meta", {}).get("mid")
+        assert msg.get("content", "").startswith("🧭")
+        assert "Recap — session so far: " in msg.get("content", "")
+        assert "Goal: X. Next: Y." in msg.get("content", "")
+        assert state.chat_frames() == []  # no hand-built duplicate frame
+
+    def test_recap_notice_redacts_at_the_chokepoint(self) -> None:
+        # Defense-in-depth: even a caller that skipped the mapping layer's
+        # redaction cannot push credential text to the surface.
+        from kiro_crew.dashboard.chat_utils import _append_recap_notice
+
+        state = _StateStub()
+        slot, delivered = _slot_with_callback()
+        _append_recap_notice(  # type: ignore[arg-type]
+            state, slot, "resume; found key AKIAIOSFODNN7EXAMPLE in output"
+        )
+        assert len(delivered) == 1
+        assert "AKIAIOSFODNN7EXAMPLE" not in delivered[0].get("content", "")
+
+    def test_recap_notice_empty_text_appends_nothing(self) -> None:
+        from kiro_crew.dashboard.chat_utils import _append_recap_notice
+
+        state = _StateStub()
+        slot, delivered = _slot_with_callback()
+        _append_recap_notice(state, slot, "   ")  # type: ignore[arg-type]
+        assert delivered == []
+        assert state.chat_frames() == []
+
+    def test_recap_notice_same_text_dedupes_against_the_tail(self) -> None:
+        # An unchanged recap re-emitted on every resume must not stack rows;
+        # DIFFERENT text still appends (newer information wins).
+        from kiro_crew.dashboard.chat_utils import _append_recap_notice
+
+        state = _StateStub()
+        slot, delivered = _slot_with_callback()
+        _append_recap_notice(state, slot, "Goal: X. Next: Y.")  # type: ignore[arg-type]
+        _append_recap_notice(state, slot, "Goal: X. Next: Y.")  # type: ignore[arg-type]
+        assert len(delivered) == 1
+        _append_recap_notice(state, slot, "Goal: X. Next: Z.")  # type: ignore[arg-type]
+        assert len(delivered) == 2
+
+
+def test_recap_dispatch_never_counts_as_visible_output() -> None:
+    """The recap branch must not set _produced_visible_output: it fires at
+    stream start on exactly the first prompt after a resume, and counting
+    it would suppress the empty-response recovery ladder for that turn —
+    the user gets the recap, then silence, and the give-up notice that says
+    to re-send is skipped."""
+    import inspect
+    import re
+
+    from kiro_crew.dashboard import chat_runner
+
+    src = inspect.getsource(chat_runner)
+    m = re.search(
+        r"elif event\.kind == EVENT_SESSION_RECAP:(.*?)(?=\n            elif )",
+        src,
+        re.DOTALL,
+    )
+    assert m, "recap dispatch branch not found"
+    assert "_append_recap_notice(" in m.group(1)
+    assert "_produced_visible_output = True" not in m.group(1)

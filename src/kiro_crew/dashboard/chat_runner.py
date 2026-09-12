@@ -31,6 +31,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_SESSION_RECAP,
     EVENT_STEER_CONSUMED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
@@ -91,6 +92,7 @@ from kiro_crew.dashboard.chat_utils import (
     _MAX_TOOL_PURPOSE,
     ResetCause,
     _append_compaction_notice,
+    _append_recap_notice,
     _apply_incognito_prefix,
     _broadcast_auto_tool,
     _broadcast_compaction_result,
@@ -10512,6 +10514,18 @@ async def _run_chat(
                     _still_pending = settle_consumed_steers(_refusal_notices, event.text or "")
                     _refusal_notices_settled += len(_refusal_notices) - len(_still_pending)
                     _refusal_notices[:] = _still_pending
+            elif event.kind == EVENT_SESSION_RECAP:
+                # A short re-orientation line for the returning user (goal,
+                # current task, next action). Rendered as a muted system
+                # notice through the single recap chokepoint; never treated
+                # as the turn's reply. Deliberately NOT counted as
+                # _produced_visible_output: the recap arrives at stream start
+                # (pre-turn drain capture) on exactly the first prompt after
+                # a resume, and counting it would suppress the empty-response
+                # recovery ladder for that turn — the user would get the
+                # recap and then silence, with the give-up notice (the rung
+                # that says to re-send) skipped.
+                _append_recap_notice(state, slot, event.text or "")
             elif event.kind == EVENT_COMPACTION_STATUS:
                 logger.debug("Main loop: compaction event text=%r", event.text)
                 if event.text == "started":

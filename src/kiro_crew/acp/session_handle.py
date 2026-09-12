@@ -94,6 +94,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_SESSION_RECAP,
     EVENT_STEER_CLEARED,
     EVENT_STEER_CONSUMED,
     EVENT_STEER_QUEUED,
@@ -650,6 +651,9 @@ class AcpSessionHandle:
         # EVENT_SUBAGENT_ACTIVITY at the next dispatch so the rejection shows
         # on the child's crew card instead of vanishing into the log.
         self._pending_reject_notices: list[tuple[str, str]] = []
+        # The last recap captured from the between-turns gap by the pre-turn
+        # drain; emitted (and cleared) at the next turn's stream start.
+        self._pending_recap: str | None = None
         # In-flight SEL audit tasks for handle-owned permission rejections
         # (fail-close gate, pre-turn drain) — retained so they cannot be
         # garbage-collected mid-flight. Mirrors AcpRuntime._audit_tasks.
@@ -1058,6 +1062,24 @@ class AcpSessionHandle:
                     "stranded_request_pre_turn_drain",
                     sub_session_id=(_stale_sid if _stale_sid != self._session_id else ""),
                 )
+            elif stale is not None and self._is_kas_recap_frame(stale):
+                # A recap emitted BETWEEN turns (session load/resume — the very
+                # moment the feature exists for) would die here unseen: no turn
+                # stream was live to consume it. Keep the LAST one and surface
+                # it at the top of the turn that is about to start, so the
+                # returning user re-orients before reading the new output.
+                # (A between-turns push with no turn machinery would need an
+                # idle-session event consumer that exists for no event today —
+                # declared follow-up; this closes the "or never" case.)
+                # Reuse the mapping path for extraction: inside this guard the
+                # kind is recap, for which _handle_kas_session_info is pure
+                # (redact + strip + build event) — one extraction authority.
+                _params = stale.params if isinstance(stale.params, dict) else {}
+                _update_raw = _params.get("update")
+                _update: dict = _update_raw if isinstance(_update_raw, dict) else {}
+                _events = self._handle_kas_session_info(_update)
+                if _events:
+                    self._pending_recap = _events[0].text
             else:
                 # Everything that is not a permission request is DISCARDED, which
                 # is correct (it belongs to a turn nobody is reading any more) but
@@ -1143,6 +1165,15 @@ class AcpSessionHandle:
                         f"{redact_text(str(_n_title)[:4096])[:120]}"
                     ),
                 )
+            # A recap captured from the between-turns gap (pre-turn drain)
+            # surfaces FIRST, before this turn's own output: the returning
+            # user re-orients, then reads the new turn. Same snapshot-and-
+            # clear discipline as the notices above — an abandoned stream
+            # must not replay it next turn.
+            _recap = self._pending_recap
+            self._pending_recap = None
+            if _recap:
+                yield AcpEvent(kind=EVENT_SESSION_RECAP, text=_recap)
             async for event in self._dispatch_events(
                 req_id, timeout, extract_command_result=extract_command_result
             ):
@@ -3700,6 +3731,28 @@ class AcpSessionHandle:
         # nothing to render and no separate branch is needed.
         return None
 
+    def stage_recap(self, update: dict) -> None:
+        """Park a recap ``session_info_update`` union for the next turn.
+
+        The public seam for code OUTSIDE this handle (``load_session``'s
+        buffered-init extraction) to hand over a recap without reaching into
+        private state: routes through ``_handle_kas_session_info`` — pure for
+        the recap kind (redact + strip + build event) — and stores the text
+        in the slot the next ``prompt()`` stream start emits from. A newer
+        recap replaces an older one; an empty/non-recap update stages nothing.
+        """
+        events = self._handle_kas_session_info(update)
+        if events and events[0].kind == EVENT_SESSION_RECAP:
+            self._pending_recap = events[0].text
+
+    def _is_kas_recap_frame(self, msg: "JsonRpcMessage | None") -> bool:
+        """True for a session/update notification carrying a KAS recap union."""
+        if msg is None:
+            return False
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            return kas_wire.is_recap_update(msg.params)
+        return False
+
     def _handle_kas_session_info(self, update: dict) -> list[AcpEvent]:
         """Map a KAS ``session_info_update`` (``_meta.kiro`` union) to events.
 
@@ -3776,6 +3829,16 @@ class AcpSessionHandle:
                 else EVENT_STEER_QUEUED
             )
             return [AcpEvent(kind=steer_kind, text=text)]
+        if kind == kas_wire.KIND_RECAP:
+            # A short re-orientation line for the returning user. The EVENT is
+            # backend-neutral (EVENT_SESSION_RECAP; the notice renders the same
+            # whatever backend produced it) — KAS is merely the first emitter,
+            # exactly like compaction status before claude grew one. Backend-
+            # echoed, LLM-influenced text: redact before it reaches a surface.
+            recap_text = redact_text(str(kiro.get(kas_wire.FIELD_TEXT) or "")).strip()
+            if not recap_text:
+                return []
+            return [AcpEvent(kind=EVENT_SESSION_RECAP, text=recap_text)]
         return []
 
     def _handle_kas_subagent(self, update: dict) -> list[AcpEvent] | None:
