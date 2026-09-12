@@ -187,6 +187,22 @@ def test_open_dump_file_returns_writable_fd(dumps_dir: Path) -> None:
         assert "Thread 0x1234" in content
 
 
+@pytest.mark.parametrize("payload", ["line one\nline two\n", "line one\r\nline two\r\n"])
+def test_open_dump_file_preserves_bytes(dumps_dir: Path, payload: str) -> None:
+    """The real descriptor preserves newlines and remains non-inheritable."""
+    with opened_dump_file(dumps_dir) as dump_file:
+        fd = dump_file.fileno()
+        path = next(dumps_dir.iterdir())
+        header = path.read_bytes()
+        assert header.endswith(b"\n\n")
+        assert b"\r\n" not in header
+        assert not os.get_inheritable(fd)
+
+        dump_file.write(payload)
+        os.write(fd, payload.encode("utf-8"))
+        assert path.read_bytes() == header + payload.encode("utf-8") * 2
+
+
 # ── Newest dump detection ──
 
 

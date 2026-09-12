@@ -521,9 +521,11 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
 
     # Use os.open() for a raw fd that is never wrapped in a closable Python
     # buffered layer.  O_WRONLY|O_CREAT|O_TRUNC mirrors open("w") semantics.
+    # Binary mode preserves the header and faulthandler's bytes without CRT
+    # newline translation on Windows, matching the binary dump reader.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     if sys.platform == "win32":
-        flags |= os.O_NOINHERIT
+        flags |= os.O_NOINHERIT | os.O_BINARY
     else:
         flags |= os.O_CLOEXEC
     fd = os.open(str(path), flags, 0o644)
