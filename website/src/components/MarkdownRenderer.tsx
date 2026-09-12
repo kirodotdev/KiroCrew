@@ -942,6 +942,24 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       pathResolution.endLine,
     )
   }
+  // A destination `urlTransform` REJECTED arrives here as '' — react-markdown's
+  // defaultUrlTransform sentinel for a scheme outside its allowlist (a custom
+  // scheme like `obsidian:`, a `javascript:`/`data:` payload the gate refuses
+  // on purpose, or an empty `[x]()` destination). '' is not nullish, so the
+  // plain-anchor return's `sessionHref ?? href` handed the DOM `<a href="">` —
+  // an ordinary-looking link the browser resolves against the CURRENT page, so
+  // "copy link address" yielded the dashboard's own session URL (issue #9925).
+  // A rejected destination must not be an anchor at all: render the label as
+  // inert text — no href, no target/rel, no click handlers — the same trade
+  // TrustAppModal's `safeHref` makes for an untrusted destination. The absent
+  // case (`<a>` with no href at all) is a non-navigating placeholder anyway and
+  // takes the same path. `InsideLinkCtx` is deliberately NOT provided: it only
+  // exists to keep a label's code span from stealing the enclosing anchor's
+  // click, and with no anchor the label is ordinary prose — its code spans
+  // re-enter the normal inline-code ladder (click-to-copy, and for session-key
+  // or confirmed-path shaped spans, their usual chips), pinned by the
+  // rejected-destinations tests.
+  if (!href) return <span {...sp(node)}>{children}</span>
   if (claimed) return <>{claimed}</>
   if (source?.provider === 'jira') {
     const jira = source
