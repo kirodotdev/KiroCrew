@@ -10090,7 +10090,16 @@
       "board_update_failed": "ボードの更新に失敗しました",
       "open_crew_members": "クルーメンバー",
       "open_crew_members_desc": "クルーメンバーのページを開きます。各メンバーは常駐エージェントで、自分のスレッドを持ちます。",
-      "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。"
+      "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。",
+      "remote_sessions_not_shown_in_board_view_other": "ボード列はローカルセッションのみを管理するため、リモートセッション {{count}} 件はボードビューに表示されません。",
+      "sessions_from_instance_unavailable": "{{names}} のセッションは現在利用できません。",
+      "checking_remote_instances": "リモートインスタンスを確認しています…",
+      "adopt_failed": "このセッションをここで開けませんでした。",
+      "adopt_remote_bind_failed": "{{name}} に接続できず、このセッションを開けませんでした。",
+      "adopt_target_unknown": "このセッションは {{name}} では開かれていません。",
+      "opening_session_locally": "このセッションをここで開いています…",
+      "opens_here_runs_on_instance": "このセッションをここで開きます — 実行は {{name}} で続きます",
+      "remote_instances_list_unavailable": "リモートインスタンスを一覧取得できなかったため、それらのセッションは表示されません。"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -10471,6 +10480,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
         "open_webhooks": "Webhooks を開く",
         "webhooks": "Webhooks",
+        "remote_instance_sessions": "リモートインスタンスのセッション",
+        "merge_a_connected_remote_instances_live_sessions": "接続済みのリモートインスタンスのライブセッションをセッション一覧に統合し、それぞれにサーバーバッジを表示します。動作しますが、まだ未完成です。",
         "intro": {
           "webhooks_summary": "別のシステム（CI、レビューボット、デプロイパイプライン）が、Webhooks ページで作成したアクセストークン付きでメッセージを送るだけで、あなたの代わりにエージェントを動かせます。",
           "webhooks_where": "オンにすると、設定のこのカードに「Webhooks を開く」リンクが現れ、新しい Webhooks ページはそこから開きます。ページが完成するまでサイドバーには表示されません。オフにしてもページが再び隠れるだけで、作成したトークンは残ります。",

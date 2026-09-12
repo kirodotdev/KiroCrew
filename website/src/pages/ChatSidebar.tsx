@@ -50,7 +50,8 @@ import useMoveUndo from '../hooks/useMoveUndo'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
+import { useInstanceSessions } from '../hooks/useInstanceSessions'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { pinMutationKeysInFlight, useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
@@ -632,6 +633,35 @@ interface Slot {
   key: string
   title?: string
   running: boolean
+  /** Peer OWNERSHIP, present ONLY on a row sourced from a connected remote
+   *  instance's live slot list (see `useInstanceSessions`). Absent on every local
+   *  slot, so a consumer tests presence to decide whether the local-only
+   *  affordances — close, duplicate, rename, pin, drag-reorder, folder move —
+   *  apply at all.
+   *
+   *  DELIBERATELY NOT `instance_id`, which is declared below and means something
+   *  else: that field names the peer a LOCAL slot DISPATCHES its turns to
+   *  (`executor: 'remote'`). The row still lives here, is renameable, pinnable
+   *  and activatable, and its history is local. Spelling both meanings with one
+   *  field would make every guard in this file misread a remote-executed local
+   *  session as a session belonging to another machine — stripping its rename,
+   *  drag, pin, folder and active-highlight and sending a click to the peer's
+   *  dashboard instead of to the session the user asked for. It would also let
+   *  our stamp overwrite a peer's own execution binding, since a peer's slot can
+   *  itself be bound to a third machine. */
+  peer_id?: string
+  /** The identity this row renders under, resolved by the SERVER.
+   *
+   *  A purely local session is its own `key`. A remote-bound one — minted on a crew
+   *  or adopted from a peer row — is `<instance_id>:<peer_key>`, the identity the
+   *  peer row already carried. Preserving it across the bind is what makes the row
+   *  the user clicked BECOME the session instead of a sibling appearing next to it.
+   *
+   *  Absent on a peer row and on an older payload; `sessionRowIdentity` falls back
+   *  to `peer_id` + `key` for those. Never parse it to recover the local slot key —
+   *  read `key`. */
+  row_identity?: string
+  peer_name?: string
   unread?: boolean
   // `pending_approval` rides on every ChatSlot payload; the sidebar reads it to
   // suppress the "your turn" dot and show the yellow "Needs approval" subtitle.
@@ -1497,8 +1527,135 @@ interface SessionRowProps {
   onCloseSession: (key: string) => void
   onMenuCloseAutoFocus: (e: Event) => void
   onSelectSlot?: (key: string) => void
+  /** ADOPT a row whose session lives on a remote instance: create a local slot
+   *  bound to that peer session and switch to it. Distinct from `onSelectSlot`
+   *  because there is no local slot to switch to YET — this is what makes one. */
+  onAdoptPeerSession?: (instanceId: string, remoteSlot: string, rowIdentity: string) => void
+  /** An adopt for THIS row is in flight. The peer's transcript is backfilled
+   *  server-side before the response, so the round-trip is long enough that a row
+   *  with no feedback reads as a dead click. */
+  adoptPending?: boolean
+  /** Why the last adopt of THIS row failed, already resolved to display text.
+   *  Empty renders nothing. */
+  adoptError?: string
   onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void
   onOpenSource?: (slotKey: string, link: { url: string; kind: 'change' | 'issue' }) => boolean
+}
+
+/** Display text for a FAILED peer-session adopt, preferring the backend's own
+ * machine-readable `code` over its prose.
+ *
+ * Why the code has to be recovered from the error journal rather than read off
+ * the error: the adopt goes through `dispatch(createSlot(...)).unwrap()`, and RTK
+ * serializes a thrown error down to its string fields — so `ApiError.status` and
+ * `ApiError.body` are GONE by the time this runs, and `parseErrorCode(err.body)`
+ * (the pattern every non-thunk call site uses) reads `undefined`. `apiFailure`
+ * journals the status and the code keyed by the message that DOES survive, which
+ * is what `findReport` looks back up. See `utils/thunkError`'s module doc.
+ *
+ * The two named codes get copy that says what the user can do about it; anything
+ * else shows the backend's own sentence (`apiFailure` already unwrapped it out of
+ * the `{error, code}` envelope), and a fixed sentence is the floor — a failed
+ * click must never render nothing, which is the defect this exists to fix. */
+function adoptFailureText(err: unknown, crewName: string): string {
+  const message = errMessage(err)
+  switch (findReport(message)?.code) {
+    // The peer no longer lists that session (closed there, or never adoptable).
+    case 'adopt_target_unknown':
+      return i18nT('pages.chatSidebar.adopt_target_unknown', { name: crewName })
+    // The tunnel died between listing the row and binding it.
+    case 'remote_bind_failed':
+      return i18nT('pages.chatSidebar.adopt_remote_bind_failed', { name: crewName })
+    default:
+      return message || i18nT('pages.chatSidebar.adopt_failed')
+  }
+}
+
+/** Does this row belong to ANOTHER machine? The one question every local-only
+ * affordance in this file asks, behind one name so the answer cannot drift
+ * between call sites.
+ *
+ * Reads `peer_id`, never `executor`/`instance_id`: a slot with
+ * `executor: 'remote'` is a LOCAL session that merely runs its turns on a peer,
+ * so it keeps every affordance below and must answer `false` here. See the
+ * `peer_id` doc on `Slot`. */
+function isPeerRow(slot: Pick<Slot, 'peer_id'>): boolean {
+  return !!slot.peer_id
+}
+
+/** Remote and local gateways do not share a slot-key namespace. Deterministic
+ * member/channel keys can be byte-identical, so every UI identity includes the
+ * origin while local rows preserve their existing key. */
+function sessionRowIdentity(slot: Pick<Slot, 'key' | 'peer_id' | 'row_identity'>): string {
+  // The SERVER's answer wins when it has one. `row_identity` is projected on every
+  // local slot and resolves a remote-bound session — minted on a crew or adopted
+  // from a peer row — to `<instance_id>:<peer_key>`, which is the identity the peer
+  // row already had. Same identity before and after the bind means this row is
+  // re-rendered rather than replaced: the row the user clicked becomes the session
+  // they asked for, instead of a sibling appearing next to it. It also keeps a
+  // `data-session-row` selector and everything logged about the row continuous
+  // across the adopt.
+  //
+  // The fallback still covers the two cases the server does not answer: a peer row
+  // (which carries `peer_id` and no local slot) and an older payload with no
+  // `row_identity` at all.
+  if (slot.row_identity) return slot.row_identity
+  return slot.peer_id ? `${slot.peer_id}:${slot.key}` : slot.key
+}
+
+/** The Older Sessions pane's counterpart to `sessionRowIdentity`, for the same
+ * reason and against a DIFFERENT field.
+ *
+ * A federated history row names the peer that answered the search in
+ * `instance_id` — that pane is the one place where `instance_id` already means
+ * ownership rather than execution, because a history row has no turns to
+ * dispatch. The LIVE list uses `peer_id` instead (see the `Slot` docs), so the
+ * two panes cannot share one reader: whichever one it keyed on, the other pane's
+ * rows would fall back to their raw key, and a local/remote pair whose
+ * deterministic keys collide would then reconcile as ONE React child and lose a
+ * row. Two collections carrying two origin fields get two readers, and the
+ * narrower parameter type is what stops either from being called on the other's
+ * rows by accident. */
+function historyRowIdentity(item: { key: string; instance_id?: string }): string {
+  return item.instance_id ? `${item.instance_id}:${item.key}` : item.key
+}
+
+/** Local sidebar metadata is keyed only by local slot key. A remote peer may
+ * emit the same deterministic key, so mixed collections must reject the remote
+ * origin before consulting pin or folder state. */
+function localSlotFolder(
+  slot: Pick<Slot, 'key' | 'peer_id'>,
+  slotFolders: Readonly<Record<string, string>>,
+): string | undefined {
+  return isPeerRow(slot) ? undefined : slotFolders[slot.key]
+}
+
+function isLocallyPinned(
+  slot: Pick<Slot, 'key' | 'peer_id'>,
+  pinned: ReadonlySet<string>,
+): boolean {
+  return !isPeerRow(slot) && pinned.has(slot.key)
+}
+
+/** `comparePinnedThenSort` with the peer rows masked out of the pinned bucket.
+ *
+ * That shared comparator keys on the raw slot key alone, which is correct for a
+ * local-only collection but not for this one: a peer key can be byte-identical
+ * to a locally pinned one, and the row would then sort into the pinned section
+ * of a list it cannot be pinned in. Membership is decided here; the pinned ORDER
+ * itself still has exactly one implementation, delegated to below. */
+function compareLocalPinnedThenSort(
+  a: Slot,
+  b: Slot,
+  key: SortKey,
+  pinned: ReadonlySet<string>,
+  pinnedRank?: ReadonlyMap<string, number>,
+): number {
+  const aPinned = isLocallyPinned(a, pinned)
+  const bPinned = isLocallyPinned(b, pinned)
+  if (aPinned !== bPinned) return aPinned ? -1 : 1
+  if (aPinned && bPinned) return comparePinnedThenSort(a, b, key, pinned, pinnedRank)
+  return compareBySort(a, b, key)
 }
 
 /** One sidebar session row behind a memo boundary, so the 200+ row bodies do
@@ -1515,9 +1672,25 @@ const SessionRow = memo(function SessionRow({
   isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
   defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
   renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
-  onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource,
+  onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onAdoptPeerSession, adoptPending, adoptError,
 }: SessionRowProps) {
   sessionRowRenderProbe.current?.(s.key)
+  // Peer ownership, present only on a row sourced from a connected remote
+  // instance. Every local-only affordance below is gated on its ABSENCE rather
+  // than disabled: a control that looks actionable and silently does nothing is
+  // worse than no control, and none of close / duplicate / rename / reorder can
+  // be honoured for a session whose slot lives on another machine.
+  //
+  // `peerId`, NOT the `instance_id` that `remoteCrewName` below reads: these two
+  // sit in one scope and mean opposite things. This one says the session is not
+  // ours; that one says the session IS ours and dispatches elsewhere.
+  const peerId = s.peer_id
+  const peerName = s.peer_name || s.peer_id
+  const rowIdentity = sessionRowIdentity(s)
+  // Remote and local gateways do not share a slot-key namespace. Deterministic
+  // member/channel keys can be byte-identical, so a remote row must never use
+  // its raw peer key to read slot-scoped LOCAL state.
+  const localSlotKey = peerId ? '' : s.key
   // memo() bails out of the provider-level repaint, so the row subscribes to
   // catalog loads directly (same contract as the ChatSidebar shell) — its
   // i18nT strings must re-translate even when no prop moves.
@@ -1544,15 +1717,20 @@ const SessionRow = memo(function SessionRow({
   // the row does not re-render. Hoisting any of these to the shell as a
   // whole-map read re-renders every row per event — the regression the memo
   // test's render probe exists to catch.
-  const statusDetail = useAppSelector(st => st.chat.slotStatusDetail?.[s.key])
-  const automation = useAppSelector(st => selectAutomationForSlot(st, s.key))
+  // `localSlotKey`, not `s.key`: a peer-owned row must not read slot-scoped LOCAL
+  // state under its own key, because the two gateways do not share a key
+  // namespace and a collision would show another session's status here.
+  // `selectAutomationForSlot` does its own `isUnsafeKey`/`safeKey` normalization,
+  // so this needs no own-property guard of its own.
+  const statusDetail = useAppSelector(st => st.chat.slotStatusDetail?.[localSlotKey])
+  const automation = useAppSelector(st => selectAutomationForSlot(st, localSlotKey))
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
-  const queuedForSlot = useAppSelector(st => st.chat.subagentQueued?.[s.key] || 0)
+  const queuedForSlot = useAppSelector(st => st.chat.subagentQueued?.[localSlotKey] || 0)
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
   // shallowEqual because the map is rebuilt per run event; the primitives only
   // change when THIS slot's runs do.
-  const wf = useAppSelector(st => selectSidebarWorkflowActive(st)[normalizeRunSessionKey(s.key)], shallowEqual)
+  const wf = useAppSelector(st => selectSidebarWorkflowActive(st)[normalizeRunSessionKey(localSlotKey)], shallowEqual)
     // Flat view shares the tree's layoutId namespace so Framer Motion treats a
     // row as the SAME element across the view toggle and animates it from its
     // tree position into the flat lane (and back). Safe: the two views are
@@ -1561,7 +1739,15 @@ const SessionRow = memo(function SessionRow({
     const layoutScope = scope === 'flat' ? 'list' : scope
     // List and flat rows use dnd-kit. Board columns retain native HTML5 drag
     // because a card drop there changes status-column membership.
-    const dndRow = scope === 'list' || scope === 'flat'
+    //
+    // Drag is a LOCAL-slot gesture: dnd-kit's drop handlers reorder local slots,
+    // move them between folders and drop them onto the chat pane, all keyed by a
+    // slot key that exists in the local store. A PEER-OWNED row has no local slot,
+    // so a drag could only resolve to nothing or — if a peer key ever coincided
+    // with a local one — to the WRONG session. Excluded by construction rather
+    // than handled per drop target. A remote-EXECUTED local slot is not excluded:
+    // its slot is right here, and reordering it is as meaningful as any other.
+    const dndRow = (scope === 'list' || scope === 'flat') && !peerId
     const reorderContainer = scope === 'flat' ? 'flat' : (s.folder_id || 'root')
     const agentName = s.agent || defaultAgent || ''
     // What the row SHOWS, kept separate from `agentName` on purpose. That value
@@ -1726,6 +1912,55 @@ const SessionRow = memo(function SessionRow({
     //
     // The tail is `last_message`, and the `unread` dot rides on it (below).
     const rowState = ([
+      {
+        // ADOPT feedback, on the row the user just clicked. It sits at the TOP
+        // because it describes THEIR in-flight action, not the session's own
+        // state, and it lives INSIDE this resolver rather than beside it: the
+        // resolver renders exactly one secondary line (`session-row-fixed-height`
+        // in website/AUTOSDE.yaml — "ONE status line, and only one"), so a running
+        // peer row that is also adopting would otherwise render two lines and grow
+        // the row.
+        //
+        // Through `ErrorNotice`, not a hand-rolled tinted div: the shared surface
+        // carries `role="alert"` and recovers the endpoint/status/code from the
+        // error journal. `askAgent` is OFF — the hand-off navigates away, and this
+        // row sits beside a composer that may hold a draft.
+        // `messageClassName="truncate"` is what keeps this to ONE line. The
+        // resolver already guarantees one status ENTRY, but `ErrorNotice` wraps a
+        // long message by default (`overflowWrap: anywhere`), so a localized
+        // failure string was still able to grow the row past its fixed height --
+        // the same `session-row-fixed-height` rule, reached from the other side.
+        // Truncating rather than dropping the component: `errors-use-error-notice`
+        // requires an error to BE an `ErrorNotice`, so the two rules together
+        // leave exactly this shape.
+        key: 'peer_adopt_error',
+        when: !!peerId && !adoptPending && !!adoptError,
+        build: () => (
+          <>
+            {/* No hand-off: the adjacent composer may contain an unsaved draft. */}
+            <ErrorNotice
+              message={adoptError || ''}
+              variant="inline"
+              messageClassName="truncate"
+              testId="session-peer-adopt-error"
+            />
+          </>
+        ),
+      },
+      {
+        // A peer-row click is a network round-trip that includes a server-side
+        // transcript backfill, so it is slow enough that silence reads as a dead
+        // click. Several peer rows can be adopting independently, which is why
+        // this is per-row and not a page-level banner.
+        key: 'peer_adopt_pending',
+        when: !!peerId && !!adoptPending,
+        build: () => (
+          <div className={ROW_STATUS_LINE_MUTED_CLS} data-testid="session-peer-adopt-pending">
+            <Loader2 size={10} className="animate-spin shrink-0 text-accent" aria-hidden="true" />
+            <span className="truncate min-w-0">{i18nT('pages.chatSidebar.opening_session_locally')}</span>
+          </div>
+        ),
+      },
       {
         // Pending approval outranks running (mirrors the Board's inferLane,
         // which returns its approval lane before the running check), so an owed
@@ -1989,18 +2224,23 @@ const SessionRow = memo(function SessionRow({
     }
     return (
       <DndDroppable
-        id={`pinned-session:${scope}:${s.key}`}
+        id={`pinned-session:${scope}:${rowIdentity}`}
         data={{ type: 'pinned-session', key: s.key, container: reorderContainer }}
         disabled={!dndRow || !pinnedReorderEnabled || !isPinned || isRenaming}
       >
         {({ setNodeRef: setPinnedDropRef, isOver: isPinnedDropOver }) => (
-      <motion.div ref={setPinnedDropRef} layout={rowAnimEnabled ? 'position' : false} layoutId={rowAnimEnabled ? `slot-${layoutScope}-${s.key}` : undefined}
+      <motion.div ref={setPinnedDropRef} layout={rowAnimEnabled ? 'position' : false} layoutId={rowAnimEnabled ? `slot-${layoutScope}-${rowIdentity}` : undefined}
         data-slot-key={s.key}
         initial={rowAnimEnabled ? { opacity: 0, x: -12 } : false}
         animate={{ opacity: 1, x: 0 }}
         transition={{ layout: { type: 'spring', stiffness: 500, damping: 35 }, opacity: { duration: 0.2 }, x: { duration: 0.2 } }}>
+        {/* Both dnd ids are ORIGIN-QUALIFIED (`rowIdentity`, not `s.key`): a peer
+            row's disabled droppable/draggable still registers its id with dnd-kit,
+            so a peer key that collided with a local one would register twice and
+            the sortable would resolve the wrong node. `data.key` stays the RAW
+            key, because the drop handlers look slots up in the local store. */}
         <DndDraggable
-          id={`session:${s.key}`}
+          id={`session:${rowIdentity}`}
           data={{ type: 'session', key: s.key, pinned: isPinned, container: reorderContainer }}
           disabled={!dndRow || isRenaming}
         >
@@ -2008,18 +2248,39 @@ const SessionRow = memo(function SessionRow({
         <ContextMenu>
           <ContextMenuTrigger asChild>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
-          data-draggable={(!isRenaming).toString()}
+          data-draggable={(!isRenaming && !peerId).toString()}
           className={`session-row group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
-          draggable={(!dndRow && !isRenaming) && (connected || isActive)}
+          draggable={
+            // Both drag paths are off for a peer-owned row. Note the polarity:
+            // native HTML5 drag is enabled precisely when dnd-kit is NOT, so
+            // gating `dndRow` alone would have SWITCHED THIS ON rather than off.
+            (!dndRow && !isRenaming && !peerId) && (connected || isActive)
+          }
+          title={
+            // A peer-owned row OPENS THE SESSION, here, in the local pane: the
+            // click creates a local slot bound to that peer session and switches
+            // to it, so this row now makes the same promise every sibling row
+            // makes. What still differs is where the TURNS run, which is the one
+            // thing worth saying on hover — the `RemoteCrewChip` beside the agent
+            // name carries the same fact as visible text, so nothing meaningful is
+            // hover-only. Declared ahead of `offlineProps` so the gateway-offline
+            // tooltip still wins while disconnected (last prop wins).
+            peerId
+              ? i18nT('pages.chatSidebar.opens_here_runs_on_instance', { name: peerName })
+              : undefined
+          }
           {...offlineProps(connected, 'switch sessions')}
           role="button"
           tabIndex={0}
-          data-session-row={s.key}
+          data-session-row={rowIdentity}
           data-session-scope={navScope}
           data-session-container={holdContainer}
           aria-current={isActive ? 'true' : undefined}
           aria-disabled={!connected}
+          // An adopt in flight is a pending state ON THIS ROW, so a screen reader
+          // hears "busy" rather than nothing while the peer transcript backfills.
+          aria-busy={peerId && adoptPending ? 'true' : undefined}
           aria-keyshortcuts={dndRow && pinnedReorderEnabled && isPinned ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
           onKeyDown={e => {
             if (dndRow && pinnedReorderEnabled && isPinned && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
@@ -2065,6 +2326,7 @@ const SessionRow = memo(function SessionRow({
             if ((e.target as HTMLElement) !== e.currentTarget) return // don't hijack inner buttons
             e.preventDefault()
             if (!connected) return
+            if (peerId) { onAdoptPeerSession?.(peerId, s.key, rowIdentity); return }
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
           }}
@@ -2084,6 +2346,7 @@ const SessionRow = memo(function SessionRow({
           onAuxClick={onOpenSlotInNewTab ? (e => {
             if (e.button !== 1 || !connected) return
             e.preventDefault()
+            if (peerId) return
             onOpenSlotInNewTab(s.key, { background: true })
           }) : undefined}
           onClick={e => {
@@ -2105,6 +2368,15 @@ const SessionRow = memo(function SessionRow({
             // /forking still works — those are local ops (or short-circuit) that
             // don't depend on gateway state.
             if (!connected) return
+            // A peer-owned row has no local slot yet, so `switchSlot` would
+            // resolve nothing and clear the transcript. ADOPT it instead: create a
+            // local slot bound to that peer session, backfill its transcript, and
+            // switch to THAT — the click opens the session the row names, in the
+            // local pane, which is what every other row's click means. (The
+            // federated Older-Sessions rows still switch panes; a history row has
+            // no live peer slot to bind.) A remote-EXECUTED local slot falls
+            // through to `switchSlot` below, because its transcript IS here.
+            if (peerId) { onAdoptPeerSession?.(peerId, s.key, rowIdentity); return }
             // Modifier-click = open as a background tab, matching the
             // editor/browser convention. The platform split is deliberate:
             // Ctrl+click IS a right-click on macOS, so honouring it there would
@@ -2118,6 +2390,7 @@ const SessionRow = memo(function SessionRow({
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
+            if (peerId) return
             if (!(e.target as HTMLElement).closest?.('[data-session-title]')) return
             if (renamingHere) return
             e.preventDefault()
@@ -2176,6 +2449,42 @@ const SessionRow = memo(function SessionRow({
                 *  rare agent switch, and the repo's animation invariant is
                 *  framer-only (no new CSS @keyframes). */}
               <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+              {/* Peer-OWNERSHIP badge: this session belongs to another machine.
+                *  The SAME component the `RemoteCrewChip` further down this row
+                *  uses, which says a LOCAL session dispatches its turns to a peer.
+                *  Internally those are opposite directions of travel, but the chip
+                *  exists precisely because they make one claim to the person
+                *  reading the rail \u2014 "this is not on my machine" \u2014 and that
+                *  component's own docstring already counts a peer-OWNED federated
+                *  search row among its consumers. A live peer row is the same fact
+                *  in the live list, so it gets the same marker rather than a
+                *  second span with the same classes.
+                *
+                *  A row can never render BOTH: this one reads `peer_id`, the chip
+                *  below reads `executor === 'remote'` + `instance_id`, and keeping
+                *  those two fields apart is what makes them exclusive. Before the
+                *  split they were one field, so a remote-EXECUTED local slot
+                *  rendered two identical chips. */}
+              {/* The badge carries a tooltip because it is the ONLY always-visible
+                *  marker that this row's session lives on another machine — and a
+                *  bare crew name does not say that. A reader who has not met the
+                *  feature sees a pill with a word in it and cannot tell what a row
+                *  WITHOUT one means either, so the text names both halves: whose
+                *  session it is, and that clicking opens it here. */}
+              {peerId && (
+                <RemoteCrewChip
+                  name={peerName || ''}
+                  title={i18nT('pages.chatSidebar.opens_here_runs_on_instance', { name: peerName || '' })}
+                />
+              )}
+              {/* NO destination marker beside the agent name any more. It read
+                *  "· opens the astro dashboard", and it was there because the click
+                *  LEFT this session behind — it went to that crew's pane instead.
+                *  The click now ADOPTS the session into the local pane (see the
+                *  row's `onClick`), so the sentence would be false, and a row that
+                *  behaves like every other row needs no caveat. The chip above
+                *  still says where the TURNS run, which is the fact that survived,
+                *  and the row's `title` says the same in a sentence. */}
               {agentDiverged && (
                 // Plain secondary TEXT, deliberately not a badge, a colour or an
                 // icon. It is informational — the session works, it is simply
@@ -2380,7 +2689,13 @@ const SessionRow = memo(function SessionRow({
            *  on focus-within, so the focused rename input would otherwise make it
            *  pop up and overlap the input's right edge. Mirrors the folder-header
            *  guard below (!(editingId === folder.id && editScope === 'list')). */}
-          {!renamingHere && (isMobile ? (
+          {/* A PEER-OWNED row shows NO action group at all: every entry in it
+           *  (⋯ menu, duplicate, close, rename, pin, move-to-folder) is a
+           *  local-slot operation that cannot reach a session on another machine.
+           *  Omitting beats disabling — the same call `historyRow` makes for its
+           *  delete button. A remote-EXECUTED local slot keeps the whole group:
+           *  its slot is local, so every one of those operations still applies. */}
+          {!renamingHere && !peerId && (isMobile ? (
             <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -2407,9 +2722,9 @@ const SessionRow = memo(function SessionRow({
           ))}
         </div>
           </ContextMenuTrigger>
-          <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+          {!peerId && <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
             <SessionActionsMenu variant="context" {...rowMenuProps} />
-          </ContextMenuContent>
+          </ContextMenuContent>}
         </ContextMenu>
           )}
         </DndDraggable>
@@ -2607,7 +2922,15 @@ interface FilterDimension {
 }
 
 function ChatSidebar({
-  slots, activeSlot, unreadSlots, history, historyHasMore,
+  // Bound as `localSlots`, NOT `slots`. This component now holds TWO
+  // collections — the caller's local tabs and `allRows`, which also carries
+  // live peer rows — and a site that reads the wrong one fails silently: a
+  // local-only read under-reports the rendered set, and a merged read leaks
+  // local key-indexed state onto a colliding peer key. Neither shows up as a
+  // crash, so the names are the guard. The prop itself keeps its public name;
+  // only the binding is scoped, which forces every call site inside this file
+  // to say which collection it means.
+  slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
   chatDropTarget, onDropSessionRef, staticRows,
 }: ChatSidebarProps) {
@@ -2659,8 +2982,8 @@ function ChatSidebar({
   // Digest of session keys + titles (NOT status), fed to both searches as their
   // revalidate signal. Sorted+joined so reordering `slots` alone cannot refetch.
   const slotTitleDigest = useMemo(
-    () => slots.map(s => s.key + '\u0000' + (s.title || '')).sort().join('\u0001'),
-    [slots],
+    () => localSlots.map(s => s.key + '\u0000' + (s.title || '')).sort().join('\u0001'),
+    [localSlots],
   )
   // The Older Sessions pane renders `history`, so this slots-derived signal is a
   // proxy: it moves for every rename reachable today, all of which start on a live row.
@@ -2671,20 +2994,202 @@ function ChatSidebar({
   // partial stores omit the instances slice entirely (unlike the instances-own
   // components, which only ever mount with it).
   const hasWarmInstances = useAppSelector(s => Object.keys(s.instances?.warm ?? {}).length > 0)
+  // Live sessions on connected remote instances, merged into the list below.
+  // The flag is read HERE and passed in, so a user who has not opted in issues no
+  // per-instance request at all — this component mounts for every dashboard user,
+  // so gating the render would gate the rows but not the wire.
+  const instanceSessionsEnabled = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
   const historySearchResults = useDebouncedSessionSearch(
     historyFilter, s => s, slotTitleDigest, hasWarmInstances,
   )
   // Shared ['instances'] cache + shared select-and-maybe-reconnect semantics for
-  // activating a remote row; enabled only while a warm connection exists so a
-  // peerless install never issues the query.
+  // activating a remote row. THE ONLY `['instances']` observer in this component:
+  // the merged-sessions hook takes this list as a parameter rather than opening a
+  // second observer on the same key, because two observers notify the sidebar
+  // twice for one cache write and a spurious render landing mid-rename cancels
+  // the edit. Enabled for a warm connection OR for the merged-sessions preview,
+  // since that preview needs the list even before anything is warm.
   const instancesQuery = useQuery({
     queryKey: ['instances'],
     queryFn: () => api.listInstances(),
-    enabled: hasWarmInstances,
+    enabled: hasWarmInstances || instanceSessionsEnabled,
   })
   const instancesData = instancesQuery.data?.instances
   const instancesList = useMemo(() => instancesData ?? [], [instancesData])
+  // "The peer list has not answered yet", derived from state this component
+  // ALREADY reads. Deliberately NOT `isLoading` / `isFetching`: react-query
+  // tracks which result properties a consumer touches, so reading either one
+  // subscribes the whole sidebar to fetch-status transitions — including every
+  // background refetch — and one such render landing mid-rename blurs the rename
+  // textarea and cancels the edit. That is the same failure the hook's deleted
+  // `notifyOnChangeProps` workaround was suppressing, and reading `isLoading`
+  // here reintroduced it from the other side (caught by
+  // `integration/ChatSidebarRenameFocus.integration.test.tsx`, which is why that
+  // spec belongs in the local gate for this file and not only in CI).
+  // `data` is already tracked for the list itself and `isError` flips at most
+  // once per query lifecycle, so neither adds a new churn source. The error arm
+  // matters: without it a permanently failing request would leave the sidebar
+  // claiming "checking" forever.
+  const instancesUnanswered = instancesData === undefined && !instancesQuery.isError
+  const instanceSessions = useInstanceSessions(
+    instanceSessionsEnabled, instancesList, instancesUnanswered,
+  )
+  // BOTH reads the merged-sessions preview depends on, collapsed into one error
+  // banner. Either can fail, and each used to vanish differently: a failing
+  // `['instances']` only flipped `instancesUnanswered` false, so the "checking"
+  // line disappeared and the list silently claimed a completeness it did not
+  // have; a failing peer read was reduced to a hand-written warn box that threw
+  // the peer's own message away. Both are read failures, so both belong in
+  // `ErrorNotice` with the hand-off on.
+  //
+  // `message` is the JOURNAL LOOKUP KEY, so it carries the underlying error text
+  // whenever there is one — that is what recovers the failed endpoint, HTTP
+  // status and backend `code` (`peer_slots_refused`, `proxy_not_connected`, a 403
+  // the user can fix by reconnecting) for the agent. The localized sentence rides
+  // as `title` beside it, and stands in AS the message only when nothing came
+  // back to look up, so the banner is never empty.
+  //
+  // ONE banner, not two: a failing instances list leaves `instancesList` empty,
+  // so no peer query is ever created and `failed` cannot be non-empty at the same
+  // time. Reading `instancesQuery.error` adds no render churn beyond the `isError`
+  // already read above — both settle at most once per query lifecycle.
+  //
+  // Gated on the preview flag because this describes the preview's own rows. With
+  // the flag off the sidebar makes no claim about peer sessions, and a new
+  // sidebar-wide banner for the pre-existing warm-instance read would be a
+  // different feature's decision to make.
+  const remoteSessionsError = useMemo((): { title?: string, message: string } | null => {
+    if (!instanceSessionsEnabled) return null
+    const say =(sentence: string, detail?: string) => (detail
+      ? { title: sentence, message: detail }
+      : { message: sentence })
+    if (instancesQuery.isError) {
+      return say(
+        i18nT('pages.chatSidebar.remote_instances_list_unavailable'),
+        instancesQuery.error instanceof Error ? instancesQuery.error.message : undefined,
+      )
+    }
+    if (instanceSessions.failed.length > 0) {
+      return say(
+        i18nT('pages.chatSidebar.sessions_from_instance_unavailable', {
+          names: instanceSessions.failed.join(', '),
+        }),
+        instanceSessions.failure,
+      )
+    }
+    return null
+  }, [
+    instanceSessionsEnabled, instancesQuery.isError, instancesQuery.error,
+    instanceSessions.failed, instanceSessions.failure,
+  ])
+  // THE RENDERED COLLECTION: every row this sidebar may show, local tabs plus
+  // live peer rows. Hoisted to a named memo rather than built inside
+  // `filteredSlots` because a collection that exists only inside one memo cannot
+  // be reached by anything else, and every other consumer that needed it reached
+  // for `localSlots` instead — which is how a filter badge ended up counting a
+  // different set than the filter renders. Anything describing what is ON SCREEN
+  // reads this; anything that is genuinely about the user's own tabs reads
+  // `localSlots`.
+  //
+  // Row ORDER here is deliberately the raw concatenation: `filteredSlots` owns
+  // narrowing and sorting, so duplicating either would give two answers.
+  const allRows = useMemo(
+    () => {
+      if (instanceSessions.rows.length === 0) return localSlots
+      // DEDUPE BY IDENTITY, local wins. An adopted session resolves to the same
+      // identity as the peer row it was bound from, which is what makes the row
+      // transform in place — but it also means both can name the same row for as
+      // long as the peer listing is stale, and rendering both would be a duplicate
+      // React key on top of a duplicate row. The local slot is the survivor: it is
+      // the one with a transcript and a `slot_key`, and it is the authority on a
+      // session this machine now drives.
+      //
+      // The server drops a driven row from the listing too, so this is the second
+      // of two guards rather than the only one; it exists because the client's copy
+      // of that listing can be older than the binding.
+      const local = localSlots as Slot[]
+      const seen = new Set(local.map(sessionRowIdentity))
+      const peers = (instanceSessions.rows as unknown as Slot[])
+        .filter(row => !seen.has(sessionRowIdentity(row)))
+      return peers.length === 0 ? local : [...local, ...peers]
+    },
+    [localSlots, instanceSessions.rows],
+  )
+  // `selectInstance` stays for the FEDERATED OLDER-SESSIONS rows further down,
+  // which genuinely have nowhere local to go: a history row names a closed
+  // session on the peer, with no live peer slot to bind, so switching to that
+  // crew's pane IS its outcome. The LIVE peer rows above no longer use it — they
+  // adopt (see `adoptPeerSession`), which is the whole point of this change.
   const { selectInstance } = useSelectInstance(instancesList)
+  // Adopt state, keyed by ROW IDENTITY (`<peerId>:<key>`) rather than raw slot
+  // key: a peer key can be byte-identical to a local one, and to another peer's,
+  // so a raw-key map would show one row's failure on another row. Two separate
+  // maps because they are two different facts and both can be true of different
+  // rows at once.
+  const [adoptPending, setAdoptPending] = useState<Record<string, boolean>>({})
+  const [adoptErrors, setAdoptErrors] = useState<Record<string, string>>({})
+  // Read inside the click handler to refuse a SECOND adopt of a row already in
+  // flight. The backend is idempotent (a repeat pair returns the same local
+  // slot), so this is not a correctness guard — it is what stops an impatient
+  // double-click spending two round-trips and two transcript backfills.
+  const adoptPendingRef = useRef(adoptPending)
+  adoptPendingRef.current = adoptPending
+  const adoptPeerSessionMutation = useMutation({
+    mutationFn: async ({ instanceId, remoteSlot }: { instanceId: string; remoteSlot: string; identity: string }) => {
+      // ADOPT, not mint: `adoptRemoteSlot` names the peer session that already
+      // exists, so the local slot this creates binds to it instead of to a fresh
+      // one. Modelled on `createRemoteChatMutation` — same `createSlot` thunk,
+      // same stay-local stance, and deliberately NO `selectInstance`: staying put
+      // is the whole point, because the session now opens HERE.
+      const created = await dispatch(createSlot({ instanceId, adoptRemoteSlot: remoteSlot })).unwrap()
+      // Plain dispatch rather than `.unwrap()`: the adopt SUCCEEDED, so a slow or
+      // failing transcript fetch is `switchSlot`'s own error to report on the
+      // pane, not a reason to tell the row its adopt failed.
+      dispatch(switchSlot(created.key))
+      onSelectSlot?.(created.key)
+      return created
+    },
+    onSuccess: (_data, variables) => {
+      // Drop the cached peer listing for THIS crew. The backend stops listing an
+      // adopted session, but that only takes effect on the next fetch — until
+      // then the cached peer row co-exists with the freshly created local slot in
+      // `allRows` ([...localSlots, ...instanceSessions.rows], which does not
+      // dedupe), so the user sees the session they just opened twice. Scoped to
+      // the one crew rather than the whole query family: the other crews' rows did
+      // not change, and refetching them would spend a tunnel round-trip each.
+      void queryClient.invalidateQueries({ queryKey: ['instance-slots', variables.instanceId] })
+    },
+    onSettled: (_data, _err, variables) => {
+      setAdoptPending(prev => {
+        if (!prev[variables.identity]) return prev
+        const next = { ...prev }
+        delete next[variables.identity]
+        return next
+      })
+    },
+    onError: (err: unknown, variables) => {
+      // The crew's DISPLAY name, resolved here rather than threaded up from the
+      // row: `useMutation` reads its callbacks fresh each render, so closing over
+      // `instancesList` is safe where closing over it in the stable
+      // `adoptPeerSession` callback below would not be.
+      const crewName = instancesList.find(i => i.id === variables.instanceId)?.name || variables.instanceId
+      setAdoptErrors(prev => ({ ...prev, [variables.identity]: adoptFailureText(err, crewName) }))
+    },
+  })
+  const adoptMutateRef = useRef(adoptPeerSessionMutation.mutate)
+  adoptMutateRef.current = adoptPeerSessionMutation.mutate
+  // Stable for the life of the component, because it is a prop of every memoized
+  // SessionRow — the same reasoning as the `selectInstanceRef` indirection this
+  // replaced: react-query's mutation object takes a fresh identity every render,
+  // so closing over it directly would re-render EVERY row on every shell commit
+  // (the regression `ChatSidebar.rowMemo.test.tsx` exists to catch). The ref is
+  // rewritten each render and read inside a never-changing callback.
+  const adoptPeerSession = useCallback((instanceId: string, remoteSlot: string, identity: string) => {
+    if (adoptPendingRef.current[identity]) return
+    setAdoptPending(prev => ({ ...prev, [identity]: true }))
+    setAdoptErrors(prev => (prev[identity] ? { ...prev, [identity]: '' } : prev))
+    adoptMutateRef.current({ instanceId, remoteSlot, identity })
+  }, [])
   // Connected crews, for the "New chat on crew" entry. `warm` is the authority
   // on which peers hold a live tunnel (it holds the loopback port + minted
   // token); `instancesList` only supplies the display name, so a crew missing
@@ -3040,7 +3545,7 @@ function ChatSidebar({
   // loop counts as in progress, so neither drops out of the filter or its count.
   const runningSet = useMemo<Set<string>>(() => {
     const out = new Set<string>()
-    for (const s of slots) {
+    for (const s of localSlots) {
       // Set membership over selector-produced keys is own-property by
       // construction (Object.keys), so no safeKey guard is needed here.
       const automationRunning = automationRunningSet.has(s.key)
@@ -3049,7 +3554,7 @@ function ChatSidebar({
         || automationRunning) out.add(s.key)
     }
     return out
-  }, [slots, workflowActiveSet, automationRunningSet])
+  }, [localSlots, workflowActiveSet, automationRunningSet])
   // A running turn is recent BY DEFINITION: the ordering key stops advancing
   // mid-turn, so a long turn would age out while it is the busiest row on screen.
   const recentSet = useMemo<Set<string>>(() => {
@@ -3057,26 +3562,37 @@ function ChatSidebar({
     // The last-activity timestamp mirrors the date-sort comparator.
     const now = Date.now()
     const out = new Set<string>()
-    for (const s of slots) {
+    for (const s of localSlots) {
       if (runningSet.has(s.key) || isWithinRecentWindow(slotActivityTs(s), now, recentWindowMs)) out.add(s.key)
     }
     return out
     // `recentTick` is an intentional dep: it forces recency to re-evaluate on
     // the heartbeat above so idle sessions age out of the Recent filter.
-  }, [slots, runningSet, recentWindowMs, recentTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [localSlots, runningSet, recentWindowMs, recentTick]) // eslint-disable-line react-hooks/exhaustive-deps
   // Exhaustive over `SessionFilterKey` on purpose: a new filter key becomes a
   // type error here instead of a predicate that silently matches nothing.
   const _derivedLookup = useMemo<Record<SessionFilterKey, (slot: Slot) => boolean>>(() => ({
-    unread: slot => unreadSet.has(slot.key),
-    running: slot => runningSet.has(slot.key),
-    pinned: slot => !!slot.pinned,
-    recent: slot => recentSet.has(slot.key),
-  }), [unreadSet, runningSet, recentSet])
+    unread: slot => !isPeerRow(slot) && unreadSet.has(slot.key),
+    running: slot => isPeerRow(slot) ? slot.running === true : runningSet.has(slot.key),
+    pinned: slot => !isPeerRow(slot) && !!slot.pinned,
+    recent: slot => isPeerRow(slot)
+      ? isWithinRecentWindow(slotActivityTs(slot), Date.now(), recentWindowMs)
+      : recentSet.has(slot.key),
+  }), [unreadSet, runningSet, recentSet, recentWindowMs])
   const filterCounts = useMemo(() => {
     const counts = {} as Record<SessionFilterKey, number>
-    for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = slots.filter(_derivedLookup[filterDef.key]).length
+    // Counted over `allRows` — the collection the filter RENDERS — not over
+    // `localSlots`. The two diverge for `running` and `recent`, whose predicates
+    // are origin-aware and so match peer rows: counting locals while rendering
+    // the merged set made those two badges under-report by exactly the remote
+    // rows the filter goes on to show. `unread` and `pinned` are unaffected
+    // either way because their predicates are themselves local-only
+    // (`!isPeerRow(slot) && …`), so widening the collection cannot add a match —
+    // which is why the badge must follow the RENDERED set rather than each
+    // predicate's notion of scope.
+    for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = allRows.filter(_derivedLookup[filterDef.key]).length
     return counts
-  }, [slots, _derivedLookup])
+  }, [allRows, _derivedLookup])
   // Ref mirror of `activeFilters` so the auto-drain effect can read the
   // current toggle state without depending on it. Keeps the effect from
   // re-firing on its own setState output.
@@ -3224,13 +3740,13 @@ function ChatSidebar({
   // literal id would collide and point one panel's checkbox at the other's label.
   const bulkSkipRunningLabelId = useId()
   const bulkModelOptions = useAvailableModels({ enabled: bulkModelOpen })
-  const bulkRunningCount = useMemo(() => slots.filter(s => s.running).length, [slots])
+  const bulkRunningCount = useMemo(() => localSlots.filter(s => s.running).length, [localSlots])
   // Count only slots that would actually change: model differs from the target
   // (the backend leaves already-on-target slots as `unchanged`), minus running
   // slots when skipping. Keeps the "Switch N" label + disable guard honest.
   const bulkAffectedCount = useMemo(() => {
-    return slots.filter(s => (s.model ?? '') !== bulkModel && (!bulkSkipRunning || !s.running)).length
-  }, [slots, bulkModel, bulkSkipRunning])
+    return localSlots.filter(s => (s.model ?? '') !== bulkModel && (!bulkSkipRunning || !s.running)).length
+  }, [localSlots, bulkModel, bulkSkipRunning])
   const bulkModelMutation = useMutation({
     // 'auto' goes on the wire verbatim (not collapsed to ''): '' doubles as the
     // "never chosen" state that every reader re-resolves to the agent template's
@@ -3268,12 +3784,17 @@ function ChatSidebar({
 
   // Pinned membership is server-persisted; the order inside that section is a
   // browser preference, matching the sidebar's existing sort/view preferences.
-  const pinned = useMemo(() => new Set(slots.filter(s => s.pinned).map(s => s.key)), [slots])
+  //
+  // Both collections read `localSlots`, NOT the merged `allRows`: pin state and
+  // pin order are local sidebar metadata keyed by local slot key, and a peer row
+  // has no entry in either. Feeding it merged rows would put a peer key into the
+  // persisted order array, where it would survive disconnection forever.
+  const pinned = useMemo(() => new Set(localSlots.filter(s => s.pinned).map(s => s.key)), [localSlots])
   const [storedPinnedOrder, setStoredPinnedOrder] = useState(readPinnedSessionOrder)
   const pinnedOrderFromStorage = useRef(false)
   const naturalPinnedOrder = useMemo(
-    () => slots.filter(s => s.pinned).sort((a, b) => compareBySort(a, b, sortKey)).map(s => s.key),
-    [slots, sortKey],
+    () => localSlots.filter(s => s.pinned).sort((a, b) => compareBySort(a, b, sortKey)).map(s => s.key),
+    [localSlots, sortKey],
   )
   const pinnedOrder = useMemo(
     () => reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinnedOrder),
@@ -3354,6 +3875,18 @@ function ChatSidebar({
     }, STALE_COLLAPSE_TICK_MS)
     return () => clearInterval(id)
   }, [staleCollapseMs])
+  // The active-row highlight, masked for peer ownership. `activeSlot` names a
+  // LOCAL session and a peer row can carry a byte-identical key, so the raw
+  // comparison would light up a second row belonging to another machine — and
+  // clicking it opens that machine's dashboard, not the highlighted chat.
+  // Hoisted to ONE definition because five lanes ask the question (list folders,
+  // fresh children, flat, board root, board columns) and each also asks it of the
+  // NEXT row to decide dividers; a lane that forgot the mask would be a bug
+  // nobody notices until two rows glow at once.
+  const isActiveRow = useCallback(
+    (s: Slot | null | undefined): boolean => !!s && !isPeerRow(s) && activeSlot === s.key,
+    [activeSlot],
+  )
   // Exempt everything live or owed to the user: pinned, focused, running
   // (incl. workflows/goal loops), live or queued subagents, an approval gate,
   // an unanswered question, unread output — and a row the user JUST moved,
@@ -3362,14 +3895,20 @@ function ChatSidebar({
   // Memoized (not just for render cost): the reveal-in-sidebar effect below
   // consults it to decide whether the target row needs its dormant section
   // pre-expanded, so it must be a listable effect dependency.
-  const isStaleExempt = useCallback((s: Slot): boolean =>
-    pinned.has(s.key) || s.key === activeSlot || runningSet.has(s.key)
-    || (subagentCounts[s.key] ?? 0) > 0 || !!s.pending_approval
-    || !!s.needs_input || !!s.pending_decision || unreadSet.has(s.key)
-    // Read-time expiry: an entry only counts while younger than one heartbeat
-    // interval, so correctness never depends on the prune timer having fired
-    // (the timer is gated on the feature being on; the writer is not).
-    || (staleRecentlyMoved.get(s.key) ?? 0) > Date.now() - STALE_COLLAPSE_TICK_MS,
+  const isStaleExempt = useCallback((s: Slot): boolean => {
+    // A peer row has no local pin, focus, unread or subagent state to exempt it
+    // — every clause below is a lookup in a LOCAL map keyed by slot key, and a
+    // peer key can collide with a local one. Its own `running` flag, read off
+    // the proxied payload, is the only signal that travels with it.
+    if (isPeerRow(s)) return s.running === true
+    return pinned.has(s.key) || s.key === activeSlot || runningSet.has(s.key)
+      || (subagentCounts[s.key] ?? 0) > 0 || !!s.pending_approval
+      || !!s.needs_input || !!s.pending_decision || unreadSet.has(s.key)
+      // Read-time expiry: an entry only counts while younger than one heartbeat
+      // interval, so correctness never depends on the prune timer having fired
+      // (the timer is gated on the feature being on; the writer is not).
+      || (staleRecentlyMoved.get(s.key) ?? 0) > Date.now() - STALE_COLLAPSE_TICK_MS
+  },
   [pinned, activeSlot, runningSet, subagentCounts, unreadSet, staleRecentlyMoved])
   // The two halves render either side of the expander, so a held row crossing it
   // leaves the sub-list the anchor was measured against. Freeze the side instead.
@@ -3377,7 +3916,11 @@ function ChatSidebar({
     const pin = hoverPinRef.current
     if (!pin || pin.scope !== 'list') return split
     const from = pin.staleSide ? split.fresh : split.stale
-    const at = from.findIndex(s => s.key === pin.key)
+    // `pin.key` and `seenOrder` are origin-qualified (captured from
+    // `data-session-row`), so every slot must be matched through
+    // `sessionRowIdentity` — a raw `s.key` compare would miss a peer row and
+    // collide two rows that share a raw key.
+    const at = from.findIndex(s => sessionRowIdentity(s) === pin.key)
     // Absent from the side it does not belong on is the normal case, in every
     // container that does not hold the row as well as before it migrates.
     if (at < 0) return split
@@ -3388,12 +3931,12 @@ function ChatSidebar({
     // Reseat by the CAPTURED order, so it returns to the position it was read at
     // rather than to the end of the half it is going back to.
     const seat = to.reduce((n, s) => {
-      const r = rank.get(s.key)
+      const r = rank.get(sessionRowIdentity(s))
       return n + (r != null && r < mine ? 1 : 0)
     }, 0)
     const seated = to.slice()
     seated.splice(Math.min(seat, seated.length), 0, from[at])
-    const rest = from.filter(s => s.key !== pin.key)
+    const rest = from.filter(s => sessionRowIdentity(s) !== pin.key)
     return pin.staleSide ? { fresh: rest, stale: seated } : { fresh: seated, stale: rest }
   }
 
@@ -3483,7 +4026,7 @@ function ChatSidebar({
   // kirocrewConfig query); recomputes when the slots or the configured count change.
   const { data: mcCfg } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const recentTintCount = clampTintCount(mcCfg?.dashboard?.recent_tint_count)
-  const recentRank = useMemo(() => computeRecentRank(slots, recentTintCount), [slots, recentTintCount])
+  const recentRank = useMemo(() => computeRecentRank(localSlots, recentTintCount), [localSlots, recentTintCount])
 
   // Folder editing state
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -3639,10 +4182,10 @@ function ChatSidebar({
       .sort((a, b) => a.order - b.order)
       .map(t => ({
         tag: t,
-        count: slots.filter(s => (s.tags ?? []).includes(t.id)).length,
+        count: localSlots.filter(s => (s.tags ?? []).includes(t.id)).length,
         selected: filterTagIds.has(t.id),
       })),
-    [tags, slots, filterTagIds],
+    [tags, localSlots, filterTagIds],
   )
   /** Names of the selected tags, in vocabulary order. Disjunction, not a comma
    *  join: selection is a union, so a screen reader should hear "Blocked or
@@ -3916,9 +4459,9 @@ function ChatSidebar({
   const slotFolders = useMemo(() => {
     const valid = new Set(folders.map(f => f.id))
     const m: Record<string, string> = {}
-    for (const s of slots) { if (s.folder_id && valid.has(s.folder_id)) m[s.key] = s.folder_id }
+    for (const s of localSlots) { if (s.folder_id && valid.has(s.folder_id)) m[s.key] = s.folder_id }
     return m
-  }, [slots, folders])
+  }, [localSlots, folders])
 
   // Watch for sessions changing container and exempt them from the stale
   // collapse until they age out (see the timestamped prune on the heartbeat).
@@ -3933,7 +4476,7 @@ function ChatSidebar({
     if (!foldersLoaded) return
     const prev = prevSlotFoldersRef.current
     const next = new Map<string, string | undefined>()
-    for (const s of slots) next.set(s.key, slotFolders[s.key])
+    for (const s of localSlots) next.set(s.key, slotFolders[s.key])
     prevSlotFoldersRef.current = next
     if (!prev) return
     const moved: string[] = []
@@ -3948,16 +4491,16 @@ function ChatSidebar({
         return merged
       })
     }
-  }, [slots, slotFolders, foldersLoaded])
+  }, [localSlots, slotFolders, foldersLoaded])
 
   // Folder IDs that hold at least one ACTIVE slot, directly or via any
   // descendant folder. Computed from all `slots` (not filteredSlots) so a
   // search/filter never spuriously hides a folder that still holds work.
   const foldersWithActiveSubtree = useMemo(() => {
     const direct: string[] = []
-    for (const s of slots) { const fid = slotFolders[s.key]; if (fid) direct.push(fid) }
+    for (const s of localSlots) { const fid = slotFolders[s.key]; if (fid) direct.push(fid) }
     return computeActiveSubtree(folders, direct)
-  }, [folders, slots, slotFolders])
+  }, [folders, localSlots, slotFolders])
 
   // A folder drops out of the active list only when the user hid it AND it is
   // currently empty (no active session in its subtree). Re-engaging a session
@@ -4050,7 +4593,11 @@ function ChatSidebar({
           const sourceMatch = (slot.source_links ?? []).some(link =>
             String(link.number).startsWith(q)
             || chipLabel(link).toLowerCase().startsWith(q))
-          if (searchRanked) return searchRanked.has(slot.key) || titleMatch || sourceMatch
+          // `searchRanked` keys are LOCAL slot keys, so a remote row whose key
+          // happens to collide with a ranked local one must not ride in on it —
+          // remote rows match on their own visible fields only. Same guard as
+          // the rank comparator in `filteredSlots`.
+          if (searchRanked) return (!isPeerRow(slot) && searchRanked.has(slot.key)) || titleMatch || sourceMatch
           return sourceMatch
             || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
         },
@@ -4080,14 +4627,17 @@ function ChatSidebar({
         // anything.
         filtersRow: null,
         narrows: null,
-        hides: slot => !!slot.folder_id && filterHiddenSubtree.has(slot.folder_id),
+        hides: slot => {
+          const folderId = localSlotFolder(slot, slotFolders)
+          return !!folderId && filterHiddenSubtree.has(folderId)
+        },
         clear: slot => {
           // Un-hide the target's ancestor chain (persisted, mirroring
           // toggleFolderFilter). Cycle-guarded like filterHiddenSubtree.
           setFilterHiddenFolders(prev => {
             const next = new Set(prev)
             const visited = new Set<string>()
-            let curId: string | undefined = slot.folder_id
+            let curId = localSlotFolder(slot, slotFolders)
             while (curId && !visited.has(curId)) {
               visited.add(curId)
               next.delete(curId)
@@ -4100,7 +4650,7 @@ function ChatSidebar({
         },
       },
     ]
-  }, [activeFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, searchRanked, _derivedLookup, filterHiddenSubtree, folders])
+  }, [activeFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders])
 
   // State and in the memo deps on purpose, not a ref: a frozen run caches its
   // stale list against new deps, so clearing a ref would invalidate nothing.
@@ -4129,7 +4679,19 @@ function ChatSidebar({
 
   const filteredSlots = useMemo(() => {
     if (dragFrozen) return frozenSlotsRef.current
-    const next = slots
+    // Live sessions from connected remote instances join the LIVE list, not the
+    // history drawer: `api/chat/slots` returns the peer's OPEN sessions, and
+    // filing those under "Older Sessions" (empty state: "closed tabs appear
+    // here") stated the wrong thing about them. Merged ahead of the filter and
+    // the sort so a remote row is narrowed and ordered by exactly the same rules
+    // as a local one.
+    //
+    // Remote rows remain filterable by their own title/activity/running data,
+    // but local key-indexed state (folders, pins, unread, search ranks) is read
+    // only after the origin check. A deterministic peer key can equal a local
+    // key, so absence of peer metadata is not a sufficient isolation boundary.
+    // Board columns enforce their separate local-only contract below.
+    const next = allRows
       // Derived from filterDimensions — the single declaration above — so this
       // site cannot hold a filter dimension the other consumers miss.
       .filter(slot => filterDimensions.every(d => d.filtersRow === null || d.filtersRow(slot)))
@@ -4138,12 +4700,13 @@ function ChatSidebar({
       // palette). Pinning stays a reachability promise for browsing, not a
       // ranking hint inside explicit search results.
       .sort((a, b) => searchRanked
-        ? (searchRanked.get(a.key) ?? Infinity) - (searchRanked.get(b.key) ?? Infinity)
-        : comparePinnedThenSort(a, b, sortKey, pinned, pinnedRank))
+        ? ((!isPeerRow(a) ? searchRanked.get(a.key) : undefined) ?? Infinity)
+          - ((!isPeerRow(b) ? searchRanked.get(b.key) : undefined) ?? Infinity)
+        : compareLocalPinnedThenSort(a, b, sortKey, pinned, pinnedRank))
     frozenSlotsRef.current = next
     return next
   },
-    [slots, filterDimensions, searchRanked, pinned, pinnedRank, sortKey, dragFrozen]
+    [allRows, filterDimensions, searchRanked, pinned, pinnedRank, sortKey, dragFrozen]
   )
 
   // Hold the row under the pointer in place. Under a last-activity sort,
@@ -4191,14 +4754,17 @@ function ChatSidebar({
     // Container, not just scope: sibling containers share a nav lane, so a scope-only
     // match would seat the row against a frame spanning rows this list never renders.
     if (!pin || pin.scope !== scope || pin.container !== container) return list
-    const at = list.findIndex(s => s.key === pin.key)
+    // `pin.key` is origin-qualified (from `data-session-row`), so match each
+    // slot through `sessionRowIdentity`; a raw `s.key` compare would drop a
+    // colliding peer AND local row together and reseat the wrong one.
+    const at = list.findIndex(s => sessionRowIdentity(s) === pin.key)
     // -1 is the normal case for every lane that does not contain the hovered
     // row, including a sibling list sharing this scope, so it is not an error.
     if (at < 0) return list
-    const held = heldSeat(pin, list, segmentOf)
+    const held = heldSeat(pin, list, sessionRowIdentity, segmentOf)
     if (held == null || held === at) { heldDisplacedRef.current = false; return list }
     heldDisplacedRef.current = true
-    const rest = list.filter(s => s.key !== pin.key)
+    const rest = list.filter(s => sessionRowIdentity(s) !== pin.key)
     // Clamp: the list can shrink under the hold (a session closes, a filter
     // narrows), and splice past the end would silently append instead.
     rest.splice(Math.min(held, rest.length), 0, list[at])
@@ -4268,6 +4834,14 @@ function ChatSidebar({
   // there are folders to flatten, otherwise the folder tree. The folder
   // filter applies to the flat lane and the tree, NOT to the board.
   const boardLaneActive = orderedColumns.length > 0
+  // Counted off `filteredSlots`, the same list the board filters, so the notice
+  // reports what the CURRENT filters would have shown — not every peer row that
+  // exists. Peer OWNERSHIP only: a local slot that merely EXECUTES on a peer is
+  // a board citizen like any other and is not counted here.
+  const peerRowsHiddenFromBoard = useMemo(
+    () => filteredSlots.filter(isPeerRow).length,
+    [filteredSlots],
+  )
   const flatLaneActive = !boardLaneActive && flatView && folders.length > 0
 
   // A pin survives only while its row is still rendered IN THE PINNED SCOPE. Slot
@@ -4329,7 +4903,7 @@ function ChatSidebar({
     if (!stale.length) return
     setStaleExpanded(prev => {
       const next = new Set(prev)
-      for (const s of stale) next.add(slotFolders[s.key] || 'root')
+      for (const s of stale) next.add(localSlotFolder(s, slotFolders) || 'root')
       return next
     })
     // Deliberately keyed on the narrowed→clear transition alone: the bridge
@@ -4347,7 +4921,10 @@ function ChatSidebar({
   const revealBlockingFilters = useMemo<RevealBlockingFilter[]>(() => {
     // Search and status defer to list membership: both rank against backend
     // state (relevance, unread) that a single row cannot answer for alone.
-    const excluded = (slot: Slot) => !filteredSlots.some(s => s.key === slot.key)
+    const excluded = (slot: Slot) => {
+      const identity = sessionRowIdentity(slot)
+      return !filteredSlots.some(s => sessionRowIdentity(s) === identity)
+    }
     return filterDimensions.map(d => ({
       hides: (slot: Slot) => d.hides(slot, excluded),
       clear: d.clear,
@@ -4422,7 +4999,7 @@ function ChatSidebar({
   const flatSlots = useMemo(() => {
     if (!folderFilterActive) return filteredSlots
     return filteredSlots.filter(s => {
-      const fid = slotFolders[s.key]
+      const fid = localSlotFolder(s, slotFolders)
       return !(fid && filterHiddenSubtree.has(fid))
     })
   }, [filteredSlots, folderFilterActive, filterHiddenSubtree, slotFolders])
@@ -4513,7 +5090,7 @@ function ChatSidebar({
     // `slots` prop is the existence basis (mirrors the handler's store
     // lookup), not the display list, so a mid-hold visibility change cannot
     // desynchronize the two consumers either.
-    const live = new Set(slots.map(s => s.key))
+    const live = new Set(localSlots.map(s => s.key))
     const m = new Map<string, string>()
     let idx = 0
     for (const k of effectiveOrderKeys) {
@@ -4530,7 +5107,7 @@ function ChatSidebar({
       idx++
     }
     return m
-  }, [effectiveOrderKeys, slots])
+  }, [effectiveOrderKeys, localSlots])
 
   // Folder rows for the filter menu: every folder in tree order, each with the
   // count of flat-lane sessions filed directly in it, and whether an unchecked
@@ -4538,7 +5115,7 @@ function ChatSidebar({
   const folderFilterRows = useMemo(() => {
     const directCounts = new Map<string, number>()
     for (const s of filteredSlots) {
-      const fid = slotFolders[s.key]
+      const fid = localSlotFolder(s, slotFolders)
       if (fid) directCounts.set(fid, (directCounts.get(fid) ?? 0) + 1)
     }
     // Same roots + childrenOf walk the "New chat in folder" menu uses, with a
@@ -4739,7 +5316,7 @@ function ChatSidebar({
     const { key } = revealRequest
     // Consume immediately: the request must not survive to a later remount.
     dispatch(clearSlotReveal())
-    const slot = slots.find(s => s.key === key)
+    const slot = localSlots.find(s => s.key === key)
     if (!slot) {
       // Stale key or a session outside this surface's slot list. Not user-visible
       // (there is nothing to highlight), so leave a trace for bug reports.
@@ -4796,7 +5373,20 @@ function ChatSidebar({
       if (revealRunRef.current.seq !== seq) return
       // Scoped to this sidebar, not `document`: other surfaces (and board-view
       // duplicate renders) can carry the same data-slot-key (#912 D5).
-      const el = sidebarRootRef.current?.querySelector<HTMLElement>(`[data-slot-key="${window.CSS.escape(key)}"]`)
+      //
+      // Targeted by `data-session-row` (the ORIGIN-QUALIFIED identity), not
+      // `data-slot-key`. Once peer rows are merged into this list the raw slot
+      // key is no longer a unique namespace — a remote row with a byte-identical
+      // deterministic key carries the same `data-slot-key`, and `querySelector`
+      // returns whichever sorts first in the DOM, so a reveal aimed at the local
+      // session could scroll to the peer's row instead. `slot` above is resolved
+      // from the LOCAL `slots` prop, so its identity is the right target.
+      // Invariant: DOM row targeting goes through `data-session-row`;
+      // `data-slot-key` stays what its name says and is only safe where a single
+      // origin is in play.
+      const el = sidebarRootRef.current?.querySelector<HTMLElement>(
+        `[data-session-row="${window.CSS.escape(sessionRowIdentity(slot))}"]`,
+      )
       if (!el) {
         attempt += 1
         if (attempt <= REVEAL_MAX_ATTEMPTS) run.timer = window.setTimeout(tryScroll, REVEAL_RETRY_MS)
@@ -4824,7 +5414,7 @@ function ChatSidebar({
       revealFlashTimersRef.current = [t1, t2]
     }
     tryScroll()
-  }, [revealRequest, dispatch, slots, folders, revealBlockingFilters, updateFolderMutation, isStaleExempt, slotFolders, staleCollapseMs, sortKey])
+  }, [revealRequest, dispatch, localSlots, folders, revealBlockingFilters, updateFolderMutation, isStaleExempt, slotFolders, staleCollapseMs, sortKey])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
@@ -4843,10 +5433,10 @@ function ChatSidebar({
   // Only DRAG-initiated moves arm it. Menu moves ("Move to folder…") pick the
   // destination by name, so there is nothing unnamed to confirm.
   const locateSlotFolder = useCallback((slotKey: string) => {
-    const slot = slots.find(s => s.key === slotKey)
+    const slot = localSlots.find(s => s.key === slotKey)
     // `undefined` = session closed (retire the offer); `null` = unfiled root.
     return slot ? (slot.folder_id || null) : undefined
-  }, [slots])
+  }, [localSlots])
   const folderStillExists = useCallback(
     (folderId: string) => folders.some(f => f.id === folderId),
     [folders],
@@ -4879,7 +5469,7 @@ function ChatSidebar({
     bar: folderUndoBar,
   } = useMoveUndo({ locate: locateFolderParent, apply: moveFolderTo, folderExists: folderStillExists })
   const moveByDrag = useCallback((slotKey: string, folderId: string | null) => {
-    const slot = slots.find(s => s.key === slotKey)
+    const slot = localSlots.find(s => s.key === slotKey)
     const to = folderId || null
     // A drop back onto the session's current folder arms nothing (arm's own
     // no-op check) — and must not dismiss the folder offer for nothing either.
@@ -4894,7 +5484,7 @@ function ChatSidebar({
       toFolderColor: dest?.color,
       itemTitle: slot?.title || slotKey,
     })
-  }, [slots, folders, armDragMove, dismissFolderMove])
+  }, [localSlots, folders, armDragMove, dismissFolderMove])
   const moveFolderByDrag = useCallback((folderId: string, parentId: string | null) => {
     // Same guards as moveFolderTo, so a drop it would refuse arms no offer
     // (arm's own no-op check only covers the same-parent case).
@@ -4986,7 +5576,7 @@ function ChatSidebar({
       //  folder-drop  → assign to that folder (folderId may be null for root lane)
       //  folder       → sortable folder container (whole block) → assign to its id
       if (o?.type === CHAT_PANE_DROP_TYPE) {
-        const src = slots.find(x => x.key === a.key)
+        const src = localSlots.find(x => x.key === a.key)
         // Re-decide at drop time rather than trusting the drag-start snapshot:
         // the refusal must not depend on the affordance having been rendered,
         // and memory_mode can change mid-drag. Same function the zone uses.
@@ -5001,7 +5591,7 @@ function ChatSidebar({
       if (o?.type === 'folder-drop') moveByDrag(a.key, o.folderId ?? null)
       else if (o?.type === 'folder') moveByDrag(a.key, over.id as string)
     }
-  }, [reorderFolders, reorderPinned, searchRanked, pinned, moveByDrag, moveFolderByDrag, slots, activeSlot, onDropSessionRef])
+  }, [reorderFolders, reorderPinned, searchRanked, pinned, moveByDrag, moveFolderByDrag, localSlots, activeSlot, onDropSessionRef])
   const handleSidebarDragCancel = useCallback(() => { setActiveDrag(null); setDragFrozen(false); if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null } }, [])
   // Auto-expand collapsed folders when a dragged item hovers over them for 500ms.
   const dragExpandTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
@@ -5321,7 +5911,7 @@ function ChatSidebar({
     visited.add(folderId)
     for (const child of fs) {
       if (child.parent_id !== folderId) continue
-      if (slots.some(s => slotFolderMap[s.key] === child.id)) return true
+      if (slots.some(s => localSlotFolder(s, slotFolderMap) === child.id)) return true
       if (descendantMatch(fs, child.id, slots, slotFolderMap, visited)) return true
     }
     return false
@@ -5331,7 +5921,7 @@ function ChatSidebar({
   // Always render the folder header (even with 0 matches) so users can see + drop into it.
   const renderColumnFolder = (folder: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean): React.ReactNode => {
     const childFolders = folders.filter(f => f.parent_id === folder.id)
-    const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
+    const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(filteredSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s)) && localSlotFolder(s, slotFolders) === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
     const deepChildren = childFolders
     // Same opt-in as the tree (see the note in renderFolderBlock): only when the
     // setting is on does a column copy holding nothing lose its body, and with it
@@ -5343,8 +5933,13 @@ function ChatSidebar({
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
     const reparentTargets = folders.filter(f => !subtreeIds.has(f.id))
     const count = childSlots.length + deepChildren.filter(cf => {
-      const cfSlots = filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === cf.id)
-      return cfSlots.length > 0 || descendantMatch(folders, cf.id, filteredSlots.filter(s => colSlotKeys.has(s.key)), slotFolders)
+      const cfSlots = filteredSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s)) && localSlotFolder(s, slotFolders) === cf.id)
+      return cfSlots.length > 0 || descendantMatch(
+        folders,
+        cf.id,
+        filteredSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s))),
+        slotFolders,
+      )
     }).length
     // Board-view folders become sortable only when a drag handle is supplied
     // (root folders wrapped in SortableColumnFolder). Subfolders render without
@@ -5525,8 +6120,8 @@ function ChatSidebar({
             )}
             {deepChildren.map(cf => renderColumnFolder(cf, columnId, colSlotKeys))}
             {childSlots.map((s, i) => {
-              const isActive = activeSlot === s.key
-              const nextIsActive = i < childSlots.length - 1 && activeSlot === childSlots[i + 1].key
+              const isActive = isActiveRow(s)
+              const nextIsActive = isActiveRow(childSlots[i + 1])
               const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
                 && !startsAutomaticSection(childSlots, i + 1)
               // `scope` stays per-folder so the Framer layoutId and the inline
@@ -5534,7 +6129,7 @@ function ChatSidebar({
               // COLUMN: a board column's foldered and ungrouped rows are one
               // visible list, so ArrowDown has to cross the folder boundary.
               return (
-                <Fragment key={s.key}>
+                <Fragment key={sessionRowIdentity(s)}>
                   {startsAutomaticSection(childSlots, i) && <PinnedSessionDivider />}
                   {renderSessionRow(s, 1, showDivider, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)}
                 </Fragment>
@@ -5585,26 +6180,41 @@ function ChatSidebar({
 
   let sessionRowOrderStamp = 0
   const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope) => {
-    const renamingHere = renamingSlot === s.key && renameScope === scope
+    // Every per-slot lookup below is keyed by LOCAL slot key, and a peer key can
+    // be byte-identical to a local one, so each is masked on `isPeer` rather than
+    // trusted to miss. Note this is peer OWNERSHIP: a remote-EXECUTED local slot
+    // is `false` here and keeps its unread dot, digit shortcut and pin rank.
+    const isPeer = isPeerRow(s)
+    const rowIdentity = sessionRowIdentity(s)
+    const renamingHere = !isPeer && renamingSlot === s.key && renameScope === scope
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
     const orderStamp = Math.min(sessionRowOrderStamp++, SIDEBAR_DISPLACEMENT_WINDOW)
     return (
-      <SessionRow key={s.key} slot={s} orderStamp={orderStamp}
+      <SessionRow key={rowIdentity} slot={s} orderStamp={orderStamp}
+        onAdoptPeerSession={adoptPeerSession}
+        adoptPending={isPeer && !!adoptPending[rowIdentity]}
+        adoptError={isPeer ? (adoptErrors[rowIdentity] || '') : ''}
         showDivider={showDivider} scope={scope} navScope={navScope} holdContainer={holdContainer}
-        isActive={activeSlot === s.key} connected={connected} isOut={poppedOut.has(s.key)}
-        isPinned={pinned.has(s.key)} isUnread={unreadSet.has(s.key)} isRunning={runningSet.has(s.key)}
-        recent={recentRank.get(s.key)} recentTintCount={recentTintCount}
-        subagentCount={subagentCounts[s.key] || 0} subagentApprovalCount={subagentApprovalCounts[s.key] || 0}
-        digitBadge={digitModifierHeld ? shortcutDigitByKey.get(s.key) : undefined}
-        isRenaming={renamingSlot === s.key} renamingHere={renamingHere}
+        isActive={isActiveRow(s)} connected={connected} isOut={!isPeer && poppedOut.has(s.key)}
+        isPinned={!isPeer && pinned.has(s.key)} isUnread={!isPeer && unreadSet.has(s.key)}
+        isRunning={isPeer ? s.running === true : runningSet.has(s.key)}
+        recent={isPeer ? undefined : recentRank.get(s.key)} recentTintCount={recentTintCount}
+        subagentCount={isPeer ? 0 : (subagentCounts[s.key] || 0)} subagentApprovalCount={isPeer ? 0 : (subagentApprovalCounts[s.key] || 0)}
+        digitBadge={!isPeer && digitModifierHeld ? shortcutDigitByKey.get(s.key) : undefined}
+        isRenaming={!isPeer && renamingSlot === s.key} renamingHere={renamingHere}
         renameValue={renamingHere ? renameValue : ''}
-        revealFlash={revealFlash?.key === s.key ? (revealFlash.fading ? 'fade' : 'flash') : null}
+        revealFlash={!isPeer && revealFlash?.key === s.key ? (revealFlash.fading ? 'fade' : 'flash') : null}
         dragInFlight={!!activeDrag}
         activeDraggedKey={activeDrag?.type === 'session' ? activeDrag.id : null}
         activeDraggedPinnedIndex={activeDrag?.type === 'session' ? (pinnedRank.get(activeDrag.id) ?? -1) : -1}
-        pinnedOrderIndex={pinnedRank.get(s.key) ?? -1}
-        pinnedReorderEnabled={!searchRanked}
+        // `pinnedRank` is a local-pin ordering, so a peer row reports -1 (outside
+        // the pinned band) and refuses keyboard reorder — the same stance as its
+        // `isPinned={false}`. Without the mask a key collision would hand a peer
+        // row a rank inside the local band and let ↑/↓ rewrite local pin order
+        // from a row that is not part of it.
+        pinnedOrderIndex={isPeer ? -1 : (pinnedRank.get(s.key) ?? -1)}
+        pinnedReorderEnabled={!searchRanked && !isPeer}
         onPinnedKeyboardReorder={reorderPinnedByKeyboard}
         // staticRows (the compositor drawer) folds into the one row-animation
         // gate: projection under a WAAPI-driven ancestor mis-attributes the
@@ -5716,7 +6326,10 @@ function ChatSidebar({
     // toggle. A folder the user hid is a folder they asked not to see, so it is
     // not part of what this row holds.
     const childFolders = folders.filter(f => f.parent_id === folder.id && !isFolderHidden(f) && !isFolderFilteredOut(f))
-    const childSlots = filteredSlots.filter(s => slotFolders[s.key] === folder.id)
+    // `localSlotFolder`, not a raw `slotFolders` lookup: a peer row is never in a
+    // folder, and a peer key colliding with a local one would otherwise count a
+    // session this machine does not own toward the folder it does.
+    const childSlots = filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
     const count = childSlots.length + childFolders.length
     const collapsed = !!folder.collapsed
     // One derivation, not two: `renderFolderBlock` decides the body from the nodes
@@ -6000,7 +6613,7 @@ function ChatSidebar({
     if (depth > 10 || visited.has(folder.id)) return []
     visited.add(folder.id)
     const childFolders = folders.filter(f => f.parent_id === folder.id)
-    const childSlots = filteredSlots.filter(s => slotFolders[s.key] === folder.id)
+    const childSlots = filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
     const childNodes: React.ReactNode[] = []
     // Nested subfolders are plain draggables (not sortables): dragging one
     // re-parents it — drop on another folder to move inside, or on the root
@@ -6037,8 +6650,8 @@ function ChatSidebar({
     // because nothing is bumping them, so only the live list needs the hold.
     const { rows: freshChildSlots, navScope: treeChildScope, container: treeChildContainer } = heldLane(freshChildSlotsRaw, 'list', `tree:folder:${folder.id}`)
     freshChildSlots.forEach((s, i) => {
-      const isActive = activeSlot === s.key
-      const nextIsActive = i < freshChildSlots.length - 1 && activeSlot === freshChildSlots[i + 1].key
+      const isActive = isActiveRow(s)
+      const nextIsActive = isActiveRow(freshChildSlots[i + 1])
       const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
         && !startsAutomaticSection(freshChildSlots, i + 1)
       if (startsAutomaticSection(freshChildSlots, i)) {
@@ -6108,7 +6721,10 @@ function ChatSidebar({
   const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort((a, b) => a.order - b.order), [folders])
   const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
   const rootFolderIds = useMemo(() => visibleRootFolders.map(f => f.id), [visibleRootFolders])
-  const ungroupedSlots = useMemo(() => filteredSlots.filter(s => !slotFolders[s.key]), [filteredSlots, slotFolders])
+  const ungroupedSlots = useMemo(
+    () => filteredSlots.filter(s => !localSlotFolder(s, slotFolders)),
+    [filteredSlots, slotFolders],
+  )
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -6122,7 +6738,7 @@ function ChatSidebar({
     ? sessionRefBlockReason({
       key: activeDrag.id,
       activeSlot,
-      memoryMode: slots.find(x => x.key === activeDrag.id)?.memory_mode,
+      memoryMode: localSlots.find(x => x.key === activeDrag.id)?.memory_mode,
     })
     : null
   // True while dragging a folder that currently has a parent — the only case
@@ -6143,7 +6759,7 @@ function ChatSidebar({
   const dragGhost = activeDrag
     ? activeDrag.type === 'folder'
       ? <FolderDragGhost folder={folders.find(x => x.id === activeDrag.id)} />
-      : <SessionDragGhost slot={slots.find(x => x.key === activeDrag.id)} fallbackLabel={activeDrag.id} />
+      : <SessionDragGhost slot={localSlots.find(x => x.key === activeDrag.id)} fallbackLabel={activeDrag.id} />
     : null
   /**
    * The drag preview is PORTALED to `document.body`.
@@ -6528,7 +7144,7 @@ function ChatSidebar({
 
       {/* Clean Up dialog */}
       {cleanupOpen && (() => {
-        const archivable = cleanupPreview ? cleanupPreview.map(k => slots.find(s => s.key === k)).filter(Boolean) as Slot[] : []
+        const archivable = cleanupPreview ? cleanupPreview.map(k => localSlots.find(s => s.key === k)).filter(Boolean) as Slot[] : []
         const noStale = cleanupPreview != null && cleanupPreview.length === 0 && !activeIsStale
         return (
           <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
@@ -7182,6 +7798,45 @@ function ChatSidebar({
         testId="new-chat-error"
       />
       <LayoutGroup id="chat-slots">
+        {/* An instance that is CONNECTED but did not answer contributes no rows.
+          *  Saying so is the difference between "that instance has nothing open" and
+          *  "we could not ask": without this line the list silently claims a
+          *  completeness it does not have, which is worse than showing fewer rows.
+          *  Placed ABOVE the view branches so it appears in the flat lane, the board
+          *  and the folder tree alike — an unreachable peer is not a property of one
+          *  layout. Non-blocking by design: local rows are unaffected. */}
+        {instanceSessions.loading && (
+          /* The same honesty rule as the notice below, for the window BEFORE any
+           *  peer has answered: remote rows land seconds after mount, so a list
+           *  that stays silent until then reads as complete while it is not, and
+           *  the arriving rows shift the list under a scan already in progress.
+           *  Muted single line in the same slot, so the two states cannot stack
+           *  into competing banners. */
+          <div className="mx-2 mt-2 px-2 py-1.5 text-[11px] text-muted flex items-center gap-1.5">
+            <Server size={11} aria-hidden="true" className="shrink-0" />
+            <span className="min-w-0 truncate">
+              {i18nT('pages.chatSidebar.checking_remote_instances')}
+            </span>
+          </div>
+        )}
+        {remoteSessionsError && (
+          /* A peer read that failed, through the one shared error surface — see
+           *  `remoteSessionsError` for how the two failing reads collapse into it.
+           *  `askAgent` is ON: this is a LIST read, so the hand-off's navigation
+           *  destroys no unsaved state, and a tunnel that stopped answering is
+           *  exactly the class of failure the user cannot fix by hand but the
+           *  agent often can. Not dismissible: the condition is live, so a
+           *  dismissed banner would reappear on the next 15s refetch.
+           *  `shrink-0` matches the new-chat notice above it — the rail is a
+           *  flex column and a growable banner would eat the list's height. */
+          <ErrorNotice
+            title={remoteSessionsError.title}
+            message={remoteSessionsError.message}
+            askAgent
+            className="mx-2 mt-2 shrink-0"
+            testId="instance-sessions-error"
+          />
+        )}
         {flatLaneActive ? (
           // Flat view: every chat exploded out of its folder into one lane.
           // Removes only the folder rendering hierarchy — sort, pin priority,
@@ -7224,7 +7879,7 @@ function ChatSidebar({
                 // without segments since pinning overrides date order.
                 const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
                 // Hoisted above the hold so the pixel anchor can count header heights.
-                const baseSeg = (s: Slot) => (isDateSort && !pinned.has(s.key) ? dateSegment(slotActivityTs(s)) : '')
+                const baseSeg = (s: Slot) => (isDateSort && !isLocallyPinned(s, pinned) ? dateSegment(slotActivityTs(s)) : '')
                 const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(flatSlots, 'flat', 'flat', baseSeg)
                 // Reads the flag holdHovered just set for THIS lane, so the header
                 // rule and the hold cannot disagree about the row being displaced.
@@ -7241,14 +7896,14 @@ function ChatSidebar({
                   const showHeader = seg !== '' && seg !== prevSeg
                   if (seg) prevSeg = seg
                   const next = i < flatRows.length - 1 ? flatRows[i + 1] : null
-                  const nextIsActive = next != null && activeSlot === next.key
-                  const isActive = activeSlot === s.key
+                  const nextIsActive = isActiveRow(next)
+                  const isActive = isActiveRow(s)
                   // No divider before a segment header — the header separates.
                   const nextSeg = next ? segOf(next) : seg
                   const showDivider = next != null && !isActive && !nextIsActive && nextSeg === seg
                     && !startsAutomaticSection(flatSlots, i + 1)
                   return (
-                    <Fragment key={s.key}>
+                    <Fragment key={sessionRowIdentity(s)}>
                       {startsAutomaticSection(flatSlots, i) && <PinnedSessionDivider />}
                       {showHeader && (
                         <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
@@ -7338,12 +7993,12 @@ function ChatSidebar({
                               return (
                                 <>
                                   {freshRoot.map((s, i) => {
-                                    const nextIsActive = i < freshRoot.length - 1 && activeSlot === freshRoot[i + 1].key
-                                    const isActive = activeSlot === s.key
+                                    const nextIsActive = isActiveRow(freshRoot[i + 1])
+                                    const isActive = isActiveRow(s)
                                     const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
                                       && !startsAutomaticSection(freshRoot, i + 1)
                                     return (
-                                      <Fragment key={s.key}>
+                                      <Fragment key={sessionRowIdentity(s)}>
                                         {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
                                         {renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)}
                                       </Fragment>
@@ -7392,9 +8047,26 @@ function ChatSidebar({
             className="mx-2 mt-2 shrink-0"
             testId="board-error"
           />
+          {/* Below the two error notices above, not beside them: this is a
+            *  standing fact about the layout, not something that just went
+            *  wrong, so it must never push a failure the user has to act on
+            *  further down the lane.
+            *
+            *  The experimental peer-session merge is a FLAT/LIST affordance.
+            *  Board columns remain local-slot containers because their tags,
+            *  lanes and drop actions are local mutations. Every filtered peer
+            *  row is therefore omitted here and represented by this exact count. */}
+          {peerRowsHiddenFromBoard > 0 && (
+            <div className="mx-2 mt-2 px-2 py-1.5 rounded-md bg-info-subtle border border-info/40 text-info text-[11px] flex items-center gap-1.5">
+              <Server size={11} aria-hidden="true" className="shrink-0" />
+              <span className="min-w-0">
+                {i18nT('pages.chatSidebar.remote_sessions_not_shown_in_board_view', { count: peerRowsHiddenFromBoard })}
+              </span>
+            </div>
+          )}
           <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-2 p-2" data-testid="column-strip">
             {orderedColumns.map((col, colIdx) => {
-              const colSlots = filteredSlots.filter(s => columnMatches(col, s))
+              const colSlots = filteredSlots.filter(s => !isPeerRow(s) && columnMatches(col, s))
               const colTags = col.tag_ids.map(tid => tagById[tid]).filter(Boolean) as ChatTag[]
               const laneDef = col.source === 'state' ? SESSION_LANES.find(l => l.key === col.state_key) : undefined
               // Only a single-status-tag column can accept a card: dropping onto a
@@ -7577,7 +8249,7 @@ function ChatSidebar({
                         Cross-column drops are handled by the OUTER column onDrop
                         (which only mutates status tags, keeping folder_id intact). */}
                     {(() => {
-                      const colSlotKeys = new Set(colSlots.map(s => s.key))
+                      const colSlotKeys = new Set(colSlots.map(sessionRowIdentity))
                       // Show ALL root folders as drop targets, not only those with matching slots.
                       // Empty folders render with "0" count so users see the structure they built.
                       // Root folders in explicit `order`-field order (the sorted
@@ -7595,7 +8267,10 @@ function ChatSidebar({
                       const relevantFolders = flatView ? [] : rootFolders
                       const { rows: ungrouped, navScope: colLaneScope, container: colHoldContainer } = heldLane(flatView
                         ? colSlots
-                        : colSlots.filter(s => !slotFolders[s.key] || !folders.find(f => f.id === slotFolders[s.key])), col.id, `board:${col.id}:ungrouped`)
+                        : colSlots.filter(s => {
+                            const folderId = localSlotFolder(s, slotFolders)
+                            return !folderId || !folders.find(f => f.id === folderId)
+                          }), col.id, `board:${col.id}:ungrouped`)
                       // In flat view folders never render, so an empty lane is
                       // empty — folder structure alone must not suppress the
                       // "no sessions" notice.
@@ -7636,12 +8311,12 @@ function ChatSidebar({
                           </DndContext>
                           )}
                           {ungrouped.map((s, i) => {
-                            const isActive = activeSlot === s.key
-                            const nextIsActive = i < ungrouped.length - 1 && activeSlot === ungrouped[i + 1].key
+                            const isActive = isActiveRow(s)
+                            const nextIsActive = isActiveRow(ungrouped[i + 1])
                             const showDivider = i < ungrouped.length - 1 && !isActive && !nextIsActive
                               && !startsAutomaticSection(ungrouped, i + 1)
                             return (
-                              <Fragment key={s.key}>
+                              <Fragment key={sessionRowIdentity(s)}>
                                 {startsAutomaticSection(ungrouped, i) && <PinnedSessionDivider />}
                                 {renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)}
                               </Fragment>
@@ -7788,6 +8463,9 @@ function ChatSidebar({
                   ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
                 // Additive rather than a boolean OR: here the backend result IS the
                 // source list, so filtering `history` instead would drop backend-only hits.
+                // Remote instance sessions are NOT merged here: they are the peer's
+                // LIVE slots and join the live sessions list above. Merging them into
+                // history as well would render each remote row twice.
                 const filteredHistory = (() => {
                   if (!historyFilter) return history
                   if (historyFilter.trim().length >= SEARCH_MIN_CHARS && historySearchResults) {
@@ -7953,7 +8631,7 @@ function ChatSidebar({
                           <span className="ml-0.5 text-muted font-normal tabular-nums">· {rows.length}</span>
                         </button>
                         {!collapsed && rows.map((s, i) => (
-                          <Fragment key={s.key}>
+                          <Fragment key={historyRowIdentity(s)}>
                             {historyRow(s)}
                             {i < rows.length - 1 && <div className="mx-3 border-b border-border" />}
                           </Fragment>
@@ -7973,7 +8651,7 @@ function ChatSidebar({
                   const nextSeg = !isLast ? dateSegment(sortedHistory[idx + 1].modified ?? sortedHistory[idx + 1].created) : seg
                   const showDivider = !isLast && (!showSegments || nextSeg === seg)
                   return (
-                    <Fragment key={s.key}>
+                    <Fragment key={historyRowIdentity(s)}>
                       {showHeader && (
                         <div className="px-2 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
                       )}

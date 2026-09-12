@@ -10244,7 +10244,17 @@
       "board_update_failed": "Board-Aktualisierung fehlgeschlagen",
       "open_crew_members": "Crew-Mitglieder",
       "open_crew_members_desc": "Öffnet die Seite Crew-Mitglieder – jedes Mitglied ist ein dauerhafter Agent mit eigenem Thread.",
-      "open_crew_members_gated_desc": "Öffnet zuerst die Einstellungen, um diese Vorschau einzuschalten – vorher ist die Seite nicht verfügbar."
+      "open_crew_members_gated_desc": "Öffnet zuerst die Einstellungen, um diese Vorschau einzuschalten – vorher ist die Seite nicht verfügbar.",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} Remote-Sitzung wird in der Board-Ansicht nicht angezeigt — Board-Spalten verwalten nur lokale Sitzungen.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} Remote-Sitzungen werden in der Board-Ansicht nicht angezeigt — Board-Spalten verwalten nur lokale Sitzungen.",
+      "sessions_from_instance_unavailable": "Sitzungen von {{names}} sind derzeit nicht verfügbar.",
+      "checking_remote_instances": "Remote-Instanzen werden geprüft…",
+      "adopt_failed": "Diese Sitzung konnte hier nicht geöffnet werden.",
+      "adopt_remote_bind_failed": "{{name}} war nicht erreichbar, um diese Sitzung zu öffnen.",
+      "adopt_target_unknown": "Diese Sitzung ist auf {{name}} nicht mehr geöffnet.",
+      "opening_session_locally": "Diese Sitzung wird hier geöffnet…",
+      "opens_here_runs_on_instance": "Öffnet diese Sitzung hier — ihre Ausführung läuft weiter auf {{name}}",
+      "remote_instances_list_unavailable": "Remote-Instanzen konnten nicht aufgelistet werden, daher werden ihre Sitzungen nicht angezeigt."
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
@@ -10626,6 +10636,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens für eingehende Webhooks, registrierte Kontexte und Ausführungsverlauf. Die API funktioniert, die Seite ist noch nicht fertig.",
         "open_webhooks": "Webhooks öffnen",
         "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sitzungen der Remote-Instanz",
+        "merge_a_connected_remote_instances_live_sessions": "Fügt die aktiven Sitzungen einer verbundenen Remote-Instanz in die Sitzungsliste ein, jeweils mit einem Server-Abzeichen. Funktionsfähig, aber noch nicht fertig.",
         "intro": {
           "webhooks_summary": "Ein anderes System – CI, ein Review-Bot, eine Deploy-Pipeline – kann deinen Agenten für dich starten, indem es eine Nachricht mit einem Zugriffstoken sendet, das du auf der Webhooks-Seite erstellst.",
           "webhooks_where": "Sobald das an ist, erscheint auf dieser Karte in den Einstellungen der Link „Webhooks öffnen“; dort öffnest du die neue Webhooks-Seite. In der Seitenleiste erscheint sie erst, wenn sie fertig ist. Ausschalten blendet die Seite nur wieder aus; erstellte Token bleiben erhalten.",

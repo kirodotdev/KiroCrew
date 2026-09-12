@@ -1300,6 +1300,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.remote-instance-sessions",
+    "label": "Remote instance sessions",
+    "labelKey": "pages.developer.featurePreviewsTab.remote_instance_sessions",
+    "description": "Merge a connected remote instance's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.run-a-local-gateway",
     "label": "Run a local gateway",
     "labelKey": "pages.settings.developerPanel.run_a_local_gateway",

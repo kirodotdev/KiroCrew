@@ -10398,7 +10398,18 @@
       "board_update_failed": "Fallo al actualizar el tablero",
       "open_crew_members": "Miembros del equipo",
       "open_crew_members_desc": "Abre la página Miembros del equipo: cada miembro es un agente permanente con su propio hilo.",
-      "open_crew_members_gated_desc": "Abre primero Ajustes para activar esta vista previa: la página no está disponible hasta que lo hagas."
+      "open_crew_members_gated_desc": "Abre primero Ajustes para activar esta vista previa: la página no está disponible hasta que lo hagas.",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} sesión remota no se muestra en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} sesiones remotas no se muestran en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} sesiones remotas no se muestran en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
+      "sessions_from_instance_unavailable": "Las sesiones de {{names}} no están disponibles en este momento.",
+      "checking_remote_instances": "Comprobando instancias remotas…",
+      "adopt_failed": "No se pudo abrir esta sesión aquí.",
+      "adopt_remote_bind_failed": "No se pudo contactar con {{name}} para abrir esta sesión.",
+      "adopt_target_unknown": "Esta sesión ya no está abierta en {{name}}.",
+      "opening_session_locally": "Abriendo esta sesión aquí…",
+      "opens_here_runs_on_instance": "Abre esta sesión aquí — su ejecución sigue en {{name}}",
+      "remote_instances_list_unavailable": "No se pudieron enumerar las instancias remotas, por lo que sus sesiones no se muestran."
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
@@ -10781,6 +10792,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks entrantes, contextos registrados e historial de ejecuciones. La API funciona; la página no está terminada.",
         "open_webhooks": "Abrir Webhooks",
         "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sesiones de la instancia remota",
+        "merge_a_connected_remote_instances_live_sessions": "Combina las sesiones activas de una instancia remota conectada en la lista de sesiones, cada una con una insignia de servidor. Funciona, pero no está terminado.",
         "intro": {
           "webhooks_summary": "Otro sistema (CI, un bot de revisión, una pipeline de despliegue) puede iniciar tu agente por ti enviando un mensaje con un token de acceso que creas en la página Webhooks.",
           "webhooks_where": "Al activarlo, en esta tarjeta de Ajustes aparece el enlace «Abrir Webhooks», desde donde se abre la nueva página Webhooks; no aparece en la barra lateral hasta que esté terminada. Desactivarlo solo vuelve a ocultar la página; los tokens que hayas creado se conservan.",

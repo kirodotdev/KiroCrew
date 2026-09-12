@@ -818,6 +818,13 @@
       "description": "Show Developer page in sidebar with Logs, System metrics, and Memory internals"
     },
     {
+      "id": "developer.remote-instance-sessions",
+      "label": "Remote instance sessions",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.remote-instance-sessions",
+      "description": "Merge a connected remote instance's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
+    },
+    {
       "id": "developer.run-a-local-gateway",
       "label": "Run a local gateway",
       "tab": "developer",

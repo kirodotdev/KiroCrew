@@ -6491,7 +6491,12 @@
       "untagged": "+ untagged",
       "will_be_moved_to_older_sessions": "will be moved to older sessions.",
       "within": "Within",
-      "autopilot_desc": "One job, done in steps — it plans first, you approve, then it runs stage by stage."
+      "autopilot_desc": "One job, done in steps — it plans first, you approve, then it runs stage by stage.",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} remote session is not shown in board view — board columns manage local sessions only.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} remote sessions are not shown in board view — board columns manage local sessions only.",
+      "sessions_from_instance_unavailable": "Sessions from {{names}} are unavailable right now.",
+      "checking_remote_instances": "Checking remote instances…",
+      "remote_instances_list_unavailable": "Remote instances could not be listed, so their sessions are not shown."
     },
     "contextBreakdown": {
       "axis_bar": "bar length ∝ √chars · segments = that turn's composition",
@@ -6660,7 +6665,9 @@
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "Remote instance sessions",
+        "merge_a_connected_remote_instances_live_sessions": "Merge a connected remote instance's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
       }
     },
     "developerPage": {
