@@ -4449,14 +4449,19 @@ class ContextBuilder:
             # the cheaper choice mechanism on every interactive surface.
             if has_dashboard_surface(session_key or "") and _agent_includes_crew_context(agent):
                 _interactive_guidance.append(
-                    "\n\n(If a decision is genuinely needed before the work can "
-                    "continue, use the ask_question tool to put it to the user as a card, "
-                    "then END YOUR TURN: the tool does not block, and the answer arrives "
-                    "as the user's next message rather than as the tool's result. Use it "
-                    "SPARINGLY: only when you cannot proceed without the answer. When you "
-                    "are ending your turn anyway, use the final [OPTIONS:] line instead. "
-                    "Never interrupt the user for a non-blocking choice, and never ask "
-                    "what you can reasonably decide or discover yourself.)"
+                    "\n\n(The ask_question tool puts a multiple-choice card to the "
+                    "dashboard user. DEFAULT TO SILENCE: it is ONLY for a decision the "
+                    "human alone can make -- a permission, an irreversible or costly "
+                    "action, a preference you have no basis to infer -- AND only when the "
+                    "work genuinely cannot continue until they answer. Everything else you "
+                    "decide yourself: pick the reasonable option, state in one line which "
+                    "you picked and why, and keep going. Never ask what you can read, run, "
+                    "search or infer; never ask to confirm a plan you were already told to "
+                    "carry out; never ask because a choice merely exists. The card "
+                    "does not block: END YOUR TURN after calling it -- the answer arrives "
+                    "as the user's next message, not as the tool's result. When you are ending "
+                    "your turn anyway, a final [OPTIONS:] line is the cheaper form. When in "
+                    "doubt, do not ask.)"
                 )
                 # A follow-up card is distinct from both: it offers concrete NEXT
                 # tasks after work is done, optionally handing one to a worktree.
