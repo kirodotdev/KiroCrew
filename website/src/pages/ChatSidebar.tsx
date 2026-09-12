@@ -2065,7 +2065,7 @@ const SessionRow = memo(function SessionRow({
             if ((e.target as HTMLElement) !== e.currentTarget) return // don't hijack inner buttons
             e.preventDefault()
             if (!connected) return
-            dispatch(switchSlot(s.key))
+            dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
             onSelectSlot?.(s.key)
           }}
           onDragStart={!dndRow ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move' }) : undefined}
@@ -2114,7 +2114,7 @@ const SessionRow = memo(function SessionRow({
               onOpenSlotInNewTab(s.key, { background: true })
               return
             }
-            dispatch(switchSlot(s.key))
+            dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
@@ -2369,7 +2369,7 @@ const SessionRow = memo(function SessionRow({
                 connected={connected}
                 isActive={isActive}
                 onOpenSource={onOpenSource}
-                onActivateSlot={() => { dispatch(switchSlot(s.key)); onSelectSlot?.(s.key) }}
+                onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true })); onSelectSlot?.(s.key) }}
               />
             )}
             {/* No tag chips here: every tag renders in the meta line above as

@@ -3154,7 +3154,7 @@ function ChatInput({
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
   const micHeldElsewhereAction = micOwnerTitle && voiceBusyElsewhereSession
-    ? { label: micOwnerTitle, onClick: () => { void dispatch(switchSlot(voiceBusyElsewhereSession)) } }
+    ? { label: micOwnerTitle, onClick: () => { void dispatch(switchSlot({ key: voiceBusyElsewhereSession, announceOnMissing: true })) } }
     : undefined
   /** State, not a ref: the hold target mounts only once hold mode is on, and the
    *  gesture hook can only bind its listeners when that arrival is observable.

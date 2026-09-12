@@ -11,12 +11,12 @@
  * status exists, so the prose fallback still has something to read.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { configureStore } from '@reduxjs/toolkit'
+import { configureStore, type Middleware } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
 import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
-import { fetchSlots } from './dashboardSlice'
+import { fetchSlots, removeSlotOptimistic } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
 
@@ -484,5 +484,263 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
     expect(s.activeSlot).toBe('gone')
     expect(s.messages).toEqual([])
     expect(s.slotSwitchOrigin).toBeNull()
+  })
+})
+
+/**
+ * The 404 recovery must not be SILENT for a user-facing click (#6372). The
+ * rejected reducer restores the pre-switch selection but cannot dispatch, so
+ * before this fix nothing told the user why the click did nothing and the dead
+ * entry stayed in the sidebar until the next authoritative refresh — inviting
+ * the same wordless bounce again. For an `announceOnMissing` caller (the
+ * sidebar rows) the thunk now surfaces both halves from its catch branch: the
+ * pane-level `switchSlotGone` notice naming the session, and one
+ * `removeSlotOptimistic` so the gone entry and its unread state leave the
+ * sidebar synchronously. The
+ * eviction runs only when the selection ESCAPES the gone key — the rejected
+ * reducer restores `slotSwitchOrigin` only when it differs from the target,
+ * so evicting a session the user was already in (or a first-ever selection)
+ * would leave `activeSlot` naming a key no sidebar row lists, with no heal.
+ * Every other caller class self-handles its 404 (in-page error, silent resume
+ * fallback), so the announce is opt-IN and the default stays quiet. The
+ * rejection payload is byte-identical throughout.
+ */
+describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)', () => {
+  beforeEach(() => { detail.mockReset() })
+
+  /** A store that also RECORDS every dispatched action, plus a minimal
+   *  dashboard slice holding slot TITLES (the thunk reads them for the named
+   *  notice; the identity reducer keeps these stores otherwise identical to
+   *  the file's other fixtures). */
+  function makeRecordingStore(slots: Array<{ key: string; title?: string }> = []) {
+    const actions: Array<{ type: string; payload?: unknown }> = []
+    const recorder: Middleware = () => (next) => (action) => {
+      actions.push(action as { type: string; payload?: unknown })
+      return next(action)
+    }
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: (s = { slots }) => s },
+      middleware: (getDefault) => getDefault({ immutableCheck: false }).concat(recorder),
+    })
+    return { store, actions }
+  }
+
+  const goneNotices = (actions: Array<{ type: string; payload?: unknown }>) =>
+    actions.filter(a => a.type === 'chat/setSwitchSlotGone')
+  const evictions = (actions: Array<{ type: string; payload?: unknown }>) =>
+    actions.filter(a => a.type === removeSlotOptimistic.type)
+
+  /** The value `unwrap()` throws, or null if the switch succeeded. */
+  const unwrapRejection = (p: Promise<unknown>): Promise<unknown> =>
+    p.then(() => null, (err: unknown) => err)
+
+  const OK_PAGE = { messages: [], has_more: false, total: 0, next_before: 0 }
+
+  it('announced 404: one notification naming the session, one synchronous eviction, payload unchanged', async () => {
+    // The realistic #6372 gesture: the user is IN a session and clicks a stale
+    // row. The prior selection is what the rejected reducer restores to, and
+    // what licenses the eviction (the selection escapes the gone key).
+    detail.mockImplementation((key: string) =>
+      key === 'home' ? Promise.resolve(OK_PAGE) : Promise.reject(apiError(404, 'slot unavailable')))
+    const { store, actions } = makeRecordingStore([{ key: 'home', title: 'Home' }, { key: 'gone', title: 'Ghost session' }])
+    await store.dispatch(switchSlot('home'))
+    const e = await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    // The rejection contract is byte-identical — `.unwrap()` callers and the
+    // reducer's classifier keep reading the structured payload.
+    expect(e).toEqual({ status: 404, message: 'slot unavailable' })
+    const n = goneNotices(actions)
+    expect(n).toHaveLength(1)
+    // The NAME is stored; ChatPage resolves the sentence at render time.
+    expect(n[0].payload).toEqual({ name: 'Ghost session', kind: 'gone' })
+    const ev = evictions(actions)
+    expect(ev).toHaveLength(1)
+    expect(ev[0].payload).toBe('gone')
+    // The page-level half: ChatPage renders this through its ErrorNotice.
+    expect(store.getState().chat.switchSlotGone).toEqual({ name: 'Ghost session', kind: 'gone' })
+  })
+
+  it('the gone-notice survives a programmatic switch and clears on the next user gesture', async () => {
+    detail.mockImplementation((key: string) =>
+      key === 'gone' ? Promise.reject(apiError(404, 'slot unavailable')) : Promise.resolve(OK_PAGE))
+    const { store } = makeRecordingStore([{ key: 'home', title: 'Home' }, { key: 'gone', title: 'Ghost session' }])
+    await store.dispatch(switchSlot('home'))
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).not.toBeNull()
+    // A programmatic re-sync (plain-string caller) must NOT eat the notice.
+    await store.dispatch(switchSlot('home'))
+    expect(store.getState().chat.switchSlotGone).not.toBeNull()
+    // The next USER gesture (announce-flagged) supersedes it.
+    await store.dispatch(switchSlot({ key: 'home', announceOnMissing: true }))
+    expect(store.getState().chat.switchSlotGone).toBeNull()
+  })
+
+  it('an authoritative frame during the 404 flight disarms the eviction (same-key replacement survives)', async () => {
+    // A delayed 404 must not evict what a fresher frame delivered: the thunk
+    // captures the row OBJECT at dispatch, and any authoritative rewrite —
+    // sseSlots/fetchSlots rebuild the array with fresh objects — breaks the
+    // identity, so the catch skips removeSlotOptimistic. The notice still fires.
+    let rejectDetail: ((e: unknown) => void) | undefined
+    detail.mockImplementation((key: string) => {
+      if (key === 'home') return Promise.resolve(OK_PAGE)
+      return new Promise((_, rej) => { rejectDetail = rej })
+    })
+    const slots = [{ key: 'home', title: 'Home' }, { key: 'gone', title: 'Ghost session' }]
+    const actions: Array<{ type: string; payload?: unknown }> = []
+    const recorder: Middleware = () => (next) => (action) => { actions.push(action as { type: string; payload?: unknown }); return next(action) }
+    const store = configureStore({
+      reducer: {
+        chat: chatReducer,
+        // Rebuilds every row object on the test frame action, the way the real
+        // authoritative writers do on every frame.
+        dashboard: (s = { slots }, a: { type: string }) =>
+          a.type === 'test/frame' ? { slots: (s as { slots: typeof slots }).slots.map(o => ({ ...o })) } : s,
+      },
+      middleware: (getDefault) => getDefault({ immutableCheck: false }).concat(recorder),
+    })
+    await store.dispatch(switchSlot('home'))
+    const p = store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true }))
+    store.dispatch({ type: 'test/frame' }) // the replacement lands mid-flight
+    rejectDetail!(apiError(404, 'slot unavailable'))
+    await unwrapRejection(p.unwrap())
+    expect(goneNotices(actions)).toHaveLength(1)
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('re-activating the session already open stays SILENT and the row is KEPT', async () => {
+    // The rejected reducer restores the origin only when it differs from the
+    // target; when the gone session IS the one the user was already in, no
+    // restore runs, so an eviction would leave `activeSlot` naming a key no
+    // sidebar row lists — blank header chips, nothing heals it. Keep the row
+    // (pre-change behaviour for exactly this case) and still say why the
+    // click did nothing.
+    let deleted = false
+    detail.mockImplementation(() => deleted ? Promise.reject(apiError(404, 'slot unavailable')) : Promise.resolve(OK_PAGE))
+    const { store, actions } = makeRecordingStore([{ key: 'gone', title: 'Ghost session' }])
+    await store.dispatch(switchSlot('gone'))
+    deleted = true
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    // ESCAPES-ONLY announcement: re-activating the already-open session stays
+    // silent (pre-change behavior) — a notice over the still-open pane would
+    // ship contradicting signals. No notice, no eviction, selection kept.
+    expect(goneNotices(actions)).toHaveLength(0)
+    expect(evictions(actions)).toHaveLength(0)
+    expect(store.getState().chat.activeSlot).toBe('gone')
+    expect(store.getState().chat.switchSlotGone).toBeNull()
+  })
+
+  it('a first-ever selection that 404s: notice fires, no eviction (nothing to restore to)', async () => {
+    // A fresh tab with no active session: `slotSwitchOrigin` is null, the
+    // reducer cannot restore, so eviction would orphan the selection the same
+    // way. The stale row outliving the click here matches pre-change behaviour.
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store, actions } = makeRecordingStore([{ key: 'gone', title: 'Ghost session' }])
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    expect(goneNotices(actions)).toHaveLength(1)
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('a title the slot list no longer knows stores an empty name (ChatPage falls back to generic copy)', async () => {
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store } = makeRecordingStore()
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).toEqual({ name: '', kind: 'gone' })
+  })
+
+
+  it('a stale 404 superseded by a newer IN-FLIGHT switch keeps the row (requestId gate)', async () => {
+    // The user clicked the stale row, then moved on before its 404 landed; the
+    // newer switch is still pending, so `slotSwitchOrigin` is still populated
+    // and the row object never changed — only the requestId gate can tell the
+    // stale rejection it lost the claim. (The fulfilled case is covered by the
+    // escapes guard: a settled newer switch clears the origin.)
+    let rejectGone: ((e: unknown) => void) | undefined
+    detail.mockImplementation((key: string) => {
+      if (key === 'gone') return new Promise((_, rej) => { rejectGone = rej })
+      if (key === 'other') return new Promise(() => { /* never settles */ })
+      return Promise.resolve(OK_PAGE)
+    })
+    const { store, actions } = makeRecordingStore([
+      { key: 'home', title: 'Home' }, { key: 'gone', title: 'Ghost session' }, { key: 'other', title: 'Other' },
+    ])
+    await store.dispatch(switchSlot('home'))
+    const stale = store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true }))
+    store.dispatch(switchSlot('other')) // newer gesture takes the claim, stays in flight
+    rejectGone!(apiError(404, 'slot unavailable'))
+    await unwrapRejection(stale.unwrap())
+    expect(goneNotices(actions)).toHaveLength(1) // the dead click is still explained
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('a stale announced FAILURE superseded by a newer switch stays silent (requestId gate)', async () => {
+    // "Could not be opened" describes THIS attempt, so unlike the stale gone
+    // notice (still-true fact) a superseded failure must not overwrite the
+    // notice belonging to the user's current gesture.
+    let rejectAlive: ((e: unknown) => void) | undefined
+    detail.mockImplementation((key: string) => {
+      if (key === 'alive') return new Promise((_, rej) => { rejectAlive = rej })
+      if (key === 'other') return new Promise(() => { /* never settles */ })
+      return Promise.resolve(OK_PAGE)
+    })
+    const { store, actions } = makeRecordingStore([
+      { key: 'home', title: 'Home' }, { key: 'alive', title: 'Alive session' }, { key: 'other', title: 'Other' },
+    ])
+    await store.dispatch(switchSlot('home'))
+    const stale = store.dispatch(switchSlot({ key: 'alive', announceOnMissing: true }))
+    store.dispatch(switchSlot('other')) // newer gesture takes the claim, stays in flight
+    rejectAlive!(apiError(500, 'gateway hiccup'))
+    await unwrapRejection(stale.unwrap())
+    expect(goneNotices(actions)).toHaveLength(0)
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('a plain-string caller stays quiet: no notification, no re-fetch', async () => {
+    // Every non-sidebar caller self-handles its 404 (in-page error notices,
+    // auto-improvement's silent resume fallback) — the default must not
+    // double-report or contradict a successful recovery.
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store, actions } = makeRecordingStore()
+    const e = await unwrapRejection(store.dispatch(switchSlot('gone')).unwrap())
+    expect(e).toEqual({ status: 404, message: 'slot unavailable' })
+    expect(goneNotices(actions)).toHaveLength(0)
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('keepTargetOnMissing stays quiet too — its 404 is a create/fetch race, not a gone session', async () => {
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store, actions } = makeRecordingStore()
+    const e = await unwrapRejection(store.dispatch(switchSlot({ key: 'just-created', keepTargetOnMissing: true })).unwrap())
+    expect(e).toEqual({ status: 404, message: 'slot unavailable' })
+    expect(goneNotices(actions)).toHaveLength(0)
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('an announced non-404 notifies with failure copy but never evicts: the target is real', async () => {
+    detail.mockRejectedValue(apiError(500, 'gateway hiccup'))
+    const { store, actions } = makeRecordingStore([{ key: 'alive', title: 'Alive session' }])
+    const e = await unwrapRejection(store.dispatch(switchSlot({ key: 'alive', announceOnMissing: true })).unwrap())
+    expect(e).toEqual({ status: 500, message: 'gateway hiccup' })
+    const n = goneNotices(actions)
+    expect(n).toHaveLength(1)
+    expect(n[0].payload).toEqual({ name: 'Alive session', kind: 'failed' })
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('an announced status-less failure notifies with failure copy and keeps the serialized-error shape', async () => {
+    detail.mockRejectedValue(new TypeError('Failed to fetch'))
+    const { store, actions } = makeRecordingStore()
+    const e = await unwrapRejection(store.dispatch(switchSlot({ key: 'k', announceOnMissing: true })).unwrap())
+    expect(e).toMatchObject({ message: 'Failed to fetch' })
+    const n = goneNotices(actions)
+    expect(n).toHaveLength(1)
+    expect(n[0].payload).toEqual({ name: '', kind: 'failed' })
+    expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('a plain-string non-404 stays quiet: failure copy is announced-gesture-only', async () => {
+    detail.mockRejectedValue(apiError(500, 'gateway hiccup'))
+    const { store, actions } = makeRecordingStore()
+    await unwrapRejection(store.dispatch(switchSlot('alive')).unwrap())
+    expect(goneNotices(actions)).toHaveLength(0)
+    expect(evictions(actions)).toHaveLength(0)
   })
 })

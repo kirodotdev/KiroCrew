@@ -15046,6 +15046,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "La session sur laquelle vous avez cliqué a été supprimée et ne peut pas être ouverte.",
+      "session_open_error_named": "Impossible d’ouvrir « {{name}} ».",
+      "session_open_error": "Impossible d’ouvrir la session.",
+      "session_gone_open_failed_named": "« {{name}} » a été supprimée et ne peut pas être ouverte.",
       "truncated": "…(tronqué)"
     }
   },

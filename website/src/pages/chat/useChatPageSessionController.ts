@@ -168,7 +168,9 @@ export function useChatPageSessionController({
     // The row menu is a deliberate "take me there", so it opens in foreground.
     if (opts?.background) return
     if (!connectedRef.current) return
-    if (key !== activeSlotRef.current) dispatch(switchSlot(key))
+    // Foreground open-in-tab is a user gesture on a session reference: the
+    // announced class.
+    if (key !== activeSlotRef.current) dispatch(switchSlot({ key, announceOnMissing: true }))
     // Depends on the ONE member it calls, not on `sessionTabs` — that hook
     // returns a fresh object literal every render, so the whole object as a dep
     // makes this callback (and thus ChatSidebar's `onOpenSlotInNewTab`, and thus
@@ -178,7 +180,9 @@ export function useChatPageSessionController({
   }, [sessionTabs.openInNewTab, dispatch, activeSlotRef])
   const selectSessionTab = useCallback((key: string) => {
     if (key === activeSlotRef.current || !connectedRef.current) return
-    dispatch(switchSlot(key))
+    // Tab-strip select is a user gesture on a session reference: the announced
+    // class.
+    dispatch(switchSlot({ key, announceOnMissing: true }))
   }, [dispatch, activeSlotRef])
   const closeSessionTab = useCallback((key: string) => {
     const next = sessionTabs.closeTab(key)

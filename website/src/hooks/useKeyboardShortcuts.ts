@@ -810,7 +810,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       // the leaked flag would blur the composer with no refocus AND silently
       // eat the NEXT pointer-driven switch's autofocus.
       if (isMacPlatform() && key !== activeSlot) releaseComposerForKeyboardSwitch()
-      dispatch(switchSlot(key))
+      dispatch(switchSlot({ key, announceOnMissing: true }))
       navigate('/chat')
     }
 

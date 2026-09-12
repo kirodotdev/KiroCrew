@@ -857,6 +857,13 @@ interface ChatState {
      *  while running is true, so deriving one from the other drops it. */
     run: { state: SlotState; running: boolean; stopping: boolean }
   } | null
+  /** A user-facing switch gesture hit a session the server no longer has
+   *  (#6372). ChatPage renders it through the pane-level ErrorNotice — the
+   *  `errors-use-error-notice` surface — above the composer. Carries the
+   *  NAME, not the sentence, so the copy re-resolves on locale switch; ''
+   *  when the slot list no longer knew the title. Cleared by the next
+   *  `switchSlot.pending` or the notice's dismiss. */
+  switchSlotGone: { name: string; kind: 'gone' | 'failed' } | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -1131,6 +1138,7 @@ const initialState: ChatState = {
   slotSwitchRequestId: null,
   slotSwitchTarget: null,
   slotSwitchOrigin: null,
+  switchSlotGone: null,
   loadingOlder: false,
   slotOlderError: false,
   lastChunkSeq: undefined,
@@ -2088,14 +2096,32 @@ function seedContextUsage(
 }
 
 /** `switchSlot`'s argument. The plain-string spelling is the overwhelmingly
- *  common one; the object form exists for the ONE caller class that must NOT
- *  have a 404 unwound: a switch into a slot the caller just created (e.g. the
- *  error handoff), where a 404 is a create/fetch race on a slot that exists
- *  and the seeded composer must stay visible. Handling it as a per-call option
- *  keeps the decision inside the reducer's atomic unwind instead of a caller
- *  patching half the state back afterwards -- the exact #6260 failure class
- *  this fix removes. */
-export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean }
+ *  common one; the object form exists for caller classes that must opt out of a
+ *  default or opt into a surface:
+ *
+ *  - `keepTargetOnMissing`: the ONE caller class that must NOT have a 404
+ *    unwound — a switch into a slot the caller just created (e.g. the error
+ *    handoff), where a 404 is a create/fetch race on a slot that exists and
+ *    the seeded composer must stay visible. Handling it as a per-call option
+ *    keeps the decision inside the reducer's atomic unwind instead of a caller
+ *    patching half the state back afterwards -- the exact #6260 failure class
+ *    this fix removes.
+ *  - `announceOnMissing`: a USER-FACING gesture on a reference to a listed
+ *    session — the sidebar rows, the command palette recents, the command
+ *    bar's session picker, the notification panel's go-to-chat buttons, the
+ *    keyboard session jump, the worlds scene. On a 404 the thunk then says
+ *    why the gesture did nothing and evicts the gone entry synchronously via
+ *    `removeSlotOptimistic` (#6372) — but only when the selection escapes the
+ *    gone key (the rejected reducer restores a differing `slotSwitchOrigin`);
+ *    evicting the session the user was already in would leave `activeSlot`
+ *    naming a row the sidebar no longer lists. It is opt-IN because the remaining
+ *    caller classes self-handle their 404 — the side-chat re-bind and
+ *    worktree-open paths render their own in-page error, creation and
+ *    recovery paths (auto-improvement, issue-radar, cold-boot restore, the
+ *    Slack-token reconnect) silently fall back to a fresh session — so
+ *    announcing there would double-report or contradict a successful
+ *    recovery. */
+export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean }
 
 /** The slot key of a `switchSlot` argument, in either spelling. Non-object
  *  values pass through untouched: a hand-rolled test dispatch can omit
@@ -2109,8 +2135,16 @@ export const switchSlot = createAsyncThunk<
   { rejectValue: StatusRejection }
 >(
   'chat/switchSlot',
-  async (arg, { dispatch, getState, rejectWithValue }) => {
+  async (arg, { dispatch, getState, rejectWithValue, requestId }) => {
     const key = switchSlotKey(arg)
+    // Row-identity snapshot for the 404 eviction below. The authoritative slot
+    // writers (`sseSlots`, `fetchSlots.fulfilled`) rebuild `dashboard.slots`
+    // with fresh objects on every frame, so this reference doubles as a
+    // request-scoped token: if ANY frame lands between this dispatch and the
+    // catch — including one delivering a same-key replacement session — the
+    // identity check below fails and the eviction is skipped. The stale row
+    // then lingers exactly as it did pre-change, and the next frame owns it.
+    const rowAtDispatch = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)
     // Safe unconditionally: this fetch resets the pane's messages and cursor, so
     // any older page still in flight is superseded even when the key is unchanged.
     _abortLoadOlder?.()
@@ -2200,7 +2234,113 @@ export const switchSlot = createAsyncThunk<
       // against a class the mock does not export throws inside this very
       // handler (see utils/agentSwitchFeedback.ts for the precedent).
       const status = (e as { status?: unknown } | null)?.status
-      if (typeof status === 'number') return rejectWithValue({ status, message: errMessage(e) })
+      if (typeof status === 'number') {
+        const payload: StatusRejection = { status, message: errMessage(e) }
+        // A 404 means the target is GONE — classified on the STRUCTURED payload
+        // with the same `isMissingSlotError` the rejected reducer applies, so
+        // the two ends of this thunk cannot disagree about what a 404 is. The
+        // reducer restores the pre-switch selection but cannot dispatch, which
+        // made the recovery SILENT: nothing told the user why the click did
+        // nothing, and the dead entry stayed listed until the next
+        // authoritative refresh, inviting the same wordless bounce again
+        // (#6372). For an `announceOnMissing` caller — a user-facing gesture on
+        // a listed session, see SwitchSlotArg for why it is opt-in — surface
+        // both halves here, BEFORE rejecting so the payload reaches
+        // `.unwrap()` consumers and the reducer unchanged.
+        // The eviction is `removeSlotOptimistic`: the 404 is exactly the
+        // server-confirmed deletion that reducer asks its callers for, it
+        // drops the row and its unread state synchronously with no network
+        // round-trip, and the next authoritative slots write reconciles either
+        // way.
+        const announce = typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
+        if (announce && isMissingSlotError(payload)) {
+          // Read BEFORE the eviction below removes the row. Optional-chained
+          // like the other dashboard reads in this thunk: a partial preloaded
+          // test state can omit the slice.
+          const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+          const chat = (getState() as RootState).chat
+          // The announcement is ESCAPES-ONLY: re-activating the session the
+          // user is already in (the live-claimed origin names the gone key)
+          // stays silent, the pre-change behavior for exactly that gesture.
+          // The intent's scenario is a click on a LISTED (other) session; a
+          // notice over the still-open pane ships three contradicting signals
+          // (deleted-notice, kept row, composer inviting input). Gated on the
+          // live claim: a stale 404 that lost its claim to a newer gesture
+          // cannot trust `slotSwitchOrigin` (the newer `pending` overwrote it).
+          const reactivation = chat.slotSwitchRequestId === requestId && chat.slotSwitchOrigin !== null && chat.slotSwitchOrigin.key === key
+          if (!reactivation) {
+            // The page-level acknowledgment: ChatPage renders this
+            // through its pane ErrorNotice above the composer (the
+            // errors-use-error-notice surface), with the agent hand-off on. The
+            // NAME is stored, not the sentence, so the copy re-resolves on a
+            // locale switch. Cleared by the next `switchSlot.pending` or the
+            // notice's own dismiss.
+            dispatch(chatSlice.actions.setSwitchSlotGone({ name: name ?? '', kind: 'gone' }))
+          }
+          // Evict only when the selection will ESCAPE the evicted key. The
+          // rejected reducer restores `slotSwitchOrigin` only when it differs
+          // from the target (chat's `deleteSlot` states the invariant: the
+          // active slot must already name a surviving peer by the time a slot
+          // leaves the list). When the gone session IS the origin — the user
+          // re-activated the session they were already in — no restore runs,
+          // so evicting here would leave `activeSlot` naming a key no sidebar
+          // row lists: the pane stays open, the header chips render blank
+          // (`currentSlot` is undefined), and nothing heals it because an
+          // authoritative write will not re-add a deleted slot. Keeping the
+          // row for that one case is the pre-change behaviour, the notice
+          // still explains the failure, and the next authoritative slots
+          // frame retires the row once the user navigates away.
+          // `keepTargetOnMissing` keeps the selection ON the target by the
+          // reducer's own contract, so the selection never escapes there.
+          const keepTarget = typeof arg === 'object' && arg !== null && arg.keepTargetOnMissing === true
+          const escapes = !keepTarget && chat.slotSwitchOrigin !== null && chat.slotSwitchOrigin.key !== key
+          // Freshness conditions on the DESTRUCTIVE half only (the notice above
+          // stays: it truthfully explains the dead click even when stale).
+          // (1) The row must still be the OBJECT captured at dispatch (see
+          // `rowAtDispatch`): any authoritative frame that changed row `key` in
+          // ANY way — a replacement session included — breaks the identity and
+          // disarms the eviction. `applySlots` reuses a row's identity only
+          // when it is jsonEqual, and a genuinely recreated session cannot be
+          // byte-identical (its message count and last_ts differ from the dead
+          // one's), so identity is honest about content freshness.
+          // (2) This switch must still be the LIVE one: `pending` stored this
+          // thunk's requestId in `slotSwitchRequestId` and any newer switch
+          // overwrote it, so a stale 404 that lost a race to a newer gesture —
+          // a successful same-key re-open included — cannot evict.
+          const rowNow = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)
+          if (escapes && rowAtDispatch !== undefined && rowNow === rowAtDispatch && chat.slotSwitchRequestId === requestId) {
+            dispatch(removeSlotOptimistic(key))
+          }
+        } else if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true) {
+          // A non-404 failure on the SAME user gesture (a 5xx, a proxy error)
+          // is just as silent by default: the rejected reducer keeps the
+          // target selected with an empty pane (the transient-failure branch),
+          // and nothing says why the transcript did not load. Announced
+          // callers get the same pane ErrorNotice with failure copy — no
+          // eviction (the session exists) and no new affordance: the row and
+          // composer already invite the natural retry. Gated on the live
+          // claim, UNLIKE the gone notice above: "was deleted" stays true
+          // whenever the 404 lands, but "could not be opened" describes THIS
+          // attempt — a superseded rejection reporting it would overwrite the
+          // notice belonging to the user's current gesture with one about a
+          // click they already moved past.
+          if ((getState() as RootState).chat.slotSwitchRequestId === requestId) {
+            const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+            dispatch(chatSlice.actions.setSwitchSlotGone({ name: name ?? '', kind: 'failed' }))
+          }
+        }
+        return rejectWithValue(payload)
+      }
+      // Status-less errors (a transport failure, a thrown TypeError) cross the
+      // boundary as miniSerializeError. The same announced-gesture contract
+      // applies: say the open failed where the user is looking — gated on the
+      // live claim like the numeric branch above, so a superseded rejection
+      // cannot overwrite the current gesture's notice.
+      if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
+          && (getState() as RootState).chat.slotSwitchRequestId === requestId) {
+        const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+        dispatch(chatSlice.actions.setSwitchSlotGone({ name: name ?? '', kind: 'failed' }))
+      }
       throw e
     }
   },
@@ -3822,6 +3962,10 @@ const chatSlice = createSlice({
       // App shell's expiry effect instead of inheriting the previous timer.
       state.agentSwitchNotice = action.payload === null ? null : { message: action.payload }
     },
+    /** See `switchSlotGone` on ChatState. Set by `switchSlot`'s catch for an
+     *  `announceOnMissing` caller whose target 404ed. */
+    setSwitchSlotGone(state, action: PayloadAction<{ name: string; kind: 'gone' | 'failed' }>) { state.switchSlotGone = action.payload },
+    clearSwitchSlotGone(state) { state.switchSlotGone = null },
     /** Dismiss the unresumable-surface notice (#5925). Deliberately does NOT
      *  clear `lastResumeRequestId`: that ordering token belongs to the resume
      *  in flight, and forgetting it would let an older resume's late answer
@@ -5799,6 +5943,12 @@ const chatSlice = createSlice({
         state.historyOffset = offset + sessions.length
       })
       .addCase(switchSlot.pending, (state, action) => {
+        // A new USER gesture supersedes the previous gone-notice — and only a
+        // user gesture: `announceOnMissing` is exactly the user-facing-gesture
+        // marker (see SwitchSlotArg). Programmatic switches (route sync, the
+        // rejected restore's follow-ups, creation flows) must not eat a notice
+        // the user has not seen.
+        if (typeof action.meta.arg === 'object' && action.meta.arg !== null && action.meta.arg.announceOnMissing === true) state.switchSlotGone = null
         const target = switchSlotKey(action.meta.arg)
         // Must precede the reassignment below: true while the active slot's own
         // switch is in flight, i.e. while `slotHasMore` is still the old chat's.
@@ -6624,7 +6774,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

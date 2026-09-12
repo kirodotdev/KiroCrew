@@ -14661,6 +14661,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "클릭한 세션은 삭제되어 열 수 없습니다.",
+      "session_open_error_named": "‘{{name}}’을(를) 열 수 없었습니다.",
+      "session_open_error": "세션을 열 수 없었습니다.",
+      "session_gone_open_failed_named": "‘{{name}}’은(는) 삭제되어 열 수 없습니다.",
       "truncated": "…(생략됨)"
     }
   },

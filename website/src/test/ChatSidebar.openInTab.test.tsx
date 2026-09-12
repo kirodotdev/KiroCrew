@@ -192,7 +192,7 @@ describe('ChatSidebar – open-as-tab gestures', () => {
     renderSidebar({ onOpenSlotInNewTab })
     fireEvent.click(row('Session 2'), { ctrlKey: true })
     expect(onOpenSlotInNewTab).not.toHaveBeenCalled()
-    expect(switchSlotMock).toHaveBeenCalledWith('s2')
+    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true })
   })
 
   it('Cmd+click opens a tab on macOS only', () => {
@@ -209,7 +209,7 @@ describe('ChatSidebar – open-as-tab gestures', () => {
     renderSidebar({ onOpenSlotInNewTab })
     fireEvent.click(row('Session 2'), { metaKey: true })
     expect(onOpenSlotInNewTab).not.toHaveBeenCalled()
-    expect(switchSlotMock).toHaveBeenCalledWith('s2')
+    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true })
   })
 
   it('does not claim a modifier-click when Shift or Alt is also held', () => {
@@ -226,7 +226,7 @@ describe('ChatSidebar – open-as-tab gestures', () => {
     const onOpenSlotInNewTab = vi.fn()
     renderSidebar({ onOpenSlotInNewTab })
     fireEvent.click(row('Session 2'))
-    expect(switchSlotMock).toHaveBeenCalledWith('s2')
+    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true })
     expect(onOpenSlotInNewTab).not.toHaveBeenCalled()
   })
 
@@ -237,6 +237,6 @@ describe('ChatSidebar – open-as-tab gestures', () => {
     auxClick(row('Session 2'), 1)
     expect(switchSlotMock).not.toHaveBeenCalled()
     fireEvent.click(row('Session 2'), { ctrlKey: true })
-    expect(switchSlotMock).toHaveBeenCalledWith('s2')
+    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true })
   })
 })

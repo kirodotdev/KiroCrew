@@ -15045,6 +15045,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "A sessão em que você clicou foi excluída e não pode ser aberta.",
+      "session_open_error_named": "Não foi possível abrir “{{name}}”.",
+      "session_open_error": "Não foi possível abrir a sessão.",
+      "session_gone_open_failed_named": "“{{name}}” foi excluída e não pode ser aberta.",
       "truncated": "…(truncado)"
     }
   },

@@ -356,6 +356,12 @@ const applySlots = (state: DashboardState, next: ChatSlot[]): void => {
     // Reusing a draft row inside a freshly assigned array is fine: Immer
     // finalizes drafts found in the assigned value within the same scope, so an
     // untouched row resolves back to its base object and keeps its identity.
+    // CONTRACT (leaned on cross-slice): a row keeps its object identity iff
+    // it is jsonEqual to the incoming one; any changed or replaced row gets a
+    // fresh object. chatSlice's switchSlot 404 eviction captures a row at
+    // dispatch and treats a changed identity as "an authoritative frame
+    // altered this row mid-flight" to disarm itself — see the catch in
+    // switchSlot and switchSlotCallsiteClassification/rejection tests.
     const reused = existing !== undefined && jsonEqual(existing, incoming) ? existing : incoming
     // Positional compare, so a pure reorder counts as changed even though every
     // row is individually reusable.

@@ -219,7 +219,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
     // reads "No subagents running" — the card's own label promising otherwise.
     // Safe inside split view: the auto-enter effect is gated on splitMode being
     // off, so switching does not reseed or leave the grid.
-    if (slot && slot !== activeSlot) dispatch(switchSlot(slot))
+    if (slot && slot !== activeSlot) dispatch(switchSlot({ key: slot, announceOnMissing: true }))
     // Deep-link to the first agent of THIS wave so the panel lands on the
     // transcript the card refers to, not whatever was last selected.
     const first = launch.ids.find(id => subagents[id])
