@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import errno
 import logging
+import ntpath
 import os
+import posixpath
 import re
 import threading
 import time
@@ -41,6 +43,13 @@ from kiro_crew.agent_sdk import host_auth
 # parsing has to hold its own reference or it silently asserts against the stub.
 _REAL_BLOCKED_IN_FILESYSTEM = security.paths._worker_blocked_in_filesystem
 
+# Likewise captured before the fixture scales them down: the tests that assert on the
+# SHIPPED budgets have to read the shipped values, not the fast ones the stall tests run
+# under, or they would assert the fixture's numbers back at themselves.
+_REAL_CANDIDATE_BUDGET = security.paths._PATH_RESOLVE_TIMEOUT_SECS
+_REAL_REBUILD_BUDGET = security.paths._PATH_RESOLVE_REBUILD_TIMEOUT_SECS
+_REAL_GRACE_MAX = security.paths._PATH_RESOLVE_GRACE_MAX_SECS
+
 
 @pytest.fixture(autouse=True)
 def _fresh_resolver_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
@@ -49,6 +58,10 @@ def _fresh_resolver_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # Short budgets keep the stall tests fast; the production values are pinned
     # separately below.
     monkeypatch.setattr(security, "_PATH_RESOLVE_TIMEOUT_SECS", 0.2)
+    # The anchor rebuild carries its OWN, larger budget in production. Scaled down
+    # here for the same reason as the one above: a stall test that reaches the
+    # rebuild would otherwise wait the full production budget.
+    monkeypatch.setattr(security.paths, "_PATH_RESOLVE_REBUILD_TIMEOUT_SECS", 0.2)
     monkeypatch.setattr(security, "_PATH_RESOLVE_COOLDOWN_SECS", 30.0)
     # The stall doubles below stand in for a WEDGED MOUNT, so they must stand in for its
     # kernel state too: a real ``lstat`` on a dead mount sits in uninterruptible sleep,
@@ -181,6 +194,179 @@ def test_stall_prefix_is_two_components() -> None:
     assert security._stall_prefix("/Volumes/share/x/y") == os.path.normpath("/Volumes/share")
     assert security._stall_prefix("/tmp") == os.path.normpath("/tmp")
     assert security._stall_prefix("rel/path/file") == os.path.normpath("rel/path")
+
+
+class _SlowThenFastResolver:
+    """Misses the budget on its FIRST call by *delay*, then answers immediately.
+
+    A merely slow resolution, not a wedged mount: exactly what a cold anchor rebuild
+    (~130 ``realpath`` calls) looks like on a loaded runner.
+    """
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.calls: list[str] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, expanded: str) -> set[str]:
+        with self._lock:
+            self.calls.append(expanded)
+            first = len(self.calls) == 1
+        if first:
+            time.sleep(self.delay)
+        return {expanded}
+
+
+def test_a_resolution_that_finishes_inside_its_grace_does_not_charge_the_prefix(
+    monkeypatch,
+) -> None:
+    """A missed budget alone must not switch the gate off for a whole mount.
+
+    Charging the prefix is the expensive conclusion: it makes ``is_sensitive_path()``
+    answer True for EVERY path beneath that prefix, without touching the filesystem,
+    until the cooldown lapses. On a host where the syscall probe cannot say WHY the
+    budget was missed -- every Windows host, since ``platform.machine()`` reports
+    ``AMD64``, which is absent from the syscall table -- that made one slow
+    resolution refuse unrelated paths wholesale: measured as 77
+    ``ArtifactError: refusing to use sensitive path as artifact root`` failures across
+    four unrelated test files on one Windows shard, all from a single charged stall.
+
+    So a resolution gets a bounded grace to finish, and one that does finish is a
+    success: the value is returned, nothing is charged, and later paths under the same
+    prefix are unaffected. The probe is forced to the answer it gives on those hosts,
+    because that is the configuration this exists for.
+    """
+    monkeypatch.setattr(security.paths, "_worker_blocked_in_filesystem", lambda tid: True)
+    # A wide grace, so what is asserted is the BEHAVIOUR (a completed resolution is
+    # honoured and charges nothing) rather than a race against a narrow window on a
+    # loaded runner: the budget stays 0.2s from the autouse fixture and the delay sits
+    # far inside a 4s grace.
+    monkeypatch.setattr(security.paths, "_PATH_RESOLVE_GRACE_FACTOR", 20.0)
+    monkeypatch.setattr(security.paths, "_PATH_RESOLVE_GRACE_MAX_SECS", 5.0)
+    slow = _SlowThenFastResolver(delay=0.5)  # misses the 0.2s budget, finishes in grace
+    monkeypatch.setattr(security, "_resolved_spellings", slow)
+
+    forms = security._candidate_forms("/home/someone/ws/file")
+
+    assert forms, "a resolution that completed must be used, not discarded"
+    assert (
+        security._path_resolve_degraded == {}
+    ), "a completed resolution must not leave a cooldown behind"
+    # The prefix is clean, so an unrelated path under it still resolves normally.
+    assert security._candidate_forms("/home/someone/other/file")
+
+    # The grace is what buys that, not the budget: with it disabled, the SAME
+    # resolution charges the prefix and every path under it is refused. Asserted here
+    # rather than by deleting the production line, so the mechanism cannot be removed
+    # while this test keeps passing.
+    monkeypatch.setattr(security.paths, "_PATH_RESOLVE_GRACE_FACTOR", 0.0)
+    monkeypatch.setattr(security.paths, "_PATH_RESOLVE_GRACE_MAX_SECS", 0.0)
+    security._path_resolve_degraded.clear()
+    slow_again = _SlowThenFastResolver(delay=0.5)
+    monkeypatch.setattr(security, "_resolved_spellings", slow_again)
+    with pytest.raises(security.PathResolutionStalled):
+        security._candidate_forms("/home/someone/ws/file")
+    assert security._stall_prefix("/home/someone/ws/file") in security._path_resolve_degraded
+
+
+def test_a_resolution_that_misses_budget_and_grace_still_charges_and_refuses(
+    monkeypatch,
+) -> None:
+    """The grace must not become a way to never fail closed.
+
+    A genuinely wedged mount misses both waits, and there the old conclusion is the
+    right one: charge the prefix, refuse, and keep refusing without re-probing. This
+    pins that the fail-CLOSED stance survives the grace -- the gate answers True for a
+    path it could not canonicalise, rather than matching on the lexical spelling.
+    """
+    stalled = _StalledResolver()
+    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    try:
+        with pytest.raises(security.PathResolutionStalled):
+            security._candidate_forms("/home/someone/ws/file")
+        assert security._stall_prefix("/home/someone/ws/file") in security._path_resolve_degraded
+    finally:
+        stalled.release.set()
+
+
+def test_the_anchor_rebuild_gets_its_own_budget_not_the_candidates(monkeypatch) -> None:
+    """One budget for both sized the wait to the wrong work.
+
+    The rebuild is ONE pool job doing ~130 ``realpath`` calls; a candidate resolution
+    does one or two. Sharing the candidate's budget left the rebuild running ~130x
+    closer to its ceiling, which is why the miss was reachable at all on a loaded
+    runner. Asserted as a relationship, not a magic number, so the pair cannot drift
+    back together.
+    """
+    assert (
+        _REAL_REBUILD_BUDGET > _REAL_CANDIDATE_BUDGET
+    ), "the rebuild does far more work per job, so its budget must be larger"
+    # And it must still be bounded well inside the loop-stall watchdog it protects,
+    # counting the grace it can earn on top.
+    assert (
+        _REAL_REBUILD_BUDGET + _REAL_GRACE_MAX < 25.0
+    ), "budget plus grace must stay inside the loop-stall watchdog"
+
+
+def test_the_grace_is_a_fraction_of_the_budget_so_a_tight_budget_stays_tight(
+    monkeypatch,
+) -> None:
+    """A caller that chooses a small budget must not inherit a fixed multi-second tail.
+
+    The grace is expressed against the caller's own budget precisely so the per-call
+    budget keeps meaning something; a constant would have made the tightest caller pay
+    the loosest caller's tail.
+    """
+    stalled = _StalledResolver()
+    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    try:
+        started = time.monotonic()
+        with pytest.raises(security.PathResolutionStalled):
+            security._candidate_forms("/home/someone/ws/file")
+        elapsed = time.monotonic() - started
+    finally:
+        stalled.release.set()
+    budget = security.paths._PATH_RESOLVE_TIMEOUT_SECS  # 0.2 under the autouse fixture
+    ceiling = budget * (1 + security.paths._PATH_RESOLVE_GRACE_FACTOR)
+    assert elapsed < ceiling + 0.6, f"blocked {elapsed:.2f}s against a {budget:.2f}s budget"
+
+
+def test_the_stall_prefix_counts_components_past_the_drive(monkeypatch) -> None:
+    """A drive letter is not a path component, and counting it as one broke Windows.
+
+    ``"C:\\Users\\bob"`` splits to ``["C:", "Users", "bob"]`` -- no leading empty
+    component, unlike a POSIX absolute path -- so keeping "the first two" kept
+    ``C:\\Users``. That single key contains ``$HOME``, ``%TEMP%``, the workspace and
+    the checkout, so ONE stalled resolution anywhere in the profile refused path
+    resolution for the whole host until the cooldown lapsed, which is the opposite of
+    the per-mount isolation the prefix exists to give. Driven through ``ntpath`` so
+    the Windows spelling is asserted on every platform.
+    """
+    monkeypatch.setattr(security.paths.os, "path", ntpath)
+    monkeypatch.setattr(security.paths.os, "sep", ntpath.sep)
+
+    assert security._stall_prefix(r"C:\Users\bob\AppData\Local\Temp\x") == r"C:\Users\bob"
+    assert security._stall_prefix(r"C:\Users\bob") == r"C:\Users\bob"
+    # A UNC share root IS the mount point, so it is the whole key.
+    assert security._stall_prefix(r"\\server\share\u\f") == r"\\server\share"
+
+
+def test_the_stall_prefix_is_unchanged_on_posix(monkeypatch) -> None:
+    """The drive split must be a no-op wherever there are no drives.
+
+    ``posixpath.splitdrive`` returns an empty drive, so every POSIX spelling has to
+    key exactly as it did before -- otherwise narrowing Windows would have widened or
+    moved the Linux/macOS keys, and the cooldown isolation there is already correct.
+    """
+    monkeypatch.setattr(security.paths.os, "path", posixpath)
+    monkeypatch.setattr(security.paths.os, "sep", posixpath.sep)
+
+    assert security._stall_prefix("/home/runner/work/repo/f") == "/home/runner"
+    assert security._stall_prefix("/tmp/pytest-of-runner/pytest-0/t0/artifacts") == (
+        "/tmp/pytest-of-runner"
+    )
+    assert security._stall_prefix("/net/host/share/f") == "/net/host"
+    assert security._stall_prefix("rel/path/file") == "rel/path"
 
 
 def test_unc_paths_are_recognised_in_both_spellings() -> None:
