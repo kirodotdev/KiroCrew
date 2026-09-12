@@ -115,26 +115,38 @@ describe('language registry', () => {
     expect(isSupportedLanguage(DEFAULT_LANGUAGE)).toBe(true)
   })
 
-  it('does not add a thirteenth statically bundled catalog', () => {
+  it('does not add a fourteenth statically bundled catalog', () => {
     // The lazy-loading ratchet, as a GATE rather than a sentence.
     //
-    // `index.ts` and `docs/system-specs/modules/config.md` both say catalog #13
-    // belongs behind the `i18next-http-backend` seam, because every catalog ships
-    // to every user whatever language they read (~173 KB gzip each, ~2.0 MB gzip
-    // for the twelve). A doc cannot hold that line: the PR that crosses it is
-    // also the PR that can rewrite the doc, which is exactly how #12 landed in
-    // front of a seam #12 was supposed to trigger.
+    // `index.ts` and `docs/system-specs/modules/config.md` both say the next
+    // catalog belongs behind the `i18next-http-backend` seam, because every
+    // catalog ships to every user whatever language they read. A doc cannot hold
+    // that line: the PR that crosses it is also the PR that can rewrite the doc,
+    // which is exactly how #12 landed in front of a seam #12 was supposed to
+    // trigger.
     //
     // Raising this number is legitimate ONLY together with the seam, or with a
     // re-measured figure in `config.md` and a reviewer who accepted the deferral.
     // The pseudolocale is excluded: it is DEV-only and Rollup drops it from a
     // production build.
+    //
+    // 13, raised from 12 for `zh-TW` under the second clause. The deferral is
+    // recorded rather than assumed, and the figure is measured, not inherited:
+    // two `vite build --mode analyze` runs against the same `node_modules`,
+    // differing only in whether zh-TW is in the tree, put the marginal cost at
+    // **+280.9 kB gzip** — the chunk carrying the catalogs (`assets/all-*.js`)
+    // goes 3,290.31 -> 3,571.26 kB gzip, 11,481,175 -> 12,268,616 B raw, and
+    // whole-bundle gzip 11.33 -> 11.60 MB. The base tree passes the bundle-size
+    // gate on that chunk and this branch fails it, so `CHUNK_BUDGETS.all` is
+    // raised in the same change and carries the same measurement. The seam is
+    // still the right answer and is still not in this branch; a fourteenth
+    // catalog should land with it.
     const authored = SUPPORTED_LANGUAGES.filter(l => !l.devOnly)
     expect(
       authored.length,
       'Adding a catalog puts its full weight in every user\'s first load. Land the '
       + 'lazy-loading seam in i18n/catalogs.ts instead, or re-measure and say why here.',
-    ).toBeLessThanOrEqual(12)
+    ).toBeLessThanOrEqual(13)
   })
 })
 

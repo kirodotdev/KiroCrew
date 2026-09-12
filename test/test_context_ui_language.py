@@ -125,10 +125,15 @@ class TestUiLanguageSection:
         """Membership is exact, mirroring how the frontend restores a PERSISTED
         choice: isRestorableLanguage() is SUPPORTED_CODES.includes() — no
         case-folding, no primary-subtag fallback (those apply only to browser
-        detection tags, which never reach dashboard.language). A stored zh-TW
+        detection tags, which never reach dashboard.language). A stored zh-HK
         or zh-cn degrades to auto-detect in the SPA, so the backend must inject
-        nothing for it too, or the two disagree about the active language."""
-        for tag in ("zh-TW", "zh-cn", "en-GB", "pt-BR", "zh-Hans-CN"):
+        nothing for it too, or the two disagree about the active language.
+
+        `zh-tw` is the sharpest case in the list: `zh-TW` IS a shipped catalog,
+        so only a literal set lookup rejects the lowercase spelling of it. A
+        case-folding membership test would pass every other tag here and fail
+        that one alone."""
+        for tag in ("zh-HK", "zh-tw", "zh-cn", "en-GB", "pt-BR", "zh-Hans-CN"):
             _seed_language(tag)
             ctx = _builder(tmp_path).build_session_context()
             assert "[UI LANGUAGE]" not in ctx, f"{tag!r} injected but not restorable"
