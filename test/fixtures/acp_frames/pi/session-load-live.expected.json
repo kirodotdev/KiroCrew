@@ -1,0 +1,155 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": false,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "delete": {},
+        "list": {}
+      }
+    },
+    "agent_version": "0.0.33",
+    "frame": "response",
+    "id": 101,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "read",
+        "tool_call_id": "call_snrgf5v4",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_snrgf5v4",
+        "tool_output": "Validation failed for tool \"read\":\n  - path: must have required properties path\n\nReceived arguments:\n{}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Ready"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Ready",
+      "thinking": false
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "ollama/llama3.2:3b",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "ollama/llama3.2:3b",
+            "value": "ollama/llama3.2:3b"
+          },
+          {
+            "description": null,
+            "name": "ollama/llama32-8k",
+            "value": "ollama/llama32-8k"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          },
+          {
+            "description": null,
+            "name": "Thinking: minimal",
+            "value": "minimal"
+          },
+          {
+            "description": null,
+            "name": "Thinking: low",
+            "value": "low"
+          },
+          {
+            "description": null,
+            "name": "Thinking: medium",
+            "value": "medium"
+          },
+          {
+            "description": null,
+            "name": "Thinking: high",
+            "value": "high"
+          },
+          {
+            "description": null,
+            "name": "Thinking: xhigh",
+            "value": "xhigh"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 102,
+    "modes": {
+      "advertised": true,
+      "current": "off",
+      "ids": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "available_commands_update"
+  }
+]

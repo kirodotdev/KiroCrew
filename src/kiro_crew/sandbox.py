@@ -67,6 +67,20 @@ logger = logging.getLogger(__name__)
 # Any file older than this threshold is garbage regardless of PID liveness.
 _LAUNCHER_MAX_AGE_SECONDS = 3600
 
+#: Run-directory artifact families the sweep reclaims, by filename prefix ->
+#: accepted suffixes. Every family tags the writing process's PID right after the
+#: prefix. ``kirocrew_sandbox_``: per-spawn launchers and Seatbelt profiles,
+#: consumed once at exec. ``kirocrew_pi_gate_``: the pi tool-gate launcher and
+#: the sealed extension copy (``acp/client.py``), written once per gateway
+#: process and reused by its later spawns.
+_SANDBOX_ARTIFACT_PREFIX = "kirocrew_sandbox_"
+_RUN_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    _SANDBOX_ARTIFACT_PREFIX: (".sb", ".py"),
+    # ``.tmp`` is the mkstemp stage both pi artifacts are written under before
+    # the rename; a crash between the two leaves it behind under the same PID.
+    "kirocrew_pi_gate_": (".sh", ".cmd", ".ts", ".tmp"),
+}
+
 # Bind-mount SOURCES staged by the namespace launcher (empty dirs/files bound
 # over credential paths, plus the SSH shadow dir). The kernel pins a source for
 # the mount's lifetime, so the launcher cannot unlink them and they orphan when
@@ -6555,21 +6569,22 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
     # ── Sweep <config_dir>/run/ (PID + age) ──
     if os.path.isdir(run_dir):
         for entry in os.listdir(run_dir):
-            if not entry.startswith("kirocrew_sandbox_"):
+            prefix = next((p for p in _RUN_DIR_ARTIFACTS if entry.startswith(p)), None)
+            if prefix is None:
                 continue
-            if entry.endswith(".sb"):
-                suffix = ".sb"
-            elif entry.endswith(".py"):
-                suffix = ".py"
-            else:
+            suffix = next((x for x in _RUN_DIR_ARTIFACTS[prefix] if entry.endswith(x)), None)
+            if suffix is None:
                 continue
             filepath = os.path.join(run_dir, entry)
-            # Age check first — handles the spawner-PID design flaw
+            # Age check first — handles the spawner-PID design flaw. Not for the
+            # pi gate artifacts: those are written once per gateway process and
+            # REUSED by every later spawn of that process, so their age says
+            # nothing, and the PID in their name is the owner's own.
             try:
                 mtime = os.stat(filepath).st_mtime
             except OSError:
                 continue
-            if (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+            if prefix == _SANDBOX_ARTIFACT_PREFIX and (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
                 try:
                     os.remove(filepath)
                     removed += 1
@@ -6577,7 +6592,7 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
                     pass
                 continue
             # Fresh file — fall back to PID liveness check
-            middle = entry[len("kirocrew_sandbox_") : -len(suffix)]
+            middle = entry[len(prefix) : -len(suffix)]
             pid = _parse_pid_segment(middle.split("_", 1)[0])
             if pid is None:
                 continue

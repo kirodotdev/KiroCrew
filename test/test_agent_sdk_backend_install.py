@@ -35,6 +35,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.agent_sdk import backend_install as probe
@@ -61,6 +62,8 @@ def _stub_resolvers(
     adapter=(["node", "/n/acp.js"], "/usr/bin"),
     claude_cli="/usr/local/bin/claude",
     opencode=("/usr/local/bin/opencode", "/usr/bin"),
+    pi_acp=(["node", "/n/pi-acp.js"], "/usr/bin"),
+    pi_cli=("/usr/local/bin/pi", "/usr/bin"),
 ):
     """Patch the four spawn resolvers on the module the driver imports from.
 
@@ -78,6 +81,10 @@ def _stub_resolvers(
     # installed on the recording host, so a payload assertion that reached the real
     # resolver would read ``installed`` here and ``missing`` in CI.
     monkeypatch.setattr(client, "_resolve_opencode_bin", lambda: opencode)
+    # pi's two halves, stubbed for the same reason as opencode: both are installed
+    # on the recording host.
+    monkeypatch.setattr(client, "_resolve_pi_acp_bin", lambda: pi_acp)
+    monkeypatch.setattr(client, "_resolve_pi_bin", lambda: pi_cli)
 
 
 # ── The opencode driver seams ──
@@ -183,6 +190,55 @@ class TestOpencodeVerdicts:
         assert state.installed == probe.MISSING
         assert state.missing_components == (probe.COMPONENT_OPENCODE,)
         assert state.install_command == driver.opencode_install_command()
+
+
+class TestPiVerdicts:
+    """Two components, one installer: the probe names whichever half is absent."""
+
+    def test_both_resolved_is_installed_and_names_nothing(self, monkeypatch):
+        from kiro_crew.acp import client
+
+        _stub_resolvers(monkeypatch)
+        monkeypatch.setattr(client, "_pi_acp_argv_cache", client._UNRESOLVED)
+        monkeypatch.setattr(client, "_pi_bin_cache", client._UNRESOLVED)
+        state = probe.probe_backend(ACP_BACKEND_PI)
+        assert state.installed == probe.INSTALLED
+        assert state.missing_components == ()
+        assert state.install_command == ""
+        assert state.restart_required is False
+        assert state.policy_id == "pi"
+
+    def test_an_absent_adapter_names_the_adapter(self, monkeypatch):
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        _stub_resolvers(monkeypatch, pi_acp=(None, "/usr/bin"))
+        state = probe.probe_backend(ACP_BACKEND_PI)
+        assert state.installed == probe.MISSING
+        assert state.missing_components == (probe.COMPONENT_PI_ACP_ADAPTER,)
+        assert state.install_command == driver.pi_install_command()
+
+    def test_an_absent_agent_names_the_agent(self, monkeypatch):
+        """The half the adapter would spawn, missing on its own: a distinct verdict."""
+        _stub_resolvers(monkeypatch, pi_cli=(None, "/usr/bin"))
+        state = probe.probe_backend(ACP_BACKEND_PI)
+        assert state.installed == probe.MISSING
+        assert state.missing_components == (probe.COMPONENT_PI_CLI,)
+        assert state.install_command.startswith("npm i -g ")
+
+    def test_both_absent_names_both(self, monkeypatch):
+        _stub_resolvers(monkeypatch, pi_acp=(None, "/usr/bin"), pi_cli=(None, "/usr/bin"))
+        state = probe.probe_backend(ACP_BACKEND_PI)
+        assert state.missing_components == (probe.COMPONENT_PI_ACP_ADAPTER, probe.COMPONENT_PI_CLI)
+
+    def test_a_cached_miss_on_either_component_reports_restart_required(self, monkeypatch):
+        from kiro_crew.acp import client
+
+        _stub_resolvers(monkeypatch)
+        monkeypatch.setattr(client, "_pi_acp_argv_cache", (["node", "/n/pi-acp.js"], "/usr/bin"))
+        monkeypatch.setattr(client, "_pi_bin_cache", (None, "/usr/bin"))
+        state = probe.probe_backend(ACP_BACKEND_PI)
+        assert state.installed == probe.INSTALLED
+        assert state.restart_required is True
 
 
 # ── The codex driver seams ──
@@ -692,6 +748,7 @@ class TestEndpointPayloadShape:
             "kas",
             "kiro",
             "opencode",
+            "pi",
         ]
         for row in rows:
             assert set(row) == {
@@ -753,6 +810,10 @@ class TestEndpointPayloadShape:
         assert by_policy["opencode"]["installed"] == "installed"
         assert by_policy["opencode"]["missing_components"] == []
         assert by_policy["opencode"]["install_command"] == ""
+        # pi's row is the two-component shape with both resolvers stubbed present.
+        assert by_policy["pi"]["installed"] == "installed"
+        assert by_policy["pi"]["missing_components"] == []
+        assert by_policy["pi"]["install_command"] == ""
 
     def test_an_unknown_row_names_no_components(self, monkeypatch):
         """The three-state rule, enforced at the payload boundary too.

@@ -49,6 +49,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_KNOWN,
     POLICY_ID_BY_BACKEND,
 )
@@ -84,6 +85,10 @@ COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
 #: The OpenCode binary. ONE component, and here that is not a simplification: the
 #: harness serves ACP itself, so there is no adapter beside it to be half-installed.
 COMPONENT_OPENCODE = "opencode"
+#: The pi backend's TWO components: the ``pi-acp`` adapter Crew spawns, and the
+#: ``pi`` agent that adapter spawns in turn. Either can be absent on its own.
+COMPONENT_PI_ACP_ADAPTER = "pi-acp"
+COMPONENT_PI_CLI = "pi"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs
 #: the filesystem, and the dashboard polls this endpoint, so an uncached probe
@@ -274,12 +279,51 @@ def _probe_codex() -> BackendInstallState:
     )
 
 
+def _probe_pi() -> BackendInstallState:
+    """The pi backend needs BOTH components, and names the absent one.
+
+    The claude probe's shape, because the harness has the same split: the adapter
+    is what Crew spawns and the agent is what the adapter spawns, and having one
+    without the other is a distinguishable half-install. Unlike claude, ONE command
+    installs both -- both are npm packages -- so it is suggested whichever half is
+    missing.
+
+    ``restart_required`` reads the spawn path's own caches for the same reason the
+    other probes do: both components resolve once per process and never
+    invalidate, so a fresh "installed" can disagree with what the next spawn does.
+    """
+    adapter_present, pi_present = acp_driver.pi_components_resolve()
+
+    missing: List[str] = []
+    if not adapter_present:
+        missing.append(COMPONENT_PI_ACP_ADAPTER)
+    if not pi_present:
+        missing.append(COMPONENT_PI_CLI)
+
+    policy_id = _policy_id(ACP_BACKEND_PI)
+    if not missing:
+        return BackendInstallState(
+            ACP_BACKEND_PI,
+            policy_id,
+            INSTALLED,
+            restart_required=acp_driver.pi_cached_negative(),
+        )
+    return BackendInstallState(
+        ACP_BACKEND_PI,
+        policy_id,
+        MISSING,
+        tuple(missing),
+        acp_driver.pi_install_command(),
+    )
+
+
 _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_KIRO: _probe_kiro,
     ACP_BACKEND_KAS: _probe_kas,
     ACP_BACKEND_CLAUDE: _probe_claude,
     ACP_BACKEND_CODEX: _probe_codex,
     ACP_BACKEND_OPENCODE: _probe_opencode,
+    ACP_BACKEND_PI: _probe_pi,
 }
 
 
