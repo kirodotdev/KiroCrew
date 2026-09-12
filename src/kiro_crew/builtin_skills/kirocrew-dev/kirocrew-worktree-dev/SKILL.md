@@ -53,6 +53,24 @@ Windows the venv binaries live under `.venv\Scripts\` instead of `.venv/bin/`):
 python3 -m venv .venv && .venv/bin/pip install -e ".[voice]" --group dev
 cd website && npm ci && cd ..
 ```
+Working from several worktrees? If `uv` resolves in your shell (`command -v uv`
+— it is a declared dependency of the package, so any activated Kiro Crew venv
+has it on `PATH`; a bare shell may not), build the venv with it instead: same
+deps, but site-packages are hardlinks into one global cache, so each extra venv
+costs ~1 MB of unique disk and ~10 s instead of ~400 MB and ~1 min. This is the
+recipe `kirocrew pod provision` runs when uv is available (design record:
+`docs/request-for-change/rfc-shared-dependency-cache.md`):
+```bash
+uv venv --seed --python 3.12 .venv
+uv pip install --link-mode hardlink --python .venv/bin/python --project . -e ".[voice]" --group dev
+```
+`--link-mode hardlink` must be explicit (uv's default has been seen to silently
+copy), `--project .` makes `--group` read this worktree's `pyproject.toml` from
+any cwd, and `--seed` keeps `.venv/bin/pip` present for `make backend`. One
+consequence of hardlinks: never edit a file under `.venv/lib/.../site-packages`
+in place — the same inode is every sibling venv's and the cache's, so the edit
+lands everywhere. Patch a dependency with a pip-built venv, or repair with
+`uv cache clean <package>` and re-provision.
 
 To list existing worktrees: `git worktree list`
 To clean up after merging: `git worktree remove ../kirocrew-wt-<name>`

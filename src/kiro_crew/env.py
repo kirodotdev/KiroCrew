@@ -19,6 +19,17 @@ from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, peek_data_home
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# ``uv`` is a declared dependency shipped as a wheel (``setup.cfg``), so this
+# import normally succeeds. An install repackaged without the wheel must still
+# import this module — a missing uv is something :func:`resolve_uv` REPORTS, never
+# an ImportError at load — so it is the optional-dependency form of
+# `top-level-imports`. Tests patch this name to model the wheel being present,
+# absent, or broken.
+try:
+    import uv as _uv_package
+except ImportError:  # pragma: no cover - only on a repackaged install
+    _uv_package = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # Common directories where MCP server binaries may be installed.
@@ -523,6 +534,38 @@ def find_node_tool(name: str, base_path: str | None = None) -> str | None:
     """
     base = os.environ.get("PATH", "") if base_path is None else base_path
     return shutil.which(name, path=node_augmented_path(base))
+
+
+def resolve_uv() -> str | None:
+    """Absolute path to a usable ``uv``, or ``None`` when genuinely absent.
+
+    ``uv`` is a DECLARED dependency (``setup.cfg``) shipped as a wheel, so a
+    stock ``pip install kirocrew`` always has the binary — but not necessarily
+    on ``PATH``: the wheel puts it in the venv's scripts dir, and an installed
+    systemd/launchd gateway runs with a minimal ``PATH``. So it is resolved
+    through the installed package first and looked up by name second:
+
+    1. ``uv.find_uv_bin()`` — the wheel's own locator. It raises ``UvNotFound``
+       (a ``FileNotFoundError`` subclass) on an install repackaged without the
+       binary, and a path it returns is only trusted when the file exists;
+    2. ``shutil.which("uv")`` — a user's own, possibly newer, uv still works;
+    3. ``None``.
+
+    Never raises: an absent uv is a reportable condition for the caller (the
+    pptx-maker engine reports "unavailable", pod provisioning falls back to
+    pip). This is the ONE spelling of the ladder — pod provisioning and the
+    pptx-maker engine both consume it, so the minimal-``PATH`` case cannot be
+    handled two different ways.
+    """
+    if _uv_package is not None:
+        try:
+            found = _uv_package.find_uv_bin()
+        except (FileNotFoundError, OSError) as exc:
+            logger.debug("uv.find_uv_bin() did not resolve: %s", exc)
+            found = None
+        if found and os.path.isfile(found):
+            return str(found)
+    return shutil.which("uv")
 
 
 def _ensure_node_script() -> Path | None:

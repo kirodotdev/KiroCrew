@@ -11,11 +11,13 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from kiro_crew import env as env_mod
 from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import launchd
@@ -1787,6 +1789,7 @@ class TestProvisionBuildPaths:
         co = tmp_path / "wt"
         co.mkdir()
         monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        monkeypatch.setattr(prov, "_find_uv", lambda: None)
 
         def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
             if cmd[1:3] == ["-m", "venv"]:
@@ -1798,6 +1801,117 @@ class TestProvisionBuildPaths:
 
         monkeypatch.setattr(prov, "_run", fake_run)
         assert prov.ensure_venv(co) is True
+
+    def test_ensure_venv_prefers_uv_with_shared_cache_flags(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With ``uv`` on the host the venv is built by uv, never by pip, and the
+        install carries the two flags that make the shared cache actually share:
+        an explicit hardlink link-mode and ``--project`` so ``--group dev``
+        resolves against the worktree's pyproject regardless of cwd."""
+        co = tmp_path / "wt"
+        co.mkdir()
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        monkeypatch.setattr(prov, "_find_uv", lambda: "/opt/bin/uv")
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            calls.append(cmd)
+            if cmd[:2] == ["/opt/bin/uv", "venv"]:
+                b = prov.venv_bin(co)
+                b.parent.mkdir(parents=True, exist_ok=True)
+                b.write_text("#!/bin/sh\n")
+                b.chmod(0o755)
+            return 0
+
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.ensure_venv(co) is True
+        assert [c[:2] for c in calls] == [["/opt/bin/uv", "venv"], ["/opt/bin/uv", "pip"]]
+        assert "--seed" in calls[0], "uv venv must seed pip so make/.venv/bin/pip keep working"
+        assert calls[0][-3:] == ["--python", "/usr/bin/python3.12", str(co / ".venv")]
+        install = calls[1]
+        assert install[install.index("--link-mode") + 1] == "hardlink"
+        assert install[install.index("--project") + 1] == str(co)
+        assert install[install.index("--editable") + 1] == str(co)
+        assert install[install.index("--group") + 1] == "dev"
+
+    def test_ensure_venv_uv_failure_falls_back_to_pip_without_deleting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A uv install that dies part-way hands the directory to ``python -m venv``
+        as-is. Nothing is deleted: a second provisioner racing on the same
+        checkout (CLI + Dev Fleet) may have just finished a good venv there, and
+        the pip path already takes over a half-built ``.venv`` from an interrupted
+        pip run in exactly the same way."""
+        co = tmp_path / "wt"
+        co.mkdir()
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        monkeypatch.setattr(prov, "_find_uv", lambda: "/opt/bin/uv")
+        monkeypatch.setattr(
+            prov.shutil, "rmtree", lambda *a, **k: pytest.fail("must not delete .venv")
+        )
+        seen: list[tuple[str, bool]] = []  # (step, uv's marker file still present)
+        marker = co / ".venv" / "bin" / "python"
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            if cmd[:2] == ["/opt/bin/uv", "venv"]:
+                marker.parent.mkdir(parents=True)
+                marker.write_text("")
+                seen.append(("uv-venv", marker.exists()))
+                return 0
+            if cmd[:2] == ["/opt/bin/uv", "pip"]:
+                seen.append(("uv-pip", marker.exists()))
+                return 1  # e.g. resolver failure
+            if cmd[1:3] == ["-m", "venv"]:
+                seen.append(("py-venv", marker.exists()))
+                b = prov.venv_bin(co)
+                b.parent.mkdir(parents=True, exist_ok=True)
+                b.write_text("#!/bin/sh\n")
+                b.chmod(0o755)
+                return 0
+            seen.append((Path(cmd[0]).name, marker.exists()))
+            return 0
+
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.ensure_venv(co) is True
+        assert [s for s, _ in seen][:3] == ["uv-venv", "uv-pip", "py-venv"]
+        assert seen[2] == (
+            "py-venv",
+            True,
+        ), "pip path must take over the existing .venv, not a deleted one"
+
+    def test_find_uv_honours_pip_only_opt_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The opt-out is a truthy flag, not mere presence: ``0``/``false`` keep uv."""
+        monkeypatch.setattr(env_mod, "_uv_package", None)  # no wheel -> ladder falls to which()
+        monkeypatch.setattr(env_mod.shutil, "which", lambda name: "/usr/bin/uv")
+        for on in ("1", "true", "YES"):
+            monkeypatch.setenv(prov.PIP_ONLY_ENV, on)
+            assert prov._find_uv() is None, on
+        for off in ("0", "false", ""):
+            monkeypatch.setenv(prov.PIP_ONLY_ENV, off)
+            assert prov._find_uv() == "/usr/bin/uv", repr(off)
+
+    def test_find_uv_is_the_shared_ladder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pod provisioning resolves uv through ``kiro_crew.env.resolve_uv`` — the
+        one ladder pptx-maker also consumes — so the declared wheel wins over
+        PATH and a systemd/launchd gateway with a minimal PATH still finds it."""
+        monkeypatch.delenv(prov.PIP_ONLY_ENV, raising=False)
+        wheel_uv = tmp_path / "site" / "uv"
+        wheel_uv.parent.mkdir()
+        wheel_uv.write_text("")
+        monkeypatch.setattr(
+            env_mod, "_uv_package", types.SimpleNamespace(find_uv_bin=lambda: str(wheel_uv))
+        )
+        monkeypatch.setattr(env_mod.shutil, "which", lambda name: "/usr/bin/uv")
+        assert prov._find_uv() == str(wheel_uv)
+
+        def missing() -> str:
+            raise FileNotFoundError("repackaged without the binary")
+
+        monkeypatch.setattr(env_mod, "_uv_package", types.SimpleNamespace(find_uv_bin=missing))
+        assert prov._find_uv() == "/usr/bin/uv"
 
     def test_ensure_venv_no_python(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         co = tmp_path / "wt"
