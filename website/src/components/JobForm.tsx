@@ -367,10 +367,21 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       onChange={setTz}
       // The vertical (Schedule sidebar) layout runs its row at 12px; without this
       // the trigger would sit at the shared `text-sm` default while every sibling
-      // stayed 12px. The horizontal layout keeps the default and takes a fixed
-      // flex basis instead.
+      // stayed 12px.
       className={vertical ? 'text-[12px]' : undefined}
-      style={vertical ? {} : { flex: '0 0 200px' }}
+      // A width FLOOR, on both layouts, and it is not cosmetic: Radix draws the
+      // popup exactly as wide as the trigger (see ui/select.tsx), and this
+      // picker's wrapper is a flex item that shrink-wraps to its SELECTED label
+      // — so the whole list took the width of the chosen zone. Measured in real
+      // Chromium with 'UTC' chosen (the shortest id in the list): a 73px popup
+      // against a 190px longest row, 14 of the 15 rows clipped to 'America/'.
+      // 200px is that longest row plus margin; a `minWidth` rather than a fixed
+      // basis so a longer stored id still grows the trigger, and the popup with
+      // it, instead of clipping. Re-measurable via
+      // scripts/capture-cron-picker-width.mjs, which also records why the
+      // interval-unit picker beside it needs no floor (its labels fit their own
+      // popup in all 12 catalogs).
+      style={{ minWidth: 200, maxWidth: '100%' }}
     />
   )
 

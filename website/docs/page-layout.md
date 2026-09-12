@@ -295,6 +295,20 @@ Inline within a `Card`, built from the shared primitives:
   These render a `<button>`, not a `<select>`, so an external
   `<label htmlFor>` does **not** name them — pass `aria-label`.
 
+  **A dropdown in a flex ROW needs a stated width, and the reason is not
+  cosmetic.** The popup is drawn exactly as wide as the trigger (see the note in
+  `ui/select.tsx`), and a `SimpleSelect` wrapper dropped into a flex row
+  shrink-wraps to the label of whatever is CURRENTLY selected — so picking a
+  short value renders the whole list at that width and truncates every longer
+  option to nothing (`JobForm`'s zone picker measured a 73px popup against a
+  190px longest row once `UTC` was chosen — 14 of its 15 rows clipped to
+  `America/`). Give such a call site a `style` width that fits its LONGEST
+  option, preferably a `minWidth` so a long translation can still grow the
+  trigger, and the popup with it. A dropdown in a `flex-col` block takes the
+  column's width already and needs nothing. Widths like these can only be
+  measured in a real browser — `scripts/capture-cron-picker-width.mjs` is the
+  worked example, and it reports rows whose content overflows their popup.
+
   **The one exception is touch, and it is not yours to make.** `SimpleSelect`
   routes to `NativeSelect` (`components/ui/native-select.tsx`) on a coarse
   pointer, so the OS draws the list there. The reason above is theming, and

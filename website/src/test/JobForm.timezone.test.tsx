@@ -97,6 +97,24 @@ describe('JobForm timezone render', () => {
     expect(options[0]).toHaveTextContent('Africa/Nairobi')
   })
 
+  /**
+   * Radix draws a Select's popup EXACTLY as wide as its trigger (see
+   * ui/select.tsx), and this picker's wrapper is a flex item free to shrink-wrap
+   * — so without a floor the whole zone list rendered at the width of the
+   * SELECTED zone, and 'UTC' left every other zone truncated to nothing. jsdom
+   * does no layout, so the floor itself is what the test can pin; it lives on
+   * SimpleSelect's wrapper, which is the flex item, not on the trigger.
+   */
+  it.each(['horizontal', 'vertical'] as const)(
+    'floors the zone picker width in the %s layout so a short zone cannot shrink the list',
+    layout => {
+      renderWithProviders(
+        <JobForm job={makeJob({ timezone: 'UTC' })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} layout={layout} />,
+      )
+      expect(tzTrigger().parentElement).toHaveStyle({ minWidth: '200px' })
+    },
+  )
+
   it('saves the raw IANA id even though the label hides the underscore', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api.updateCron).mockResolvedValue({})
