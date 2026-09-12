@@ -24,6 +24,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 
 | Need | Use (`platform_compat`) | NOT |
 |------|--------------------------|-----|
+| Tail a rotating log | `open_log_file_for_tail(path)` returns a binary read descriptor (caller closes); Windows permits read/write/delete sharing so the writer can rename during a read. Only for log readers, never security pinning. | plain `open` held while a Windows writer rolls over |
 | File lock | `file_lock(fd, exclusive=)` / `acquire_lock`+`release_lock` / `try_acquire_lock` | `fcntl.flock` |
 | Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)` | `os.kill(pid, 0)` (kills on Windows!) |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |

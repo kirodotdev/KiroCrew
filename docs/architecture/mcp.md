@@ -595,6 +595,30 @@ are CONSTRUCTED and cannot be changed afterwards. `socket_path`, `overlay_dir`,
 once at spawn, so they too are marked `restart=True` in the config schema and
 apply to a broker started after the change.
 
+### Stub argument transport
+
+Generated overlays carry backend arguments as a base64url-encoded UTF-8 JSON
+string list in `--target-args-b64`. Pool-identity environment names use the same
+codec in `--pool-identity-env-b64`. The encoded alphabet contains no shell
+metacharacters: a Windows CLI can reparse the launch through `cmd.exe` without
+turning a delimiter into a pipeline. Empty arguments, Unicode and literal pipes
+retain their original boundaries. This is encoding, not encryption; arguments
+remain visible on the command line, and the longer representation still counts
+against the host's command-line length limit. On Windows, generation warns
+with the server name and command length when the base stub command reaches
+cmd.exe's 8,191 UTF-16-unit limit; it never logs the argument payload or rejects
+a launcher that can use a longer command. Per-session additions can grow the
+command further.
+
+The stub decodes before both fallback launch and command hashing. The rewriter's
+daemon target map decodes identically, preserving the hash used to select a
+backend. Encoded flags take precedence when present; malformed payloads fail
+rather than falling back to different arguments. Legacy `--target-args`,
+`--pool-identity-env` and `--target-args-sep` remain readable. Rewriter fingerprint
+schema 4 regenerates cached delimiter-based overlays on upgrade. Upgrades must
+keep the rewriter and stub from the same package; an older stub cannot consume
+the new flags.
+
 ## How app agents reach MCP servers
 
 An app declares MCP servers in its manifest, and

@@ -139,11 +139,12 @@ class TestDoctorStrictIdentity:
     def _darwin(self, monkeypatch) -> None:
         monkeypatch.setattr(cli_doctor._plat, "system", lambda: "Darwin")
 
-    def test_all_routed_reads_healthy(self, monkeypatch, capsys) -> None:
+    def test_all_routed_reports_configuration_only(self, monkeypatch, capsys) -> None:
         self._darwin(monkeypatch)
         cli_doctor._doctor_strict_identity(self._Cfg(list(cli_doctor._STRICT_IDENTITY_SERVERS)))
         out = capsys.readouterr().out
-        assert "strict identity: ✅" in out and "per-call caller" in out
+        assert "routing configured" in out and "live session identity not verified" in out
+        assert "per-call caller" in out and "✅" not in out
 
     def test_unrouted_names_the_servers_and_the_affected_tools(self, monkeypatch, capsys) -> None:
         self._darwin(monkeypatch)

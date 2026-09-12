@@ -798,6 +798,8 @@ def _doctor_mcp_tools(
     if not probe_targets:
         return
 
+    print("  MCP host probe — session tool loading is not verified by this check.")
+
     # Every probe below spawns its server through the sandbox chokepoint, and
     # asyncio.gather releases them together. On a cold cache the first arrivals
     # therefore land on the on-loop deferral path simultaneously and each logs a
@@ -1538,7 +1540,7 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
 
 
 def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
-    """Report whether strict-identity tools have a working identity channel.
+    """Report configured routing, not proof of a live session's identity channel.
 
     On the kiro backend a session's process is an ``AcpRuntime``, which is
     session-UNBOUND by design (one process multiplexes N sessions, so it cannot
@@ -1568,7 +1570,12 @@ def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
         routed = set()
     unrouted = [s for s in _STRICT_IDENTITY_SERVERS if s not in routed]
     if not unrouted:
-        print("  strict identity: ✅ routed — the gateway injects a per-call caller")
+        print("  strict identity: ⏹ routing configured — live session identity not verified")
+        _print_wrapped(
+            "This checks mcp_gateway.stub_servers, not the running session's "
+            "launch command or per-call caller injection. Confirm a strict-identity "
+            "tool succeeds in the affected dashboard session."
+        )
         return
     names = ", ".join(unrouted)
     print(f"  strict identity: ⏹ no identity channel for {names}")

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import codecs
 import http.client
+import io
 import json
 import logging
 import os
@@ -15,6 +17,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 from typing import NoReturn
 
@@ -2483,8 +2486,60 @@ def _logs_cmd(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    if plat == Platform.UNSUPPORTED:
+        try:
+            _tail_log_file(fallback, lines, follow)
+        except OSError as exc:
+            print(
+                f"Unable to read gateway log: {exc}. "
+                "Check file access or retry `kirocrew logs` if the log is rotating.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
     cmd = ["tail", "-n", str(lines)]
     if follow:
         cmd.append("-f")
     cmd.append(str(fallback))
     os.execvp("tail", cmd)
+
+
+def _tail_log_file(path: Path, lines: int, follow: bool) -> None:
+    """Follow the log by name, allowing the writer to rotate it during reads."""
+    identity: tuple[int, int] | None = None
+    offset = 0
+    first = True
+    decoder = io.IncrementalNewlineDecoder(
+        codecs.getincrementaldecoder("utf-8")(errors="replace"), translate=True
+    )
+    try:
+        while True:
+            try:
+                fd = platform_compat.open_log_file_for_tail(path)
+            except FileNotFoundError:
+                if not follow:
+                    raise
+            else:
+                with os.fdopen(fd, "rb") as log:
+                    info = os.fstat(log.fileno())
+                    current_identity = (info.st_dev, info.st_ino)
+                    if current_identity != identity or info.st_size < offset:
+                        offset = 0
+                        decoder.reset()
+                    if first:
+                        data = b"".join(deque(log, maxlen=abs(lines)))
+                        first = False
+                    else:
+                        log.seek(offset)
+                        data = log.read()
+                    offset = log.tell()
+                    identity = current_identity
+                # Close before output or sleep can block. Rotation after open
+                # is picked up by name on the next poll, without a retry loop.
+                sys.stdout.write(decoder.decode(data, final=not follow))
+                sys.stdout.flush()
+            if not follow:
+                return
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        return

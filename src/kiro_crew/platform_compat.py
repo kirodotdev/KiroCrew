@@ -4344,6 +4344,53 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
     return fd
 
 
+_WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004
+
+
+def open_log_file_for_tail(path: str | os.PathLike) -> int:
+    """Open a binary read fd without blocking the log writer's rename/rotation.
+
+    Windows CRT opens omit FILE_SHARE_DELETE. This separate log-only helper
+    permits rotation even during a read; security pinning helpers must not.
+    The caller owns the returned descriptor and must close it.
+    """
+    if IS_POSIX:
+        return os.open(os.fspath(path), os.O_RDONLY)
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        os.fspath(path),
+        _WIN_GENERIC_READ,
+        _WIN_FILE_SHARE_READ_WRITE_DELETE,
+        None,
+        _WIN_OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    try:
+        return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+            handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        )
+    except BaseException:
+        # Ownership transfers only when the CRT descriptor is created.
+        kernel32.CloseHandle(handle)
+        raise
+
+
 # Well-known SID for the file's *owner* (implicit). Under a self-relative DACL
 # with inheritance stripped, S-1-3-4 grants access to whoever currently owns
 # the file. See:

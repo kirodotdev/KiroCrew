@@ -173,7 +173,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew setup --agent-only` | Only install agent config (skip credentials) |
 | `kirocrew setup --slack` | Run the guided Slack credential + slash-command setup (opt-in) |
 | `kirocrew setup --whatsapp` | Run the guided WhatsApp opt-in: report the optional `whatsapp` extra and the pairing state, then enable the channel (opt-in) |
-| `kirocrew doctor` | Verify kiro-cli is installed and config is valid |
+| `kirocrew doctor` | Verify kiro-cli is installed and config is valid. MCP counts are host-probe results, not confirmation of session tool loading; strict-identity routing is reported as configuration, not a verified live channel. |
 | `kirocrew cron add/list/remove` | Manage cron jobs |
 | `kirocrew spawn run/list` | Manage background subagents |
 | `kirocrew app install/list/enable/disable/uninstall` | Manage App Kit apps. Uninstall preserves `apps/<name>/data/` by default. |
@@ -191,8 +191,8 @@ choice blob makes the usage line unreadable.
 | `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
 | `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. |
 | `kirocrew service status` | Show service status (`systemctl status` or `launchctl list`). No sudo required. |
-| `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kiro/crew/gateway.log`. |
-| `kirocrew logs -f` | Follow logs live (long-running tail). |
+| `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kiro/crew/gateway.log`. Hosts without systemd/launchd, including Windows, read the UTF-8 fallback file in Python without requiring `tail`. Read failures exit with file-access/retry guidance instead of an exception traceback. |
+| `kirocrew logs -f` | Follow logs live. The Python fallback reopens the log by name on each poll, permits Windows rename-based rotation even during reads, streams appended UTF-8 text, and stops on Ctrl+C. A replacement file or detected truncation resets the read offset; a temporary missing path during rotation is retried on the next poll. Rotated backup files are not replayed. |
 | `kirocrew cloud launch/list/status/connect/stop/start/destroy/iam-policy/doctor` | Provision, connect to, and manage a KiroCrew EC2 instance in the user's AWS account. |
 | `kirocrew security events` | Show recent SEL audit events (`-n N` for count) |
 | `kirocrew security verify` | Verify SEL HMAC chain integrity |

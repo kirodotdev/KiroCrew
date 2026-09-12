@@ -41,7 +41,7 @@ from kiro_crew.executors import configure_default_executor, subprocess_executor
 from kiro_crew.jsonl_util import bounded_records, rotate_jsonl_at
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
+from kiro_crew.mcp_gateway.hashing import decode_target_args, hash_command, hash_effective_env
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 from kiro_crew.metrics.events import MCP_RECONNECTS, emit_counter
 
@@ -165,7 +165,12 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--server", required=True)
     p.add_argument("--agent", required=True)
     p.add_argument("--target-command", required=True, dest="target_command")
-    p.add_argument("--target-args", default="", dest="target_args")
+    p.add_argument(
+        "--target-args-b64",
+        default=None,
+        help="Base64url-encoded JSON argv; takes precedence over --target-args.",
+    )
+    p.add_argument("--target-args", default="", help="Legacy delimiter-separated argv.")
     p.add_argument("--target-args-sep", default="|", dest="target_args_sep")
     p.add_argument("--sandbox-mode", default="standard", dest="sandbox_mode")
     p.add_argument("--work-dir", required=True, dest="work_dir")
@@ -202,18 +207,23 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--channel-id", default=None, dest="channel_id")
     p.add_argument(
+        "--pool-identity-env-b64",
+        default=None,
+        help="Base64url-encoded JSON env names; takes precedence over --pool-identity-env.",
+    )
+    p.add_argument(
         "--pool-identity-env",
         default="",
         dest="pool_identity_env",
         help=(
-            "Env variable NAMES (separated by --target-args-sep) whose value the "
-            "operator declared part of backend identity via "
-            "mcp_gateway.pool_identity_env. Folded into effective_env_hash even "
-            "when the name looks like a rotating secret. Names only, never "
-            "values, so this is safe on argv. Carries NO authority: gatewayd "
-            "re-reads the operator's own list at spawn and refuses to forward "
-            "when the hash it recomputes does not match the one registered here, "
-            "so a stub cannot widen what gets applied to a shared backend."
+            "DEPRECATED: env variable NAMES separated by --target-args-sep. "
+            "Read only when --pool-identity-env-b64 is absent. Folded into "
+            "effective_env_hash even when the name looks like a rotating "
+            "secret. Names only, never values, so this is safe on argv. "
+            "Carries NO authority: gatewayd re-reads the operator's own list "
+            "at spawn and refuses to forward when the hash it recomputes does "
+            "not match the one registered here, so a stub cannot widen what "
+            "gets applied to a shared backend."
         ),
     )
     p.add_argument(
@@ -225,7 +235,27 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def _split_target_args(raw: str, sep: str) -> list[str]:
+    """Read delimiter-separated arguments from legacy overlays."""
     return raw.split(sep) if raw else []
+
+
+def _resolve_target_args(args: argparse.Namespace) -> list[str]:
+    """Share one decode between backend launch and the registered command hash."""
+    encoded = getattr(args, "target_args_b64", None)
+    if encoded is not None:
+        return decode_target_args(encoded)
+    return _split_target_args(args.target_args, args.target_args_sep)
+
+
+def _resolve_pool_identity_env(args: argparse.Namespace) -> frozenset[str]:
+    """Decode names only; the daemon independently checks forwarding authority."""
+    encoded = getattr(args, "pool_identity_env_b64", None)
+    names = (
+        decode_target_args(encoded)
+        if encoded is not None
+        else _split_target_args(args.pool_identity_env, args.target_args_sep)
+    )
+    return frozenset(n for n in names if n)
 
 
 def _parse_env_csv(raw: str) -> dict[str, str]:
@@ -445,7 +475,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
 
     The result is accepted verbatim by :meth:`PoolKey.from_register` —
     callers do not post-process."""
-    target_args = _split_target_args(args.target_args, args.target_args_sep)
+    target_args = _resolve_target_args(args)
     # Prefer --env-json when present (commas/equals round-trip intact);
     # fall back to the legacy --env CSV for overlay files written by a
     # pre-JSON rewriter that may still be on disk during the transition.
@@ -457,12 +487,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         env_pairs = _parse_env_csv(args.env)
     auto_approve = _parse_auto_approve(args.auto_approve)
     channel_id = _resolve_channel_id(args.channel_id)
-    # Reuses the target-args separator rather than ',' so a name can never be
-    # split the way the legacy CSV env encoding split values. Empty -> the
-    # default set, which hashes exactly as it did before this flag existed.
-    identity_keys = frozenset(
-        n for n in args.pool_identity_env.split(args.target_args_sep) if n
-    )
+    identity_keys = _resolve_pool_identity_env(args)
 
     try:
         work_dir = str(Path(args.work_dir).resolve())
@@ -1712,7 +1737,7 @@ def fallback_exec(args: argparse.Namespace) -> None:
     diagnostic. Windows has no in-place exec, so there the backend runs as a
     child inheriting this process's stdio -- see :func:`_fallback_spawn_child`
     for why the emulated ``exec*`` would kill the session outright."""
-    target_args = _split_target_args(args.target_args, args.target_args_sep)
+    target_args = _resolve_target_args(args)
     argv = [args.target_command, *target_args]
     # Restore the server's declared env. The rewriter moves declared env
     # (which routinely holds tokens / API keys) into a 0600 sidecar the stub
