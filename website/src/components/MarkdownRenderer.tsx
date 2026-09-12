@@ -4,6 +4,7 @@ import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
 import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, FileCode, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
 import { copyCode, copyToClipboard } from '../utils/clipboard'
+import { clampNestingDepth } from '../utils/clampNestingDepth'
 import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
@@ -3772,6 +3773,14 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // streaming transitions or when the agent emits protocol markup as text.
   // Both passes preserve mentions inside inline-code spans.
   let clean = stripStrayToolUseTags(stripStrayWidgetTags(content))
+  // Clamp pathological nesting depth BEFORE any parsing: past the engine's
+  // call-stack limit, remark-rehype's recursive mdast->hast transform (and this
+  // module's own tree walkers) throw `RangeError: Maximum call stack size
+  // exceeded` on a single message. Runs in both sourcePos modes -- a message
+  // that crashes the renderer has no coordinates to preserve -- and rewrites
+  // only lines beyond the bounds (>100 blockquote markers / >256 indent cols),
+  // so ordinary content is byte-identical. See clampNestingDepth for details.
+  clean = clampNestingDepth(clean)
   // `glow` marks the live streaming tail block: while streaming, hold back an
   // incomplete trailing table so it doesn't paint as pipe text then snap into a
   // <table> when the delimiter row arrives.
