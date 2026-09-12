@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import unicodedata
 from typing import Any
 
 from aiohttp import web
@@ -18,6 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
+from kiro_crew.imessage.plaintext import _grapheme_end
 from kiro_crew.llm_helpers import background_turn, run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -806,10 +806,12 @@ def _title_reveal_prefixes(title: str) -> list[str]:
     two characters at a time instead, so a 12-character zh name reveals in about
     as many steps as a 6-word en one rather than 12.
 
-    A cut is extended past any combining marks that follow it, so a frame never
-    shows a Thai consonant whose tone mark has not arrived yet (``แก`` then
-    ``แก้``): the mark would appear to pop onto an already-drawn glyph. Chinese
-    and Japanese have no combining marks, so this only ever fires for Thai.
+    A cut is extended to the end of the grapheme cluster it lands in, so a
+    frame never shows an incomplete glyph: not a Thai consonant whose tone
+    mark has not arrived yet (``แก`` then ``แก้`` — the mark would appear to
+    pop onto an already-drawn glyph), and not half of a ZWJ family, flag,
+    skin-tone, keycap or accented sequence either. Chinese and Japanese have
+    no combining marks, so the combining case only ever fires for Thai.
     """
     words = title.split()
     if len(words) > 1:
@@ -820,12 +822,11 @@ def _title_reveal_prefixes(title: str) -> list[str]:
     prefixes: list[str] = []
     cut = _TITLE_REVEAL_CHAR_CHUNK
     while cut < len(single):
-        while cut < len(single) and unicodedata.combining(single[cut]):
-            cut += 1
-        if cut >= len(single):
+        end = _grapheme_end(single, cut)
+        if end >= len(single):
             break
-        prefixes.append(single[:cut])
-        cut += _TITLE_REVEAL_CHAR_CHUNK
+        prefixes.append(single[:end])
+        cut = end + _TITLE_REVEAL_CHAR_CHUNK
     return prefixes
 
 
