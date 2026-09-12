@@ -209,6 +209,12 @@ function rowAction(title: string, action: string): void {
   fireEvent.click(within(noteRow(title)).getByRole('button', { name: action }))
 }
 
+/** Pick `action` from a folder row's create menu (one trigger, two items). */
+function folderCreate(folder: string, action: string): void {
+  rowAction(folder, 'New note or subfolder here')
+  rowAction(folder, action)
+}
+
 /** Walk the delete confirmation for a row through to its Delete button. */
 async function confirmDelete(title: string): Promise<void> {
   rowAction(title, 'Delete note')
@@ -803,16 +809,242 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     expect(api.readNote).toHaveBeenCalledWith('v1', 'Renamed.md')
   })
 
-  it('ignores a rename that strips down to an empty name', async () => {
+  it('refuses a rename that strips down to empty or to a Windows device name, at the field', async () => {
     await mount()
     await screen.findByRole('button', { name: 'One' }, TREE_READY)
     rowAction('One', 'Rename note')
     const field = await screen.findByRole('textbox', { name: 'Note name' })
     await userEvent.clear(field)
-    // Every character here is illegal in a filename, so nothing is left.
     await userEvent.type(field, '?*|{Enter}')
-
     expect(api.moveNote).not.toHaveBeenCalled()
+    // The field stays open with the draft and one cause-specific reason beside
+    // it — a validation hint, not the error notice.
+    expect(field).toHaveValue('?*|')
+    expect(field).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByText('Nothing usable is left once illegal characters are removed')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+    await userEvent.clear(field)
+    await userEvent.type(field, 'CON{Enter}')
+    expect(api.moveNote).not.toHaveBeenCalled()
+    expect(screen.getByText('Windows reserves this name (CON, NUL, LPT1…)')).toBeTruthy()
+    // Fixing the name commits it.
+    await userEvent.clear(field)
+    await userEvent.type(field, 'Console{Enter}')
+    await waitFor(() => expect(api.moveNote).toHaveBeenCalledWith('v1', 'One.md', 'Console.md'))
+  })
+
+  it('treats a blank rename as a cancel, with nothing reported', async () => {
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    rowAction('One', 'Rename note')
+    const field = await screen.findByRole('textbox', { name: 'Note name' })
+    await userEvent.clear(field)
+    await userEvent.type(field, '   {Enter}')
+    expect(api.moveNote).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  // ── folders: born with their first note ──────────────────────────────────
+
+  it('creates a top-level folder through its first note and opens that note', async () => {
+    api.newNote.mockResolvedValue({ path: 'Projects/Untitled.md' })
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New folder at the top level' }))
+    const field = await screen.findByRole('textbox', { name: 'Folder name' })
+    expect(document.activeElement).toBe(field)
+    // Choosing an item closed the menu.
+    expect(screen.queryByRole('button', { name: 'New note at the top level' })).toBeNull()
+    // Separators and filename-illegal characters are stripped, a leading dot
+    // too (the backend refuses a dotted component); the rest is trimmed.
+    await userEvent.type(field, ' ..Pro/jects? {Enter}')
+
+    await waitFor(() => expect(api.newNote).toHaveBeenCalledWith('v1', 'Projects'))
+    await waitFor(() => expect(api.readNote).toHaveBeenCalledWith('v1', 'Projects/Untitled.md'))
+    expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull()
+  })
+
+  it('creates a subfolder under the hovered folder, expanding it first if collapsed', async () => {
+    localStorage.setItem('mdnb-collapsed-v1', '["folder"]')
+    api.newNote.mockResolvedValue({ path: 'folder/Sub/Untitled.md' })
+    await mount()
+    await screen.findByRole('button', { name: 'folder' }, TREE_READY)
+    // Collapsed: the folder's note is off screen.
+    expect(screen.queryByRole('button', { name: 'Two' })).toBeNull()
+    folderCreate('folder', 'New subfolder')
+    // Expanded so the field is visible among the children.
+    expect(screen.getByRole('button', { name: 'Two' })).toBeTruthy()
+    expect(localStorage.getItem('mdnb-collapsed-v1')).toBe('[]')
+    const field = await screen.findByRole('textbox', { name: 'Folder name' })
+    await userEvent.type(field, 'Sub{Enter}')
+
+    await waitFor(() => expect(api.newNote).toHaveBeenCalledWith('v1', 'folder/Sub'))
+  })
+
+  it('keeps a nested folder draft across a search that unmounts the tree', async () => {
+    api.search.mockResolvedValue({ results: [] })
+    await mount()
+    await screen.findByRole('button', { name: 'folder' }, TREE_READY)
+    folderCreate('folder', 'New subfolder')
+    let field = await screen.findByRole('textbox', { name: 'Folder name' })
+    // A refused name, left in the field to fix.
+    await userEvent.type(field, 'CON{Enter}')
+    expect(screen.getByText('Windows reserves this name (CON, NUL, LPT1…)')).toBeTruthy()
+    // Typing in Search replaces the tree with results: the field is gone.
+    const search = screen.getByRole('textbox', { name: 'Search notes' })
+    await userEvent.type(search, 'zzz')
+    expect(await screen.findByText('No matches')).toBeTruthy()
+    expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull()
+    // Clearing the search brings the tree back — with the draft, not an empty field.
+    await userEvent.clear(search)
+    field = await screen.findByRole('textbox', { name: 'Folder name' })
+    expect(field).toHaveValue('CON')
+    await userEvent.clear(field)
+    await userEvent.type(field, 'Console{Enter}')
+    await waitFor(() => expect(api.newNote).toHaveBeenCalledWith('v1', 'folder/Console'))
+  })
+
+  it('closes the header create menu on a pointer press elsewhere', async () => {
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    expect(screen.getByRole('button', { name: 'New folder at the top level' })).toBeTruthy()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'One' }))
+    expect(screen.queryByRole('button', { name: 'New folder at the top level' })).toBeNull()
+    expect(api.newNote).not.toHaveBeenCalled()
+  })
+
+  it('creates a note inside a folder from the folder row', async () => {
+    api.newNote.mockResolvedValue({ path: 'folder/Untitled.md' })
+    await mount()
+    await screen.findByRole('button', { name: 'folder' }, TREE_READY)
+    folderCreate('folder', 'New note in this folder')
+
+    await waitFor(() => expect(api.newNote).toHaveBeenCalledWith('v1', 'folder'))
+    await waitFor(() => expect(api.readNote).toHaveBeenCalledWith('v1', 'folder/Untitled.md'))
+  })
+
+  it('refuses a folder name Windows cannot check out and says so; strips a trailing dot', async () => {
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    for (const bad of ['CON', 'lpt1', 'Nul.txt', ' . . ']) {
+      fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+      fireEvent.click(screen.getByRole('button', { name: 'New folder at the top level' }))
+      const field = await screen.findByRole('textbox', { name: 'Folder name' })
+      await userEvent.type(field, `${bad}{Enter}`)
+      expect(api.newNote).not.toHaveBeenCalled()
+      // The field stays, draft intact, with the reason beside it.
+      expect(field).toHaveAttribute('aria-invalid', 'true')
+      expect(screen.queryByRole('alert')).toBeNull()
+      const reason = bad.trim().startsWith('.')
+        ? 'Nothing usable is left once illegal characters are removed'
+        : 'Windows reserves this name (CON, NUL, LPT1…)'
+      expect(screen.getByText(reason)).toBeTruthy()
+      await userEvent.type(field, '{Escape}')
+      expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull()
+    }
+    api.newNote.mockResolvedValue({ path: 'Drafts/Untitled.md' })
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New folder at the top level' }))
+    const field = await screen.findByRole('textbox', { name: 'Folder name' })
+    // NTFS strips a trailing dot or space, so the name would not round-trip.
+    await userEvent.type(field, 'Drafts. .{Enter}')
+    await waitFor(() => expect(api.newNote).toHaveBeenCalledWith('v1', 'Drafts'))
+  })
+
+  it('does not open the created note in another vault when the vault changed mid-request', async () => {
+    const create = deferred<{ path: string }>()
+    api.newNote.mockImplementationOnce(() => create.promise)
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    api.readNote.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New note at the top level' }))
+    expect(api.newNote).toHaveBeenCalledWith('v1')
+    // Switch while the create is in flight.
+    await userEvent.click(screen.getByRole('button', { name: 'Switch vault' }))
+    await userEvent.click(await screen.findByRole('option', { name: /Archive/ }))
+    await screen.findByRole('button', { name: 'Archived' })
+    api.listNotes.mockClear()
+    await act(async () => {
+      create.settle({ path: 'Untitled.md' })
+      await Promise.resolve()
+    })
+    // The continuation stopped: no reload of, and no open in, the new vault.
+    expect(api.listNotes).not.toHaveBeenCalled()
+    expect(api.readNote).not.toHaveBeenCalledWith('v2', 'Untitled.md')
+    expect(screen.queryByRole('button', { name: 'Untitled' })).toBeNull()
+  })
+
+  it('does not open the created note in another vault when a switch is still flushing a dirty note', async () => {
+    const save = deferred<{ ok: boolean; mtime: number }>()
+    api.saveNote.mockImplementationOnce(() => save.promise)
+    await mountWithNote()
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
+    vi.useFakeTimers()
+    fireEvent.change(rawEditor(), { target: { value: '# Hello\n\nstill saving' } })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
+    })
+    expect(api.saveNote).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+
+    // Switch while that save is in flight. The switch joins the save and only
+    // repoints the vault once it lands, so the page still shows the first vault.
+    await userEvent.click(screen.getByRole('button', { name: 'Switch vault' }))
+    await userEvent.click(await screen.findByRole('option', { name: /Archive/ }))
+    expect(screen.getByRole('button', { name: 'One' })).toBeTruthy()
+    api.readNote.mockClear()
+    // Create a note meanwhile. Both of newNote's pin checks pass — the vault has
+    // not moved yet — and its open parks on the same save, BEHIND the switch.
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New note at the top level' }))
+    await waitFor(() => expect(api.newNote).toHaveBeenCalledWith('v1'))
+    await act(async () => {
+      save.settle({ ok: true, mtime: 6 })
+      await Promise.resolve()
+    })
+    await screen.findByRole('button', { name: 'Archived' })
+    // The switch landed first; the open must notice its pinned vault is gone
+    // rather than read `Untitled.md` from the vault the user just moved to.
+    expect(api.readNote).not.toHaveBeenCalledWith('v2', 'Untitled.md')
+    expect(screen.queryByRole('button', { name: 'Untitled' })).toBeNull()
+  })
+
+  it('creates nothing when the folder name strips down to empty, or on Escape', async () => {
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New folder at the top level' }))
+    let field = await screen.findByRole('textbox', { name: 'Folder name' })
+    await userEvent.type(field, '?*|{Enter}')
+    expect(api.newNote).not.toHaveBeenCalled()
+    // Refused at the field: still open, draft kept, reason beside it, no notice.
+    expect(field).toHaveValue('?*|')
+    expect(screen.getByText('Nothing usable is left once illegal characters are removed')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+    await userEvent.type(field, '{Escape}')
+    expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New folder at the top level' }))
+    field = await screen.findByRole('textbox', { name: 'Folder name' })
+    await userEvent.type(field, 'Projects{Escape}')
+    expect(api.newNote).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull()
+  })
+
+  it('drops the open folder field when the vault is switched', async () => {
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    fireEvent.click(screen.getByRole('button', { name: 'New note or folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New folder at the top level' }))
+    await screen.findByRole('textbox', { name: 'Folder name' })
+    await userEvent.click(screen.getByRole('button', { name: 'Switch vault' }))
+    await userEvent.click(await screen.findByRole('option', { name: /Archive/ }))
+    await screen.findByRole('button', { name: 'Archived' })
+    expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull()
   })
 
   it('joins an active debounced save and refuses to move when that save fails', async () => {

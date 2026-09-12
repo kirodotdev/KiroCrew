@@ -66,7 +66,14 @@ import { InlineLink } from './bits'
 import { SettingsBar, SettingsPage } from './SettingsPage'
 import Clickable from '../../components/Clickable'
 import ReadingWidthToggle from '../../components/ReadingWidthToggle'
-import { NoteRow, flattenVisibleNotes, orderNotes, renderTree } from './NoteRow'
+import {
+  CreateMenu,
+  NewFolderRow,
+  NoteRow,
+  flattenVisibleNotes,
+  orderNotes,
+  renderTree,
+} from './NoteRow'
 import {
   FM_RE,
   agoBucket,
@@ -76,7 +83,9 @@ import {
   loadPref,
   matchesShortcut,
   neighborAfterDelete,
+  nameProblem,
   noteDirPath,
+  portableName,
   savePref,
   shiftListItem,
   targetsSameNote,
@@ -105,6 +114,7 @@ const REQUIRED_FEATURES = [
   'pickFolder',
 ]
 
+/** One row of the header's create menu — the sort menu's row recipe. */
 const iconBtn: CSSProperties = {
   width: '28px',
   height: '28px',
@@ -163,6 +173,8 @@ export default function MdNotebookPage() {
   const [showConnect, setShowConnect] = useState(false)
   const [vaultSelOpen, setVaultSelOpen] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
+  // The header's create menu (new note / new folder at the top level).
+  const [createOpen, setCreateOpen] = useState(false)
   const [fileConflict, setFileConflict] = useState<{ mtime: number; disk: string } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [auth, setAuth] = useState({ hasPat: false, hasGhAuth: false })
@@ -170,6 +182,11 @@ export default function MdNotebookPage() {
   // inline from its hover action bar.
   const [pinned, setPinned] = useState<Set<string>>(new Set())
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  // The folder ('' is the root) whose new-subfolder name field is open, if any.
+  const [newFolderParent, setNewFolderParent] = useState<string | null>(null)
+  // The name typed into that field so far. Held here, not only in the field:
+  // the field sits in the tree, and the tree unmounts while a search is typed.
+  const [newFolderDraft, setNewFolderDraft] = useState('')
   // The note awaiting delete confirmation, and the one whose DELETE is in flight.
   const [confirmDelete, setConfirmDelete] = useState<{ path: string; title: string } | null>(null)
   // Identified by VAULT + PATH, never a bare path. A path here is vault-RELATIVE,
@@ -823,7 +840,11 @@ export default function MdNotebookPage() {
   }, [trackWrite])
 
   const openNote = useCallback(async (path: string) => {
-    if (!vaultRef.current) return
+    // `path` is vault-relative: it names a note in THIS vault, the one on
+    // screen when the open was asked for. Every caller checks that vault before
+    // calling, so what is current at entry is the vault the path belongs to.
+    const vault = vaultRef.current
+    if (!vault) return
     // Claim this open's sequence NOW, before any await: ordering must reflect
     // the order openNote was CALLED, not the order the debounced saves happen
     // to finish. If it were bumped after flushSave, a dirty note A whose save
@@ -835,6 +856,15 @@ export default function MdNotebookPage() {
     await flushSave()
     // A later openNote superseded this one while the flush was in flight.
     if (openSeqRef.current !== seq) return
+    // `switchVault` awaits its own flushSave BEFORE repointing `vaultRef`, so a
+    // switch that started while this open was queued may only land its vault
+    // change after this flush resolves — too late for the caller's own check,
+    // and the seq bump it did is invisible here because our seq was claimed
+    // after it. Without this re-check the read below would fetch `path` from
+    // the NEW vault and a same-named note there would inherit the edits. Done
+    // here, once, rather than by each caller: create, duplicate, move and
+    // post-delete all share the request-then-open shape.
+    if (vaultRef.current !== vault) return
     // flushSave leaves `dirty` set when the write failed — an ESTALE conflict is
     // waiting for the user to choose a version. Navigating would discard it.
     if (dirtyRef.current) return
@@ -894,6 +924,7 @@ export default function MdNotebookPage() {
     setPinned(new Set(loadPref<string[]>(pinnedKey(activeVaultId), [])))
     setCollapsed(new Set(loadPref<string[]>(collapsedKey(activeVaultId), [])))
     setRenamingPath(null)
+    setNewFolderParent(null)
     void loadNotes()
   }, [activeVaultId, loadNotes])
 
@@ -1039,6 +1070,8 @@ export default function MdNotebookPage() {
       // user never chose.
       setConfirmDelete(null)
       setRenamingPath(null)
+      setNewFolderParent(null)
+      setCreateOpen(false)
       setActivePath(null)
       pathRef.current = null
       setContent('')
@@ -1049,10 +1082,26 @@ export default function MdNotebookPage() {
     [flushSave],
   )
 
-  const newNote = useCallback(async () => {
+  /**
+   * Create an empty note in `folder` ('' or omitted is the vault root) and
+   * open it. The vault is pinned for the whole create → reload → open
+   * sequence: `openNote` reads the ACTIVE vault when called, so a switch made
+   * while the request was in flight would open the returned relative path in
+   * the new vault — and a same-named note there would then take the edits.
+   */
+  const newNote = useCallback(async (folder = '') => {
+    const vault = vaultRef.current
     try {
-      const { path } = await notesApi.newNote(vaultRef.current)
+      // Two call shapes, not one with `undefined`: the root call keeps the
+      // arity it always had, so nothing observing it sees a new argument.
+      const { path } = folder
+        ? await notesApi.newNote(vault, folder)
+        : await notesApi.newNote(vault)
+      if (vaultRef.current !== vault) return
       await loadNotes()
+      if (vaultRef.current !== vault) return
+      // openNote re-checks the vault after its own flushSave: a vault switch
+      // whose flush is still in flight here would otherwise win the race.
       await openNote(path)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -1174,20 +1223,71 @@ export default function MdNotebookPage() {
     [relocate],
   )
 
+  /**
+   * The validation the inline name fields show beside the input before they
+   * commit: one message per cause (`nameProblem`). This is a hint about a
+   * value not yet sent, not the outcome of a failed operation, so it is NOT
+   * routed through `error` / `ErrorNotice` (AUTOSDE errors-use-error-notice).
+   */
+  const validateName = useCallback((raw: string): string | null => {
+    switch (nameProblem(raw)) {
+      case 'empty':
+        return i18nT('apps.mdNotebook.row.nameEmptyAfterClean')
+      case 'reserved':
+        return i18nT('apps.mdNotebook.row.nameReserved')
+      default:
+        return null
+    }
+  }, [])
+
   /** Rename in place from the inline title, keeping the folder. */
   const renameNote = useCallback(
     (from: string, nextName: string) => {
-      // Strip separators and characters illegal in filenames, so a title edit
-      // can never move the note or produce an unopenable name.
-      const clean = String(nextName)
-        .replace(/[\\/:*?"<>|]/g, '')
-        .trim()
-        .slice(0, 120)
+      // The same cleaner as a new folder: a title edit can never move the
+      // note or produce a name a Windows clone cannot hold. The field has
+      // already validated; an empty result here is a blank, i.e. a cancel.
+      const clean = portableName(nextName)
       if (!clean) return
       const dir = from.includes('/') ? from.slice(0, from.lastIndexOf('/')) : ''
       void relocate(from, `${dir ? `${dir}/` : ''}${clean}.md`)
     },
     [relocate],
+  )
+
+  /**
+   * Open the name field for a folder under `parent`. A collapsed parent is
+   * expanded first: the field renders among its children, so it would
+   * otherwise be invisible and the user left typing into nothing.
+   */
+  const startNewFolder = useCallback(
+    (parent: string) => {
+      if (parent && collapsed.has(parent)) {
+        const next = new Set(collapsed)
+        next.delete(parent)
+        writeCollapsed(next)
+      }
+      setRenamingPath(null)
+      setNewFolderDraft('')
+      setNewFolderParent(parent)
+    },
+    [collapsed, writeCollapsed],
+  )
+
+  /**
+   * Create `parent/name` by creating its first note there and opening it. The
+   * backend makes the directory on the way (`/api/note/new` mkdirs the target),
+   * so no folder endpoint exists — and none is wanted: the tree is derived from
+   * note paths and git does not track an empty directory, so a folder with no
+   * note would vanish on the next clone. The name goes through the same
+   * cleaner as a note rename (`portableName`, see utils.ts for the rules).
+   */
+  const newFolder = useCallback(
+    (parent: string, name: string) => {
+      const clean = portableName(name)
+      if (!clean) return
+      void newNote(parent ? `${parent}/${clean}` : clean)
+    },
+    [newNote],
   )
 
   /** Copy a note beside itself and open the copy. */
@@ -1545,6 +1645,14 @@ export default function MdNotebookPage() {
       onRenameStart: setRenamingPath,
       onRenameEnd: () => setRenamingPath(null),
       onRename: renameNote,
+      validateName,
+      onNewNote: f => void newNote(f),
+      newFolderParent,
+      onNewFolderStart: startNewFolder,
+      onNewFolderEnd: () => setNewFolderParent(null),
+      newFolderDraft,
+      onNewFolderDraft: setNewFolderDraft,
+      onNewFolder: newFolder,
     }),
     [
       isPinned,
@@ -1555,7 +1663,13 @@ export default function MdNotebookPage() {
       deleting,
       activeVaultId,
       renameNote,
+      validateName,
       canTrash,
+      newNote,
+      newFolderParent,
+      newFolderDraft,
+      startNewFolder,
+      newFolder,
     ],
   )
 
@@ -1828,20 +1942,35 @@ export default function MdNotebookPage() {
                 }}
               />
             </button>
-            {/* New note, at the top level of the vault — outside every folder.
-                It lives here rather than beside the document controls because
-                creating a note is a navigation act on this list, and "outside
-                all folders" only reads as a location next to the tree. */}
-            <button
-              type="button"
-              onClick={() => void newNote()}
-              aria-label={i18nT('apps.mdNotebook.panel.newRootNote')}
-              title={i18nT('apps.mdNotebook.panel.newRootNote')}
-              style={{ ...iconBtn, marginLeft: 'auto' }}
-              className="mdnb-act"
-            >
-              <Plus size={16} />
-            </button>
+            {/* New note / new folder, at the top level of the vault — outside
+                every folder. They live here rather than beside the document
+                controls because creating one is a navigation act on this list,
+                and "outside all folders" only reads as a location next to the
+                tree. ONE trigger with a two-item menu, not two buttons: the
+                vault selector is already this row's other control, and a row
+                holds at most two (AUTOSDE max-two-buttons-per-row). */}
+            <div style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setCreateOpen(o => !o)}
+                aria-label={i18nT('apps.mdNotebook.panel.create')}
+                title={i18nT('apps.mdNotebook.panel.create')}
+                aria-expanded={createOpen}
+                style={iconBtn}
+                className="mdnb-act"
+              >
+                <Plus size={16} />
+              </button>
+              {createOpen && (
+                <CreateMenu
+                  noteLabel={i18nT('apps.mdNotebook.panel.newRootNote')}
+                  folderLabel={i18nT('apps.mdNotebook.panel.newRootFolder')}
+                  onNote={() => void newNote()}
+                  onFolder={() => startNewFolder('')}
+                  onClose={() => setCreateOpen(false)}
+                />
+              )}
+            </div>
             {vaultSelOpen && (
               <div
                 role="listbox"
@@ -2077,6 +2206,11 @@ export default function MdNotebookPage() {
               if (from) moveNote(from, '')
             }}
           >
+            {/* A top-level folder being named. Placed here, not in the tree,
+                so it also shows in list view and during a search. */}
+            {newFolderParent === '' && (
+              <NewFolderRow parent="" depth={0} actions={noteActions} />
+            )}
             {query.trim()
               ? results.length
                 ? results.map(r => (

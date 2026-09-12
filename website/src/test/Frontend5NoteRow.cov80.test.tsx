@@ -13,7 +13,7 @@
  * their labels, so the assertions never pin user-visible copy.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { render, fireEvent, within } from '@testing-library/react'
 
 import {
   NoteRow,
@@ -38,6 +38,14 @@ function actions(over: Partial<NoteActions> = {}): NoteActions {
     onRenameStart: vi.fn(),
     onRenameEnd: vi.fn(),
     onRename: vi.fn(),
+    validateName: vi.fn(() => null),
+    onNewNote: vi.fn(),
+    newFolderParent: null,
+    onNewFolderStart: vi.fn(),
+    onNewFolderEnd: vi.fn(),
+    newFolderDraft: '',
+    onNewFolderDraft: vi.fn(),
+    onNewFolder: vi.fn(),
     ...over,
   }
 }
@@ -53,7 +61,7 @@ function transfer(payload = '') {
   }
 }
 
-/** The hover action bar's buttons, in DOM order: pin, duplicate, rename, delete. */
+/** The hover action bar's buttons, in DOM order: pin, duplicate, rename, delete on a note; new note, new subfolder on a folder. */
 function actionButtons(root: HTMLElement) {
   return Array.from(root.querySelectorAll('.mdnb-row-actions button')) as HTMLButtonElement[]
 }
@@ -350,5 +358,204 @@ describe('md-notebook/NoteRow — ordering helpers', () => {
   it('applies the pin order inside a folder', () => {
     const paths = flattenVisibleNotes(tree(), byTitle, (p) => p === 'beta/b2.md', new Set())
     expect(paths).toEqual(['alpha/a1.md', 'beta/b2.md', 'beta/b1.md', 'root1.md', 'root2.md'])
+  })
+})
+
+describe('md-notebook/NoteRow — folder row actions and the new-folder field', () => {
+  function renderFolders(over: Partial<NoteActions> = {}) {
+    const a = actions(over)
+    const toggle = vi.fn()
+    const utils = render(
+      <div>{renderTree(tree(), 0, '', {
+        activePath: null,
+        onOpen: vi.fn(),
+        collapsed: new Set(),
+        toggle,
+        cmp: (x, y) => x.title.localeCompare(y.title),
+        actions: a,
+      })}</div>,
+    )
+    return { a, toggle, ...utils }
+  }
+
+  it('opens a create menu from one trigger; an item acts and closes it, without toggling the folder', () => {
+    const { container, a, toggle } = renderFolders()
+    const alpha = container.querySelectorAll('.mdnb-row')[0] as HTMLElement
+    // ONE visible action on the bar (the row's click is already the toggle).
+    const [trigger, ...others] = actionButtons(alpha)
+    expect(others).toEqual([])
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    const bar = alpha.querySelector('.mdnb-folder-actions') as HTMLElement
+    expect(bar.style.opacity).toBe('')
+
+    fireEvent.click(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    // Held visible while open: the menu hangs below the row, outside its hover.
+    expect(bar.style.opacity).toBe('1')
+    fireEvent.click(within(alpha).getByRole('button', { name: 'New note in this folder' }))
+    expect(a.onNewNote).toHaveBeenCalledWith('alpha')
+    expect(within(alpha).queryByRole('button', { name: 'New subfolder' })).toBeNull()
+    expect(bar.style.opacity).toBe('')
+
+    fireEvent.click(trigger)
+    fireEvent.click(within(alpha).getByRole('button', { name: 'New subfolder' }))
+    expect(a.onNewFolderStart).toHaveBeenCalledWith('alpha')
+    expect(within(alpha).queryByRole('button', { name: 'New subfolder' })).toBeNull()
+    // stopPropagation: no click reached the row's own toggle handler.
+    expect(toggle).not.toHaveBeenCalled()
+  })
+
+  it('closes the create menu on Escape and on a second press of the trigger, acting on nothing', () => {
+    const { container, a } = renderFolders()
+    const alpha = container.querySelectorAll('.mdnb-row')[0] as HTMLElement
+    const [trigger] = actionButtons(alpha)
+    fireEvent.click(trigger)
+    fireEvent.keyDown(within(alpha).getByRole('button', { name: 'New subfolder' }), { key: 'Escape' })
+    expect(within(alpha).queryByRole('button', { name: 'New subfolder' })).toBeNull()
+    fireEvent.click(trigger)
+    fireEvent.click(trigger)
+    expect(within(alpha).queryByRole('button', { name: 'New subfolder' })).toBeNull()
+    expect(a.onNewNote).not.toHaveBeenCalled()
+    expect(a.onNewFolderStart).not.toHaveBeenCalled()
+  })
+
+  it('closes the create menu on a pointer press outside its host, and on Escape from the trigger', () => {
+    const { container, a } = renderFolders()
+    const alpha = container.querySelectorAll('.mdnb-row')[0] as HTMLElement
+    const [trigger] = actionButtons(alpha)
+    fireEvent.click(trigger)
+    const item = () => within(alpha).queryByRole('button', { name: 'New subfolder' })
+    // A press inside the host (the menu itself, the trigger) leaves it open: the
+    // trigger's own click is its toggle, and closing here too would reopen it.
+    fireEvent.pointerDown(item()!)
+    expect(item()).not.toBeNull()
+    fireEvent.pointerDown(trigger)
+    expect(item()).not.toBeNull()
+    // A press anywhere else — the page around the tree — closes it, acting on nothing.
+    fireEvent.pointerDown(document.body)
+    expect(item()).toBeNull()
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+
+    // Right after opening, focus is still on the trigger: Escape there closes.
+    fireEvent.click(trigger)
+    expect(item()).not.toBeNull()
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(item()).toBeNull()
+    expect(a.onNewNote).not.toHaveBeenCalled()
+    expect(a.onNewFolderStart).not.toHaveBeenCalled()
+  })
+
+  it('seeds the field from the mirrored draft and mirrors every keystroke back', () => {
+    const { container, a } = renderFolders({ newFolderParent: 'beta', newFolderDraft: 'Proj' })
+    const input = container.querySelector('input') as HTMLInputElement
+    // The tree unmounts during a search; the draft comes back from the page.
+    expect(input.value).toBe('Proj')
+    fireEvent.change(input, { target: { value: 'Projects' } })
+    expect(a.onNewFolderDraft).toHaveBeenCalledWith('Projects')
+    expect(input.value).toBe('Projects')
+  })
+
+  it('previews the cleaned name in the hint when the cleaner would change it', () => {
+    const { container } = renderFolders({ newFolderParent: 'beta' })
+    const input = container.querySelector('input') as HTMLInputElement
+    const hint = () =>
+      container.querySelector(`#${CSS.escape(input.getAttribute('aria-describedby')!)}`)?.textContent
+    expect(hint()).toBe('Starts with an empty note')
+    // Path-style nesting and forbidden characters: the name that WILL be created.
+    fireEvent.change(input, { target: { value: '2026/Q1' } })
+    expect(hint()).toBe('Will be created as “2026Q1”')
+    fireEvent.change(input, { target: { value: 'Q&A: 2026' } })
+    expect(hint()).toBe('Will be created as “Q&A 2026”')
+    // A name the cleaner leaves alone goes back to the plain disclosure.
+    fireEvent.change(input, { target: { value: 'Plans' } })
+    expect(hint()).toBe('Starts with an empty note')
+    // Nothing usable left: no preview of an empty name, the refusal speaks instead.
+    fireEvent.change(input, { target: { value: '?*|' } })
+    expect(hint()).toBe('Starts with an empty note')
+  })
+
+  it('keeps a refused folder name in the field, marked invalid with the reason, until it is edited', () => {
+    const { container, a } = renderFolders({
+      newFolderParent: 'beta',
+      validateName: vi.fn((raw: string) => (raw === 'CON' ? 'Windows reserves this name' : null)),
+    })
+    const input = container.querySelector('input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'CON' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // Not committed, not closed: the draft is still there to fix.
+    expect(a.onNewFolder).not.toHaveBeenCalled()
+    expect(a.onNewFolderEnd).not.toHaveBeenCalled()
+    expect(input.value).toBe('CON')
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    const hint = container.querySelector(`#${CSS.escape(input.getAttribute('aria-describedby')!)}`)
+    expect(hint?.textContent).toBe('Windows reserves this name')
+    // Blur while refused keeps it too (the reason would otherwise vanish with the draft).
+    fireEvent.blur(input)
+    expect(a.onNewFolderEnd).not.toHaveBeenCalled()
+    // Editing clears the hint; a valid name then commits once.
+    fireEvent.change(input, { target: { value: 'Console' } })
+    expect(input.getAttribute('aria-invalid')).toBeNull()
+    expect(container.textContent).not.toContain('reserves')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(a.onNewFolder).toHaveBeenCalledWith('beta', 'Console')
+    expect(a.onNewFolderEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the name field under its parent only, first among that level, focused', () => {
+    const { container } = renderFolders({ newFolderParent: 'beta' })
+    const rows = Array.from(container.querySelectorAll('.mdnb-row'))
+    const labels = rows.map((r) => r.getAttribute('aria-label'))
+    // beta's children: the field (no aria-label on the row, the input has it),
+    // then beta's notes. Nothing under alpha, nothing at the root.
+    expect(labels).toEqual(['alpha', 'a1.md', 'beta', null, 'b1.md', 'b2.md', 'root1.md', 'root2.md'])
+    const input = rows[3].querySelector('input') as HTMLInputElement
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('never renders the root field itself — that is the page\'s placement', () => {
+    const { container } = renderFolders({ newFolderParent: '' })
+    expect(container.querySelector('.mdnb-row input')).toBeNull()
+  })
+
+  it('commits a typed name on Enter, once, and ends the field first', () => {
+    const calls: string[] = []
+    const { container } = renderFolders({
+      newFolderParent: 'beta',
+      onNewFolderEnd: vi.fn(() => calls.push('end')),
+      onNewFolder: vi.fn(() => calls.push('create')),
+    })
+    const input = container.querySelector('.mdnb-row input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '  Projects ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // The blur the unmount produces must not commit a second time.
+    fireEvent.blur(input)
+    expect(calls).toEqual(['end', 'create'])
+  })
+
+  it('passes the trimmed name and its parent to onNewFolder', () => {
+    const { container, a } = renderFolders({ newFolderParent: 'beta' })
+    const input = container.querySelector('.mdnb-row input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '  Projects ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(a.onNewFolder).toHaveBeenCalledTimes(1)
+    expect(a.onNewFolder).toHaveBeenCalledWith('beta', 'Projects')
+  })
+
+  it('commits on blur, and treats a blank name as a cancel', () => {
+    const { container, a } = renderFolders({ newFolderParent: 'beta' })
+    const input = container.querySelector('.mdnb-row input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.blur(input)
+    expect(a.onNewFolderEnd).toHaveBeenCalledTimes(1)
+    expect(a.onNewFolder).not.toHaveBeenCalled()
+  })
+
+  it('abandons on Escape without creating anything', () => {
+    const { container, a } = renderFolders({ newFolderParent: 'beta' })
+    const input = container.querySelector('.mdnb-row input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'Projects' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(a.onNewFolderEnd).toHaveBeenCalledTimes(1)
+    expect(a.onNewFolder).not.toHaveBeenCalled()
   })
 })

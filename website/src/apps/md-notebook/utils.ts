@@ -241,6 +241,70 @@ export function isEmptyListItem(before: string, after: string): boolean {
   return Boolean(m) && before.slice(m![0].length).trim() === '' && after === ''
 }
 
+/**
+ * Win32 device names, reserved as a whole path component whatever its case or
+ * extension (`CON`, `con.md`, `LPT1`). A file or folder so named cannot exist
+ * on Windows, so a git-synced vault that gains one stops checking out there.
+ * The serial and printer ports are also reserved with the superscript digits
+ * (`COM¹`, `LPT³`), not only the ASCII ones.
+ */
+const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$/i
+
+/**
+ * The longest a path component may be, in UTF-8 bytes, on the filesystems a
+ * vault can live on (255 on ext4, APFS and NTFS-via-git). Held a little under
+ * so a note's `.md` still fits beside the name.
+ */
+const MAX_COMPONENT_BYTES = 250
+
+/**
+ * The cleaning half of `portableName`: separators, the characters Win32
+ * forbids and control characters are removed; no leading dot (the backend
+ * refuses a dotted component); at most 120 code points — counted as code
+ * points, not UTF-16 units, so a cut never splits a surrogate pair into a
+ * lone half no filesystem accepts — and, within that, at most
+ * `MAX_COMPONENT_BYTES` of UTF-8, since 120 four-byte code points are 480
+ * bytes and the filesystem's limit is on bytes (the cut stays at a code point
+ * boundary); then no trailing dot or space (NTFS strips it, so the name would
+ * not round-trip) — stripped AFTER truncating, or a cut at a dot would put one
+ * back.
+ */
+function cleanComponent(input: string): string {
+  const stripped = String(input)
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '')
+    .trim()
+    .replace(/^\.+/, '')
+  const points = Array.from(stripped).slice(0, 120)
+  const bytes = new TextEncoder()
+  while (points.length && bytes.encode(points.join('')).length > MAX_COMPONENT_BYTES) points.pop()
+  return points.join('').replace(/[. ]+$/, '')
+}
+
+/**
+ * Why a typed name cannot become a note or folder name: `'empty'` when nothing
+ * usable is left once cleaned, `'reserved'` when what is left is a Win32
+ * device name, `null` when the name is fine. Both the rename field and the
+ * new-folder field ask this before committing, so the reason is shown at the
+ * field and nothing is sent.
+ */
+export function nameProblem(input: string): 'empty' | 'reserved' | null {
+  const clean = cleanComponent(input)
+  if (!clean) return 'empty'
+  return WINDOWS_DEVICE_NAME.test(clean) ? 'reserved' : null
+}
+
+/**
+ * Turn a user-typed name into one path component every clone of the vault
+ * can hold, or '' when `nameProblem` refuses it. Used by both the note rename
+ * and the new-folder field, so the two never disagree on what a name may be.
+ * The backend refuses a trailing dot/space and a device name only when it
+ * runs on Windows for a folder it is about to create, so a POSIX host must
+ * refuse them here or a Windows clone of the vault stops checking out.
+ */
+export function portableName(input: string): string {
+  return nameProblem(input) ? '' : cleanComponent(input)
+}
+
 /** Filename without directories or the .md extension. */
 export function noteBasename(path: string): string {
   const file = path.split('/').pop() ?? path

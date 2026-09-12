@@ -146,4 +146,34 @@ export interface NoteActions {
   onRenameStart: (path: string) => void
   onRenameEnd: () => void
   onRename: (path: string, nextName: string) => void
+  /**
+   * Why a typed name cannot be a note or folder name, or null when it can.
+   * Client-side validation the inline fields show beside the input; not an
+   * error of a failed operation, so it never goes through the error notice.
+   */
+  validateName: (raw: string) => string | null
+  /** Create an empty note inside `folder` ('' is the vault root) and open it. */
+  onNewNote: (folder: string) => void
+  /**
+   * The folder ('' is the vault root) currently showing the new-folder name
+   * field, if any. One at a time, like `renamingPath`.
+   */
+  newFolderParent: string | null
+  onNewFolderStart: (parent: string) => void
+  onNewFolderEnd: () => void
+  /**
+   * What has been typed into that field so far, mirrored here by the field on
+   * every keystroke and handed back to it as its initial value. The field is
+   * rendered inside the tree, and the tree unmounts while a search is typed —
+   * kept only in the field, a half-typed (or refused) name would come back
+   * empty once the search is cleared.
+   */
+  newFolderDraft: string
+  onNewFolderDraft: (value: string) => void
+  /**
+   * Create `parent/name` and open its first note. A folder exists in this app
+   * only through the notes it holds — the tree is built from note paths, and git
+   * does not version an empty directory — so a new folder is born with a note.
+   */
+  onNewFolder: (parent: string, name: string) => void
 }
