@@ -322,34 +322,46 @@ class TestDigestHoldSecs:
 
 
 class TestCheckMemoryAvailable:
-    def test_parses_mem_available(self) -> None:
-        text = "MemTotal:       1000 kB\nMemAvailable:    8388608 kB\n"
-        with patch.object(sa, "safe_read_file", return_value=text):
-            ok, gb = sa.check_memory_available(min_gb=4.0)
+    def test_parses_mem_available(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemTotal:       1000 kB\nMemAvailable:    8388608 kB\n")
+        ok, gb = sa.check_memory_available(min_gb=4.0, path=str(f))
         assert ok is True
         assert gb == 8.0
 
-    def test_below_threshold_reports_not_ok(self) -> None:
-        text = "MemAvailable:    1048576 kB\n"
-        with patch.object(sa, "safe_read_file", return_value=text):
-            ok, gb = sa.check_memory_available(min_gb=4.0)
+    def test_below_threshold_reports_not_ok(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemAvailable:    1048576 kB\n")
+        ok, gb = sa.check_memory_available(min_gb=4.0, path=str(f))
         assert (ok, gb) == (False, 1.0)
 
-    def test_sensitive_path_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", side_effect=PermissionError):
+    def test_path_gate_not_consulted(self, tmp_path: Path) -> None:
+        """The fixed kernel path is read with plain open, never the gate."""
+        f = tmp_path / "meminfo"
+        f.write_text("MemAvailable:    8388608 kB\n")
+        with (
+            patch("kiro_crew.hooks.safe_read_file", side_effect=AssertionError),
+            patch("kiro_crew.hooks.is_sensitive_path", side_effect=AssertionError),
+        ):
+            assert sa.check_memory_available(min_gb=4.0, path=str(f)) == (True, 8.0)
+
+    def test_permission_error_fails_open(self) -> None:
+        with patch("builtins.open", side_effect=PermissionError):
             assert sa.check_memory_available() == (True, -1.0)
 
     def test_read_error_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", side_effect=OSError):
+        with patch("builtins.open", side_effect=OSError):
             assert sa.check_memory_available() == (True, -1.0)
 
-    def test_malformed_line_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", return_value="MemAvailable:  notanumber kB\n"):
-            assert sa.check_memory_available() == (True, -1.0)
+    def test_malformed_line_fails_open(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemAvailable:  notanumber kB\n")
+        assert sa.check_memory_available(path=str(f)) == (True, -1.0)
 
-    def test_missing_key_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", return_value="MemTotal: 12 kB\n"):
-            assert sa.check_memory_available() == (True, -1.0)
+    def test_missing_key_fails_open(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemTotal: 12 kB\n")
+        assert sa.check_memory_available(path=str(f)) == (True, -1.0)
 
 
 class TestReadIntFile:
