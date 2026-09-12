@@ -515,7 +515,7 @@ class TestRefreshRotationRebind:
             app={"tailnet_trust": TRUST},
         )
         await _rebind_rotated_token_to_peer(req, "new-token", 9999999999.0)
-        key, _exp, proxied = _ta._state._peer_bindings["new-token"]
+        key, _exp, proxied = _ta._state._peer_bindings[_ta._token_pin_key("new-token")]
         assert key == "ts:node:you@example.com|phone.tail.ts.net"
         assert proxied is False
         _ta._state.clear_all()
@@ -535,10 +535,10 @@ class TestRefreshRotationRebind:
             app={"tailnet_trust": TRUST},
         )
         await _rebind_rotated_token_to_peer(req, "new-token", 9999999999.0)
-        assert "new-token" not in _ta._state._peer_bindings
+        assert not _ta._state.has_binding("new-token")
         req2 = SimpleNamespace(remote="127.0.0.1", headers=CIMultiDict(), app={})
         await _rebind_rotated_token_to_peer(req2, "other-token", 9999999999.0)
-        assert "other-token" not in _ta._state._peer_bindings
+        assert not _ta._state.has_binding("other-token")
 
 
 class TestCliPathTrust:

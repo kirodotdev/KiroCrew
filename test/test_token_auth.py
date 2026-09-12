@@ -1872,7 +1872,7 @@ def test_signing_secret_incomplete_file_not_deleted_if_replaced(tmp_path, monkey
 
 def test_evict_expired_removes_old_entries() -> None:
     """Verify evict_expired removes expired IP bindings, consumed tokens, and nonces."""
-    from kiro_crew.dashboard.token_auth import _state
+    from kiro_crew.dashboard.token_auth import _state, _token_pin_key
 
     # Generate a token and bind IP / mark consumed
     token = generate_token("evict_user")
@@ -1888,7 +1888,8 @@ def test_evict_expired_removes_old_entries() -> None:
 
     # Verify expired entries were removed
     with _state._lock:
-        assert token not in _state._peer_bindings, "expired IP binding should be evicted"
+        pin_key = _token_pin_key(token)
+        assert pin_key not in _state._peer_bindings, "expired pin should be evicted"
         assert token not in _state._consumed, "expired consumed token should be evicted"
         assert "expired_nonce" not in _state._nonces, "expired nonce should be evicted"
 
@@ -3502,7 +3503,7 @@ async def test_verified_peer_session_pins_to_identity_key(_tailnet_env) -> None:
     assert resp.status == 200
     cookie = resp.cookies.get("mc_token_5476")
     assert cookie is not None
-    key, _exp, proxied = _ta._state._peer_bindings[cookie.value]
+    key, _exp, proxied = _ta._state._peer_bindings[_ta._token_pin_key(cookie.value)]
     assert key == "ts:node:you@example.com|phone.tail.ts.net"
     assert proxied is False
     from kiro_crew.dashboard.token_auth import proxied_pin_observed
@@ -3609,7 +3610,7 @@ async def test_xff_injection_from_non_loopback_peer_gets_ip_pin(_tailnet_env) ->
     resp = await mw(_peer_request(remote="203.0.113.7", query={"token": token}), _ok_handler)
     assert resp.status == 200
     cookie = resp.cookies.get("mc_token_5476")
-    assert _ta._state._peer_bindings[cookie.value][0] == "ip:203.0.113.7"
+    assert _ta._state._peer_bindings[_ta._token_pin_key(cookie.value)][0] == "ip:203.0.113.7"
     whois.assert_not_called()
 
 
@@ -3625,7 +3626,7 @@ async def test_daemon_failure_degrades_to_token_ip_path(_tailnet_env) -> None:
     resp = await mw(_peer_request(query={"token": token}), _ok_handler)
     assert resp.status == 200
     cookie = resp.cookies.get("mc_token_5476")
-    key, _exp, proxied = _ta._state._peer_bindings[cookie.value]
+    key, _exp, proxied = _ta._state._peer_bindings[_ta._token_pin_key(cookie.value)]
     assert key == "ip:127.0.0.1"
     assert proxied is True  # same-host proxy pin — posture reports SHARED
 
@@ -3661,7 +3662,7 @@ async def test_require_peer_link_exchanges_for_verified_allowed_peer(_tailnet_en
     assert _ta.requires_verified_peer_unverified(cookie.value) is True
     expected = "ts:node:you@example.com|phone.tail.ts.net"
     assert required_peer_key_unverified(cookie.value) == expected
-    assert _ta._state._peer_bindings[cookie.value][0] == expected
+    assert _ta._state._peer_bindings[_ta._token_pin_key(cookie.value)][0] == expected
     refresh = resp.cookies.get(refresh_cookie_name("5476"))
     assert refresh is not None
     assert refresh_token_peer_key(refresh.value) == expected
@@ -3680,7 +3681,7 @@ async def test_non_tailscale_tunnel_behaviour_is_unchanged(_tailnet_env) -> None
     resp = await mw(_peer_request(query={"token": token}), _ok_handler)
     assert resp.status == 200
     cookie = resp.cookies.get("mc_token_5476")
-    key, _exp, proxied = _ta._state._peer_bindings[cookie.value]
+    key, _exp, proxied = _ta._state._peer_bindings[_ta._token_pin_key(cookie.value)]
     assert key == "ip:127.0.0.1"
     assert proxied is True
     assert proxied_pin_observed() is True
@@ -3804,7 +3805,7 @@ async def test_restart_first_use_repins_verified_peer_cookie(_tailnet_env) -> No
     # No bind_token_peer call: simulates the post-restart unbound state.
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert resp.status == 200
-    key, _exp, _proxied = _ta._state._peer_bindings[token]
+    key, _exp, _proxied = _ta._state._peer_bindings[_ta._token_pin_key(token)]
     assert key == "ts:node:you@example.com|phone.tail.ts.net"
     # Same cookie replayed from a different node (different tailnet address,
     # so the whois cache cannot serve the first node's answer) is rejected.
@@ -3832,7 +3833,7 @@ async def test_restart_require_peer_cookie_refuses_unverified_first_use(
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert resp.status == 403
     assert b"tailnet identity unverified" in resp.body
-    assert token not in _ta._state._peer_bindings
+    assert not _ta._state.has_binding(token)
 
 
 @pytest.mark.asyncio
@@ -3854,14 +3855,14 @@ async def test_restart_signed_require_peer_cookie_rehydrates_only_for_original_d
         register_nonce=False,
     )
 
-    assert token not in _ta._state._peer_bindings
+    assert not _ta._state.has_binding(token)
     response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert response.status == 200
-    assert _ta._state._peer_bindings[token][0] == expected
+    assert _ta._state._peer_bindings[_ta._token_pin_key(token)][0] == expected
 
     # Simulate another restart, then let a different but still allowlisted node
     # arrive first.  It cannot claim the empty in-memory map.
-    _ta._state._peer_bindings.pop(token, None)
+    _ta._state._peer_bindings.pop(_ta._token_pin_key(token), None)
     set_whois(_whois_payload(node="other-node.tail.ts.net"))
     replay = await mw(
         _peer_request(forwarded="100.64.0.6", cookies={"mc_token_5476": token}),
@@ -3869,7 +3870,7 @@ async def test_restart_signed_require_peer_cookie_rehydrates_only_for_original_d
     )
     assert replay.status == 403
     assert b"device identity mismatch" in replay.body
-    assert token not in _ta._state._peer_bindings
+    assert not _ta._state.has_binding(token)
 
 
 @pytest.mark.asyncio
@@ -3887,7 +3888,7 @@ async def test_restart_legacy_claimless_require_peer_cookie_cannot_claim_device(
     response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert response.status == 403
     assert b"tailnet session device binding missing" in response.body
-    assert token not in _ta._state._peer_bindings
+    assert not _ta._state.has_binding(token)
 
 
 @pytest.mark.asyncio
@@ -3909,7 +3910,7 @@ async def test_claimless_require_peer_link_cannot_enroll_on_mixed_internal_path(
     assert response.status == 403
     assert b"tailnet session device binding missing" in response.body
     assert not response.cookies
-    assert token not in _ta._state._peer_bindings
+    assert not _ta._state.has_binding(token)
 
 
 @pytest.mark.asyncio
@@ -3931,7 +3932,7 @@ async def test_signed_login_scope_survives_operator_pin_scope_change(_tailnet_en
     )
     response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert response.status == 200
-    assert _ta._state._peer_bindings[token][0] == expected
+    assert _ta._state._peer_bindings[_ta._token_pin_key(token)][0] == expected
 
 
 @pytest.mark.asyncio
@@ -3952,7 +3953,10 @@ async def test_restart_repin_covers_internal_mixed_paths(_tailnet_env) -> None:
     req.path = "/api/spawn"
     resp = await mw(req, _ok_handler)
     assert resp.status == 200
-    assert _ta._state._peer_bindings[token][0] == "ts:node:you@example.com|phone.tail.ts.net"
+    assert (
+        _ta._state._peer_bindings[_ta._token_pin_key(token)][0]
+        == "ts:node:you@example.com|phone.tail.ts.net"
+    )
     set_whois(_whois_payload(node="other-node.tail.ts.net"))
     req2 = _peer_request(forwarded="100.64.0.6", cookies={"mc_token_5476": token})
     req2.path = "/api/spawn"
@@ -3975,7 +3979,7 @@ async def test_restart_unbound_cookie_without_peer_keeps_todays_semantics(
     mark_consumed(token)
     resp = await mw(_make_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert resp.status == 200
-    assert token not in _ta._state._peer_bindings
+    assert not _ta._state.has_binding(token)
 
 
 def test_app_token_path_allowed_implicit_ws():

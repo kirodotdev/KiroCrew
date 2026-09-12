@@ -259,9 +259,12 @@ class TokenStateManager:
         self._nonces: OrderedDict[str, float] = OrderedDict()
         # Observation latches for the Security Posture surface only — never read
         # by an auth decision. See bind_peer() / proxied_pin_observed().
-        # token → (peer key, exp, proxied). The peer key is "ip:<addr>" for the
-        # default address pin and "ts:node:<login>@<node>" / "ts:login:<login>" for a
-        # daemon-verified tailnet peer (RFC §3) — in-memory only, regenerated on restart.
+        # _token_pin_key(token) → (peer key, exp, proxied). The key comes from
+        # the signed payload rather than the token string, so every string that
+        # authenticates as a session finds that session's pin. The peer key is
+        # "ip:<addr>" for the default address pin and "ts:node:<login>@<node>" /
+        # "ts:login:<login>" for a daemon-verified tailnet peer (RFC §3) —
+        # in-memory only, regenerated on restart.
         self._peer_bindings: dict[str, tuple[str, float, bool]] = {}
         self._consumed: dict[str, float] = {}  # token → exp
 
@@ -303,8 +306,9 @@ class TokenStateManager:
         Security Posture surface only — it does not change the binding or how
         :meth:`check_peer` compares it.
         """
+        key = _token_pin_key(token)
         with self._lock:
-            self._peer_bindings[token] = (peer_key, session_exp, proxied)
+            self._peer_bindings[key] = (peer_key, session_exp, proxied)
 
     def proxied_pin_observed(self, now: float) -> bool | None:
         """Report the pin scope of the sessions that are LIVE at *now*.
@@ -340,8 +344,9 @@ class TokenStateManager:
         (Tailscale re-enroll), and reporting it as "IP mismatch" would send
         them chasing the wrong thing.
         """
+        key = _token_pin_key(token)
         with self._lock:
-            entry = self._peer_bindings.get(token)
+            entry = self._peer_bindings.get(key)
         if entry is None or entry[0] == peer_key:
             return True, ""
         stored = entry[0]
@@ -353,8 +358,9 @@ class TokenStateManager:
 
     def has_binding(self, token: str) -> bool:
         """Whether *token* currently has a peer binding (live or not)."""
+        key = _token_pin_key(token)
         with self._lock:
-            return token in self._peer_bindings
+            return key in self._peer_bindings
 
     def mark_consumed(self, token: str, session_exp: float) -> None:
         """Mark a token as consumed (used for one-time token patterns)."""
@@ -749,6 +755,35 @@ def _b64url_encode(data: bytes) -> str:
 def _b64url_decode(s: str) -> bytes:
     padding = 4 - len(s) % 4
     return base64.urlsafe_b64decode(s + "=" * (padding % 4))
+
+
+def _token_pin_key(token: str) -> str:
+    """The identity a token's peer pin is stored under.
+
+    Derived from the signed payload bytes, not from the token string, because
+    the two are not one-to-one: :func:`_b64url_decode` uses the stdlib decoder's
+    default ``validate=False``, which discards characters outside the base64
+    alphabet, so a cosmetically re-encoded copy of a token is a different string
+    carrying byte-identical payload bytes -- and :func:`validate_token` verifies
+    the signature over those bytes, so it accepts both as the same session.
+
+    Keyed on the string, such a copy authenticates as the session while missing
+    its binding, and :meth:`TokenStateManager.check_peer` treats an absent entry
+    as unbound. Keyed on the payload, every string that can authenticate as a
+    session resolves to that session's pin, so the pin cannot be shed by
+    re-spelling the cookie. The signed payload carries a per-mint nonce and
+    ``iat``, so two separate mints never share a key.
+
+    A token whose payload cannot be decoded keeps the raw string as its key. It
+    cannot authenticate at all (:func:`validate_token` rejects it as invalid
+    encoding), and folding every undecodable string into one shared key would
+    alias unrelated tokens onto one another's pins.
+    """
+    try:
+        payload = _b64url_decode(token.split(".", 1)[0])
+    except Exception:
+        return token
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _sign(payload: bytes) -> str:
