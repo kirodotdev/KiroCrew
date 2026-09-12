@@ -121,7 +121,12 @@ from kiro_crew.validation import (
     WORKSPACE_NAME_RE,
     normalize_lesson_category,
 )
-from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore, _lesson_display_text
+from kiro_crew.vector_memory import (
+    LessonWriteOutcome,
+    VectorMemoryStore,
+    _lesson_display_text,
+    embedding_blob_to_list,
+)
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
 # working state, so letting --dir escape would let it be pointed at ~/.ssh or the
@@ -2322,6 +2327,20 @@ _LEARN_EMBED_NOTE = (
     "  is ready."
 )
 
+# The import-path sibling of _LEARN_EMBED_NOTE, printed when an import lands
+# semantic rows with a NULL vector: this CLI store binds no embed_fn by design
+# (see the note above), and a payload's vectors are only persisted into a store
+# whose embedding-space signature matches the export's.
+_IMPORT_EMBED_NOTE = (
+    "  Those rows are keyword-searchable only for the moment: their embedding\n"
+    "  vectors are filled by the gateway's re-embed sweep after it next starts,\n"
+    "  once its embedding backend is ready. To carry vectors across installs\n"
+    "  directly, stop the gateway first, then copy memory.db and\n"
+    "  memory_index.db (with their -wal and -shm sidecars if present) instead\n"
+    "  of export/import — copying while the gateway runs can miss commits\n"
+    "  still in the write-ahead log."
+)
+
 # INSERTED only. An enrichment resolves against the ONE existing row it rewrites
 # (write_lesson pass 1 sets ``matched`` and pass 2's generic scan runs over
 # ``[] if matched else lesson_rows``), so the substring/topic-overlap claim is
@@ -2987,8 +3006,24 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                 print("✅ No suspicious content in memory.")
 
         elif action == "export":
+            space_sig = store.recorded_embedding_space()
+            semantic_rows = store.get_all_semantic()
+            if store.recorded_embedding_space() != space_sig:
+                # A live model swap landed between the two reads, so the rows'
+                # vectors cannot be attributed to one space. Ship them
+                # unsigned: import then refuses the carry and re-embeds.
+                space_sig = None
+            for row in semantic_rows:
+                # A raw BLOB survives json.dumps only as an unrestorable repr
+                # string (default=str), so ship the vector as a plain list the
+                # import side can persist; a NULL column drops the key.
+                vec = embedding_blob_to_list(row.get("embedding"))
+                if vec is None:
+                    row.pop("embedding", None)
+                else:
+                    row["embedding"] = vec
             data: dict[str, object] = {
-                "semantic": store.get_all_semantic(),
+                "semantic": semantic_rows,
                 "episodic": store.get_episodic_list(limit=10000),
                 "events": store.get_events(limit=1000),
             }
@@ -2996,6 +3031,11 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                 # Opt-in so the default payload shape stays byte-identical
                 # for existing consumers.
                 data["markdown"] = _markdown_memory_store().markdown_snapshot()
+            # Appended after every pre-existing key — the optional markdown
+            # collection included — so each keeps its position for
+            # shape-sniffing consumers. Scopes the vectors above: import
+            # persists them only into a store recording the same space.
+            data["embedding_space_sig"] = space_sig
             output = json.dumps(data, indent=2, default=str)
             out_file = getattr(args, "output", None)
             if out_file:
@@ -3039,6 +3079,9 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             print(f"  Semantic: {counts['semantic']}")
             print(f"  Episodic: {counts['episodic']}")
             print(f"  Skipped:  {counts['skipped']}")
+            if counts.get("semantic_unembedded", 0) > 0:
+                print(f"  Semantic rows without a vector: {counts['semantic_unembedded']}")
+                print(_IMPORT_EMBED_NOTE)
             if "markdown" in data:
                 # The markdown collection is export-only: the markdown layer is
                 # consolidator-owned, so import never writes it. Say so rather
