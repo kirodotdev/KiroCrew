@@ -12948,6 +12948,8 @@
         "node_missing": "Se necesita Node.js 20 o posterior, y no se encontró Node en esta máquina.",
         "node_how": "Instálalo y vuelve a abrir esta página. <dl>Descargar Node.js</dl>",
         "node_no_admin": "En un equipo donde no puede instalar Node —sin permisos de administrador o con un registro que exige iniciar sesión— ejecute el comando siguiente en el equipo donde se ejecuta {{productName}}. El script instala Node y la CLI en su directorio personal y le indica cómo solucionarlo si su red bloquea la descarga.",
+        "prefix_unwritable": "Node.js está instalado, pero este usuario no puede escribir en la carpeta global de npm, por lo que la instalación con un clic fallaría.",
+        "prefix_no_admin": "Ejecute el comando siguiente en el equipo donde se ejecuta {{productName}}. Instala la CLI en su directorio personal, sin tocar la carpeta global de npm.",
         "copy_command": "Copiar comando",
         "copied": "Copiado",
         "builtin_save_failed": "No se pudo guardar el ajuste del navegador integrado.",

@@ -12770,6 +12770,8 @@
         "node_missing": "Node.js 20 oder neuer wird benötigt, auf diesem Rechner wurde kein Node gefunden.",
         "node_how": "Installieren Sie es und öffnen Sie diese Seite erneut. <dl>Node.js herunterladen</dl>",
         "node_no_admin": "Auf einem Rechner, auf dem Sie Node nicht installieren können – keine Administratorrechte oder eine Registry, die eine Anmeldung verlangt – führen Sie den folgenden Befehl auf dem Rechner aus, auf dem {{productName}} läuft. Das Skript installiert Node und die CLI in Ihr Home-Verzeichnis und erklärt Ihnen, wie Sie es beheben, falls Ihr Netzwerk den Download blockiert.",
+        "prefix_unwritable": "Node.js ist installiert, aber dieser Benutzer kann nicht in den globalen npm-Ordner schreiben, sodass die Ein-Klick-Installation fehlschlagen würde.",
+        "prefix_no_admin": "Führen Sie den folgenden Befehl auf dem Rechner aus, auf dem {{productName}} läuft. Er installiert die CLI in Ihr Home-Verzeichnis, ohne den globalen npm-Ordner anzutasten.",
         "copy_command": "Befehl kopieren",
         "copied": "Kopiert",
         "builtin_save_failed": "Die Einstellung für den integrierten Browser konnte nicht gespeichert werden.",

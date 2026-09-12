@@ -12947,6 +12947,8 @@
         "node_missing": "Serve Node.js 20 o successivo, e su questa macchina non è stato trovato Node.",
         "node_how": "Installalo, poi riapri questa pagina. <dl>Scarica Node.js</dl>",
         "node_no_admin": "Su una macchina dove non è possibile installare Node — nessun diritto di amministratore, o un registry che richiede l'accesso — esegui il comando qui sotto sulla macchina dove è in esecuzione {{productName}}. Lo script installa Node e la CLI nella tua directory home e ti spiega come risolvere se la rete blocca il download.",
+        "prefix_unwritable": "Node.js è installato, ma questo utente non può scrivere nella cartella npm globale, quindi l'installazione con un clic fallirebbe.",
+        "prefix_no_admin": "Esegui il comando qui sotto sulla macchina dove è in esecuzione {{productName}}. Installa la CLI nella tua directory home, senza toccare la cartella npm globale.",
         "copy_command": "Copia comando",
         "copied": "Copiato",
         "builtin_save_failed": "Impossibile salvare l’impostazione del browser integrato.",

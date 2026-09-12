@@ -459,6 +459,47 @@ def _node_runtime_executable(node: str) -> str | None:
     return str(resolved) if resolved is not None else None
 
 
+def _npm_prefix_writable() -> bool | None:
+    """Whether the current user may write the global npm package tree.
+
+    ``npm install -g`` lands in ``<prefix>/lib/node_modules`` on POSIX and
+    ``<prefix>/node_modules`` on Windows (the same layout
+    :func:`_standalone_node_modules` documents), and on a host whose global
+    prefix is owned by another user -- a system-wide Node under ``/usr/local``
+    -- the install fails EACCES only after the operator has already clicked it.
+    Probing up front lets the panel lead with the standalone installer instead
+    of a button that cannot succeed.
+
+    ``None`` when npm is absent or the prefix probe fails: that is "cannot
+    tell", not "blocked", and the caller must not withhold the normal install
+    over an unanswered question. Read-only by construction -- one ``npm prefix
+    -g`` child and an :func:`os.access` check; nothing is created or modified,
+    so a prefix whose ``node_modules`` does not exist yet is judged by the
+    nearest existing ancestor, the directory npm would have to create it in.
+    """
+    npm = find_node_tool("npm")
+    if npm is None:
+        return None
+    rc, out, err = _run([npm, "prefix", "-g"], _PROBE_TIMEOUT_S)
+    prefix_text = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if rc != 0 or not prefix_text:
+        logger.debug("npm prefix -g failed (rc=%d): %s", rc, err.strip())
+        return None
+    prefix = Path(prefix_text)
+    target = (
+        prefix / _NODE_MODULES if platform_compat.IS_WINDOWS else prefix / "lib" / _NODE_MODULES
+    )
+    probe = target
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    # W_OK alone is not enough on POSIX: creating an entry in a directory also
+    # needs search permission on it.
+    return os.access(probe, os.W_OK | os.X_OK)
+
+
 def _browsers_cache_dir() -> Path | None:
     """Playwright's browser cache directory for this platform.
 
@@ -1036,6 +1077,11 @@ def detect() -> dict[str, Any]:
         "cli_version": cli_version,
         "node_ok": major is not None and major >= MIN_NODE_MAJOR,
         "node_version": node_version,
+        # Whether `npm install -g` may write the global package tree.
+        # True / False / None (npm absent or the probe failed); the panel
+        # treats only an explicit False as a reason to lead with the
+        # standalone installer, so an unknown never withholds the button.
+        "npm_prefix_writable": _npm_prefix_writable(),
         "browser_ok": _browser_present(),
         # Per-engine, so the panel can offer each download rather than
         # implying "browser" means only the one attach needs.

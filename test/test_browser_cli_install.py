@@ -188,6 +188,79 @@ def test_detect_node_absent_is_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     assert d["node_version"] is None
 
 
+def test_detect_reports_npm_prefix_writability(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A writable global prefix reports True, judged read-only.
+
+    ``tmp_path`` is a real, writable directory whose ``(lib/)node_modules``
+    does not exist, so the probe must fall back to the nearest existing
+    ancestor rather than failing on a tree npm has yet to create.
+    """
+    calls = _wire(
+        monkeypatch,
+        {"node": "/n/node", "npm": "/n/npm"},
+        {"/n/node": (0, "v22.1.0", ""), "/n/npm": (0, f"{tmp_path}\n", "")},
+    )
+
+    d = mod.detect()
+
+    assert d["npm_prefix_writable"] is True
+    # The probe is a read: one `npm prefix -g`, never an install or a write.
+    assert ["/n/npm", "prefix", "-g"] in calls
+
+
+def test_detect_flags_an_unwritable_npm_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A prefix the user may not write reports False, with node_ok untouched.
+
+    False is what lets the panel lead with the standalone installer instead of
+    an install button that would fail EACCES only after being clicked.
+    """
+    _wire(
+        monkeypatch,
+        {"node": "/n/node", "npm": "/n/npm"},
+        {"/n/node": (0, "v22.1.0", ""), "/n/npm": (0, str(tmp_path), "")},
+    )
+    monkeypatch.setattr(mod.os, "access", lambda p, m: False)
+
+    d = mod.detect()
+
+    assert d["npm_prefix_writable"] is False
+    # The prefix answer must not bleed into the Node verdict: they gate
+    # different remedies in the panel.
+    assert d["node_ok"] is True
+
+
+def test_detect_prefix_probe_is_none_when_npm_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No npm means "cannot tell", not "blocked": the key must be None."""
+    _wire(monkeypatch, {"node": "/n/node"}, {"/n/node": (0, "v22.1.0", "")})
+
+    d = mod.detect()
+
+    assert "npm_prefix_writable" in d
+    assert d["npm_prefix_writable"] is None
+
+
+def test_detect_prefix_probe_failure_is_unknown_not_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing `npm prefix -g` degrades to None so an unanswered question
+    never withholds the one-click install."""
+    _wire(
+        monkeypatch,
+        {"node": "/n/node", "npm": "/n/npm"},
+        {"/n/node": (0, "v22.1.0", ""), "/n/npm": (2, "", "boom")},
+    )
+
+    d = mod.detect()
+
+    assert d["npm_prefix_writable"] is None
+
+
 def test_detect_browser_ok_requires_chromium_build(
     monkeypatch: pytest.MonkeyPatch, isolated_browser_cache: Path
 ) -> None:

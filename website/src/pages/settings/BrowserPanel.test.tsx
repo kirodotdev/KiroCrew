@@ -24,6 +24,7 @@ type State = {
   cli_version: string | null
   node_ok: boolean
   standalone_install?: string
+  npm_prefix_writable?: boolean | null
   node_version: string | null
   browser_ok: boolean
   installing: boolean
@@ -240,6 +241,36 @@ describe('BrowserPanel', () => {
       if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)
       else delete (navigator as unknown as { clipboard?: unknown }).clipboard
     }
+  })
+
+  it('offers the standalone installer when the npm prefix is unwritable', async () => {
+    // Good Node, bad prefix: `npm install -g` would fail EACCES on a global
+    // prefix owned by another user (reporter: a system-wide Node under
+    // /usr/local). The panel must say WHY the button is withheld and lead with
+    // the path that works -- the standalone installer into the home directory.
+    await renderPanel(state({ node_ok: true, installed: false, npm_prefix_writable: false }))
+    expect(screen.getByText(/cannot write to the global npm folder/i)).toBeTruthy()
+    expect(screen.getByText(/playwright-cli\.sh/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Install Playwright CLI/i })).toBeNull()
+  })
+
+  it('does not withhold the install over an unanswered prefix probe', async () => {
+    // null is "could not tell" (npm absent, probe failed) and undefined is an
+    // older gateway; neither is evidence the install would fail, so both keep
+    // the one-click button.
+    await renderPanel(state({ node_ok: true, installed: false, npm_prefix_writable: null }))
+    expect(screen.queryByText(/global npm folder/i)).toBeNull()
+    expect(screen.getByRole('button', { name: /Install Playwright CLI/i })).toBeTruthy()
+  })
+
+  it('reports Node first when both Node and the prefix block', async () => {
+    // Without a usable Node the prefix question is moot, and the standalone
+    // installer offered underneath repairs both at once.
+    await renderPanel(
+      state({ node_ok: false, node_version: null, npm_prefix_writable: false })
+    )
+    expect(screen.getByText(/no Node was found/i)).toBeTruthy()
+    expect(screen.queryByText(/cannot write to the global npm folder/i)).toBeNull()
   })
 
   it('does not push the installer at someone whose Node is fine', async () => {

@@ -332,6 +332,12 @@ export interface BrowserInstallData {
    *  in-app install. Optional so an older gateway simply shows nothing extra
    *  rather than rendering `undefined`. */
   standalone_install?: string
+  /** Whether `npm install -g` may write the global package tree. `false` means
+   *  the in-app install would fail EACCES, so the panel leads with the
+   *  standalone installer instead. `null` is "could not tell" (npm absent or
+   *  the probe failed) and must not block the button; optional so an older
+   *  gateway that predates the probe degrades the same way. */
+  npm_prefix_writable?: boolean | null
 }
 
 export interface BrowserViewData {

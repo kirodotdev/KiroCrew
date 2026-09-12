@@ -161,6 +161,13 @@ export function BrowserPanel() {
   // Node is the one prerequisite an install cannot supply for the operator, so a
   // too-old runtime is reported instead of offering a button that would fail.
   const blockedByNode = !data.node_ok
+  // Only an explicit false blocks: `npm install -g` would fail EACCES on a
+  // global prefix owned by another user (a system-wide Node under /usr/local).
+  // None/undefined is "could not tell" -- npm absent, probe failed, or an
+  // older gateway -- and must not withhold the one-click install over an
+  // unanswered question.
+  const prefixBlocked = data.npm_prefix_writable === false
+  const blocked = blockedByNode || prefixBlocked
   // Bound once so the render, the copy handler and the guard all use the same
   // narrowed value -- otherwise the handler needs a `?? ''` fallback that the
   // guard has already made unreachable, which is an untestable branch rather
@@ -435,7 +442,7 @@ export function BrowserPanel() {
             title={i18nT('pages.settings.browserPanel.not_installed')}
             subtitle={i18nT('pages.settings.browserPanel.install_explains')}
             action={
-              blockedByNode ? (
+              blocked ? (
                 /*
                   Node is the one prerequisite an install cannot supply, so this
                   state has to be actionable rather than a bare requirement. It
@@ -447,12 +454,22 @@ export function BrowserPanel() {
                 <div className="flex flex-col items-center gap-1.5 text-[13px]">
                   <div className="flex items-center gap-2 text-warn">
                     <AlertTriangle size={14} className="shrink-0" />
-                    {data.node_version
-                      ? i18nT('pages.settings.browserPanel.needs_node', {
-                          version: data.node_version,
-                        })
-                      : i18nT('pages.settings.browserPanel.node_missing')}
+                    {/*
+                      Node outranks the prefix when both block: without a usable
+                      Node the prefix question is moot, and the standalone
+                      installer below repairs both at once anyway.
+                    */}
+                    {blockedByNode ? (
+                      data.node_version
+                        ? i18nT('pages.settings.browserPanel.needs_node', {
+                            version: data.node_version,
+                          })
+                        : i18nT('pages.settings.browserPanel.node_missing')
+                    ) : (
+                      i18nT('pages.settings.browserPanel.prefix_unwritable')
+                    )}
                   </div>
+                  {blockedByNode && (
                   <div className="text-muted text-center max-w-[340px]">
                     {/*
                       ONE key for the whole passage, with the link interpolated
@@ -477,6 +494,7 @@ export function BrowserPanel() {
                       }}
                     />
                   </div>
+                  )}
                   {/*
                     The link above is a dead end for the operator this panel most
                     needs to help: a locked-down machine where Node cannot be
@@ -496,7 +514,9 @@ export function BrowserPanel() {
                   */}
                   {installCommand && (
                     <div className="text-muted text-left max-w-[340px] mt-1">
-                      {i18nT('pages.settings.browserPanel.node_no_admin')}
+                      {blockedByNode
+                        ? i18nT('pages.settings.browserPanel.node_no_admin')
+                        : i18nT('pages.settings.browserPanel.prefix_no_admin')}
                       <pre className="mt-1.5 mb-1 whitespace-pre-wrap break-all text-[12px] bg-bg-elevated rounded px-2 py-1.5">
                         <code>{installCommand}</code>
                       </pre>
@@ -589,7 +609,7 @@ export function BrowserPanel() {
             say what pressing the button will do to the machine; during, they turn
             a multi-minute blank wait into something legible.
           */}
-          {!blockedByNode && (
+          {!blocked && (
             <div className="border-t border-border pt-3 mt-1">
               <div className="text-[13px] text-muted mb-1.5">
                 {installing
