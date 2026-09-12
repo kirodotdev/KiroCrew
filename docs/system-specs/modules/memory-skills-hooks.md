@@ -1202,9 +1202,16 @@ their existing context path.
 bound custom-template persona on fresh, warm, resumed, post-compaction and
 minimal turns, including delegated and cron turns with no DM member argument.
 An execution-template override supplies task instructions; it does not replace
-the memory owner's persona. The generic `kirocrew` product prompt retains its
-existing provider/session-start path. The member's working briefing keeps its
-existing bounded/platform-gated reader; it is not unbounded archival memory.
+the memory owner's persona. The generic product prompt retains its existing
+provider/session-start path, including when a member's fork inherits it. The
+loader recognizes the exact current `file://` URI selected by `_prompt_path()`,
+not a template name or file basename. Package installs outside the user home,
+development prompt overrides and the global user prompt override therefore do
+not become project essentials or spend the essential envelope's budget. A
+custom persona, including one on a template named `kirocrew`, remains essential
+and passes the same file-admission checks as other declared sources. The member's
+working briefing keeps its existing bounded/platform-gated reader; it is not
+unbounded archival memory.
 
 Admitted project essentials are the active project's root `AGENTS.md` and
 `SOUL.md`, default/`always` documents under `.kiro/steering`, and Markdown file

@@ -25,7 +25,7 @@ from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import members as members_mod
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
 from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     rehydrate_slot_from_history_async,
@@ -435,13 +435,23 @@ async def api_member_thread(request: web.Request) -> web.Response:
         # member thread, so a ✕-closed transcript reopens with its history.
         slot = await rehydrate_slot_from_history_async(state, slot_key, adopt_closed=True)
     if slot is None:
-        # No usable history — a genuinely fresh thread.
-        slot = state.get_or_create_slot(
-            name=slot_key,
-            agent=member_name,
-            mode=members_mod.DM_SLOT_MODE,
-            origin=request_slot_origin(request.get("app", "")),
-        )
+        member_workspace = cfg.agents[member_name].workspace
+        if member_workspace not in cfg.workspaces:
+            member_workspace = cfg.default_workspace
+        project = await asyncio.to_thread(default_project_dir, member_workspace)
+        # Resolve before publication, then re-check: another opener can create
+        # the slot while path validation waits. Its project remains its choice.
+        slot = state._slots.get(slot_key)
+        if slot is None:
+            with state.suspend_slots_push():
+                slot = state.get_or_create_slot(
+                    name=slot_key,
+                    agent=member_name,
+                    workspace=member_workspace,
+                    mode=members_mod.DM_SLOT_MODE,
+                    origin=request_slot_origin(request.get("app", "")),
+                )
+                slot.project = project
     if slot.mode != members_mod.DM_SLOT_MODE:
         # The derived key is already occupied by a foreign slot (mode is set at
         # creation only, so a pre-existing non-member slot keeps its own). Never

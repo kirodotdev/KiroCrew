@@ -529,3 +529,92 @@ def test_refused_workspace_root_is_never_resolved(env, monkeypatch, tmp_path):
 
     assert not any("share-host" in p for p in resolved), resolved
     assert mec._comparable_root(refused) == Path(os.path.abspath(refused))
+
+
+@pytest.mark.parametrize("source", ["package", "development", "user-override"])
+@pytest.mark.parametrize(
+    "fresh, options",
+    [
+        (True, {}),
+        (False, {}),
+        (False, {"needs_reinjection": True}),
+        (True, {"resumed": True}),
+        (True, {"minimal_context": True}),
+    ],
+)
+def test_inherited_product_prompt_uses_session_start_not_essentials(
+    env, tmp_path, monkeypatch, source, fresh, options
+):
+    from kiro_crew import agent
+    from kiro_crew.config import config_dir
+
+    package = tmp_path / "installed-package" / "config"
+    development = tmp_path / "checkout"
+    monkeypatch.setattr(agent, "_BUNDLED_CFG_DIR", package)
+    monkeypatch.setattr(agent, "_project_dir", lambda: development)
+    paths = {
+        "package": package / "prompt.md",
+        "development": development / "agents" / "prompt.md",
+        "user-override": config_dir() / "prompt.md",
+    }
+    prompt_path = paths[source]
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text("PRODUCT_PROMPT_AT_SESSION_START", encoding="utf-8")
+    assert agent._prompt_path() == prompt_path
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    spec.write_text(
+        json.dumps({"name": "writer-template", "prompt": f"file://{prompt_path}"}),
+        encoding="utf-8",
+    )
+
+    message, _ = env.builder.build_message(
+        "Continue", fresh, memory_store=env.store, project=str(env.project), **options
+    )
+
+    assert message.count("[V2 ESSENTIAL CONTEXT") == 1
+    assert "You are writer." in message and "Do not publish drafts." in message
+    assert "Preference anchor" in message and "Project rules" in message
+    assert f"[Essential source: {prompt_path}]" not in message
+    if fresh and not options.get("resumed"):
+        assert message.count("PRODUCT_PROMPT_AT_SESSION_START") == 1
+    env.forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("template", ["writer-template", "kirocrew"])
+@pytest.mark.parametrize("source", ["inline", "relative", "absolute"])
+def test_custom_persona_is_not_classified_by_template_name(env, template, source):
+    cfg = KiroCrewConfig.load()
+    cfg.agents["writer"].kiro_agent = template
+    cfg.save()
+    persona = env.project / "prompt.md"
+    persona.write_text("CUSTOM_OWNER_PERSONA", encoding="utf-8")
+    prompts = {
+        "inline": "CUSTOM_OWNER_PERSONA",
+        "relative": "file://prompt.md",
+        "absolute": f"file://{persona}",
+    }
+    spec = env.project / ".kiro" / "agents" / f"{template}.json"
+    spec.write_text(json.dumps({"name": template, "prompt": prompts[source]}), encoding="utf-8")
+
+    message, _ = env.builder.build_message(
+        "Continue", False, agent="task-template", memory_store=env.store, project=str(env.project)
+    )
+
+    assert "CUSTOM_OWNER_PERSONA" in message
+    assert "Do not publish drafts." in message
+
+
+@pytest.mark.parametrize("template", ["writer-template", "kirocrew"])
+def test_unmanaged_prompt_outside_root_is_not_exempted_by_name(env, tmp_path, template):
+    cfg = KiroCrewConfig.load()
+    cfg.agents["writer"].kiro_agent = template
+    cfg.save()
+    persona = tmp_path / "prompt.md"
+    persona.write_text("OUTSIDE_PERSONA", encoding="utf-8")
+    spec = env.project / ".kiro" / "agents" / f"{template}.json"
+    spec.write_text(json.dumps({"name": template, "prompt": f"file://{persona}"}), encoding="utf-8")
+
+    with pytest.raises(MemberEssentialContextError, match="outside the admitted document root"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, project=str(env.project)
+        )

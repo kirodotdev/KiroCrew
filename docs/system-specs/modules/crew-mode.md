@@ -66,6 +66,15 @@ using V1 or explicitly choose empty V2 memory from their settings; former Global
 or named V1 contents remain untouched. Config fields, atomic publication, ownership manifest and
 recovery semantics are owned by [config](config.md#named-memory-stores-memory_storespy).
 
+A new member DM inherits the member's configured workspace, falling back to
+`default_workspace` when that name is undeclared. Its project directory uses the
+shared `default_project_dir` validation, so provider cwd and project essentials
+refer to the same workspace. Resolution finishes before publishing the slot;
+the first slot broadcast includes its project directory. A concurrent opener's
+existing slot is preserved. Reopening a live or restored
+thread keeps its saved workspace and project, including an explicitly empty
+project, rather than resetting a session choice to the member default.
+
 Opting into V2 opens a fresh member conversation. Existing V1 conversation and
 native provider context cannot become private context by changing the config.
 The member-thread binding records its private store generation and reuses that
