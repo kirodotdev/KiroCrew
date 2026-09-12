@@ -53,7 +53,7 @@ describe('md-notebook at phone widths', () => {
   it('drives the existing panel toggle from the viewport', async () => {
     const s = await app('md-notebook/MdNotebookPage.tsx')
     expect(s, 'expected a viewport hook').toContain('useIsMobile')
-    expect(s, 'expected a derived visibility').toMatch(/const panelShown = isMobile \? \(narrowPanelOpen \|\| !activePath\) : panelOpen/)
+    expect(s, 'expected a derived visibility').toMatch(/const panelShown = isMobile \? \(narrowPanelOpen \|\| \(!activePath && !settingsOpen\)\) : panelOpen/)
     expect(s, 'the panel must render from the derived value').toMatch(/\{panelShown && \(/)
     expect(s, 'the toggle icon must follow it').toMatch(/\{panelShown \? <PanelLeftLight/)
     expect(s, 'the aria label must follow it').toMatch(/aria-label=\{\s*\n?\s*panelShown/)
@@ -84,7 +84,30 @@ describe('md-notebook at phone widths', () => {
     const s = await app('md-notebook/MdNotebookPage.tsx')
     // The empty state reads "Select a note, or create one with the + button" and
     // that + lives INSIDE the drawer. Closed, it instructs an off-screen control.
-    expect(s).toMatch(/const panelShown = isMobile \? \(narrowPanelOpen \|\| !activePath\) : panelOpen/)
+    expect(s).toMatch(/const panelShown = isMobile \? \(narrowPanelOpen \|\| \(!activePath && !settingsOpen\)\) : panelOpen/)
+  })
+
+  // The full-width drawer leaves the main column a 0px flex sibling, and that
+  // column's header controls are absolutely positioned at its right edge -- so
+  // they painted leftward over the drawer: at 390px the Commit / Save-locally
+  // pill covered the right end of the FIRST tree row (#10254), and the Settings
+  // close button did the same. The column steps out of the flow while the
+  // drawer owns the pane, hidden rather than unmounted so the editor's scroll
+  // and pending-save state survive a drawer round trip.
+  it('takes the main column out of the pane while the drawer owns it', async () => {
+    const s = await app('md-notebook/MdNotebookPage.tsx')
+    expect(s, 'the main column must be hidden, not unmounted, behind the open drawer')
+      .toMatch(/<div style=\{\{ display: isMobile && panelShown \? 'none' : 'contents' \}\}>\s*\n\s*\{settingsOpen \? \(/)
+  })
+
+  // Settings is the one thing the pane shows without a note. Before, opening it
+  // from the drawer left the drawer forced open (no note picked), so the page
+  // rendered 0px wide with only its close button leaking over the tree.
+  it('lets the drawer step aside for the Settings page it opened', async () => {
+    const s = await app('md-notebook/MdNotebookPage.tsx')
+    const bar = s.match(/<SettingsBar[\s\S]*?\/>/)
+    expect(bar, 'expected the SettingsBar element').not.toBeNull()
+    expect(bar![0]).toContain('if (isMobile) setNarrowPanelOpen(false)')
   })
 
   it('drops keyboard-only advice from what is now the mobile landing view', async () => {
