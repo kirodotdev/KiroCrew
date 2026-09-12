@@ -6300,6 +6300,21 @@ def _install_conductor_agent() -> None:
     logger.info("Installed conductor agent config: %s", path)
 
 
+#: Deprecated agent-spec name -> the current spec that replaced it.
+#:
+#: One row per installed alias. ``kirocrew doctor`` reads this table to warn
+#: any config surface that persists an agent name -- a cron job, a crew
+#: binding, a chat slot -- while the old name still resolves, so deleting the
+#: alias later breaks nobody silently with ``Mode not found`` at dispatch
+#: time. A row is deleted together with its alias installer, never before:
+#: the doctor notice is the precondition for the deletion (see
+#: ``docs/request-for-change/rfc-conductor-work-ledger.md``, "What retired
+#: means for the name").
+DEPRECATED_AGENT_SPECS: dict[str, str] = {
+    "kirocrew-ledger-conductor": "kirocrew-conductor",
+}
+
+
 def _install_ledger_conductor_agent() -> None:
     """Install the deprecated ``kirocrew-ledger-conductor`` alias spec.
 

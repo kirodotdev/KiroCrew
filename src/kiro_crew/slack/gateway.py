@@ -102,6 +102,7 @@ from kiro_crew.cron import (
     CronService,
     CronStoreBusy,
     CronStoreUnreadable,
+    agent_sequence_dispatches,
     build_cron_session_context,
     effective_wake_budget,
 )
@@ -4777,7 +4778,7 @@ class GatewayOrchestrator:
             # When agent_sequence has multiple agents, run them sequentially
             # with per-agent session keys and per-job env vars.
             agents = job.agent_sequence if job.agent_sequence else []
-            if len(agents) > 1:
+            if agent_sequence_dispatches(agents):
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
                 result_text = "_No response._"

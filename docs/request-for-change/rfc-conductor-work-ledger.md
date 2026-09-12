@@ -974,15 +974,19 @@ describes patrol, so a conductor sizes its interval against the real cost. Phase
 remains worth doing and is now an optimisation of the shipped conductor rather than of a
 variant of it.
 
-**Still owed before the alias is deleted.** The retirement spec above requires a
+**The doctor notice -- shipped.** The retirement spec above requires a
 `kirocrew doctor` notice for any config that still names `kirocrew-ledger-conductor`,
-and no doctor change ships with the swap. Nothing tells a cron owner or a crew binding
-that its agent name is going away — the deprecated `description` is read by an operator
-looking at the roster, not by a config file — so without the notice the one-release
-window warns nobody and the name's deletion is a `Mode not found` at the far end. The
-notice is a **precondition for deleting the alias**, not for the swap: while the alias
-exists, an unmigrated config keeps working. Tracked as
-[#10268](https://github.com/kirodotdev/KiroCrew/issues/10268).
+and that notice now ships ([#10268](https://github.com/kirodotdev/KiroCrew/issues/10268)):
+doctor scans every config surface that persists an agent name -- cron jobs
+(`agent_id`, and `agent_sequence` entries when the sequence actually dispatches),
+crew bindings (`agents.<name>.kiro_agent`), the config's own selectors
+(`agent.default_agent`, `session.pool_agent`, per-channel `agent` overrides), and
+open chat slots -- and reports any that names a deprecated spec, naming the
+replacement. The check is data-driven off `DEPRECATED_AGENT_SPECS` in `agent.py`,
+defined beside the alias installer so a future rename adds a row instead of a new
+check, and a row is deleted together with its alias. The notice is a
+**precondition for deleting the alias**, not for the swap: while the alias
+exists, an unmigrated config keeps working.
 
 **Mid-goal behaviour.** A `kirocrew-conductor` session that was mid-goal under the old
 procedure wakes into the ledger prompt with its item state still in `session_ledger`
