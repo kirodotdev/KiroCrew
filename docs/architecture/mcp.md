@@ -1114,6 +1114,74 @@ parent's tree. `mcp_core.py` offers two resolvers:
 - `_resolve_session_key()` (lenient, still walks ancestors) is only for read-only
   and telemetry callers where misattribution is harmless.
 
+**What names a session on the stub path: the stub session token.** The injected
+caller context above is the only identity channel a pooled backend has, and every
+input gatewayd had for building it answered per RUNTIME, not per session: the
+stub's own self-report (its `KIROCREW_SESSION_KEY` or `session_pid_<pid>.txt`
+walk), gatewayd's own SO_PEERCRED `/proc` walk, and claim-push, which re-targeted
+every connection indexed under a runtime PID. One kiro-cli process hosts N ACP
+sessions, so all three answered with the parent slot for a `spawn_run` subagent's
+stub, and a parent re-claim overwrote whatever a subagent had. So Kiro Crew mints
+one unguessable token per ACP session (`claim.mint_stub_session_token`), puts it
+in the `env` of that session's injected stub entries
+(`session_servers.attach_stub_session_token`), and remembers it on the session
+handle. The stub returns it on its `register` frame as a sibling field — never a
+`PoolKey` dimension, which would make every session's backend private and turn
+pooling into a no-op — and `claim` frames carry it too. gatewayd then keys claims
+by `(pid, token)`: a claim re-targets the connections carrying its token, plus any
+connection carrying none, and a claim with NO token re-targets every connection
+under the PID exactly as before, which is what a stub launched from a
+hand-written config or an older overlay still needs.
+
+**The token narrows within a runtime; the runtime bounds who may present the
+token.** A claim binds the token together with the PID it named, and a register is
+answered from that binding only when the same PID is in the chain gatewayd walks
+from the **SO_PEERCRED peer pid** — never the stub's self-reported
+`ancestor_pids`. That distinction is the whole value of the second factor: the
+register frame is peer-supplied in full, so an actor who has read another
+session's token out of `/proc/<pid>/environ` (readable at the operator's own uid)
+can equally name that session's runtime in its own chain, and one actor would then
+satisfy both halves. The peer pid comes from the kernel and the walk is gatewayd's
+own, so the registrant cannot author it. The self-reported pids stay in the claim
+INDEX, where they are harmless: a claim only ever narrows to connections carrying
+its own token or none. A connection whose ancestry the kernel did not attest loses
+the register-time shortcut, not its identity — claim-push still reaches it through
+the index. (What a same-uid process can assert on the register frame itself is a
+separate, pre-existing question — a tokenless register's self-reported
+`session_key` is believed as it always was.)
+
+**A token nothing has claimed is refused, not resolved.** A binding outranks both
+process-tree sources at register time, and where no claim has named the token yet
+the connection stays identity-less — the stub's own self-report and the peer walk
+are not consulted, and neither is the stub-initiated `recaller` frame, whose key
+comes from the same walk. The refusal cannot be made conditional on some sibling
+session happening to be named: an empty binding table is the state a fresh daemon,
+a respawn and an evicted binding all share, and in each of those the tree answer
+would hand a subagent its parent's session. What repairs a deferred identity is
+the owning session's own claim — pushed before `session/new` where the owner is
+known, at `rekey()` on a pooled claim, and after `new_conversation` re-launches a
+worker's stubs.
+
+**And re-pushed at the start of every turn**, which is what re-binds a token whose
+daemon restarted under it and bounds that outage to the turn it happened in. Two
+places do it, because no single one sees every session: the shared identity
+publisher (`messaging/identity.py`, the same boundary that rewrites
+`session_pid_<pid>.txt`) covers each surface that drives a user turn, and
+`AcpSessionProvider.stream` covers the sessions no surface publishes for — which
+is where a subagent's turns live, the session type the token exists to protect.
+
+A claim carries a session key or gatewayd discards it, so every provider is told
+which session it serves when it is CONSTRUCTED rather than only at `rekey()`: that
+is a warm-pool event, and a cold start (pool miss, pooling off, a subagent's own
+session) reaches it never. A provider that learned its key there would re-claim
+with an empty one, which is rejected as malformed before the binding is recorded —
+so the token could never be re-bound and the session would stay identity-less for
+the rest of its life rather than for one turn.
+
+The token is a bearer name for a session's identity, so it is never logged, never
+in `stats()`, and stripped from the register payload before the prewarm recorder
+can persist it.
+
 `register_hook` also resolves through `require_strict_session_key`. Legacy
 Global hooks can still be registered without a conversation; private hooks
 require the gateway-authenticated caller and its protected member binding before

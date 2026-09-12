@@ -705,6 +705,28 @@ class AcpProvider(LLMProvider):
         except Exception:  # never let telemetry break session startup
             logger.debug("kiro startup metric emit failed", exc_info=True)
 
+    def _owning_session_key(self) -> str:
+        """The Kiro Crew session key this provider serves, or ``""``.
+
+        Handed to the runtime's session-creation paths so the session's broker
+        stubs carry a token bound to THIS session (see
+        ``AcpRuntime._own_stub_session``). Read off the placeholder client the
+        same way :meth:`_member_session_key` does; empty for a pooled worker
+        spawned before any session claimed it, whose ``rekey()`` names it later.
+        """
+        skey = getattr(self._client, "_session_key", None)
+        return skey if isinstance(skey, str) else ""
+
+    def _owning_channel_id(self) -> str | None:
+        """The channel this provider's session belongs to, or ``None``.
+
+        Carried on the claim frame beside the session key so a channel-driven
+        session's forwarded calls keep naming their channel. Read off the
+        placeholder client like :meth:`_owning_session_key`.
+        """
+        channel = getattr(self._client, "_channel_id", None)
+        return channel if isinstance(channel, str) and channel else None
+
     def _member_session_key(self) -> str:
         """This session's key when it is a member DM on a dispatch-capable backend.
 
@@ -734,6 +756,7 @@ class AcpProvider(LLMProvider):
         work_dir: str | Path | None,
         agent: str | None,
         member_session_key: str = "",
+        session_key: str = "",
     ) -> AcpSessionHandle | None:
         """Resume via session/load, retrying past a stale native session lock.
 
@@ -759,6 +782,7 @@ class AcpProvider(LLMProvider):
                     cwd=work_dir,
                     agent=agent or None,
                     member_session_key=member_session_key,
+                    session_key=session_key,
                 )
                 if attempt:
                     logger.info(
@@ -919,6 +943,7 @@ class AcpProvider(LLMProvider):
                             work_dir,
                             agent,
                             member_session_key=self._member_session_key(),
+                            session_key=self._owning_session_key(),
                         )
                     finally:
                         phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
@@ -976,6 +1001,7 @@ class AcpProvider(LLMProvider):
                         cwd=work_dir,
                         agent=agent or None,
                         member_session_key=self._member_session_key(),
+                        session_key=self._owning_session_key(),
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():
@@ -1037,7 +1063,16 @@ class AcpProvider(LLMProvider):
                         phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
 
             # Replace the placeholder AcpClient with the real AcpSessionProvider
-            provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
+            provider = AcpSessionProvider(
+                handle,
+                runtime,
+                owns_runtime=True,
+                # This path is the COLD start, which never rekeys — so the
+                # correlation keys have to arrive here or the per-turn re-claim
+                # pushes a keyless claim gatewayd throws away.
+                session_key=self._owning_session_key(),
+                channel_id=self._owning_channel_id(),
+            )
             if resumed:
                 provider.resumed = True
             # Re-apply the consumer's fidelity opt-in: it was set on THIS

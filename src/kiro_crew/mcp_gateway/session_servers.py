@@ -13,7 +13,11 @@ Only stub entries are injected. A non-poolable server is left entirely to the
 agent spec, so its ``env`` — which routinely holds tokens and API keys — never
 leaves the file it was declared in. Stub entries carry ``env: {}`` by
 construction (``rewriter._build_stub_entry``): the pooled backend is spawned by
-gatewayd, not by kiro-cli, so no credential is transmitted here either.
+gatewayd, not by kiro-cli, so no credential is transmitted here either. The one
+value a stub entry's ``env`` does carry is this session's stub token
+(:func:`attach_stub_session_token`), which names the SESSION the entry was
+injected for and is what stops a subagent sharing its parent's process from
+inheriting the parent's identity.
 
 Precedence caveat: same-name override is verified against the shipped binary
 (``test_mcp_gateway_session_inject.py`` pins it, including a live check when
@@ -31,9 +35,41 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 
 logger = logging.getLogger(__name__)
+
+
+def attach_stub_session_token(
+    entries: list[dict[str, Any]], token: str
+) -> list[dict[str, Any]]:
+    """Return *entries* with *token* added to each element's ACP ``env`` array.
+
+    Applied to the stub entries of ONE ACP session, after
+    :func:`pooled_session_servers` has shaped them. Kept separate from that
+    function rather than folded into it because the token is per SESSION while
+    the overlay lookup is per agent — and because the shaping call is
+    monkeypatched by callers that know nothing about tokens.
+
+    An empty *token* returns the input unchanged, so a caller that cannot mint
+    one (or a build with the gateway off, where ``entries`` is empty anyway)
+    stays byte-identical to the pre-token wire shape. Copies each element: the
+    caller's list may be a cached array shared with another session.
+    """
+    if not token:
+        return entries
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        shaped = dict(entry)
+        raw_env = shaped.get("env")
+        env = [e for e in raw_env if isinstance(e, dict)] if isinstance(raw_env, list) else []
+        env = [e for e in env if e.get("name") != STUB_SESSION_TOKEN_ENV]
+        env.append({"name": STUB_SESSION_TOKEN_ENV, "value": token})
+        shaped["env"] = env
+        out.append(shaped)
+    return out
+
 
 # Keys that are positional in the ACP element shape (``name``) or that we
 # always re-derive (``env``), so they must not be copied verbatim.

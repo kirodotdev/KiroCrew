@@ -637,7 +637,15 @@ class SessionAllocationService:
             parent_session_key, agent=agent, cwd=cwd
         )
         try:
-            handle = await runtime.create_session(cwd=cwd or None, agent=agent or None)
+            handle = await runtime.create_session(
+                cwd=cwd or None,
+                agent=agent or None,
+                # A per-step session on the RUN's shared runtime: without its
+                # owner, its broker stubs carry a token no claim names and
+                # resolve to nothing (fail closed), and before the token they
+                # resolved to the run's parent session.
+                session_key=key,
+            )
         except AcpWorkspaceBindingError:
             return await owner.get_or_create(
                 key,
