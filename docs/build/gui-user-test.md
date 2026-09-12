@@ -30,6 +30,7 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 | `test/gui_user/scenarios.py` + `scenarios/*.yaml` | The scenario DSL (including the `FEATURES` registry) and the shipped scenarios. |
 | `test/gui_user/report.py` | Renders `summary.json` into `verdict.md`, the PR comment and the nightly issue, all grouped by feature; renders `features.md` from the scenario directory. |
 | [`test/gui_user/FEATURES.md`](../../test/gui_user/FEATURES.md) + `features.json` | The scenario backlog: every user-visible feature as one record (feature slug, user story, start URL, seed, runnable tier, priority). `features.json` is the source of truth; `FEATURES.md` is rendered from it by `features_catalog.py` (`--write` / `--check`), which also validates every record and refuses cross-slug duplicates. |
+| `test/gui_user/friction.py` | The new-user friction channel: the `report_friction` tool schema, entry validation, the cross-night ledger, the "New-user friction" section and the nightly `ux(<feature>)` issues. |
 
 The unit tests under `test/gui_user/` run in the ordinary Backend Tests shards; they
 need no display and never call Bedrock.
@@ -107,6 +108,7 @@ expectations:
   - The page background colour is clearly different from the first screenshot.
 max_steps: 12               # actions before the scenario FAILS (ceiling 40)
 max_seconds: 300            # wall clock before the scenario FAILS (ceiling 900)
+persona: new-user           # optional; who the tester is (scenarios.PERSONAS), see below
 ```
 
 Write `steps` as you would brief a human tester -- what to look for, not where to
@@ -163,6 +165,91 @@ on demand (below) before merging.
 `boot.sh` seeds one home per run from `GUI_SEED` (default `rich`) with `GUI_MEMBERS`
 (default `nova-sky`); a scenario's `preconditions.seed` / `members` document what it
 needs and must agree with that boot, because the target is booted once per run.
+
+### New-user friction: what confused the tester, beside the verdict
+
+A scenario tells you whether a flow works. It does not tell you whether a person who
+has never seen the product could find it. The friction channel does, and it is
+deliberately independent of PASS/FAIL: a scenario can pass with five confusions
+logged, or fail with none.
+
+- **Persona.** The tester runs as `scenarios.PERSONAS["new-user"]` unless the YAML sets
+  `persona: none` (the bare tester, no friction tool -- for a scenario about the expert
+  path, or to measure the channel's own cost). The persona text is spliced into the
+  harness system prompt: first time using Kiro Crew, no documentation, used ordinary
+  chat apps and an editor before; and a standing instruction to call `report_friction`
+  the moment it pauses for more than a glance, cannot find a control, clicks the wrong
+  thing, does not understand a label / icon / message, does not know what is
+  happening, or finds the layout hides the main action -- then carry on.
+- **Entries.** `report_friction` takes `surface`, `element`, `what_confused` (first
+  person, one sentence), `expected`, `actual` and `severity` (`blocker` = could not
+  continue without guessing; `slows-down` = got there but lost time; `cosmetic` =
+  looked wrong, did not slow me down). `friction.validate_entry` is the only way in:
+  every field typed, trimmed and capped at 240 characters, unknown fields refused,
+  and the harness stamps `feature` (from the scenario), `scenario`, the last
+  screenshot's artifact path and the step number. Twelve entries per attempt; a
+  duplicate or a malformed call gets a one-line answer and never fails the task. The
+  entries ride in `summary.json` under each attempt as `friction[]`.
+- **Identity across nights.** `friction.entry_key(feature, element, what_confused)`
+  after case / whitespace / punctuation normalization. The workflow fetches the
+  previous `gui-user-test-friction-ledger` artifact, folds
+  tonight's entries in (`friction.py merge`: a recurrence bumps `count` and
+  `last_seen`, takes the newest sighting's wording and screenshot and keeps the worst
+  severity; a second run on the same day -- a dispatch after the nightly -- refreshes
+  the evidence under its own artifact without counting the day twice, and a re-run of
+  the same run is never a new night, even across midnight UTC), writes `results/friction.json` (tonight's
+  rows with counts and issue numbers) and -- on the scheduled run only -- re-uploads
+  the ledger with 90-day retention. A dispatch reads the ledger for its report but
+  never writes it, so runs on different refs cannot race each other's entries into
+  the canonical ledger.
+- **Where the ledger may come from.** The ledger feeds a step that writes issues
+  with the repository token, so it is never looked up by artifact name across the
+  repository -- a fork pull request can upload an artifact called anything.
+  `friction.py pick-ledger` first looks at the current run itself -- a **re-run**
+  of a scheduled night reads its own earlier attempt's ledger, which already
+  records the issues that attempt filed (the ledger upload overwrites for the same
+  reason) -- then lists the completed **scheduled** runs of this workflow file on
+  the **default branch**, keeps only those whose head and base repository are this
+  repository (walking the listing page by page, so a long streak of ledgerless
+  nights cannot hide an older ledger still inside its retention window), and takes
+  the ledger from the newest such run that still holds one
+  (a red, cancelled or timed-out nightly counts: its ledger was written and
+  uploaded before the job ended; a night whose merge step failed uploaded nothing
+  and is skipped). The
+  artifact's own `workflow_run` block is checked against that run and branch
+  before download. A complete answer with no eligible run means "first night"; a
+  listing or download ERROR fails the merge step instead, so a transient outage
+  can never replace the canonical ledger with an empty one. A night the harness
+  did not run carries the ledger forward and files nothing. `verdict.md` is
+  re-rendered after the merge so the uploaded verdict carries the counts.
+- **Where it shows.** `verdict.md`, the run summary and the nightly failure issue all
+  end with a "New-user friction" section: one table per feature in registry order,
+  worst severity first, each row with where / expected → actual / how many nights /
+  the screenshot in the artifact. The section is capped at 30k characters (issue
+  bodies and comments stop at 64k): rows past the budget are counted in one
+  trailer line and stay in the artifact's `friction.json`. Model text is rendered
+  inert (no fences, links, HTML or mentions survive).
+- **Issues.** Nightly only: each non-cosmetic row without an issue gets one
+  (unless an OPEN issue already carries the row's marker -- a number the ledger
+  lost to a cancelled run is adopted, never duplicated; a failed lookup skips the
+  row for the night) --
+  title `ux(<feature>): <what confused me>`, labels `ux`, `channel: gui-user-test`
+  and an `area:` label mapped from the feature (`friction.AREA_LABELS`, keyed only by
+  registry slugs, default `area: dashboard`), body carrying
+  `<!-- gui-user-friction <key> -->` -- at most
+  five a night, the rest wait in the summary for the next night. A recurrence whose
+  row already has an issue gets one "again on <date>" comment per date (a same-day
+  rerun posts nothing twice; the ledger is written -- atomically, temp file then
+  rename, so a disk-full or killed runner never leaves a truncated ledger under the
+  canonical name -- after every successful `gh` call
+  so a rerun after a partial failure files only what is missing). Cosmetic rows never
+  leave the summary. Closing an issue is a human call; the lane never reopens one.
+- **Cost.** The persona adds about 450 input tokens to every model call and each
+  `report_friction` call is one extra round trip (~7k input, ~150 output tokens);
+  two to four per scenario in practice. Roughly +$0.10 per scenario, about +$1 a
+  night on the twelve-scenario tier, inside the $10 ceiling. If the ceiling is ever
+  the problem, set `persona: none` on the low-priority scenarios first rather than
+  dropping the channel.
 
 ## Running it
 
