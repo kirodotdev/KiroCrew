@@ -51,6 +51,7 @@ work on a daemon thread, and the ``no-blocking-call-on-event-loop`` rule.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.client
 import logging
@@ -58,6 +59,7 @@ import os
 import platform
 import shutil
 import ssl
+import stat
 import sys
 import tarfile
 import threading
@@ -69,7 +71,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
 from kiro_crew.apps.builtins.papyrus.backend import store
 from kiro_crew.sel import sel
@@ -543,13 +545,96 @@ def _locate_binary(tree: Path) -> Path | None:
     top-level directory does not need a code change to keep working.
     """
     wanted = binary_name()
+    root = tree.resolve()
+
+    def contained(candidate: Path) -> bool:
+        """True only when *candidate* is a file the extraction itself produced.
+
+        The walk below already refuses a candidate that IS a link, so refusing a
+        link-mediated escape is this function's own intent. But ``rglob``
+        DESCENDS through a directory link, and the executable on the far side is
+        an ordinary file -- ``is_file()`` true, ``is_symlink()`` false -- so it
+        passes that filter while resolving outside the tree. On Windows the link
+        is typically a junction, which ``is_symlink`` does not report at all.
+
+        Resolving is what makes the check hold for both: it follows every
+        reparse point on the way down and answers where the bytes actually live.
+
+        This is a NAME-level filter and deliberately not the containment
+        witness: it resolves a path, and whatever opens that path afterwards
+        resolves it again, so a link swapped in between is followed by the
+        second resolution and not the first. It exists to refuse the ordinary
+        case early and to name the right file in the failure message.
+        :func:`_open_inside` is what actually decides containment, on the
+        descriptor the install then reads.
+        """
+        try:
+            return candidate.resolve().is_relative_to(root)
+        except OSError:
+            return False
+
     direct = tree / wanted
-    if direct.is_file():
+    if direct.is_file() and contained(direct):
         return direct
     for candidate in sorted(tree.rglob(wanted)):
-        if candidate.is_file() and not candidate.is_symlink():
+        if candidate.is_file() and not candidate.is_symlink() and contained(candidate):
             return candidate
     return None
+
+
+def _open_inside(candidate: Path, root_real: str) -> int | None:
+    """Open *candidate* and return a descriptor, but only if it lives in *root_real*.
+
+    This is the containment witness. Every by-name check in this module --
+    ``resolve()``, ``is_file()``, ``is_symlink()`` -- validates a path and then
+    hands that path to something that opens it again, so the inode that was
+    checked and the inode that is used are two separate lookups with a window
+    between them. Inside that window a local writer can retarget the
+    ``.provision.<pid>`` tree the unpack ran into, and the second lookup follows
+    the new link.
+
+    So the order is inverted: open FIRST, then ask the kernel where the thing
+    already held open actually is (:func:`pinned_fs.fd_real_path` --
+    ``/proc/self/fd``, ``F_GETPATH`` or ``GetFinalPathNameByHandleW``). A
+    descriptor cannot be re-pointed, so that answer stays true for as long as it
+    is held, and the caller installs FROM the descriptor rather than reopening
+    the name.
+
+    *root_real* must be captured before the tree is filled, and by the caller --
+    resolving it here would re-open the same window one level up, since the
+    directory whose containment is being asserted is exactly the one an attacker
+    would swap.
+
+    ``O_NOFOLLOW`` guards only the final component and does not exist on
+    Windows; it is passed where available as a cheap early refusal, and the
+    fd-path check is what closes the gap on every platform. Every failure route
+    -- unreadable, not a regular file, unknowable real path -- returns ``None``,
+    never a fallback to the pathname.
+    """
+    try:
+        fd = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        real = pinned_fs.fd_real_path(fd)
+        if real is None:
+            return None  # cannot witness containment -> fail closed
+        try:
+            if os.path.commonpath([real, root_real]) != root_real:
+                return None
+        except ValueError:  # different drives on Windows
+            return None
+    except OSError:
+        return None
+    else:
+        held, fd = fd, -1
+        return held
+    finally:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 # ── download ────────────────────────────────────────────────────────────────
@@ -722,8 +807,8 @@ def _download_to(asset: TectonicAsset, staging: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def _install_binary(extracted: Path, target: Path) -> None:
-    """Move *extracted* into place atomically and make it executable.
+def _install_binary(source_fd: int, target: Path) -> None:
+    """Install the bytes behind *source_fd* atomically and make them executable.
 
     Staged inside the TARGET directory so ``os.replace`` is a same-filesystem
     rename, and named per-process so two concurrent installs cannot interleave
@@ -731,11 +816,23 @@ def _install_binary(extracted: Path, target: Path) -> None:
     binary is never observable at its final path without its exec bit — a
     half-installed compiler that "looks valid" is exactly the state
     :func:`binary_installed` must never see.
+
+    The source is a DESCRIPTOR, not a path, and that is the whole point. This
+    used to ``shutil.move`` the located path, which re-resolves it: the file
+    that was validated and the file that got installed were two lookups of the
+    same name, and a local writer who retargeted the unpack tree in between had
+    an arbitrary file promoted onto the path papyrus executes. A descriptor
+    cannot be re-pointed, so the bytes copied here are exactly the bytes
+    :func:`_open_inside` witnessed inside the tree. The cost is a copy instead
+    of a rename, once, for an artifact that was just downloaded over the
+    network.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{target.name}.{os.getpid()}.tmp"
     try:
-        shutil.move(str(extracted), str(staging))
+        os.lseek(source_fd, 0, os.SEEK_SET)
+        with open(staging, "wb") as out:
+            shutil.copyfileobj(os.fdopen(os.dup(source_fd), "rb", closefd=True), out)
         platform_compat.chmod_safe(staging, _BINARY_MODE)
         os.replace(staging, target)
     finally:
@@ -764,6 +861,12 @@ def _provision_once(root: Path | None) -> tuple[bool, str]:
         _set_state(STATE_INSTALLING)
         unpacked = work / "unpacked"
         unpacked.mkdir()
+        # Captured HERE, on a directory this process just created and before the
+        # archive is written into it, so it is the extraction's own tree that
+        # containment is asserted against. Resolving it later -- inside the
+        # locator, or after the walk -- would resolve whatever the name points at
+        # by then, which is precisely the thing an attacker would have swapped.
+        root_real = os.path.realpath(unpacked)
         try:
             _extract(archive, unpacked, is_zip=asset.is_zip)
         except (ArchiveRejected, tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
@@ -771,9 +874,23 @@ def _provision_once(root: Path | None) -> tuple[bool, str]:
         binary = _locate_binary(unpacked)
         if binary is None:
             return False, f"no {binary_name()} found inside {asset.name}"
-        if binary.stat().st_size < _MIN_BINARY_BYTES:
-            return False, f"extracted {binary_name()} is implausibly small ({binary.stat().st_size} bytes)"
-        _install_binary(binary, target)
+        source_fd = _open_inside(binary, root_real)
+        if source_fd is None:
+            return False, (
+                f"the {binary_name()} found inside {asset.name} does not live inside "
+                "the unpacked tree — refusing to install it"
+            )
+        try:
+            # From the descriptor, not the path: a second stat() of the name is a
+            # second lookup, and the size that gates the install must be the size
+            # of the file that gets installed.
+            size = os.fstat(source_fd).st_size
+            if size < _MIN_BINARY_BYTES:
+                return False, f"extracted {binary_name()} is implausibly small ({size} bytes)"
+            _install_binary(source_fd, target)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(source_fd)
         if not binary_installed(root):
             return False, "installed binary failed its post-install check"
         return True, ""

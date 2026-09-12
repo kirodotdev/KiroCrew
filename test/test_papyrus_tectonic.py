@@ -40,6 +40,8 @@ from unittest import mock
 
 import pytest
 
+from conftest import make_dir_link, requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import latex, store, tectonic
 
 
@@ -1062,3 +1064,275 @@ class TestErrorMessagesNeverCarryMirrorCredentials:
         assert audited and all("sup3rsecret" not in a for a in audited), (
             f"credential leaked into the audit record: {audited}"
         )
+
+
+# ── the installed binary must be the file that was validated ────────────────
+
+
+#: ``Path.rglob`` recurses with pathlib's ``**`` selector, which deliberately does
+#: NOT descend a directory SYMLINK — so on POSIX the walk cannot reach past one at
+#: all. A Windows JUNCTION is a different reparse tag: ``DirEntry.is_symlink()``
+#: answers False for it, so the same walk descends it and hands back an ordinary
+#: file living outside the tree. MEASURED both ways rather than assumed: on this
+#: repo's Linux shard the guard-the-guard assertion below reported an empty walk,
+#: and on Windows it reports the file beyond the junction.
+#:
+#: The consequence is a platform fact, not a preference: the walk-descent escape is
+#: reachable on Windows and not on POSIX, and a test that manufactured a POSIX
+#: equivalent would be pinning a premise that does not hold there.
+_WALK_DESCENDS_A_DIRECTORY_LINK = platform_compat.IS_WINDOWS
+
+walk_descends_a_directory_link = pytest.mark.skipif(
+    not _WALK_DESCENDS_A_DIRECTORY_LINK,
+    reason=(
+        "pathlib's ** does not descend a POSIX directory symlink, so the walk cannot "
+        "reach past one; this escape is the Windows junction shape"
+    ),
+)
+
+
+def _detach_dir_link(link: Path) -> None:
+    """Remove the link ITSELF at *link*, leaving whatever it pointed at alone.
+
+    The call differs by platform and the wrong one raises rather than misbehaving
+    quietly: a POSIX directory symlink is a link entry, so ``rmdir`` answers
+    ``NotADirectoryError`` and only ``unlink`` removes it; a Windows junction is a
+    real directory entry, which ``unlink`` refuses. ``is_symlink()`` separates them
+    -- it is False for a junction, which is the same property the production code
+    under test is about.
+    """
+    if link.is_symlink():
+        link.unlink()
+    else:
+        os.rmdir(link)
+
+
+def _small(body: bytes = b"\x7fELFgood") -> bytes:
+    """A body for the containment tests, which never reach the plausibility floor."""
+    return body
+
+
+class TestLocateBinaryStaysInsideTheUnpackedTree:
+    """`_locate_binary` may only offer a path the extraction itself produced.
+
+    The walk already refuses a candidate that IS a link, so refusing a link-mediated
+    escape is the site's own stated intent. That guard is blind to the escape that
+    costs the most: on Windows `rglob` DESCENDS through a directory junction, and
+    the executable it finds on the far side is an ordinary file — `is_file()` true,
+    `is_symlink()` false — so it passes the filter unchanged while resolving outside
+    the tree.
+
+    What follows the return is not a read. `_provision_once` installs the located
+    binary onto `binary_path()` with `_BINARY_MODE`, and papyrus then executes it.
+    So an escape here promotes an arbitrary local file to an executed binary path.
+
+    Threat model, stated plainly and not inflated: the asset is pinned and fetched
+    over TLS, and neither tar nor zip can create a Windows junction, so the archive
+    cannot plant this. It needs a local writer racing the per-process
+    `.provision.<pid>` unpack directory.
+
+    This class covers the by-name filter only. It is a first refusal, not the
+    containment decision — see `TestTheInstalledBytesAreTheValidatedBytes`.
+    """
+
+    @walk_descends_a_directory_link
+    def test_an_executable_reached_through_a_directory_link_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        planted = outside / tectonic.binary_name()
+        planted.write_bytes(_small())
+        make_dir_link(tree / "vendor", outside)
+
+        # Guard the guard, through an oracle OUTSIDE the module under test: if
+        # `rglob` did not descend, or the descendant were itself a link, this test
+        # would pass for a reason that has nothing to do with the fix. The skipif
+        # above says where this holds; this says it still holds HERE.
+        reached = sorted(tree.rglob(tectonic.binary_name()))
+        assert reached, "rglob never descended the link, so nothing was under test"
+        assert reached[0].is_file()
+        assert not reached[0].is_symlink()
+        assert not reached[0].resolve().is_relative_to(tree.resolve())
+
+        assert tectonic._locate_binary(tree) is None
+
+    @requires_symlinks
+    def test_a_direct_hit_that_resolves_outside_the_tree_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The fast path takes `tree / wanted` on `is_file()` alone — which follows a
+        link — so it never had even the walk's own `is_symlink` filter.
+
+        This one needs a FILE symlink, and only a file symlink: a junction is a
+        directory, so `is_file()` is False for it and the fast path is never entered
+        (an earlier draft used one and silently tested the walk instead). Creating a
+        file symlink needs a privilege an unelevated Windows shell does not hold, so
+        this case is POSIX-and-elevated-Windows by construction — which is also
+        where the escape it describes exists.
+        """
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        planted = outside / tectonic.binary_name()
+        planted.write_bytes(_small())
+        direct = tree / tectonic.binary_name()
+        direct.symlink_to(planted)
+
+        # Guard the guard: the fast path is only under test when `is_file()` is
+        # true, which is exactly what the junction version failed to arrange.
+        assert direct.is_file(), "the fast path was not entered, so nothing was tested"
+        assert not direct.resolve().is_relative_to(tree.resolve())
+
+        assert tectonic._locate_binary(tree) is None
+
+    def test_a_real_binary_at_the_top_of_the_tree_is_still_found(
+        self, tmp_path: Path
+    ) -> None:
+        """Positive control: the flat pinned layout must keep resolving."""
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        real = tree / tectonic.binary_name()
+        real.write_bytes(_small())
+        assert tectonic._locate_binary(tree) == real
+
+    def test_a_real_binary_in_a_subdirectory_is_still_found(self, tmp_path: Path) -> None:
+        """Positive control for the walk: a future release adding a top-level
+        directory must keep working, which is the reason the walk exists."""
+        tree = tmp_path / "unpacked"
+        nested = tree / "tectonic-0.1" / "bin"
+        nested.mkdir(parents=True)
+        real = nested / tectonic.binary_name()
+        real.write_bytes(_small())
+        assert tectonic._locate_binary(tree) == real
+
+
+class TestTheInstalledBytesAreTheValidatedBytes:
+    """Containment is decided on the DESCRIPTOR, and the install reads that descriptor.
+
+    Every by-name check in this module — `resolve()`, `is_file()`, `is_symlink()` —
+    validates a path and then hands the path to something that opens it again. The
+    inode that was checked and the inode that is used are two separate lookups, and
+    a local writer who retargets the unpack tree in the window between them has an
+    arbitrary file installed onto the path papyrus executes. Reviewers found exactly
+    that hole in the by-name-only version of this fix.
+
+    `_open_inside` inverts the order — open first, then ask the kernel where the
+    open thing actually is — and `_install_binary` copies from that descriptor. So
+    the property under test is not "the check is stricter" but "the check and the
+    use address one object".
+    """
+
+    def test_a_file_reached_through_a_directory_link_gets_no_descriptor(
+        self, tmp_path: Path
+    ) -> None:
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        planted = outside / tectonic.binary_name()
+        planted.write_bytes(_small())
+        make_dir_link(tree / "vendor", outside)
+
+        candidate = tree / "vendor" / tectonic.binary_name()
+        # Guard the guard: the lexical path IS inside the tree, so a check that
+        # only looked at the name would accept it. That is the whole point.
+        assert candidate.is_file()
+        assert tree in candidate.parents
+
+        assert tectonic._open_inside(candidate, os.path.realpath(tree)) is None
+
+    def test_a_real_file_inside_the_tree_gets_a_descriptor_on_its_own_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        """Positive control, and the one that would catch an over-tight check.
+
+        `fd_real_path` and `realpath` reach the same name by different kernel
+        routes, and on Windows a path can also come back in 8.3 short form — so a
+        containment comparison that agrees only by luck must fail here, not in
+        production.
+        """
+        tree = tmp_path / "unpacked"
+        nested = tree / "tectonic-0.1" / "bin"
+        nested.mkdir(parents=True)
+        real = nested / tectonic.binary_name()
+        real.write_bytes(_small(b"\x7fELFreal"))
+
+        fd = tectonic._open_inside(real, os.path.realpath(tree))
+        assert fd is not None
+        try:
+            assert os.read(fd, 64) == b"\x7fELFreal"
+        finally:
+            os.close(fd)
+
+    def test_retargeting_the_link_after_validation_cannot_change_what_is_installed(
+        self, tmp_path: Path
+    ) -> None:
+        """The regression for the race itself.
+
+        The link points INSIDE the tree when the candidate is validated, so a
+        by-name check accepts it — correctly. It is then retargeted outside before
+        the install. A build that re-opens the path installs the attacker's file; a
+        build that installs from the validated descriptor installs the bytes it
+        checked.
+
+        Deterministic on purpose: the swap is placed exactly where a racing writer
+        would land, rather than run concurrently and hoped for.
+        """
+        tree = tmp_path / "unpacked"
+        genuine = tree / "real"
+        genuine.mkdir(parents=True)
+        (genuine / tectonic.binary_name()).write_bytes(_small(b"\x7fELFgenuine"))
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / tectonic.binary_name()).write_bytes(_small(b"\x7fELFplanted!"))
+
+        link = tree / "vendor"
+        make_dir_link(link, genuine)
+        candidate = link / tectonic.binary_name()
+
+        fd = tectonic._open_inside(candidate, os.path.realpath(tree))
+        assert fd is not None, "the contained candidate was refused; nothing under test"
+        try:
+            # The window. Detaching the link is not the same call on both
+            # platforms and the wrong one raises rather than misbehaving quietly:
+            # a POSIX directory SYMLINK is a link entry, so `rmdir` answers
+            # `NotADirectoryError` and only `unlink` removes it, while a Windows
+            # JUNCTION is a real directory entry that `unlink` refuses. Neither
+            # call touches what the link points at.
+            _detach_dir_link(link)
+            make_dir_link(link, outside)
+            assert candidate.read_bytes() == b"\x7fELFplanted!", (
+                "the swap did not take effect, so the race was never simulated"
+            )
+
+            target = tmp_path / "install" / tectonic.binary_name()
+            tectonic._install_binary(fd, target)
+        finally:
+            os.close(fd)
+
+        assert target.read_bytes() == b"\x7fELFgenuine"
+
+    def test_containment_fails_closed_when_the_real_path_is_unknowable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A host whose kernel route for "where is this fd" is unavailable gets a
+        refusal, never a fallback to the pathname the descriptor was opened by."""
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        real = tree / tectonic.binary_name()
+        real.write_bytes(_small())
+        assert tectonic._open_inside(real, os.path.realpath(tree)) is not None
+
+        monkeypatch.setattr(tectonic.pinned_fs, "fd_real_path", lambda _fd: None)
+        assert tectonic._open_inside(real, os.path.realpath(tree)) is None
+
+    def test_a_directory_never_yields_a_descriptor(self, tmp_path: Path) -> None:
+        """`_install_binary` copies bytes; a non-regular source must be refused
+        before it reaches that, not turned into an unreadable install."""
+        tree = tmp_path / "unpacked"
+        (tree / "adir").mkdir(parents=True)
+        assert tectonic._open_inside(tree / "adir", os.path.realpath(tree)) is None
