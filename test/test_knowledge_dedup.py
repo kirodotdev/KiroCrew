@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from kiro_crew.knowledge.dedup import (
     DocRef,
     _match_reason,
@@ -86,6 +88,23 @@ def _upload_still_holds_a_document(store):
 
 
 class TestFilenameMatch:
+    @pytest.mark.parametrize("separator", ["-", "_", ".", ""])
+    def test_iso_dates_keep_the_year(self, separator):
+        a = f"Report 2025{separator}04{separator}14.docx"
+        b = f"Report 2026{separator}04{separator}14.docx"
+        assert not filename_near_match(a, b)
+
+    def test_iso_dates_keep_close_revisions_and_separate_numeric_dates(self):
+        assert filename_near_match("Report 2025-12-30.docx", "Report 2026-01-02.docx")
+        assert filename_near_match(
+            "Report 2025-04-14 06-10.docx", "Report 2026-04-14 06-10.docx"
+        )
+
+    def test_malformed_iso_tokens_still_feed_the_numeric_date_guard(self):
+        assert not filename_near_match(
+            "Report 2025-13-01.docx", "Report 2025-25-01.docx"
+        )
+
     def test_copy_modifiers_match(self):
         assert filename_near_match("Report.docx", "Report (1).docx")
         assert filename_near_match("Report.docx", "Report copy.docx")
@@ -362,6 +381,38 @@ class TestDedupSweep:
         assert _upload_owns_no_items(store)
         assert _upload_still_holds_a_document(store)
         store.db.close()
+
+    def test_fuzzy_sweep_preserves_reports_from_different_iso_years(self, tmp_path):
+        store = _mk_store(tmp_path)
+        try:
+            _, upload = _add_upload(
+                store, "Report 2025-04-14.docx", "H1", [1.0, 0.0, 0.0, 0.0]
+            )
+            _, folder = _add_folder_file(
+                store, "/p/Report 2026-04-14.docx", "H2", [0.98, 0.0, 0.2, 0.0]
+            )
+            assert dedup_sweep(store, apply=True) == []
+            assert {
+                row["id"] for row in store.db.execute("SELECT id FROM items")
+            } == {upload, folder}
+        finally:
+            store.db.close()
+
+    def test_fuzzy_sweep_preserves_reports_with_distinct_malformed_iso_tokens(self, tmp_path):
+        store = _mk_store(tmp_path)
+        try:
+            _, upload = _add_upload(
+                store, "Report 2025-13-01.docx", "H1", [1.0, 0.0, 0.0, 0.0]
+            )
+            _, folder = _add_folder_file(
+                store, "/p/Report 2025-25-01.docx", "H2", [0.98, 0.0, 0.2, 0.0]
+            )
+            assert dedup_sweep(store, apply=True) == []
+            assert {
+                row["id"] for row in store.db.execute("SELECT id FROM items")
+            } == {upload, folder}
+        finally:
+            store.db.close()
 
     def test_below_threshold_keeps_both(self, tmp_path):
         store = _mk_store(tmp_path)
