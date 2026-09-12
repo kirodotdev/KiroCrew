@@ -402,6 +402,13 @@
     "components.pendingDecisionCard.submit_n_answers": "Primary button label when several options are toggled; {{count}} is the number of picked options, e.g. 'Submit 2 answers'.",
     "components.pendingDecisionCard.add_to_message_box": "Secondary button on that card; puts the toggled option(s) into the message box below without sending.",
     "components.pendingDecisionCard.add_to_message_box_hint": "Tooltip of that secondary button; uses the same 'message box' term as the label.",
-    "components.pendingDecisionCard.dismiss_hint": "Tooltip of the X button stating the outcome: the card hides without answering, the decision stays in the chat, the loop keeps running."
+    "components.pendingDecisionCard.dismiss_hint": "Tooltip of the X button stating the outcome: the card hides without answering, the decision stays in the chat, the loop keeps running.",
+    "apps.meetings.meeting.pausing": "Pending label on the Pause button while the pause request is waiting on the server; ellipsis conveys in-progress.",
+    "apps.meetings.meeting.resuming": "Pending label on the Resume button while the unpause request is waiting on the server; ellipsis conveys in-progress.",
+    "apps.meetings.broadcastBar.pausedPlaceholder": "Compose-bar placeholder while the meeting is paused; names the AGENTS as what stopped (pause does not interrupt the humans in the room) and how to get sending back.",
+    "apps.meetings.broadcastBar.pausingPlaceholder": "Compose-bar placeholder while the pause request is still in flight; must not claim the meeting is already paused.",
+    "apps.meetings.broadcastBar.resumingPlaceholder": "Compose-bar placeholder while the resume request is in flight; must not instruct the user to click Resume again.",
+    "apps.meetings.transcript.emptyHintPaused": "Empty-transcript hint while the meeting is paused; reassures nothing was discarded without promising live speech.",
+    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled."
   }
 }

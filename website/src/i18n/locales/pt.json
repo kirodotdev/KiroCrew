@@ -2921,7 +2921,10 @@
       },
       "broadcastBar": {
         "heard": "Ouvido: {{text}}",
+        "pausedPlaceholder": "Agentes pausados — retome para enviar",
+        "pausingPlaceholder": "Pausando — envio indisponível",
         "placeholder": "Diga algo a todos os agentes à escuta…",
+        "resumingPlaceholder": "Retomando — o envio estará disponível em breve",
         "send": "Enviar"
       },
       "list": {
@@ -2973,6 +2976,7 @@
         "back": "Voltar",
         "endAndReview": "Terminar e revisar",
         "ended": "Terminada",
+        "endingReview": "Encerrando — preparando a revisão…",
         "live": "Em direto",
         "loadFailed": "Não foi possível abrir esta reunião",
         "moreActions": "Mais ações",
@@ -2980,8 +2984,10 @@
         "noAgentsHint": "Ative um na barra acima, ou escolha uma predefinição.",
         "pause": "Pausar",
         "paused": "Em pausa",
+        "pausing": "Pausando…",
         "refresh": "Atualizar",
         "restart": "Reiniciar",
+        "resuming": "Retomando…",
         "retryAgents": "Tentar de novo",
         "start": "Começar",
         "toggleTasks": "Tarefas",
@@ -3116,6 +3122,7 @@
       "transcript": {
         "empty": "Ainda não há transcrição",
         "emptyHintLive": "A fala finalizada aparecerá aqui à medida que a reunião avança.",
+        "emptyHintPaused": "Pausado — a fala aparecerá aqui após retomar.",
         "emptyHintRecorded": "Nenhuma transcrição foi gravada para esta reunião.",
         "full": "A transcrição está cheia. Novas falas e transmissões não serão mais gravadas nem enviadas aos agentes.",
         "jumpToLatest": "Ir para o mais recente",

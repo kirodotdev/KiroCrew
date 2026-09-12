@@ -509,6 +509,65 @@ describe('useMeetingSession lifecycle actions', () => {
     await waitFor(() => expect(apiMocks.setStatus).toHaveBeenCalledWith('weekly_sync', next))
   })
 
+  it('exposes the in-flight status change and clears it on settle', async () => {
+    const view = await mountLoaded()
+    let release!: (value: Record<string, never>) => void
+    apiMocks.setStatus.mockImplementationOnce(
+      () => new Promise(resolve => { release = resolve }),
+    )
+
+    expect(view.result.current.pending.settingStatus).toBeNull()
+    act(() => {
+      view.result.current.actions.pause()
+    })
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBe('paused'))
+
+    act(() => release({}))
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBeNull())
+  })
+
+  it('clears the in-flight status change when the request fails', async () => {
+    const view = await mountLoaded()
+    let fail!: (reason: Error) => void
+    apiMocks.setStatus.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { fail = reject }),
+    )
+
+    act(() => {
+      view.result.current.actions.pause()
+    })
+    // Observe the flag SET first, so the null below proves it was cleared by
+    // settle rather than never having flipped at all.
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBe('paused'))
+
+    act(() => fail(new Error('boom')))
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBeNull())
+  })
+
+  it('drops a second status change while one is still pending', async () => {
+    const view = await mountLoaded()
+    let release!: (value: Record<string, never>) => void
+    apiMocks.setStatus.mockImplementationOnce(
+      () => new Promise(resolve => { release = resolve }),
+    )
+
+    act(() => {
+      view.result.current.actions.pause()
+    })
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBe('paused'))
+
+    // A click on another status control inside the pending window is a no-op:
+    // the mutations would otherwise overlap and the first settle would clear
+    // the pending flag while the second is still in flight.
+    act(() => {
+      view.result.current.actions.review()
+    })
+    expect(apiMocks.setStatus).toHaveBeenCalledTimes(1)
+
+    act(() => release({}))
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBeNull())
+  })
+
   it('ends the meeting and refreshes the meeting list', async () => {
     const view = await mountLoaded()
     const invalidate = vi.spyOn(view.queryClient, 'invalidateQueries')

@@ -493,7 +493,16 @@ async def handle_meeting_status(request: web.Request) -> web.Response:
                 )
 
             session = ACTIVE.get(meeting_id)
-            if session is not None and status in (k.STATUS_REVIEWING, k.STATUS_ENDED):
+            # Every non-active state closes ingress: paused, reviewing, and ended
+            # all stop accepting dispatches at the server, so a second tab, the
+            # broadcast bar, or a direct API call cannot fan lines out to agents
+            # while the meeting is not live. The `active` branch below is the
+            # unpause path that reopens the gate.
+            if session is not None and status in (
+                k.STATUS_PAUSED,
+                k.STATUS_REVIEWING,
+                k.STATUS_ENDED,
+            ):
                 ACTIVE.suspend_dispatches(session)
             elif session is not None and status == k.STATUS_ACTIVE:
                 ACTIVE.resume_dispatches(session)

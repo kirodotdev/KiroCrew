@@ -8,9 +8,8 @@ import {
   ArrowLeft,
   Languages,
   ListChecks,
-  Mic,
-  MicOff,
   MoreHorizontal,
+  Pause as PauseIcon,
   Play,
   RefreshCw,
   Square,
@@ -153,11 +152,29 @@ export default function MeetingView({
             <h2 className="text-lg font-semibold text-text-strong truncate">
               {meta?.title || i18nT('apps.meetings.session.untitled')}
             </h2>
-            {status === 'active' && (
+            {status === 'active'
+              && pending.settingStatus !== 'paused'
+              && pending.settingStatus !== 'reviewing' && (
               <Badge variant="ok">{i18nT('apps.meetings.meeting.live')}</Badge>
             )}
-            {status === 'paused' && (
+            {(status === 'active' || status === 'paused')
+              && pending.settingStatus === 'reviewing' && (
+              <Badge variant="warn">{i18nT('apps.meetings.meeting.endingReview')}</Badge>
+            )}
+            {status === 'active' && pending.settingStatus === 'paused' && (
+              // Transitional badge: the polled status still reads active while
+              // the pause request is in flight, but the server may already
+              // have closed ingress — "Live" would contradict the disabled
+              // controls next to it.
+              <Badge variant="warn">{i18nT('apps.meetings.meeting.pausing')}</Badge>
+            )}
+            {status === 'paused'
+              && pending.settingStatus !== 'active'
+              && pending.settingStatus !== 'reviewing' && (
               <Badge variant="warn">{i18nT('apps.meetings.meeting.paused')}</Badge>
+            )}
+            {status === 'paused' && pending.settingStatus === 'active' && (
+              <Badge variant="warn">{i18nT('apps.meetings.meeting.resuming')}</Badge>
             )}
             {status === 'ended' && (
               <Badge variant="muted">{i18nT('apps.meetings.meeting.ended')}</Badge>
@@ -181,16 +198,36 @@ export default function MeetingView({
                   : i18nT('apps.meetings.meeting.start')}
               </SendBtn>
             )}
-            {status === 'active' && (
-              <Btn onClick={actions.pause} aria-label={i18nT('apps.meetings.meeting.pause')}>
-                <Mic className="lucide-inline" />
-                {i18nT('apps.meetings.meeting.pause')}
+            {status === 'active' && pending.settingStatus !== 'reviewing' && (
+              <Btn
+                onClick={actions.pause}
+                disabled={pending.settingStatus !== null}
+                aria-label={
+                  pending.settingStatus === 'paused'
+                    ? i18nT('apps.meetings.meeting.pausing')
+                    : i18nT('apps.meetings.meeting.pause')
+                }
+              >
+                <PauseIcon className="lucide-inline" />
+                {pending.settingStatus === 'paused'
+                  ? i18nT('apps.meetings.meeting.pausing')
+                  : i18nT('apps.meetings.meeting.pause')}
               </Btn>
             )}
             {status === 'paused' && (
-              <Btn onClick={actions.resume} aria-label={i18nT('apps.meetings.meeting.unpause')}>
-                <MicOff className="lucide-inline" />
-                {i18nT('apps.meetings.meeting.unpause')}
+              <Btn
+                onClick={actions.resume}
+                disabled={pending.settingStatus !== null}
+                aria-label={
+                  pending.settingStatus === 'active'
+                    ? i18nT('apps.meetings.meeting.resuming')
+                    : i18nT('apps.meetings.meeting.unpause')
+                }
+              >
+                <Play className="lucide-inline" />
+                {pending.settingStatus === 'active'
+                  ? i18nT('apps.meetings.meeting.resuming')
+                  : i18nT('apps.meetings.meeting.unpause')}
               </Btn>
             )}
             {/* Everything past the one primary status action lives in an overflow
@@ -214,7 +251,10 @@ export default function MeetingView({
               <DropdownMenuContent align="end" className="min-w-[200px]">
                 {(status === 'active' || status === 'paused') && (
                   <>
-                    <DropdownMenuItem onSelect={actions.review}>
+                    <DropdownMenuItem
+                      disabled={pending.settingStatus !== null}
+                      onSelect={actions.review}
+                    >
                       <Square size={13} className="shrink-0 text-danger" />
                       <span>{i18nT('apps.meetings.meeting.endAndReview')}</span>
                     </DropdownMenuItem>
@@ -337,6 +377,7 @@ export default function MeetingView({
               partial={partialTranscript}
               primary={enabledAgents.length === 0}
               status={status}
+              resuming={pending.settingStatus === 'active'}
               full={transcriptFull}
             />
           )}
@@ -346,7 +387,22 @@ export default function MeetingView({
           <BroadcastBar
             onSend={actions.broadcast}
             caption={caption}
-            disabled={transcriptFull}
+            // Gated on the pending window as well: during a pending pause the
+            // polled status still reads active while the server has already
+            // closed ingress, and a send landing there loses the typed line
+            // to a 409.
+            disabled={transcriptFull || status !== 'active' || pending.settingStatus !== null}
+            placeholder={
+              pending.settingStatus === 'paused'
+                ? i18nT('apps.meetings.broadcastBar.pausingPlaceholder')
+                : pending.settingStatus === 'active'
+                  ? i18nT('apps.meetings.broadcastBar.resumingPlaceholder')
+                  : pending.settingStatus === 'reviewing'
+                    ? i18nT('apps.meetings.meeting.endingReview')
+                    : status === 'paused'
+                      ? i18nT('apps.meetings.broadcastBar.pausedPlaceholder')
+                      : undefined
+            }
           />
         )}
       </div>

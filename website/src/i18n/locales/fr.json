@@ -2972,7 +2972,10 @@
       },
       "broadcastBar": {
         "heard": "Entendu : {{text}}",
+        "pausedPlaceholder": "Agents en pause — reprenez pour envoyer",
+        "pausingPlaceholder": "Mise en pause — envoi indisponible",
         "placeholder": "Dites quelque chose à tous les agents à l’écoute…",
+        "resumingPlaceholder": "Reprise — l'envoi sera bientôt disponible",
         "send": "Envoyer"
       },
       "list": {
@@ -3024,6 +3027,7 @@
         "back": "Retour",
         "endAndReview": "Terminer et passer en revue",
         "ended": "Terminée",
+        "endingReview": "Fin en cours — préparation de la revue…",
         "live": "En cours",
         "loadFailed": "Impossible d’ouvrir cette réunion",
         "moreActions": "Plus d'actions",
@@ -3031,8 +3035,10 @@
         "noAgentsHint": "Activez-en un dans la barre ci-dessus, ou choisissez un préréglage.",
         "pause": "Mettre en pause",
         "paused": "En pause",
+        "pausing": "Mise en pause…",
         "refresh": "Actualiser",
         "restart": "Relancer",
+        "resuming": "Reprise…",
         "retryAgents": "Réessayer",
         "start": "Démarrer",
         "toggleTasks": "Actions à suivre",
@@ -3167,6 +3173,7 @@
       "transcript": {
         "empty": "Aucune transcription pour le moment",
         "emptyHintLive": "Les paroles finalisées apparaîtront ici au fil de la réunion.",
+        "emptyHintPaused": "En pause — la parole apparaîtra ici après la reprise.",
         "emptyHintRecorded": "Aucune transcription n’a été enregistrée pour cette réunion.",
         "full": "La transcription est pleine. Les nouvelles paroles et diffusions ne seront plus enregistrées ni envoyées aux agents.",
         "jumpToLatest": "Aller au plus récent",
