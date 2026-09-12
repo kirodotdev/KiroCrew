@@ -106,7 +106,9 @@ class TestCronService:
         svc = CronService(base_dir=tmp_path)
         svc._load()
         job = svc.add_job(
-            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            name="shipped-disabled",
+            message="",
+            cron_expr="0 22 * * *",
             enabled=False,
         )
         assert job.enabled is False
@@ -118,7 +120,9 @@ class TestCronService:
         assert loaded and loaded[0].enabled is False
 
     def test_add_job_enabled_false_never_persisted_enabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The paused state is part of the FIRST persist — no save may ever
         capture the disabled-by-manifest job in an enabled state (a crash or a
@@ -137,13 +141,15 @@ class TestCronService:
 
         monkeypatch.setattr(svc, "_save", spy_save)
         svc.add_job(
-            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            name="shipped-disabled",
+            message="",
+            cron_expr="0 22 * * *",
             enabled=False,
         )
         assert snapshots, "add_job must persist the new job"
-        assert all(s == (False, True) for s in snapshots), (
-            f"a save captured the job enabled: {snapshots}"
-        )
+        assert all(
+            s == (False, True) for s in snapshots
+        ), f"a save captured the job enabled: {snapshots}"
 
     def test_add_job_invalid_cron_expr(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
@@ -533,6 +539,124 @@ class TestCronService:
         assert updated.model == ""
 
 
+class TestCronJobProjectPath:
+    """``project_path`` on a cron job: same validation bar as
+    ``chat_folders._validate_project_dir`` (absolute, resolved, non-sensitive,
+    existing directory), applied at the single locked ``_build_job``/
+    ``_update_job_locked`` chokepoints so every create/update path (MCP,
+    dashboard REST, CLI) shares one check.
+    """
+
+    def test_add_job_default_project_path_empty(self, tmp_path: Path) -> None:
+        """The common case: no project_path set is unchanged behavior."""
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="test", message="hello", every_secs=300)
+        assert job.project_path == ""
+
+    def test_add_job_valid_project_path_persists(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        svc = CronService(base_dir=tmp_path / "cron_home")
+        svc._load()
+        job = svc.add_job(
+            name="test",
+            message="hello",
+            every_secs=300,
+            project_path=str(project_dir),
+        )
+        assert job.project_path == str(project_dir.resolve())
+        # Round-trips through a fresh load of the store.
+        svc2 = CronService(base_dir=tmp_path / "cron_home")
+        svc2._load()
+        loaded = [j for j in svc2.list_jobs(include_disabled=True) if j.id == job.id]
+        assert loaded and loaded[0].project_path == str(project_dir.resolve())
+
+    def test_add_job_nonexistent_project_path_rejected(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        missing = tmp_path / "does-not-exist"
+        with pytest.raises(ValueError, match="existing directory"):
+            svc.add_job(
+                name="test",
+                message="hello",
+                every_secs=300,
+                project_path=str(missing),
+            )
+        # A rejected create must not leave an orphaned job on disk.
+        assert svc.list_jobs(include_disabled=True) == []
+
+    def test_add_job_relative_project_path_rejected(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        with pytest.raises(ValueError, match="absolute path"):
+            svc.add_job(
+                name="test",
+                message="hello",
+                every_secs=300,
+                project_path="relative/path",
+            )
+
+    def test_add_job_sensitive_project_path_rejected(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        with pytest.raises(ValueError, match="sensitive path"):
+            svc.add_job(
+                name="test",
+                message="hello",
+                every_secs=300,
+                project_path=str(Path.home() / ".ssh"),
+            )
+
+    def test_update_job_sets_project_path(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        svc = CronService(base_dir=tmp_path / "cron_home")
+        svc._load()
+        job = svc.add_job(name="test", message="hello", every_secs=300)
+        assert job.project_path == ""
+        updated = svc.update_job(job.id, project_path=str(project_dir))
+        assert updated is not None
+        assert updated.project_path == str(project_dir.resolve())
+
+    def test_update_job_clears_project_path(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        svc = CronService(base_dir=tmp_path / "cron_home")
+        svc._load()
+        job = svc.add_job(
+            name="test",
+            message="hello",
+            every_secs=300,
+            project_path=str(project_dir),
+        )
+        updated = svc.update_job(job.id, project_path="")
+        assert updated is not None
+        assert updated.project_path == ""
+
+    def test_update_job_invalid_project_path_rejected_leaves_existing_unchanged(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A rejected update must not strand earlier field mutations, and must
+        not clobber the job's existing (valid) project_path either."""
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        svc = CronService(base_dir=tmp_path / "cron_home")
+        svc._load()
+        job = svc.add_job(
+            name="test",
+            message="hello",
+            every_secs=300,
+            project_path=str(project_dir),
+        )
+        with pytest.raises(ValueError, match="existing directory"):
+            svc.update_job(job.id, project_path=str(tmp_path / "nope"))
+        reloaded = svc.get_job(job.id)
+        assert reloaded is not None
+        assert reloaded.project_path == str(project_dir.resolve())
+
+
 class TestLastResultTimestamp:
     """``last_result_ts`` identifies WHICH run produced ``last_result``.
 
@@ -599,13 +723,15 @@ class TestLastResultTimestamp:
         the row content the dedup compares, so anything coarser merges two runs
         that finished within the same interval.
         """
-        job = CronJob(id="tz1", name="tz", message="go", schedule=CronSchedule(kind="every", every_secs=300))
+        job = CronJob(
+            id="tz1", name="tz", message="go", schedule=CronSchedule(kind="every", every_secs=300)
+        )
         job.timezone = "UTC"
         job.set_run_result("output")
         assert job.last_result_stamp.startswith(" | ")
         # ' | YYYY-MM-DD HH:MM:SS UTC'
         assert job.last_result_stamp.endswith("UTC")
-        stamped = job.last_result_stamp[len(" | "): -len(" UTC")]
+        stamped = job.last_result_stamp[len(" | ") : -len(" UTC")]
         datetime.strptime(stamped, "%Y-%m-%d %H:%M:%S")
 
     def test_an_unknown_timezone_still_renders_via_the_utc_fallback(self) -> None:
@@ -616,7 +742,9 @@ class TestLastResultTimestamp:
         rows dedup against: a run must not lose its stamp over a config typo.
         """
         job = CronJob(
-            id="tz2", name="tz", message="go",
+            id="tz2",
+            name="tz",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=300),
         )
         job.timezone = "Not/AZone"
@@ -632,7 +760,9 @@ class TestLastResultTimestamp:
         instead of gaining a third variant of the same row.
         """
         job = CronJob(
-            id="tz3", name="tz", message="go",
+            id="tz3",
+            name="tz",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=300),
         )
         # Beyond what the platform can turn into a date, which is what the
@@ -829,7 +959,9 @@ class TestJobCompletionRearmsTimer:
     async def test_run_job_isolated_rearms_the_timer(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -845,14 +977,14 @@ class TestJobCompletionRearmsTimer:
         mock_arm.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_run_job_isolated_does_not_rearm_a_stopped_service(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_run_job_isolated_does_not_rearm_a_stopped_service(self, tmp_path: Path) -> None:
         """A job finishing during/after shutdown must not spin up a fresh
         timer task behind close_all()'s back."""
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -879,7 +1011,9 @@ class TestJobCompletionRearmsTimer:
         shorter one instead of leaving the stale one in place."""
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -915,9 +1049,7 @@ class TestArmTimerDuringOnTimer:
     doesn't cover it. See _arm_timer's second guard clause."""
 
     @pytest.mark.asyncio
-    async def test_arm_timer_does_not_cancel_the_timer_task_mid_sweep(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_arm_timer_does_not_cancel_the_timer_task_mid_sweep(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         svc._running = True
         svc._loop = asyncio.get_running_loop()
@@ -1062,10 +1194,19 @@ class TestFormatSchedule:
         # Mock "now" to Apr 10, job at 3PM same day
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
-        monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
-            "now": classmethod(lambda cls, tz=None: fake_now),
-            "fromtimestamp": staticmethod(lambda ts, tz=None: datetime.fromtimestamp(ts, tz)),
-        }))
+        monkeypatch.setattr(
+            "kiro_crew.cron.datetime",
+            type(
+                "D",
+                (datetime,),
+                {
+                    "now": classmethod(lambda cls, tz=None: fake_now),
+                    "fromtimestamp": staticmethod(
+                        lambda ts, tz=None: datetime.fromtimestamp(ts, tz)
+                    ),
+                },
+            ),
+        )
         job_ts = datetime(2026, 4, 10, 15, 0, tzinfo=timezone.utc).timestamp()
         result = format_schedule(CronSchedule(kind="at", at_ts=job_ts))
         assert result.startswith("at ")
@@ -1077,10 +1218,19 @@ class TestFormatSchedule:
         # Mock "now" to Apr 10, job on Apr 17
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
-        monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
-            "now": classmethod(lambda cls, tz=None: fake_now),
-            "fromtimestamp": staticmethod(lambda ts, tz=None: datetime.fromtimestamp(ts, tz)),
-        }))
+        monkeypatch.setattr(
+            "kiro_crew.cron.datetime",
+            type(
+                "D",
+                (datetime,),
+                {
+                    "now": classmethod(lambda cls, tz=None: fake_now),
+                    "fromtimestamp": staticmethod(
+                        lambda ts, tz=None: datetime.fromtimestamp(ts, tz)
+                    ),
+                },
+            ),
+        )
         job_ts = datetime(2026, 4, 17, 8, 0, tzinfo=timezone.utc).timestamp()
         result = format_schedule(CronSchedule(kind="at", at_ts=job_ts))
         assert "Apr 17" in result
@@ -1130,9 +1280,7 @@ class TestFormatSchedule:
             return type("C", (), {"timezone": "Bad/Zone"})()
 
         monkeypatch.setattr("kiro_crew.cron.KiroCrewConfig.load", staticmethod(_record_load))
-        monkeypatch.setattr(
-            "kiro_crew.cron.published_config_timezone", lambda: "America/New_York"
-        )
+        monkeypatch.setattr("kiro_crew.cron.published_config_timezone", lambda: "America/New_York")
         s = CronSchedule(kind="cron", cron_expr="0 22 * * 1-5")
         result = format_schedule(s)
         # Expression is evaluated in job timezone (ET fallback), so 22:00 = 10 PM local
@@ -1301,16 +1449,14 @@ class TestTimezoneScheduling:
             return type("C", (), {"timezone": "Bad/Zone"})()
 
         monkeypatch.setattr("kiro_crew.cron.KiroCrewConfig.load", staticmethod(_record_load))
-        monkeypatch.setattr(
-            "kiro_crew.cron.published_config_timezone", lambda: "America/Toronto"
-        )
+        monkeypatch.setattr("kiro_crew.cron.published_config_timezone", lambda: "America/Toronto")
 
         assert _job_tz(CronJob(id="j1", name="t", message="m", timezone="")) == ZoneInfo(
             "America/Toronto"
         )
-        assert _job_tz(
-            CronJob(id="j2", name="t", message="m", timezone="Asia/Tokyo")
-        ) == ZoneInfo("Asia/Tokyo")
+        assert _job_tz(CronJob(id="j2", name="t", message="m", timezone="Asia/Tokyo")) == ZoneInfo(
+            "Asia/Tokyo"
+        )
         assert not loads, "_job_tz loaded config.json on the event loop"
 
     def test_get_local_tz_never_loads_the_config_file(self, monkeypatch) -> None:
@@ -1477,9 +1623,7 @@ class TestTimezoneScheduling:
         )
         window_start = datetime(2025, 3, 10, 6, 0, tzinfo=timezone.utc)
         fires = [
-            i
-            for i in range(180)
-            if CronService._is_due(job, window_start.timestamp() + i * 60)
+            i for i in range(180) if CronService._is_due(job, window_start.timestamp() + i * 60)
         ]
         assert len(fires) == 1
 

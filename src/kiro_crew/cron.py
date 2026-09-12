@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import random
 import re
 import threading
@@ -56,17 +57,13 @@ from kiro_crew import (
     shutdown_event,
     stall_attribution,
 )
-from kiro_crew.config.loader import (
-    KiroCrewConfig,
-    config_dir,
-    data_home,
-    published_config_timezone,
-)
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home, published_config_timezone
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
 from kiro_crew.metrics.events import CRON_FIRES, emit_counter
 from kiro_crew.resource_status import admission_check
+from kiro_crew.security import resolve_project_path
 from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
@@ -94,6 +91,7 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("command", 5000),
     ("script", 200),
     ("timezone", 50),
+    ("project_path", MAX_SHORT_STRING),
     # Secret-grant fields have no boundary FieldSpec: the pins are sha256 hex
     # digests computed server-side by the grant endpoint / cron_secret_request
     # tool (grant validity is enforced by pin equality at fire time, not by
@@ -314,6 +312,12 @@ def referenced_skill_names() -> set[str]:
 _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
+# Distinguishes "the caller passed no expect_project_path precondition" from
+# "the caller expects the field to be the empty string (unbound)" -- both are
+# meaningfully different states for `_update_job_locked`'s compare-and-swap,
+# and `None`/`""` cannot tell them apart since "" is itself a valid expected
+# value, not an absence of one.
+_UNSET = object()
 # Margin the per-wake budget must leave above a command/script subprocess
 # timeout: the wake deadline cancels only the executor FUTURE (threads are
 # not interruptible), so a budget shorter than the subprocess bound leaves
@@ -706,6 +710,16 @@ class CronJob:
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["2026-04-06"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
+    # Absolute path to a project directory whose .kiro/agents/*.json this job's
+    # agent_id may resolve against. "" = global agent only (default, unchanged
+    # behavior). Validated at add_job() time (must exist, must not be a
+    # sensitive path) mirroring chat_folders._validate_project_dir. A path that
+    # existed at save time but is gone by fire time is NOT re-validated here —
+    # the fire-time path (slack/gateway.py) does that check itself and SKIPS
+    # the run entirely when the folder is gone, surfacing it via a normal
+    # last_status="error" on the run record rather than falling back to a
+    # global agent.
+    project_path: str = ""
     minimal_context: bool = False  # True → skip memory/lessons/skills/history
     hide_in_chat: bool = (
         False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
@@ -1883,6 +1897,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         consecutive_failures=_guard_num("consecutive_failures", 0),
         skip_dates=_str_list("skip_dates"),
         timezone=_guard_str("timezone"),
+        project_path=_guard_str("project_path"),
         persistent_session=j.get("persistent_session", True),
         minimal_context=j.get("minimal_context", False),
         hide_in_chat=j.get("hide_in_chat", False),
@@ -2550,6 +2565,7 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        project_path: str = "",
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -2610,6 +2626,7 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            project_path=project_path,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -2643,8 +2660,17 @@ class CronService:
         registrars (e.g. a CLI enable racing gateway boot) cannot both
         observe the name as absent and persist duplicates. Returns None when
         a matching job already exists.
+
+        Like :meth:`add_job_async`, a non-empty ``project_path`` kwarg is
+        resolved via :meth:`_validate_project_path_async` (a worker-thread
+        offload) before the on-loop build, since ``_build_job`` cannot run
+        that syscall-bearing check inline without stalling the loop.
         """
-        job = self._build_job(**kwargs)
+        project_path = kwargs.get("project_path") or ""
+        resolved_project_path = (
+            await self._validate_project_path_async(project_path) if project_path else None
+        )
+        job = self._build_job(**kwargs, _resolved_project_path=resolved_project_path)
         persisted = await asyncio.to_thread(self._persist_add_if_absent_locked, predicate, job)
         if not persisted:
             return None
@@ -2739,6 +2765,8 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        project_path: str = "",
+        _resolved_project_path: str | None = None,
     ) -> CronJob:
         """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
 
@@ -2757,6 +2785,26 @@ class CronService:
         transaction. This closes a create-then-mutate-then-unlocked-``_save``
         window (two concurrent creates could otherwise interleave at the
         ``await`` and the unlocked save could clobber the other request's job).
+
+        ``project_path``, when non-empty, must be an absolute, existing,
+        non-sensitive directory — validated HERE (same shape as
+        ``chat_folders._validate_project_dir``) so every create path shares one
+        check and a job is never persisted pointing at a path that was already
+        invalid at creation time. A path that later disappears is NOT
+        re-validated on every wake; that is a run-time condition surfaced on
+        the run record, not a reason to refuse the job outright.
+
+        ``_resolved_project_path`` is an internal-only escape hatch for the
+        async build paths: this method is genuinely "no I/O" for every OTHER
+        field, but ``project_path`` validation does real filesystem syscalls
+        (``os.path.realpath``, ``os.path.isdir``), which a caller on the event
+        loop must not run inline. :meth:`add_job_async` and
+        :meth:`add_job_if_absent_async` resolve ``project_path`` via
+        :meth:`_validate_project_path_async` (a worker-thread offload) BEFORE
+        calling this method, then pass the result through here so the sync
+        resolution is skipped. Sync callers (:meth:`add_job`,
+        :meth:`add_job_if_absent`) never set this and get the original
+        on-the-spot validation.
         """
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
@@ -2792,9 +2840,15 @@ class CronService:
                 "command": command,
                 "script": script,
                 "timezone": timezone,
+                "project_path": project_path,
             },
             required=frozenset({"name", "message"}),
         )
+        resolved_project_path = ""
+        if _resolved_project_path is not None:
+            resolved_project_path = _resolved_project_path
+        elif project_path:
+            resolved_project_path = self._validate_project_path(project_path)
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
@@ -2861,7 +2915,59 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=int(timeout_secs) if timeout_secs else _JOB_TIMEOUT_SECS,
+            project_path=resolved_project_path,
         )
+
+    @staticmethod
+    def _validate_project_path(raw: str) -> str:
+        """Validate a cron job's ``project_path``. Returns the resolved path.
+
+        Mirrors ``chat_folders._validate_project_dir``'s shape (absolute,
+        resolved, non-sensitive, existing directory) so a cron's project
+        binding is held to the same bar as a chat folder's. Raises
+        ``ValueError`` on any failure — this runs inside ``_build_job``,
+        the single locked create chokepoint, so a rejected path never reaches
+        disk as part of a job.
+
+        The realpath/sensitivity/existing-directory core is
+        :func:`security.resolve_project_path`; the absolute/``~`` gate, the
+        raise-on-failure shape, and the SEL denial log are this create surface's.
+
+        Synchronous filesystem I/O (``os.path.realpath``, ``os.path.isdir``) —
+        callers on the event loop MUST NOT call this directly. Use
+        :meth:`_validate_project_path_async` instead, which offloads the same
+        check to a worker thread; an unavailable NFS/FUSE-backed path here
+        would otherwise stall the gateway's single event loop.
+        """
+        if not os.path.isabs(raw) and not raw.startswith("~"):
+            raise ValueError("project_path must be an absolute path")
+        verdict = resolve_project_path(raw)
+        if verdict.sensitive:
+            sel.sel().log_api_access(
+                caller="cron",
+                operation="cron.project_path",
+                outcome="denied",
+                source="cron",
+                resources=verdict.resolved,
+                error="sensitive path",
+            )
+            raise ValueError("project_path refers to a sensitive path")
+        if not verdict.is_dir:
+            raise ValueError("project_path must be an existing directory")
+        return verdict.resolved
+
+    @classmethod
+    async def _validate_project_path_async(cls, raw: str) -> str:
+        """Event-loop-safe :meth:`_validate_project_path`.
+
+        Offloads the same absolute/resolved/non-sensitive/existing-directory
+        check to a worker thread via ``asyncio.to_thread`` — the async build
+        paths (:meth:`add_job_async`, :meth:`add_job_if_absent_async`) resolve
+        ``project_path`` through this BEFORE calling :meth:`_build_job`, then
+        pass the already-resolved path in via ``_resolved_project_path`` so
+        ``_build_job`` does not repeat the syscalls on the loop.
+        """
+        return await asyncio.to_thread(cls._validate_project_path, raw)
 
     def _persist_add_locked(self, job: CronJob) -> None:
         """Lock/reload/append/save for a new job — the thread-safe disk core.
@@ -2914,17 +3020,26 @@ class CronService:
         timeout_secs: int = 0,
         source_preset: str = "",
         source_template_prompt: str = "",
+        project_path: str = "",
     ) -> CronJob:
         """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
         The gateway's aiohttp/Slack handlers run on the sole asyncio event loop;
         calling the sync :meth:`add_job` there parks the loop in the bounded lock
-        spin under contention. This builds+validates on the loop (no I/O),
-        offloads the lock+persist to a worker thread via ``asyncio.to_thread``
-        (the disk core is thread-safe — flock on separate fds mutually excludes
-        in-process too), then re-arms the timer back on the loop. Raises
+        spin under contention. This builds+validates on the loop, offloads the
+        lock+persist to a worker thread via ``asyncio.to_thread`` (the disk core
+        is thread-safe — flock on separate fds mutually excludes in-process
+        too), then re-arms the timer back on the loop. Raises
         :class:`CronStoreBusy` (retryable) on sustained contention; the public
         boundaries translate it to a clean 409 / structured error.
+
+        ``project_path`` is the one field in ``_build_job`` that does real
+        filesystem I/O (``os.path.realpath``, ``os.path.isdir``), so it is
+        resolved here via :meth:`_validate_project_path_async` — a worker-thread
+        offload — BEFORE the on-loop build, and the already-resolved value is
+        passed through so ``_build_job`` does not repeat the syscalls on the
+        loop. An unavailable NFS/FUSE-backed path would otherwise stall the
+        gateway's single event loop for the duration of the stat.
 
         Optional presentation/routing fields (``agent_id``, ``model``,
         ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are
@@ -2932,6 +3047,9 @@ class CronService:
         follow-up unlocked ``_save()`` (which could race a concurrent create and
         drop a job).
         """
+        resolved_project_path = (
+            await self._validate_project_path_async(project_path) if project_path else None
+        )
         job = self._build_job(
             name,
             message,
@@ -2962,6 +3080,8 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            project_path=project_path,
+            _resolved_project_path=resolved_project_path,
         )
         # Dashboard-only template provenance. Set on the freshly-built job
         # BEFORE the off-loop persist -- the object has no other reference yet,
@@ -3027,6 +3147,17 @@ class CronService:
         # instead of resurrecting state the operator withdrew.
         expect_active = kwargs.pop("expect_secret_env", None)
         expect_active_pin = kwargs.pop("expect_secret_env_pin", None)
+        # Same shape again for the owner-authorization decision itself: the
+        # dashboard handler reads the job's `project_path` OUTSIDE this lock
+        # to decide whether the caller needs owner authorization, then applies
+        # the update separately here. A concurrent owner bind/unbind landing
+        # in that gap would let a non-owner's already-authorized (on the
+        # stale snapshot) update or run execute against a project it was
+        # never checked against -- the multi-human TOCTOU this field exists
+        # to close. `_UNSET` (not `None`) is the "no precondition" sentinel,
+        # since the empty string is itself a meaningful expected value
+        # (unbound) that must be distinguishable from "the caller didn't ask".
+        expect_project_path = kwargs.pop("expect_project_path", _UNSET)
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -3042,6 +3173,8 @@ class CronService:
                     raise CronPendingMismatch("active grant changed concurrently")
                 if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
                     raise CronPendingMismatch("active grant pin changed concurrently")
+                if expect_project_path is not _UNSET and job.project_path != expect_project_path:
+                    raise CronPendingMismatch("project binding changed concurrently")
                 # Validate approval_mode if provided
                 if "approval_mode" in kwargs:
                     valid_approval_modes = ("", "auto")
@@ -3089,6 +3222,12 @@ class CronService:
                 if "timezone" in kwargs and kwargs["timezone"]:
                     if not is_valid_timezone(kwargs["timezone"]):
                         raise ValueError(f"Invalid timezone: {kwargs['timezone']!r}")
+                # Same bar as add_job/_build_job: an updated project_path must
+                # be absolute, resolved, non-sensitive, and an existing
+                # directory. An empty string is a valid update (clears the
+                # binding back to global-agent-only) and skips this check.
+                if "project_path" in kwargs and kwargs["project_path"]:
+                    kwargs["project_path"] = self._validate_project_path(kwargs["project_path"])
                 if "skip_dates" in kwargs and kwargs["skip_dates"]:
                     for _d in kwargs["skip_dates"]:
                         if not is_valid_skip_date(_d):
@@ -3214,6 +3353,8 @@ class CronService:
                     job.skip_dates = kwargs["skip_dates"] or []
                 if "timezone" in kwargs:
                     job.timezone = kwargs["timezone"] or ""
+                if "project_path" in kwargs:
+                    job.project_path = kwargs["project_path"] or ""
                 if "strict_schedule" in kwargs:
                     job.strict_schedule = bool(kwargs["strict_schedule"])
                 if "persistent_session" in kwargs:
@@ -4104,33 +4245,51 @@ class CronService:
         """
         return await asyncio.to_thread(self._owner_keys_locked)
 
-    def enable_job(self, job_id: str, enabled: bool = True) -> bool:
+    def enable_job(
+        self, job_id: str, enabled: bool = True, expect_project_path: str | object = _UNSET
+    ) -> bool:
         """Enable or disable a job by ID.
+
+        ``expect_project_path``, when passed, closes the same TOCTOU the
+        update path's precondition of the same name closes (see
+        :meth:`update_job_async`): re-verified against the freshly reloaded
+        record UNDER the lock, atomically with the actual toggle, rather than
+        trusting a snapshot the caller read separately before deciding
+        whether the request needed owner authorization.
 
         Raises :class:`CronStoreBusy` on lock contention; see
         :meth:`enable_job_async` for the event-loop-safe variant.
         """
-        ok = self._enable_job_locked(job_id, enabled)
+        ok = self._enable_job_locked(job_id, enabled, expect_project_path)
         if ok:
             self._arm_timer()
         return ok
 
-    async def enable_job_async(self, job_id: str, enabled: bool = True) -> bool:
+    async def enable_job_async(
+        self, job_id: str, enabled: bool = True, expect_project_path: str | object = _UNSET
+    ) -> bool:
         """Event-loop-safe :meth:`enable_job`: the lock+save runs off the loop.
 
         Raises :class:`CronStoreBusy` (retryable) on sustained contention.
         """
-        ok = await asyncio.to_thread(self._enable_job_locked, job_id, enabled)
+        ok = await asyncio.to_thread(self._enable_job_locked, job_id, enabled, expect_project_path)
         if ok:
             self._arm_timer()
         return ok
 
-    def _enable_job_locked(self, job_id: str, enabled: bool = True) -> bool:
+    def _enable_job_locked(
+        self, job_id: str, enabled: bool = True, expect_project_path: str | object = _UNSET
+    ) -> bool:
         """Lock/reload/mutate/save core of :meth:`enable_job` (no timer work)."""
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
                 if job.id == job_id:
+                    if (
+                        expect_project_path is not _UNSET
+                        and job.project_path != expect_project_path
+                    ):
+                        raise CronPendingMismatch("project binding changed concurrently")
                     job.user_paused = not enabled
                     job.enabled = enabled
                     # Re-enabling clears an execution auto-pause; without this a
@@ -4266,8 +4425,25 @@ class CronService:
         """Set the dashboard refresh callback."""
         self._push_refresh = cb
 
-    async def run_job(self, job_id: str) -> bool:
-        """Manually trigger a job via _run_job_isolated (records history)."""
+    async def run_job(self, job_id: str, expect_project_path: str | object = _UNSET) -> bool:
+        """Manually trigger a job via _run_job_isolated (records history).
+
+        ``expect_project_path``, when passed, closes the same TOCTOU the
+        update/enable paths' precondition of the same name closes (see
+        :meth:`update_job_async`): the caller's owner-authorization decision
+        was made against a snapshot read BEFORE this call, and this method
+        re-syncs its OWN fresh snapshot from disk independently -- an owner
+        binding the project in the gap between the two reads would otherwise
+        let an already-authorized (against the stale, unbound snapshot)
+        non-owner's trigger execute against the newly-bound project. A
+        mismatch REFUSES the run and returns ``False``, the same silent-skip
+        contract as "job not found" and "already running" below -- unlike
+        the update/enable preconditions, this method's caller (the REST
+        handler) dispatches it fire-and-forget via ``asyncio.create_task``
+        and has already returned its HTTP response by the time this runs,
+        so there is no synchronous caller left to receive a raised
+        exception.
+        """
         # Refresh the store off the loop, then resolve + claim on the loop.
         #
         # The locked _sync() + snapshot runs in a worker thread (_synced_snapshot
@@ -4287,6 +4463,16 @@ class CronService:
         snapshot = await asyncio.to_thread(self._synced_snapshot, True)
         job = next((j for j in snapshot if j.id == job_id), None)
         if not job:
+            return False
+        if expect_project_path is not _UNSET and job.project_path != expect_project_path:
+            sel.sel().log_api_access(
+                caller="cron",
+                operation="cron.run.project_bound_job",
+                outcome="denied",
+                source="cron",
+                resources=job_id,
+                error="project binding changed concurrently",
+            )
             return False
         if job.id in self._executing:
             return False
@@ -5938,6 +6124,7 @@ class CronService:
                     "consecutive_failures": j.consecutive_failures,
                     "skip_dates": j.skip_dates,
                     "timezone": j.timezone,
+                    "project_path": j.project_path,
                     "persistent_session": j.persistent_session,
                     "minimal_context": j.minimal_context,
                     "hide_in_chat": j.hide_in_chat,

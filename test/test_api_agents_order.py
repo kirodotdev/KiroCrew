@@ -133,9 +133,7 @@ class TestAgentOrderingFallback:
     async def test_history_unreadable_returns_config_order(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        with patch.object(
-            state.conversation_log, "agent_usage", side_effect=OSError("boom")
-        ):
+        with patch.object(state.conversation_log, "agent_usage", side_effect=OSError("boom")):
             data = await _get_agents(state, CONFIG_ORDER)
 
         order = [a["name"] for a in data["agents"]]
@@ -175,8 +173,8 @@ class TestProjectScopeRoster:
         (proj / ".kiro" / "agents" / "repo-bot.json").write_text(_json.dumps({"name": "repo-bot"}))
         clear_project_agent_cache()
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents.active_project_dir",
-            lambda state, key: str(proj),
+            "kiro_crew.dashboard.handlers.agents.requesting_slot_project",
+            lambda state, key: proj,
         )
         state = _make_state(tmp_path)
 
@@ -199,8 +197,8 @@ class TestProjectScopeRoster:
         (proj / ".kiro" / "agents" / "alpha.json").write_text(_json.dumps({"name": "alpha"}))
         clear_project_agent_cache()
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents.active_project_dir",
-            lambda state, key: str(proj),
+            "kiro_crew.dashboard.handlers.agents.requesting_slot_project",
+            lambda state, key: proj,
         )
         state = _make_state(tmp_path)
 
@@ -214,8 +212,8 @@ class TestProjectScopeRoster:
     async def test_no_project_dir_keeps_roster_global_only(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents.active_project_dir",
-            lambda state, key: "",
+            "kiro_crew.dashboard.handlers.agents.requesting_slot_project",
+            lambda state, key: None,
         )
         state = _make_state(tmp_path)
 

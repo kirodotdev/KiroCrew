@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Zap } from 'lucide-react'
+import { Zap, FolderOpen } from 'lucide-react'
 import { api } from '../api/client'
-import { Input, SendBtn } from './ui'
+import { Btn, Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
 import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
+import ProjectPicker from './ProjectPicker'
 import SimpleSelect from './SimpleSelect'
 import type { CronJob } from '../types'
 import type { CronPrefill } from '../utils/schedulePresets'
@@ -57,7 +58,7 @@ export function jobKindOf(job?: CronJob): JobKind {
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', projectPath: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([smh])/); if (!m) return 3600; return parseInt(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -104,7 +105,28 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, projectPath: job.project_path || '' }
+}
+
+/** Remap the backend's raw `project_path` validation errors (which use the
+ *  wire field name and say nothing about the field being optional) to the
+ *  UI's own field label, so a rejected path reads as a helpful correction
+ *  rather than "failed to save" with no clue why. The backend's error
+ *  vocabulary is shared with the CLI/MCP tool and other callers, so this
+ *  stays a display-only remap here rather than a change to those strings.
+ *  Falls through to the raw message for anything else (network errors,
+ *  other 4xx/5xx) so nothing is silently swallowed. */
+function friendlyProjectPathError(raw: string): string {
+  if (raw.includes('project_path must be an absolute path')) {
+    return i18nT('components.jobForm.working_directory_must_be_an_absolute_path')
+  }
+  if (raw.includes('project_path refers to a sensitive path')) {
+    return i18nT('components.jobForm.working_directory_refers_to_a_protected_path')
+  }
+  if (raw.includes('project_path must be an existing directory')) {
+    return i18nT('components.jobForm.working_directory_must_be_an_existing_directory')
+  }
+  return raw
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -140,6 +162,10 @@ function buildBody(
   body.silent = f.silent
   body.strict_schedule = f.strictSchedule
   body.hide_in_chat = f.hideInChat
+  // "" is a valid, meaningful value here (clears the binding back to
+  // global-agent-only on an edit), so it is sent unconditionally rather than
+  // gated behind a truthiness check like the optional fields above.
+  body.project_path = f.projectPath
   if (f.schedMode === 'interval') {
     body.every = f.intVal * (f.intUnit === 'minutes' ? 60 : f.intUnit === 'hours' ? 3600 : 86400)
   } else if (f.schedMode === 'weekly') {
@@ -260,6 +286,95 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [weekTime, setWeekTime] = useState(init.weekTime)
   const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cronExpr, setCronExpr] = useState(init.cronExpr)
+  const [projectPath, setProjectPath] = useState(init.projectPath)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const browseRef = useRef<HTMLButtonElement>(null)
+  // Project-scoped roster for THIS job's project_path — a raw path, no live
+  // chat slot behind it, so this is the project_path fallback (Decision 1).
+  // A local effect rather than useAgents(): that hook unconditionally syncs +
+  // fetches on every mount regardless of its args, which would double every
+  // JobForm's roster work even for the common case of no project_path set.
+  // This only does anything once a path is actually present.
+  const [projectAgents, setProjectAgents] = useState<KiroCrewAgent[]>([])
+  // Separate from the form-wide `error` (validation failures on Save): a
+  // background roster fetch failing must not borrow that channel, which
+  // (1) auto-scrolls the page to the bottom-of-form notice on every set,
+  // interrupting a user who is calmly typing elsewhere in the form for a
+  // failure unrelated to what they are doing, and (2) shares one string with
+  // Save-time validation, so a stale roster error can sit through an
+  // otherwise-successful save (only `handleSave`'s `setError('')` clears it),
+  // or a validation error can be silently clobbered by a late-resolving
+  // roster retry. Rendered beside the working-directory field itself instead.
+  const [projectRosterError, setProjectRosterError] = useState('')
+  useEffect(() => {
+    if (!projectPath) {
+      setProjectAgents([])
+      setProjectRosterError('')
+      // The selected agent may have been a project-scoped one that only
+      // existed because THIS folder was open (effectiveAgents merged it in
+      // from projectAgents, now cleared above). Left alone, that name is
+      // still sent on save (`agent: locked ?? agent`) with an empty
+      // project_path -- Kiro cannot resolve it without the project scope
+      // and silently falls back to the default agent's prompt, tools, and
+      // permissions, with no error surfaced anywhere. Clear it back to the
+      // global default whenever it is not a name the global roster itself
+      // recognizes; a global agent that happens to share a name is left
+      // untouched, matching effectiveAgents' own dedup-by-name rule.
+      setAgent(a => (a && !agents.some(g => g.name === a) ? '' : a))
+      return
+    }
+    // Clear immediately on folder change, before the fetch even starts: the
+    // `cancelled` flag below only stops a SUPERSEDED fetch's result from
+    // overwriting a newer one, but leaves the PREVIOUS folder's now-stale
+    // agents selectable in the picker for the whole in-flight gap. A user who
+    // switches folders and picks an agent in that gap would get an agent from
+    // the folder they just left.
+    setProjectAgents([])
+    setProjectRosterError('')
+    let cancelled = false
+    api.kirocrewAgents(undefined, projectPath).then(d => {
+      if (!cancelled) setProjectAgents(d.agents || [])
+    }).catch(e => {
+      if (cancelled) return
+      // A roster-fetch failure must be VISIBLE, not a silent empty list: the
+      // user picked this folder specifically to see its agents, and an empty
+      // roster with no explanation reads as "this folder has none" rather
+      // than "the request failed" -- indistinguishable failure modes that
+      // need different next actions (retry vs. pick a different folder).
+      // api.kirocrewAgents throws ApiError/Error with an already-friendly
+      // message (apiFailure's friendlyErrText), so no remap is needed here --
+      // friendlyProjectPathError is for the three raw project_path validation
+      // strings the SAVE path can surface, which this read endpoint does not.
+      setProjectAgents([])
+      // Suffixed with the hand-off this failure causes: the agent picker
+      // below falls back to the global roster (effectiveAgents returns
+      // `agents` when projectAgents is empty), which the raw fetch error
+      // alone does not say -- without it, an empty-looking roster and a
+      // silently-substituted one are indistinguishable.
+      const rosterErr = e instanceof Error ? e.message : String(e)
+      setProjectRosterError(
+        `${rosterErr} ${i18nT('components.jobForm.project_roster_error_falls_back_to_global_agents')}`,
+      )
+    })
+    return () => { cancelled = true }
+  }, [projectPath, agents])
+  // Global roster (the `agents` prop) plus this job's own project-scoped
+  // agents, deduped by name — a project agent that happens to share a global
+  // agent's name is not offered twice. Project rows arrive tagged
+  // `source: 'project'` by the server, and are shown as such without a
+  // per-folder relabel: this form only ever merges ONE folder's agents at a
+  // time, so the generic "project" badge already identifies where an agent
+  // came from unambiguously — a folder-name badge would only earn its keep
+  // if more than one folder's agents could appear in the same dropdown at
+  // once, which does not happen here. Merging here is the only way a per-job
+  // path (not known to the page-level roster) can ever appear in this picker
+  // at all.
+  const effectiveAgents = useMemo(() => {
+    if (!projectPath || projectAgents.length === 0) return agents
+    const globalNames = new Set(agents.map(a => a.name))
+    const labeled = projectAgents.filter(a => !globalNames.has(a.name))
+    return [...agents, ...labeled]
+  }, [agents, projectAgents, projectPath])
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
   // value typed and then typed back reads as untouched again — the same rule
@@ -276,6 +391,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     minimalContext !== defaults.minimalContext ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
     weekTime !== init.weekTime || cronExpr !== init.cronExpr ||
+    projectPath !== init.projectPath ||
     weekDays.length !== init.weekDays.length || weekDays.some((d, i) => d !== init.weekDays[i])
   const dirtyChangeRef = useRef(onDirtyChange)
   dirtyChangeRef.current = onDirtyChange
@@ -326,7 +442,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
 
   const submit = async () => {
     setError(''); setSaving(true)
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
+    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, projectPath }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     if (boundMember && !isLlmless) {
@@ -335,10 +451,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     }
     try {
       const res = job
-        ? await api.updateCron(job.id, body)
+        ? await api.updateCron(job.id, body).catch((e: Error) => ({ error: e.message }))
         : await api.createCron(body).catch((e: Error) => ({ error: e.message }))
-      if (res.error) { setError(res.error); setSaving(false); return }
-      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false) }
+      if (res.error) { setError(friendlyProjectPathError(res.error)); setSaving(false); return }
+      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setProjectPath('') }
       onSaved()
     } catch { setError(i18nT('components.jobForm.failed_to_save')); setSaving(false) }
   }
@@ -402,7 +518,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} />
-            : <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
+            : <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}
@@ -462,16 +578,48 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
 
       {/* Vertical-only: agent, channel, actions */}
       {vertical && (<>
-        {/* Agent and Approval are agent/message concepts — script/command crons
-            run no LLM, so hide them (consistent with the LLM-less create surface). */}
+        {/* Working directory (like Agent/Approval below) is an agent/message
+            concept: it is only ever read at fire time by the LLM-agent cron
+            paths in gateway.py (single-agent and sequential), never by a
+            script/command job's subprocess dispatch in cron.py, which passes
+            no cwd derived from it. Showing the field for script/command jobs
+            would display help text that talks about "this job's agent" when
+            that job kind has none, and — since save-time validation runs
+            unconditionally on any non-empty project_path — could 400 the
+            save over a value the job would never actually use. Guarding it
+            the same as Agent/Approval keeps the field's presence consistent
+            with what fire time actually reads. */}
         {!isLlmless && (<>
+        <div className="flex flex-col gap-1">
+          <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.working_directory')} <span className="text-muted/60 font-normal">({i18nT('components.jobForm.optional')})</span></span>
+          <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.run_this_job_s_agent_in_this_folder_and_offer')}</span>
+          <div className="flex gap-2">
+            <Input
+              className="flex-1 min-w-0 font-mono text-[12px]"
+              id="jobform-project-path"
+              aria-label={i18nT('components.jobForm.working_directory')}
+              value={projectPath}
+              onChange={e => setProjectPath(e.target.value)}
+              placeholder="/Users/you/projects/myrepo"
+            />
+            <Btn ref={browseRef} onClick={() => setPickerOpen(true)}>
+              <FolderOpen size={13} /> {i18nT('components.jobForm.browse')}
+            </Btn>
+          </div>
+          {/* No hand-off: this notice sits inside the job form whose fields
+              (name, message, schedule, working directory) are still live —
+              the hand-off navigates to chat and would discard them. */}
+          {projectRosterError && (
+            <ErrorNotice variant="inline" testId="jobform-project-roster-error" message={projectRosterError} />
+          )}
+        </div>
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.agent')}</span>
           {locked
             ? <LockedAgentValue name={locked} />
             : (<>
               <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
-              <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
+              <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
             </>)}
         </div>
         </>)}
@@ -569,6 +717,17 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       <div ref={errorRef}>
         <ErrorNotice message={error} />
       </div>
+      {/* Portals at z-[9999] via createPortal — reused rather than
+       *  reimplemented so this folder picker is IDENTICAL to every other
+       *  project-directory picker in the app (chat's own, FolderConfigModal's). */}
+      {pickerOpen && (
+        <ProjectPicker
+          open={true}
+          onOpenChange={o => { if (!o) setPickerOpen(false) }}
+          anchorRef={browseRef}
+          onSelect={path => { setProjectPath(path); setPickerOpen(false) }}
+        />
+      )}
     </div>
   )
 }

@@ -43,6 +43,7 @@ def _make_gw():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()
@@ -993,6 +994,7 @@ def _make_gw_for_llm():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()
@@ -1044,6 +1046,7 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.update_job_async = AsyncMock()
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -1142,6 +1145,233 @@ class TestModelFallback:
 
         with pytest.raises(RuntimeError, match="model spawn failed"):
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+
+class TestProjectPathMissingSkipsRun:
+    """A job's operating folder existing at save time but gone by fire time
+    must SKIP the run entirely (no agent invoked, no session acquired) and
+    record it as a normal failed run — not silently fall back to a global
+    agent, which ran the wrong agent with no visible sign beyond a list-page
+    badge (the original, since-reverted behavior).
+    """
+
+    @pytest.mark.asyncio
+    async def test_single_agent_job_skips_and_marks_error(self, tmp_path):
+        gw = _make_gw_for_llm()
+        gw.cron_svc.update_job_async = AsyncMock()
+        vanished = str(tmp_path / "does-not-exist")
+        job = _make_llm_job(project_path=vanished, agent_id="ea-dev")
+
+        result, _stream_mock = await _run_llm_callback(gw, job)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert vanished in job.last_error
+        assert job.run_never_started is True
+        # No agent turn ran: neither the session acquire nor the prompt
+        # stream was ever reached.
+        gw.sessions.get_or_create.assert_not_called()
+        _stream_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_existing_folder_runs_normally(self, tmp_path):
+        # Control: a REAL directory must not trip the skip at all — the
+        # normal single-agent turn still runs and returns its result.
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(project_path=str(tmp_path), agent_id="ea-dev")
+
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            mock_resolve.return_value.kiro_agent = "ea-dev"
+            result, _stream_mock = await _run_llm_callback(gw, job)
+
+        assert result == "Agent response here"
+        assert job.last_status != "error"
+        assert job.run_never_started is False
+        gw.sessions.get_or_create.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_sequential_job_skips_before_any_sequence_member_runs(self, tmp_path):
+        gw = _make_gw_for_llm()
+        gw.cron_svc.update_job_async = AsyncMock()
+        vanished = str(tmp_path / "does-not-exist")
+        job = _make_llm_job(project_path=vanished, agent_sequence=["agent-a", "agent-b"])
+
+        result, _stream_mock = await _run_llm_callback(gw, job)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert vanished in job.last_error
+        assert job.run_never_started is True
+        gw.sessions.get_or_create.assert_not_called()
+        _stream_mock.assert_not_called()
+
+
+class TestUnresolvedProjectAgentSkipsRun:
+    """A job whose ``agent_id``/sequence member names a specific agent that
+    ``resolve_agent_bindings`` cannot find inside ``project_path`` (the
+    folder exists, but the agent's own JSON does not, or never did) must
+    SKIP the run — not silently execute under the default agent's tools and
+    permissions with no visible sign anything was substituted. Distinct from
+    ``TestProjectPathMissingSkipsRun``, which covers the folder itself being
+    gone; this covers the folder existing but not declaring the requested
+    agent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_single_agent_job_skips_and_marks_error(self, tmp_path):
+        gw = _make_gw_for_llm()
+        gw.cron_svc.update_job_async = AsyncMock()
+        job = _make_llm_job(project_path=str(tmp_path), agent_id="ghost-agent")
+
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            mock_resolve.return_value.requested_resolved = False
+            mock_resolve.return_value.kiro_agent = "default-agent"
+            result, _stream_mock = await _run_llm_callback(gw, job)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert "ghost-agent" in job.last_error
+        assert job.run_never_started is True
+        # No agent turn ran: neither the session acquire nor the prompt
+        # stream was ever reached — the resolved default binding must never
+        # be handed to a session.
+        gw.sessions.get_or_create.assert_not_called()
+        _stream_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sequential_job_skips_before_any_sequence_member_runs(self, tmp_path):
+        gw = _make_gw_for_llm()
+        gw.cron_svc.update_job_async = AsyncMock()
+        job = _make_llm_job(project_path=str(tmp_path), agent_sequence=["ghost-a", "ghost-b"])
+
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            mock_resolve.return_value.requested_resolved = False
+            mock_resolve.return_value.kiro_agent = "default-agent"
+            result, _stream_mock = await _run_llm_callback(gw, job)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert "ghost-a" in job.last_error
+        assert job.run_never_started is True
+        gw.sessions.get_or_create.assert_not_called()
+        _stream_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolved_project_agent_still_runs_normally(self, tmp_path):
+        # Control: requested_resolved=True (the agent WAS found in the
+        # project) must not trip the skip — the normal single-agent turn
+        # still runs and returns its result.
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(project_path=str(tmp_path), agent_id="ea-dev")
+
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            mock_resolve.return_value.requested_resolved = True
+            mock_resolve.return_value.kiro_agent = "ea-dev"
+            result, _stream_mock = await _run_llm_callback(gw, job)
+
+        assert result == "Agent response here"
+        assert job.last_status != "error"
+        assert job.run_never_started is False
+        gw.sessions.get_or_create.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_sequential_run_never_starts_if_a_later_member_is_unresolvable(self, tmp_path):
+        # Resolving every sequence member in one pre-pass, before any session
+        # is acquired, means an unresolvable later member is caught before the
+        # FIRST member ever runs -- resolving inside the per-agent execution
+        # loop instead would let an early member run a REAL turn before a
+        # later member's unresolvable agent aborts the whole run and marks it
+        # run_never_started=True, mislabeling a run that already executed.
+        # The pre-pass keeps run_never_started honest.
+        gw = _make_gw_for_llm()
+        gw.cron_svc.update_job_async = AsyncMock()
+        job = _make_llm_job(
+            project_path=str(tmp_path), agent_sequence=["resolves-fine", "ghost-agent"]
+        )
+
+        def _resolve_side_effect(_cfg, agent, _project_path):
+            b = MagicMock()
+            b.requested_resolved = agent != "ghost-agent"
+            b.kiro_agent = agent
+            b.model = ""
+            return b
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                side_effect=_resolve_side_effect,
+            ),
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            result, _stream_mock = await _run_llm_callback(gw, job)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert "ghost-agent" in job.last_error
+        assert job.run_never_started is True
+        # The whole point of the fix: NO session was ever acquired, even for
+        # the first (resolvable) member -- proving the abort happened in the
+        # pre-pass, before any turn ran.
+        gw.sessions.get_or_create.assert_not_called()
+        _stream_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolved_alias_model_is_not_dropped(self, tmp_path):
+        # Substituting job.agent_id with _bindings.kiro_agent (the raw
+        # kiro-cli agent name) so the resolved agent actually dispatches must
+        # not silently drop that alias's OWN configured model tier
+        # (ResolvedBindings.model) -- get_or_create must not see only the bare
+        # kiro_agent name and fall through to whatever THAT agent defaults to.
+        # job.model (a job-level pin) is empty here, so the alias's model must
+        # be the one that reaches get_or_create.
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(project_path=str(tmp_path), agent_id="ea-dev", model="")
+
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            mock_resolve.return_value.requested_resolved = True
+            mock_resolve.return_value.kiro_agent = "raw-kiro-agent-name"
+            mock_resolve.return_value.model = "alias-pinned-model"
+            await _run_llm_callback(gw, job)
+
+        gw.sessions.get_or_create.assert_called()
+        _, kwargs = gw.sessions.get_or_create.call_args
+        assert kwargs.get("model") == "alias-pinned-model"
+        assert kwargs.get("agent") == "raw-kiro-agent-name"
+
+    @pytest.mark.asyncio
+    async def test_job_level_model_pin_still_outranks_the_alias_model(self, tmp_path):
+        # A job-level job.model pin outranks the resolved alias's own model --
+        # confirming the fix's precedence (job.model or alias_model) rather
+        # than accidentally swapping which one wins.
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(project_path=str(tmp_path), agent_id="ea-dev", model="job-pinned-model")
+
+        with (
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings") as mock_resolve,
+            patch("kiro_crew.slack.gateway.warm_project_agent_names", AsyncMock()),
+        ):
+            mock_resolve.return_value.requested_resolved = True
+            mock_resolve.return_value.kiro_agent = "raw-kiro-agent-name"
+            mock_resolve.return_value.model = "alias-pinned-model"
+            await _run_llm_callback(gw, job)
+
+        _, kwargs = gw.sessions.get_or_create.call_args
+        assert kwargs.get("model") == "job-pinned-model"
 
 
 class TestThrottleFallbackCronWiring:

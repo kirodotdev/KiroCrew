@@ -3020,10 +3020,18 @@ export const api = {
   // slots sit on different projects, so project-scoped agents silently
   // vanish from the picker. Surfaces with no slot context (Channels,
   // Schedule) pass nothing and keep the global-only view.
-  kirocrewAgents: (sessionKey?: string) =>
-    fetch('/api/agents', {
+  //
+  // `projectPath` is the raw-path fallback (Decision 1, cron project agents):
+  // a surface with no live slot (e.g. the Schedule page's job form) can still
+  // ask for a project's agents by passing the path directly. The server only
+  // honors it when sessionKey resolved to no project — a real slot's own
+  // project always wins, so this cannot override a live session's scope.
+  kirocrewAgents: (sessionKey?: string, projectPath?: string) => {
+    const qs = projectPath ? '?project_path=' + encodeURIComponent(projectPath) : ''
+    return fetch('/api/agents' + qs, {
       headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
-    }).then(j),
+    }).then(j)
+  },
   /** The model a new session on this KiroCrew agent would run on. Empty
    *  `agent` resolves the configured default agent. */
   agentResolvedModel: (agent: string) =>

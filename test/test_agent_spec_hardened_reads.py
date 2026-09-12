@@ -40,10 +40,7 @@ from kiro_crew.agent import _install_heartbeat_agent, migrate_agent_specs
 from kiro_crew.agent_files import AGENT_FILENAME, HEARTBEAT_AGENT_FILENAME
 from kiro_crew.connections import mint
 from kiro_crew.dashboard.chat_persistence import _build_kiro_model_map
-from kiro_crew.dashboard.handlers.agents import (
-    _namespaced_agent_file_exists,
-    api_agent_detail,
-)
+from kiro_crew.dashboard.handlers.agents import _namespaced_agent_file_exists, api_agent_detail
 from kiro_crew.dashboard.handlers.mcp import (
     _collect_server_rows,
     _find_server_spec_anywhere,
@@ -982,6 +979,7 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/dashboard/chat_runner.py": [("chat_turn", "unknown")],
     "kiro_crew/dashboard/handlers/side.py": [("side_panel", "dashboard")],
+    "kiro_crew/slack/gateway.py": [("cron_fire", "cron"), ("cron_fire", "cron")],
     "kiro_crew/spawn_warm.py": [("spawn_warm", "unknown")],
 }
 

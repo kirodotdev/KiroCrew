@@ -153,6 +153,7 @@ def gw_and_cb() -> tuple[Any, Callable[[], Any], Callable[..., Any]]:
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._no_crons = False
     gw._interactive_approval = MagicMock(return_value="interactive_cb")
 
@@ -471,9 +472,7 @@ class TestCronPostTokenResume:
         assert stream_calls == 1
         assert job.consecutive_failures == 1
 
-    def test_posttoken_resume_is_one_shot_per_turn(
-        self, gw_and_cb: tuple[Any, Any, Any]
-    ) -> None:
+    def test_posttoken_resume_is_one_shot_per_turn(self, gw_and_cb: tuple[Any, Any, Any]) -> None:
         """A transient error during the continuation propagates: the one shot
         is spent, and the unrecovered cycle records the error exactly as
         before (one failure, no third prompt)."""
@@ -574,8 +573,12 @@ class TestWakeBudgetSubprocessGuard:
         svc._load()
         with pytest.raises(ValueError, match="wake budget"):
             svc.add_job(
-                name="t", message="m", every_secs=300, command="true",
-                timeout=600, timeout_secs=60,
+                name="t",
+                message="m",
+                every_secs=300,
+                command="true",
+                timeout=600,
+                timeout_secs=60,
             )
 
     def test_update_rejects_budget_below_default_command_timeout(self, tmp_path: Path) -> None:
@@ -588,13 +591,15 @@ class TestWakeBudgetSubprocessGuard:
         # Rejected update leaves the job untouched.
         assert svc.list_jobs()[0].timeout_secs == _JOB_TIMEOUT_SECS
 
-    def test_update_rejects_raising_subprocess_timeout_above_budget(
-        self, tmp_path: Path
-    ) -> None:
+    def test_update_rejects_raising_subprocess_timeout_above_budget(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         svc._load()
         job = svc.add_job(
-            name="t", message="m", every_secs=300, command="true", timeout_secs=400,
+            name="t",
+            message="m",
+            every_secs=300,
+            command="true",
+            timeout_secs=400,
         )
         with pytest.raises(ValueError, match="wake budget"):
             svc.update_job(job.id, timeout=500)
@@ -628,7 +633,10 @@ class TestWakeBudgetSubprocessGuard:
         svc = CronService(base_dir=tmp_path)
         svc._load()
         job = svc.add_job(
-            name="t", message="m", every_secs=300,
-            script="~/.kiro/crew/crons/x.py:f", timeout_secs=60,
+            name="t",
+            message="m",
+            every_secs=300,
+            script="~/.kiro/crew/crons/x.py:f",
+            timeout_secs=60,
         )
         assert job.timeout_secs == 60

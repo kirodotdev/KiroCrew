@@ -158,8 +158,8 @@ class TestRosterRowKeySet:
         answer for the whole response.
         """
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents.active_project_dir",
-            lambda state, key: "/probe/project",
+            "kiro_crew.dashboard.handlers.agents.requesting_slot_project",
+            lambda state, key: Path("/probe/project"),
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.agents.project_agent_names",
