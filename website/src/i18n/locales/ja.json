@@ -5595,6 +5595,10 @@
       "clear_goal_question": "この目標を完全に削除しますか？"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "すべてのタブを閉じる",
+      "close_other_tabs": "他のタブを閉じる",
+      "close_tab": "閉じる",
+      "close_tabs_to_right": "右側のタブを閉じる",
       "terminal_is_in_its_own_window": "ターミナルは別ウィンドウで開いています",
       "focus_popout": "ポップアウトをフォーカス",
       "pop_out_to_window": "別ウィンドウに切り離す",

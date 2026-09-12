@@ -5781,6 +5781,10 @@
       "clear_goal_question": "Eliminare definitivamente questo obiettivo?"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Chiudi tutte le schede",
+      "close_other_tabs": "Chiudi le altre schede",
+      "close_tab": "Chiudi",
+      "close_tabs_to_right": "Chiudi le schede a destra",
       "close_terminal": "Chiudi il terminale",
       "focus_popout": "Metti a fuoco la finestra separata",
       "hide_terminal_panel": "Nascondi il pannello del terminale",

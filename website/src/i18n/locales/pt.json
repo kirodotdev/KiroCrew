@@ -5781,6 +5781,10 @@
       "clear_goal_question": "Excluir este objetivo definitivamente?"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Fechar todas as abas",
+      "close_other_tabs": "Fechar outras abas",
+      "close_tab": "Fechar",
+      "close_tabs_to_right": "Fechar abas à direita",
       "close_terminal": "Fechar terminal",
       "focus_popout": "Focar janela destacada",
       "hide_terminal_panel": "Ocultar painel do terminal",

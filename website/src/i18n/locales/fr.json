@@ -5781,6 +5781,10 @@
       "clear_goal_question": "Supprimer définitivement cet objectif ?"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Fermer tous les onglets",
+      "close_other_tabs": "Fermer les autres onglets",
+      "close_tab": "Fermer",
+      "close_tabs_to_right": "Fermer les onglets à droite",
       "close_terminal": "Fermer le terminal",
       "focus_popout": "Afficher la fenêtre détachée",
       "hide_terminal_panel": "Masquer le panneau du terminal",

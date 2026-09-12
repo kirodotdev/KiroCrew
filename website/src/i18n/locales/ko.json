@@ -5595,6 +5595,10 @@
       "clear_goal_question": "이 목표를 영구히 삭제하시겠습니까?"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "모든 탭 닫기",
+      "close_other_tabs": "다른 탭 닫기",
+      "close_tab": "닫기",
+      "close_tabs_to_right": "오른쪽 탭 닫기",
       "close_terminal": "터미널 닫기",
       "focus_popout": "팝아웃 포커스",
       "hide_terminal_panel": "터미널 패널 숨기기",
