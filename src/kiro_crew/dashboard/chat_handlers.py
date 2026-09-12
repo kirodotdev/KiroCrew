@@ -72,6 +72,9 @@ from kiro_crew.dashboard.chat_runner import (
     _start_next_queued_turn,
     _sync_served_model,
     context_entry_expired,
+    dashboard_principal_kwargs,
+    dashboard_user_origin,
+    queue_bind_kwargs,
     schedule_eager_spawn,
 )
 from kiro_crew.dashboard.chat_summary import generate_session_summary
@@ -677,9 +680,14 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             state,
             slot,
             message,
-            directive_user_origin=not bool(request_app),
+            directive_user_origin=dashboard_user_origin(request),
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
             attachments=attachment_meta(user_meta),
+            **queue_bind_kwargs(
+                dashboard_principal_kwargs(
+                    state, user_origin=dashboard_user_origin(request), request=request
+                )
+            ),
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
@@ -711,7 +719,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
-            directive_user_origin=not bool(request_app),
+            directive_user_origin=dashboard_user_origin(request),
+            **queue_bind_kwargs(
+                dashboard_principal_kwargs(
+                    state, user_origin=dashboard_user_origin(request), request=request
+                )
+            ),
         )
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
@@ -1065,7 +1078,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     state,
                     slot,
                     message,
-                    _directive_user_origin=not bool(request_app),
+                    _directive_user_origin=dashboard_user_origin(request),
+                    **dashboard_principal_kwargs(
+                        state,
+                        user_origin=dashboard_user_origin(request),
+                        request=request,
+                    ),
                 )
             ),
         ),
@@ -4575,6 +4593,13 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         queue_id,
         content,
         directive_user_origin=not bool(request.get("app", "")),
+        **queue_bind_kwargs(
+            dashboard_principal_kwargs(
+                state,
+                user_origin=dashboard_user_origin(request),
+                request=request,
+            )
+        ),
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
     # The stored text is what the edit normalized to (attachment markers are

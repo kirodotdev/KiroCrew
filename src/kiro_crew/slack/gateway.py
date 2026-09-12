@@ -5933,6 +5933,10 @@ class GatewayOrchestrator:
                     key, wait_if_busy=False
                 )
             _acquired = True
+            # Direct Slack nudge skips the dispatcher. Publish without bind
+            # after acquire so a concurrent human turn cannot have its
+            # principal cleared while it still holds the session.
+            await publish_turn_identity(self.sessions, key)
             _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
             # An auto-nudge cycle continues the NUDGED session's own conversation,
             # so it reads that session's silo — resolved from its recorded binding,
@@ -6247,6 +6251,7 @@ class GatewayOrchestrator:
                 user_id=user_id,
                 conversation_id=conversation_id,
                 text=tagged,
+                bind_principal=False,
             )
             dispatch_kwargs: dict[str, Any] = {"interpret_commands": False}
             completion_hook = self._monitor_completion_hook(loop)
@@ -6363,6 +6368,7 @@ class GatewayOrchestrator:
                 room_id=room_id,
                 text=tagged,
                 room_type=ROOM_DIRECT,
+                bind_principal=False,
             )
             await asyncio.wait_for(
                 dispatcher.handle_message(synthetic, interpret_commands=False),

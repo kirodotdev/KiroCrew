@@ -134,7 +134,15 @@ def _make_request(body: dict, state, app: str = ""):
         "state": state,
         "kiro_prerequisite_service": _READY_KIRO_PREREQUISITE,
     }
-    request.get = MagicMock(side_effect=lambda k, d="": app if k == "app" else d)
+
+    def _get(key: str, default: object = "") -> object:
+        if key == "app":
+            return app
+        if key == "is_dashboard_user":
+            return not bool(app)
+        return default
+
+    request.get = MagicMock(side_effect=_get)
     request.remote = "127.0.0.1"
     return request
 
