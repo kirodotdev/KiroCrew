@@ -208,11 +208,20 @@ class TestKasMemberProjection:
 
 
 class _ClientStub:
-    """The three attributes ``_append_member_dispatch_server`` reads."""
+    """The attributes ``_append_member_dispatch_server`` reads."""
 
     backend = ACP_BACKEND_CLAUDE
     _session_key = MEMBER_KEY
     _claude_settings_authored = True
+    _claude_settings_shared = False
+
+    @property
+    def _permission_surface_governed(self):
+        # The real governed-surface derivation (authored OR shared), reached at
+        # call time through the live class so the stub cannot drift from what
+        # production actually reads -- and so a tree without the property fails
+        # these tests at call rather than at collection.
+        return AcpClient._permission_surface_governed.fget(self)
 
 
 def _base_servers() -> list[dict]:
@@ -240,6 +249,16 @@ class TestClaudeMemberAppend:
         stub = _ClientStub()
         stub._claude_settings_authored = False
         assert self._run(stub) == _base_servers()
+
+    def test_a_shared_permission_surface_mounts(self):
+        """A sharer's surface is governed too: the file on disk is a sibling's
+        byte-identical Crew seed, so session control rides the same permission
+        file it would have under ownership."""
+        stub = _ClientStub()
+        stub._claude_settings_authored = False
+        stub._claude_settings_shared = True
+        out = self._run(stub)
+        assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
 
     def test_kiro_backend_is_untouched(self):
         stub = _ClientStub()

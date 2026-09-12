@@ -77,6 +77,18 @@ _RECORDS: dict[str, dict[str, Any]] = {}
 # exactly right: whoever wrote them is a previous process.
 _LIVE: dict[str, str] = {}
 
+# Which owner tokens are CURRENTLY running as SHARED READERS of each path in
+# this process. A sharer validated that the file on disk is byte-identical to
+# both the durable record and its own rendered payload, delivered its MCP array
+# on that basis, and holds no other stake: it may never rewrite or remove the
+# file. This registry is what keeps the file's future honest for them -- while
+# it is non-empty, the owner's teardown leaves the file in place (see the
+# client's settle transaction) and :func:`claim` refuses a new adoption, so no
+# Crew session can put DIFFERENT permission bytes at a path a sharer already
+# delivered tools against. Process memory, like ``_LIVE``: it dies with the
+# process, which is exactly right -- so do the sharer sessions it describes.
+_SHARERS: dict[str, set[str]] = {}
+
 # Serializes the record transaction: mutate ``_RECORDS``, prune, snapshot, publish.
 # Without it two seeds running concurrently under ``asyncio.to_thread`` can each
 # build a snapshot and publish in the opposite order, so an OLDER snapshot lands
@@ -207,7 +219,11 @@ def _cross_process_lock() -> Iterator[None]:
             os.close(fd)
 
 
-def _persist(keep: str | None = None, drop: str | None = None) -> bool:
+def _persist(
+    keep: str | None = None,
+    drop: str | None = None,
+    pending: tuple[str, dict[str, Any]] | None = None,
+) -> bool:
     """Publish this process's records to the SHARED sidecar. ``True`` when the disk agrees.
 
     Blocking. The return value is what :func:`record` and :func:`forget` need in
@@ -227,6 +243,14 @@ def _persist(keep: str | None = None, drop: str | None = None) -> bool:
 
     *drop* removes the key a :func:`forget` just revoked. Without it the merge would
     resurrect that key from the copy still on disk, and the revoke would never stick.
+
+    *pending* is the entry a :func:`record` is trying to make durable, supplied as an
+    argument instead of being read from ``_RECORDS``: the module's lock-free readers
+    (:func:`share`, :func:`recorded`) see ``_RECORDS`` at any instant, and an entry
+    published there before this write lands would let a sibling validate a share
+    against a grant that then fails to persist -- a governed reader whose file no
+    later session can recognize. So the caller publishes to ``_RECORDS`` only after
+    this returns ``True``, and a failing persist leaves nothing for a reader to see.
 
     There is exactly ONE prune, and it runs unconditionally: entries whose file is
     gone. Nothing is left at those paths to overwrite, adopt or clean up, so they are
@@ -260,6 +284,8 @@ def _persist(keep: str | None = None, drop: str | None = None) -> bool:
         with _cross_process_lock():
             merged = _read_disk_seeds()
             merged.update(_RECORDS)
+            if pending is not None:
+                merged[pending[0]] = dict(pending[1])
             if drop is not None:
                 merged.pop(drop, None)
             # Prune dead-file entries carried in from another process's disk copy too;
@@ -286,6 +312,16 @@ def claim(path: Path | str, owner: str) -> bool:
     ``permissions.defaultMode``. ``setdefault`` is a single atomic dict
     operation, so exactly one of them can win it no matter how they interleave.
 
+    Refused outright while the path has live SHARERS and *owner* does not
+    already hold the slot: a sharer delivered its MCP array against exactly the
+    bytes on disk, and an adoption exists to REWRITE those bytes -- possibly
+    with a different ``permissions.defaultMode`` -- under a session still
+    running on them. The newcomer is not stranded: an identical payload can
+    still :func:`share`, and a differing one falls to the leave-it-alone
+    branch, which is the pre-share behaviour. The holder itself stays exempt so
+    an owner's idempotent re-claim (and its post-capture re-seed) keeps
+    working.
+
     Idempotent for a holder that already owns the slot, so re-seeding the same
     path in the same client is not a self-refusal.
 
@@ -293,6 +329,9 @@ def claim(path: Path | str, owner: str) -> bool:
     :func:`release`, or the orphan it was about to repair stays wedged behind a
     claim nobody is using for the rest of the process.
     """
+    key = _key(path)
+    if _SHARERS.get(key) and _LIVE.get(key) != owner:
+        return False
     return _LIVE.setdefault(_key(path), owner) == owner
 
 
@@ -316,6 +355,128 @@ def release(path: Path | str, owner: str) -> None:
         _LIVE.pop(key, None)
 
 
+def share(path: Path | str, payload: str, owner: str) -> bool:
+    """Register *owner* as a live shared reader of *path*, IFF *payload* matches.
+
+    The registration comes FIRST -- before the validation -- deliberately: the
+    owner's teardown checks :func:`has_sharers` before it touches the disk, so
+    a sharer that validated before registering could pass its checks against a
+    file the teardown was unlinking in the same instant, and keep an MCP array
+    delivered against a path whose next occupant it cannot see.
+    Registered-then-validated, the interleavings both fail safe: a teardown
+    that ran first leaves nothing on disk for the caller's byte check to match
+    (the share is withdrawn), and a teardown that runs after registration sees
+    the sharer and keeps the file. The cost of the early registration is one
+    moment where a sharer is registered but not yet proven -- which can only
+    make a teardown KEEP a file, never delete one, and a kept file is the
+    recorded-orphan shape the next session already repairs.
+
+    The validation half compares *payload* against the recorded ``(size,
+    sha256)`` for the path, deliberately ignoring ``_LIVE`` -- the whole point
+    is answering for the client that just lost (or could never take) the live
+    slot. Because :func:`record` publishes an entry only once the sidecar
+    write has landed, a record visible here IS a durable grant: a sibling
+    whose persist is still in flight (or failing) seeds no sharer, so the
+    write-failure withdrawal path never has a governed reader to strand.
+
+    ``False`` when no durable record names exactly *payload*'s bytes. A failed
+    validation withdraws the registration ONLY when this call created it: a
+    sharer re-validating on a later pass (its payload moved with a model
+    refresh, say) keeps the lease its ORIGINAL validation earned, because that
+    lease is what pins the file it already delivered its MCP array against --
+    dropping it would free the owner's teardown to delete the seed beneath a
+    still-governed reader. The caller still owes the second half -- verifying
+    the file ON DISK holds those bytes -- and applies the same
+    newly-registered-only rule to its own withdrawal.
+
+    In-memory only and lock-free; single dict operations, same reasoning as
+    :func:`recorded`.
+    """
+    key = _key(path)
+    holders = _SHARERS.setdefault(key, set())
+    newly_registered = owner not in holders
+    holders.add(owner)
+    entry = _RECORDS.get(key)
+    if entry:
+        size, sha = entry.get("size"), entry.get("sha256")
+        if (
+            isinstance(size, int)
+            and isinstance(sha, str)
+            and sha
+            and size == len(payload.encode("utf-8"))
+            and sha == digest(payload)
+        ):
+            return True
+    if newly_registered:
+        unshare(path, owner)
+    return False
+
+
+def unshare(path: Path | str, owner: str) -> None:
+    """Withdraw *owner*'s shared-reader registration on *path*.
+
+    The sharer's whole teardown: it wrote nothing and claimed nothing, so this
+    one in-memory discard is all it owes. Once the last sharer is gone the
+    file is an ordinary recorded orphan again -- the owner's (already departed)
+    teardown left it in place, and the next session adopts and repairs or
+    removes it. Idempotent and lock-free, safe from the synchronous reset path.
+
+    An emptied set deliberately STAYS in the registry rather than being popped:
+    a check-then-pop here could observe emptiness, lose the CPU to a sibling's
+    ``setdefault(...).add(...)`` landing in the same set, and then pop that
+    sibling's live registration out of the registry -- a validated, governed
+    sharer invisible to :func:`has_sharers`, which is exactly the
+    unlink-under-a-reader hazard the registry exists to close.
+    :func:`has_sharers` and :func:`claim` already read an empty set as "no
+    sharers", and growth is bounded by the distinct settings paths this process
+    ever shared.
+    """
+    holders = _SHARERS.get(_key(path))
+    if holders is not None:
+        holders.discard(owner)
+
+
+def has_record(path: Path | str) -> bool:
+    """Whether ANY durable record names *path*, whoever holds it live.
+
+    A diagnostic probe, not a grant: it says "this file is a Crew seed", not
+    "this file is yours". The declined-share diagnostic uses it to tell a
+    sibling's seed apart from a user's own project settings, so the refusal it
+    surfaces can say what would actually unblock the session. In-memory and
+    lock-free, same reasoning as :func:`recorded`.
+    """
+    return bool(_RECORDS.get(_key(path)))
+
+
+def recorded_any(path: Path | str) -> tuple[int, str] | None:
+    """The ``(size, sha256)`` recorded for *path*, whoever holds it live.
+
+    The owner-agnostic sibling of :func:`recorded`, for callers that must
+    compare bytes against what live SHARERS validated rather than claim the
+    record: an authorship guard refusing to create differing bytes under a
+    registered reader needs the digest even while another session's record is
+    live. Grants nothing. In-memory and lock-free, same reasoning as
+    :func:`recorded`.
+    """
+    entry = _RECORDS.get(_key(path))
+    if not entry:
+        return None
+    size, sha = entry.get("size"), entry.get("sha256")
+    if not isinstance(size, int) or not isinstance(sha, str) or not sha:
+        return None
+    return size, sha
+
+
+def has_sharers(path: Path | str) -> bool:
+    """Whether any live shared reader is registered on *path*.
+
+    Read by the owner's teardown transaction to decide whether the file must
+    outlive it, and by :func:`claim` to refuse adoptions that would rewrite a
+    surface a sharer is running against.
+    """
+    return bool(_SHARERS.get(_key(path)))
+
+
 def record(path: Path | str, payload: str, owner: str) -> bool:
     """Record that *owner* just wrote *payload* to *path*. ``True`` when the DISK agrees.
 
@@ -327,49 +488,42 @@ def record(path: Path | str, payload: str, owner: str) -> bool:
 
     The return value is the same contract :func:`forget` carries, and for the same
     reason: a grant is only real once it is on disk. ``False`` means the sidecar
-    write did not land, the in-memory record has been rolled back to exactly what a
-    restart would read, and **the caller must not leave a seed behind** — a settings
-    file with no durable grant is a ``permissions.defaultMode`` the user never
-    approved that no later session is permitted to re-seed or remove, so it outlives
-    every session on the host. Withdrawing the seed is the only outcome that stays
-    inside this module's invariant, which is why this is not best-effort.
+    write did not land, this process's records are exactly what a restart would
+    read, and **the caller must not leave a seed behind** — a settings file with no
+    durable grant is a ``permissions.defaultMode`` the user never approved that no
+    later session is permitted to re-seed or remove, so it outlives every session on
+    the host. Withdrawing the seed is the only outcome that stays inside this
+    module's invariant, which is why this is not best-effort.
 
-    The rollback restores the displaced entry rather than dropping the key: on a
-    RE-SEED the sidecar on disk still names the previous digest, and the bytes that
-    digest describes may still be the ones on disk (``atomic_write`` publishes by
-    rename, so a failed write leaves the old file intact). Dropping the key instead
-    would make this process disagree with the sidecar it just failed to replace.
+    **The entry reaches ``_RECORDS`` only once the sidecar write has landed.** The
+    lock-free readers -- :func:`share` above all -- see ``_RECORDS`` at any instant,
+    and an entry published before the persist would let a sibling validate a share
+    against a grant that then fails: a governed reader left on a file no later
+    session can recognize. Publishing after means a failing persist is invisible --
+    on a re-seed the previous durable entry simply stays in place, still naming the
+    bytes the caller's pre-write copy holds, so restoring that copy returns the path
+    to exactly the recognized state a restart would read.
     """
     key = _key(path)
     with _LOCK:
-        # Captured under the lock, before either dict is touched, because the
-        # rollback below has to reproduce this exact pair. ``_LIVE`` is included:
-        # an adopter arrives here already holding the slot from :func:`claim`, and
-        # a rollback that popped it would hand a live path to a sibling.
-        previous_entry = _RECORDS.get(key)
+        # Captured under the lock, before ``_LIVE`` is touched, because the
+        # rollback below has to reproduce it. An adopter arrives here already
+        # holding the slot from :func:`claim`, and a rollback that popped it
+        # would hand a live path to a sibling.
         previous_live = _LIVE.get(key)
-        # ``_LIVE`` BEFORE ``_RECORDS``, and the order is the point rather than a
-        # style choice: :func:`recorded` is deliberately lock-free, so a sibling
-        # client reads these two dicts from another thread BETWEEN the statements
-        # below. Publishing the record first opens a window in which the seed this
-        # client has just written reads as an ORPHAN -- a record with no live
-        # holder, whose digest matches the file now on disk -- so the sibling would
-        # claim it, rewrite it under its own ``permissions.defaultMode``, and unlink
-        # it on its own reset, out from under a session still running against it.
-        # Reversed, a sibling sees either no record at all or the record with its
-        # owner already attached, and both of those answer "not mine".
-        #
-        # It carries extra weight on the CREATE path, which has no :func:`claim` of
-        # its own (``O_EXCL`` arbitrates that one), so this assignment is the only
-        # thing that ever makes a freshly created seed look live.
+        # ``_LIVE`` is taken up front so the window where the seed exists on disk
+        # but its record is still persisting never reads as an ORPHAN to a
+        # sibling: :func:`recorded` hides the record behind the live holder
+        # either way, and the entry itself is not even visible until the persist
+        # lands. It carries extra weight on the CREATE path, which has no
+        # :func:`claim` of its own (``O_EXCL`` arbitrates that one), so this
+        # assignment is the only thing that ever makes a freshly created seed
+        # look live.
         _LIVE[key] = owner
-        _RECORDS[key] = {"size": len(payload.encode("utf-8")), "sha256": digest(payload)}
-        if _persist(keep=key):
+        entry = {"size": len(payload.encode("utf-8")), "sha256": digest(payload)}
+        if _persist(keep=key, pending=(key, entry)):
+            _RECORDS[key] = entry
             return True
-        if previous_entry is None:
-            _RECORDS.pop(key, None)
-        else:
-            _RECORDS[key] = previous_entry
         if previous_live is None:
             _LIVE.pop(key, None)
         else:
