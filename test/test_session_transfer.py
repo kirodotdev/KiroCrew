@@ -16,6 +16,7 @@ want pinned:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from types import SimpleNamespace
@@ -312,16 +313,22 @@ async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monke
     monkeypatch.setattr(st.asyncio, "to_thread", _record)
     monkeypatch.setattr(st, "_resolve_agent", lambda n: n)
 
-    created: dict = {}
-    await _run_import(st, monkeypatch, _valid(agent="my-agent"), created=created)
-    assert st._resolve_agent in offloaded or offloaded, "agent resolution must be offloaded"
-    assert created.get("agent") == "my-agent"
+    # The resolved agent now lands on the slot through the shared materialiser
+    # (via the metadata snapshot), not through a ``get_or_create_slot(agent=...)``
+    # kwarg — so assert it on the returned slot, which is what the property is
+    # actually about. ``_resolve_agent`` is offloaded when a hint is present.
+    slot = await _run_import(st, monkeypatch, _valid(agent="my-agent"), return_slot=True)
+    assert st._resolve_agent in offloaded, "agent resolution must be offloaded"
+    assert slot.agent == "my-agent"
 
-    # Unhinted: no offload for agent resolution.
+    # Unhinted: no offload for AGENT RESOLUTION specifically. Redaction always
+    # offloads (``_redact_history_rows`` runs the regex pass off the loop before
+    # construction), so the invariant is that an empty hint adds no _resolve_agent
+    # hop — not that ``to_thread`` is never called at all.
     offloaded.clear()
     created2: dict = {}
     await _run_import(st, monkeypatch, _valid(agent=""), created=created2)
-    assert offloaded == [], "an empty agent hint must not cost a thread hop"
+    assert st._resolve_agent not in offloaded, "an empty agent hint must not resolve an agent"
     assert created2.get("agent") == ""
     monkeypatch.setattr(st.asyncio, "to_thread", real_to_thread)
 
@@ -730,9 +737,7 @@ async def test_snapshot_retries_when_a_turn_lands_during_assembly():
 
     st.asyncio.to_thread = _append_midway  # type: ignore[assignment]
     try:
-        bundle = await st.build_transfer_bundle_async(
-            _state([persisted]), slot, origin="mac"
-        )
+        bundle = await st.build_transfer_bundle_async(_state([persisted]), slot, origin="mac")
     finally:
         st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
@@ -829,8 +834,18 @@ async def test_snapshot_retries_on_an_in_place_edit_during_assembly():
 
 @pytest.mark.asyncio
 async def test_import_broadcasts_the_rollback_so_no_phantom_slot_remains(monkeypatch):
-    """``get_or_create_slot`` already told clients the session exists, so a
-    silent pop on failure leaves a tab that resolves to nothing."""
+    """A refused import must leave no tab behind.
+
+    Under the fold the slot is NEVER published before success: the shared
+    materialiser hands it back retracted, and import re-registers + broadcasts
+    only at the very end of a successful import. So on the save-failure path
+    there is nothing a client ever saw — the correct rollback is simply that the
+    slot is absent from ``_slots`` and the construction count is released. A
+    broadcast here would announce the removal of a tab no client was ever told
+    about, so its ABSENCE on this path is correct, not a regression. (Before the
+    fold the slot was published at creation, so a rollback had to broadcast its
+    removal; the fold removed the early publish, and with it the need.)
+    """
     from kiro_crew.dashboard import session_transfer as st
 
     state = _stub_state(st, monkeypatch)
@@ -848,8 +863,12 @@ async def test_import_broadcasts_the_rollback_so_no_phantom_slot_remains(monkeyp
     resp = await st.api_chat_slot_import(_make_request(state, _valid()))
 
     assert resp.status == 503
+    # No phantom tab, and the construction count released — the real invariant.
     assert state._slots == {}
-    assert pushes["n"] >= 1, "the rollback must be broadcast, not silent"
+    assert state._slots_under_construction == set()
+    # The slot was never published, so the failure path broadcasts nothing:
+    # there is no tab to retract from any client's view.
+    assert pushes["n"] == 0, "a never-published slot must not broadcast a removal"
 
 
 @pytest.mark.asyncio
@@ -925,9 +944,7 @@ async def test_retry_reflushes_so_it_cannot_serialize_a_superseded_variant(monke
 
     st.asyncio.to_thread = _switch_variant_once  # type: ignore[assignment]
     try:
-        bundle = await st.build_transfer_bundle_async(
-            _state(disk), slot, origin="mac"
-        )
+        bundle = await st.build_transfer_bundle_async(_state(disk), slot, origin="mac")
     finally:
         st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
@@ -1210,55 +1227,17 @@ def test_importer_never_answers_404_or_405():
 async def test_import_creates_a_new_slot_with_no_project(monkeypatch):
     """The headline decision: an imported session arrives unscoped.
 
-    Driven through the handler with the slot machinery stubbed, so the assertion
-    is about the handler's contract rather than DashboardState internals.
+    Driven through the real shared materialisation path (the fold): the handler
+    lands the transcript in memory and routes construction through
+    ``_materialise_slot_from_history``, which never sets a project. The assertion
+    is that the resulting slot is a fresh, unscoped copy.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    created = {}
-
-    class _Slot:
-        def __init__(self):
-            self.key = "imported-1"
-            self.title = ""
-            self._titled = False
-            self.agent = ""
-            self.project = "SHOULD-BE-CLEARED"
-            self.messages: list[dict] = []
-            self._resumed_count = 0
-
-        def append(self, role, content, _cls, ts="", broadcast=True):
-            self.messages.append({"role": role, "content": content, "ts": ts})
-
-        def drain(self):
-            pass
-
-    slot = _Slot()
-
-    def _get_or_create(**kwargs):
-        created.update(kwargs)
-        # A freshly created slot has no project; the handler must not set one.
-        slot.project = ""
-        return slot
-
-    state = SimpleNamespace(
-        _slots={},
-        _slots_under_construction=set(),
-        get_or_create_slot=_get_or_create,
-        push_slots_update=lambda: None,
-    )
-    state.live_slot_count = lambda: len(state._slots) + len(state._slots_under_construction)
-    state.begin_slot_construction = state._slots_under_construction.add
-    state.end_slot_construction = state._slots_under_construction.discard
-
-    async def _save(*_a, **_k):
-        return True
-
-    monkeypatch.setattr(st, "save_slot_off_loop", _save)
-    monkeypatch.setattr(st, "_sync_dashboard_slots", lambda _s: None)
-
-    request = _make_request(
-        state,
+    created: dict = {}
+    slot = await _run_import(
+        st,
+        monkeypatch,
         _valid(
             title="Design chat",
             origin="macbook",
@@ -1267,15 +1246,13 @@ async def test_import_creates_a_new_slot_with_no_project(monkeypatch):
                 {"role": "assistant", "content": "it forwards loopback", "ts": ""},
             ],
         ),
+        created=created,
+        return_slot=True,
     )
-    resp = await st.api_chat_slot_import(request)
 
-    assert resp.status == 200
-    payload = json.loads(resp.body)
-    assert payload["ok"] is True
-    assert payload["key"] == "imported-1"
-    assert payload["messages"] == 2
-    # Copy semantics: a brand-new key, and no project inherited.
+    # Copy semantics: a brand-new key, and no project inherited. A fresh
+    # _ChatSlot has an empty project and the shared path never sets one, so an
+    # unscoped arrival is the real behaviour, not a stub artifact.
     assert slot.project == ""
     assert "project" not in created
     # Provenance is visible in the title so a transferred tab is never mistaken
@@ -1369,62 +1346,146 @@ async def test_import_drops_an_agent_the_target_does_not_have(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_import_yields_to_the_event_loop_on_a_large_bundle(monkeypatch):
+async def test_import_redacts_off_the_loop_before_construction(monkeypatch):
     """A big bundle must not hold the loop in one un-yielded pass.
 
-    Redaction is regex-heavy and the content is peer-supplied, so an un-yielded
-    import starves the loop heartbeat until LoopStallWatchdog _exit()s the
-    gateway — the failure chat_persistence.restore_open_slots_async documents on
-    the same read-and-redact work.
-
-    Shrinks the yield BUDGET rather than inflating the payload. An earlier version
-    pushed 2 MB through the real redactors: fine locally, but it blew the 120s
-    per-test timeout under 3.12's coverage instrumentation in CI. Budget-scaling
-    exercises the same branch in kilobytes, with no dependence on how fast
-    redaction happens to be on the runner.
+    Redaction is regex-heavy and the content is peer-supplied. Construction is
+    synchronous, so the redaction cost runs AHEAD of construction and off the
+    event loop: import calls ``_redact_history_rows`` via ``asyncio.to_thread``
+    before any slot exists, so the regex work runs on a worker thread and the loop
+    is free to service other turns. This pins that the redaction pass is
+    dispatched to a thread rather than run inline on the loop.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    monkeypatch.setattr(st, "_YIELD_AFTER_CHARS", 1_000)
+    offloaded = []
+    real_to_thread = asyncio.to_thread
 
-    yields = 0
-    real_sleep = asyncio.sleep
+    async def _tracking_to_thread(fn, *a, **k):
+        if getattr(fn, "__name__", "") == "_redact_history_rows":
+            offloaded.append(fn)
+        return await real_to_thread(fn, *a, **k)
 
-    async def _counting_sleep(delay, *a, **k):
-        nonlocal yields
-        if delay == 0:
-            yields += 1
-        return await real_sleep(delay, *a, **k)
+    monkeypatch.setattr(st.asyncio, "to_thread", _tracking_to_thread)
 
-    monkeypatch.setattr(st.asyncio, "sleep", _counting_sleep)
-
-    # 20 turns x 500 chars = 10 KB against the 1 KB budget → trips every 2nd turn.
-    # Asserting a lower bound (not an exact count) keeps this robust to a future
-    # budget tweak while still proving the loop yields repeatedly.
     big = [{"role": "assistant", "content": "x" * 500, "ts": ""} for _ in range(20)]
     await _run_import(st, monkeypatch, _valid(messages=big))
 
-    assert yields >= 5, f"expected repeated yields once the budget is exceeded, got {yields}"
+    assert offloaded, "import redaction did not run off the event loop before construction"
 
 
 @pytest.mark.asyncio
-async def test_import_does_not_yield_for_a_small_bundle(monkeypatch):
-    """The yield is budgeted, not per-message — a normal session pays nothing."""
+async def test_import_persists_every_row_of_a_bundle_over_the_resume_window(monkeypatch):
+    """A bundle larger than resume's 500-row window must persist EVERY row.
+
+    The shared materialiser windows resume's rows to the newest 500 because the
+    earlier ones already sit on disk. Import's rows exist only in memory and are
+    all persisted by its own save, so nothing is "older on disk": it passes
+    ``window_limit=None`` and must hydrate every row with ``_disk_older_count``
+    at 0. Applying resume's cap here would silently drop everything past the last
+    500 and claim a frozen prefix of rows that were never written -- a
+    silent-data-loss regression on the exact "lossy copy" the transfer feature's
+    resume_mode plumbing exists to surface. Bundles carry up to _MAX_MESSAGES
+    (5000) rows in-contract, so >500 is an ordinary input, not an edge.
+    """
     from kiro_crew.dashboard import session_transfer as st
 
-    yields = 0
-    real_sleep = asyncio.sleep
+    n = 750  # comfortably past the 500 window, well under _MAX_MESSAGES
+    big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(n)]
+    slot = await _run_import(st, monkeypatch, _valid(messages=big), return_slot=True)
 
-    async def _counting_sleep(delay, *a, **k):
-        nonlocal yields
-        if delay == 0:
-            yields += 1
-        return await real_sleep(delay, *a, **k)
+    # Every row is hydrated onto the slot -- none dropped by a resume-shaped cap.
+    assert len(slot.messages) == n, (
+        f"import kept only {len(slot.messages)} of {n} rows; a bundle over the "
+        "resume window was silently truncated"
+    )
+    assert slot.messages[0]["content"] == "row-0", "the oldest rows were dropped"
+    assert slot.messages[-1]["content"] == f"row-{n - 1}"
+    # No phantom frozen prefix: nothing is older-on-disk for an in-memory import.
+    assert slot._disk_older_count == 0, (
+        f"_disk_older_count={slot._disk_older_count}; import claims a frozen prefix "
+        "of on-disk rows that were never written, poisoning the save accounting"
+    )
+    assert slot._disk_older_durable_count == 0
 
-    monkeypatch.setattr(st.asyncio, "sleep", _counting_sleep)
-    await _run_import(st, monkeypatch, _valid())
 
-    assert yields == 0
+@pytest.mark.asyncio
+async def test_import_does_not_arm_the_disk_delete_won_guard(monkeypatch):
+    """Import read no transcript off disk, so the delete-won identity guard must
+    stay dormant.
+
+    ``_disk_meta_observed`` / ``_disk_meta_created_at`` tell a later save that this
+    slot was hydrated from an existing on-disk transcript, arming the guard that
+    refuses to overwrite a file recreated under it. Import synthesises its
+    metadata and has no pre-existing file, so setting the observed bit would arm
+    the guard against a disk read that never happened.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    slot = await _run_import(st, monkeypatch, _valid(), return_slot=True)
+    assert slot._disk_meta_observed is False, (
+        "import armed the delete-won disk-identity guard, but it read no transcript " "off disk"
+    )
+    assert slot._disk_meta_created_at == ""
+
+
+@pytest.mark.asyncio
+async def test_imported_rows_are_replayed_silently_not_broadcast(monkeypatch):
+    """Import is a silent replay onto a RETRACTED slot: no row may broadcast.
+
+    The materialiser keeps the slot out of ``_slots`` during hydration so nothing
+    can interleave. ``_ChatSlot.append`` also broadcasts a live ``chat_message``
+    SSE event when ``broadcast=True`` (its docstring names session_transfer among
+    the replay callers that must pass False), which would push a retracted slot's
+    peer content to every client and retire live question cards. Every appended
+    row must therefore carry ``broadcast=False``.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.chat_handlers import _ChatSlot
+
+    seen_broadcast: list[bool] = []
+    real_append = _ChatSlot.append
+
+    def _spy_append(self, role, content, cls="", ts="", *, broadcast=True, **kw):
+        seen_broadcast.append(broadcast)
+        return real_append(self, role, content, cls, ts, broadcast=broadcast, **kw)
+
+    monkeypatch.setattr(_ChatSlot, "append", _spy_append)
+
+    msgs = [
+        {"role": "user", "content": "q", "ts": ""},
+        {"role": "assistant", "content": "a", "ts": ""},
+    ]
+    await _run_import(st, monkeypatch, _valid(messages=msgs))
+
+    assert seen_broadcast, "no rows were appended; fixture did not engage"
+    assert all(b is False for b in seen_broadcast), (
+        f"an imported row was appended with broadcast=True ({seen_broadcast}); it "
+        "would fan a retracted slot's content out as a live SSE event"
+    )
+
+
+@pytest.mark.asyncio
+async def test_imported_rows_carry_a_minted_mid(monkeypatch):
+    """Bundle rows have no message id, so the materialiser must mint one.
+
+    The old importer left ``mint_mid`` at its default (True) and minted a mid per
+    row; the shared path defaults to False for resume, whose disk rows already
+    carry mids. Import passes ``mint_missing_mids=True`` -- without it, imported
+    rows land permanently id-less and drop out of every mid-keyed feature
+    (row-identity dedup, the non-legacy Fork path).
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    msgs = [
+        {"role": "user", "content": "q", "ts": ""},
+        {"role": "assistant", "content": "a", "ts": ""},
+    ]
+    slot = await _run_import(st, monkeypatch, _valid(messages=msgs), return_slot=True)
+
+    for m in slot.messages:
+        mid = (m.get("meta") or {}).get("mid")
+        assert isinstance(mid, str) and mid, f"an imported row landed without a minted mid: {m!r}"
 
 
 # ── Layer B (kiro-cli context) ──────────────────────────────────────────
@@ -1812,9 +1873,7 @@ def test_layer_b_rewrite_tolerates_a_minimal_envelope():
     assert out["session_state"]["agent_name"] is None
 
 
-def test_write_layer_b_files_writes_a_fresh_sid_and_never_touches_the_map(
-    monkeypatch, tmp_path
-):
+def test_write_layer_b_files_writes_a_fresh_sid_and_never_touches_the_map(monkeypatch, tmp_path):
     """File writes run in a worker thread, so they must NOT touch the session
     map: ``SessionMap.set`` mutates a shared dict and serialises the whole file,
     which races the event loop's own map writes."""
@@ -1915,7 +1974,9 @@ def test_bundle_includes_layer_b_when_present():
 def test_bundle_omits_layer_b_when_the_session_has_none():
     from kiro_crew.dashboard import session_transfer as st
 
-    bundle = st._assemble_bundle([{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", None)
+    bundle = st._assemble_bundle(
+        [{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", None
+    )
 
     assert "layer_b" not in bundle
 
@@ -2001,9 +2062,7 @@ async def test_import_still_succeeds_when_layer_b_cannot_be_materialised(monkeyp
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert resp.status == 200
     assert json.loads(resp.body)["ok"] is True
@@ -2035,9 +2094,7 @@ async def test_import_reports_session_load_when_layer_b_landed(monkeypatch):
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert json.loads(resp.body)["resume_mode"] == "session_load"
 
@@ -2048,9 +2105,7 @@ async def test_import_reports_prefix_when_layer_b_failed(monkeypatch):
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert json.loads(resp.body)["resume_mode"] == "prefix"
 
@@ -2226,9 +2281,7 @@ async def test_failed_save_rolls_back_the_layer_b_join(monkeypatch):
     forgotten: list[str] = []
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        st, "_forget_layer_b_join", lambda _s, key: (forgotten.append(key), "")[1]
-    )
+    monkeypatch.setattr(st, "_forget_layer_b_join", lambda _s, key: (forgotten.append(key), "")[1])
 
     async def _boom(*_a, **_k):
         raise OSError("disk full")
@@ -2260,9 +2313,7 @@ def test_forget_layer_b_join_returns_the_sid_for_file_cleanup():
     from kiro_crew.dashboard import session_transfer as st
 
     dropped: list[str] = []
-    live = SimpleNamespace(
-        forget_conversation=lambda key: (dropped.append(key), "old-sid")[1]
-    )
+    live = SimpleNamespace(forget_conversation=lambda key: (dropped.append(key), "old-sid")[1])
 
     assert st._forget_layer_b_join(live, "dashboard:imported-1") == "old-sid"
     assert dropped == ["dashboard:imported-1"]
@@ -2276,22 +2327,29 @@ def test_forget_layer_b_join_is_silent_without_a_live_manager():
 
 @pytest.mark.asyncio
 async def test_slot_is_unreachable_until_construction_finishes(monkeypatch):
-    """``get_or_create_slot`` registers the slot in ``state._slots`` AND calls
-    ``push_slots_update()`` before returning, so without retracting it the tab is
-    visible and GET-reachable while its transcript is empty and its Layer B
-    unjoined — a prompt then cold-starts a fresh context the later join can never
-    attach to. The slot must be absent from ``_slots`` for the whole build and
-    present exactly once at the end.
+    """A slot mid-import is retracted from ``_slots`` for its async tail.
+
+    The materialiser returns the slot registered, but the import handler pops it
+    from ``state._slots`` for the async Layer B write/join + durable save, so no
+    raw ``state._slots.get`` acquirer (delete/close, regenerate, rewind) can reach
+    it mid-finalization. It stays under ``begin_slot_construction`` for the count,
+    and is re-registered on the success path once finalization lands. So at the
+    Layer B write the slot must be ABSENT from ``_slots`` and UNDER CONSTRUCTION;
+    after the handler returns it is registered and out of the construction set.
+    Retracting is safe here because import mints its own key (no concurrent
+    same-key request can target it), unlike a client-supplied resume key.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    seen: list[bool] = []
+    seen_registered: list[bool] = []
+    seen_under_construction: list[bool] = []
     state = _stub_state(st, monkeypatch)
-    slot = state._imported_slot
 
     def _probe(*_a, **_k):
-        # Sampled from inside the build, standing in for a concurrent GET.
-        seen.append(slot.key in state._slots)
+        # Sampled from inside the build, standing in for a concurrent lookup.
+        s = state._imported_slot
+        seen_registered.append(s.key in state._slots)
+        seen_under_construction.append(s.key in state._slots_under_construction)
         return "new-sid"
 
     monkeypatch.setattr(st, "_write_layer_b_files", _probe)
@@ -2302,9 +2360,22 @@ async def test_slot_is_unreachable_until_construction_finishes(monkeypatch):
     )
 
     assert resp.status == 200
-    assert seen == [False], "the slot must be unreachable while it is being built"
-    # ...and reachable once, after everything landed.
+    # RETRACTED (absent from _slots, so no raw acquirer can find it) AND under
+    # construction (the count is still open) during the async tail.
+    assert seen_registered == [False], (
+        "the slot must be retracted from _slots during the async Layer B tail so "
+        "no raw acquirer can close/mutate it mid-finalization"
+    )
+    assert seen_under_construction == [True], (
+        "the slot must stay under construction during the tail (count open, "
+        "released in the finally)"
+    )
+    # ...and re-registered + published once everything landed.
+    slot = state._imported_slot
     assert state._slots.get(slot.key) is slot
+    assert (
+        slot.key not in state._slots_under_construction
+    ), "construction was never ended; the slot would stay hidden forever"
 
 
 @pytest.mark.asyncio
@@ -2388,23 +2459,23 @@ def _make_request(state, body, *, raw: str | None = None):
 
 
 def _stub_state(st, monkeypatch, save=None):
-    class _Slot:
-        def __init__(self):
-            self.key = "imported-1"
-            self.title = ""
-            self._titled = False
-            self.agent = ""
-            self.project = ""
-            self.messages: list[dict] = []
-            self._resumed_count = 0
+    # A REAL _ChatSlot, not a hand-rolled fake: the fold routes import through
+    # the shared materialiser, which sets ~20 slot attributes and re-runs the
+    # title/provenance helpers. A fake that only grows the fields the test
+    # happens to touch would silently diverge from the production slot; a real
+    # one cannot. get_or_create_slot below mints the key the same way the real
+    # one does (name=None -> a fresh key).
+    from kiro_crew.dashboard.chat_handlers import _ChatSlot
 
-        def append(self, role, content, _cls, ts="", broadcast=True):
-            self.messages.append({"role": role, "content": content, "ts": ts})
-
-        def drain(self):
-            pass
-
-    slot = _Slot()
+    def _get_or_create(name=None, *_a, **kwargs):
+        s = _ChatSlot(name or "imported-1", agent=kwargs.get("agent", ""))
+        # Production's get_or_create_slot REGISTERS the slot in _slots (and
+        # broadcasts) before returning; model that, or a test asserting the slot
+        # is hidden-during-construction passes vacuously because the stub never
+        # put it in _slots at all.
+        state._slots[s.key] = s
+        state._imported_slot = s
+        return s
 
     async def _save(*_a, **_k):
         return True
@@ -2418,30 +2489,53 @@ def _stub_state(st, monkeypatch, save=None):
         # cap, so the stub has to model both halves or the handler's cap check
         # and its release would not be exercised at all.
         _slots_under_construction=set(),
-        get_or_create_slot=lambda **_k: slot,
+        # The shared materialiser toggles this per the imported session's
+        # memory_mode; import's bundle carries none, so it stays untouched here,
+        # but the attribute must exist for the discard/add to run.
+        _restricted_keys=set(),
+        _tags=[],
+        _tags_authoritative=True,
+        _folders={},
+        get_or_create_slot=_get_or_create,
         push_slots_update=lambda: None,
+        # The materialiser wraps creation + begin_slot_construction in this to
+        # defer the creation broadcast; the stub's push is already a no-op, so a
+        # nullcontext models it faithfully enough for the paths these tests
+        # exercise (the deferred-broadcast/filter interaction is covered on a real
+        # DashboardState in test_resume_publishes_hydrated_slot).
+        suspend_slots_push=lambda: contextlib.nullcontext(),
         # The live SessionManager surface the Layer B path threads through.
         sessions=SimpleNamespace(
             seed_conversation=lambda *a, **k: None,
             forget_conversation=lambda _k: "",
             resumable_sid=lambda _k: None,
+            set_autocompact_pct=lambda *a, **k: None,
         ),
     )
     state.live_slot_count = lambda: len(state._slots) + len(state._slots_under_construction)
     state.begin_slot_construction = state._slots_under_construction.add
     state.end_slot_construction = state._slots_under_construction.discard
-    state._imported_slot = slot
+    # Seed with the first slot the handler will mint, so tests that read
+    # ``state._imported_slot`` before the call still resolve; _get_or_create
+    # rebinds it to the real minted slot when the handler runs.
+    state._imported_slot = _ChatSlot("imported-1")
     return state
 
 
 async def _run_import(st, monkeypatch, body, *, return_slot=False, created=None, save=None):
     state = _stub_state(st, monkeypatch, save=save)
     if created is not None:
-        slot = state._imported_slot
+        from kiro_crew.dashboard.chat_handlers import _ChatSlot
 
-        def _get_or_create(**kwargs):
+        def _get_or_create(name=None, *_a, **kwargs):
+            created.clear()
             created.update(kwargs)
-            return slot
+            if name is not None:
+                created["name"] = name
+            s = _ChatSlot(name or "imported-1", agent=kwargs.get("agent", ""))
+            state._slots[s.key] = s
+            state._imported_slot = s
+            return s
 
         state.get_or_create_slot = _get_or_create
     resp = await st.api_chat_slot_import(_make_request(state, body))
@@ -2781,9 +2875,7 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     assert got is not None
     assert len(sizes) == 2, f"expected one lockdown per file of the pair: {sizes}"
-    assert sizes == [0, 0], (
-        f"a file already held payload bytes when it was locked down: {sizes}"
-    )
+    assert sizes == [0, 0], f"a file already held payload bytes when it was locked down: {sizes}"
 
 
 def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path):
@@ -2802,9 +2894,9 @@ def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path)
     from kiro_crew.dashboard import session_transfer as st
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-    sig = _THINKING_ENVELOPE["session_state"]["conversation_metadata"][
-        "user_turn_metadatas"
-    ][0]["result"]["Ok"]["content"][0]["data"]["signature"]
+    sig = _THINKING_ENVELOPE["session_state"]["conversation_metadata"]["user_turn_metadatas"][0][
+        "result"
+    ]["Ok"]["content"][0]["data"]["signature"]
 
     new_sid = st._write_layer_b_files(
         {"envelope": _THINKING_ENVELOPE, "events": '{"kind":"Prompt"}\n'}, "target-agent"

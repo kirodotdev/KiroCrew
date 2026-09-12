@@ -6561,8 +6561,24 @@ class DashboardState:
         await _notifications_for(self).clear(self)
 
     def get_slot(self, name: str) -> _ChatSlot | None:
-        """Look up a slot by name without creating it. Returns None if absent."""
-        return _registry_for(self).get_slot(self, name)
+        """Look up a slot by name without creating it. Returns None if absent.
+
+        Also returns ``None`` for a slot still marked under construction. The
+        hydrate loop is synchronous, but the import path does async Layer B
+        write/join and a durable save after the loop; it RETRACTS the slot from
+        ``_slots`` across that tail as the primary protection, so a lookup finds
+        nothing then anyway. This construction-mark check is the belt-and-braces
+        layer for any construction path that keeps the slot registered while it
+        awaits: acquisition must not hand out a not-yet-finalized session.
+        ``serialize_slots`` hides it from the payload; resume dedup reads
+        ``_slots`` directly (``_live_slot_resume_response``), so a resuming slot
+        stays discoverable for dedup while acquisition through this door is
+        refused.
+        """
+        slot = _registry_for(self).get_slot(self, name)
+        if slot is not None and slot.key in getattr(self, "_slots_under_construction", ()):
+            return None
+        return slot
 
     def running_session_keys(self) -> frozenset[str]:
         """Return effective session keys whose current slots are running."""
@@ -6761,9 +6777,34 @@ class DashboardState:
             timestamp_provider=lambda: time.time(),
         )
         if existing is not None:
+            # An under-construction slot is registered (so a same-key resume
+            # dedups against it) but not yet a live session: the import path holds
+            # construction across its async Layer B finalization tail. Refuse to
+            # hand it to an acquirer that would treat it as resumable before that
+            # lands. Create-or-send callers (``api_chat``) handle ValueError as a
+            # 409 -- retry once the build finishes.
+            if existing.key in getattr(self, "_slots_under_construction", ()):
+                raise ValueError(
+                    f"slot {existing.key} is still being built; retry once it is ready"
+                )
             return existing
         assert creation is not None
         name = creation.key
+        # Refuse to MINT on a key that is under construction. The existing-branch
+        # guard above only fires when the slot is in ``_slots``; the import path
+        # RETRACTS its slot from ``_slots`` for its async Layer B tail while
+        # leaving the construction mark set, so a create on that (predictable,
+        # ``chat-N-<ts>``-shaped) key would otherwise miss the guard, take this
+        # mint path, and produce a second slot sharing the effective session key
+        # Layer B was just joined to. Keying on the construction mark rather than
+        # ``_slots`` membership covers both the registered and the retracted
+        # window. The constructor itself does not trip this: import mints a fresh
+        # key (name=None) that is not yet under construction, and only begins
+        # construction after this returns. Depends on
+        # ``_materialise_slot_from_history`` leaving the construction mark set on
+        # its success path (see the comment there); do not change one side alone.
+        if name in getattr(self, "_slots_under_construction", ()):
+            raise ValueError(f"slot {name} is still being built; retry once it is ready")
         requested_name = creation.requested_name
         minted_new = creation.minted_new
         slot = _ChatSlot(
@@ -7951,7 +7992,21 @@ class DashboardState:
         """
         out = []
         subs = getattr(self, "subagents", None)
+        # A slot that is registered but still under construction is not yet a
+        # session: its transcript is mid-hydration and, for an import, its Layer B
+        # join is not written. Omit it from the payload so the creation-time
+        # broadcast never advertises a tab that resolves to nothing (a click would
+        # cold-start a fresh context the pending join can never attach to). It
+        # stays REGISTERED in ``_slots`` throughout, so a concurrent same-key
+        # resume still resolves it and the idempotency guard holds; it simply is
+        # not shown until the builder ends construction and pushes. Belt-and-
+        # suspenders on ``__new__``-built states that never ran __init__:
+        # treat a missing set as empty rather than AttributeError-ing this hot
+        # path.
+        under_construction = getattr(self, "_slots_under_construction", None) or ()
         for s in self._slots.values():
+            if s.key in under_construction:
+                continue
             self._drop_orphaned_mcp_report(s)
             d = self.serialize_slot(
                 s,

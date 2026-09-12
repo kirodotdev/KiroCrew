@@ -852,6 +852,32 @@ def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | N
         return None
 
 
+def reject_if_slot_under_construction(
+    state: DashboardState, slot: _ChatSlot
+) -> web.Response | None:
+    """A 409 for a mutating handler that reached a slot under construction.
+
+    Defense-in-depth over the construction mark. The primary protection for the
+    import path is that it RETRACTS the slot from ``_slots`` across its async
+    Layer B write/join and durable save (see ``api_chat_slot_import``), so a raw
+    ``state._slots.get(name)`` acquirer finds nothing during that tail. This check
+    is the belt-and-braces layer: it refuses any mutating handler (regenerate,
+    variant-switch, edit-resend, rewind) that resolves a slot still marked under
+    construction, keyed on ``_slots_under_construction`` rather than registration,
+    so it holds regardless of whether a given construction path retracts. Refused
+    the same way ``slot.running`` is. The hydrate loop itself is synchronous, so
+    there is no in-loop window; this guards the async finalization tail.
+
+    Returns a response to return as-is, or ``None`` to proceed.
+    """
+    if slot.key in getattr(state, "_slots_under_construction", ()):
+        return web.json_response(
+            {"error": "slot is being restored", "code": "slot_under_construction"},
+            status=409,
+        )
+    return None
+
+
 def slack_options_linked_slot(state: DashboardState | None, thread_ts: str) -> _ChatSlot | None:
     """The dashboard slot that owns *thread_ts*, if a session mirrors into it.
 

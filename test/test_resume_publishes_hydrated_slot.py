@@ -853,3 +853,442 @@ async def test_resuming_a_session_that_never_existed_is_not_refused(tmp_path, mo
         f"resuming a never-existed session returned {resp.status}; an absent key is a new "
         "conversation, not a deletion"
     )
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_apply_the_remote_binding_from_disk(tmp_path, monkeypatch):
+    """The load-bearing constraint of the fold (RFC 7.1b): the shared
+    materialiser applies exactly resume's field set and NEVER the remote binding.
+
+    A session bound to a remote instance is persisted with
+    ``executor="remote"`` / ``instance_id`` / ``remote_slot`` in its metadata
+    line. Opening it from History must come back LOCAL — remote rehydration is
+    the startup restore path's job (``_rehydrate_slot_from_history``), a
+    different code path. This asserts the NEGATIVE against the exact failure
+    mode, so it fails if anyone starts applying the remote binding here, rather
+    than merely characterising the current field list (which a snapshot would,
+    and which would still pass if the applied set were widened and the snapshot
+    updated in the same commit).
+    """
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:remotebound1"
+    log.append(key, "user", "history-1")
+    log.append(key, "assistant", "history-2")
+    # Plant the remote binding on the persisted metadata line, exactly as a
+    # remote-invocation session persists it.
+    log.update_metadata(
+        key,
+        {
+            "executor": "remote",
+            "instance_id": "some-instance",
+            "remote_slot": "chat-99",
+        },
+    )
+    assert log.get_metadata(key).get("executor") == "remote", "fixture did not plant the binding"
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/remotebound1/resume", json={"key": key})
+
+    assert resp.status == 200, f"resume did not publish (status {resp.status})"
+    slot = state._slots.get("remotebound1")
+    assert slot is not None, "the slot was never published"
+    # The binding must NOT have been applied: a resumed session opens local.
+    assert slot.executor == "local", (
+        f"resume applied the remote executor from disk (executor={slot.executor!r}); a "
+        "session that used to open locally would now try to relay to an instance that "
+        "may not be connected"
+    )
+    assert not getattr(
+        slot, "instance_id", ""
+    ), f"resume applied instance_id from disk ({getattr(slot, 'instance_id', None)!r})"
+    assert not getattr(
+        slot, "remote_slot", ""
+    ), f"resume applied remote_slot from disk ({getattr(slot, 'remote_slot', None)!r})"
+    assert slot.is_remote is False, "the resumed slot is admitted as remote"
+    # The transcript still hydrated correctly — this is a real resume, not a
+    # refusal that would pass the negatives vacuously.
+    contents = [m.get("content") for m in slot.messages]
+    assert [c for c in contents if c and c.startswith("history-")] == [
+        "history-1",
+        "history-2",
+    ], f"history lost: {contents}"
+
+
+@pytest.mark.asyncio
+async def test_resume_still_windows_a_long_transcript_to_500(tmp_path, monkeypatch):
+    """Resume keeps its 500-row on-disk window unchanged.
+
+    The window/older-count is now a parameter (``window_limit``) so import can opt
+    out, but resume must still pass the default 500 and report the earlier rows as
+    frozen on disk. This pins that the parameterization did not quietly widen or
+    narrow resume's own window: a transcript of 600 rows loads the newest 500 and
+    reports 100 older-on-disk.
+    """
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:longresume1"
+    for i in range(600):
+        log.append(key, "assistant", f"row-{i}")
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/longresume1/resume", json={"key": key})
+        data = await resp.json()
+
+    assert resp.status == 200
+    slot = state._slots.get("longresume1")
+    assert slot is not None
+    # Newest 500 in memory, 100 frozen on disk -- resume's window is intact.
+    assert len(slot.messages) == 500, f"resume window changed: {len(slot.messages)}"
+    assert slot._disk_older_count == 100, f"_disk_older_count={slot._disk_older_count}"
+    assert data["total"] == 600
+
+
+def test_serialize_slots_omits_a_slot_under_construction(tmp_path, monkeypatch):
+    """serialize_slots hides a registered-but-under-construction slot.
+
+    This is the primitive the whole materialisation-visibility design rests on: a
+    slot stays in ``_slots`` for identity while being built, but must not appear
+    in the payload until construction ends, or a client sees (and can click) a
+    half-built session whose Layer B join is not yet written. Registered +
+    begin_slot_construction -> absent from serialize_slots; end -> present.
+    """
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    slot = _ChatSlot("dashboard:underconstruction1")
+    state._slots[slot.key] = slot
+
+    # Registered but under construction: hidden.
+    state.begin_slot_construction(slot.key)
+    keys_hidden = {s.get("key") for s in state.serialize_slots()}
+    assert "dashboard:underconstruction1" not in keys_hidden, (
+        "a slot under construction appeared in the payload; a client would see a "
+        "half-built session"
+    )
+
+    # Construction ended: shown.
+    state.end_slot_construction(slot.key)
+    keys_shown = {s.get("key") for s in state.serialize_slots()}
+    assert (
+        "dashboard:underconstruction1" in keys_shown
+    ), "the slot never became visible after construction ended"
+
+
+@pytest.mark.asyncio
+async def test_materialise_never_makes_the_slot_visible_before_it_is_ready(tmp_path, monkeypatch):
+    """No push during materialisation may serialize the slot — including the
+    leading-edge frame ``get_or_create_slot`` fires on creation.
+
+    This is the F3 regression First Principles and GPT caught: the construction
+    mark was set AFTER get_or_create_slot's synchronous broadcast, so the empty
+    slot rode the creation frame before the filter could hide it. The fix wraps
+    creation + begin_slot_construction in one suspend_slots_push block, deferring
+    that broadcast until the mark is set. Driven on a REAL DashboardState (not a
+    stub whose get_or_create_slot omits the broadcast — the fidelity gap that let
+    the earlier test pass vacuously): every serialize_slots taken at a push during
+    the materialise call must omit the slot, and it must appear only after.
+    """
+    import kiro_crew.dashboard.chat_handlers as ch
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    key = "dashboard:materialise-vis1"
+
+    visible_at_delivery: list[bool] = []
+    real_deliver = state._do_slots_broadcast
+
+    def _spy_deliver():
+        # Sample at actual DELIVERY, not at every push_slots_update call: a call
+        # made while suspended is deferred and delivers nothing, so sampling
+        # there would measure a frame no client receives. This fires only when a
+        # broadcast is really sent.
+        visible_at_delivery.append(
+            any(s.get("key") == "materialise-vis1" for s in state.serialize_slots())
+        )
+        return real_deliver()
+
+    monkeypatch.setattr(state, "_do_slots_broadcast", _spy_deliver)
+
+    slot = ch._materialise_slot_from_history(
+        state,
+        name=key,
+        history_key=key,
+        meta={"title": "hi"},
+        all_messages=[{"role": "assistant", "content": "a", "ts": ""}],
+    )
+
+    # The materialiser returns the slot registered + still under construction; the
+    # caller publishes. So no broadcast DELIVERED during the call may serialize
+    # the slot — the creation frame (deferred to the suspend block's exit, by
+    # which point the construction mark is set) included.
+    assert not any(visible_at_delivery), (
+        f"a delivered broadcast serialized the slot during materialisation "
+        f"({visible_at_delivery}); the creation frame advertised a not-yet-ready slot"
+    )
+    assert slot.key in state._slots, "the slot must stay registered for the same-key guard"
+    assert (
+        slot.key in state._slots_under_construction
+    ), "the materialiser must return the slot still under construction for the caller to publish"
+    # Once the caller ends construction and pushes, it becomes visible.
+    state.end_slot_construction(slot.key)
+    assert any(
+        s.get("key") == "materialise-vis1" for s in state.serialize_slots()
+    ), "the slot never became visible after construction ended"
+
+
+def test_background_flush_and_open_slots_skip_an_under_construction_slot(tmp_path, monkeypatch):
+    """Only the constructor persists a slot mid-build; the background flush and
+    the restart-restore set both skip it.
+
+    A periodic ``_flush_dirty_slots`` landing on an under-construction slot would
+    write a half-built transcript and could race the constructor's own save; and
+    the open-slots set must not list a slot a crash could then resurrect
+    half-built. Both skip on ``_slots_under_construction`` membership.
+    """
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    slot = _ChatSlot("dashboard:flush1")
+    state._slots[slot.key] = slot
+    state.begin_slot_construction(slot.key)
+
+    flushed: list[str] = []
+    monkeypatch.setattr(state, "flush_slot_now", lambda s: flushed.append(s.key))
+
+    state._flush_dirty_slots()
+    assert (
+        "dashboard:flush1" not in flushed
+    ), "the background flush persisted a slot still under construction"
+
+    # And it is not in the restart-restore open-slots set until construction ends.
+    import json as _json
+
+    open_slots_path = tmp_path / "open_slots.json"
+    keys_hidden = set()
+    if open_slots_path.exists():
+        keys_hidden = set(_json.loads(open_slots_path.read_text()).get("keys", []))
+    assert (
+        "dashboard:flush1" not in keys_hidden
+    ), "an under-construction slot was written into the restart-restore set"
+
+    # After construction ends, the flush persists it normally.
+    state.end_slot_construction(slot.key)
+    flushed.clear()
+    state._flush_dirty_slots()
+    assert "dashboard:flush1" in flushed, "a ready slot was not flushed"
+
+
+def test_live_slot_count_counts_an_under_construction_slot_once(tmp_path):
+    """An in-flight resume/import must not be double-counted toward the ceiling.
+
+    The fold keeps the slot REGISTERED in ``_slots`` throughout construction, so
+    it is simultaneously in ``_slots`` and ``_slots_under_construction``. A naive
+    sum of the two lengths would charge it twice and refuse admissible
+    imports/forks/creates near ``MAX_LIVE_SLOTS`` with fewer real slots than that.
+    """
+    from kiro_crew.dashboard.slot_registry import SlotRegistry
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("count-uc")
+    assert state.live_slot_count() == 1
+
+    # Under construction AND still registered: must stay 1, not 2.
+    state.begin_slot_construction(slot.key)
+    assert slot.key in state._slots
+    assert state.live_slot_count() == 1, "under-construction slot double-counted"
+
+    state.end_slot_construction(slot.key)
+    assert state.live_slot_count() == 1
+    # SlotRegistry is imported to pin the delegation target exists.
+    assert callable(SlotRegistry.live_slot_count)
+
+
+def test_under_construction_slot_is_not_acquirable_during_the_async_tail(tmp_path):
+    """A slot under construction is refused by both acquisition doors.
+
+    Construction is synchronous through the hydrate loop, but the import path
+    holds ``begin_slot_construction`` across its async Layer B finalization tail,
+    so the slot is registered-but-not-yet-resumable for that span. ``get_slot``
+    returns None and ``get_or_create_slot`` raises, so a concurrent acquirer
+    cannot treat it as a live session before Layer B lands; raw ``_slots`` still
+    resolves it so a same-key resume dedups.
+    """
+    import pytest
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("acq-tail")
+    state.begin_slot_construction(slot.key)
+
+    assert state.get_slot(slot.key) is None
+    with pytest.raises(ValueError, match="still being built"):
+        state.get_or_create_slot("acq-tail")
+    # Registered throughout: dedup still resolves it via raw _slots.
+    assert state._slots.get(slot.key) is slot
+
+    state.end_slot_construction(slot.key)
+    assert state.get_slot(slot.key) is slot
+    assert state.get_or_create_slot("acq-tail") is slot
+
+
+def test_raw_acquirer_mutators_refuse_an_under_construction_slot(tmp_path):
+    """regenerate/rewind acquire via raw ``_slots.get``; they must still refuse
+    an under-construction slot, so a crafted request against the predictable
+    minted key cannot truncate+persist during the import Layer B async tail.
+    """
+    from kiro_crew.dashboard.chat_utils import reject_if_slot_under_construction
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("raw-uc")
+    state.begin_slot_construction(slot.key)
+    resp = reject_if_slot_under_construction(state, slot)
+    assert resp is not None and resp.status == 409
+    state.end_slot_construction(slot.key)
+    assert reject_if_slot_under_construction(state, slot) is None
+
+
+def test_redact_history_rows_only_touches_the_window_not_the_frozen_prefix():
+    """``_redact_history_rows`` redacts only the newest ``window_limit`` rows.
+
+    Redacting the frozen prefix would put transcript-sized GIL regex on the loop
+    for bytes that are never re-serialized (the prefix is already redacted on disk
+    and only counted). With ``window_limit=2`` on 5 rows, the 3 prefix rows are
+    returned untouched (same objects) and only the last 2 non-user rows are
+    scrubbed. ``window_limit=None`` (import) redacts everything.
+    """
+    from kiro_crew.dashboard.chat_handlers import _redact_history_rows
+
+    secret = "ghp_" + "a" * 36  # a token-shaped string the credential scanner redacts
+    rows = [{"role": "assistant", "content": f"p{i} {secret}", "ts": ""} for i in range(5)]
+
+    out = _redact_history_rows(rows, window_limit=2)
+    # Prefix (first 3) untouched: same objects, secret still present.
+    assert out[0] is rows[0] and out[1] is rows[1] and out[2] is rows[2]
+    assert secret in out[0]["content"]
+    # Window (last 2) scrubbed: the token is gone.
+    assert secret not in out[3]["content"] and secret not in out[4]["content"]
+
+    # window_limit=None redacts every row (import's all-persisted case).
+    out_all = _redact_history_rows(rows, window_limit=None)
+    assert all(secret not in m["content"] for m in out_all)
+
+
+def test_named_create_on_a_retracted_under_construction_key_is_refused(tmp_path):
+    """The retract-window hijack: a named create on the predictable minted key,
+    while that key is retracted from ``_slots`` but still under construction,
+    must be refused -- otherwise it mints a second slot sharing the effective
+    session key the import's Layer B was joined to.
+
+    Reproduces the exact window: begin construction on the key, then RETRACT it
+    from ``_slots`` (as import does for its async Layer B tail), then issue a
+    ``get_or_create_slot(name=<key>)`` -- the create path, since the key is absent
+    from ``_slots``. It must raise, not mint. Once construction ends, the same
+    named create succeeds.
+    """
+    import pytest
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-7-1700000000")
+    key = slot.key
+    state.begin_slot_construction(key)
+    # Import retracts the slot from _slots for its async finalization tail.
+    state._slots.pop(key, None)
+
+    # The attack: a named create on the predicted key during the window.
+    with pytest.raises(ValueError, match="still being built"):
+        state.get_or_create_slot(key)
+    # And it did not mint a colliding slot.
+    assert key not in state._slots
+
+    # Once finalization ends (import re-registers + ends construction), the key
+    # is usable again.
+    state._slots[key] = slot
+    state.end_slot_construction(key)
+    assert state.get_or_create_slot(key) is slot
+
+
+def test_failed_hydration_does_not_leave_a_stale_restricted_marker(tmp_path, monkeypatch):
+    """A hydration that raises after marking the key restricted must roll the
+    marker back, or a later session at that key is wrongly blocked from memory
+    operations (fail-closed over-restriction).
+
+    Non-persistent ``memory_mode`` adds ``dashboard:{key}`` to
+    ``_restricted_keys`` early in hydration; force a raise AFTER that add and
+    assert the except path discarded it (and dropped the slot).
+    """
+    import kiro_crew.dashboard.chat_handlers as ch
+
+    state = _make_state(tmp_path)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("malformed variant")
+
+    monkeypatch.setattr(ch, "_attach_variants", _boom)
+
+    with pytest.raises(RuntimeError, match="malformed variant"):
+        ch._materialise_slot_from_history(
+            state,
+            name="priv-1",
+            history_key="priv-1",
+            meta={"memory_mode": "temporary"},
+            all_messages=[{"role": "assistant", "content": "a", "ts": ""}],
+        )
+
+    assert (
+        "dashboard:priv-1" not in state._restricted_keys
+    ), "failed hydration left a stale restricted marker"
+    assert "priv-1" not in state._slots
+
+
+def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, monkeypatch):
+    """If the suspend-block exit flush raises (a poisoned pre-existing slot's
+    push_slots_update), materialisation must roll back fully: no leaked
+    construction count, no registered slot. The rollback region covers creation
+    and the context exit, not just the hydrate body.
+    """
+    state = _make_state(tmp_path)
+
+    # Raise only on the DEFERRED exit flush (F2's scenario: a poisoned slot
+    # field fails serialize_slots at block exit), not the leading-edge push
+    # inside get_or_create_slot. Count calls: the exit flush is the one that
+    # fires after begin_slot_construction, with the slot already bound in the
+    # materialiser scope.
+    real_push = state.push_slots_update
+    calls = {"n": 0}
+
+    def _push(*a, **k):
+        calls["n"] += 1
+        if slot_created["done"]:
+            raise RuntimeError("poisoned broadcast")
+        return real_push(*a, **k)
+
+    slot_created = {"done": False}
+    # begin_slot_construction runs after get_or_create_slot; flip the flag when
+    # construction is marked so only the exit flush raises.
+    real_begin = state.begin_slot_construction
+
+    def _begin(key):
+        slot_created["done"] = True
+        return real_begin(key)
+
+    monkeypatch.setattr(state, "begin_slot_construction", _begin)
+    monkeypatch.setattr(state, "push_slots_update", _push)
+
+    import kiro_crew.dashboard.chat_handlers as ch
+
+    before = state.live_slot_count()
+    with pytest.raises(RuntimeError, match="poisoned broadcast"):
+        ch._materialise_slot_from_history(
+            state,
+            name="flush-leak-1",
+            history_key="flush-leak-1",
+            meta={"title": "x"},
+            all_messages=[{"role": "assistant", "content": "a", "ts": ""}],
+        )
+    assert "flush-leak-1" not in state._slots, "leaked a registered slot on flush failure"
+    assert state.live_slot_count() == before, "leaked a construction reservation"
+    assert "flush-leak-1" not in state._slots_under_construction

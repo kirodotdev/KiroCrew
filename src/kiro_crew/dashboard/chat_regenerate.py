@@ -10,7 +10,11 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
-from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    reject_if_slot_under_construction,
+    slot_history_key,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
@@ -52,6 +56,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    under_construction = reject_if_slot_under_construction(state, slot)
+    if under_construction is not None:
+        return under_construction
 
     # A crew-bound slot has no local regenerate: it would truncate LOCAL history
     # and re-run the turn on this machine, diverging from the peer.
@@ -162,6 +169,9 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    under_construction = reject_if_slot_under_construction(state, slot)
+    if under_construction is not None:
+        return under_construction
 
     try:
         body = await request.json()
@@ -257,6 +267,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     request_app = request.get("app", "")
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    under_construction = reject_if_slot_under_construction(state, slot)
+    if under_construction is not None:
+        return under_construction
 
     # App-ownership gate (App Kit §5.2). This endpoint discards the slot's
     # NATIVE ACP conversation below, so an app token reaching a slot it does not
