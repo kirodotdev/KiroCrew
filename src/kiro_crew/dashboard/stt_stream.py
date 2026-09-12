@@ -621,7 +621,11 @@ async def _run_local_session(
     # fires when the user first reaches for the button. Streaming stays available on
     # the local provider, which is the whole feature; what is refused is the one
     # first-run window where it could only lose words.
-    pending = session.pending_download()
+    # Off the loop: `pending_download` resolves the model, and resolving the CUSTOM
+    # selection reads and validates `config.json` synchronously (see
+    # `models.resolve`). This runs on the websocket handler's task, so doing it
+    # inline stalled the gateway on the setting this feature adds.
+    pending = await asyncio.to_thread(session.pending_download)
     if pending is not None:
         await _send(
             {
@@ -654,7 +658,14 @@ async def _run_local_session(
     # visible one. Best-effort like every other pre-`ready` send. `pending_load` is
     # advisory (a concurrent session may change residency between the check and the
     # load), so this only ever adds or omits one announce — `prepare` still loads.
-    if session.pending_load():
+    #
+    # Off the loop for the same reason as `pending_download` above, and it is the
+    # same reason twice because it is the same call underneath: `pending_load`
+    # resolves the model too, and resolving the CUSTOM selection reads and validates
+    # `config.json` synchronously. `pending_download` returning None is exactly the
+    # path that reaches here, so leaving this one inline would have kept the stall
+    # this feature introduced on the cold-engine custom session.
+    if await asyncio.to_thread(session.pending_load):
         logger.info("Loading local speech model %s before first transcript", cfg.stt.model)
         await _send(
             {

@@ -31,10 +31,13 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility facade
 
-# Module alias for post-split helpers. The `from ... import` list below is a
+# Module aliases for post-split helpers. The `from ... import` list below is a
 # FROZEN pre-split alias snapshot (test_loader_reexports_historical_snapshot_by_identity),
-# so new resolution helpers are reached through the module, not re-exported.
+# so new resolution helpers are reached through the module, not re-exported. That
+# is also why ``_validated_stt_custom_url`` / ``_validated_stt_custom_sha256``
+# arrive through ``_sections`` rather than joining that block.
 import kiro_crew.config.resolution as _resolution
+import kiro_crew.config.sections as _sections
 from kiro_crew import __version__, model_registry, pinned_fs, platform_compat, windows_acl
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 
@@ -61,12 +64,6 @@ from kiro_crew.computer_use.types import MAX_TEXT_LIMIT as _CU_MAX_TEXT_LIMIT
 from kiro_crew.computer_use.types import MAX_TREE_DEPTH_LIMIT as _CU_MAX_TREE_DEPTH
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
-
-# Post-split section internals are reached through the module: the name-level
-# `from kiro_crew.config.sections import (...)` block below is a FROZEN
-# pre-split snapshot (test_config_module_boundaries pins it), so a coercer added
-# after the split must not join it.
-from kiro_crew.config import sections as _sections
 
 # Pure path primitives live in the leaf module ``config.paths`` (stdlib-only,
 # no ``kiro_crew`` imports) so the modules that only need ``config_dir()`` can
@@ -4097,7 +4094,17 @@ class KiroCrewConfig:
             stt=SttConfig(
                 enabled=_safe_bool(stt_data.get("enabled"), True),
                 provider=_validated_stt_provider(stt_data.get("provider", STT_PROVIDER_LOCAL)),
-                model=_validated_stt_model(stt_data.get("model", _STT_DEFAULT_MODEL)),
+                model=_validated_stt_model(
+                    stt_data.get("model", _STT_DEFAULT_MODEL),
+                    custom_url=stt_data.get("custom_model_url", ""),
+                    custom_sha256=stt_data.get("custom_model_sha256", ""),
+                ),
+                custom_model_url=_sections._validated_stt_custom_url(
+                    stt_data.get("custom_model_url", "")
+                ),
+                custom_model_sha256=_sections._validated_stt_custom_sha256(
+                    stt_data.get("custom_model_sha256", "")
+                ),
                 language_code=stt_data.get("language_code", _sections.STT_LANGUAGE_AUTO),
                 streaming=_safe_bool(stt_data.get("streaming"), True),
                 silence_ms=_safe_int(

@@ -1193,6 +1193,22 @@
       "description": "AWS region for Transcribe"
     },
     {
+      "id": "voice.custom-model-sha-256",
+      "label": "Custom model SHA-256",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.custom_model_sha256",
+      "description": "The 64-character hex SHA-256 of that file. Nothing is stored unless the download matches it, and it is checked again on every load.",
+      "configKey": "stt.custom_model_sha256"
+    },
+    {
+      "id": "voice.custom-model-url",
+      "label": "Custom model URL",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.custom_model_url",
+      "description": "HTTPS URL of a whisper.cpp ggml model to run instead of one from the list above.",
+      "configKey": "stt.custom_model_url"
+    },
+    {
       "id": "voice.dictation-panel",
       "label": "Dictation panel",
       "tab": "voice",

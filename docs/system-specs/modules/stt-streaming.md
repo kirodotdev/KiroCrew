@@ -479,6 +479,35 @@ air-gapped install without weakening the pin, and `SKIP_DOWNLOAD_ENV` is the sam
 switch the embedding downloader honours, so one setting means "this process must
 not pull model weights".
 
+### A model outside the catalog
+
+The catalog is not the whole set. `stt.model` also accepts `custom`, whose bytes
+come from `stt.custom_model_url` and whose trust anchor is the operator's own
+`stt.custom_model_sha256` — the pin moves to the caller rather than being dropped,
+so a custom fetch is verified on exactly the same path as a catalog one. Both keys
+are needed: a half-configured pair degrades to the default model with a warning
+instead of downloading anything, and the URL is served masked and is owner-only on
+`GET`/`PUT /api/config/stt`, because an app token that could set it would be aiming
+a gateway download.
+
+What the catalog gets from its pinned size, a custom entry has to get elsewhere,
+and those substitutes are the transport rules this path adds:
+
+- The staged file is named for its digest (`ggml-custom-<sha256>.bin`), so a
+  corrected pin is a different file and never a silent overwrite. Superseded files
+  are not removed.
+- With no pinned size to use as a ceiling, `_CUSTOM_MAX_BYTES` bounds the transfer.
+- A redirect that leaves https is refused, for catalog and custom downloads alike.
+- A custom download refuses private, loopback and link-local addresses — the
+  configured address itself as well as every hop it redirects to, checked on the
+  socket that will carry the request rather than on a name resolved earlier.
+  `CUSTOM_MODEL_ALLOW_PRIVATE_ENV` re-admits named origins for the air-gapped or
+  internal-mirror case, per origin rather than globally.
+- A custom download through an https proxy is refused outright rather than
+  screened. The hook is handed the PROXY's address on a tunnel, so screening what
+  it is given would approve the proxy and say nothing about the destination.
+  Catalog downloads still run through a proxy normally.
+
 ## Caps and limits
 
 Every limit is a named constant in the module that owns it. The values are not

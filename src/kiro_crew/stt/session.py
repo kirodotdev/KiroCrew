@@ -25,6 +25,7 @@ one.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -622,7 +623,10 @@ async def close() -> None:
 # Kept so a caller can await a download without opening a session (the settings
 # panel's "get it ready now" action).
 async def ensure_model(model_name: str) -> bool:
-    model = models.resolve(model_name)
+    # Off the loop: resolving the CUSTOM selection reads and validates `config.json`
+    # synchronously (see `models.resolve`), and this is awaited from the dashboard's
+    # handler task.
+    model = await asyncio.to_thread(models.resolve, model_name)
     return (await models.store().ensure(model)) is not None
 
 
