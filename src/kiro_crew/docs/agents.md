@@ -58,6 +58,42 @@ Custom agents are JSON files in `~/.kiro/agents/`. They define their own system 
 }
 ```
 
+### Markdown definitions
+
+A custom agent can also be written as a single markdown file in the same
+directory: YAML frontmatter for the fields, and the markdown body as the system
+prompt. This is the shape the wider ecosystem (Kiro IDE, kiro-agent) uses, so an
+existing agent file can be dropped in as-is instead of hand-translated to JSON.
+
+```markdown
+---
+name: code-reviewer
+description: Reviews code changes
+model: claude-opus
+tools: [fs_read, grep, glob, "@kirocrew-core"]
+allowedTools: [fs_read, grep, glob]
+---
+You are a meticulous code reviewer. Focus on correctness, security, and
+maintainability.
+```
+
+kiro-cli itself reads only JSON, so Kiro Crew compiles each `<name>.md` into a
+`<name>.json` beside it at startup and keeps the two in step — the markdown file
+stays the source you edit. Points worth knowing:
+
+- The output filename follows the **declared** `name`, so `reviewer.md` declaring
+  `name: code-reviewer` compiles to `code-reviewer.json`.
+- The body is the prompt, so frontmatter may not also declare `prompt`.
+- A frontmatter key kiro-cli does not accept is dropped with a warning rather
+  than failing the whole file, because kiro-cli rejects a spec wholesale on an
+  unknown key.
+- Kiro Crew never overwrites a JSON spec it did not generate. If a
+  hand-written `code-reviewer.json` already exists, the markdown file is refused
+  and the reason is logged; the same applies once you edit a generated file, so
+  your edit is preserved rather than reverted.
+- Deleting the markdown file removes the JSON it generated. Compilation covers
+  `~/.kiro/agents/` only, not a project's `.kiro/agents/`.
+
 ## Managing Agents
 
 **Agent Capabilities → Agents** shows your agents; select one and open its **Template** pane to see its definition — model, system prompt, skills, tools, and MCP servers. Drop a new JSON file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Agent Capabilities.

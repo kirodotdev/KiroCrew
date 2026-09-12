@@ -217,6 +217,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     rewrite_agents,
 )
 from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
+from kiro_crew.md_agent_specs import compile_markdown_agents
 from kiro_crew.memory import MemoryStore
 from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver, inbound_spool, registry
 from kiro_crew.messaging.dispatch import build_directive_consumer, build_tool_gate
@@ -9727,6 +9728,42 @@ class GatewayOrchestrator:
     # MCP Gateway
     # ------------------------------------------------------------------
 
+    async def _compile_markdown_agents(self) -> None:
+        """Compile ``~/.kiro/agents/*.md`` into the JSON specs kiro-cli loads.
+
+        kiro-cli globs ``*.json`` and parses whatever it is handed as JSON, so a
+        markdown definition is invisible to it; Crew hands it a bare NAME and
+        kiro-cli resolves the file itself. Compiling to JSON is therefore what
+        makes a markdown agent runnable at all, and it also lets every existing
+        consumer -- the roster, the model resolvers, doctor, and above all the MCP
+        gateway rewriter -- keep working unchanged.
+
+        Fail-open and offloaded. The pass globs a directory, parses each document
+        and writes files, which is blocking filesystem work that must not run on
+        the event loop during boot; and a malformed definition is the author's
+        problem, never a reason for the gateway not to start. Skipped in
+        ``test_mode`` for the same reason the agents-dir janitor is: the offline
+        E2E gate must not write into a developer's real agents directory.
+        """
+        if self._test_mode:
+            return
+        try:
+            outcome = await asyncio.to_thread(compile_markdown_agents)
+        except Exception:
+            logger.warning("markdown agent compilation failed at boot", exc_info=True)
+            return
+        if outcome.written or outcome.pruned:
+            logger.info(
+                "markdown agents: %d compiled, %d removed",
+                len(outcome.written),
+                len(outcome.pruned),
+            )
+        for source, code, message in outcome.refused:
+            # WARNING, not debug: the author's agent is silently absent from
+            # every picker until they fix the document, so the reason has to be
+            # visible without turning on debug logging.
+            logger.warning("markdown agent %s refused (%s): %s", source, code, message)
+
     async def _init_mcp_gateway(self, stub_servers: frozenset[str] | None = None) -> None:
         """Start the MCP gateway sidecar and populate the agent-JSON overlay.
 
@@ -11798,6 +11835,14 @@ class GatewayOrchestrator:
         await self._start_embeddings()
 
         # Auto-migration starts only after deferred restore and memory init.
+
+        # Compile markdown agent definitions (``~/.kiro/agents/*.md``) into the
+        # JSON specs kiro-cli actually loads. Ordering is load-bearing and this
+        # step MUST stay ahead of the MCP gateway below: the rewriter is what
+        # turns a spec's ``mcpServers`` into broker stubs, so a spec compiled
+        # after it would have its MCP servers spawn DIRECT and bypass the tool
+        # gate for the rest of the process's life.
+        await self._compile_markdown_agents()
 
         # Start MCP gateway sidecar before any ACP session can spawn.  The
         # rewriter writes the agent-JSON overlay first so kiro-cli picks up
