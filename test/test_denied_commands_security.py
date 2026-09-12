@@ -8837,3 +8837,52 @@ class TestHostsAliasPublicationWindow:
         # ``ssh dev-dsk`` shape).
         assert _denied_by("ssh farbox uptime") is None
         assert started == []
+
+
+class TestChmod777FlagVariantsStayDenied:
+    """The chmod-777 rule must not depend on the exact ``chmod 777`` spelling.
+
+    A recursive ``-R`` (packed, split, or ``--recursive``) turns the same mode
+    change into a whole-tree exposure, and padding with ordinary single-letter
+    flags changes nothing about that.
+    """
+
+    def test_flag_variants_are_denied(self):
+        for cmd in (
+            "chmod 777 ~",
+            "chmod 777 /tmp/x",
+            "chmod -R 777 ~",
+            "chmod -R 777 /",
+            "chmod -Rv 777 ~",
+            "chmod -vR 777 ~",
+            "chmod -Rvf 777 ~",
+            "chmod -Rvf 777",
+            "chmod -v -R 777 ~",
+            "chmod -R -v 777 ~",
+            "chmod -R -v -f 777 ~",
+            "chmod -R -v -f -c -v 777 ~",
+            "chmod --recursive 777 ~",
+            "chmod --recursive -v 777 ~",
+            "chmod --recursive -v -v -v 777 ~",
+            "chmod -v --recursive 777 ~",
+            "chmod -f -R 777 ~",
+            "chmod -Rv --recursive -v -v 777 ~",
+            # Leading-zero octal is the same mode.
+            "chmod 0777 ~",
+            "chmod -R 0777 ~",
+            # A quoted program is the same program; an empty word is elided
+            # by the third view -- both reach the rule.
+            '"chmod" -R 777 ~',
+            'chmod "" 777 ~',
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_other_modes_and_tools_stay_allowed(self):
+        for cmd in (
+            "chmod 775 ~",
+            "chmod -R 775 ~",
+            "chmod +x foo",
+            "chmod -R u+rw ~",
+            "ls -la",
+        ):
+            assert is_denied(cmd) is None, cmd
