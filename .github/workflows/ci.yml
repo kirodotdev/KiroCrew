@@ -520,14 +520,18 @@ jobs:
   backend-test:
     name: Backend Tests
     needs: [changes, await-fast-gate]
-    # NOT on the CodeBuild-hosted runner (yet). The pilot's first run routed
-    # these shards there and every shard failed 37-42 tests: the CodeBuild runner
-    # executes the job as root, and this suite asserts permission semantics
-    # (read-only refusals, root-owned checks, PermissionError) that root does not
-    # have; the standard:7.0 image also lacks the hosted toolchain (jq 1.7). They
-    # move once a non-root custom image exists -- see docs/ci/ci-and-reviews.md,
-    # "CodeBuild-hosted runner (pilot)".
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner pilot, wave 3 SPIKE: shard 1 only. The pilot's
+    # first attempt routed all four shards and every one failed 37-42 tests,
+    # because the CodeBuild runner executes the job as root and this suite
+    # asserts permission semantics root does not have (read-only refusals,
+    # root-owned checks, PermissionError; the code refuses to run providers as
+    # root at all), and because standard:7.0 ships jq 1.6 and a toolcache
+    # python whose libpython needs LD_LIBRARY_PATH. The `run-as-runner` action
+    # below closes all of that inside the job (an unprivileged `runner` user,
+    # jq/gh/ldconfig), and the test steps run through its ci-shell. Shards 2-4
+    # stay hosted until shard 1 is green here; then all four move. See
+    # docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
+    runs-on: ${{ matrix.group == 1 && needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # The slowest 3.12 shard runs 34 to 36 minutes on a hosted runner, and the
     # per-shard time swings by several minutes run to run (a 28-minute shard
     # reached 99% at 40 on the next run of the same tree). A cap that a green
@@ -571,6 +575,27 @@ jobs:
 
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # Same user model on every runner: on a root runner (CodeBuild) create the
+      # unprivileged `runner` user and hand it the workspace; everywhere install
+      # /usr/local/bin/ci-shell, which the test steps below declare as their
+      # shell. On ubuntu-latest it is a bash passthrough. Must come after the
+      # setup-* actions (they install as root, harmlessly) and before anything
+      # whose result depends on not being root.
+      - uses: ./.github/actions/run-as-runner
+
+      - name: Runner identity (spike diagnostics, CodeBuild only)
+        if: runner.environment == 'self-hosted'
+        shell: /usr/local/bin/ci-shell {0}
+        run: |
+          echo "runner.environment=self-hosted  name=$RUNNER_NAME"
+          echo "step user: $(id)"
+          echo "HOME=$HOME  USER=$USER"
+          echo "python: $(command -v python) -> $(python -c 'import sys; print(sys.version.split()[0])')"
+          python -c 'import os,sys; print("libpython resolves without LD_LIBRARY_PATH:", os.system("env -u LD_LIBRARY_PATH " + sys.executable + " -c pass") == 0)'
+          echo "jq $(jq --version)  gh $(gh --version | head -1)  git $(git --version)"
+          echo "workspace owner: $(stat -c %U "$GITHUB_WORKSPACE")  temp owner: $(stat -c %U "$RUNNER_TEMP")"
+          echo "unshare NEWNS (sandbox availability): $(unshare --mount --map-root-user true 2>&1 && echo ok || echo unavailable)"
 
       - name: Select test scope
         id: scope
@@ -632,6 +657,9 @@ jobs:
           LEAF_REPEAT: "3"
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        # ci-shell: as the unprivileged `runner` user on a root runner, plain bash
+        # on ubuntu-latest (see the run-as-runner step).
+        shell: /usr/local/bin/ci-shell {0}
         run: |
           # Take the `python` problem matcher registered by actions/setup-python
           # out of scope before pytest writes a line. Its pattern is a traceback
@@ -713,6 +741,7 @@ jobs:
         # Fold any xdist parallel data files into a single .coverage (no-op if
         # pytest-cov already combined this shard), then name it per-shard so the
         # combine job can merge all shards with `coverage combine`.
+        shell: /usr/local/bin/ci-shell {0}
         run: |
           coverage combine 2>/dev/null || true
           test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
