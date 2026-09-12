@@ -25,6 +25,9 @@ export interface FileTab {
 }
 
 export interface FileMeta {
+  /** Opaque nanosecond-mtime token from /read — lossless concurrency guard.
+   *  STRING because the value exceeds JS's safe-integer range; see api.ts. */
+  mtime_ns?: string
   size?: number
   mtime?: number
   mime?: string
@@ -45,4 +48,73 @@ export interface SearchResult {
   line: number
   col: number
   preview: string
+}
+
+// ── Structured Office extraction (/extract) ──
+
+export interface DocxBlock {
+  type: string // 'p' | 'h1'..'h6' | 'table'
+  text?: string
+  rows?: string[][]
+}
+
+export interface XlsxSheet {
+  name: string
+  rows: string[][]
+  truncated?: boolean
+}
+
+export interface PptxRun {
+  t: string
+  b?: boolean
+  i?: boolean
+  sz?: number
+  c?: string
+}
+
+export interface PptxParagraph {
+  algn: string
+  lvl: number
+  bullet: boolean
+  runs: PptxRun[]
+}
+
+export interface PptxShape {
+  kind: 'text' | 'image' | 'table'
+  x?: number
+  y?: number
+  w?: number
+  h?: number
+  paras?: PptxParagraph[]
+  fill?: string
+  member?: string
+  rows?: string[][]
+}
+
+export interface PptxSlide {
+  n: number
+  bg: string | null
+  shapes: PptxShape[]
+  lines: string[]
+}
+
+export interface OfficeExtract {
+  kind: 'docx' | 'xlsx' | 'pptx'
+  blocks?: DocxBlock[]
+  sheets?: XlsxSheet[]
+  slides?: PptxSlide[]
+  slideW?: number
+  slideH?: number
+  truncated?: boolean
+  path: string
+  size: number
+  mtime: number
+}
+
+export interface WriteResult {
+  /** Opaque string token the editor adopts as its next base — see FileMeta. */
+  mtime_ns?: string
+  ok: boolean
+  size: number
+  mtime: number
 }

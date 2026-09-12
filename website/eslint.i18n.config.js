@@ -162,6 +162,25 @@ export default [
       // keep both modules parser-facing only.
       'src/lib/widgetSrcdoc.ts',
       'src/lib/mcpAppSrcdoc.ts',
+      // The Files app's HTML-preview policy builder — the same category as the two
+      // srcdoc builders directly above, and listed by the same exact-path rule. Its
+      // literals are a CSP directive list and `<meta>`/`<head>` markup, all handed
+      // to a PARSER: translating a word of either would not change anything anyone
+      // reads, it would weaken the policy (a translated `default-src` stops being a
+      // directive) or break the injection point.
+      //
+      // Verified copy-free rather than assumed: the module imports no `i18nT` /
+      // `useTranslation`, renders no text node, and exports one pure string builder
+      // plus the policy constant. It exists as a separate file FOR this reason —
+      // `viewers.tsx`, which consumes it, holds real user copy (the preview/source
+      // toggle labels) and therefore stays fully gated, exactly the split the
+      // `sketchSrcdoc.ts` note above describes as what makes a path exemption
+      // admissible.
+      //
+      // Stated as a false-negative class, per this file's convention: any
+      // user-visible copy ever added to this path will not be reported — keep the
+      // module parser-facing only.
+      'src/apps/file-explorer/previewCsp.ts',
       // Per-app scoped CSS, injected as `<style>{APP_CSS}</style>`. Each module is
       // ONE template literal of stylesheet text handed to the CSS parser -- selectors,
       // lengths and `var(--…)` references. None of it is read as words, and the
