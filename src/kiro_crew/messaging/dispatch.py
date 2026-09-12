@@ -229,6 +229,10 @@ class ChannelTurn:
     the spool and its refusal path is byte-identical to before.
     """
 
+    user_display_name: Optional[str] = None
+    """Human name of the sender, injected as ``[CURRENT USER]`` so the agent
+    knows who it is talking to. ``None`` omits the block (byte-identical to before)."""
+
 
 #: Every spelling a channel accepts for "abort the running turn". The union of
 #: the per-channel command tables (``/stop`` and ``/cancel`` everywhere, plus
@@ -668,6 +672,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             resumed=resumed,
             minimal_context=turn.minimal_context,
             runtime_source=turn.channel_type,
+            user_display_name=turn.user_display_name,
         )
 
         driver = TurnDriver(

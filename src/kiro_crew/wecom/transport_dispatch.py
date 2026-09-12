@@ -324,6 +324,7 @@ class WeComDispatcher:
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                     audit_caller=f"wecom:{userid}",
                     after_persist=_surface_new_session,
+                    user_display_name=self._display_name(userid),
                 ),
                 sessions=self.sessions,
                 ctx_builder=self.ctx_builder,
@@ -397,6 +398,26 @@ class WeComDispatcher:
 
     def _resolve_agent(self) -> str:
         return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+
+    def _display_name(self, userid: str) -> str:
+        """Sender's name from ``wecom.allowed_users``, else the raw userid.
+
+        WeCom's inbound frame carries only an opaque userid, so resolve the
+        operator-set name for ``[CURRENT USER]``, mirroring Slack's name fallback.
+        """
+        for u in getattr(self.cfg.wecom, "allowed_users", []):
+            if u.get("userid") == userid:
+                # Return the operator-set name ONLY when it is a non-empty
+                # string. A truthy non-string (e.g. YAML ``name: 123`` coerced
+                # to int) would otherwise flow into ``[CURRENT USER]`` marker
+                # scrubbing, which assumes ``str`` and raises — crashing every
+                # turn for that user. The loader type-checks ``userid`` but not
+                # ``name``, so guard it here.
+                name = u.get("name")
+                if isinstance(name, str) and name:
+                    return name
+                return userid
+        return userid
 
     def _session_key(self, userid: str) -> str:
         gen = self._conv.current_gen(userid)
