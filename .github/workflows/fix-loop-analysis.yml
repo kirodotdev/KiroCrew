@@ -50,6 +50,11 @@ permissions:
   # because a report that silently drops PRs understates its own denominator and
   # so must fail loudly instead.
   actions: read
+  # The harvest denominator lists merged PRs through the GraphQL search
+  # surface, which silently omits nodes the token cannot read instead of
+  # 403ing -- so a missing grant publishes a clean-looking false zero
+  # rather than failing.
+  pull-requests: read
   # No `id-token` here: the OIDC grant for Bedrock is job-scoped to `analyze`
   # below, so the git-history job never holds a credential it does not use.
 
@@ -155,6 +160,7 @@ jobs:
       contents: read
       issues: write
       actions: read
+      pull-requests: read
       id-token: write
     steps:
       # The model reads staged files only; a shallow checkout gives the action
