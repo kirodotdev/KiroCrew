@@ -457,7 +457,6 @@ test/test_cautious_boot.py
 test/test_cc_agent_resolution.py
 test/test_changelog_handler.py
 test/test_channel_activation.py
-test/test_channel_blocked_tools.py
 test/test_channel_connect_row.py
 test/test_channel_fixtures.py
 test/test_channel_folders.py

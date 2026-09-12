@@ -393,7 +393,11 @@ def directive_tool_from_call(mcp_server_name: str, tool_name: str, title: str) -
     wire: kiro-agent's MCP wrapper (KAS) sets the ``tool_call`` title to
     ``@<serverName>/<toolName>`` from its own tool config, and claude-agent-acp
     (Claude) passes Claude's raw tool name ``mcp__<server>__<tool>`` through as
-    the title. Either spelling with ``kirocrew-core`` as the server resolves.
+    the title. opencode names an MCP tool ``<server>_<tool>`` with a SINGLE
+    underscore and emits no ``_meta.kiro`` at all, so for that harness the title
+    is the only identity a call carries (measured on 1.18.30 --
+    ``agent-host-contract.md`` section 9). Any of the three spellings with
+    ``kirocrew-core`` as the server resolves.
     Anything else is ``""``, and a call with no resolvable tool records no digest.
 
     *title* MUST be the frame's ``wire_title`` -- the backend's own field -- and
@@ -431,7 +435,36 @@ def directive_tool_from_call(mcp_server_name: str, tool_name: str, title: str) -
     if title.startswith(f"mcp__{CORE_MCP_SERVER}__"):
         candidate = title[len(f"mcp__{CORE_MCP_SERVER}__") :].strip()
         return candidate if candidate in DIRECTIVE_TOOLS else ""
-    return ""
+    # opencode: ``<server>_<tool>``, joined by ONE underscore, and no
+    # ``_meta.kiro`` anywhere -- so this is the only channel that names the tool.
+    return _server_underscore_qualified(title)
+
+
+def _server_underscore_qualified(name: str) -> str:
+    """The directive tool *name* spells as ``<CORE_MCP_SERVER>_<tool>``, else ``""``.
+
+    opencode's MCP tool id is its server name and tool name joined by a SINGLE
+    underscore (each half with ``[^a-zA-Z0-9_-]`` replaced by ``_``; Crew's server
+    names survive that unchanged). Deliberately an EXACT server-qualified match
+    rather than teaching :func:`match_tool` that one underscore separates a
+    qualifier: one underscore as a separator resolves ``do_monitor_start``, which
+    that function excludes on purpose, and there is no way to tell that spelling
+    apart from a bare tool name whose own words happen to end in a directive
+    name. Exactness costs nothing here, because the whole point of this spelling
+    is that both halves are on the wire.
+
+    The SERVER half is the guard, as in the KAS and Claude branches: a
+    third-party server exposing a tool literally named
+    ``kirocrew-core_monitor_start`` spells its own id
+    ``<that-server>_kirocrew-core_monitor_start`` and fails the prefix, and a
+    longer Crew-looking name (``kirocrew-core_monitor_start_extra``) fails the
+    :data:`DIRECTIVE_TOOLS` membership check on the tool half.
+    """
+    prefix = f"{CORE_MCP_SERVER}_"
+    if not name.startswith(prefix):
+        return ""
+    candidate = name[len(prefix) :].strip()
+    return candidate if candidate in DIRECTIVE_TOOLS else ""
 
 
 def match_tool(raw: str) -> str:

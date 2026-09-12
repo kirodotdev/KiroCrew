@@ -92,6 +92,20 @@ _BLOCKED_TOOL_RE = re.compile(
     + r")(?![\w.\-/])"
 )
 _MCP_SEPARATOR_RE = re.compile(r"_{2,}")
+# A THIRD qualified spelling: opencode joins server and tool with a SINGLE
+# underscore ("kirocrew-core_send_message", measured on 1.18.30), which the run
+# of 2+ above leaves untouched — and a lone "_" before the tool name is a word
+# character, so the boundary lookbehind then refuses the match and the whole
+# containment list read as absent on that harness. Keyed on Crew's OWN
+# server-name shape rather than on "one underscore", because a bare single
+# underscore also unblocks "do_send_message" and every other identifier that
+# merely ends in a blocked name. Applied AFTER the run normalization, so
+# "mcp__kirocrew-core__send_message" is already spaced out and does not come
+# back here as "mcp _send_message" with the boundary re-broken. Recognising one
+# name too many can only ever BLOCK more, which is the safe direction for a
+# containment list — unlike the grant in ``session_directive``, which is why
+# that one matches the server name exactly.
+_CREW_MCP_SERVER_PREFIX_RE = re.compile(r"\bkirocrew-[A-Za-z0-9-]+_")
 
 
 def _shell_base_binary(cmd: str) -> str | None:
@@ -184,7 +198,8 @@ def _match_trusted_channel_command(cmd: str, agent: "ChannelAgent") -> str | Non
 
 def _blocked_tool_named(rendered: str) -> bool:
     """True when a blocked messaging tool is named (as a tool) in *rendered*."""
-    return bool(_BLOCKED_TOOL_RE.search(_MCP_SEPARATOR_RE.sub(" ", rendered)))
+    normalized = _CREW_MCP_SERVER_PREFIX_RE.sub(" ", _MCP_SEPARATOR_RE.sub(" ", rendered))
+    return bool(_BLOCKED_TOOL_RE.search(normalized))
 
 
 class ListenMode(Enum):

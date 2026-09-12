@@ -174,6 +174,37 @@ async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None
     return spy
 
 
+def _opencode_events(
+    *,
+    wire_title: str = "kirocrew-core_monitor_start",
+    result_text: str = "Monitor loop requested.",
+    tool_call_id: str = "tc-oc",
+):
+    """An opencode turn: no ``_meta.kiro`` identity anywhere, the tool named ONLY
+    by a single-underscore ``<server>_<tool>`` wire title, and a result carrying no
+    marker -- the shape measured on 1.18.30."""
+    return [
+        AcpEvent(
+            kind=EVENT_TOOL_CALL,
+            tool_call_id=tool_call_id,
+            title=wire_title,
+            wire_title=wire_title,
+            tool_kind="other",
+            tool_name="",
+            mcp_server_name="",
+            raw_tool_params=CALL_ARGS,
+        ),
+        AcpEvent(
+            kind=EVENT_TOOL_RESULT,
+            tool_call_id=tool_call_id,
+            tool_output=result_text,
+            tool_final=True,
+        ),
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+        AcpEvent(kind=EVENT_COMPLETE),
+    ]
+
+
 def _kas_events(result_text: str, *, raw_input=FRAME_INPUT, tool_call_id="tc-kas"):
     """A KAS turn: no ``_meta.kiro`` identity on the call, rawInput present."""
     return [
@@ -1267,3 +1298,83 @@ class TestConcurrentDirectivesInOneSession:
         assert all(k != "reset_conversation" for k, _ in applied), "child never reaches parent"
         assert len(applied) == 3
         assert directive_queue.depth(effective_session_key(slot)) == 0, "child record retired"
+
+
+class TestOpenCodeBackendResolvesTheTool:
+    """opencode names an MCP tool ``<server>_<tool>`` -- ONE underscore -- and emits
+    no ``_meta.kiro`` at all, so the wire title is the only channel that names the
+    tool it called. Measured on 1.18.30: a stub Crew MCP server mounted through the
+    ``session/new`` ``mcpServers`` array came back as
+    ``{"sessionUpdate":"tool_call","title":"kirocrew-core_spike_marker_tool",...}``
+    (``test/fixtures/acp_frames/opencode/mcp-directive-call-synthesized.jsonl``).
+    Every recogniser returned ``""`` for that spelling, so a session with Crew's
+    control plane mounted would answer every directive tool and apply none of them.
+    """
+
+    @pytest.mark.parametrize("tool", sorted(session_directive.DIRECTIVE_TOOLS))
+    def test_every_directive_tool_resolves_from_the_opencode_title(self, tool):
+        title = f"{session_directive.CORE_MCP_SERVER}_{tool}"
+        assert session_directive.directive_tool_from_call("", "", title) == tool
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            # The server half is the guard, exactly as in the KAS and Claude
+            # branches: a third-party server's own tool never carries Crew's
+            # server name as its prefix.
+            "evil-mcp_monitor_start",
+            "other_reset_conversation",
+            # ...and a third-party server exposing a tool LITERALLY named
+            # "kirocrew-core_monitor_start" spells its own id with its own name
+            # in front, so it fails the prefix too.
+            "evil-mcp_kirocrew-core_monitor_start",
+            # A single underscore is NOT treated as a separator, which is why
+            # match_tool was left alone: these must all stay unresolved.
+            "do_monitor_start",
+            "evilmonitor_start",
+            # Longer than the tool name: the DIRECTIVE_TOOLS membership check on
+            # the tool half is what refuses it.
+            "kirocrew-core_monitor_start_extra",
+            # A real Crew tool that is not a directive tool.
+            "kirocrew-core_resource_status",
+            "kirocrew-core_spike_marker_tool",
+            # Not a qualified name at all.
+            "kirocrew-core",
+            "kirocrew-core_",
+        ],
+    )
+    def test_a_lookalike_single_underscore_name_resolves_to_nothing(self, title):
+        assert session_directive.directive_tool_from_call("", "", title) == ""
+
+    @pytest.mark.asyncio
+    async def test_the_directive_lands_out_of_band_on_an_opencode_turn(self, tmp_path, monkeypatch):
+        """End to end through the REAL consumer: the opencode-spelled title is what
+        records the input digest, and the digest is what claims the parked record.
+        The result text is not consulted -- this turn carries no marker at all."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("opencode-directive")
+        slot._titled = True
+        spy = await _drive(state, slot, _opencode_events(), monkeypatch)
+        spy.assert_awaited_once()
+        assert spy.call_args.args[3] == "monitor_start"
+        assert spy.call_args.args[4] == VALIDATED_ARGS, "the RECORD's payload is applied"
+        assert directive_queue.depth(effective_session_key(slot)) == 0
+
+    @pytest.mark.asyncio
+    async def test_a_lookalike_title_claims_nothing_on_an_opencode_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """Fail-closed: same turn, same arguments, same parked record -- but the
+        call is a NON-directive tool whose name merely looks like one. It records no
+        digest, so the record stays parked and nothing is applied."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("opencode-lookalike")
+        slot._titled = True
+        spy = await _drive(
+            state,
+            slot,
+            _opencode_events(wire_title="kirocrew-core_monitor_start_extra"),
+            monkeypatch,
+        )
+        spy.assert_not_called()
+        assert directive_queue.depth(effective_session_key(slot)) == 1, "record left parked"
