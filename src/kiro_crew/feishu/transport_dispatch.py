@@ -30,7 +30,11 @@ from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.feishu.client import CHAT_GROUP
 from kiro_crew.feishu.renderer import FeishuRenderer
-from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+from kiro_crew.feishu.transport import (
+    FEISHU_CAPABILITIES,
+    SPOOL_DM_ROUTE_PREFIX,
+    SPOOL_GROUP_ROUTE_PREFIX,
+)
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.conversation import (
@@ -44,6 +48,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -218,6 +223,17 @@ class FeishuDispatcher:
             ChannelTurn(
                 channel_type="feishu",
                 session_key=session_key,
+                inbound_route=InboundRoute(
+                    conversation_id=inbound.message_id,
+                    text=inbound.text,
+                    user_id=open_id,
+                    thread_id=(
+                        f"{SPOOL_GROUP_ROUTE_PREFIX}{inbound.chat_id}"
+                        if inbound.chat_type == CHAT_GROUP
+                        else f"{SPOOL_DM_ROUTE_PREFIX}{open_id}"
+                    ),
+                    message_id=inbound.message_id,
+                ),
                 # Session-directive consumer: monitor_start /
                 # autonudge_stop / ... return a marker TurnDriver decodes;
                 # apply it against THIS turn's session key. Without it the

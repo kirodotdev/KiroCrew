@@ -29,6 +29,7 @@ a trust boundary rather than a writable input.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
@@ -206,6 +207,31 @@ def _spool(path: Path, **kw: Any) -> SpooledInbound:
     )
     assert record_refusal_sync(entry, path=path)
     return entry
+
+
+# ── Shared-dispatch adoption pin ───────────────────────────────────────────────
+
+
+def test_every_shared_channel_turn_declares_an_inbound_route() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    calls: list[tuple[Path, ast.Call]] = []
+    for path in root.glob("*/transport_dispatch.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        calls.extend(
+            (path, node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "ChannelTurn"
+        )
+
+    assert calls, "shared dispatcher scan found no ChannelTurn call sites"
+    missing = [
+        f"{path.relative_to(root)}:{call.lineno}"
+        for path, call in calls
+        if not any(keyword.arg == "inbound_route" for keyword in call.keywords)
+    ]
+    assert missing == [], f"shared dispatchers can drop update-refused turns: {missing}"
 
 
 # ── The loss (red-before on an unwired tree) ──────────────────────────────────
@@ -758,6 +784,22 @@ def test_a_threaded_route_is_authorized_by_the_thread_roster_alone(spool_home: P
     asyncio.run(replay_spooled(transports={"discord": transport}))
 
     assert sorted(transport.send_gate_calls) == sorted([("thr", "thr", ""), ("dm", None, "u")])
+
+
+def test_slack_rechecks_the_sender_for_its_threaded_route(spool_home: Path) -> None:
+    """Slack has no separate thread roster, so its accepted sender owns the route."""
+    _spool(
+        spool_home,
+        channel_type="slack",
+        conversation_id="C1",
+        thread_id="1700.0",
+        user_id="U_OWNER",
+    )
+    transport = _Transport()
+
+    asyncio.run(replay_spooled(transports={"slack": transport}))
+
+    assert transport.send_gate_calls == [("C1", "1700.0", "U_OWNER")]
 
 
 def test_a_revoked_discord_thread_gets_no_notice_even_from_an_allowed_sender(

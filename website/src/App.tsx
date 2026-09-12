@@ -109,6 +109,7 @@ import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import RemoteArtifactDetailPage from './pages/RemoteArtifactDetailPage'
 import ArtifactDeployPage from './pages/ArtifactDeployPage'
 import SettingsPage from './pages/SettingsPage'
+import { InAppUpdateFlow } from './pages/settings/AboutPanel'
 import EmbedSettingsPage from './pages/EmbedSettingsPage'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstanceTabBar from './components/InstanceTabBar'
@@ -1264,12 +1265,19 @@ export default function App() {
   // Can the GATEWAY replace its own code? False on a wheel install and on a
   // desktop bundle, where `POST /api/update` answers 400/409.
   const canApplyUpdate = useAppSelector(s => s.dashboard.status?.update_can_apply)
+  const canArmUpdate = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const updateCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
+  const updateTargetVersion = useAppSelector(
+    s => s.dashboard.status?.update_latest_version_display
+      || s.dashboard.status?.update_latest_version
+      || '',
+  )
   // Availability and capability are separate facts; `updateAffordance` is the one
   // place that combines them, so the modal and the nav badge cannot disagree.
   const affordance = updateAffordance({
     updateAvailable: useAppSelector(s => s.dashboard.status?.update_available),
     canApply: canApplyUpdate,
+    canArm: canArmUpdate,
     command: updateCommand,
   })
   const version = useAppSelector(s => s.dashboard.status?.version) || '—'
@@ -3837,12 +3845,15 @@ export default function App() {
                 <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
                   {i18nT('app.update_now')}
                 </button>
+              ) : affordance === 'arm' ? (
+                <InAppUpdateFlow
+                  version={updateTargetVersion}
+                  manualCommand=""
+                  onHandoff={() => setShowChangelog(false)}
+                />
               ) : affordance === 'command' ? (
-                // This install cannot replace its own code from here: `POST
-                // /api/update` is git fetch + reset, so a wheel install answers
-                // 400/409 and a desktop bundle is owned by its own updater.
-                // Settings > About carries the same command with an explanation
-                // and a copy button.
+                // A non-managed source install cannot use host-local approval.
+                // Its installer remains a manual recovery command.
                 <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
                   data-testid="modal-update-command">
                   {updateCommand}

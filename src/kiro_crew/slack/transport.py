@@ -1,9 +1,10 @@
 """Slack as a concrete :class:`MessagingTransport`.
 
 This wraps the existing ``SlackClientOps`` surface in the channel-neutral
-transport contract. Nothing in the live gateway path constructs it: the Slack
-path routes through ``slack.transport_dispatch`` (TurnDriver + SlackRenderer)
-and only ``SlackTransport.channel_type`` is read, by ``handlers_system``.
+transport contract. The live inbound path still routes through
+``slack.transport_dispatch`` (TurnDriver + SlackRenderer), and Slack remains
+absent from the shared ``channel_transports`` registry. The gateway constructs a
+pass-local instance only to replay refused-turn notices through its live client.
 
 Direction of dependency is ``slack -> messaging`` (allowed): the neutral
 ``messaging`` package never imports Slack.
@@ -18,6 +19,7 @@ in ``slack/events.py`` so the two inbound paths agree.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -103,6 +105,16 @@ class SlackTransport(MessagingTransport):
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
+        # Inbound events normally resolve this before any reply. Refused-turn
+        # replay runs after a restart with no event to warm the per-process cache,
+        # so an org-wide Slack install would otherwise post without the channel's
+        # home team_id and reject Slack Connect destinations. Keep the hook
+        # optional for SlackClientOps test doubles and alternate clients.
+        ensure_home_team = getattr(self._client, "ensure_channel_team", None)
+        if ensure_home_team is not None:
+            outcome = ensure_home_team(conversation_id)
+            if inspect.isawaitable(outcome):
+                await outcome
         return await self._client.post_message(conversation_id, content, thread_id)
 
     async def resolve_conversation(self, user_id: str) -> str:
@@ -131,22 +143,16 @@ class SlackTransport(MessagingTransport):
     def may_send_to(
         self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
     ) -> bool:
-        """Never consulted -- permits, and says why.
+        """Authorize a refused-turn notice for a currently allowed sender.
 
-        An override with a reason rather than an inherited default, so a reader
-        does not have to infer this transport's stance. The shared send ladder
-        (``chat_runner._resolve_channel_target``) returns early for
-        ``SLACK_NAMESPACE`` before any transport call: Slack's proactive traffic
-        goes through the gateway's own client and streaming path, which is not
-        registered in ``channel_transports``. Nothing routes here, so there is no
-        decision this method can enforce.
-
-        It could not answer anyway: a Slack link persists a **channel** id
-        (``D…``/``C…``) while the roster holds user ids, so the same
-        conversation-id-is-not-a-principal problem applies. Slack's own proactive
-        paths do their allow-list checks at their own call sites.
+        Slack remains absent from the shared transport registry, so ordinary
+        proactive traffic still uses the gateway's existing route. The gateway
+        creates this adapter only for inbound-spool replay and supplies a fresh
+        snapshot of its owner roster. ``conversation_id`` is an opaque channel
+        id, so the persisted sender principal is the only identity this gate can
+        recheck; empty or revoked principals fail closed.
         """
-        return bool(conversation_id)
+        return bool(conversation_id and principal and principal in self._allowed_users)
 
     # -- Inbound adapter ----------------------------------------------------
     def authorize(self, msg: InboundMessage) -> bool:

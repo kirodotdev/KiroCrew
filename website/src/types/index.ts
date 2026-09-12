@@ -185,6 +185,8 @@ export interface UpdateCheckResult {
   mode?: string
   can_download?: boolean
   can_apply?: boolean
+  /** This install can use the nonce-backed host approval flow. */
+  can_arm?: boolean
   requires_restart?: boolean
   channel?: string
   latest_version?: string

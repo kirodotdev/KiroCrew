@@ -44,6 +44,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     DM_SCOPE_UNIFIED,
     UNBIND_REASON_ORIGIN_REBIND,
@@ -164,6 +165,8 @@ class WeComDispatcher:
             return
         userid = inbound.userid
         text = inbound.text
+        original_text = text
+        original_attachments = len(inbound.attachments)
         logger.info("WeCom inbound from %s: %d chars", userid, len(text or ""))
 
         # ── Command intercept (no LLM session needed) ──
@@ -300,6 +303,13 @@ class WeComDispatcher:
                 ChannelTurn(
                     channel_type="wecom",
                     session_key=session_key,
+                    inbound_route=InboundRoute(
+                        conversation_id=userid,
+                        text=original_text,
+                        user_id=userid,
+                        message_id=inbound.msgid or inbound.req_id,
+                        attachments_dropped=original_attachments,
+                    ),
                     # Session-directive consumer: monitor_start / autonudge_stop /
                     # ... return a marker TurnDriver decodes; apply it against THIS
                     # turn's session key (dashboard-only directives stay refused

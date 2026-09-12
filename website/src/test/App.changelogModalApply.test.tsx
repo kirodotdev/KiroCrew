@@ -14,7 +14,8 @@
  * are stubbed the same way the other App.* tests stub them.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { i18nT } from '../i18n/t'
 import { renderWithProviders } from './helpers'
 import type { RootState } from '../store'
 import App from '../App'
@@ -38,9 +39,11 @@ vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { cont
 // `statusOverride` is mutable on purpose: the /api/status fetch lands AFTER mount
 // and writes the same slice the preloaded state seeds, so a fixed fetch payload
 // silently clobbers whatever a test set up and every case would test one shape.
-const { COMMAND, statusOverride } = vi.hoisted(() => ({
+const { COMMAND, statusOverride, armUpdate, armStatus } = vi.hoisted(() => ({
   COMMAND: 'python3 -m pip install --upgrade kiro-crew',
   statusOverride: { value: {} as Record<string, unknown> },
+  armUpdate: vi.fn(),
+  armStatus: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -66,6 +69,8 @@ vi.mock('../api/client', () => ({
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     changelog: vi.fn().mockResolvedValue({ content: '## [0.2.0rc9]\n- a new entry\n' }),
     setAutoUpdate: vi.fn().mockResolvedValue({}),
+    armUpdate,
+    armStatus,
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class ApiError extends Error {
@@ -115,17 +120,61 @@ describe('changelog modal apply affordance', () => {
     // A DIFFERENT last-seen version is what opens the modal on mount.
     localStorage.setItem('mc-last-version', '0.2.0rc8')
     statusOverride.value = {}
+    armUpdate.mockReset()
+    armUpdate.mockResolvedValue({
+      ok: true, armed: true, expires_in: 600, approve_command: 'kirocrew update approve',
+    })
+    armStatus.mockReset()
+    armStatus.mockResolvedValue({
+      armed: true, expires_in: 590, approve_command: 'kirocrew update approve',
+    })
   })
 
-  it('offers the command, not a button the gateway would refuse, on a wheel install', async () => {
+  it('arms a managed install and exposes only the host approval command', async () => {
+    renderWithProviders(<App />, {
+      route: '/chat',
+      preloadedState: wheelState({ update_can_arm: true, update_latest_version: '9.9.9' }),
+    })
+
+    const action = await screen.findByTestId('in-app-update-action')
+    expect(action).toHaveTextContent(/update to v9\.9\.9/i)
+    expect(screen.queryByTestId('modal-update-command')).toBeNull()
+    fireEvent.click(action)
+
+    await waitFor(() => expect(armUpdate).toHaveBeenCalledTimes(1))
+    expect(await screen.findByTestId('approve-command')).toHaveTextContent(
+      'kirocrew update approve',
+    )
+    expect(screen.getByTestId('in-app-update-action')).toBe(action)
+    expect(action).toHaveTextContent(/copy command/i)
+    expect(screen.getByTestId('in-app-update-armed')).toHaveTextContent(/gateway host/i)
+    expect(screen.getByTestId('arm-countdown')).toBeInTheDocument()
+    expect(screen.queryByText(COMMAND)).not.toBeInTheDocument()
+  })
+
+  it('renders an arm failure through ErrorNotice with agent hand-off', async () => {
+    armUpdate.mockRejectedValue(new Error('zzq arm refused'))
+    renderWithProviders(<App />, {
+      route: '/chat',
+      preloadedState: wheelState({ update_can_arm: true, update_latest_version: '9.9.9' }),
+    })
+
+    fireEvent.click(await screen.findByTestId('in-app-update-action'))
+
+    const notice = await screen.findByTestId('arm-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent(i18nT('pages.settings.aboutPanel.update_failed'))
+    expect(notice).not.toHaveTextContent('zzq arm refused')
+    expect(within(notice).getByRole('button', {
+      name: i18nT('components.askAgent.ask_the_agent'),
+    })).toBeInTheDocument()
+  })
+
+  it('retains the installer command only for a non-armable install', async () => {
     renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
 
-    expect(await screen.findByTestId('modal-update-command')).toBeTruthy()
-    // The exact command is whatever the gateway composed for this install shape;
-    // the fixture only has to be recognisable here.
-    expect(screen.getByTestId('modal-update-command').textContent).toContain('kiro-crew')
-    // The regression guard: this button is a guaranteed 400/409 here.
-    expect(screen.queryByText('Update Now')).toBeNull()
+    expect(await screen.findByTestId('modal-update-command')).toHaveTextContent('kiro-crew')
+    expect(armUpdate).not.toHaveBeenCalled()
   })
 
   it('still offers the in-app apply on a checkout, which the gateway can act on', async () => {

@@ -121,6 +121,7 @@ class SessionRegistryState:
     sessions: dict[str, Any] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
+    update_pause_owned: bool = False
     start_sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(4))
     starting_pids: set[int] = field(default_factory=set)
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)

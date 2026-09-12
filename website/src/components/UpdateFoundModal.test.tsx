@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import { sseStatus, setUpdateProgress } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
 import { api, ApiError } from '../api/client'
+import { copyToClipboard } from '../utils/clipboard'
 import { SNOOZE_SECS } from '../utils/updateNudge'
 import UpdateFoundModal from './UpdateFoundModal'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 import type { StatusData } from '../types'
+
+vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
 vi.mock('../api/client', () => {
   class MockApiError extends Error {}
@@ -19,11 +22,14 @@ vi.mock('../api/client', () => {
       patchConfig: vi.fn(),
       checkUpdate: vi.fn(),
       applyUpdate: vi.fn(),
+      armUpdate: vi.fn(),
+      armStatus: vi.fn(),
     },
   }
 })
 
 const mockedApi = vi.mocked(api)
+const mockedCopyToClipboard = vi.mocked(copyToClipboard)
 
 const found: UpdateState = { state: 'found', version: '9.9.9', notes: 'zzq release notes' }
 
@@ -63,8 +69,18 @@ beforeEach(() => {
   mockedApi.patchConfig.mockReset()
   mockedApi.checkUpdate.mockReset()
   mockedApi.applyUpdate.mockReset()
+  mockedApi.armUpdate.mockReset()
+  mockedApi.armStatus.mockReset()
   mockedApi.patchConfig.mockResolvedValue({} as never)
   mockedApi.checkUpdate.mockResolvedValue({ changes: '' } as never)
+  mockedApi.armUpdate.mockResolvedValue({
+    ok: true, armed: true, expires_in: 600, approve_command: 'kirocrew update approve',
+  } as never)
+  mockedApi.armStatus.mockResolvedValue({
+    armed: true, expires_in: 590, approve_command: 'kirocrew update approve',
+  } as never)
+  mockedCopyToClipboard.mockReset()
+  mockedCopyToClipboard.mockResolvedValue(true)
   withNudgeConfig({})
   // Desktop candidacy requires a preload that can actually download.
   downloadBridge.mockReset()
@@ -246,9 +262,12 @@ describe('UpdateFoundModal — desktop source', () => {
     fireEvent.click(byName('components.updateFoundModal.skip_this_version'))
     // Closing optimistically here would silently discard the failed write:
     // the reload re-nags a user who believes they answered.
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
+    await waitFor(() => expect(screen.getByTestId('update-found-persist-error')).toHaveTextContent(
       i18nT('components.updateFoundModal.could_not_save_choice'),
     ))
+    expect(screen.getByRole('button', {
+      name: i18nT('components.askAgent.ask_the_agent'),
+    })).toBeInTheDocument()
     expect(dialog()).toBeInTheDocument()
     // But a modal that can NEVER close over a persistently failing write
     // holds the whole dashboard hostage: once the user has seen the error,
@@ -468,15 +487,82 @@ describe('UpdateFoundModal — gateway source', () => {
     await waitFor(() => expect(screen.getByText('zzq dirty tree')).toBeInTheDocument())
   })
 
-  it('a wheel install gets the copyable command, never Update now', async () => {
+  it('an armable managed install prepares the host approval command, never the installer', async () => {
     await mount(undefined, gatewayStore({
       update_available: true, update_latest_version: '8.8.8',
-      update_can_apply: false, update_command: 'curl -fsSL zzq.sh | sh',
+      update_can_apply: false, update_can_arm: true,
+      update_command: 'curl -fsSL zzq.sh | sh',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    const action = screen.getByTestId('in-app-update-action')
+    expect(action).toHaveTextContent(/update to v8\.8\.8/i)
+    expect(screen.queryByText('curl -fsSL zzq.sh | sh')).not.toBeInTheDocument()
+
+    fireEvent.click(action)
+
+    await waitFor(() => expect(mockedApi.armUpdate).toHaveBeenCalledTimes(1))
+    expect(await screen.findByTestId('approve-command'))
+      .toHaveTextContent('kirocrew update approve')
+    expect(screen.getByTestId('in-app-update-action')).toBe(action)
+    expect(action).toHaveTextContent(/copy command/i)
+    expect(screen.getByTestId('in-app-update-armed')).toHaveTextContent(/gateway host/i)
+    expect(screen.getByTestId('arm-countdown')).toBeInTheDocument()
+    expect(screen.queryByText('curl -fsSL zzq.sh | sh')).not.toBeInTheDocument()
+  })
+
+  it('an arm failure renders the shared error notice with agent hand-off', async () => {
+    mockedApi.armUpdate.mockRejectedValue(new ApiError('zzq arm refused'))
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.8',
+      update_can_apply: false, update_can_arm: true,
+      update_command: 'curl -fsSL zzq.sh | sh',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId('in-app-update-action'))
+
+    const notice = await screen.findByTestId('arm-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent('zzq arm refused')
+    expect(within(notice).getByRole('button', {
+      name: i18nT('components.askAgent.ask_the_agent'),
+    })).toBeInTheDocument()
+  })
+
+  it('a failed clipboard write never reports Copied and offers agent hand-off', async () => {
+    mockedCopyToClipboard.mockResolvedValue(false)
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.8',
+      update_can_apply: false, update_can_arm: true,
+      update_command: 'curl -fsSL zzq.sh | sh',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    const action = screen.getByTestId('in-app-update-action')
+    fireEvent.click(action)
+    await screen.findByTestId('approve-command')
+
+    fireEvent.click(action)
+
+    await waitFor(() => expect(mockedCopyToClipboard).toHaveBeenCalledWith(
+      'kirocrew update approve',
+    ))
+    expect(action).not.toHaveTextContent(i18nT('pages.settings.aboutPanel.copied'))
+    const notice = await screen.findByTestId('arm-copy-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(within(notice).getByRole('button', {
+      name: i18nT('components.askAgent.ask_the_agent'),
+    })).toBeInTheDocument()
+  })
+
+  it('a non-armable install retains the copyable installer fallback', async () => {
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.8',
+      update_can_apply: false, update_can_arm: false,
+      update_command: 'curl -fsSL zzq.sh | sh',
     }))
     await waitFor(() => expect(dialog()).toBeInTheDocument())
     expect(screen.getByTestId('update-found-command')).toHaveTextContent('curl -fsSL zzq.sh | sh')
-    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.update_now') }))
-      .not.toBeInTheDocument()
+    expect(mockedApi.armUpdate).not.toHaveBeenCalled()
   })
 
   it('an install with no affordance is never interrupted', async () => {
@@ -521,6 +607,19 @@ describe('UpdateFoundModal — mandatory update (update_required)', () => {
     // The primary action survives — a forced prompt with no way forward would
     // just be a lock screen.
     expect(byName('components.updateFoundModal.update_now')).toBeInTheDocument()
+  })
+
+  it('a required apply failure keeps the enforcement overlay visible', async () => {
+    mockedApi.applyUpdate.mockRejectedValue(new ApiError('zzq apply refused'))
+    await mount(undefined, gatewayStore(requiredStatus))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+
+    const notice = await screen.findByTestId('update-found-action-error')
+    expect(within(notice).queryByRole('button', {
+      name: i18nT('components.askAgent.ask_the_agent'),
+    })).not.toBeInTheDocument()
+    expect(dialog()).toBeInTheDocument()
   })
 
   it('neither Escape nor a backdrop click closes it', async () => {

@@ -167,6 +167,24 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # --- Redact task once for all SubagentInfo storage (raw task kept for kiro-cli prompt) ---
         _redacted_task = redact_credentials(redact_exfiltration_urls(task)[0])[0]
 
+        # Synchronous and yield-free with registration below: a spawn is either
+        # visible to the updater's busy count before the pause, or rejected after
+        # SessionManager closes admission. MagicMock-based embedders only block
+        # when they expose the literal boolean True.
+        if getattr(self._manager._sessions, "admission_closed", False) is True:
+            return self._manager._announce_rejection(
+                SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error="spawn refused: gateway admission is closed",
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+            )
+
         # Validate before queueing/starting. An explicit private identity may
         # never degrade to V1 after deletion, a config error, or a restart.
         try:

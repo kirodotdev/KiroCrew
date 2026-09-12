@@ -99,6 +99,109 @@ class TestTaskRun:
 
 class TestWorkflowRunIntegration:
     @pytest.mark.asyncio
+    async def test_closed_gateway_admission_rejects_background_start(self, tmp_path: Path) -> None:
+        sessions = _make_mock_sessions()
+        sessions.admission_closed = True
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        spec_path = tmp_path / "blocked.md"
+        spec_path.write_text("# Blocked task\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="gateway admission is closed"):
+            await runner.start_background(spec_path)
+
+        assert runner._runs == {}
+        assert runner._tasks == {}
+
+    def test_in_flight_planning_counts_as_running(self, tmp_path: Path) -> None:
+        runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
+
+        runner._start_ids_in_flight.add("plan-racing")
+
+        assert runner.running is True
+
+    @pytest.mark.asyncio
+    async def test_closed_gateway_admission_rejects_planning(self, tmp_path: Path) -> None:
+        sessions = _make_mock_sessions()
+        sessions.admission_closed = True
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+
+        with pytest.raises(ValueError, match="gateway admission is closed"):
+            await runner.plan("draft a plan")
+
+        assert runner._start_ids_in_flight == set()
+        assert runner._runs == {}
+
+    @pytest.mark.asyncio
+    async def test_pause_during_background_preparation_stays_visible(self, tmp_path: Path) -> None:
+        sessions = _make_mock_sessions()
+        sessions.admission_closed = False
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        spec_path = tmp_path / "racing.md"
+        spec_path.write_text("# Racing task\n", encoding="utf-8")
+        visible_during_pause: list[bool] = []
+
+        async def close_admission_during_persist() -> None:
+            sessions.admission_closed = True
+            visible_during_pause.append(runner.running)
+
+        runner._apersist_runs = close_admission_during_persist  # type: ignore[method-assign]
+        execute = AsyncMock()
+        with patch.object(runner, "run", execute):
+            task_id = await runner.start_background(spec_path)
+            assert visible_during_pause == [True]
+            assert task_id in runner._tasks
+            assert runner._start_ids_in_flight == set()
+            await runner._tasks[task_id]
+
+        execute.assert_awaited_once()
+        assert runner._tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_plan_memory_inheritance_releases_reservation(
+        self, tmp_path: Path
+    ) -> None:
+        runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
+
+        with patch(
+            "kiro_crew.context.inherit_session_memory",
+            AsyncMock(side_effect=asyncio.CancelledError()),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await runner.plan("cancel during inherited memory")
+
+        assert runner._start_ids_in_flight == set()
+        assert runner.running is False
+        assert runner._runs == {}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_workflow_begin_rolls_back_background_start(
+        self, tmp_path: Path
+    ) -> None:
+        runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
+        spec_path = tmp_path / "workflow-cancel.md"
+        spec_path.write_text("# Cancel during workflow publication\n", encoding="utf-8")
+        delete_link = AsyncMock()
+        persist = AsyncMock()
+
+        async def cancel_after_link(run) -> None:
+            run.workflow_run_id = "wf-partial"
+            raise asyncio.CancelledError()
+
+        runner._workflow_begin = cancel_after_link  # type: ignore[method-assign]
+        runner._workflow_delete_link = delete_link  # type: ignore[method-assign]
+        runner._apersist_runs = persist  # type: ignore[method-assign]
+
+        with pytest.raises(asyncio.CancelledError):
+            await runner.start_background(spec_path, session_key="dashboard:test")
+
+        delete_link.assert_awaited_once()
+        persist.assert_awaited_once()
+        assert runner._runs == {}
+        assert runner._run_session_keys == {}
+        assert runner._start_ids_in_flight == set()
+        assert runner.running is False
+
+    @pytest.mark.asyncio
     async def test_cancelled_background_start_removes_unowned_workflow_run(
         self, tmp_path: Path
     ) -> None:
@@ -114,21 +217,31 @@ class TestWorkflowRunIntegration:
         spec_path = tmp_path / "background.md"
         spec_path.write_text("# Background task\n", encoding="utf-8")
         persistence_started = asyncio.Event()
+        persistence_release = asyncio.Event()
+        persist_calls = 0
 
         async def block_placeholder_persistence() -> None:
-            persistence_started.set()
-            await asyncio.Future()
+            nonlocal persist_calls
+            persist_calls += 1
+            if persist_calls == 1:
+                persistence_started.set()
+                await persistence_release.wait()
 
         runner._apersist_runs = block_placeholder_persistence  # type: ignore[method-assign]
         starting = asyncio.create_task(runner.start_background(spec_path))
         await asyncio.wait_for(persistence_started.wait(), timeout=1)
         starting.cancel()
+        persistence_release.set()
 
         with pytest.raises(asyncio.CancelledError):
             await starting
 
+        assert persist_calls == 2
+
         assert runner._runs == {}
         assert runner._tasks == {}
+        assert runner._start_ids_in_flight == set()
+        assert runner.running is False
         assert workflows.list_runs() == []
         assert WorkflowService(sessions=sessions, store=workflow_store).list_runs() == []
 

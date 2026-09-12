@@ -68,6 +68,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -521,6 +522,14 @@ class WebexDispatcher:
                 ChannelTurn(
                     channel_type="webex",
                     session_key=session_key,
+                    inbound_route=InboundRoute(
+                        conversation_id=room_id,
+                        text=inbound.text,
+                        user_id=email,
+                        thread_id=(reply_parent if inbound.room_type != ROOM_DIRECT else ""),
+                        message_id=inbound.message_id,
+                        attachments_dropped=len(inbound.file_urls),
+                    ),
                     # Session-directive consumer: monitor_start / autonudge_stop /
                     # ... return a marker TurnDriver decodes; apply it against THIS
                     # turn's session key (dashboard-only directives stay refused

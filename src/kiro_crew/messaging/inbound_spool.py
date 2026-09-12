@@ -822,22 +822,23 @@ def _route_authorized(entry: SpooledInbound, transport: Any) -> bool:
     notice is a proactive send, which is exactly what it governs. Fails CLOSED on
     a transport that cannot answer or that raises.
 
-    The principal is passed for a DM route ONLY. A THREADED route (a Discord
-    thread, a Telegram forum Topic) is authorized by the thread roster and
-    nothing else: Discord's ``may_send_to`` falls from a thread not in
+    The principal is normally passed for a DM route ONLY. A THREADED route (a
+    Discord thread, a Telegram forum Topic) is authorized by the thread roster
+    and nothing else: Discord's ``may_send_to`` falls from a thread not in
     ``_allowed_threads`` to its DM arm, ``principal in _allowed``, on the stated
     assumption that a thread route names no principal. A spooled thread entry
     DOES name one -- the sender -- so passing it would let a still-allowed sender
     authorize a notice into a thread that was revoked while the gateway was
-    down. The sender being on the DM allow-list says nothing about whether the
-    thread may be posted to; withholding the principal keeps the two rosters
-    from answering for each other.
+    down. Slack is the only exception: it has no separate thread roster, and the
+    accepted sender is itself the route authority, so the stored owner principal
+    is rechecked while the original thread id is preserved.
     """
     gate = getattr(transport, "may_send_to", None)
     if gate is None:
         return False
     thread = entry.thread_id or None
-    principal = "" if thread else entry.user_id
+    sender_owns_thread = entry.channel_type == "slack"
+    principal = entry.user_id if not thread or sender_owns_thread else ""
     try:
         permitted = bool(gate(entry.conversation_id, thread, principal=principal))
     except Exception:

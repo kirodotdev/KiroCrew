@@ -45,10 +45,10 @@ _PRINCIPAL_ANSWERED = {
     "(a space answers from its own room allow-list instead)",
 }
 
-#: Transports that permit unconditionally, with the reason stated at the method.
-_PERMITS_WITH_REASON = {
-    "slack": "ladder returns early for SLACK_NAMESPACE; never consulted",
-}
+#: No shipped transport currently permits every persisted destination without a
+#: channel-specific revocation decision. Kept as a typed table so a future
+#: unavoidable exception must still record its reason at the method.
+_PERMITS_WITH_REASON: dict[str, str] = {}
 
 
 def _transport_classes() -> dict[str, list[str]]:

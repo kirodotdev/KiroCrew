@@ -101,6 +101,37 @@ class TestSpawnWithoutApprovalCallback:
         assert info.error == "spawn rejected: no approval mechanism configured"
 
     @pytest.mark.asyncio
+    async def test_spawn_refused_while_gateway_admission_is_closed(self) -> None:
+        sessions = _mock_sessions()
+        sessions.admission_closed = True
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto_spawn(),
+        )
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("must wait for update")
+
+        assert info is not None
+        assert info.done is True
+        assert info.error == "spawn refused: gateway admission is closed"
+        assert manager._tasks == {}
+
+    def test_total_queued_count_includes_every_parent(self) -> None:
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+        )
+        manager._queue.extend(
+            [
+                {"parent_session_key": "dashboard:a"},
+                {"parent_session_key": "slack:b"},
+            ]
+        )
+
+        assert manager.queued_count == 2
+
+    @pytest.mark.asyncio
     async def test_spawn_auto_approved_with_flag(self) -> None:
         """Spawn is auto-approved when auto_approve_subagent_spawn is True."""
         manager = SubagentManager(
