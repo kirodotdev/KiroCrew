@@ -9255,6 +9255,7 @@ async def _run_chat(
     # die -- there is one entry and many exits, so the entry is the place that
     # cannot miss one. This turn publishes later (during prompt assembly), so its
     # own outcome is unaffected; see `_decisions_strip_meta` for the claim side.
+    slot._turn_preparing = True
     _discard_stale_decision(slot)
 
     # Immutable authority for ORIGINAL replay. ``message`` is enriched later
@@ -12497,6 +12498,13 @@ async def _run_chat(
             return
         if monitor_completion is not None:
             monitor_completion.mark_accepted()
+        # The turn has survived every gate up to here, so it is no longer being
+        # PREPARED: the prompt is about to be handed to the provider. From this
+        # point the runner is the dispatch authority for the slot, and a stop
+        # arriving with a terminal outcome must go through the stop machinery --
+        # never through ``_cancel_terminal_stop_task``, which exists only for the
+        # preparing span.
+        slot._turn_preparing = False
         # Append-only the session's log (flag-gated, fail-soft). Emitted HERE, after
         # every gate above has passed, because ``turn/started`` asserts that the
         # turn RAN: a start written before authorization leaves an orphan for each
@@ -19055,6 +19063,10 @@ async def _run_chat(
         if _dispatch_lock_held:
             _dispatch_lock_held = False
             _dispatch_lock.release()
+        # Whatever way this turn exited, its preparation is over: nothing in the
+        # slot can still be mid-preparation, so a later stop must not treat
+        # ``slot.task`` as a preparing task.
+        slot._turn_preparing = False
         # The turn's crew log closers, in the one order a reader can trust: every
         # `message/sent` for this turn has now been flushed, so the tool closer,
         # the last step's completion and the turn's own completion land after the

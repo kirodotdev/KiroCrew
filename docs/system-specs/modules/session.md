@@ -1338,6 +1338,12 @@ is the host's own best-effort abort (queue drain, injection retry, run
 teardown), not a person pressing Stop, and must not suppress a continuation
 the way a Stop does.
 
+Dashboard stop and interrupt handlers snapshot the runner task before calling
+`stop_turn()`. A terminal `"hard"` or `"idle"` result means the provider cannot
+drive that runner to its `finally` block, so the handler cancels and awaits only
+the captured task. A later turn is never touched; a task that does not settle
+within two seconds emits a warning for investigation.
+
 ### Cancelled-turn context restore
 
 `_Session.prev_turn_cancelled` is a one-shot flag set on soft-cancel

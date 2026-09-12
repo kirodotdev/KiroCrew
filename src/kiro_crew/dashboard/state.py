@@ -2630,6 +2630,7 @@ class _ChatSlot:
         "remote_slot",
         "_relay_in_flight",
         "_active_turn_session_key",
+        "_turn_preparing",
         "_side",
         "_acp_client",
         "_last_turn_awaiting_permission",
@@ -3543,6 +3544,18 @@ class _ChatSlot:
         # lifecycle owner (installed once the turn is committed, cleared after
         # its session is released).
         self._active_turn_session_key: str = ""
+        # Whether the turn in flight is still being PREPARED — ``_run_chat`` has
+        # entered but has not yet handed a prompt to the provider (memory
+        # admission, session cold start, context build). Runtime-only: never
+        # persisted. ``_run_chat`` sets it True at entry and False once the turn
+        # is past its dispatch gate, and clears it in its finally, so it is
+        # False for a slot whose ``task`` is the orchestrator's stage loop or
+        # anything other than a preparing turn. ``_cancel_terminal_stop_task``
+        # (chat_handlers) reads it to decide whether a terminal stop outcome may
+        # cancel ``slot.task``: a preparing turn has no provider turn to cancel,
+        # and cancelling the stage loop must never happen here (the loop owns
+        # its own stop handling).
+        self._turn_preparing: bool = False
         # True only when this slot was created to DISPLAY a conversation that
         # already lives in a channel transcript (the reconciler surfacing a
         # thread, a restore, a History resume). It is what separates such a tab
