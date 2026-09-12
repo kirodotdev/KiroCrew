@@ -1076,3 +1076,57 @@ class TestShippedAgentsDoNotPreAuthorizeTools:
             "declares — kiro-cli will silently drop them at mount time:\n  "
             + "\n  ".join(offenders)
         )
+
+
+class TestTheProvisionLogIsDecodedAsUtf8:
+    """`_run`'s captured output is the provisioning log the operator reads.
+
+    ``ProvisionState`` serves it straight to the dashboard
+    (``{"ok": ..., "log": self.log[-LOG_TAIL_CHARS:], ...}``), so whatever this
+    decode gets wrong is what a human sees while trying to work out why an
+    install failed — the one moment the log has to be right.
+
+    The child is ``uv``, which this module's own docstring calls "a static Rust
+    binary": it writes UTF-8, not the console code page. But
+    ``run_limited(..., text=True)`` with no ``encoding=`` decodes with
+    ``locale.getpreferredencoding()``, which on Windows is the legacy ANSI code
+    page. uv's output carries package names and absolute paths under the user's
+    data home, so a non-ASCII account name is enough to reach this.
+
+    Measured, not argued: the child exits **0** and the whole log arrives as
+    ``""``. On Windows ``capture_output`` decodes on a helper thread, so the
+    error kills that thread rather than the call and ``proc.stdout`` is ``None``;
+    the operator gets a blank log for a run that printed plenty. On POSIX the
+    same decode raises `UnicodeDecodeError` — a `ValueError`, so neither
+    ``except subprocess.TimeoutExpired`` nor
+    ``except (OSError, subprocess.SubprocessError)`` catches it and it escapes
+    ``_run`` entirely.
+    """
+
+    #: Not valid UTF-8 (``0xff`` never begins a sequence), so this is red on
+    #: every host — it turns on the decode being strict, not on the host codec.
+    PAYLOAD = b"Resolved 41 packages\nerror: failed at " + bytes([0xFF, 0xFE]) + b"/pkg\n"
+
+    def _argv(self) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            f"import sys;sys.stdout.buffer.write({self.PAYLOAD!r});sys.stdout.buffer.flush()",
+        ]
+
+    def test_undecodable_uv_output_still_reaches_the_log(self, tmp_path):
+        """A malformed byte must cost one character, not the entire log."""
+        with pytest.raises(UnicodeDecodeError):
+            self.PAYLOAD.decode("utf-8")  # guard the guard
+
+        with (
+            mock.patch.object(
+                provision, "sandboxed_spawn_argv", return_value=(self._argv(), None, None)
+            ),
+            mock.patch.object(provision, "cgroup_scope_argv", side_effect=lambda a: a),
+        ):
+            code, out = provision._run(self._argv(), cwd=str(tmp_path), timeout=30)
+
+        assert code == 0
+        assert "Resolved 41 packages" in out, "the log must survive one bad byte"
+        assert "error: failed at" in out
