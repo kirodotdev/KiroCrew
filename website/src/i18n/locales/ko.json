@@ -10973,7 +10973,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "추론 노력(추출)",
+        "effort_hint": "'기본'은 설정 → 채팅의 백그라운드 노력을 상속합니다.",
+        "effort_model_unknown_hint": "모델은 실행 시에 선택되므로, 노력은 해석된 모델이 지원할 때만 적용됩니다. '기본'은 설정 → 채팅의 백그라운드 노력을 상속합니다.",
+        "requires_restart": "재시작 필요"
       }
     },
     "localStorageDebug": {

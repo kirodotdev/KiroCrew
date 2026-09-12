@@ -11459,7 +11459,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Усилие извлечения",
+        "effort_hint": "«По умолчанию» наследует фоновое усилие из Настройки → Чат.",
+        "effort_model_unknown_hint": "Модель выбирается во время работы, поэтому усилие применяется, только если выбранная модель его поддерживает. «По умолчанию» наследует фоновое усилие из Настройки → Чат.",
+        "requires_restart": "Требуется перезапуск"
       }
     },
     "localStorageDebug": {

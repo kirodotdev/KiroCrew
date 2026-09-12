@@ -11297,7 +11297,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Effort d'extraction",
+        "effort_hint": "« Par défaut » hérite de l’effort d’arrière-plan dans Réglages → Chat.",
+        "effort_model_unknown_hint": "Le modèle est choisi à l’exécution ; l’effort ne s’applique donc que si le modèle résolu le prend en charge. « Par défaut » hérite de l’effort d’arrière-plan dans Réglages → Chat.",
+        "requires_restart": "Redémarrage requis"
       }
     },
     "localStorageDebug": {

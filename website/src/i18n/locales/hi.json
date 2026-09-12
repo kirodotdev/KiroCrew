@@ -11135,7 +11135,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "एक्सट्रैक्शन एफ़र्ट",
+        "effort_hint": "'Default' Settings → Chat का Background Effort इनहेरिट करता है।",
+        "effort_model_unknown_hint": "मॉडल रन टाइम पर चुना जाता है, इसलिए effort तभी लागू होता है जब resolved मॉडल उसे सपोर्ट करे। 'Default' Settings → Chat का Background Effort इनहेरिट करता है।",
+        "requires_restart": "रीस्टार्ट आवश्यक है"
       }
     },
     "localStorageDebug": {

@@ -11297,7 +11297,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Esforço de extração",
+        "effort_hint": "\"Padrão\" herda o esforço em segundo plano de Configurações → Chat.",
+        "effort_model_unknown_hint": "O modelo é escolhido em tempo de execução, então o esforço só se aplica se o modelo resolvido o suportar. \"Padrão\" herda o esforço em segundo plano de Configurações → Chat.",
+        "requires_restart": "Reinicialização necessária"
       }
     },
     "localStorageDebug": {

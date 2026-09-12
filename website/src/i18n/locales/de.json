@@ -11135,7 +11135,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Extraktions-Aufwand",
+        "effort_hint": "„Standard“ erbt den Hintergrund-Aufwand aus Einstellungen → Chat.",
+        "effort_model_unknown_hint": "Das Modell wird zur Laufzeit gewählt, daher gilt der Aufwand nur, wenn das aufgelöste Modell ihn unterstützt. „Standard“ erbt den Hintergrund-Aufwand aus Einstellungen → Chat.",
+        "requires_restart": "Neustart erforderlich"
       }
     },
     "localStorageDebug": {

@@ -1592,8 +1592,16 @@ async def _sync_source_body(request: web.Request) -> web.Response:
         return web.json_response({"error": "pipeline not configured"}, status=503)
     pool = request.app.get("knowledge_fetch_pool")
     if pool is None:
-        # Compatibility for minimal callers that predate workload-isolated pools.
-        pool = request.app["knowledge_llm_pool"]
+        # Every production construction site sets knowledge_fetch_pool; a
+        # minimal/hand-built app missing it fails loudly rather than silently
+        # running URL sync through the extraction pool.
+        return web.json_response(
+            {
+                "error": "knowledge_fetch_pool is not configured on this application",
+                "code": "knowledge_fetch_pool_unavailable",
+            },
+            status=503,
+        )
     await _hand_off_under_gate(
         request, pipeline,
         lambda settled: _background_agent_sync(
@@ -2843,7 +2851,6 @@ async def _shutdown_knowledge_pools(app: web.Application) -> None:
     for key in (
         "knowledge_extraction_pool",
         "knowledge_fetch_pool",
-        "knowledge_llm_pool",
     ):
         pool = app.get(key)
         if pool is None or id(pool) in seen:
@@ -2862,16 +2869,11 @@ def setup_knowledge_routes(app: web.Application) -> None:
         cfg = KiroCrewConfig.load()
         extraction_pool = LLMPool(
             pool_size=cfg.knowledge.extraction_pool_size,
-            effort=DEFAULT_EXTRACTION_EFFORT,
-            use_config_pool_size=False,
-            # Seeded from knowledge.extraction_pool_size above, so it follows a
-            # later write to that key (applied at the next idle boundary).
-            track_config_pool_size=True,
+            effort_key="extraction_effort",
+            fallback_effort=DEFAULT_EXTRACTION_EFFORT,
+            config_pool_size_key="extraction_pool_size",
         )
-        fetch_pool = LLMPool(
-            pool_size=1,
-            use_config_pool_size=False,
-        )
+        fetch_pool = LLMPool(pool_size=1)
         embedder = _create_embedder(app)
         pipeline = IngestionPipeline(
             store=store,
@@ -2882,9 +2884,6 @@ def setup_knowledge_routes(app: web.Application) -> None:
         )
         app["knowledge_extraction_pool"] = extraction_pool
         app["knowledge_fetch_pool"] = fetch_pool
-        # Keep the old key as an extraction-only compatibility alias. Production
-        # URL sync uses knowledge_fetch_pool above.
-        app["knowledge_llm_pool"] = extraction_pool
         app["knowledge_embedder"] = embedder
         connectors: dict[str, "BaseConnector"] = {}
         # Local folder connector (always available)

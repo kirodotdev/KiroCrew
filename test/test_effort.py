@@ -17,6 +17,7 @@ from kiro_crew.effort import (
     is_valid_effort,
     model_supports_effort,
     resolve_effort_for_model,
+    select_effort_level,
 )
 from kiro_crew.providers.acp import (
     _clear_cli_overlay_effort,
@@ -39,6 +40,30 @@ class TestEffortVocabulary:
     @pytest.mark.parametrize("bad", ["", "LOW", "ultra", " low", 5, None, ["max"]])
     def test_is_valid_effort_false(self, bad: object):
         assert not is_valid_effort(bad)
+
+
+class TestSelectEffortLevel:
+    """The shared advertised-level descent used by every effort consumer."""
+
+    def test_exact_match(self):
+        assert select_effort_level("high", ["low", "medium", "high"]) == "high"
+
+    def test_descends_to_highest_supported_lower(self):
+        assert select_effort_level("high", ["low", "medium"]) == "medium"
+
+    def test_nothing_at_or_below_returns_none(self):
+        assert select_effort_level("low", ["medium", "high"]) is None
+
+    def test_empty_supported_returns_requested(self):
+        # A lazy backend that advertises nothing gets the requested value so
+        # ACP can confirm or reject it.
+        assert select_effort_level("high", []) == "high"
+
+    def test_invalid_entries_are_ignored(self):
+        assert select_effort_level("high", ["bogus", "medium"]) == "medium"
+
+    def test_accepts_any_iterable(self):
+        assert select_effort_level("high", {"low", "high"}) == "high"
 
 
 class TestModelSupportsEffort:

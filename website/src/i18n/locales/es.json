@@ -11297,7 +11297,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Esfuerzo de extracción",
+        "effort_hint": "\"Predeterminado\" hereda el esfuerzo de fondo de Ajustes → Chat.",
+        "effort_model_unknown_hint": "El modelo se elige en tiempo de ejecución, por lo que el esfuerzo solo se aplica si el modelo resuelto lo admite. \"Predeterminado\" hereda el esfuerzo de fondo de Ajustes → Chat.",
+        "requires_restart": "Se requiere reiniciar"
       }
     },
     "localStorageDebug": {

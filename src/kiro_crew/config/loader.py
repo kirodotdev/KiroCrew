@@ -3749,6 +3749,7 @@ class KiroCrewConfig:
                         _safe_nonnegative_int(knowledge_data.get("extraction_pool_size", 3), 3),
                     ),
                 ),
+                extraction_effort=coerce_effort(knowledge_data.get("extraction_effort", "")),
             ),
             telegram=TelegramConfig(
                 session_folder=_coerce_session_folder(telegram_data.get("session_folder")),

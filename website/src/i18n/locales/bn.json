@@ -11135,7 +11135,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "এক্সট্রাকশন এফোর্ট",
+        "effort_hint": "'ডিফল্ট' Settings → Chat-এর ব্যাকগ্রাউন্ড এফোর্ট ইনহেরিট করে।",
+        "effort_model_unknown_hint": "মডেল রান টাইমে নির্বাচিত হয়, তাই এফোর্ট প্রযোজ্য হয় শুধুমাত্র নির্ধারিত মডেল সমর্থন করলে। 'ডিফল্ট' Settings → Chat-এর ব্যাকগ্রাউন্ড এফোর্ট ইনহেরিট করে।",
+        "requires_restart": "রিস্টার্ট প্রয়োজন"
       }
     },
     "localStorageDebug": {

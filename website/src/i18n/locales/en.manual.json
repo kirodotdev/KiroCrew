@@ -4480,7 +4480,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Extraction effort",
+        "effort_hint": "Default inherits Background effort from Settings → Chat.",
+        "effort_model_unknown_hint": "The model is picked at run time, so effort applies only when the resolved model supports it. 'Default' inherits Background effort from Settings → Chat.",
+        "requires_restart": "restart required"
       }
     },
     "libraryPage": {

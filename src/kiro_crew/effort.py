@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 
 from kiro_crew import model_registry
 
@@ -46,6 +47,34 @@ EFFORT_VALUES: frozenset[str] = frozenset({""} | set(EFFORT_LEVELS))
 def is_valid_effort(level: object) -> bool:
     """True if *level* is one of the concrete effort levels (excludes "")."""
     return isinstance(level, str) and level in EFFORT_LEVELS
+
+
+def select_effort_level(requested: str, supported: Iterable[str]) -> str | None:
+    """Highest advertised level no higher than *requested*.
+
+    Shared arithmetic for every consumer that can READ a backend's advertised
+    effort levels before sending one (the Knowledge pool workers read
+    ``configOptions``; the chat-side trial ladder in ``providers/acp.py`` uses
+    write-and-see instead and keeps its own loop, but agrees on this ordering).
+
+    Entries in *supported* that are not concrete levels are ignored; an empty
+    (or all-invalid) list is treated like a lazy backend that advertises
+    nothing — the requested value is returned so ACP can confirm or reject it.
+    ``None`` means no advertised level is at or below *requested* and the
+    caller should stay on the provider default.
+    """
+    supported_levels = {
+        level for level in supported if isinstance(level, str) and is_valid_effort(level)
+    }
+    if not supported_levels:
+        return requested
+    requested_index = EFFORT_LEVELS.index(requested)
+    eligible = [
+        level
+        for level in EFFORT_LEVELS
+        if level in supported_levels and EFFORT_LEVELS.index(level) <= requested_index
+    ]
+    return eligible[-1] if eligible else None
 
 
 def model_supports_effort(model: str | None) -> bool:

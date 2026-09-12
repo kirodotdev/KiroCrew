@@ -10973,7 +10973,11 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "提取投入",
+        "effort_hint": "“默认”会继承 设置 → 聊天 中的后台投入。",
+        "effort_model_unknown_hint": "模型在运行时才确定，因此仅当解析出的模型支持时才会应用投入。“默认”会继承 设置 → 聊天 中的后台投入。",
+        "requires_restart": "需要重启"
       }
     },
     "localStorageDebug": {

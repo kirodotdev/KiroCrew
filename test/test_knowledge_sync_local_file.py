@@ -6,6 +6,7 @@ rejects non-https paths with "Invalid URL format" and left the source in 'error'
 local_file sync must instead re-ingest via the FileReader pipeline (ingest_file),
 matching how add_source ingests the same file.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +38,7 @@ def _make_app(store, pipeline=None):
         app["knowledge_pipeline"] = pipeline
     # No connector for local_file (matches production registration)
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
-    app["knowledge_llm_pool"] = MagicMock()
+    app["knowledge_fetch_pool"] = MagicMock()
     app.router.add_post("/api/knowledge/sources/{id}/sync", sync_source)
     return app
 
@@ -56,7 +57,8 @@ async def _await_sync_status(store, source_id: str, want: str) -> str:
     status = None
     for _ in range(200):
         row = store.db.execute(
-            "SELECT sync_status FROM sources WHERE id = ?", (source_id,)).fetchone()
+            "SELECT sync_status FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
         status = row["sync_status"] if row else None
         if status == want:
             return status
@@ -66,13 +68,17 @@ async def _await_sync_status(store, source_id: str, want: str) -> str:
 
 class TestSyncLocalFile:
     @pytest.mark.asyncio
-    async def test_sync_reingests_via_ingest_file_not_agent_fetch(self, store, tmp_path, monkeypatch):
+    async def test_sync_reingests_via_ingest_file_not_agent_fetch(
+        self, store, tmp_path, monkeypatch
+    ):
         test_file = tmp_path / "doc.md"
         test_file.write_text("# Doc")
         pipeline = MagicMock()
         pipeline.ingest_file = AsyncMock()
         # Guard: the agent URL-fetch path must NOT be used for local_file
-        fetch_spy = AsyncMock(side_effect=AssertionError("local_file must not use fetch_url_content"))
+        fetch_spy = AsyncMock(
+            side_effect=AssertionError("local_file must not use fetch_url_content")
+        )
         monkeypatch.setattr(kh, "fetch_url_content", fetch_spy)
 
         sid = store.add_source(name="doc.md", source_type="local_file", uri=str(test_file))

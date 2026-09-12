@@ -2070,6 +2070,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.import_chunk_budget": {"type": "int", "min": 0, "max": IMPORT_CHUNK_BUDGET_MAX},
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
     "knowledge.extraction_model": {"type": "str"},
+    "knowledge.extraction_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "knowledge.extraction_pool_size": {
         "type": "int",
         "min": EXTRACTION_POOL_SIZE_MIN,
