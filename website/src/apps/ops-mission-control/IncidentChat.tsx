@@ -10,9 +10,10 @@
  *
  * Two wiring requirements, both easy to get silently wrong:
  *
- * 1. `ChatEmbed` reads `useAppApi()`, so it MUST have an `AppApiProvider`
- *    ancestor. A builtin page has none (AppHost only wraps installed apps), so
- *    this component mounts its own.
+ * 1. `ChatEmbed` reads `useAppApi()`, so it MUST have the SDK's scoped-API layer
+ *    above it. This component mounts one. It passes `appName` explicitly rather
+ *    than taking it from the page's app identity, because it is a component on a
+ *    board row and its own unit test renders it with no route above it.
  * 2. The provider is permission-scoped: fetches outside `allowedApiPaths` throw.
  *    `/api/chat*` is what the embed polls and posts; `/api/approvals*` is what
  *    the Approve/Trust buttons on a tool card call — omit it and those buttons
@@ -22,7 +23,7 @@
  * empty conversation next to a live one.
  */
 import { useCallback } from 'react'
-import { AppApiProvider } from '../../app-sdk'
+import { AppScopedApiProvider } from '../../app-sdk/scopedApi'
 import ChatEmbed from '../../app-sdk/ChatEmbed'
 
 import { i18nT } from '../../i18n/t'
@@ -49,14 +50,11 @@ export default function IncidentChat({
   incidentId: string
   title?: string
 }) {
-  // The embed only needs these to satisfy the provider contract. Events are
-  // unused here (the board polls), so subscribe is a no-op that returns its
-  // unsubscribe — returning undefined would break the provider's cleanup.
-  const subscribeFn = useCallback(() => () => {}, [])
+  // Deliberately NOT the router's navigate: this panel sits on a board row, and a
+  // full document load is the intended behaviour when the embed navigates away.
   const navigateFn = useCallback((path: string) => {
     window.location.assign(path)
   }, [])
-  const notifyFn = useCallback(() => {}, [])
 
   return (
     // Fixed-height flex column, and `min-h-0` on the growing child.
@@ -76,19 +74,17 @@ export default function IncidentChat({
         })}
       </p>
       <div className="flex-1 min-h-0">
-        <AppApiProvider
+        <AppScopedApiProvider
           appName="ops-mission-control"
           allowedApiPaths={ALLOWED_API}
           allowedEvents={ALLOWED_EVENTS}
-          subscribeFn={subscribeFn}
           navigateFn={navigateFn}
-          notifyFn={notifyFn}
         >
           <ChatEmbed
             slotKey={incidentSlotKey(incidentId)}
             placeholder={i18nT('apps.opsMissionControl.incidentChat.ask_about_incident', { incidentId })}
           />
-        </AppApiProvider>
+        </AppScopedApiProvider>
       </div>
     </div>
   )

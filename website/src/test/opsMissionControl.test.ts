@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { hasBuiltinComponent, getBuiltinComponent } from '../apps/builtinRegistry'
+import { hasBuiltinComponent, getBuiltinApp } from '../apps/builtinRegistry'
 import { describeSourceHealth, type SourcePollHealth } from '../apps/ops-mission-control/api'
 import EN_CATALOG from '../i18n/locales/en.json'
 
@@ -78,10 +78,11 @@ describe('ops-mission-control builtin registration', () => {
     expect(hasBuiltinComponent(ROUTE)).toBe(true)
   })
 
-  it('resolves to a lazy component', () => {
-    const component = getBuiltinComponent(ROUTE)
-    expect(component).toBeDefined()
-    expect(component).toHaveProperty('$$typeof')
+  it('resolves to a lazy component owned by this app', () => {
+    const entry = getBuiltinApp(ROUTE)
+    expect(entry).toBeDefined()
+    expect(entry!.component).toHaveProperty('$$typeof')
+    expect(entry!.appId).toBe('ops-mission-control')
   })
 
   it('uses a route shape BuiltinAppRoute can actually resolve', () => {

@@ -104,9 +104,10 @@ describe('IncidentChat', () => {
     ).toBeInTheDocument()
   })
 
-  it('unmounts cleanly, so subscribeFn returned a real unsubscribe', () => {
-    // useAppEvents calls subscribe() on mount and its RETURN VALUE on cleanup;
-    // a subscribeFn returning undefined would throw during unmount.
+  it('mounts and unmounts cleanly with the provider default subscribe', () => {
+    // useAppEvents calls subscribe() during its effect, so an ABSENT subscribe is
+    // a TypeError on mount. (An effect cleanup of `undefined` is legal React and
+    // throws nothing, so this does not prove what the old comment here claimed.)
     const { unmount } = render(<IncidentChat incidentId="zzq-42" />)
     expect(() => unmount()).not.toThrow()
   })
@@ -117,8 +118,16 @@ describe('IncidentChat', () => {
     expect(window.location.pathname).toBe('/zzq-elsewhere')
   })
 
-  it('notify is a no-op rather than a missing callback', () => {
+  it('routes notify to the host toast bus', () => {
+    // Was a hand-written no-op purely to satisfy the old provider contract, which
+    // meant an embed error message was dropped on the floor. The scoped provider's
+    // default is the host's own `mc:notify` bus, so it now surfaces.
+    const seen: unknown[] = []
+    const listener = (e: Event) => seen.push((e as CustomEvent).detail?.message)
+    window.addEventListener('mc:notify', listener)
     render(<IncidentChat incidentId="zzq-42" />)
-    expect(() => fireEvent.click(screen.getByTestId('zzq-notify'))).not.toThrow()
+    fireEvent.click(screen.getByTestId('zzq-notify'))
+    window.removeEventListener('mc:notify', listener)
+    expect(seen).toEqual(['zzq hello'])
   })
 })

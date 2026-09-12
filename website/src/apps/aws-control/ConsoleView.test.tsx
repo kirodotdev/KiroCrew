@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
+import { AppIdentityProvider } from '../../app-sdk/identity'
+import { useAppQueryKey } from '../../app-sdk/appQuery'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes, fmtCurrency, fmtDate, fmtNumber } from '../../i18n/format'
 import type { AwsAccount, DriveStatus, CostReport } from './types'
@@ -105,12 +107,25 @@ beforeEach(() => {
   vi.mocked(api.awsConsent).mockReturnValue(new Promise(() => {}) as ReturnType<typeof api.awsConsent>)
 })
 
+/**
+ * Mount a pane with the app identity a real page has.
+ *
+ * In production `BuiltinAppRoute` publishes this before the page renders, and
+ * `useAppQuery` reads the key prefix from it. Mounting without it would exercise
+ * the un-namespaced degrade path — which works, but is not the path a user is on.
+ */
+function renderPane(ui: React.ReactElement) {
+  return renderWithProviders(
+    <AppIdentityProvider appId="aws-control" origin="builtin">{ui}</AppIdentityProvider>,
+  )
+}
+
 describe('UsagePane', () => {
   it('renders the pane header and the fresh month-to-date bill, with no "as of" hint', async () => {
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     const pane = await screen.findByTestId('usage-pane')
     expect(within(pane).getByTestId('page-title')).toHaveTextContent(i18nT('apps.awsControl.rail.usage'))
@@ -129,7 +144,7 @@ describe('UsagePane', () => {
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     const storage = await screen.findByTestId('console-storage-stat')
     await waitFor(() =>
@@ -161,7 +176,7 @@ describe('UsagePane', () => {
     })
     stubConsent({ s3: notGranted, ce: notGranted })
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     // The consentMissing branch renders "—", never a zero figure or the as-of line.
     await screen.findByTestId('console-stats')
@@ -195,7 +210,7 @@ describe('UsagePane', () => {
     // A rejected costs read (CE not enabled / throttled) must settle to "—".
     vi.mocked(awsControlApi.costs).mockRejectedValue(new Error('CE disabled'))
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     // The costs query carries retry:1, so its error settles after one
     // backoff — give waitFor room.
@@ -237,7 +252,7 @@ describe('UsagePane', () => {
       byService: [{ service: 'S3', amount: 9.99 }], fetchedAt: '2026-08-24T05:00:00Z',
     })
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     await screen.findByTestId('console-stats')
     await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(9.99, 'USD')))
@@ -250,7 +265,7 @@ describe('UsagePane', () => {
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     const storage = await screen.findByTestId('usage-storage')
     expect(within(storage).getByTestId('drive-bucket')).toHaveTextContent('kirocrew-drive-abc123')
@@ -264,7 +279,7 @@ describe('UsagePane', () => {
     vi.mocked(awsControlApi.drive).mockResolvedValue({ exists: false })
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
     expect(screen.queryByTestId('usage-storage')).toBeNull()
@@ -279,7 +294,7 @@ describe('UsagePane', () => {
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
     stubConsent({ s3: grantHere, ce: grantHere })
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     const receipts = await screen.findByTestId('paid-services')
     expect(within(receipts).getByTestId('aws-consent-s3')).toBeTruthy()
@@ -297,7 +312,7 @@ describe('UsagePane', () => {
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
     stubConsent({ s3: notGranted, ce: notGranted })
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     const services = await screen.findByTestId('paid-services')
     const ask = within(services).getByTestId('costs-consent-gate')
@@ -315,7 +330,7 @@ describe('UsagePane', () => {
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
     stubConsent({ s3: grantElsewhere, ce: grantElsewhere })
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('s3'))
     await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
@@ -331,11 +346,77 @@ describe('UsagePane', () => {
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
     stubConsent({ s3: grantHere, ce: grantHere })
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     const receipts = await screen.findByTestId('paid-services')
     expect(within(receipts).getByTestId('aws-consent-ce')).toBeTruthy()
     expect(within(receipts).queryByTestId('aws-consent-s3')).toBeNull()
+  })
+
+  it('keeps the host-built costs key byte-identical to the hand-written one beside it', async () => {
+    // This pane is the first consumer of `useAppQuery`, and it is deliberately a
+    // MIXED site: the costs query is built by the host
+    // (`useAppQuery(['costs', id])`) while `refetchGated` still writes
+    // `['aws-control', 'costs', id]` by hand. If the host's prefix were anything
+    // other than the appId itself, those two would address different cache
+    // entries and a consent grant would stop refreshing the bill — the failure
+    // that would let the rest of this app be converted only in one sweep.
+    vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
+    vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
+
+    const { queryClient } = renderPane(<UsagePane account={ACCOUNT} />)
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
+
+    // The literal is what this file wrote before the conversion.
+    const handWritten = ['aws-control', 'costs', ACCOUNT.account]
+    expect(queryClient.getQueryData(handWritten)).toEqual(costsFresh)
+    // And the app retains only ONE costs entry, not a namespaced one plus a
+    // hand-written one that nothing keeps in step.
+    const costsEntries = queryClient
+      .getQueryCache()
+      .findAll({ queryKey: ['aws-control', 'costs'] })
+    expect(costsEntries).toHaveLength(1)
+  })
+
+  it('reaches a hand-written query key from the host-built invalidation', async () => {
+    // The REVERSE direction of the same agreement, and the one that catches a
+    // prefix mistake the other case cannot: `drive` is queried by a hand-written
+    // literal and invalidated through the host's key builder (`refetchGated`). If
+    // the builder resolved to anything but that literal, the invalidation would
+    // silently hit nothing and a consent grant would leave the storage meter on
+    // its cached refusal.
+    //
+    // The invalidation goes through the BUILDER's output, not through the literal
+    // — invalidating the literal would be trivially true and prove nothing.
+    vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
+    vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
+    stubConsent({ s3: notGranted, ce: notGranted })
+
+    let built: readonly unknown[] = []
+    function KeyProbe() {
+      // Same hook, same identity as the pane beside it, so this is the key
+      // `refetchGated` builds at runtime.
+      built = useAppQueryKey()(['drive', ACCOUNT.account])
+      return null
+    }
+    const { queryClient } = renderPane(
+      <>
+        <KeyProbe />
+        <UsagePane account={ACCOUNT} />
+      </>,
+    )
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
+    await waitFor(() => expect(awsControlApi.drive).toHaveBeenCalledTimes(1))
+
+    // It addresses the entry the hand-written query created.
+    expect(built).toEqual(['aws-control', 'drive', ACCOUNT.account])
+    expect(queryClient.getQueryData(built)).toEqual(driveExists)
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: built })
+    })
+    // Reached the mounted query, so the pane refetched.
+    await waitFor(() => expect(awsControlApi.drive).toHaveBeenCalledTimes(2))
   })
 
   it('suppresses the CE receipt while costs report consentMissing, keeping the S3 one', async () => {
@@ -346,7 +427,7 @@ describe('UsagePane', () => {
     })
     stubConsent({ s3: grantHere, ce: grantHere })
 
-    renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderPane(<UsagePane account={ACCOUNT} />)
 
     const receipts = await screen.findByTestId('paid-services')
     expect(within(receipts).getByTestId('aws-consent-s3')).toBeTruthy()

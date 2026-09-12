@@ -186,6 +186,29 @@ export function safeSetItem(key: string, value: string): boolean {
 }
 
 /**
+ * Non-throwing localStorage delete — the counterpart of `safeSetItem` for a
+ * caller that wants the key GONE rather than set to some empty value.
+ *
+ * This exposes behaviour the module already relies on internally: `reclaimSpace()`
+ * calls `localStorage.removeItem` to free the tiers above. What was missing was a
+ * way for a caller outside this file to do it without hand-rolling the try/catch,
+ * which is why deleting a key used to mean writing a sentinel over it.
+ *
+ * Returning void rather than a boolean, unlike `safeSetItem`: a delete has nothing
+ * a caller can do about failure. A write that was dropped may need a fallback, but
+ * a key that could not be removed is a key that was already unreachable — storage
+ * is denied, so nothing can read it either.
+ */
+export function safeRemoveItem(key: string): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.removeItem(key)
+  } catch {
+    // Same contract as the read: storage being denied is not the caller's problem.
+  }
+}
+
+/**
  * Non-throwing sessionStorage read — the per-tab mirror of `safeGetItem`.
  * Returns null when storage access is denied (SecurityError in locked-down
  * embedding contexts / browser policies) or unavailable.

@@ -29,7 +29,7 @@ vi.mock('../pages/ChatPage', () => ({ default: () => null }))
 
 import {
   BUILTIN_COMPONENT_REGISTRY,
-  getBuiltinComponent,
+  getBuiltinApp,
   hasBuiltinComponent,
   registerBuiltinComponents,
   type LazyComponent,
@@ -68,7 +68,7 @@ describe('BUILTIN_COMPONENT_REGISTRY', () => {
   it.each(CORE_ROUTES)(
     '%s resolves to a module with a default export',
     async (route) => {
-      const mod = await importFactory(BUILTIN_COMPONENT_REGISTRY[route])()
+      const mod = await importFactory(BUILTIN_COMPONENT_REGISTRY[route].component)()
       expect(mod.default).toBeTruthy()
     },
     30_000,
@@ -84,24 +84,30 @@ describe('registerBuiltinComponents', () => {
 
   it('adds a downstream route and resolves it', () => {
     const Comp = lazy(async () => ({ default: Dummy }))
-    registerBuiltinComponents({ '/zzq-edition-page': Comp })
+    registerBuiltinComponents({ '/zzq-edition-page': { component: Comp, appId: 'zzq-edition' } })
     expect(hasBuiltinComponent('/zzq-edition-page')).toBe(true)
-    expect(getBuiltinComponent('/zzq-edition-page')).toBe(Comp)
+    expect(getBuiltinApp('/zzq-edition-page')?.component).toBe(Comp)
+    expect(getBuiltinApp('/zzq-edition-page')?.appId).toBe('zzq-edition')
   })
 
   it('registers several entries in one call', () => {
     const a = lazy(async () => ({ default: Dummy }))
     const b = lazy(async () => ({ default: Dummy }))
-    registerBuiltinComponents({ '/zzq-multi-a': a, '/zzq-multi-b': b })
-    expect(getBuiltinComponent('/zzq-multi-a')).toBe(a)
-    expect(getBuiltinComponent('/zzq-multi-b')).toBe(b)
+    registerBuiltinComponents({
+      '/zzq-multi-a': { component: a, appId: 'zzq-multi-a' },
+      '/zzq-multi-b': { component: b, appId: 'zzq-multi-b' },
+    })
+    expect(getBuiltinApp('/zzq-multi-a')?.component).toBe(a)
+    expect(getBuiltinApp('/zzq-multi-b')?.component).toBe(b)
   })
 
   it('lets the core win a duplicate route, loudly in dev/test', () => {
     const core = BUILTIN_COMPONENT_REGISTRY['/worlds']
     const shadow = lazy(async () => ({ default: Dummy }))
-    expect(() => registerBuiltinComponents({ '/worlds': shadow })).toThrow(/already registered/)
-    expect(getBuiltinComponent('/worlds')).toBe(core)
+    expect(() =>
+      registerBuiltinComponents({ '/worlds': { component: shadow, appId: 'agent-worlds' } }),
+    ).toThrow(/already registered/)
+    expect(getBuiltinApp('/worlds')).toBe(core)
   })
 
   it.each([
@@ -114,9 +120,11 @@ describe('registerBuiltinComponents', () => {
     'zzq-no-slash',
     '/',
   ])('refuses %s, which could never resolve', (route) => {
-    expect(() => registerBuiltinComponents({ [route]: lazy(async () => ({ default: Dummy })) })).toThrow(
-      /never resolve/,
-    )
+    expect(() =>
+      registerBuiltinComponents({
+        [route]: { component: lazy(async () => ({ default: Dummy })), appId: 'zzq-shape' },
+      }),
+    ).toThrow(/never resolve/)
     expect(hasBuiltinComponent(route)).toBe(false)
   })
 
@@ -124,17 +132,17 @@ describe('registerBuiltinComponents', () => {
     const good = lazy(async () => ({ default: Dummy }))
     expect(() =>
       registerBuiltinComponents({
-        '/zzq-good-first': good,
-        '/zzq-bad/second': lazy(async () => ({ default: Dummy })),
+        '/zzq-good-first': { component: good, appId: 'zzq-good-first' },
+        '/zzq-bad/second': { component: lazy(async () => ({ default: Dummy })), appId: 'zzq-bad' },
       }),
     ).toThrow(/never resolve/)
-    expect(getBuiltinComponent('/zzq-good-first')).toBe(good)
+    expect(getBuiltinApp('/zzq-good-first')?.component).toBe(good)
   })
 })
 
 describe('lookup helpers', () => {
   it('reports unknown routes as absent', () => {
     expect(hasBuiltinComponent('/zzq-unknown')).toBe(false)
-    expect(getBuiltinComponent('/zzq-unknown')).toBeUndefined()
+    expect(getBuiltinApp('/zzq-unknown')).toBeUndefined()
   })
 })
