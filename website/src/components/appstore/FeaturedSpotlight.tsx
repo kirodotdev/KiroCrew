@@ -27,7 +27,7 @@ import Clickable from '../Clickable'
 import AppIcon from '../AppIcon'
 import { gradientFor } from './gradient'
 import { categoryFor } from './categories'
-import { useHeroArt } from './useHeroArt'
+import { useHeroArt, type InstalledArtSource } from './useHeroArt'
 import { useEditorialArt, type EditorialArtwork } from './useEditorialArt'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
@@ -168,6 +168,7 @@ export default function FeaturedSpotlight({
   curated = false,
   layout = 'stacked',
   compact = false,
+  leadInstalled,
   onOpenApp,
   onGet,
   onEnable,
@@ -221,6 +222,15 @@ export default function FeaturedSpotlight({
    * fallback row reads as secondary beside the lead.
    */
   compact?: boolean
+  /**
+   * The LEAD app's installed record, when it is installed — the local
+   * second-chance art source for `useHeroArt` (#6887): a registry hero that
+   * fails to LOAD swaps once to the app's own on-disk art instead of
+   * degrading straight to the gradient. Only the lead's art fills the band,
+   * so only the lead's record is threaded. Omitted (a non-installed lead, or
+   * a caller that has no installed list), the hook stays behaviour-identical.
+   */
+  leadInstalled?: InstalledArtSource
   onOpenApp: (name: string, e?: React.MouseEvent | React.KeyboardEvent) => void
   onGet: (name: string) => void
   onEnable: (name: string) => void
@@ -236,7 +246,7 @@ export default function FeaturedSpotlight({
   // app rather than being skipped -- React forbids the skip, and `useHeroArt`
   // answers "no art" for no app, which is the same answer it gives for an app
   // shipping none.
-  const hero = useHeroArt(lead)
+  const hero = useHeroArt(lead, leadInstalled)
   const editorial = useEditorialArt(artwork)
   // Unconditional like the art hooks above: the early return below sits between
   // this and the compact branch that reads it, and React forbids the skip.
