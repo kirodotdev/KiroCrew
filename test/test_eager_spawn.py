@@ -1345,7 +1345,9 @@ class TestPrewarmAdmission:
         # reservation, which is what stops a concurrent admission passing.
         assert population_at_spawn == [1, 1]
         assert list(chat_runner._armed_prefetches) == [keys[1]]
-        assert chat_runner._armed_prefetches[keys[1]] is None, "reservation not converted"
+        assert (
+            chat_runner._armed_prefetches[keys[1]] is not chat_runner._RESERVED
+        ), "reservation not converted"
 
     @pytest.mark.asyncio
     async def test_rearming_the_only_live_key_needs_no_eviction(self, monkeypatch):
@@ -1511,8 +1513,110 @@ class TestPrewarmAdmission:
         shared_sessions.get_or_create.assert_awaited_once()
         spawned = shared_sessions.get_or_create.await_args.args[0]
         assert list(chat_runner._armed_prefetches) == [spawned]
-        assert chat_runner._armed_prefetches[spawned] is None
+        assert chat_runner._armed_prefetches[spawned] is not chat_runner._RESERVED
         shared_sessions.remove_if_unclaimed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delayed_concurrent_admission_never_evicts_the_winners_registration(self):
+        """The deterministic shape of the Windows flake: two signals
+        arrive together, but B's admission lands only after A's whole
+        handshake (the allowance probe runs in a worker thread, and Windows
+        can hold it that long). B must be refused -- evicting the session A
+        registered moments ago and spawning a second one is the double spawn
+        the concurrent test intermittently caught."""
+        sessions = MagicMock()
+        sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+        # Both signals arrive now: they share the arm generation.
+        signal_generation = chat_runner._arm_generation
+        assert (
+            await chat_runner._admit_prefetch(
+                sessions, "dashboard:a", 1, signal_generation=signal_generation
+            )
+            is True
+        )
+        # A's handshake completes and registers, converting the reservation.
+        await chat_runner._cap_armed_prefetches(sessions, "dashboard:a", cap=1)
+        # B's admission was delayed past A's registration.
+        assert (
+            await chat_runner._admit_prefetch(
+                sessions, "dashboard:b", 1, signal_generation=signal_generation
+            )
+            is False
+        )
+        sessions.remove_if_unclaimed.assert_not_awaited()
+        assert list(chat_runner._armed_prefetches) == ["dashboard:a"]
+
+    @pytest.mark.asyncio
+    async def test_later_signal_still_evicts_an_older_registration(self):
+        """Newest-signal-wins is intact: a signal whose generation was read
+        AFTER an entry registered outranks it and takes its allowance."""
+        sessions = MagicMock()
+        sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+        await chat_runner._cap_armed_prefetches(sessions, "dashboard:a", cap=1)
+        # B's signal arrives after A registered: its generation covers A.
+        assert (
+            await chat_runner._admit_prefetch(
+                sessions, "dashboard:b", 1, signal_generation=chat_runner._arm_generation
+            )
+            is True
+        )
+        sessions.remove_if_unclaimed.assert_awaited_once_with("dashboard:a")
+        assert list(chat_runner._armed_prefetches) == ["dashboard:b"]
+        assert chat_runner._armed_prefetches["dashboard:b"] is chat_runner._RESERVED
+
+    @pytest.mark.asyncio
+    async def test_generation_is_snapshotted_at_schedule_time_not_first_task_step(
+        self, monkeypatch
+    ):
+        """``create_task`` only queues ``_eager_spawn``: a registration landing
+        before the queued task's first step belongs to a concurrent signal,
+        and a snapshot taken inside the task would already cover it. The
+        schedule call must capture the generation synchronously."""
+        monkeypatch.setattr(chat_runner, "_prewarm_allowance", lambda: 1)
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        sessions = MagicMock()
+        sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            patch.object(chat_runner, "resolve_agent_bindings", return_value=self._bindings()),
+        ):
+            task = chat_runner.schedule_eager_spawn(state, slot)
+            assert task is not None
+            # A concurrent signal's handshake registers BEFORE the queued
+            # task's first step (no await between here and create_task).
+            await chat_runner._cap_armed_prefetches(sessions, "dashboard:winner", cap=1)
+            await task
+        state.sessions.get_or_create.assert_not_awaited()
+        assert list(chat_runner._armed_prefetches) == ["dashboard:winner"]
+
+    @pytest.mark.asyncio
+    async def test_eviction_does_not_pop_a_key_re_registered_during_the_removal(self):
+        """The awaited removal is a window: a re-registration of the SAME key
+        landing inside it must keep its registry entry — popping by key alone
+        would erase the replacement's accounting."""
+        gate = asyncio.Event()
+        sessions = MagicMock()
+
+        async def _held_remove(key):
+            await gate.wait()
+            return True
+
+        sessions.remove_if_unclaimed = AsyncMock(side_effect=_held_remove)
+        chat_runner._armed_prefetches["dashboard:old"] = None
+        admit = asyncio.create_task(
+            chat_runner._admit_prefetch(
+                sessions, "dashboard:b", 1, signal_generation=chat_runner._arm_generation
+            )
+        )
+        await asyncio.sleep(0)  # admit is parked inside the awaited removal
+        registrar = MagicMock()
+        registrar.remove_if_unclaimed = AsyncMock(return_value=True)
+        await chat_runner._cap_armed_prefetches(registrar, "dashboard:old", cap=3)
+        refreshed_value = chat_runner._armed_prefetches["dashboard:old"]
+        gate.set()
+        assert await admit is False
+        assert chat_runner._armed_prefetches.get("dashboard:old") is refreshed_value
 
     @pytest.mark.asyncio
     async def test_reservation_is_released_when_the_spawn_is_refused(self, monkeypatch):
