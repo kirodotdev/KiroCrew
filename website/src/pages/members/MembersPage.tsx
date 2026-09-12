@@ -33,8 +33,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
-import { PanelRightSolid } from '../../components/icons/panels'
+import { ArrowLeft, Check, ChevronRight, ChevronsRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
+import { PanelLeftLight, PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
 import {
@@ -80,7 +80,7 @@ import {
 import { Btn } from '../../components/ui'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
-import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
+import SidePanel, { CHAT_PANE_MIN_W, SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
 import { CHAT_TRANSCRIPT_VIEWS, VIEW_DATA_SOURCE, useAnyLiveAppTab, usePanelTabs, type ViewKind } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
@@ -162,6 +162,40 @@ const ROSTER_MIN = 200
 const ROSTER_MAX = 420
 const ROSTER_DEFAULT = 264
 const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
+/** The roster folded to its avatar rail: one 36px face per row inside the
+ *  card's p-2 body, plus the card border — the nav rail's collapsed idiom. */
+export const ROSTER_RAIL_W = 56
+/** Below this window width (Tailwind `lg`) the roster OPENS folded. Between
+ *  `md` and here the shell still shows the 220px nav rail, and a 264px roster
+ *  beside it left the DM thread 252px wide at 768 — narrower than the
+ *  composer's own control row. The Sessions sidebar is
+ *  collapsible for the same reason; the roster now is too. */
+export const ROSTER_RAIL_BREAKPOINT = 1024
+/** The user's own FOLD, persisted ONLY when made at lg and above — like the
+ *  chat page's `mc-sidebar-pinned`. Unfolding clears it; a toggle below lg
+ *  holds for the session only (see toggleRoster). Absent, the window width
+ *  decides live. Read as `true` or nothing: a legacy '0' reads as nothing. */
+const ROSTER_COLLAPSED_KEY = 'mc-members-roster-collapsed'
+/** The fold's tween: 150ms, the nav rail's `grid-template-columns 150ms`, so
+ *  the two rails on screen fold at one speed. The aside's width transition
+ *  (Tailwind `duration-150`) and every fade in the fold share it. */
+const FOLD_TWEEN = { duration: 0.15, ease: [0.2, 0, 0, 1] as [number, number, number, number] }
+function loadRosterCollapsedPref(): boolean | null {
+  return safeGetItem(ROSTER_COLLAPSED_KEY) === '1' ? true : null
+}
+function clearRosterCollapsedPref(): void {
+  // safeStorage has no remove; a missing Storage (privacy mode) throws here as
+  // it would on read, and losing the clear is harmless — a stale '1' only
+  // re-folds a roster the user can unfold again.
+  try { localStorage.removeItem(ROSTER_COLLAPSED_KEY) } catch { /* no storage */ }
+}
+/** Whether the roster shows as the avatar rail. Pure, so the boundary is
+ *  tested directly. Mobile never folds: below `md` the page is single-pane and
+ *  the roster IS the page. A stored preference wins over the width rule. */
+export function rosterIsRail({ winW, isMobile, pref }: { winW: number; isMobile: boolean; pref: boolean | null }): boolean {
+  if (isMobile) return false
+  return pref ?? winW < ROSTER_RAIL_BREAKPOINT
+}
 /** The permanent first tab of the member's side panel. Its id is what
  *  `usePanelTabs` stores as the strip's focus while it is selected, so it must
  *  not collide with a chat `TabKind` — `'summary'` is the chat page's
@@ -203,15 +237,28 @@ export const MEMBERS_UNCONFIRMED_WITHHELD_VIEWS: readonly SidePanelWithholdable[
  *  The thread's own minimum is already inside the panel's shell reserve
  *  (`SIDE_PANEL_RESERVED_W` budgets the nav rail plus a chat-pane minimum). */
 const PANEL_GAPS_W = 24
+/** The thread's floor while the panel is DOCKED. The shell reserve only
+ *  budgets `CHAT_PANE_MIN_W` (320) for the conversation, which is the split
+ *  view's floor for a pane the user chose to make small. A permanent column
+ *  the user cannot close is different: at 1280×800 it would leave the thread
+ *  332px beside a 432px panel — the observation wider than what it observes.
+ *  420 keeps the composer's control row on one line and a bubble wider than
+ *  its own padding; below it the panel overlays instead.
+ *  The extra over the shell reserve is what both the dock decision and the
+ *  panel's live clamp (`extraReserveW`) add, so the two never disagree. */
+export const THREAD_DOCKED_MIN_W = 420
+const THREAD_EXTRA_RESERVE_W = THREAD_DOCKED_MIN_W - CHAT_PANE_MIN_W
 /** Whether the side panel can sit BESIDE the thread as a permanent column,
  *  or must become an overlay the user opens. Beside needs the shell reserve
  *  (nav rail + a usable thread) plus the live roster width plus the panel's
  *  own minimum — the same arithmetic the chat page's `sidePanelFillWidth` does
- *  for its two columns, with the roster added. Pure, so the boundary is
- *  tested directly. Mobile always overlays (its viewport seats neither). */
+ *  for its two columns, with the roster and the docked thread floor added.
+ *  Pure, so the boundary is tested directly. Mobile always overlays (its
+ *  viewport seats neither). With the default roster this is 1268; with the
+ *  roster folded to its rail, 1060. */
 export function panelSitsBeside({ winW, rosterW, isMobile }: { winW: number; rosterW: number; isMobile: boolean }): boolean {
   if (isMobile) return false
-  return winW - rosterW - PANEL_GAPS_W >= SIDE_PANEL_RESERVED_W + SIDE_PANEL_MIN_W
+  return winW - rosterW - PANEL_GAPS_W - THREAD_EXTRA_RESERVE_W >= SIDE_PANEL_RESERVED_W + SIDE_PANEL_MIN_W
 }
 /** Punctuation, not prose: joins an activity label to its project name, and a
  *  driving row's title to its status word in the hover title. */
@@ -412,7 +459,6 @@ export default function MembersPage() {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-  const beside = panelSitsBeside({ winW, rosterW: roster.width, isMobile })
   // On a phone the overlay must FILL its scrim. SidePanel's own mobile
   // fallback is `width: 100%`, which cannot resolve here: the overlay's inner
   // wrapper is a shrink-to-fit flex item, so a percentage child falls back to
@@ -423,6 +469,89 @@ export default function MembersPage() {
   // the phone, where the panel keeps its own resizable width in both
   // placements — the docked/overlay split is panelSitsBeside's, not this.
   const panelFillWidth = isMobile ? Math.max(SIDE_PANEL_MIN_W, winW) : undefined
+  // Roster fold. `null` = no stored preference, so the window decides live
+  // (crossing `lg` folds and unfolds like a CSS breakpoint would); a user
+  // toggle stores a preference that then wins at every width, the chat
+  // page's own rule for its sessions sidebar.
+  const [rosterCollapsedPref, setRosterCollapsedPref] = useState<boolean | null>(loadRosterCollapsedPref)
+  // Auto patrol: the auto-nudge loop (monitor / goal loop) bound to a member's
+  // own DM slot. This is the thing that wakes a standing member without anyone
+  // asking — so a member whose loop has silently stopped, or never armed, is a
+  // member that will not act again until someone notices. The roster badge
+  // and the drawer block both read from here, so the whole registry is read
+  // (the badge needs every member, not just the open drawer's) and filtered
+  // per member at render by slot key — the member's derived slot is
+  // `member-<slug>`, resolved the same way isRunning resolves it.
+  //
+  // One React Query read, not a private fetch + frame merge: the websocket
+  // hook invalidates AUTONUDGE_LOOPS_QUERY_KEY on every `autonudge_state`
+  // frame AND on every (re)connect, so a stop that landed while the socket was
+  // down is re-read the moment it comes back, and a transient mount-time
+  // failure is retried on the next signal rather than freezing the block in
+  // its failed state. The interval is a floor under that: frames fire only on
+  // change, and the one reading this block must never give is a stale
+  // "Patrolling" for a dead patrol.
+  const patrolQuery = useQuery({
+    queryKey: AUTONUDGE_LOOPS_QUERY_KEY,
+    queryFn: () => api.autonudgeList(),
+    refetchInterval: PATROL_REFRESH_MS,
+    refetchOnReconnect: true,
+  })
+  // `failed` is kept distinct from empty for the same reason the wake-sources
+  // block keeps it: a failed read must never render the affirmative "no patrol
+  // scheduled", which is precisely the false statement this block exists to
+  // prevent. A refetch error after a good read keeps showing the last data.
+  const patrol = useMemo(() => {
+    const data = patrolQuery.data
+    const loops: Record<string, AutoNudgeLoop> = {}
+    for (const lp of data?.loops || []) if (lp?.slot_key) loops[lp.slot_key] = lp
+    return {
+      loaded: data !== undefined || patrolQuery.isError,
+      failed: data === undefined && patrolQuery.isError,
+      loops,
+    }
+  }, [patrolQuery.data, patrolQuery.isError])
+  // A star write that failed: the notice lives on the roster, above the list.
+  // Declared here, ahead of the fold decision, because it is one of the things
+  // that forces the roster open (below).
+  const [starError, setStarError] = useState<{ message: string; report?: ErrorReport } | null>(null)
+  // Anything the roster has to SAY forces it open: a failed roster read (the
+  // notice below the header), an EMPTY roster (its "no one yet" copy and the
+  // create button), a failed patrol-registry read (the roster-level notice
+  // that every badge is blank for a reason) and a failed star write. A 56px
+  // rail has room for none of them, so the fold yields while any is showing.
+  // The patrol read and the star state are declared above this line for that
+  // reason. While forced open the toggle is not offered: a fold that cannot
+  // take effect would still store a preference and surface later, unasked.
+  const rosterEmpty = loaded && !loadError && members.length === 0
+  const forcedOpen = loadError || rosterEmpty || patrol.failed || starError !== null
+  const railed = rosterIsRail({ winW, isMobile, pref: rosterCollapsedPref }) && !forcedOpen
+  const toggleRoster = useCallback(() => {
+    if (forcedOpen) return
+    const next = !railed
+    // A FOLD is the only stored preference, and only when made at lg and
+    // above, where unfolded is the default the user is departing from. ANY
+    // unfold clears the key: unfolded is what the window decides at lg+, so a
+    // stored unfold would encode nothing there and would win below lg on
+    // every later visit; and an unfold below lg must not leave a fold stored
+    // at lg+ behind it, or widening the window would show the list while the
+    // next visit shows the rail. Below lg the unfold is also held open in
+    // state, because the width rule would re-fold at once; that hold is the
+    // session's, not a preference.
+    const atLg = winW >= ROSTER_RAIL_BREAKPOINT
+    if (!next) {
+      clearRosterCollapsedPref()
+      setRosterCollapsedPref(atLg ? null : false)
+      return
+    }
+    setRosterCollapsedPref(true)
+    if (atLg) safeSetItem(ROSTER_COLLAPSED_KEY, '1')
+  }, [railed, forcedOpen, winW])
+  // The roster's LIVE width — what the thread and the panel actually sit
+  // beside. Every consumer (the dock decision, the panel's clamp, the CSS
+  // var) reads this one value so the rail can never be budgeted as a column.
+  const rosterW = railed ? ROSTER_RAIL_W : roster.width
+  const beside = panelSitsBeside({ winW, rosterW: rosterW, isMobile })
   const [overlayOpen, setOverlayOpen] = useState(false)
   // `overlayOpen` is overlay-mode state only. Reset it whenever the panel docks
   // (a widening window, a narrower roster), so an open overlay does not lie in
@@ -524,7 +653,6 @@ export default function MembersPage() {
   // Display text is the localized `star_failed` copy; the structured report
   // (endpoint, status, code, detail) is looked up from the thrown message
   // and passed to ErrorNotice explicitly, so the agent hand-off keeps it.
-  const [starError, setStarError] = useState<{ message: string; report?: ErrorReport } | null>(null)
   // Names with a star write in flight. The control is disabled while its
   // write is pending, so two rapid toggles cannot race: without this, a
   // second click whose write also fails would revert to the FIRST click's
@@ -1072,43 +1200,6 @@ export default function MembersPage() {
     [slotKeyOf, unreadSlots],
   )
 
-  // Auto patrol: the auto-nudge loop (monitor / goal loop) bound to a member's
-  // own DM slot. This is the thing that wakes a standing member without anyone
-  // asking — so a member whose loop has silently stopped, or never armed, is a
-  // member that will not act again until someone notices. The roster badge
-  // and the drawer block both read from here, so the whole registry is read
-  // (the badge needs every member, not just the open drawer's) and filtered
-  // per member at render by slot key — the member's derived slot is
-  // `member-<slug>`, resolved the same way isRunning resolves it.
-  //
-  // One React Query read, not a private fetch + frame merge: the websocket
-  // hook invalidates AUTONUDGE_LOOPS_QUERY_KEY on every `autonudge_state`
-  // frame AND on every (re)connect, so a stop that landed while the socket was
-  // down is re-read the moment it comes back, and a transient mount-time
-  // failure is retried on the next signal rather than freezing the block in
-  // its failed state. The interval is a floor under that: frames fire only on
-  // change, and the one reading this block must never give is a stale
-  // "Patrolling" for a dead patrol.
-  const patrolQuery = useQuery({
-    queryKey: AUTONUDGE_LOOPS_QUERY_KEY,
-    queryFn: () => api.autonudgeList(),
-    refetchInterval: PATROL_REFRESH_MS,
-    refetchOnReconnect: true,
-  })
-  // `failed` is kept distinct from empty for the same reason the wake-sources
-  // block keeps it: a failed read must never render the affirmative "no patrol
-  // scheduled", which is precisely the false statement this block exists to
-  // prevent. A refetch error after a good read keeps showing the last data.
-  const patrol = useMemo(() => {
-    const data = patrolQuery.data
-    const loops: Record<string, AutoNudgeLoop> = {}
-    for (const lp of data?.loops || []) if (lp?.slot_key) loops[lp.slot_key] = lp
-    return {
-      loaded: data !== undefined || patrolQuery.isError,
-      failed: data === undefined && patrolQuery.isError,
-      loops,
-    }
-  }, [patrolQuery.data, patrolQuery.isError])
   const patrolLoopOf = useCallback(
     (m: MemberRosterRow) => {
       const key = slotKeyOf(m)
@@ -1176,6 +1267,13 @@ export default function MembersPage() {
   // copy would be wrong then, since the roster is not empty.
   const filteredOut =
     loaded && !loadError && members.length > 0 && sortedMembers.length === 0 && !filter.trim()
+  // What the list renders. The rail carries none of the narrowing controls —
+  // no search field, no filter menu, no chips — so it shows the WHOLE roster in
+  // its committed order: a persisted starred/status/source filter that hides
+  // everyone would otherwise leave a blank 56px strip with nothing visible to
+  // explain it or clear it. Unfolding brings the controls back and the
+  // narrowed list with them.
+  const visibleRows = railed ? orderedMembers : sortedMembers
   // Which of the block's three verdicts to render. An active loop wins; a
   // stopped loop keeps its reason visible rather than collapsing into
   // "nothing scheduled" — that collapse is exactly how a dead patrol goes
@@ -1335,7 +1433,10 @@ export default function MembersPage() {
       {/* Member list. Below md the page is single-pane: the roster IS the
           page until a member is picked, then the thread takes over and the
           header's back button returns here. Two fixed rails (264+300px)
-          otherwise crush the flex-1 thread to zero at narrow widths.
+          otherwise crush the flex-1 thread to zero at narrow widths. Between
+          md and lg the roster opens FOLDED to a 56px avatar rail (rosterIsRail)
+          so the thread keeps the width the shell's nav rail leaves; a header
+          toggle unfolds it, and that choice persists.
           The card, header line, list body and rows are the Sessions sidebar's
           own recipes (components/listShell) so the two conversation lists read
           as one surface — including the kiro-light shell hook that steps the
@@ -1343,21 +1444,79 @@ export default function MembersPage() {
       <aside
         className={`${
           activeName ? 'hidden md:flex' : 'flex'
-        } ${LIST_SHELL_CLS} relative w-full md:w-[var(--roster-w)] shrink-0 flex-col min-h-0`}
-        // CSS owns the breakpoint: the var is set unconditionally and only the
-        // md: class consumes it, so resizing the window across 768px reacts
-        // without any JS media-query snapshot going stale.
-        style={{ '--roster-w': `${roster.width}px` } as React.CSSProperties}
+        } ${LIST_SHELL_CLS} relative w-full md:w-[var(--roster-w)] ${
+          roster.dragging ? '' : 'md:transition-[width] md:duration-150 md:ease-out motion-reduce:transition-none'
+        } shrink-0 flex-col min-h-0`}
+        // CSS owns the md breakpoint: the var is set unconditionally and only
+        // the md: class consumes it, so resizing the window across 768px
+        // reacts without any JS media-query snapshot going stale. The var
+        // itself is the LIVE width — the rail's when folded (see rosterIsRail).
+        // The fold is a width TRANSITION (150ms, the nav rail's own tween),
+        // not a cut: the column narrows to the rail while the prose below the
+        // header and the row labels fade (AnimatePresence, same duration), so
+        // the list the user was reading visibly becomes the stack of faces.
+        // Not while the ResizeHandle is dragged: a drag writes the var every
+        // frame and must track the pointer, so the transition is dropped for
+        // its duration (the sessions sidebar's own rule).
+        style={{ '--roster-w': `${rosterW}px` } as React.CSSProperties}
         data-testid="member-roster"
+        data-rail={railed ? 'true' : undefined}
       >
-        <div className={LIST_HEADER_CLS}>
-          {/* pl-1.5 is the sidebar's title inset when no rail toggle sits
-              before it; the page icon leads the title where the sidebar's
-              reads bare, because this header names a page, not a pane. */}
-          <div className="flex items-center gap-1.5 min-w-0 flex-1 pl-1.5">
-            <Users size={15} className="lucide-inline text-muted shrink-0" />
-            <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
-          </div>
+        {/* Header. Column: [fold toggle][page icon + title] … [add]. Rail: the
+            same two controls stacked, nothing else — the toggle stays the first
+            control at the card's top-left in both states so the gesture that
+            folded the list is where the user left it. Unfolded, the toggle is
+            the chat page's sessions-sidebar toggle (same glyph, same 28px
+            target). Folded, it is NOT icon-only: below lg this one control
+            gates names, search and filters, and a bare glyph read as "no idea
+            what it does" to a first-time reader — so the rail state shows a
+            chevron pointing at where the list will open plus a visible
+            one-word label (the full name stays on aria-label and title). */}
+        <div className={railed ? 'flex flex-col items-center gap-1 pt-1.5 pb-1' : LIST_HEADER_CLS}>
+          {/* Not offered while the roster is forced open (see forcedOpen):
+              the fold could not take effect, and a click would only store a
+              preference that surfaces later. */}
+          {!forcedOpen && (
+          <button
+            type="button"
+            onClick={toggleRoster}
+            aria-pressed={railed}
+            className={cn(
+              'hidden md:flex items-center justify-center rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer',
+              railed ? 'flex-col gap-0.5 w-12 px-0.5 py-1' : 'w-7 h-7',
+            )}
+            aria-label={t(railed ? 'pages.membersPage.expand_roster' : 'pages.membersPage.collapse_roster')}
+            title={t(railed ? 'pages.membersPage.expand_roster' : 'pages.membersPage.collapse_roster')}
+            data-testid="member-roster-toggle"
+          >
+            {railed ? (
+              <>
+                <ChevronsRight size={16} className="lucide-inline shrink-0" aria-hidden="true" />
+                <span className="text-[10px] leading-3 font-medium max-w-full truncate" data-testid="member-roster-toggle-label">
+                  {t('pages.membersPage.expand_roster_short')}
+                </span>
+              </>
+            ) : (
+              <PanelLeftLight size={16} />
+            )}
+          </button>
+          )}
+          {/* The page's only heading. In the rail it stays mounted sr-only so
+              768–1023 keeps its heading landmark; the visible title returns
+              with the unfold. */}
+          {railed && <h1 className="sr-only">{t('pages.membersPage.title')}</h1>}
+          {!railed && (
+            /* pl-1.5 is the sidebar's title inset below md, where the toggle
+               is hidden (single-pane: nothing to fold), and whenever the
+               roster is forced open (no toggle to lead); otherwise at md+ the
+               toggle leads and the inset is its own gap. The page icon leads
+               the title where the sidebar's reads bare, because this header
+               names a page, not a pane. */
+            <div className={cn('flex items-center gap-1.5 min-w-0 flex-1 pl-1.5', !forcedOpen && 'md:pl-0')}>
+              <Users size={15} className="lucide-inline text-muted shrink-0" />
+              <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
+            </div>
+          )}
           {/* Adding a member IS creating a crew, and the crew manager is the
               only write path — so this is a navigation, not an inline form.
               It lands ON the create form, not on the crew list (#9513). */}
@@ -1371,6 +1530,22 @@ export default function MembersPage() {
             <UserPlus size={15} />
           </button>
         </div>
+        {/* Everything between the header and the rows is prose or a field —
+            the count line, notices, the search row, filter chips. None of it
+            fits a 56px rail, and none of it is lost: unfolding brings it
+            back. The rows below carry the roster's live signals (presence,
+            patrol, unread) on the avatar, so the rail keeps those. */}
+        <AnimatePresence initial={false}>
+        {!railed && (
+        <motion.div
+          key="roster-prose"
+          className="flex flex-col shrink-0 min-w-0"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={reduceMotion ? { duration: 0 } : FOLD_TWEEN}
+          data-testid="member-roster-prose"
+        >
         <div className={`px-4 pb-2 ${ROW_STATUS_CLS} text-muted`} data-testid="member-count">
           {/* "N of M" while any filter (not the search) narrows the list, so
               the header never contradicts a 1-row or empty view below it.
@@ -1546,12 +1721,15 @@ export default function MembersPage() {
             {t('pages.membersPage.member_gone_roster', { name: gone.name })}
           </div>
         )}
+        </motion.div>
+        )}
+        </AnimatePresence>
         <ul
           className={`${LIST_BODY_CLS} list-none m-0`}
           style={{ scrollbarWidth: 'none' }}
           aria-label={t('pages.membersPage.title')}
         >
-          {loaded && !loadError && members.length === 0 && (
+          {rosterEmpty && (
             <li className="px-4 py-6 text-xs text-muted">
               <p>{t('pages.membersPage.empty_roster')}</p>
               {/* The copy only says there is no one yet; this button IS the
@@ -1567,7 +1745,7 @@ export default function MembersPage() {
               </button>
             </li>
           )}
-          {loadError && (
+          {!railed && loadError && (
             /* The shared notice, not a bare alert: a read failure on a list
                that holds no draft, so the agent hand-off is safe here. */
             <li className="px-2 py-4">
@@ -1579,7 +1757,7 @@ export default function MembersPage() {
               />
             </li>
           )}
-          {filteredOut && (
+          {!railed && filteredOut && (
             <li className="px-4 py-6 text-xs text-muted" data-testid="member-filtered-out">
               <p>{t('pages.membersPage.filters_hide_all')}</p>
               <button
@@ -1592,7 +1770,7 @@ export default function MembersPage() {
               </button>
             </li>
           )}
-          {sortedMembers.map((m) => (
+          {visibleRows.map((m) => (
             <li key={m.name} className="group/row relative">
               {/* ChatSidebar's own row recipe (components/listShell), so the
                   two conversation lists read as one family; pr-8 widens the
@@ -1611,9 +1789,13 @@ export default function MembersPage() {
                 ref={m.name === activeName ? scrollActiveRowIntoView : undefined}
                 className={cn(
                   'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
-                  ROW_BOX_CLS, 'pr-8',
+                  // Rail: the face alone, centred in the 56px card, the row's
+                  // vertical rhythm kept (py-2). The name stays in the DOM for
+                  // AT and moves to the hover title for everyone else.
+                  railed ? 'justify-center px-0 py-2 rounded-md' : cn(ROW_BOX_CLS, 'pr-8'),
                   m.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
                 )}
+                title={railed ? (m.last_message ? `${m.name}${PROJECT_SEPARATOR}${m.last_message}` : m.name) : undefined}
                 aria-current={m.name === activeName ? 'true' : undefined}
               >
                 <span className="relative shrink-0">
@@ -1688,8 +1870,34 @@ export default function MembersPage() {
                       )
                     })()}
                   </AnimatePresence>
+                  {/* Rail: the unread mark moves onto the avatar's free corner
+                      (top-left — presence has bottom-right, patrol top-right)
+                      because the row's right edge is gone. Same size, same
+                      fill, same accessible name as the row-edge dot below. */}
+                  {railed && isUnread(m) && (
+                    <span
+                      className="absolute -left-0.5 -top-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg"
+                      style={{ background: 'var(--accent)' }}
+                      role="img"
+                      aria-label={t('pages.membersPage.unread_message')}
+                      data-testid="member-unread-dot"
+                    />
+                  )}
                 </span>
-                <span className="min-w-0 flex-1">
+                {/* Rail: the label fades with the column (same tween as the
+                    width) and the name stays for AT as sr-only text; the
+                    hover title above carries it for everyone else. */}
+                {railed && <span className="sr-only">{m.name}</span>}
+                <AnimatePresence initial={false}>
+                {!railed && (
+                <motion.span
+                  key="label"
+                  className="min-w-0 flex-1"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={reduceMotion ? { duration: 0 } : FOLD_TWEEN}
+                >
                   <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{m.name}</span>
                   {/* Last-message preview, like a session row — presence
                       already rides the avatar dot, so a textual Idle/Working
@@ -1697,14 +1905,16 @@ export default function MembersPage() {
                   <span className={`block ${ROW_STATUS_CLS} text-muted truncate`}>
                     {m.last_message || '\u00a0'}
                   </span>
-                </span>
+                </motion.span>
+                )}
+                </AnimatePresence>
                 {/* Unread marker on the row's right edge — the IM convention
                     (and where the rail badge sits), vertically centered by the
                     row's items-center. Accent-filled w-2 h-2 like ChatSidebar's
                     unread dot, with a real accessible name: nothing else on
                     the row says "unread". The left side is taken — presence
                     rides the avatar. */}
-                {isUnread(m) && (
+                {!railed && isUnread(m) && (
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
                     style={{ background: 'var(--accent)' }}
@@ -1719,6 +1929,7 @@ export default function MembersPage() {
                   (touch has no hover or keyboard focus to reveal it), hover /
                   focus-revealed at md+ so a desktop roster stays quiet. Never
                   hidden from AT — opacity, not display. */}
+              {!railed && (
               <button
                 type="button"
                 onClick={(e) => {
@@ -1743,6 +1954,7 @@ export default function MembersPage() {
                   {...(m.starred ? { fill: 'var(--accent)', stroke: 'none' } : {})}
                 />
               </button>
+              )}
             </li>
           ))}
         </ul>
@@ -1751,6 +1963,7 @@ export default function MembersPage() {
             way (absolute, 12px rounded-xl corner inset), so the two pages' edges
             read as one control. md+ only — below md the page is single-pane and
             there is nothing to resize. */}
+        {!railed && (
         <div className="hidden md:block" data-testid="member-roster-resize">
           <ResizeHandle
             handleProps={roster.handleProps}
@@ -1763,6 +1976,7 @@ export default function MembersPage() {
             className="absolute top-0 -right-[3px] h-full z-10"
           />
         </div>
+        )}
       </aside>
 
       {/* DM thread */}
@@ -2619,13 +2833,13 @@ export default function MembersPage() {
                       panelHidden={panelHidden}
                       /* Docked: permanent — no onClose, so the strip renders no
                          close control and Escape inside a view does nothing.
-                         `extraReserveW` keeps the live roster width plus the
-                         page's gaps clear on top of the shell reserve, so a drag
-                         can never fold the thread to nothing (the contract the
-                         old drawer's reserveWidth carried). Overlay: the panel
-                         covers the thread, so nothing to reserve. */
+                         `extraReserveW` keeps the live roster width (rail or
+                         column), the page's gaps and the docked thread floor
+                         clear on top of the shell reserve, so a drag can never
+                         fold the thread below THREAD_DOCKED_MIN_W. Overlay: the
+                         panel covers the thread, so nothing to reserve. */
                       onClose={beside ? undefined : closeOverlay}
-                      extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
+                      extraReserveW={beside ? rosterW + PANEL_GAPS_W + THREAD_EXTRA_RESERVE_W : 0}
                       /* Phone only (see panelFillWidth): the overlay fills the
                          window. Off the phone this is undefined and the panel
                          sizes itself. */

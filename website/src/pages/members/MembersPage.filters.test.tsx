@@ -103,6 +103,11 @@ async function openFilters() {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  // These cases read the search row and the count line, which the roster only
+  // shows unfolded. happy-dom's default innerWidth (1024) sits exactly on the
+  // fold boundary (rosterIsRail: rail below lg), so pin a wide window rather
+  // than lean on the default.
+  Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true, writable: true })
 })
 
 describe('matchesSource', () => {
@@ -355,4 +360,19 @@ describe('MembersPage star', () => {
     fireEvent.click(screen.getByTestId('member-star-pkg-b'))
     await waitFor(() => expect(screen.queryByTestId('member-star-error')).toBeNull())
   })
+
+  it('a failed star write forces the roster open (rail yields) so its notice is visible, and the fold toggle steps aside', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true, writable: true })
+    ;(api.updateKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Forbidden'))
+    await renderPage()
+    const roster = screen.getByTestId('member-roster')
+    expect(roster).toHaveAttribute('data-rail', 'true')
+    // The rail has no star; unfold, star, and let the write fail.
+    fireEvent.click(screen.getByTestId('member-roster-toggle'))
+    fireEvent.click(await screen.findByTestId('member-star-pkg-a'))
+    await screen.findByTestId('member-star-error')
+    expect(screen.getByTestId('member-roster')).not.toHaveAttribute('data-rail')
+    expect(screen.queryByTestId('member-roster-toggle')).toBeNull()
+  })
+
 })
