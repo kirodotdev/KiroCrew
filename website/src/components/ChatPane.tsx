@@ -36,7 +36,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, SLOT_DETAIL_MAX_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -468,26 +468,40 @@ export default function ChatPane({
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —
   // live updates arrive through the WS store routing, not a refetch).
-  // Unbounded while streaming is deliberate, not a raw-row guard: the handler
-  // collapses chunk runs BEFORE computing total and slicing, even mid-stream.
-  // A background slot's stream state reads idle until an SSE frame arrives, so
-  // the slot record is the signal; latch only once unbounded so a turn that starts
-  // while the bounded fetch is still in flight can still upgrade it.
-  const limitRef = useRef<number | undefined>(PANE_HYDRATE_LIMIT)
-  const limitLatched = useRef(false)
-  if (!limitLatched.current && (running || paneSlot?.running)) {
-    limitRef.current = undefined
-    limitLatched.current = true
-  }
-  const hydrateLimit = limitRef.current
-  const { data: slotDetail, isError: slotDetailFailed, refetch: refetchSlotDetail } = useQuery({
-    queryKey: ['slot-messages', slotKey, hydrateLimit],
+  // Bounded whether or not the slot is running (#10005). A running slot used to
+  // lift the bound and latch it, on the theory that a limit would slice the
+  // in-flight response's raw chunk rows; the handler collapses chunk runs
+  // BEFORE it computes total and slices, so that hazard never existed, and the
+  // lift made a long-lived thread (a Crew Members DM is almost always running)
+  // pull and render its whole persisted transcript on every open. The rows a
+  // turn produces reach the pane over the WS routing, not this fetch, so a
+  // bounded page is all the history the pane has to fetch.
+  // Older history is reached in place through the
+  // transcript's earlier-history bar: each press re-asks the handler for a
+  // wider newest-N window (whole pages up to the handler's own cap), and
+  // `hydrateSlotMessages` accepts the wider bounded page over the held one. At
+  // the cap the bar stays: the next press takes the explicit full-history read
+  // (no limit), which the reducer accepts as the final, widest page -- so a
+  // thread longer than the cap never loses its earliest rows, and the only
+  // unbounded read is the one the reader asked for. Reset per slot, so a pane
+  // rebound to another slot starts at one page again.
+  const [hydrateLimit, setHydrateLimit] = useState<number | undefined>(PANE_HYDRATE_LIMIT)
+  useEffect(() => { setHydrateLimit(PANE_HYDRATE_LIMIT) }, [slotKey])
+  const { data: slotDetail, isError: slotDetailFailed, isFetching: slotDetailFetching, refetch: refetchSlotDetail } = useQuery({
+    queryKey: ['slot-messages', slotKey, hydrateLimit ?? 'all'],
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
     staleTime: Infinity,
   })
   useEffect(() => {
     if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running }))
-  }, [slotDetail, slotKey, dispatch, hydrateLimit])
+  }, [slotDetail, slotKey, hydrateLimit, dispatch])
+  const widenHydrate = useCallback(() => {
+    setHydrateLimit((l) => {
+      if (l === undefined) return undefined
+      // Below the cap: one page wider. At the cap: the full history.
+      return l < SLOT_DETAIL_MAX_LIMIT ? Math.min(SLOT_DETAIL_MAX_LIMIT, l + PANE_HYDRATE_LIMIT) : undefined
+    })
+  }, [])
 
   // Scroll follow (auto-pin, release, jump pill) is owned by the virtualizer
   // inside ChatMessageList — growth on EARLIER rows (a tool result updating, a
@@ -1255,6 +1269,15 @@ export default function ChatPane({
             onScroll: onScrollPin,
             onAtBottomChange: setIsAtBottom,
             scrollerStyle: { paddingTop: 12, paddingBottom: 12, minHeight: 0 },
+            // A host with no full session to open (the Crew Members DM) loads the
+            // earlier history in place: the bar widens the bounded window a page
+            // at a time and, at the handler's cap, takes the full-history read,
+            // so the newest-50 page the pane opens on is never the end of the
+            // road (#10005). Suppressed on the active slot (it renders the store's
+            // full history) and wherever `onOpenFull` offers the session instead.
+            earlier: warmHasMore && slotKey !== activeSlot && !onOpenFull
+              ? { hasMore: true, loading: slotDetailFetching, failed: slotDetailFailed, onLoad: widenHydrate, handOff: false }
+              : undefined,
             aboveRows: (
               <>
                 {slotDetailFailed && (

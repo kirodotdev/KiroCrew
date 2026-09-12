@@ -361,6 +361,9 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
   state.slotServerTotalSeq,
   state.thinkingOrphans,
+  // `slotClearSeq` is deliberately NOT here: it is the generation an in-flight
+  // fetch compares against, and an eviction is one of the events it must count
+  // (see noteSlotCleared), so it has to outlive the slot.
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
@@ -405,6 +408,10 @@ const evictSlotState = (state: ChatState, slotKey: string): void => {
   for (const m of slotKeyedMaps(state)) {
     for (const spelling of spellings) delete m[spelling]
   }
+  // The transcript this key named is gone; a page fetched for it must not land
+  // in a slot later recreated under the SAME key (deterministic app slot keys
+  // make that an ordinary flow), so move the key's generation.
+  noteSlotCleared(state, slotKey)
   evictMcpApps(state, slotKey)
   state.slotHistory = (state.slotHistory ?? []).filter(k => k !== slotKey)
   // An evicted slot cannot serve as the failed-switch fallback either: an
@@ -910,6 +917,16 @@ interface ChatState {
    *  turn issues can supersede it and still keep the rows it never fetched.
    *  Absent once superseded, so the upgrade happens at most once per slot. */
   slotPaneBounded: Record<string, number>
+  /** Per-key GENERATION of the transcript a slot key names: moved by a `/clear`
+   *  of the cache (`clearSlotCache`) or the live view (`clearMessages`) and by the
+   *  slot's eviction (`evictSlotState`). A warm captures it before its fetch and
+   *  declines its page when it moved: the page was built from a transcript that
+   *  no longer exists under that key, and writing it back would resurrect it --
+   *  into the same slot after a clear, or into a slot RECREATED under the same
+   *  key after a delete. Survives eviction on purpose (not in `slotKeyedMaps`):
+   *  a counter that died with the slot would read `undefined` both before and
+   *  after a delete-and-recreate and see no move. */
+  slotClearSeq: Record<string, number>
   /** The server's own message count for a slot, as of the last slot-detail fetch.
    *
    *  This exists to tell two indistinguishable populations apart at the warm
@@ -1076,6 +1093,7 @@ const initialState: ChatState = {
   slotMessages: {},
   slotPaneHasMore: {},
   slotPaneBounded: {},
+  slotClearSeq: {},
   slotServerTotal: {},
   slotServerTotalSeq: {},
   thinkingOrphans: {},
@@ -1450,10 +1468,10 @@ export const SLOT_DETAIL_MAX_LIMIT = 500
  * door involved -- and, because the whole transcript is replaced at once, the
  * reader's saved position with it.
  *
- * Order matters here: bounding this is only safe once a streaming response can
- * leave a comparable baseline behind (`retainServerTotal`). Without one the
- * coverage check cannot prove overlap, and every streaming switch would take the
- * unbounded RETRY instead — the same payload, one round-trip later.
+ * The coverage check compares ROWS (`slotCoverageShortfall`), not the retained
+ * server count, so it needs no baseline to prove overlap; the baseline a running
+ * bounded read leaves behind (`retainServerTotal`, in settled units) serves the
+ * warm's rewind detection, not this check.
  */
 export function slotSwitchFetchLimit(input: {
   cached: number
@@ -1666,6 +1684,33 @@ function tailNotInPage(tail: ChatMessage[], page: ChatMessage[]): ChatMessage[] 
   return tail.filter(m => !rowIdentities(m).some(id => seen.has(id)))
 }
 
+/** `tailNotInPage` for LIVE frames that raced a hydrate page. Two identities, two
+ *  different hazards, so neither is trusted alone:
+ *
+ *  - A row that already carries a `mid` is matched on it through the one anchor
+ *    invariant every bounded-page comparison in this file runs on
+ *    (`idAnchorsOneRow`): the id must name exactly ONE row on each side and the two
+ *    rows must not contradict each other on `ts`. `meta.mid` is minted only when
+ *    absent (`_ChatSlot.append`), so a caller CAN post one twice; a bare set lookup
+ *    would then read the newer of two distinct rows as a copy of the older and drop
+ *    it. Declining keeps both -- a transient double the next warm reconciles, which
+ *    is what an undeduped hydrate did before.
+ *  - A row the server has not yet named is known only by its `sendId`, a client
+ *    one-shot the backend stores opaquely; a caller repeating one across two valid
+ *    sends puts the same `send:` identity on two DISTINCT rows, so it is consulted
+ *    only for the unconfirmed row, never to match a row that has a `mid`. */
+function liveTailNotInPage(tail: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
+  const seen = new Set<string>()
+  for (const m of page) for (const id of rowIdentities(m)) seen.add(id)
+  const tailCounts = midOccurrences(tail)
+  const pageCounts = midOccurrences(page)
+  return tail.filter(m => {
+    const mid = m.meta?.mid
+    if (typeof mid === 'string' && mid) return !idAnchorsOneRow(mid, tail, page, tailCounts, pageCounts)
+    return !rowIdentities(m).some(id => seen.has(id))
+  })
+}
+
 /** Epoch ms for a transcript `ts`, or `null` when it cannot be read.
  *
  *  One transcript can carry both offset-aware and naive rows — current builds
@@ -1702,6 +1747,16 @@ export function transcriptTsMs(ts: string | undefined): number | null {
   return Number.isNaN(ms) ? null : ms
 }
 
+
+/** Record that the transcript a slot key names was discarded -- by a `/clear`
+ *  or by the slot's eviction -- so an in-flight fetch that predates it can tell
+ *  (`warmSlotCache`). Monotonic per key and NOT evicted with the slot, so a
+ *  delete-and-recreate under the same key reads as a move. */
+function noteSlotCleared(state: ChatState, key: string): void {
+  if (!state.slotClearSeq) state.slotClearSeq = {}
+  const k = safeKey(key)
+  state.slotClearSeq[k] = (state.slotClearSeq[k] ?? 0) + 1
+}
 /** The ONE writer of a slot's pane transcript and its "has older history" marker.
  *
  *  The two must describe the SAME array. A `true` beside a complete transcript
@@ -1895,33 +1950,19 @@ function pagingCursorAfterKeptHead(
   return { hasMore, nextBefore: nextBefore - headRows }
 }
 
-/** SINGLE writer for the retained per-slot server count, so the three reducers
- *  that consume a slot-detail payload cannot drift apart on it. A warm reads this
- *  to tell a truncated row from one the page was merely built too early to carry,
+/** SINGLE writer for the retained per-slot server count, so the reducers that
+ *  consume a slot-detail payload cannot drift apart on it. A warm reads this to
+ *  tell a truncated row from one the page was merely built too early to carry,
  *  which only works if whichever fetch ran last left its count behind. A count of
  *  0 is written like any other: the server reporting an empty slot is a fact, and
  *  treating it as absent would read a later non-zero count as growth.
  *
- *  A running count is refused only when the read was UNBOUNDED, which is where the
- *  incomparability actually lives: the unbounded branch counts raw rows, so a
- *  streaming response is inflated by rows that collapse at turn end, and retaining
- *  it makes the next warm read that ordinary collapse as a truncation and suppress
- *  the rescue, dropping a live row. A BOUNDED read is collapsed by the handler
- *  before it slices (`_collapse_wire_rows`), so its count is already in the same
- *  units as a settled one and refusing it buys nothing.
- *
- *  Refusing every running count -- which is what this did -- manufactured the
- *  absence it was trying to avoid guessing from. A slot that streams for most of
- *  its life then has NO baseline at all, and the switch's coverage check treats an
- *  absent baseline as unproven overlap and refetches the whole transcript: measured
- *  on a phone as one switch turning 305 loaded messages into 6,203, with the tab
- *  eventually killed. So the narrow refusal is not an optimization -- declining a
- *  comparable count is what produced the guess.
- *
- *  `boundedRead` absent still refuses while running, so a caller that cannot say
- *  keeps the conservative answer. */
-function retainServerTotal(state: ChatState, key: string, total: number | undefined, running?: boolean, seq?: number, boundedRead?: boolean): void {
-  if (running && !boundedRead) return
+ *  Only a count in SETTLED units is retained (#10005) -- the units the warm's
+ *  `serverShrank` comparison is made in. Callers derive it with `settledTotalOf`,
+ *  which is `undefined` for a count that cannot be put in those units, and an
+ *  undefined count is refused here. See that helper for the two inflations a raw
+ *  count carries and how each read shape gets past them. */
+function retainServerTotal(state: ChatState, key: string, total: number | undefined, seq?: number): void {
   if (typeof total !== 'number' || !Number.isFinite(total)) return
   if (!state.slotServerTotal) state.slotServerTotal = {}
   if (!state.slotServerTotalSeq) state.slotServerTotalSeq = {}
@@ -1935,14 +1976,67 @@ function retainServerTotal(state: ChatState, key: string, total: number | undefi
   if (typeof seq === 'number') state.slotServerTotalSeq[safeKey(key)] = seq
 }
 
+/** The count a BOUNDED page will report once its turn settles: its `total` less the
+ *  pending permission cards the bounded corpus keeps and the settled one drops
+ *  (every permission row the handler leaves in the window is pending -- answered
+ *  ones are excluded by `_is_answered_permission`). A settled page has none, so
+ *  this is the identity on it. `undefined` when the payload carries no count.
+ *  See retainServerTotal for why a running count must be in these units. */
+function settledBoundedTotal(page: { total?: unknown; messages: ReadonlyArray<{ role?: string }> }): number | undefined {
+  if (typeof page.total !== 'number' || !Number.isFinite(page.total)) return undefined
+  let pending = 0
+  for (const m of page.messages) if (m.role === 'permission') pending += 1
+  return Math.max(0, page.total - pending)
+}
+
+/** A slot-detail response's count in SETTLED units -- what the bounded handler
+ *  reports once the turn is over -- or `undefined` when the response cannot say.
+ *
+ *  Two read shapes, two inflations:
+ *  - A BOUNDED read's `total` is the collapsed corpus, but that corpus keeps every
+ *    PENDING permission card and drops answered ones (`_UNOWED_WINDOW_ROLES`), so
+ *    mid-turn it exceeds the settled count by the cards in the page:
+ *    `settledBoundedTotal` subtracts them. Raw, the next settled warm read that
+ *    fall as a truncation and dropped its rescued tail.
+ *  - An UNBOUNDED read's `total` is the RAW row count -- a `done` per finished
+ *    turn, chunk rows while streaming -- and cannot be corrected from here. But an
+ *    unbounded read is the WHOLE transcript, and its `messages` come back prepared
+ *    (`_prepare_messages`: `done` dropped, a chunk run collapsed to one row), so
+ *    the persisted durable rows among them ARE the settled count. Counting those
+ *    (`isDurableRow`: no card, no in-flight row, no queued bubble) is how a
+ *    complete unbounded read still leaves a baseline -- refusing it left a slot
+ *    whose only read was an empty-view refresh with none, so a remote regeneration
+ *    of its reply was never recognised and the warm restored the superseded copy.
+ *    A partial unbounded read (`hasMore`) has no such derivation, and a RUNNING
+ *    complete one is short by the in-flight row; both yield `undefined`. */
+function settledTotalOf(page: {
+  total?: unknown
+  messages: ReadonlyArray<{ role?: string }>
+  hasMore?: boolean
+  boundedRead?: boolean
+  running?: boolean
+}): number | undefined {
+  if (page.boundedRead) return settledBoundedTotal(page)
+  // A partial read has no derivation. A RUNNING complete read has one that is
+  // short by the in-flight row (`isDurableRow` excludes the collapsed `streaming`
+  // row the bounded count keeps): an under-count is safe against a false shrink
+  // but hides a later one-row rewind (`serverShrank` needs `total < prior`), so
+  // it is not offered either -- the bounded page's count carried as
+  // `comparableTotal` is exact there, and a caller with none retains nothing.
+  if (page.hasMore || page.running) return undefined
+  let durable = 0
+  for (const m of page.messages) if (isDurableRow(m)) durable += 1
+  return durable
+}
+
 async function fetchSlotDetail(key: string, limit?: number) {
-  // A limit takes the handler's most-recent-N slice. `undefined` keeps the
-  // unbounded shape, which a STREAMING warm/switch fetch still takes
-  // (deliberate, though the handler collapses before slicing). refreshSlot
-  // replaces the active transcript in place, so it cannot take a FIXED bound
-  // (that would shrink history the user already paged in) — it passes a
-  // COUNT-MATCHED one instead, see REFRESH_LIMIT_CEILING. Omit the arg when
-  // unbounded to keep the one-arg shape.
+  // A limit takes the handler's most-recent-N slice. `undefined` is the
+  // unbounded shape: an EMPTY active view on refreshSlot, and the coverage
+  // RETRY switchSlot / warmSlotCache take once a bounded window is observed
+  // to miss cached rows. refreshSlot replaces the active transcript in place,
+  // so it cannot take a FIXED bound (that would shrink history the user
+  // already paged in) — it passes a COUNT-MATCHED one instead, see
+  // REFRESH_LIMIT_CEILING. Omit the arg when unbounded to keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   type QueueItem = string | { content: string; id: string }
   return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
@@ -2031,9 +2125,9 @@ export const switchSlot = createAsyncThunk<
     const _newestSlotTs = () => (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.last_ts
     // Bounded to the page size so opening a long session costs one page, not the
     // whole chained transcript; `loadOlderMessages` walks back from the cursor
-    // this fetch returns. Unbounded while the slot is streaming, for the same
-    // reason warmSlotCache and ChatPane's hydrate are -- deliberately, not because a
-    // bound would cut raw rows: the handler collapses chunk runs BEFORE it slices.
+    // this fetch returns. Bounded while the slot is streaming too, as warmSlotCache
+    // and ChatPane's hydrate are: the handler collapses chunk runs BEFORE it
+    // slices, so a bound never cut raw rows, and coverage is verified below.
     // `slotRun` and not `selectSlotStreamState`: switchSlot.pending has already
     // assigned `activeSlot = key` by the time this body runs, so that selector
     // would always take its active-slot branch and report `slotState`, which
@@ -2082,7 +2176,7 @@ export const switchSlot = createAsyncThunk<
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
         if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
-        return { ...wide, comparableTotal: first.total }
+        return { ...wide, comparableTotal: settledBoundedTotal(first) }
       }
       if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
       return first
@@ -2735,6 +2829,99 @@ function mergePreservedClientTs<M extends { role: string; content: string; ts?: 
  *  shape rather than truncate. */
 export const REFRESH_LIMIT_CEILING = 500
 
+/** The rows a `mid`-keyed cut can see: durable AND stamped. A view also holds
+ *  client-only rows (a `thinking` block, a `permission` card, a `queued` bubble)
+ *  and legacy rows written before the backend stamped `mid`; neither can anchor. */
+function identifiedServerRows(view: ChatMessage[]): ChatMessage[] {
+  return view.filter(
+    m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
+  )
+}
+
+/** Is this bounded page safe to hand a reducer that REPLACES `viewNow` with it?
+ *
+ *  It is, on any one of three counts -- and each is a different relationship
+ *  between the page's range and the view's, not a restatement:
+ *
+ *    1. the page reaches the START of history (`!hasMore`), so it covers the
+ *       view whatever the identities are;
+ *    2. the page CONTAINS the view's oldest identified row, so it spans everything
+ *       the view holds -- a floor's over-request lands here, and a superset can
+ *       lose nothing;
+ *    3. the page's own oldest row is IN the view, so the ranges overlap and
+ *       `olderHeadAbovePage` can cut a head to keep above it.
+ *
+ *  Returns WHICH count held (`null` for none), because they are not equally
+ *  safe for every caller: only `overlaps` gives the reducer a cut, so a view
+ *  with an unidentified head (`unidentifiedDurableHead`) is safe under
+ *  `overlaps` and `complete` but not under `spans` alone.
+ *
+ *  None of the three: the server gained at least a window's worth of rows during
+ *  the gap, so page and view are FULLY DISJOINT and a reducer -- correctly
+ *  declining to guess a cut it has no identity for -- would drop every loaded row
+ *  or splice the page on with a silent hole. The caller refetches unbounded there:
+ *  one extra round trip in exactly the case a slice cannot be stitched.
+ *
+ *  This is the reducer's ACTUAL need, and deliberately NOT full multiset coverage
+ *  (`slotCoverageShortfall`, which `switchSlot` runs on a cache it will replace
+ *  without a head-keeping cut). A row the view holds that is NEWER than the
+ *  window's newest is a tail the reducer rescues (`tailNotInPage`), and a row
+ *  pushed above the window's oldest is a head it keeps -- neither is a hole, and
+ *  counting them as one would send every warm of a busy or long-held pane to the
+ *  unbounded read this bound exists to avoid.
+ *
+ *  Counts, not membership. A `Set.has` / `Array.some` answers "SOME row carries
+ *  this id", and a caller-repeated `meta.mid` makes that true while pointing at a
+ *  DIFFERENT occurrence than the one meant -- so the page reads as safe and the
+ *  reducer then cuts at the wrong row and drops visible history. Both tests
+ *  therefore go through the one anchor invariant, in its strict `requireTs` form:
+ *  a decline here costs one round trip, so it can afford to.
+ *
+ *  Pass the view as it is NOW, not the snapshot the limit was sized from: rows
+ *  prepended during the await are exactly the scrollback a wrong decision
+ *  strands, and they can make an anchor that was unique in the old view AMBIGUOUS
+ *  in the new one. The limit itself is not re-derived -- a page that is now too
+ *  small simply fails these checks and the caller refetches unbounded, which is
+ *  the safe direction. `viewNow` can be empty even though the pre-fetch count was
+ *  positive (a `clearMessages` landing in the await), so the oldest-row anchor is
+ *  guarded rather than indexed blind. */
+type PageStitch = 'complete' | 'spans' | 'overlaps'
+
+function pageStitchesOntoView(
+  page: { messages: ChatMessage[]; hasMore: boolean },
+  viewNow: ChatMessage[],
+): PageStitch | null {
+  if (!page.hasMore) return 'complete'
+  const serverRowsNow = identifiedServerRows(viewNow)
+  const viewCounts = midOccurrences(viewNow)
+  const pageCounts = midOccurrences(page.messages)
+  const anchors = (id: unknown): boolean =>
+    idAnchorsOneRow(id, viewNow, page.messages, viewCounts, pageCounts, { requireTs: true })
+  // `overlaps` first: it is the one the head-keeping cut can act on, so a caller
+  // that must know whether a cut exists reads it before `spans`.
+  if (anchors(page.messages[0]?.meta?.mid)) return 'overlaps'
+  if (serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)) return 'spans'
+  return null
+}
+
+/** Does a durable row WITHOUT a `mid` sit above (older than) the view's oldest
+ *  identified row? Such a head is invisible to every `mid`-keyed cut: a page that
+ *  merely SPANS the oldest identified row has an unanchorable oldest row of its
+ *  own, so a reducer replacing everything above the cut it cannot find drops the
+ *  head. Legacy history written before the backend stamped `mid` is the case.
+ *  Rows BELOW the oldest identified row are not asked about: a client-minted
+ *  `error` or `notice` bubble lives there, and it is rescued as tail or, once the
+ *  next turn appends identified rows behind it, reconciled away -- the same fate
+ *  an unbounded read hands it, so it must not send a warm unbounded. */
+function unidentifiedDurableHead(view: ChatMessage[]): boolean {
+  for (const m of view) {
+    if (!isDurableRow(m)) continue
+    if (typeof m.meta?.mid === 'string' && m.meta.mid.length > 0) return false
+    return true
+  }
+  return false
+}
+
 export const refreshSlot = createAsyncThunk(
   'chat/refreshSlot',
   async (key: string, { getState }) => {
@@ -2769,10 +2956,7 @@ export const refreshSlot = createAsyncThunk(
      * `want === held` a page of `held` rows cannot hide an unidentified row. The
      * limit reaches a handler that slices DISK, and disk has no client-only rows, so
      * only durable ones may be counted against it. */
-    const serverRows = view.filter(
-      m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
-    )
-    const held = serverRows.length
+    const held = identifiedServerRows(view).length
     const want = Math.max(held, PANE_HYDRATE_LIMIT)
     /* The FLOOR is the one over-request, and mixed history is where it bites.
      *
@@ -2801,58 +2985,13 @@ export const refreshSlot = createAsyncThunk(
     if (!bounded) return fetchSlotDetail(key)
     const page = await fetchSlotDetail(key, want)
     /* Is this page safe to hand a reducer that REPLACES the transcript with it?
-     * It is, on any one of three counts -- and each is a different relationship
-     * between the page's range and the view's, not a restatement:
-     *
-     *   1. the page reaches the START of history (`!hasMore`), so it covers the
-     *      view whatever the identities are;
-     *   2. the page CONTAINS the view's oldest row, so it spans everything the
-     *      view holds -- the floor's over-request lands here, and a superset can
-     *      lose nothing;
-     *   3. the page's own oldest row is IN the view, so the ranges overlap and
-     *      `olderHeadAbovePage` can cut a head to keep above it.
-     *
-     * None of the three: the server gained at least `held` rows during the gap, so
-     * page and view are FULLY DISJOINT and the reducer -- correctly declining to
-     * guess a cut it has no identity for -- would drop every loaded row. Refetch
-     * unbounded there. One extra round trip in exactly the case a slice cannot be
-     * stitched, which keeps the alternative off the table: splicing a disjoint
-     * page onto the view publishes a transcript with a silent hole in it.
-     */
-    /* Counts, not membership. A `Set.has` / `Array.some` answers "SOME row carries
-     * this id", and a caller-repeated `meta.mid` makes that true while pointing at
-     * a DIFFERENT occurrence than the one meant -- so the page reads as safe and
-     * the reducer then cuts at the wrong row and drops visible history. Both tests
-     * below therefore go through the one anchor invariant. */
-    /* Validate against the view as it is NOW, not the snapshot the limit was sized
-     * from. `view` was read before the await, and `loadOlderMessages` can resolve
-     * inside it: the rows it prepends are exactly the scrollback a wrong decision
-     * strands, and they can also make an anchor that was unique in the old view
-     * AMBIGUOUS in the new one. Judging a page against a view that no longer exists
-     * is how it gets accepted and then cut wrong.
-     *
-     * The limit itself is not re-derived -- the request is already in flight and a
-     * page that is now too small simply fails the checks below and refetches
-     * unbounded, which is the safe direction. Re-reading is only about the DECISION.
-     *
-     * A slot switch during the await makes the whole answer moot, so it declines the
-     * same way the pre-fetch check does. */
+     * `pageStitchesOntoView` answers, against the view AS IT IS NOW rather than the
+     * snapshot the limit was sized from -- `loadOlderMessages` can resolve inside
+     * the await. A slot switch during the await makes the whole answer moot, so
+     * it declines the same way the pre-fetch check does. */
     const after = (getState() as { chat: ChatState }).chat
     if (after.activeSlot !== key) return null
-    const viewNow = after.messages
-    const serverRowsNow = viewNow.filter(
-      m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
-    )
-    const viewCounts = midOccurrences(viewNow)
-    const pageCounts = midOccurrences(page.messages)
-    const anchors = (id: unknown): boolean =>
-      idAnchorsOneRow(id, viewNow, page.messages, viewCounts, pageCounts, { requireTs: true })
-    /* `serverRowsNow` can be empty even though the pre-fetch `held` was positive --
-     * a `clearMessages` landing in the await empties the view -- so the oldest-row
-     * anchor is guarded rather than indexed blind. */
-    const spansView = serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
-    const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    return !page.hasMore || spansView || overlapsView ? page : fetchSlotDetail(key)
+    return pageStitchesOntoView(page, after.messages) ? page : fetchSlotDetail(key)
   },
 )
 
@@ -2873,19 +3012,111 @@ const configuredDefaultMemoryMode = () =>
 
 export const warmSlotCache = createAsyncThunk(
   'chat/warmSlotCache',
-  async (key: string, { getState }) => {
+  async (key: string, { getState }): Promise<
+    | null
+    | (Awaited<ReturnType<typeof fetchSlotDetail>> & { warmSeq: number; comparableTotal?: number })
+  > => {
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot === key) return null
-    // Unbounded while streaming is deliberate, not a raw-row guard: the handler
-    // collapses chunk runs BEFORE computing total and slicing, even mid-stream.
-    const streaming = (state.slotRun[key]?.state ?? 'idle') !== 'idle'
     // Captured BEFORE the fetch: two warms for one slot resolve in any order,
     // and the later-dispatched response is the newer view of the transcript.
     const warmSeq = nextWarmSeq()
-    // `switchSlot.pending` paints the active view from this cache, and a window can miss
-    // a small cache entirely once the server has grown, so refetch any of it whole.
-    const cached = state.slotMessages?.[safeKey(key)]?.length ?? 0
-    return { ...(await fetchSlotDetail(key, streaming || cached > 0 ? undefined : PANE_HYDRATE_LIMIT)), warmSeq }
+    // Bounded whether or not the slot is streaming, and bounded even when the
+    // pane already holds rows (#10005). This warm fires on EVERY background
+    // `chat_done`, so an unbounded read here re-pulled a long-lived thread's
+    // whole persisted transcript each time a turn finished -- a Crew Members DM
+    // at ~3000 rows froze the page on every reply. Neither reason it used to go
+    // unbounded holds:
+    //  - streaming: the handler collapses chunk runs BEFORE it computes total and
+    //    slices, so a bound never cut a raw chunk row, and its count -- pending
+    //    cards subtracted -- is in settled units (see retainServerTotal);
+    //  - cached rows: the fear was a window missing a small cache entirely once
+    //    the server had grown. That is a question of whether the page can be
+    //    STITCHED onto the cache, verified after the response rather than
+    //    pre-purchased with an unbounded read -- the retirement #7916 made for
+    //    switchSlot, applied to the one branch it did not revisit. The window
+    //    is sized to what the pane holds (`slotSwitchFetchLimit`, floor
+    //    PANE_HYDRATE_LIMIT -- the pane's own bound, not the active slot's
+    //    page), so it cannot shrink the cache, and the fulfilled reducer keeps
+    //    any head above the page and rescues any tail below it; only a page
+    //    that anchors into NEITHER takes the unbounded retry, one round trip
+    //    later. The cap is the handler's 500: a pane holding more than that
+    //    still gets a window that anchors, so the reducer keeps the rest as head.
+    const cachedRows = state.slotMessages?.[safeKey(key)] ?? []
+    // Every page this thunk fetches describes the transcript AS IT WAS when the
+    // request left. A `/clear` (or a delete / prune, even one followed by a
+    // recreate under the same key) landing during an await discards that
+    // transcript, and a fulfilled reducer that guards only on `activeSlot` would
+    // write the stale page back and resurrect it. So the key's generation is
+    // captured here and re-read after EACH await; a cache that held rows and now
+    // holds none, and a key missing from the loaded slot list, are read the same
+    // way (belt and braces for state shapes that predate the generation).
+    const clearSeq0 = state.slotClearSeq?.[safeKey(key)]
+    type Root = { chat: ChatState; dashboard?: { slots?: ReadonlyArray<{ key: string; created?: string }>; slotsLoaded?: boolean } }
+    // A deleted slot leaves NO trace a cold cache could show (the count is evicted
+    // with it), so the authoritative slot list is the signal there: absent from a
+    // loaded list, the slot is gone and the page must not recreate its cache.
+    const slotRecord = (root: Root) => root.dashboard?.slots?.find(s => s.key === key)
+    const slotGone = (root: Root): boolean =>
+      root.dashboard?.slotsLoaded === true && Array.isArray(root.dashboard.slots) && !slotRecord(root)
+    // A slot deleted and RECREATED under the same key mid-flight is back in the
+    // list, and a cold one left no residue for the eviction to move the
+    // generation on -- but the recreated record carries a new `created`.
+    const created0 = slotRecord(getState() as Root)?.created
+    const slotRecreated = (root: Root): boolean => {
+      const created = slotRecord(root)?.created
+      return created0 !== undefined && created !== undefined && created !== created0
+    }
+    const discardedSince = (root: Root, hadRows: boolean): boolean =>
+      root.chat.slotClearSeq?.[safeKey(key)] !== clearSeq0
+      || (hadRows && (root.chat.slotMessages?.[safeKey(key)]?.length ?? 0) === 0)
+      || slotGone(root)
+      || slotRecreated(root)
+    // Sized on DURABLE rows only: the window is spent on server rows, and counting
+    // a `thinking` block or a `permission` card into it over-reaches by that many
+    // rows on every warm -- a ratchet toward the handler ceiling. No `mid`-based
+    // pre-check here (unlike refreshSlot's floor guard): a client-minted `error`
+    // or `notice` bubble is durable-role but carries no mid and never leaves the
+    // cache (the reducer rescues it as tail on every warm), so declining on it
+    // would pin the slot to the unbounded read for the rest of the session. The
+    // stitch check below already declines a page that cannot anchor, and the
+    // reducer keeps a longer prior it cannot cut ("decline, not guess").
+    const durable = cachedRows.filter(isDurableRow)
+    const limit = slotSwitchFetchLimit({ cached: durable.length, pageLimit: PANE_HYDRATE_LIMIT })
+    const page = await fetchSlotDetail(key, limit)
+    // Judge the page against the cache as it is NOW, not the snapshot the window
+    // was sized from. The fulfilled reducer already declines a slot that became
+    // active mid-flight; decline here too rather than spend the retry on it.
+    const rootAfter = getState() as Root
+    const after = rootAfter.chat
+    if (after.activeSlot === key) return null
+    if (discardedSince(rootAfter, cachedRows.length > 0)) return null
+    const cacheNow = after.slotMessages?.[safeKey(key)] ?? []
+    // A cache with no durable row has nothing the page could strand; otherwise the
+    // page must anchor into it (`pageStitchesOntoView`, the reducer's own need,
+    // NOT `slotCoverageShortfall`'s multiset -- see that helper for why a warm
+    // cannot use the switch's predicate). A window that already reaches the start
+    // of history is the whole transcript, and a cached row it lacks was REMOVED
+    // server-side, which the reducer reads off the retained count.
+    const how = pageStitchesOntoView(page, cacheNow)
+    // `spans` alone leaves the reducer no cut (the page's own oldest row anchors
+    // nowhere), so everything above the page is replaced -- safe only when no
+    // durable row without a `mid` sits above the view's oldest identified one.
+    const stitches = !cacheNow.some(isDurableRow)
+      || how === 'complete' || how === 'overlaps'
+      || (how === 'spans' && !unidentifiedDurableHead(cacheNow))
+    if (stitches) return { ...page, warmSeq }
+    // Carry the bounded read's count forward, as switchSlot does: the unbounded
+    // handler counts RAW rows (one `done` per finished turn among them) while the
+    // bounded one counts collapsed rows, and a raw baseline makes the next bounded
+    // warm read an ordinary difference in units as a truncation. In SETTLED units
+    // (pending cards subtracted), so a mid-turn page is as safe to carry as a
+    // settled one -- see retainServerTotal.
+    const wide = await fetchSlotDetail(key)
+    const rootWide = getState() as Root
+    if (rootWide.chat.activeSlot === key) return null
+    if (discardedSince(rootWide, cacheNow.length > 0)) return null
+    return { ...wide, comparableTotal: settledBoundedTotal(page), warmSeq }
   },
 )
 
@@ -4332,7 +4563,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
+    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) { writeSlotPage(state, state.activeSlot, [], false); noteSlotCleared(state, state.activeSlot) } },
     /** A server-confirmed clear for a slot that is NOT the active view. The
      *  active-slot case routes through `clearMessages`; this one exists so a
      *  background slot's cached page cannot outlive its authoritative clear --
@@ -4343,6 +4574,7 @@ const chatSlice = createSlice({
       const slot = action.payload
       if (isUnsafeKey(slot)) return
       writeSlotPage(state, slot, [], false)
+      noteSlotCleared(state, slot)
       delete state.thinkingOrphans?.[safeKey(slot)]
       evictMcpApps(state, slot)
     },
@@ -4355,12 +4587,11 @@ const chatSlice = createSlice({
      *  hydrate fetch resolves. A dedicated `slotHydrated` flag makes it fire
      *  exactly once, so a racing frame can't make us silently drop history.
      *
-     *  One exception to "exactly once": a pane that mounts idle fetches a BOUNDED
-     *  page, and the slot can start a turn before that page lands. The pane then
-     *  refetches unbounded, and a flat one-shot would discard the wider result and
-     *  strand the pane on 50 rows. So a bounded page may be superseded once by an
-     *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
-     *  again, so this cannot loop.
+     *  One exception to "exactly once": a held bounded page may be superseded by a
+     *  WIDER one -- a wider bounded page (ChatPane's load-earlier widens its
+     *  newest-N window a page at a time, #10005) or an unbounded page. A page no
+     *  wider than the held one is refused, and an unbounded page is never
+     *  superseded, so this cannot loop.
      *  No-op for the active slot (its mirror is already live). */
     hydrateSlotMessages(state, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean }>) {
       const { slot, messages, hasMore, bounded, total, running } = action.payload
@@ -4373,15 +4604,24 @@ const chatSlice = createSlice({
         // Keep the rows the bounded page never fetched: it was written as
         // [page, ...priorRows], so everything past its length is a live tail.
         const boundedLen = state.slotPaneBounded?.[k]
-        if (bounded || boundedLen === undefined) return
+        // A page can only WIDEN the one already held: an unbounded page over a
+        // bounded one, or a bounded page with more rows than the held one (the
+        // pane's load-earlier asks for a wider newest-N window, #10005). A page no
+        // wider than what is held -- the same page landing twice, a stale
+        // narrower one -- is declined, and nothing widens an unbounded page.
+        if (boundedLen === undefined) return
+        if (bounded && messages.length <= boundedLen) return
         const prior = state.slotMessages[k] ?? []
         // The wider page is a fresh server snapshot, so it can already carry rows
         // that tail holds -- a just-sent row persists before its send is acked.
-        const tail = tailNotInPage(prior.slice(boundedLen), messages)
+        // Same rule as the first hydrate: a confirmed row matches on its `mid`
+        // through the anchor invariant, `sendId` only names an unconfirmed row
+        // (`liveTailNotInPage`), so a repeated id cannot drop a distinct live row.
+        const tail = liveTailNotInPage(prior.slice(boundedLen), messages)
         // Reasoning is broadcast-only so the wider page never carries it back.
         // Scoped to the REPLACED region: `tail` already keeps the live tail's own.
-        writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore)
-        retainServerTotal(state, slot, total, running)
+        writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore, bounded ? messages.length : undefined)
+        retainServerTotal(state, slot, settledTotalOf({ total, messages, hasMore, boundedRead: bounded, running }))
         return
       }
       const cur = state.slotMessages[slot] ?? []
@@ -4392,8 +4632,22 @@ const chatSlice = createSlice({
       if (state.slotPaneHasMore?.[k] !== undefined) return
       // Seeded frames are NEWER rows appended after the page, so the page's
       // has-more still describes what precedes it; dropping it hid the marker.
-      writeSlotPage(state, slot, [...messages, ...cur], hasMore, bounded ? messages.length : undefined)
-      retainServerTotal(state, slot, total, running)
+      // The frames that seeded `cur` arrived over WS while the page was in flight,
+      // and the WS beats the HTTP render, so the page can already carry them. A
+      // row held twice is not cosmetic: a duplicated `mid` cannot anchor
+      // (`idAnchorsOneRow` demands exactly one occurrence), so the first warm's
+      // stitch check would decline and take the unbounded read (#10005).
+      // Reasoning is broadcast-only, so a `thinking` row carries no identity and
+      // is kept as-is. A confirmed row is matched on its `mid` only -- see
+      // `liveTailNotInPage` for why a `sendId` match would drop a distinct row.
+      writeSlotPage(state, slot, [...messages, ...liveTailNotInPage(cur, messages)], hasMore, bounded ? messages.length : undefined)
+      // `bounded` is the pane's own statement that the read was bounded, which is
+      // what lets a RUNNING count seed the baseline -- in settled units, the
+      // pending cards the bounded corpus keeps subtracted (see retainServerTotal).
+      // This hydrate is the only retainer that can seed a background slot, and a
+      // Crew Members DM is almost always running, so without it such a pane would
+      // never get the baseline a later warm needs to recognise a rewind.
+      retainServerTotal(state, slot, settledTotalOf({ total, messages, hasMore, boundedRead: bounded, running }))
     },
     setVoicePlaying(state, action: PayloadAction<boolean>) { state.voicePlaying = action.payload },
     setVoiceAudio(state, action: PayloadAction<string | null>) { state.voiceAudio = action.payload },
@@ -5757,12 +6011,10 @@ const chatSlice = createSlice({
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
-        // A payload carrying `comparableTotal` came from the coverage retry: its
-        // own `total` is the raw unbounded count, the carried one is the settled
-        // bounded count, and only the latter may become the baseline.
+        // Settled units only (`settledTotalOf`); a payload from the coverage retry
+        // also carries the bounded read's normalised count as the fallback.
         const comparable = (action.payload as { comparableTotal?: number }).comparableTotal
-        retainServerTotal(state, key, comparable ?? action.payload.total, running,
-          undefined, comparable !== undefined || action.payload.boundedRead)
+        retainServerTotal(state, key, settledTotalOf(action.payload) ?? comparable)
         state.slotState = running ? 'streaming' : 'idle'
         // Mark stale permissions as resolved so ApprovalBar ignores them
         if (!running) {
@@ -5973,7 +6225,10 @@ const chatSlice = createSlice({
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
-        retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
+        // An unbounded refresh (empty view, ceiling, legacy rows) is the whole
+        // transcript, so its settled count is derived from the prepared rows -- see
+        // settledTotalOf; its raw `total` is never used.
+        retainServerTotal(state, key, settledTotalOf(action.payload))
         // Merge permission messages: prefer state perms (have frontend resolved flags)
         // but include API perms for any we don't have locally (e.g. arrived while disconnected)
         const statePerms = new Map<string, typeof state.messages[0]>()
@@ -6067,8 +6322,14 @@ const chatSlice = createSlice({
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, queue, hasMore, total, running, warmSeq } = action.payload
+        const { key, messages, queue, hasMore, running, warmSeq, comparableTotal } = action.payload
         if (isUnsafeKey(key)) return
+        // Units. `settledTotalOf` puts either read shape in settled units (a bounded
+        // read's count less its pending cards; a complete unbounded read's durable
+        // prepared rows); the bounded page's count the retry carried is the
+        // fallback. This `total` feeds the shrink and rewrite comparisons below as
+        // well as what gets retained, so all three stay in one unit.
+        const total = settledTotalOf(action.payload) ?? comparableTotal
         // Slot became active between dispatch and fulfilment — switchSlot now
         // owns its messages, so leave the cache for it to manage.
         if (state.activeSlot === key) return
@@ -6196,7 +6457,10 @@ const chatSlice = createSlice({
         const boundedLen = boundaryIdx >= 0 ? boundaryIdx + 1 : pageRows.length
         writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
           warmIsPrefix && hasMore ? boundedLen : undefined)
-        retainServerTotal(state, key, total, running, warmSeq, action.payload.boundedRead)
+        // Only a bounded count in settled units seeds the baseline -- see
+        // retainServerTotal. `total` is already in those units on both the page
+        // path and the retry path; the retry's own raw count never reaches it.
+        retainServerTotal(state, key, total, warmSeq)
         // Idle the per-slot run indicator only when the server says the turn is
         // NOT running. This is a pure non-regression gate for the reconnect
         // caller (which warms slots MID-TURN): idling is idempotent with the

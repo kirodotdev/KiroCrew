@@ -12,7 +12,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 
 import { api } from '../api/client'
-import chatReducer, { OLDER_PAGE_LIMIT, PANE_HYDRATE_LIMIT, appendSlotMessage, hydrateSlotMessages, refreshSlot, switchSlot, warmSlotCache } from '../store/chatSlice'
+import chatReducer, { OLDER_PAGE_LIMIT, PANE_HYDRATE_LIMIT, appendSlotMessage, clearSlotCache, hydrateSlotMessages, refreshSlot, switchSlot, warmSlotCache } from '../store/chatSlice'
+import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 
 vi.mock('../api/client')
 
@@ -145,20 +146,360 @@ describe('warmSlotCache hydrate bound', () => {
     expect(store.getState().chat.slotPaneHasMore['bg-slot']).toBe(false)
   })
 
-  // Unbounded while streaming is deliberate, not a raw-row guard: the handler
-  // collapses chunk runs BEFORE computing total and slicing, even mid-stream.
-  it('warms a streaming slot unbounded', async () => {
+  // Streaming is not an exception (#10005, the same retirement #7916 made for
+  // switchSlot): the handler collapses chunk runs BEFORE computing total and
+  // slicing, so a bound never cut a raw row, and this warm fires on every
+  // background chat_done -- unbounded, it re-pulled a ~3000-row Crew Members
+  // DM on every reply.
+  it('warms a streaming slot bounded', async () => {
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail)
     const store = makeStore('active-slot', { slotRun: { 'bg-slot': { state: 'streaming' } } })
     await store.dispatch(warmSlotCache('bg-slot') as never)
-    expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot')
+    expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot', PANE_HYDRATE_LIMIT)
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.every(c => typeof c[1] === 'number')).toBe(true)
   })
 
-  it('warms an idle slot bounded', async () => {
-    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail)
-    const store = makeStore('active-slot', { slotRun: { 'bg-slot': { state: 'idle' } } })
-    await store.dispatch(warmSlotCache('bg-slot') as never)
-    expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot', PANE_HYDRATE_LIMIT)
+  // A pane that already holds rows used to force the warm unbounded (#6839), on the
+  // fear that a fixed window could miss a small cache once the server had grown.
+  // Whether the page can be STITCHED onto the cache is now verified after the
+  // response instead: the window is sized to the durable rows the pane holds (never
+  // below the pane bound), and only a page that anchors into neither the cache's
+  // head nor its oldest row takes the unbounded retry.
+  describe('a pane holding rows warms through a count-matched window (#10005)', () => {
+    // One row per minute from a fixed instant, so every ts parses and orders.
+    const rows = (n: number, from = 0) => Array.from({ length: n }, (_, k) => {
+      const i = from + k
+      return msg(`row ${i}`, new Date(Date.UTC(2026, 7, 13, 0, i)).toISOString(), `m-${i}`)
+    })
+
+    it('asks for at least what the pane holds, never below the pane bound', async () => {
+      const held = rows(3)
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: held, has_more: true, total: 400 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+      expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot', PANE_HYDRATE_LIMIT)
+    })
+
+    it('grows the window to a pane that holds more than the bound, so the warm cannot shrink it', async () => {
+      const held = rows(PANE_HYDRATE_LIMIT + 7)
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: held, has_more: true, total: 400 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+      const [, limit] = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect(limit).toBe(PANE_HYDRATE_LIMIT + 7)
+      expect(limit).toBeLessThanOrEqual(500)
+    })
+
+    it('sizes the window on durable rows only, so client-only rows do not ratchet it', async () => {
+      const held = [
+        ...rows(3),
+        { role: 'thinking', content: 'reasoning', cls: '', ts: '2026-08-13T01:00:00Z' },
+        { role: 'permission', content: 'approve?', cls: '', ts: '2026-08-13T01:01:00Z', meta: { approval_id: 'a-1' } },
+      ]
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: rows(3), has_more: true, total: 400 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      // 3 durable rows -> the floor; 5 raw rows would also give the floor here, so
+      // pin the counting rule where it is observable: a pane past the bound.
+      expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot', PANE_HYDRATE_LIMIT)
+      const big = [...rows(PANE_HYDRATE_LIMIT + 2), { role: 'thinking', content: 'reasoning', cls: '', ts: '2026-08-13T05:00:00Z' }]
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: rows(PANE_HYDRATE_LIMIT + 2), has_more: true, total: 400 })
+      const store2 = makeStore('active-slot', { slotMessages: { 'bg-slot': big } })
+      await store2.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot', PANE_HYDRATE_LIMIT + 2)
+    })
+
+    it('keeps a pane larger than the handler ceiling on one bounded read: the window anchors and the head is kept', async () => {
+      // 3000 rows: the shape of the Crew Members DM this bound is for. The window
+      // is the newest 500 server rows; its oldest row IS in the cache, so the
+      // reducer keeps everything above it as head -- no retry, no shrink.
+      const held = rows(3000)
+      const window = held.slice(2500)
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: window, has_more: true, total: 3000 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+      expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot', 500)
+      expect(store.getState().chat.slotMessages['bg-slot']).toHaveLength(3000)
+    })
+
+    it('does not retry when the server grew and the window merely pushed the cache\'s oldest rows above it', async () => {
+      // The pane holds rows 0..59; two rows landed on the server that this pane never
+      // saw. The newest-60 window is rows 2..61: its oldest row anchors into the
+      // cache, so the reducer keeps rows 0..1 as head and the two new rows arrive.
+      const held = rows(60)
+      const window = [...held.slice(2), ...rows(2, 60)]
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: window, has_more: true, total: 400 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+      const contents = store.getState().chat.slotMessages['bg-slot'].map(m => m.content)
+      expect(contents[0]).toBe('row 0')
+      expect(contents).toHaveLength(62)
+      expect(contents.slice(-2)).toEqual(['row 60', 'row 61'])
+    })
+
+    it('does not retry over a live row appended while the window was in flight', async () => {
+      // A row NEWER than the window is a tail the reducer rescues, not a hole.
+      const held = rows(2)
+      let resolveWarm: (v: unknown) => void = () => {}
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise(r => { resolveWarm = r }))
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      const warm = store.dispatch(warmSlotCache('bg-slot') as never)
+      store.dispatch(appendSlotMessage({ slot: 'bg-slot', message: msg('live', '2026-08-13T11:00:00Z', 'm-live') as never }))
+      resolveWarm({ ...detail, messages: held, has_more: true, total: 3 })
+      await warm
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+      expect(store.getState().chat.slotMessages['bg-slot'].map(m => m.content)).toEqual(['row 0', 'row 1', 'live'])
+    })
+
+    it('retries unbounded only when the window anchors into neither the cache head nor its oldest row', async () => {
+      const held = rows(3)
+      // The server grew past the whole window: it holds none of the pane's rows, so
+      // the reducer could only splice it on with a hole.
+      const disjoint = rows(2, 100)
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ ...detail, messages: disjoint, has_more: true, total: 400 })
+        .mockResolvedValueOnce({ ...detail, messages: [...held, ...disjoint], has_more: false, total: 5 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      const calls = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls).toHaveLength(2)
+      expect(calls[0]).toEqual(['bg-slot', PANE_HYDRATE_LIMIT])
+      expect(calls[1]).toEqual(['bg-slot'])
+      expect(store.getState().chat.slotMessages['bg-slot'].map(m => m.content))
+        .toEqual(['row 0', 'row 1', 'row 2', 'row 100', 'row 101'])
+    })
+
+    it('discards a page when a /clear landed while the window was in flight', async () => {
+      // The page describes the transcript the clear discarded; writing it back would
+      // resurrect it into the just-cleared pane.
+      const held = rows(3)
+      let resolveWarm: (v: unknown) => void = () => {}
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise(r => { resolveWarm = r }))
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      const warm = store.dispatch(warmSlotCache('bg-slot') as never)
+      store.dispatch(clearSlotCache('bg-slot'))
+      // The backend's own confirmation row is what a later fetch would carry; this
+      // stale page carries the pre-clear rows.
+      resolveWarm({ ...detail, messages: held, has_more: true, total: 400 })
+      await warm
+      expect(store.getState().chat.slotMessages['bg-slot']).toEqual([])
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+    })
+
+    it('discards the unbounded retry too when a /clear landed during it', async () => {
+      const held = rows(3)
+      let resolveWide: (v: unknown) => void = () => {}
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ ...detail, messages: rows(2, 100), has_more: true, total: 400 })
+        .mockImplementationOnce(() => new Promise(r => { resolveWide = r }))
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      const warm = store.dispatch(warmSlotCache('bg-slot') as never)
+      // Let the bounded page land and the retry start before the clear.
+      await new Promise(r => setTimeout(r, 0))
+      await new Promise(r => setTimeout(r, 0))
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(2)
+      store.dispatch(clearSlotCache('bg-slot'))
+      resolveWide({ ...detail, messages: [...held, ...rows(2, 100)], has_more: false, total: 5 })
+      await warm
+      expect(store.getState().chat.slotMessages['bg-slot']).toEqual([])
+    })
+
+    it('discards a page for a slot the authoritative list no longer carries, even on a cold cache', async () => {
+      // A delete evicts the cache AND the clear count, so a cold cache shows no
+      // trace of it; the loaded slot list is the signal, and a late page must not
+      // recreate the deleted transcript's cache.
+      let resolveWarm: (v: unknown) => void = () => {}
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise(r => { resolveWarm = r }))
+      const dashboardBase = dashboardReducer(undefined, { type: '@@INIT' })
+      const store = configureStore({
+        reducer: { chat: chatReducer, dashboard: dashboardReducer },
+        preloadedState: {
+          chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'active-slot' },
+          dashboard: { ...dashboardBase, slotsLoaded: true, slots: [{ key: 'active-slot' }, { key: 'bg-slot' }] as never },
+        },
+      })
+      const warm = store.dispatch(warmSlotCache('bg-slot') as never)
+      // The slot is deleted while the page is in flight.
+      store.dispatch(sseSlots([{ key: 'active-slot' }] as never))
+      resolveWarm({ ...detail, messages: rows(3), has_more: false, total: 3 })
+      await warm
+      expect(store.getState().chat.slotMessages['bg-slot']).toBeUndefined()
+    })
+
+    it('discards a page for a slot deleted AND recreated under the same key while the window was in flight', async () => {
+      // A cold cache before and after, and the key is back in the loaded list, so
+      // neither the emptied-cache nor the slot-gone check can see it, and a cold
+      // slot leaves no residue for the eviction to move the generation on. The
+      // recreated record's `created` is what tells (deterministic app slot keys
+      // make same-key recreation an ordinary flow).
+      let resolveWarm: (v: unknown) => void = () => {}
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise(r => { resolveWarm = r }))
+      const dashboardBase = dashboardReducer(undefined, { type: '@@INIT' })
+      const store = configureStore({
+        reducer: { chat: chatReducer, dashboard: dashboardReducer },
+        preloadedState: {
+          chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'active-slot' },
+          dashboard: { ...dashboardBase, slotsLoaded: true, slots: [{ key: 'active-slot', created: '2026-08-13T00:00:00Z' }, { key: 'bg-slot', created: '2026-08-13T01:00:00Z' }] as never },
+        },
+      })
+      const warm = store.dispatch(warmSlotCache('bg-slot') as never)
+      store.dispatch(sseSlots([{ key: 'active-slot', created: '2026-08-13T00:00:00Z' }] as never))
+      store.dispatch(sseSlots([{ key: 'active-slot', created: '2026-08-13T00:00:00Z' }, { key: 'bg-slot', created: '2026-08-13T02:00:00Z' }] as never))
+      resolveWarm({ ...detail, messages: rows(3), has_more: false, total: 3 })
+      await warm
+      expect(store.getState().chat.slotMessages['bg-slot']).toBeUndefined()
+    })
+
+    it('discards a page when a slot WITH residue is deleted and recreated under the same key', async () => {
+      // The eviction moves the key's generation, which survives the eviction.
+      let resolveWarm: (v: unknown) => void = () => {}
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise(r => { resolveWarm = r }))
+      const dashboardBase = dashboardReducer(undefined, { type: '@@INIT' })
+      const store = configureStore({
+        reducer: { chat: chatReducer, dashboard: dashboardReducer },
+        preloadedState: {
+          chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'active-slot', slotMessages: { 'bg-slot': rows(2) } },
+          dashboard: { ...dashboardBase, slotsLoaded: true, slots: [{ key: 'active-slot' }, { key: 'bg-slot' }] as never },
+        },
+      })
+      const warm = store.dispatch(warmSlotCache('bg-slot') as never)
+      store.dispatch(sseSlots([{ key: 'active-slot' }] as never))
+      // The eviction emptied the cache, so re-seed the recreated slot with a live
+      // row: the emptied-cache check is then blind and the generation must tell.
+      store.dispatch(sseSlots([{ key: 'active-slot' }, { key: 'bg-slot' }] as never))
+      store.dispatch(appendSlotMessage({ slot: 'bg-slot', message: msg('fresh', '2026-08-13T11:00:00Z', 'm-fresh') as never }))
+      resolveWarm({ ...detail, messages: rows(2), has_more: true, total: 400 })
+      await warm
+      expect(store.getState().chat.slotMessages['bg-slot'].map(m => m.content)).toEqual(['fresh'])
+    })
+
+    it('retains no baseline from a RUNNING unbounded retry (short by the in-flight row); the bounded count carries instead', async () => {
+      const held = rows(3)
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ ...detail, messages: rows(2, 100), has_more: true, total: 400, running: true })
+        .mockResolvedValueOnce({ ...detail, messages: [...held, ...rows(2, 100), { role: 'streaming', content: 'partial', cls: '', ts: '' }], has_more: false, total: 900, running: true })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(2)
+      // Bounded page: total 400 with no pending cards -> 400. The retry's own
+      // durable count (5) would have been retained before and read a later
+      // one-row rewind as no change.
+      expect(store.getState().chat.slotServerTotal['bg-slot']).toBe(400)
+    })
+
+    it('does not retry when the window already reaches the start of history', async () => {
+      // A rewind removed rows the pane still holds; the window IS the whole
+      // transcript, so a retry would return the same rows one round trip later.
+      const held = rows(3)
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: [held[0]], has_more: false, total: 1 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held }, slotServerTotal: { 'bg-slot': 3 } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+      expect(store.getState().chat.slotMessages['bg-slot'].map(m => m.content)).toEqual(['row 0'])
+    })
+
+    it('takes the unbounded retry for a pane whose rows carry no mid, since nothing can anchor', async () => {
+      // Legacy rows predate meta.mid: the page's oldest row anchors nowhere and the
+      // cache has no identified oldest row, so the stitch check declines.
+      const legacy = [msg('legacy 1', '2026-08-13T05:00:00Z'), msg('legacy 2', '2026-08-13T06:00:00Z')]
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: legacy, has_more: true, total: 200 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': legacy } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      const calls = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls).toEqual([['bg-slot', PANE_HYDRATE_LIMIT], ['bg-slot']])
+    })
+
+    it('does not let a client-minted error bubble pin the slot to the unbounded read', async () => {
+      // A send failure appends an `error` row locally: durable-role, no mid, and
+      // rescued as tail on every warm, so it never leaves the cache. Declining on
+      // it would send EVERY later warm unbounded -- the cost this bound removes.
+      const held = [...rows(60), { role: 'error', content: 'send failed', cls: '', ts: '2026-08-13T05:00:00Z' }]
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: rows(60), has_more: true, total: 400 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      const calls = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls).toHaveLength(2)
+      expect(calls.every(c => c[1] === 61)).toBe(true)
+      const contents = store.getState().chat.slotMessages['bg-slot'].map(m => m.content)
+      expect(contents).toHaveLength(61)
+      expect(contents.at(-1)).toBe('send failed')
+    })
+
+    it('carries the bounded count through the retry, so a raw unbounded total never becomes the baseline', async () => {
+      // The unbounded handler counts raw rows (a `done` per finished turn among
+      // them); the bounded one counts collapsed rows. Retaining the raw 900 would
+      // make the next bounded warm's 402 read as a truncation and drop its tail.
+      const held = rows(3)
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ ...detail, messages: rows(2, 100), has_more: true, total: 400 })
+        .mockResolvedValueOnce({ ...detail, messages: [...held, ...rows(2, 100)], has_more: true, total: 900 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(2)
+      expect(store.getState().chat.slotServerTotal['bg-slot']).toBe(400)
+    })
+
+    it('retains a RUNNING count from a bounded warm in settled units: pending cards subtracted', async () => {
+      // The bounded corpus keeps pending permission cards the settled one drops, so
+      // a mid-turn `total` is settled + pending. Raw, the next settled warm would
+      // read the cards' resolution as a truncation and drop the rescued tail;
+      // refused, a slot that runs for most of its life would never get a baseline.
+      const held = rows(3)
+      const card = { role: 'permission', content: '', cls: '', ts: '2026-08-13T05:00:00Z', meta: { approval_id: 'a-1' } }
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: [...held, card], has_more: true, total: 401, running: true })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledWith('bg-slot', PANE_HYDRATE_LIMIT)
+      expect(store.getState().chat.slotServerTotal['bg-slot']).toBe(400)
+    })
+
+    it('carries the normalised bounded count through a retry from a mid-turn page, never the raw one', async () => {
+      const held = rows(3)
+      const card = { role: 'permission', content: '', cls: '', ts: '2026-08-13T05:00:00Z', meta: { approval_id: 'a-1' } }
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ ...detail, messages: [...rows(2, 100), card], has_more: true, total: 401, running: true })
+        .mockResolvedValueOnce({ ...detail, messages: [...held, ...rows(2, 100)], has_more: true, total: 900, running: false })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(2)
+      expect(store.getState().chat.slotServerTotal['bg-slot']).toBe(400)
+    })
+
+    it('declines a page that only SPANS a cache whose head carries no mid', async () => {
+      // Legacy rows above the first identified one: the page contains that
+      // identified row (spans) but its own oldest row is a legacy row the cache
+      // cannot anchor, so the reducer would replace the head. Unbounded instead.
+      const legacyHead = [msg('legacy 1', '2026-08-13T00:00:00Z'), msg('legacy 2', '2026-08-13T00:01:00Z')]
+      const identified = rows(3, 10)
+      const held = [...legacyHead, ...identified]
+      // Server grew by one; the window (5 durable rows) reaches one legacy row further back.
+      const window = [msg('legacy 2', '2026-08-13T00:01:00Z'), ...identified, ...rows(1, 20)]
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ ...detail, messages: window, has_more: true, total: 400 })
+        .mockResolvedValueOnce({ ...detail, messages: [...held, ...rows(1, 20)], has_more: false, total: 6 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      const calls = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls).toEqual([['bg-slot', PANE_HYDRATE_LIMIT], ['bg-slot']])
+      expect(store.getState().chat.slotMessages['bg-slot'].map(m => m.content)[0]).toBe('legacy 1')
+    })
+
+    it('accepts a page that spans the cache when the only mid-less row is a tail bubble', async () => {
+      // Contrast for the head guard: an `error` bubble BELOW the identified rows is
+      // not a head, so `spans` is enough and the warm stays bounded.
+      const held = [...rows(3), { role: 'error', content: 'send failed', cls: '', ts: '2026-08-13T05:00:00Z' }]
+      const window = [msg('older', '2026-08-12T23:59:00Z', 'm-older'), ...rows(3)]
+      ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ ...detail, messages: window, has_more: true, total: 400 })
+      const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+      await store.dispatch(warmSlotCache('bg-slot') as never)
+      expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+    })
   })
 
   // Legacy rows predate meta.mid, so no overlap can be found at all. Replacing
@@ -724,7 +1065,10 @@ describe('switching away from a pane whose own fetch has not landed', () => {
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...detail, messages: [msg('row', '2026-08-13T08:00:00Z', 'm-1')], has_more: false, total: 9,
     })
-    const store = makeStore('active-slot')
+    // A painted active view, so the refresh is the count-matched BOUNDED read: an
+    // unbounded refresh (empty view) leaves no baseline, its raw count being in
+    // the wrong units (see retainServerTotal).
+    const store = makeStore('active-slot', { messages: [msg('row', '2026-08-13T08:00:00Z', 'm-1')] })
     await store.dispatch(refreshSlot('bg-slot') as never)
     expect(store.getState().chat.slotServerTotal['bg-slot']).toBeUndefined()
     // Positive control: the same fetch DOES seed the slot that is active.
@@ -737,22 +1081,26 @@ describe('switching away from a pane whose own fetch has not landed', () => {
   // rows that collapse at turn end. Retaining it makes the next warm read that
   // normal collapse as a truncation, and the suppression then DROPS a live row --
   // the opposite direction to the re-append this baseline exists to prevent.
-  it('does not retain a count from a running response, so a later collapse is not read as a rewind', async () => {
+  it('does not read the resolution of pending cards a running hydrate counted as a rewind', async () => {
     const anchor = msg('anchor', '2026-08-13T08:00:00Z', 'm-1')
+    const card = (id: string) => ({ role: 'permission', content: '', cls: '', ts: '2026-08-13T08:30:00Z', meta: { approval_id: id } })
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...detail,
       messages: [anchor, msg('warm 2', '2026-08-13T09:00:00Z', 'm-2')],
-      has_more: false, total: 3, running: false,
+      has_more: false, total: 2, running: false,
     })
     const store = makeStore('active-slot')
-    // Hydrate lands mid-turn: total 9 counts un-collapsed streaming rows.
+    // Hydrate lands mid-turn with two pending cards: the bounded corpus counts
+    // them (total 3 = 1 settled row + 2 cards); the baseline must not.
     store.dispatch(hydrateSlotMessages({
-      slot: 'bg-slot', messages: [anchor] as never, hasMore: false, bounded: true, total: 9, running: true,
+      slot: 'bg-slot', messages: [anchor, card('a-1'), card('a-2')] as never, hasMore: false, bounded: true, total: 3, running: true,
     }))
-    expect(store.getState().chat.slotServerTotal['bg-slot']).toBeUndefined()
+    expect(store.getState().chat.slotServerTotal['bg-slot']).toBe(1)
     store.dispatch(appendSlotMessage({ slot: 'bg-slot', message: msg('live frame', '2026-08-13T12:00:00Z', 'm-99') as never }))
     await store.dispatch(warmSlotCache('bg-slot') as never)
-    const held = store.getState().chat.slotMessages['bg-slot'].map(m => m.content)
+    // The settled warm reports 2 against a baseline of 1: growth, not a rewind, so
+    // the live tail is rescued (the still-pending cards ride along as tail too).
+    const held = store.getState().chat.slotMessages['bg-slot'].filter(m => m.role !== 'permission').map(m => m.content)
     expect(held).toEqual(['anchor', 'warm 2', 'live frame'])
   })
 
@@ -1021,8 +1369,9 @@ describe('switching away from a pane whose own fetch has not landed', () => {
     const held = store.getState().chat.slotMessages['bg-slot'].map(m => m.content)
     expect(held).not.toContain('rewound turn')
   })
-  // Only `warmSlotCache` supplies a sequence, so an unordered writer clearing it
-  // destroys the field the staleness check needs to spare a late EARLIER warm.
+  // Only `warmSlotCache` supplies a sequence, so a writer that landed between two
+  // warms must not destroy the field the staleness check needs to spare a late
+  // EARLIER warm.
   it('keeps the recorded order when an unbounded hydrate lands between two warms', async () => {
     const history = msg('history', '2026-08-13T08:00:00Z', 'm-1')
     const turn2 = msg('turn 2 answer', '2026-08-13T12:00:00Z', 'm-9')
@@ -1044,9 +1393,11 @@ describe('switching away from a pane whose own fetch has not landed', () => {
     // An unbounded pane hydrate for the same slot carries NO ordering token.
     store.dispatch(hydrateSlotMessages({ slot: 'bg-slot', messages: [history, turn2], hasMore: false, total: 7 }))
     expect(typeof store.getState().chat.slotServerTotalSeq['bg-slot']).toBe('number')
-    // OPPOSITE DIRECTION: keeping the order must not freeze the count. An
-    // unordered response is still the newest view of it and has to land.
-    expect(store.getState().chat.slotServerTotal['bg-slot']).toBe(7)
+    // OPPOSITE DIRECTION: keeping the order must not freeze the count. An unordered
+    // response is still the newest view of it and has to land -- in settled units:
+    // a complete unbounded read's count is its durable prepared rows (2), never
+    // its raw `total` (7, a `done` per finished turn among them).
+    expect(store.getState().chat.slotServerTotal['bg-slot']).toBe(2)
     resolveFirst({ ...detail, messages: [history], total: 5, has_more: true })
     await firstWarm
     expect(store.getState().chat.slotMessages['bg-slot'].map(m => m.content)).toContain('turn 2 answer')
