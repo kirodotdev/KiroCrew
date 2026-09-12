@@ -207,10 +207,15 @@ owning server is not a virtual one.
 - A 1280x800 screenshot is about 1 365 input tokens (width x height / 750). With three
   screenshots kept, a step costs roughly 6-8k input and ~150 output tokens; a
   10-step scenario on a Sonnet-class model is about $0.25-0.40 and two to four
-  minutes. The nightly tier (three scenarios, one retry each in the worst case) is
-  about $1-2.50; the PR smoke pair about $0.60. The run stops at `--budget-usd`
-  (dispatch default $3, nightly $4, PR $2) and marks the remaining scenarios
-  `SKIPPED`.
+  minutes. Budget the nightly tier (every shipped scenario, one retry each in the
+  worst case) at about $0.50 per scenario and the smoke tier at about $0.35. The run
+  stops at `--budget-usd` (dispatch default $5 -- the smoke tier is seven scenarios,
+  about $2.50 with one retry apiece, so the default has to clear that; nightly $8)
+  and marks the remaining
+  scenarios `SKIPPED`; the job's 90-minute timeout is the backstop for a hung target,
+  not the budget. Keep the nightly bill under $10: when a new batch would push past
+  it, move the lowest-value scenarios to a cheaper cadence (a `weekly` tier is a
+  schema + workflow change) rather than raising the budget.
 - Pixel tests are stochastic. One retry absorbs a mis-click; a scenario that flips
   night to night is a scenario problem (vague step, timing) before it is a product
   problem. Read `steps.jsonl` and the numbered screenshots: they show exactly where

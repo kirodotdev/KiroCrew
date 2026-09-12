@@ -31,7 +31,7 @@ name: GUI User Test
 # under test can be the PR's while the code holding credentials is not.
 #
 # COST GATES: per-scenario max_steps / max_seconds live in the scenario YAML;
-# the run-level USD budget is an input (default $3); a failed scenario is
+# the run-level USD budget is an input (default $5); a failed scenario is
 # retried once.
 
 on:
@@ -53,7 +53,7 @@ on:
       budget_usd:
         description: "Stop the run once estimated spend reaches this many USD"
         type: string
-        default: "3"
+        default: "5"
   schedule:
     - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
 
@@ -70,9 +70,10 @@ jobs:
   gui-user-test:
     name: GUI User Test
     runs-on: ubuntu-latest
-    # Boot (~4 min: npm ci + build) + up to three scenarios at ~2-4 min each
-    # with one retry apiece, plus model-latency tail.
-    timeout-minutes: 45
+    # Boot (~4 min: npm ci + build) + every shipped scenario at ~2-4 min each
+    # with one retry apiece, plus model-latency tail. The USD budget below is
+    # the real stop; this is the backstop for a hung target.
+    timeout-minutes: 90
     env:
       GUI_DISPLAY: ":99"
       GUI_SCREEN: "1600x1000x24"
@@ -155,8 +156,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT" in
-            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-sonnet-4-6}"; budget="${IN_BUDGET:-3}" ;;
-            *)                 tier="nightly"; model="us.anthropic.claude-sonnet-4-6"; budget="4" ;;
+            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-sonnet-4-6}"; budget="${IN_BUDGET:-5}" ;;
+            *)                 tier="nightly"; model="us.anthropic.claude-sonnet-4-6"; budget="8" ;;
           esac
           scenario_args=""
           if [ -n "${IN_SCENARIO:-}" ] && [ "$EVENT" = "workflow_dispatch" ]; then
