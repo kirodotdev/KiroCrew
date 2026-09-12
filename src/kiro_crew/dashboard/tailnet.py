@@ -48,6 +48,7 @@ from kiro_crew.platform.governance_profiles import (
 )
 from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.sandbox import scrub_env
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -200,7 +201,7 @@ def _run_json_detail(args: list[str]) -> tuple[Any | None, bool]:
         proc = subprocess.run(  # noqa: S603 - vetted absolute binary, fixed argv, no shell
             [cli, *args],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=_CLI_TIMEOUT_SECS,
             check=False,
             # Defence in depth behind the pinned binary above: even a legitimate
