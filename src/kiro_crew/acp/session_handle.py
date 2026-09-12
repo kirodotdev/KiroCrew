@@ -86,7 +86,9 @@ from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_st
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_STEER,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -414,6 +416,79 @@ def parse_advertised_models(resp: dict[str, Any]) -> list[dict[str, str]]:
         return []
     if isinstance(models, list):
         return AcpSessionHandle._normalize_models(models)
+    return []
+
+
+def models_from_config_options(resp: dict[str, Any], backend: str) -> dict[str, Any] | None:
+    """A ``models`` envelope synthesized from a ``model`` select, or ``None``.
+
+    Some hosts advertise no ``models`` object at all and put their model list in
+    ``configOptions`` instead, as a ``select`` whose ``options`` carry the ids
+    ``session/set_config_option`` accepts -- so a caller that reads only ``models``
+    records nothing and the picker it feeds is empty. Gated on membership in
+    ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` (harness-parity H6): the fold is
+    only meaningful where the advertised list IS the vocabulary, and a host outside
+    that set keeps whatever the static registry gave it.
+
+    Authored once because both drivers need the same answer -- ``AcpClient`` on the
+    per-session path and ``AcpSessionHandle`` on the shared-runtime one -- and a
+    second copy is free to disagree about the select's shape.
+    """
+    if backend not in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        return None
+    for opt in resp.get("configOptions") or []:
+        if not isinstance(opt, dict) or opt.get("id") != "model" or opt.get("type") != "select":
+            continue
+        options = [o for o in opt.get("options") or [] if isinstance(o, dict) and o.get("value")]
+        if not options:
+            return None
+        envelope: dict[str, Any] = {
+            "availableModels": [
+                {
+                    "modelId": o["value"],
+                    "name": o.get("name") or o["value"],
+                    "description": o.get("description") or "",
+                }
+                for o in options
+            ]
+        }
+        current = opt.get("currentValue")
+        if isinstance(current, str) and current:
+            envelope["currentModelId"] = current
+        return envelope
+    return None
+
+
+def session_models_envelope(resp: dict[str, Any], backend: str) -> Any:
+    """The ``models`` payload of a session response, with the select folded in.
+
+    One home for "where does this host's model list live", so a reader cannot know
+    about the ``models`` object and not about the ``configOptions`` select. Returns
+    whatever shape the response carried when it carried one, the synthesized
+    envelope when it did not and the host advertises a ``model`` select, and the
+    original absent value when neither applies -- so a caller's own shape branches
+    stay exactly as they were.
+    """
+    models = resp.get("models") or resp.get("availableModels")
+    if models is None or models == {} or models == []:
+        models = models_from_config_options(resp, backend) or models
+    return models
+
+
+def advertised_models_from_session(resp: dict[str, Any], backend: str) -> list[dict[str, str]]:
+    """The normalized advertised-model list for a session response, either shape.
+
+    What a caller wants when it needs the LIST and not the envelope -- the
+    entitlement probe, which re-asks the question on a throwaway session. Reading
+    ``parse_advertised_models`` alone answers ``[]`` for a host whose list is a
+    ``configOptions`` select, and an empty probe result is contractually "no
+    evidence", so the snapshot it exists to correct would never heal.
+    """
+    env = session_models_envelope(resp, backend)
+    if isinstance(env, dict):
+        return parse_advertised_models({"models": env})
+    if isinstance(env, list):
+        return parse_advertised_models({"availableModels": env})
     return []
 
 
@@ -1607,8 +1682,17 @@ class AcpSessionHandle:
 
     @property
     def supports_steer(self) -> bool:
-        """True — AcpRuntime is kiro-cli only, which supports _session/steer."""
-        return True
+        """True when this session's host implements ``_session/steer``.
+
+        Membership in ``ACP_BACKENDS_STEER`` (harness-parity H6), read from the
+        runtime's own backend id -- the same answer, from the same table, that
+        ``AcpClient.supports_steer`` gives. A capability is granted by opt-in
+        membership, so a host the runtime learns to drive does not inherit an
+        extension it never demonstrated: answering True for one would advertise
+        the steer affordance and then meet the user's mid-turn correction with
+        ``-32601``.
+        """
+        return self._runtime.acp_backend in ACP_BACKENDS_STEER
 
     # ── Commands & Config ──
 
@@ -2028,7 +2112,14 @@ class AcpSessionHandle:
         if isinstance(config_options, list):
             self._config_options = config_options
             self._sync_effort_levels()
-        models = resp.get("models") or resp.get("availableModels")
+        # Where this host's model list lives is asked in ONE place
+        # (``session_models_envelope``): a host in
+        # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` advertises no ``models`` object
+        # and puts the list in a ``configOptions`` ``model`` select, and a reader that
+        # knows about one shape and not the other is how the entitlement probe came to
+        # answer ``[]`` for codex while this path answered correctly. Absent stays
+        # absent, so the shape branches below are untaken exactly as before.
+        models = session_models_envelope(resp, self._runtime.acp_backend)
         if isinstance(models, dict):
             # Record the resolved model id (kiro-cli's currentModelId) so
             # _backfill_context_window can look up the window on pct-only

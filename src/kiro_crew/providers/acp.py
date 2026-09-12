@@ -27,9 +27,9 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
-    ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SESSION_SHARING,
@@ -41,6 +41,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_OPENCODE,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
+    acp_runtime_backends,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk import host_auth
@@ -540,8 +541,16 @@ class AcpProvider(LLMProvider):
         spelled ``not is_claude_backend`` — which would hand the kiro-family
         path to every harness added later. The claude AcpClient is deliberately
         not a member: it runs one process per session and shares no runtime.
+
+        Reads ``acp_runtime_backends()`` rather than the set directly, so the
+        codex preview switch (``KIROCREW_CODEX_ACP_RUNTIME``, off by default) has
+        one home instead of one per foreground call site. With the switch off the
+        function returns ``ACP_BACKENDS_ACP_RUNTIME`` verbatim and this property
+        answers exactly the frozenset. This is the switch's ONLY reader in ``src``:
+        ``session._bg_runtime_backends`` reads the set, so background handles stay
+        off a codex runtime even with the switch on.
         """
-        return self._client.backend in ACP_BACKENDS_ACP_RUNTIME
+        return self._client.backend in acp_runtime_backends()
 
     @property
     def is_session_sharing_eligible(self) -> bool:
@@ -892,11 +901,24 @@ class AcpProvider(LLMProvider):
             handle = None
             resumed = False
             if resume_sid:
-                if self.is_kas_backend:
-                    # KAS locates the transcript itself from sessionId, and in
-                    # remote-session mode there are no local files to stat at
-                    # all. Attempt the load and let failure fall through to a
-                    # fresh session/new with history replay.
+                if self.is_kas_backend or self._client.backend in (
+                    ACP_BACKENDS_HARNESS_OWNED_SESSIONS
+                ):
+                    # Nothing local to stat. KAS locates the transcript itself
+                    # from sessionId, and in remote-session mode there are no
+                    # local files at all; a member of
+                    # ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` keeps its own
+                    # session records and resolves a resume from the id alone.
+                    # Attempt the load and let failure fall through to a fresh
+                    # session/new with history replay.
+                    #
+                    # Pre-checking the kiro transcript for those hosts makes
+                    # ``should_load`` permanently False — the file is never
+                    # written for them — so every reopen would silently start a
+                    # fresh session and drop the conversation. ``AcpClient``
+                    # reads the same set for the same reason (client.py's
+                    # ``file_ok`` branch). KAS is named separately because it is
+                    # NOT a member: adding it would change that client path too.
                     session_file = None
                     should_load = True
                 else:
@@ -1408,27 +1430,45 @@ class AcpProvider(LLMProvider):
         await self._apply_initial_effort()
 
     async def _apply_initial_effort(self) -> None:
-        """Apply the resolved effort to a fresh claude-agent-acp session.
+        """Apply the resolved effort to a fresh session on the config-option channel.
 
         claude-agent-acp does NOT read ``CLAUDE_CODE_EFFORT_LEVEL`` from the
         environment — effort only takes hold via settings.json files or a live
         ``session/set_config_option``. So for the claude backend we push the
         resolved level once after the session is ready. Best-effort: a model
         that does not support effort, or an adapter that rejects the value,
-        must not break session start. The kiro backend already gets effort
-        from the cli.json overlay at spawn, so this is a no-op there.
+        must not break session start.
+
+        Gated on ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` -- the set that names
+        the CHANNEL -- rather than on ``is_acp_runtime_backend``, for the reason
+        harness-parity H6 gives: which harnesses take effort over
+        ``session/set_config_option`` is a fact the table already holds, and
+        "runs on the shared runtime" is a different fact. The kiro family is
+        outside the channel set because it reads effort from the spawn-time
+        cli.json overlay instead, so it still skips the push; opencode is
+        outside it because its ``session/new`` advertises no ``effort`` option at
+        all. Reading the runtime answer here instead drops a codex session's
+        configured effort as soon as the preview switch puts codex on the
+        runtime, because codex IS in the channel set and takes effort no other
+        way.
         """
-        if self.is_acp_runtime_backend:
+        if self._client.backend not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
             return
         level = self._resolve_effort()
         if not level:
             return
         try:
             await self._set_effort_config_option(level)
-            logger.info("CC initial effort applied: model=%s effort=%s", self._client._model, level)
+            logger.info(
+                "ACP initial effort applied: backend=%s model=%s effort=%s",
+                self._client.backend,
+                self._client._model,
+                level,
+            )
         except Exception:
             logger.warning(
-                "CC initial effort apply failed (model=%s effort=%s)",
+                "ACP initial effort apply failed (backend=%s model=%s effort=%s)",
+                self._client.backend,
                 self._client._model,
                 level,
                 exc_info=True,

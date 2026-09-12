@@ -22,11 +22,13 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
+from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.harness.kiro import KiroHarness
-from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
 __all__ = [
+    "CodexHarness",
     "HarnessAdapter",
     "KasHarness",
     "KiroHarness",
@@ -42,6 +44,15 @@ __all__ = [
 _HARNESSES: dict[str, type[HarnessAdapter]] = {
     ACP_BACKEND_KIRO: KiroHarness,
     ACP_BACKEND_KAS: KasHarness,
+    # Registered whether or not codex is currently ROUTED here. The two questions
+    # are separate on purpose: this table answers "can the shared-process runtime
+    # drive this host?", and ``acp_runtime_backends()`` answers "does a codex
+    # session take that path today?" -- which the ``KIROCREW_CODEX_ACP_RUNTIME``
+    # switch decides, and which is off by default. A registry gated on the switch
+    # would make the harness unreachable to its own tests and to an operator
+    # trying the preview, and would leave the runtime resolving a harness that
+    # exists on disk but not in the table.
+    ACP_BACKEND_CODEX: CodexHarness,
 }
 
 

@@ -38,6 +38,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
+    acp_runtime_backends,
     model_registry_namespace,
     selectable_backends,
 )

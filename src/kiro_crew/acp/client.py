@@ -873,6 +873,24 @@ def _resolve_codex_acp_bin() -> tuple[list[str] | None, str]:
     return None, search_path
 
 
+def codex_acp_not_found_message(search_path: str) -> str:
+    """The one wording for "the codex adapter is not installed".
+
+    Both transports that spawn codex-acp raise it, so it is authored once: two
+    copies drift, and this text is the operator's only instruction for fixing the
+    install. *search_path* is what the resolver actually walked -- passed in
+    rather than re-read, so a "searched ..." line can never name a directory the
+    search skipped.
+    """
+    return (
+        f"{CODEX_ACP_BIN} not found "
+        f"({describe_search_path(search_path)}). Install it with "
+        f"'npm i -g {CODEX_ACP_NPM_PKG}' (or add it as a project "
+        f"dependency), or set {_ENV_CODEX_ACP_BIN} to its entry script. "
+        f"The 'codex' CLI alone does not serve ACP."
+    )
+
+
 def _resolve_claude_code_executable() -> str | None:
     """Find the Claude backend CLI binary for CLAUDE_CODE_EXECUTABLE.
 
@@ -5106,10 +5124,15 @@ class AcpClient:
         Also records ``currentModelId`` for ``_track_metadata``'s context
         window lookup.
         """
+        # Imported lazily: acp.session_handle imports this module at module
+        # level, so a top-level import here would be a cycle.
+        from kiro_crew.acp.session_handle import models_from_config_options
+
         models = session_resp.get("models")
         if not isinstance(models, dict):
-            # Adapters that omit `models` still advertise via configOptions.
-            models = self._models_from_config_options(session_resp)
+            # Adapters that omit `models` still advertise via configOptions. One
+            # authoring, shared with the shared-runtime driver's own capture.
+            models = models_from_config_options(session_resp, self.backend)
             if models is None:
                 return
         current_model_id = models.get("currentModelId")
@@ -5144,33 +5167,6 @@ class AcpClient:
                 self._advertised_models_changed = model_registry.refresh_advertised_models(
                     self._model_registry_namespace, self._advertised_model_ids()
                 )
-
-    def _models_from_config_options(self, session_resp: dict) -> dict | None:
-        """Synthesize a ``models`` envelope from a configOptions model select, or None."""
-        if not self._uses_advertised_model_selection:
-            return None
-        for opt in session_resp.get("configOptions") or []:
-            if isinstance(opt, dict) and opt.get("id") == "model" and opt.get("type") == "select":
-                options = [
-                    o for o in opt.get("options") or [] if isinstance(o, dict) and o.get("value")
-                ]
-                if not options:
-                    return None
-                envelope: dict = {
-                    "availableModels": [
-                        {
-                            "modelId": o["value"],
-                            "name": o.get("name") or o["value"],
-                            "description": o.get("description") or "",
-                        }
-                        for o in options
-                    ]
-                }
-                current = opt.get("currentValue")
-                if isinstance(current, str) and current:
-                    envelope["currentModelId"] = current
-                return envelope
-        return None
 
     async def _persist_advertised_models_if_changed(self) -> None:
         """Offload a disk persist of the provider-model cache when it changed.
@@ -5835,13 +5831,7 @@ class AcpClient:
                 else (None, "")
             )
             if not isinstance(codex_argv, list) or not codex_argv:
-                raise AcpError(
-                    f"{CODEX_ACP_BIN} not found "
-                    f"({describe_search_path(codex_search_path)}). Install it with "
-                    f"'npm i -g {CODEX_ACP_NPM_PKG}' (or add it as a project "
-                    f"dependency), or set {_ENV_CODEX_ACP_BIN} to its entry script. "
-                    f"The 'codex' CLI alone does not serve ACP."
-                )
+                raise AcpError(codex_acp_not_found_message(codex_search_path))
             argv = codex_argv
             # Translate the agent spec into this session's MCP array HERE, on
             # codex's own arm, for exactly the reason the claude arm above does it
