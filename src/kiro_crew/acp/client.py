@@ -24,7 +24,6 @@ import logging
 import os
 import re
 import shutil
-import signal
 import stat
 import subprocess as subprocess_mod
 import sys
@@ -3400,14 +3399,15 @@ def _kill_escaped_children(child_pids: dict[int, int | None] | dict[int, ChildRe
     POSIX-only sweep: it cleans up children that reparented out of the killed
     process group (e.g. MCP servers). On Windows there are no process groups —
     ``kill_process_tree`` already used ``taskkill /T`` to walk the whole child
-    tree — so there is nothing left to sweep, and the raw ``os.kill`` /
-    ``signal.SIGKILL`` below are unavailable there. No-op on win32.
+    tree — so there is nothing left to sweep, and the POSIX signal APIs are
+    unavailable there. No-op on win32.
     """
     if platform_compat.IS_WINDOWS:
         return
     for cpid in reversed(list(child_pids.keys())):
         try:
-            os.kill(cpid, 0)  # still alive?
+            if not platform_compat.pid_exists(cpid):
+                continue  # gone — nothing to sweep
             record = child_pids.get(cpid)
             # Support both old (int|None) and new (tuple) record shapes
             if isinstance(record, tuple):
@@ -3420,7 +3420,7 @@ def _kill_escaped_children(child_pids: dict[int, int | None] | dict[int, ChildRe
             ):
                 logger.debug("Skipping PID %d — not our process (recycled?)", cpid)
                 continue
-            os.kill(cpid, signal.SIGKILL)
+            platform_compat.kill_pid(cpid, platform_compat.SIGKILL)
             logger.debug("Killed escaped child PID %d", cpid)
         except (ProcessLookupError, OSError):
             pass
