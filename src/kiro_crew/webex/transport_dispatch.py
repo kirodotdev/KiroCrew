@@ -68,6 +68,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -436,6 +437,12 @@ class WebexDispatcher:
         # are captured in ``on_busy``. Keyed on the ROUTE (see ``_route_of``), not
         # the email, so a group space cannot land in the sender's private session.
         override_mode, body = parse_mid_turn_override(text) if interpret_commands else (None, text)
+        # Captured BEFORE the override strip and ingestion below rewrite the
+        # prompt. The durable inbound spool quotes what the user sent, so it holds
+        # the mention-stripped message body and the original file count, not the
+        # ingested prompt with its temp paths.
+        original_text = text
+        original_attachments = len(inbound.file_urls or ())
         # Distinct name: ``session_key`` above is the pre-rotation key the approval
         # intercept read (``str``); ``resolve_pre_turn`` returns ``str | None``
         # (None = folded into a running turn), so narrow before reusing the name.
@@ -521,6 +528,26 @@ class WebexDispatcher:
                 ChannelTurn(
                     channel_type="webex",
                     session_key=session_key,
+                    # Durable inbound spool: the reply target is ``room_id`` (what
+                    # ``send_message`` and the dispatcher's own ``_reply`` address),
+                    # NOT the ``webex:{route}`` attribution id below. The pairing is
+                    # the invariant that keeps replay honest: a DM route carries the
+                    # principal (``user_id``) and NO thread; a space route carries
+                    # the thread and NO principal; an unthreaded space carries
+                    # neither and therefore FALLS THROUGH to denial. ``may_send_to``
+                    # has a space arm (``room_id in _allowed_rooms``) that falls
+                    # through to ``principal in _allowed`` -- so a space route that
+                    # carried a principal would authorize a de-authorized space via
+                    # its sender, and a DM route that carried a thread would be read
+                    # as threaded and denied for want of a principal. ``text`` is
+                    # the mention-stripped original, not the ingested prompt.
+                    inbound_route=InboundRoute(
+                        conversation_id=room_id,
+                        text=original_text,
+                        user_id=(email if inbound.room_type == ROOM_DIRECT else ""),
+                        thread_id=(reply_parent if inbound.room_type != ROOM_DIRECT else ""),
+                        attachments_dropped=original_attachments,
+                    ),
                     # Session-directive consumer: monitor_start / autonudge_stop /
                     # ... return a marker TurnDriver decodes; apply it against THIS
                     # turn's session key (dashboard-only directives stay refused
