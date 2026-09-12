@@ -244,6 +244,15 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # can rename out from under the mount.
     "quarantined-clones",
     "apps/meetings/data/edits",
+    # The same app's calendar credential store (a CalDAV password and the Google /
+    # Microsoft 365 OAuth tokens). Fenced from agent FILE TOOLS by
+    # ``security._CREW_SECRET_LEAVES``; masked here so a spawned command cannot read
+    # it either. Whole DIRECTORY, because ``credentials.py`` writes by atomic replace
+    # through a sibling temp that holds the same bytes. No carve-out is needed: the
+    # Meetings backend registers its routes IN the gateway process (``app.json`` ->
+    # ``backend.routes:register_routes``), so its only legitimate reader never runs
+    # inside this sandbox.
+    "workspace/meetings",
     "whatsapp",
     # The refused-inbound spool. Fenced from agent FILE TOOLS by
     # ``security._CREW_SECRET_LEAVES``; masked here so a spawned command cannot

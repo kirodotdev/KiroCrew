@@ -277,6 +277,30 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens every one of them directly rather than through this gate, so the app
     # keeps working and future state files are covered without a new entry.
     "apps/aws-control/data",
+    # The Meetings builtin's calendar credentials: a CalDAV password and the
+    # Google / Microsoft 365 OAuth refresh + access tokens. Each is a live bearer
+    # credential for the user's calendar — a refresh token in particular survives
+    # until revoked, so an agent that could read this file would keep reading the
+    # user's schedule long after the session ended. It is a leaf (not a flat
+    # ``~/.kiro/crew`` entry) so it is generated for BOTH ``_CREW_HOME_PREFIXES``,
+    # since ``config_dir()`` can resolve to the legacy ``.kirocrew`` data-home
+    # during a migration fallback and the tokens must be protected there too.
+    #
+    # It lives under ``workspace/`` rather than in ``apps/meetings/data/`` on
+    # purpose: that data tree is what the app's own ``store.contain`` bounds
+    # agent-driven paths against, and keeping a credential outside it removes the
+    # reachability question instead of answering it. The app's backend
+    # (``meetings/backend/credentials.py``) opens the file directly rather than
+    # through this gate, so the user's calendar connection keeps working.
+    #
+    # The DIRECTORY is gated, not the one leaf, because the leaf is not the only
+    # file that holds the tokens. ``credentials.py`` writes atomically through
+    # ``atomic_write``'s owner-only ``.tmp`` sibling in the same directory; if
+    # the process dies between the write and the replace, that sibling survives
+    # with the credentials in it, and an exact-leaf rule does not cover it.
+    # Gating the directory (like ``trust``/``profiles`` below) also means a
+    # future file in here is protected without a new entry.
+    "workspace/meetings",
     # The same app's gateway-owned transfer staging. Not a secret store: it holds
     # object bytes in flight between the AWS CLI's write and the gateway's
     # read-back. It is fenced because the destination path is what a same-UID
