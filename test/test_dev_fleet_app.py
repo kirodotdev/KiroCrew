@@ -1177,10 +1177,14 @@ async def test_every_step_gets_a_utf8_pin_in_its_environment():
     src = Path(sync_runner.__file__).read_text(encoding="utf-8")
     run_step_body = src.split("def run_step(", 1)[1].split("\ndef ", 1)[0]
     assert 'env["PYTHONIOENCODING"] = "utf-8:replace"' in run_step_body
-    # Applied to the env actually handed to subprocess.run, not a stale copy.
-    assert "cwd=cwd, env=env" in run_step_body
+    # Applied to the env actually handed to the spawn, not a stale copy. Matched
+    # on the keyword alone, not on a formatted argument run: the spawn became a
+    # multi-line Popen when stderr got its own pipe, and a substring spanning two
+    # arguments made this fail on a formatting change rather than on a defect.
+    assert "env=env," in run_step_body
+    assert "cwd=cwd," in run_step_body
     # Set before the step is spawned, not after.
-    assert run_step_body.index("PYTHONIOENCODING") < run_step_body.index("subprocess.run(")
+    assert run_step_body.index("PYTHONIOENCODING") < run_step_body.index("subprocess.Popen(")
 
 
 @pytest.mark.asyncio
