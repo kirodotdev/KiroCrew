@@ -46,12 +46,23 @@ const activeLegacyLoop: LegacyGoalLoop = {
   nextDueAt: 1_900_000_000, maxRuntimeSecs: 14_400, stoppedReason: '',
 }
 
+/* The popover opens on the goal loop, so a test about the BOUNDED form has to
+   walk to it exactly as a reader does. Pressed only when the offer is on
+   screen: a slot that already holds a monitor opens on the bounded view, and a
+   slot running a legacy loop renders no offer at all, so both cases must reach
+   their view without a click rather than fail looking for one. */
+function enterBoundedView() {
+  const offer = screen.queryByRole('button', { name: 'Watch a pull request instead' })
+  if (offer) fireEvent.click(offer)
+}
+
 function renderPopover(
   automation: AutomationRecord | null,
   onChange = vi.fn(),
   creationReady = true,
   onOpenChange = vi.fn(),
   sessionMode = '',
+  { enterBounded = true }: { enterBounded?: boolean } = {},
 ) {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   const props = (next: AutomationRecord | null, slotKey = 'chat-1', open = true) => (
@@ -68,6 +79,7 @@ function renderPopover(
     </QueryClientProvider>
   )
   const view = render(props(automation))
+  if (enterBounded) enterBoundedView()
   return {
     client,
     onChange,
@@ -118,7 +130,7 @@ describe('SessionAutomationPopover', () => {
     renderPopover(null, vi.fn(), false)
 
     expect(screen.getByRole('button', { name: 'Start monitor' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Use legacy goal loop (costly)' }))
+    expect(screen.getByRole('button', { name: 'Back to goal loop' }))
       .toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Start monitor' }))
     expect(api.monitorCreate).not.toHaveBeenCalled()
@@ -128,12 +140,25 @@ describe('SessionAutomationPopover', () => {
     renderPopover(null, vi.fn(), true, vi.fn(), sessionMode)
 
     expect(screen.getByText(
-      "Monitors aren't available in crew or member sessions because those sessions route work through their crew.",
+      "Automations aren't available in crew or member sessions because those sessions route work through their crew.",
     )).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start monitor' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Use legacy goal loop (costly)' })).toBeDisabled()
+    /* The way BACK is never gated: it writes nothing, so an unsupported mode
+       has nothing to refuse. Exercised as a round trip in its own case below. */
+    expect(screen.getByRole('button', { name: 'Back to goal loop' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Start monitor' }))
     expect(api.monitorCreate).not.toHaveBeenCalled()
+  })
+
+  it.each(['crew', 'member'])('leaves a %s session a way back off the bounded form', sessionMode => {
+    renderPopover(null, vi.fn(), true, vi.fn(), sessionMode)
+
+    /* The offer that brings a reader here carries no mode gate, so gating the
+       exit stranded them on this form with Close as the only move. */
+    fireEvent.click(screen.getByRole('button', { name: 'Back to goal loop' }))
+
+    expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Pull request URL' })).not.toBeInTheDocument()
   })
 
   it.each(['crew', 'member'])(
@@ -197,11 +222,12 @@ describe('SessionAutomationPopover', () => {
         />
       </QueryClientProvider>,
     )
+    enterBoundedView()
 
     expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load this session's monitor state. Retry loading before starting a monitor.")
     expect(screen.queryByRole('button', { name: /ask.*agent/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start monitor' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Use legacy goal loop (costly)' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Back to goal loop' })).toBeEnabled()
   })
 
   it('announces a rejected request without losing the unsaved monitor draft', async () => {
@@ -233,6 +259,7 @@ describe('SessionAutomationPopover', () => {
       />
     }
     const view = render(<QueryClientProvider client={client}><SnapshotEditor /></QueryClientProvider>)
+    enterBoundedView()
 
     const retry = await screen.findByRole('button', { name: 'Retry loading' })
     fireEvent.change(screen.getByRole('textbox', { name: 'Pull request URL' }), {
@@ -913,17 +940,38 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByText(instructions)).toHaveClass('break-words')
   })
 
+  it('opens on the goal loop so a session with no pull request can still set a goal', () => {
+    renderPopover(null, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+    expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Pull request URL' })).not.toBeInTheDocument()
+    /* The composer button must name the surface it opens. It said "Set up a
+       bounded monitor" while the monitor was the default, which promised a
+       PR-only form to every session. */
+    expect(screen.getByRole('button', { name: 'Set a goal' })).toBeInTheDocument()
+  })
+
+  it('opens on a live monitor rather than the default goal loop', () => {
+    renderPopover(activeMonitor, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+    expect(screen.getByText('https://github.com/kirodotdev/KiroCrew/pull/42')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Goal description' })).not.toBeInTheDocument()
+  })
+
   it('offers the old costly loop explicitly without changing zero-unlimited semantics', () => {
-    renderPopover(null)
-    const trigger = screen.getByRole('button', { name: 'Set up a bounded monitor' })
-    fireEvent.click(screen.getByRole('button', { name: 'Use legacy goal loop (costly)' }))
+    renderPopover(null, vi.fn(), true, vi.fn(), '', { enterBounded: false })
 
     const notice = screen.getByText(
-      'This legacy loop invokes the agent every cycle and can run without a limit.',
+      'This goal loop invokes the agent every cycle and can run without a limit.',
     )
     const panel = notice.closest('[data-side]')
     const maxCycles = screen.getByRole('spinbutton', { name: 'Max cycles (0 = infinite)' })
     expect(notice).toBeInTheDocument()
+    /* Warn-coloured, as it was when this form was opt-in. On the view every
+       reader now lands on, this sentence is the only cost cue the surface
+       carries, so muting it would have weakened that cue in the same change
+       that made the surface the default. */
+    expect(notice).toHaveClass('border-warn/30', 'bg-warn-subtle', 'text-warn-fg')
     expect(panel).toHaveClass(
       'w-[min(calc(100vw-1rem),26.25rem)]',
       'max-h-[min(80vh,42rem)]',
@@ -931,9 +979,72 @@ describe('SessionAutomationPopover', () => {
     )
     expect(maxCycles).toHaveValue(0)
     expect(maxCycles.parentElement?.parentElement).toHaveClass('flex-col', 'sm:flex-row')
-    expect(trigger).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to bounded monitor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Watch a pull request instead' }))
     expect(screen.getByRole('textbox', { name: 'Pull request URL' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to goal loop' }))
+    expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeInTheDocument()
+  })
+
+  it('reopens an unarmed slot on the default view after the bounded form was visited', () => {
+    const onOpenChange = vi.fn()
+    const { rerenderAutomation } = renderPopover(
+      null, vi.fn(), true, onOpenChange, '', { enterBounded: false },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Watch a pull request instead' }))
+    expect(screen.getByRole('textbox', { name: 'Pull request URL' })).toBeInTheDocument()
+
+    /* Close, then reopen the same unarmed slot. The view is re-derived from the
+       record on every open, so the reader's earlier switch does not turn the
+       pull-request form back into this slot's default. */
+    rerenderAutomation(null, 'chat-1', false)
+    rerenderAutomation(null, 'chat-1', true)
+
+    expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Pull request URL' })).not.toBeInTheDocument()
+  })
+
+  it('marks the only route to the monitor as a link without needing hover', () => {
+    renderPopover(null, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+    /* A hover-only affordance is invisible on a touch viewport, and this is now
+       the sole path to the bounded form. */
+    expect(screen.getByRole('button', { name: 'Watch a pull request instead' }))
+      .toHaveClass('underline')
+  })
+
+  it('shows the goal glyph on the trigger while nothing is armed', () => {
+    const { container, rerenderAutomation } = renderPopover(
+      null, vi.fn(), true, vi.fn(), '', { enterBounded: false },
+    )
+
+    /* The glyph must promise what the button opens: with nothing armed it opens
+       the goal editor, and there is no probing to depict. */
+    expect(container.querySelector('.lucide-goal')).toBeTruthy()
+    expect(container.querySelector('.lucide-radar')).toBeNull()
+
+    rerenderAutomation(activeMonitor)
+    expect(container.querySelector('.lucide-radar')).toBeTruthy()
+  })
+
+  it.each(['crew', 'member'])('says why the goal fields are dead in %s mode', sessionMode => {
+    renderPopover(null, vi.fn(), true, vi.fn(), sessionMode, { enterBounded: false })
+
+    /* The explanation used to sit on the bounded view because that was the
+       default; a disabled form with no reason on it is what flipping the
+       default would otherwise have produced. */
+    expect(screen.getByTestId('auto-nudge-write-disabled-reason')).toHaveTextContent(
+      "Automations aren't available in crew or member sessions because those sessions route work through their crew.",
+    )
+    expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeDisabled()
+  })
+
+  it('offers no bounded monitor while a legacy loop is already running', () => {
+    renderPopover(activeLegacyLoop, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+    expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Watch a pull request instead' })).not.toBeInTheDocument()
   })
 })

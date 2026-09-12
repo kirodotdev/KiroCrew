@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Goal, X } from 'lucide-react'
+import { Goal, Radar, X } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -20,9 +20,9 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onChange: (loop: AutoNudgeLoop | null) => void
-  /** Present only when the legacy form is nested under the bounded monitor picker. */
-  onBackToBoundedMonitor?: () => void
-  /** Disable legacy-loop writes while leaving Stop available for stale state. */
+  /** Present when this editor is the popover's default view and a bounded monitor can still be armed. */
+  onSetUpBoundedMonitor?: () => void
+  /** Disable legacy-loop writes while leaving Stop available for stale state. Also renders the reason. */
   writeDisabled?: boolean
   /**
    * True when the slot's last turn ended interrupted (the composer is showing
@@ -47,7 +47,7 @@ interface SlotWatch {
   next_run_ts: number | null
 }
 
-export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange, onBackToBoundedMonitor, writeDisabled = false, interrupted = false, trigger, content }: Props) {
+export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange, onSetUpBoundedMonitor, writeDisabled = false, interrupted = false, trigger, content }: Props) {
   // `||` (not `??`) is deliberate on the loop tier: it preserves the fallback
   // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
   // the 60 / 0 / default template rather than a bare 0 / "".
@@ -373,16 +373,32 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             <X size={14} />
           </button>
         </div>
-        {onBackToBoundedMonitor ? (
+        {onSetUpBoundedMonitor ? (
           <>
+            {/* An OFFER, not a way back: this editor is the view the popover
+                opens on, so a reader arriving here has no bounded monitor
+                behind them to return to. Hence a Radar glyph rather than a left
+                arrow, and a label naming the SUBJECT that surface takes -- it
+                accepts a pull request URL and nothing else, so a label reading
+                only "bounded monitor" walks a reader with any other goal into
+                a form whose one field they cannot fill.
+                Underlined without hovering, because this is now the ONLY route
+                to the monitor: a usability reader could not tell 11px muted
+                text was clickable at all, and a hover-only affordance is
+                invisible on a touch viewport. */}
             <button
               type="button"
-              onClick={onBackToBoundedMonitor}
-              className="mb-2 inline-flex items-center gap-1 border-none bg-transparent p-0 text-[11px] text-muted cursor-pointer hover:text-text"
+              onClick={onSetUpBoundedMonitor}
+              className="mb-2 inline-flex items-center gap-1 border-none bg-transparent p-0 text-[11px] text-muted underline cursor-pointer hover:text-text"
             >
-              <ArrowLeft size={13} className="lucide-inline" aria-hidden />
-              {i18nT('components.sessionAutomationPopover.back_to_bounded_monitor')}
+              <Radar size={13} className="lucide-inline" aria-hidden />
+              {i18nT('components.sessionAutomationPopover.set_up_bounded_monitor')}
             </button>
+            {/* Warn-coloured, unchanged from when this form was opt-in. Muting
+                it read better to the author and worse to review: on the view
+                every reader now lands on, this sentence is the only cost cue
+                the surface carries, and dropping its colour weakened that cue
+                in the same change that made the surface the default. */}
             <p role="note" className="mb-2 rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn-fg">
               {i18nT('components.sessionAutomationPopover.legacy_notice')}
             </p>
@@ -430,6 +446,28 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             </div>
           </div>
         )}
+
+        {/* The reason the fields below are dead. `writeDisabled` alone renders a
+            form a crew/member reader cannot use and does not say why: the
+            explanation used to live on the bounded view, which was the default,
+            and making the goal loop the default left the disabled form with no
+            reason attached.
+            Rendered from the boolean rather than through a `reason` prop. The
+            prop was a one-consumer generalization -- its single caller passed
+            one constant gated on this same condition -- and the rationale for
+            it ("the editor knows nothing about session modes") was already
+            false, since this component reads `sessionAutomationPopover` strings
+            two lines up. A second reason for disabling writes would need the
+            reason back as a parameter; there is exactly one today. */}
+        {writeDisabled ? (
+          <p
+            role="status"
+            data-testid="auto-nudge-write-disabled-reason"
+            className="mb-3 rounded-md border border-border bg-bg px-2 py-1.5 text-[11px] leading-relaxed text-muted"
+          >
+            {i18nT('components.sessionAutomationPopover.session_mode_unavailable')}
+          </p>
+        ) : null}
 
         <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.goal_description')}</div>
         <textarea

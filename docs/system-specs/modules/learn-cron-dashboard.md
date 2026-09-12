@@ -2931,9 +2931,36 @@ must have their exact version-1 key sets; an extra key makes the record inert ra
 than letting an unbounded provider field ride a future wire frame.
 
 The chat composer exposes structured monitor creation and mutation only through
-the dedicated `/api/monitors` routes. It explains that crew and member sessions
+the dedicated `/api/monitors` routes. **The popover opens on the goal loop, not
+on the bounded monitor.** A bounded monitor accepts exactly one subject — a pull
+request URL validated against the four supported code hosts — so opening on it
+put every session that is not about a pull request in front of a form it cannot
+fill, with the surface accepting an arbitrary objective behind an unlabelled
+click. An armed record outranks that default in either direction: a slot holding
+a structured monitor opens on the monitor, and a slot running a legacy loop
+opens on the loop and is offered no monitor at all, because the alternative
+hides a running automation behind the form for the other one. From the goal loop
+the bounded form is one press away, under a note stating that a goal loop
+invokes the agent every cycle and may be unbounded. That note keeps its
+WARN colouring, and on this surface that is load-bearing rather than decorative:
+it is the only cost cue the default view carries, so muting it would have
+weakened the cue in the same change that put the view in front of every reader.
+It also names the surface the way the panel's own title does -- "goal loop"
+under "Set a goal" -- because a reader who cannot tell that the loop being
+warned about is the screen in front of them is reading a warning about something
+else. The switch to the bounded form names its subject rather than its
+boundedness, and carries a static underline, since it is the only route there
+and a hover-only affordance does not exist on a touch viewport. The button back
+from the bounded form is a plain return and carries NO cost warning: it is the
+only labelled way back to the default view, and a reader refused to press it
+while it read as a penalty, so the cost cue stays where the cost is incurred.
+It is also NOT disabled in a crew or member session, unlike every control on
+that form that writes: the offer bringing a reader there carries no mode gate,
+so gating the exit stranded them on a form they could neither use nor leave
+except by closing the popover. It explains that crew and member sessions
 cannot host a direct monitor turn and disables create, edit, restart, and
-legacy-loop controls for those modes. Stop remains available for an existing
+legacy-loop controls for those modes; that explanation renders on BOTH views,
+so a disabled goal form is never left without a reason. Stop remains available for an existing
 monitor so an operator can always disarm stale state. A new pull-request monitor
 starts from the 300-second cadence, 14,400-second runtime, eight-turn,
 250,000-token, and three-provider-error defaults. Terminal evidence remains read-only and exposes
