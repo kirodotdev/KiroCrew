@@ -17,7 +17,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from tmpdir_helpers import short_tmp_base
@@ -86,14 +86,31 @@ class TestSafeReadSnapshot:
         f.write_text("hello\nworld\n")
         assert _safe_read_snapshot(str(f)) == "hello\nworld\n"
 
-    def test_reads_with_explicit_utf8_encoding(self, tmp_path: Path):
+    def test_reads_as_utf8_whatever_the_host_locale_says(self, tmp_path: Path):
+        """The INTENT this pins is unchanged; the mechanism it pins is not.
+
+        It used to assert `Path.read_text(encoding="utf-8", errors="replace")` was
+        called. That read followed a symlink swapped in after `validate_file_path`
+        had already approved the path, so the read now goes through the hooks
+        bytes chokepoint (`O_NOFOLLOW` plus an `fstat` on the descriptor) and the
+        decode happens here. Asserting the call would pin the mechanism again, so
+        this asserts the property that actually matters: the bytes are decoded as
+        UTF-8 regardless of the host's preferred code page, which is what a legacy
+        Windows default like cp1252 would otherwise mangle.
+        """
         f = tmp_path / "unicode.txt"
-        f.write_text("こんにちは", encoding="utf-8")
+        f.write_bytes("こんにちは".encode("utf-8"))
+        assert _safe_read_snapshot(str(f)) == "こんにちは"
 
-        with patch.object(Path, "read_text", return_value="こんにちは") as read_text:
-            assert _safe_read_snapshot(str(f)) == "こんにちは"
-
-        read_text.assert_called_once_with(encoding="utf-8", errors="replace")
+        # A byte sequence that is valid cp1252 and invalid UTF-8 would come back
+        # transliterated if the host locale were in play; under UTF-8 with
+        # replacement it comes back as replacement characters instead.
+        g = tmp_path / "cp1252.txt"
+        g.write_bytes(b"caf\xe9")
+        out = _safe_read_snapshot(str(g))
+        assert out is not None
+        assert out.startswith("caf")
+        assert "é" not in out
 
     def test_returns_none_for_missing_file(self, tmp_path: Path):
         assert _safe_read_snapshot(str(tmp_path / "ghost")) is None

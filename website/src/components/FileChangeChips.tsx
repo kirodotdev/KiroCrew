@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FileDiff, ChevronDown, ChevronUp, ChevronRight, Columns2 } from 'lucide-react'
 import type { FileChipStyle } from '../pages/chat/ChatSettings'
 import { useRowDisclosure } from '../pages/chat/rowDisclosure'
-import { PierreFilePair } from '../pierre'
+import { PierreFilePair, PierrePatch } from '../pierre'
 import {
   ROW_ANIM_MS,
   ROW_BODY_MAX_H,
@@ -10,15 +10,28 @@ import {
   ROW_CSS_CLOSING,
   ROW_CSS_OPEN,
 } from './fileChangeChipsCss'
-import { countLines } from '../utils/diffLineCounts'
+import { countDiffStats, countLines } from '../utils/diffLineCounts'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export interface FileChangeEntry {
   path: string
-  before: string
-  after: string
+  /** ABSENT when the pair was too big to travel. Measured on a real session,
+   *  1% of rows carried 69% of the transcript's bytes and those bytes were these
+   *  two strings (33-200 KB per side) — so the server sends `patch` instead once
+   *  the pair crosses a size threshold, and a diff of the same change was 130x
+   *  smaller. Free geometrically: a collapsed row's height is its file-list
+   *  header, which never depended on these. */
+  before?: string
+  after?: string
+  /** A capped unified diff, present when the before/after pair either cannot
+   *  express the change (both snapshots are cut from the start of the file, so
+   *  an edit past the backend's per-file cap leaves them byte-identical) or is
+   *  too large to send. The patch spends the same budget on the change itself
+   *  and keeps the true line numbers in its hunk headers. When set, it is the
+   *  authority for this row. */
+  patch?: string
 }
 
 /** Re-exported for this component's existing importers; defined in
@@ -111,13 +124,17 @@ function RowMetadata({ added, removed, isArtifact }: {
   )
 }
 
-function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onToggle }: {
+function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onToggle, expanded }: {
   fc: FileChangeEntry
   added: number
   removed: number
   isArtifact?: boolean
   onFileOpen?: (path: string) => void
-  onToggle: () => void
+  /** Omitted when the row has no diff to reveal, so no disclosure is offered. */
+  onToggle?: () => void
+  /** Set when this header sits ABOVE an open patch, so the chevron and
+   *  `aria-expanded` describe the row's real state instead of claiming closed. */
+  expanded?: boolean
 }) {
   const name = basename(fc.path)
   return (
@@ -129,15 +146,21 @@ function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onTogg
       data-testid={`fcc-header-${fc.path}`}
       className="flex items-center gap-2 min-h-[36px] px-[10px] py-1.5 bg-[color-mix(in_srgb,var(--bg-elevated)_50%,var(--bg))] font-mono text-[12px] leading-[18px] text-muted"
     >
-      <button
-        data-testid={`fcc-toggle-${fc.path}`}
-        onClick={e => { e.stopPropagation(); onToggle() }}
-        aria-expanded={false}
-        aria-label={i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })}
-        className="shrink-0 flex items-center justify-center w-[16px] h-[16px] rounded text-muted hover:text-text cursor-pointer bg-transparent border-none"
-      >
-        <ChevronRight size={13} />
-      </button>
+      {onToggle ? (
+        <button
+          data-testid={`fcc-toggle-${fc.path}`}
+          onClick={e => { e.stopPropagation(); onToggle() }}
+          aria-expanded={!!expanded}
+          aria-label={i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })}
+          className="shrink-0 flex items-center justify-center w-[16px] h-[16px] rounded text-muted hover:text-text cursor-pointer bg-transparent border-none"
+        >
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+      ) : (
+        /* Holds the chevron's column so a non-disclosable row's filename stays
+           aligned with its siblings instead of shifting left. */
+        <span className="shrink-0 w-[16px] h-[16px]" aria-hidden />
+      )}
       <FileDiff size={13} className="shrink-0 text-muted" aria-hidden />
       {onFileOpen ? (
         <button
@@ -183,14 +206,59 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
   const openFocusPending = useRef(false)
   const collapseFocusPending = useRef(false)
   const [focusProxy, setFocusProxy] = useState(false)
-  const renderPierre = open || closing
+  // NOTHING TO SHOW: the captured before/after are byte-identical, so Pierre can
+  // only ever paint an empty diff. Offering a disclosure here spends a tap to
+  // replace the header with the warm fallback's plain text and then collapse to
+  // nothing — the row appears to flash and vanish, which is indistinguishable
+  // from a broken diff. A row that carries a `patch` is never in this state: the
+  // patch exists precisely BECAUSE the capped pair went identical, and it is the
+  // authority for what changed.
+  const nothingToShow = !fc.patch && fc.before === fc.after
+  const renderPierre = !nothingToShow && (open || closing)
+  // The patch renders under this row's own header, so Pierre must not draw a
+  // second one. Split/unified does not apply to a unified patch.
+  const patchOptions = useMemo(
+    () => ({ disableFileHeader: true, overflow: 'wrap' as const }),
+    [],
+  )
   // Pierre titles the header from `name`; the full path would wrap the row and
   // bury the filename, so the row shows the basename and the path stays on the
   // Open button's tooltip.
   const name = basename(fc.path)
   const toggleLabel = i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })
-  const oldFile = useMemo(() => ({ name, contents: fc.before }), [name, fc.before])
-  const newFile = useMemo(() => ({ name, contents: fc.after }), [name, fc.after])
+  // A MOUNTED row's diff inputs are PINNED to the contents that were current
+  // when it opened, for the same reason `options` below is kept referentially
+  // stable: Pierre re-initializes the diff view when its inputs change identity.
+  // Its cache key is derived from the CONTENTS, so replacing them is a cache
+  // miss — the surface re-diffs asynchronously and paints NOTHING until that
+  // lands. That is the flash the `options` comment describes, except a content
+  // swap can leave the row blank for hundreds of milliseconds with the chevron
+  // still reading expanded, so a reader watching a patch simply loses it.
+  //
+  // The pin costs nothing, because Pierre is unmounted while the row is
+  // collapsed (`renderPierre`): the next open re-initializes regardless and
+  // takes whatever the contents are by then. Pierre also derives the expanded
+  // header's own +/- numbers from these same contents, so body and header stay
+  // consistent with each other by construction; the COLLAPSED row's counts come
+  // from the card and keep describing the change as it currently stands.
+  // Derived during render rather than through state, so opening a row still
+  // costs exactly ONE Pierre render — a `setPinned` effect would add a second
+  // pass on every open, which is churn on the most render-sensitive rows in the
+  // app. The write is idempotent and reads only this render's props, so a
+  // double-invoked render reaches the same pin.
+  // An ABSENT pair reads as empty. It is absent exactly when the server sent a
+  // `patch` instead because the pair was too large to travel, and in that case
+  // the patch branch below is what renders — so the empty strings are never the
+  // thing on screen, they only keep the pin's shape total.
+  const fcBefore = fc.before ?? ''
+  const fcAfter = fc.after ?? ''
+  const pinRef = useRef<{ before: string; after: string } | null>(null)
+  if (!renderPierre) pinRef.current = null
+  else if (!pinRef.current) pinRef.current = { before: fcBefore, after: fcAfter }
+  const before = pinRef.current ? pinRef.current.before : fcBefore
+  const after = pinRef.current ? pinRef.current.after : fcAfter
+  const oldFile = useMemo(() => ({ name, contents: before }), [name, before])
+  const newFile = useMemo(() => ({ name, contents: after }), [name, after])
   // Depend on WHETHER a file-open handler exists, never on its identity: the
   // options only splice a CSS block in when the title is clickable, so an
   // unstable callback from a parent must not re-create `options` — Pierre
@@ -221,6 +289,9 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
     return () => clearTimeout(t)
   }, [closing])
   const toggle = () => {
+    // One guard for every entry point — the chevron, header whitespace via
+    // onRowClick, and the focus-proxy keyboard path all funnel here.
+    if (nothingToShow) return
     // Reopening inside the collapse window must CLEAR `closing`, not leave it:
     // the closing stylesheet runs `fccHide` with `animation-fill-mode: forwards`,
     // so a stale `closing` keeps hiding a row that is now open — the row snaps
@@ -357,20 +428,40 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
       aria-expanded={focusProxy ? open : undefined}
     >
       {renderPierre ? (
-        <PierreFilePair
+        fc.patch ? (
+          /* The patch path keeps THIS row's header and puts the diff below it,
+             rather than slotting controls into Pierre's own file header. Nothing
+             is handed off, so the identity strip never leaves the screen — and
+             the patch already carries the filename and true line numbers, so a
+             second header would only repeat them. */
+          <>
+            <CollapsedRowHeader
+              fc={fc}
+              added={added}
+              removed={removed}
+              isArtifact={isArtifact}
+              onFileOpen={onFileOpen}
+              onToggle={toggle}
+              expanded
+            />
+            <PierrePatch patch={fc.patch} options={patchOptions} />
+          </>
+        ) : (
+          <PierreFilePair
           oldFile={oldFile}
           newFile={newFile}
           options={options}
-          fallbackText={fc.after.length > ROW_WARM_FALLBACK_MAX_CHARS
-            ? `${fc.after.slice(0, ROW_WARM_FALLBACK_MAX_CHARS)}\n${ROW_WARM_FALLBACK_ELLIPSIS}`
-            : fc.after}
+          fallbackText={fcAfter.length > ROW_WARM_FALLBACK_MAX_CHARS
+            ? `${fcAfter.slice(0, ROW_WARM_FALLBACK_MAX_CHARS)}\n${ROW_WARM_FALLBACK_ELLIPSIS}`
+            : fcAfter}
           fallbackClassName="max-h-[376px] overflow-auto"
           fallbackContentStyle={FALLBACK_CONTENT_STYLE}
           onVisible={completeOpenFocus}
           renderHeaderPrefix={prefix}
           renderHeaderFilenameSuffix={filenameSuffix}
           renderHeaderMetadata={metadata}
-        />
+          />
+        )
       ) : (
         <CollapsedRowHeader
           fc={fc}
@@ -378,7 +469,7 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
           removed={removed}
           isArtifact={isArtifact}
           onFileOpen={onFileOpen}
-          onToggle={toggle}
+          onToggle={nothingToShow ? undefined : toggle}
         />
       )}
     </div>
@@ -409,7 +500,10 @@ function ExpandedList({ fileChanges, onFileOpen, artifactPaths, disclosureKey }:
   const [sideBySide, setSideBySide] = usePersistedBool('mc-diff-split', true)
   const n = fileChanges.length
   // Count once per file: reused by each row AND the header roll-up.
-  const stats = fileChanges.map(fc => countLines(fc.before, fc.after))
+  // Count once per file: reused by each row AND the header roll-up. A row with a
+  // patch counts from the patch's own +/- markers, because its before/after pair
+  // is exactly the one the backend found could not express the change.
+  const stats = fileChanges.map(fc => (fc.patch ? countDiffStats(fc.patch) : countLines(fc.before ?? '', fc.after ?? '')))
   const totalAdded = stats.reduce((s, x) => s + x.added, 0)
   const totalRemoved = stats.reduce((s, x) => s + x.removed, 0)
   const overflow = n > COLLAPSED_COUNT
@@ -479,7 +573,11 @@ function ExpandedList({ fileChanges, onFileOpen, artifactPaths, disclosureKey }:
 
 /* ── Minimal: stats-only liquid-glass pill, filename hovers above on hover ── */
 function MinimalChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void }) {
-  const { added, removed } = countLines(fc.before, fc.after)
+  // A patch is the authority when present — and when the pair did not travel it
+  // is the ONLY source, so the chip's counts have to come from it or read 0/0.
+  const { added, removed } = fc.patch
+    ? countDiffStats(fc.patch)
+    : countLines(fc.before ?? '', fc.after ?? '')
   return (
     <span className="relative inline-flex group/tip">
       <span className="glass-surface absolute bottom-full left-0 mb-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-text whitespace-nowrap font-mono z-10 pointer-events-none opacity-0 translate-y-1 group-hover/tip:opacity-100 group-hover/tip:translate-y-0 transition-all duration-150">
@@ -521,7 +619,7 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff,
     return (
       <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mt-2 mb-1.5">
         {fileChanges.map(fc => (
-          <MinimalChip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} />
+          <MinimalChip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after ?? '', fc.before ?? '')} />
         ))}
       </div>
     )

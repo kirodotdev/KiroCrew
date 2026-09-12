@@ -8886,13 +8886,21 @@ async def _live_slot_resume_response(
         # count, while a raw window length is not.
         #
         # O(window) on the event loop, and the window is capped -- the
-        # `_prepare_messages` redaction pass on the next line is the larger
-        # cost at this call site either way.
+        # `_prepare_messages` pass below is the larger cost at this call site
+        # either way, which is why that one is offloaded.
         window = _collapse_wire_rows(existing.messages)
         total = len(window)
         recent = window[-200:] if total > 200 else window
-        prepared = _prepare_messages(
-            recent, existing.running, live_child=_live_child_instance(state, existing)
+        # Off-loop: besides the regex-heavy redaction pass, `_prepare_messages`
+        # shrinks oversized file-change rows for the wire, and that RECOMPUTES a
+        # unified diff per oversized row. A resume replaying a window full of them
+        # would run those difflib passes inline and stall every other session on
+        # this gateway's one loop.
+        prepared = await asyncio.to_thread(
+            _prepare_messages,
+            recent,
+            existing.running,
+            live_child=_live_child_instance(state, existing),
         )
         # Raw index this window starts at: the frozen on-disk prefix plus the
         # in-memory rows it skipped. has_more is derived from the same number so
@@ -9496,6 +9504,16 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
     _sync_dashboard_slots(state)
     state.push_slots_update()
+    # Off-loop for the same reason as the sibling resume path: `_prepare_messages`
+    # shrinks oversized file-change rows for the wire, and that RECOMPUTES a unified
+    # diff per oversized row, on top of the regex-heavy redaction pass. Computed
+    # before the response literal so it is awaited rather than run inline.
+    prepared_recent = await asyncio.to_thread(
+        _prepare_messages,
+        recent,
+        slot.running,
+        live_child=_live_child_instance(state, slot),
+    )
     return web.json_response(
         {
             "ok": True,
@@ -9503,9 +9521,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             # `total` is the full on-disk length here, so this already is the
             # raw index the next older page starts from.
             "next_before": total - len(recent),
-            "messages": _prepare_messages(
-                recent, slot.running, live_child=_live_child_instance(state, slot)
-            ),
+            "messages": prepared_recent,
             "queue": [
                 {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
             ],

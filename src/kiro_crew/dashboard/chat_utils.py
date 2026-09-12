@@ -7,6 +7,7 @@ persona injection, and other helpers used across chat_*.py modules.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import hmac
 import json
@@ -1501,6 +1502,104 @@ def _redact_meta(meta: dict) -> dict:
     containers get their own snapshot from the recursive call.
     """
     return {k: _redact_value(v) for k, v in list(meta.items())}
+
+
+# A capped unified diff is what an oversized file change carries INSTEAD of a
+# content pair. Two reasons, and they arrive from opposite directions.
+#
+# CORRECTNESS: the pair is cut from the START of the file, so an edit past the
+# snapshot cap leaves both sides byte-identical and a real change reads as no
+# change at all.
+#
+# SIZE: measured on a 9,611-message session, 1.0% of rows carried 69% of the
+# corpus bytes, and those bytes were entirely `meta.file_changes` content pairs
+# (33-200 KB per side, up to 400 KB for one file) while the rows' own `content`
+# was 0-2 KB. Sending the diff instead of the two files was 130x smaller on the
+# 40 heaviest pairs -- 15.26 MB to 0.12 MB -- for 3.6 ms of CPU per pair. That
+# ratio is the whole point: a diff describes only what moved, not the file it
+# moved in, so its size tracks the EDIT while a pair tracks the FILE.
+_MAX_PATCH = 40_000
+_PATCH_CONTEXT_LINES = 3
+# Combined `before + after` size above which an entry travels as a patch. Below
+# it the pair is already small, and converting would spend CPU to save nothing
+# while losing the client's ability to show full context on expand.
+_PATCH_INSTEAD_OF_PAIR_BYTES = 8_192
+
+
+def _unified_patch(path: str, before: str, after: str) -> str:
+    """A capped unified diff of two file bodies.
+
+    Its hunk headers carry the TRUE line numbers, which a windowed content pair
+    could not (both windows would start at line 1). Capping the DIFF bounds
+    message meta without making the represented change either invisible or
+    mislocated.
+    """
+    diff = difflib.unified_diff(
+        before.splitlines(keepends=True),
+        after.splitlines(keepends=True),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        n=_PATCH_CONTEXT_LINES,
+    )
+    out: list[str] = []
+    size = 0
+    for line in diff:
+        # Stop on a whole line: a patch cut mid-line renders as a corrupt hunk.
+        if size + len(line) > _MAX_PATCH:
+            out.append(f"... (patch truncated at {_MAX_PATCH} chars)\n")
+            break
+        out.append(line)
+        size += len(line)
+    return "".join(out)
+
+
+def _shrink_file_changes_for_wire(meta: dict) -> dict:
+    """Replace oversized `file_changes` content pairs with capped patches.
+
+    Applied on the READ path, not the write path, because the corpus already on
+    disk is where the reader's wait comes from: a page of 100 messages weighed
+    0.3-1.4 MB against a 1.3 KB median row, and the server-side CPU for that same
+    page was ~305 ms of a 2.6 s wait. The remainder was bytes on the wire, so this
+    is the only lever on the term that dominates.
+
+    Geometrically free: the card these entries feed renders COLLAPSED, and a
+    collapsed row's height is its file-list header -- it does not depend on the
+    snapshots at all. A reader who expands a row gets the patch, which is the
+    authority for that row (see FileChangeEntry.patch on the client).
+
+    Returns `meta` unchanged when nothing qualifies, so an ordinary message pays
+    one length check per entry and no copy.
+    """
+    changes = meta.get("file_changes")
+    if not isinstance(changes, list) or not changes:
+        return meta
+    out: list[Any] = []
+    touched = False
+    for entry in changes:
+        if not isinstance(entry, dict):
+            out.append(entry)
+            continue
+        before = entry.get("before")
+        after = entry.get("after")
+        if not isinstance(before, str) or not isinstance(after, str):
+            out.append(entry)
+            continue
+        if len(before) + len(after) < _PATCH_INSTEAD_OF_PAIR_BYTES:
+            out.append(entry)
+            continue
+        slim = {k: v for k, v in entry.items() if k not in ("before", "after")}
+        # An existing `patch` is authoritative and already capped -- recomputing
+        # one from a pair the writer already judged unusable would replace a good
+        # diff with a diff of two identical prefixes (empty).
+        if not isinstance(slim.get("patch"), str) or not slim["patch"]:
+            slim["patch"] = _unified_patch(str(entry.get("path") or ""), before, after)
+        out.append(slim)
+        touched = True
+    if not touched:
+        return meta
+    shrunk = dict(meta)
+    shrunk["file_changes"] = out
+    return shrunk
 
 
 def _redact_meta_for_role(role: str, meta: dict) -> dict:
@@ -3045,5 +3144,12 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, msg_out["meta"]), live_child
             )
+        # LAST, and after redaction on purpose: the patch is computed from the
+        # already-scrubbed pair, so it inherits the credential and exfiltration
+        # scrub by construction rather than needing its own pass. Both branches
+        # above converge here, so one call covers a parsed-cls meta and a stored
+        # one alike.
+        if isinstance(msg_out.get("meta"), dict):
+            msg_out["meta"] = _shrink_file_changes_for_wire(msg_out["meta"])
         out.append(msg_out)
     return out
