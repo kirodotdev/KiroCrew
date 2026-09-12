@@ -266,6 +266,8 @@ from .exfil import (
     _STRUCTURAL_VALIDATORS,
     _STS_TOKEN_RE,
     _URL_RE,
+    CONSENT_ENDPOINT_BUILTIN,
+    CONSENT_ENDPOINT_OPERATOR,
     EXFILTRATION_REDACTION_TAG_PREFIX,
     OAuthUrlCredentialDiagnostic,
     OAuthUrlShapeProfile,
@@ -292,6 +294,7 @@ from .exfil import (
     _slack_manifest_re_slot,
     _valid_oauth_extension_path,
     _validate_operator_oauth_entries,
+    agentcore_consent_endpoint_source,
     allow_agentcore_consent_url,
     audit_bash_exfiltration,
     canonicalize_ip,
@@ -1151,9 +1154,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                     seen_views.add(candidate)
                     views.append(candidate)
             joined_here: set[str] = set()
-            payloads = _nested_shell_payloads(
-                tokens, allow_join=allow_join, joined_out=joined_here
-            )
+            payloads = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
             programs = _argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -1402,9 +1403,7 @@ def is_denied(
         agent cannot diagnose at all. The span is the whole subject because a floor
         decides on the argv's SHAPE rather than at an offset.
         """
-        diagnostic = (
-            refusal_diagnostic(rule, component, tool_name) if rule and component else None
-        )
+        diagnostic = refusal_diagnostic(rule, component, tool_name) if rule and component else None
         return _deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )

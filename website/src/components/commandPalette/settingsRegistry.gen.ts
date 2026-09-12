@@ -1624,6 +1624,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Authenticates coding-activity sync when WakaTime is enabled."
   },
   {
+    "id": "security.identity",
+    "labelKey": "pages.settings.securityPanel.agent_identity",
+    "tab": "security",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "section": "identity"
+    },
+    "label": "Agent identity",
+    "description": "Choose how this crew identifies itself when it calls tools through your AgentCore Gateway — the front door in your cloud account that sits in front of the tool servers the crew can reach. Each option below says what the crew gains or loses."
+  },
+  {
     "id": "security.denied-commands",
     "labelKey": "pages.settings.securityPanel.denied_commands",
     "tab": "security",
@@ -1633,6 +1645,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "section": "rules"
     },
     "label": "Denied Commands"
+  },
+  {
+    "id": "security.gateway-url",
+    "labelKey": "pages.settings.securityPanel.agent_identity_gateway_url",
+    "tab": "security",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "section": "identity"
+    },
+    "label": "Gateway URL"
   },
   {
     "id": "security.governance-policy",
@@ -1690,6 +1713,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "section": "tailnet"
     },
     "label": "Trust this machine's tailnet name"
+  },
+  {
+    "id": "security.workload-name",
+    "labelKey": "pages.settings.securityPanel.agent_identity_name",
+    "tab": "security",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "section": "identity"
+    },
+    "label": "Workload name"
   },
   {
     "id": "security.your-custom-denies",

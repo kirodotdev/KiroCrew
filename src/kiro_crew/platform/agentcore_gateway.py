@@ -41,7 +41,11 @@ from kiro_crew.platform.context import (
 from kiro_crew.platform.governance import agentcore_posture
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, vet_and_audit
 from kiro_crew.platform.interfaces import InboundToken, SessionPrincipal
-from kiro_crew.security import allow_agentcore_consent_url
+from kiro_crew.security import (
+    CONSENT_ENDPOINT_OPERATOR,
+    agentcore_consent_endpoint_source,
+    allow_agentcore_consent_url,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -278,17 +282,43 @@ def consent_snapshot() -> dict[str, Any]:
     an empty key would classify as.
     """
     if not _identity_on(HOST_SESSION_KEY):
-        return {"pending": False, "url": None, "host": None, "refused": False}
+        return _consent_absent()
     raw = _adapter_status().get(STATUS_AUTHORIZATION_URL)
     if not isinstance(raw, str) or not raw.strip():
-        return {"pending": False, "url": None, "host": None, "refused": False}
+        return _consent_absent()
     allowed = surface_consent_url(raw)
     if allowed is None:
-        return {"pending": False, "url": None, "host": None, "refused": True}
+        return _consent_absent(refused=True)
     # The host is what the operator recognises ("sign in at login.example.com");
     # it comes from the allowlisted URL itself, never from the adapter payload.
     host = (urlparse(allowed).hostname or "").lower() or None
-    return {"pending": True, "url": allowed, "host": host, "refused": False}
+    # Provenance the reader can check: a provider the product ships with, or
+    # the operator's own oauth_endpoints.json (named so they can open it).
+    source = agentcore_consent_endpoint_source(allowed)
+    allowlist_path = ""
+    if source == CONSENT_ENDPOINT_OPERATOR:
+        from kiro_crew.config import loader as config_loader
+
+        allowlist_path = str(config_loader.oauth_endpoints_path())
+    return {
+        "pending": True,
+        "url": allowed,
+        "host": host,
+        "refused": False,
+        "allow_source": source or None,
+        "allowlist_path": allowlist_path or None,
+    }
+
+
+def _consent_absent(*, refused: bool = False) -> dict[str, Any]:
+    return {
+        "pending": False,
+        "url": None,
+        "host": None,
+        "refused": refused,
+        "allow_source": None,
+        "allowlist_path": None,
+    }
 
 
 def inbound_sidecar_path(session_key: str) -> Path:

@@ -413,6 +413,84 @@ export interface ComputerUseConfigData {
   sessions_reset?: number
 }
 
+/** This crew's AgentCore identity as returned by GET /api/agentcore/identity. */
+export interface AgentcoreIdentityData {
+  configured: boolean
+  posture: 'workload' | 'login' | null
+  workload_name: string
+  gateway_url: string
+  source: 'policy' | 'env' | 'unset'
+  writable: boolean
+  write_blocked?: string | null
+  restart_required: boolean
+  extra_installed: boolean
+  extra_code: 'ok' | 'no_install_channel' | 'install_failed' | null
+}
+
+/** Pending 3LO consent after the oauth_endpoints.json allowlist. */
+export interface AgentcoreConsentData {
+  pending: boolean
+  url: string | null
+  /** Hostname of the allowlisted sign-in page, so the card can say where sign-in happens. */
+  host?: string | null
+  /** Which allowlist admitted the host: a provider the product ships with, or the operator's file. */
+  allow_source?: 'builtin' | 'operator' | null
+  /** The operator allowlist file, when allow_source is 'operator', so the reader can open it. */
+  allowlist_path?: string | null
+}
+
+/** One Settings check on the configured AgentCore Gateway. */
+export interface AgentcoreGatewayCheck {
+  id: string
+  ok: boolean
+  detail: string
+}
+
+/** A Gateway target (MCP server, connector, Lambda, …). */
+export interface AgentcoreGatewayTarget {
+  target_id: string
+  name: string
+  target_type: string
+  status: string
+  listing_mode: string
+  last_synchronized_at: string
+  pending_auth: boolean
+  authorization_url: string | null
+  syncable: boolean
+  status_reasons: string[]
+}
+
+/** Data-plane MCP tools/list, or a skip reason when this page cannot list. */
+export interface AgentcoreGatewayTools {
+  reachable: boolean
+  skip_reason: string | null
+  items: Array<{ name: string; description: string }>
+  /** ``proxy`` when tools/list used the same localhost SigV4 path as the agent. */
+  via?: string | null
+}
+
+/** GET /api/agentcore/gateway and POST /verify. */
+export interface AgentcoreGatewayData {
+  code: string
+  /** True for a pre-save preview of a drafted URL/posture: no identity, tools deferred. */
+  preview?: boolean
+  posture: 'workload' | 'login' | null
+  workload_name?: string
+  gateway_url: string
+  gateway: {
+    id: string
+    name: string
+    status: string
+    authorizer_type: string
+    gateway_url: string
+    status_reasons: string[]
+  } | null
+  targets: AgentcoreGatewayTarget[]
+  targets_error: string | null
+  tools: AgentcoreGatewayTools
+  checks: AgentcoreGatewayCheck[]
+}
+
 /** Writable computer-use fields sent to PUT /api/computer-use/config. */
 export interface ComputerUseConfigSave {
   enabled: boolean
@@ -4394,6 +4472,26 @@ export const api = {
     post('/api/browser/open', { url, session_key: sessionKey }).then(j) as Promise<BrowserOpenData>,
   // Computer use (desktop automation). The PUT returns the refreshed snapshot so
   // the panel re-renders from server truth rather than its optimistic guess.
+  getAgentcoreIdentity: () =>
+    get('/api/agentcore/identity').then(j) as Promise<AgentcoreIdentityData>,
+  saveAgentcoreIdentity: (body: {
+    posture: 'none' | 'workload' | 'login'
+    gateway_url?: string
+    workload_name?: string
+  }) => put('/api/agentcore/identity', body).then(j) as Promise<AgentcoreIdentityData>,
+  getAgentcoreConsent: () =>
+    get('/api/agentcore/consent').then(j) as Promise<AgentcoreConsentData>,
+  getAgentcoreGateway: () =>
+    get('/api/agentcore/gateway').then(j) as Promise<AgentcoreGatewayData>,
+  verifyAgentcoreGateway: () =>
+    post('/api/agentcore/gateway/verify', {}).then(j) as Promise<AgentcoreGatewayData>,
+  previewAgentcoreGateway: (body: { gateway_url: string; posture: 'workload' | 'login' }) =>
+    post('/api/agentcore/gateway/preview', body).then(j) as Promise<AgentcoreGatewayData>,
+  syncAgentcoreGatewayTarget: (targetId: string) =>
+    post('/api/agentcore/gateway/sync', { target_id: targetId }).then(j) as Promise<{
+      code: string
+      target_id: string
+    }>,
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,
   saveComputerUseConfig: (body: Partial<ComputerUseConfigSave>) =>
     put('/api/computer-use/config', body).then(j) as Promise<ComputerUseConfigData>,

@@ -1070,10 +1070,23 @@
       "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {
+      "id": "security.identity",
+      "label": "Agent identity",
+      "tab": "security",
+      "route": "/settings/security/identity?highlight=security.identity",
+      "description": "Choose how this crew identifies itself when it calls tools through your AgentCore Gateway — the front door in your cloud account that sits in front of the tool servers the crew can reach. Each option below says what the crew gains or loses."
+    },
+    {
       "id": "security.denied-commands",
       "label": "Denied Commands",
       "tab": "security",
       "route": "/settings/security/rules?highlight=security.denied-commands"
+    },
+    {
+      "id": "security.gateway-url",
+      "label": "Gateway URL",
+      "tab": "security",
+      "route": "/settings/security/identity?highlight=security.gateway-url"
     },
     {
       "id": "security.governance-policy",
@@ -1106,6 +1119,12 @@
       "label": "Trust this machine's tailnet name",
       "tab": "security",
       "route": "/settings/security/tailnet?highlight=security.trust-this-machine-s-tailnet-name"
+    },
+    {
+      "id": "security.workload-name",
+      "label": "Workload name",
+      "tab": "security",
+      "route": "/settings/security/identity?highlight=security.workload-name"
     },
     {
       "id": "security.your-custom-denies",

@@ -82,6 +82,19 @@ describe('SecurityPanel floor-enforced rule lock', () => {
     vi.spyOn(api, 'deniedCommands').mockResolvedValue(snapshot)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
     vi.spyOn(api, 'tailnetStatus').mockResolvedValue({ state: 'disabled' } as never)
+    vi.spyOn(api, 'getAgentcoreIdentity').mockResolvedValue({
+      configured: false,
+      posture: null,
+      workload_name: '',
+      source: 'unset',
+      writable: true,
+      write_blocked: null,
+      restart_required: false,
+      extra_installed: false,
+      extra_code: null,
+      gateway_url: '',
+    } as never)
+    vi.spyOn(api, 'getAgentcoreConsent').mockResolvedValue({ pending: false, url: null })
   })
   afterEach(() => {
     cleanup()

@@ -296,7 +296,6 @@ src/kiro_crew/pod/provision.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
-src/kiro_crew/security/__init__.py
 src/kiro_crew/seed.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
@@ -534,7 +533,6 @@ test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_hooks.py
 test/test_dashboard_no_legacy.py
-test/test_dashboard_reset_sessions.py
 test/test_dashboard_route_table.py
 test/test_dashboard_server_coverage.py
 test/test_dashboard_sessions_memory.py
