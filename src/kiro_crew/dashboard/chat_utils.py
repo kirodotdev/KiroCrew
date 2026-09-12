@@ -1818,6 +1818,25 @@ _NEGATED_PROMISE_RE = re.compile(
 # keeps the reject-bias but only where the promise can actually be.
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n]+")
 
+# A status update can be accurate while a turn is streaming and become false as
+# soon as that turn returns control. This detector is deliberately notice-only:
+# unlike the promise-only recovery above, it may run after tools with side
+# effects, so its caller must never replay the turn automatically. Requiring a
+# first-person claim at the start of a sentence excludes truthful reports about
+# a subagent or monitor that really can continue after the main turn ends.
+_UNFINISHED_PROGRESS_RE = re.compile(
+    r"(?:^|[.!?\n]\s*)(?P<claim>(?:next[,:]?\s+)?"
+    r"(?:"
+    r"(?:i(?:'|’)?m|i\s+am)\s+(?:still\s+)?"
+    r"(?:continuing\s+(?:with|to)|proceeding\s+(?:with|to)|working\s+(?:on|through)"
+    r"|running\b|checking\b|validating\b|testing\b|building\b|reviewing\b"
+    r"|preparing\b|investigating\b)"
+    r"|i(?:'|’)?ll\s+(?:keep|continue)\s+"
+    r"(?:working|running|checking|validating|testing|building|reviewing|preparing|investigating)\b"
+    r"))",
+    re.IGNORECASE,
+)
+
 
 def _terminal_sentence(text: str) -> str:
     """Return the last sentence of ``text`` — the span the terminal promise gate
@@ -1825,6 +1844,25 @@ def _terminal_sentence(text: str) -> str:
     multi-sentence closer cannot veto a promise that sits only at the end."""
     parts = [p.strip() for p in _SENTENCE_BOUNDARY_RE.split(text) if p.strip()]
     return parts[-1] if parts else text
+
+
+def has_unfinished_progress_claim(final_segment_text: str) -> bool:
+    """Return whether a completed turn's final sentence says foreground work continues.
+
+    The caller supplies only text emitted after the last tool boundary. A match
+    is diagnostic, not permission to re-run anything: earlier tools may already
+    have produced side effects. Only the terminal sentence can describe work as
+    still running when control returns; an earlier progress update followed by a
+    completed-status sentence is not an unfinished claim. A colon followed by
+    content is likewise a lead-in fulfilled by the same response.
+    """
+    text = (final_segment_text or "").strip()
+    terminal = _terminal_sentence(text)
+    match = _UNFINISHED_PROGRESS_RE.search(terminal)
+    if match is None:
+        return False
+    claim = terminal[match.start("claim") :]
+    return not bool(re.search(r":\s*\S", claim))
 
 
 def is_promise_only_terminal(final_segment_text: str) -> bool:

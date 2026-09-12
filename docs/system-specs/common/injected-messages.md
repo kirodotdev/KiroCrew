@@ -206,6 +206,17 @@ none is mirrored to a linked Slack or Telegram thread as though the user typed i
 | `[Continue — requested by the user]` | The user pressed Continue on an interrupted turn. It is in this family so `test_recovery_card_prefixes.py`'s cross-language drift guard covers it, but the value deliberately does not say "automatic recovery": a person pressed the button, and the card must not claim the system recovered by itself. |
 | `[Tool blocked — reason sent to the agent]` | Display-only. A tool deny's reason was steered into the running turn, so nothing is queued and no turn is dispatched — this row exists so the person sees the same blocked-tool card instead of only a generic "Steered" chip that reads as though they had steered the turn themselves. |
 
+A related notice-only guard handles turns that cannot be replayed safely. When a
+normal top-level turn ends after earlier tool calls with a new immediate-action
+promise, or its final segment claims foreground work is still continuing, the
+runner keeps the completed tool work landed and appends an informational notice:
+the main-agent turn has ended, separately shown subagents or monitor loops may
+continue, and otherwise the user must send a message to resume. This path never
+injects a continuation because replaying a mixed turn could duplicate a push,
+deployment, message, or other side effect. The detector is model-agnostic and
+matches only first-person progress claims at a sentence boundary; statements
+about a subagent or monitor are not classified as foreground work.
+
 **A tool deny is explained IN-BAND first, and the injection above is the
 fallback.** ACP's permission response carries only `outcome`/`optionId`, so the
 host cannot attach a reason to a rejection — kiro-cli hands the model the fixed
