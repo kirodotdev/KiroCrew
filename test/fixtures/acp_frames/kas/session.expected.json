@@ -1,32 +1,291 @@
 [
   {
     "agent_capabilities": {
-      "loadSession": true
+      "_meta": {
+        "kiro": {
+          "checkpoints": true,
+          "executionTargets": [
+            "local",
+            "cloud-sandbox"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/codeIntelligence",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/config/template",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
+          ],
+          "logging": {
+            "channels": [
+              {
+                "filePath": "~/.kiro/logs/20260912T063741644/kiro.log",
+                "name": "kiro"
+              },
+              {
+                "filePath": "~/.kiro/logs/20260912T063741644/mcp.log",
+                "name": "mcp"
+              },
+              {
+                "filePath": "~/.kiro/logs/20260912T063741644/powers.log",
+                "name": "powers"
+              }
+            ],
+            "logDir": "~/.kiro/logs/20260912T063741644"
+          },
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace",
+            "user"
+          ],
+          "sessionSources": [
+            "local",
+            "remote"
+          ],
+          "sourceProviders": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
     },
-    "agent_version": "0.54.3",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
   },
   {
-    "frame": "response",
-    "id": 2,
-    "session_id": "kas-session-0001"
-  },
-  {
-    "action": "update",
-    "events": [
+    "config_options": [
       {
-        "kind": "text_chunk",
-        "text": "Running one command."
+        "category": "mode",
+        "currentValue": "vibe",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
+                "source": "bundled"
+              }
+            },
+            "description": "General coding assistance",
+            "name": "Default",
+            "value": "vibe"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
+                "source": "bundled"
+              }
+            },
+            "description": "Structured feature development",
+            "name": "Spec",
+            "value": "spec"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
+                "source": "bundled"
+              }
+            },
+            "description": "Fast spec workflow: clarify, then auto-generate requirements, design, and tasks",
+            "name": "Quick Spec",
+            "value": "quick-spec"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
+                "source": "bundled"
+              }
+            },
+            "description": "Structured bug-fix workflow: investigate, diagnose, and resolve bugs",
+            "name": "Bug Fix",
+            "value": "bug-fix"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
+                "source": "bundled",
+                "welcomeMessage": "Transform any idea into fully working code. What do you want to build today?"
+              }
+            },
+            "description": "Plan-only mode that helps break ideas down into an implementation plan without making any changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
+                "source": "bundled"
+              }
+            },
+            "description": "Autonomous agent execution",
+            "name": "Autonomous",
+            "value": "autonomous"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
+                "source": "bundled"
+              }
+            },
+            "description": "Reviews code changes at the behavioral level, not the syntactic level. Reconstructs the change as a narrative organized by concern, not by file. Produces a design-level review that every reviewer can navigate at their preferred depth. Works with local diffs (pre-PR) or PR diffs (post-PR).",
+            "name": "semantic_reviewer",
+            "value": "semantic_reviewer"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "auto",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "_meta": {
+              "kiro": {
+                "hasEffort": false,
+                "rateMultiplier": 1,
+                "rateUnit": "Credit"
+              }
+            },
+            "description": "",
+            "name": "Auto",
+            "value": "auto"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "on",
+        "id": "autopilot",
+        "name": "Autopilot",
+        "options": [
+          {
+            "description": "Agent executes tools without confirmation",
+            "name": "Autopilot",
+            "value": "on"
+          },
+          {
+            "description": "Agent asks for approval before file changes",
+            "name": "Supervised",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "enabled",
+        "id": "contentCollection",
+        "name": "Content Collection",
+        "options": [
+          {
+            "description": "Allow content to be used for service improvement",
+            "name": "Enabled",
+            "value": "enabled"
+          },
+          {
+            "description": "Opt out of content collection",
+            "name": "Disabled",
+            "value": "disabled"
+          }
+        ],
+        "type": "select"
       }
     ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "Running one command.",
-      "thinking": false
-    }
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "vibe",
+      "ids": [
+        "vibe",
+        "spec",
+        "quick-spec",
+        "bug-fix",
+        "plan",
+        "autonomous",
+        "semantic_reviewer"
+      ]
+    },
+    "session_id": "sess_1a823ed5-7bdd-49c4-8fd3-fe76a6779c87"
   },
   {
     "action": "update",
@@ -35,15 +294,14 @@
         "is_shell": true,
         "kind": "tool_call",
         "raw_tool_params": {
-          "__toolUsePurpose": "Echo the corpus marker",
-          "command": "echo acp-replay-corpus"
+          "command": "echo hello-from-corpus",
+          "run_in_background": false
         },
-        "title": "echo acp-replay-corpus",
-        "tool_call_id": "kas-tool-0001",
-        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__toolUsePurpose\": \"Echo the corpus marker\"\n}",
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
+        "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"run_in_background\": false\n}",
         "tool_kind": "execute",
-        "tool_purpose": "Echo the corpus marker",
-        "wire_title": "executeBash"
+        "wire_title": "Run Command"
       }
     ],
     "frame": "session/update",
@@ -58,42 +316,97 @@
         "mcp_identity_trusted": true,
         "options": [
           {
-            "id": "allow",
+            "id": "accept",
             "label": "Allow"
           },
           {
-            "id": "deny",
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
             "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
           }
         ],
         "raw_params_trusted": true,
         "raw_tool_params": {
-          "__toolUsePurpose": "Echo the corpus marker",
-          "command": "echo acp-replay-corpus"
+          "command": "echo hello-from-corpus",
+          "run_in_background": false
         },
-        "request_id": 9101,
+        "request_id": 1,
         "shell_classified": true,
-        "title": "executeBash",
-        "tool_call_id": "kas-tool-0001",
-        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__toolUsePurpose\": \"Echo the corpus marker\"\n}",
-        "tool_kind": "execute"
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
+        "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"run_in_background\": false\n}"
       }
     ],
     "frame": "session/request_permission",
     "recorded_options": {
-      "always": "allow",
-      "once": "allow",
-      "reject": "deny"
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
     }
   },
   {
     "action": "update",
     "events": [
       {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo hello-from-corpus",
+          "run_in_background": false
+        },
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
+        "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"run_in_background\": false\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo hello-from-corpus",
+          "run_in_background": false
+        },
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
+        "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"run_in_background\": false\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
         "kind": "tool_result",
-        "tool_call_id": "kas-tool-0001",
+        "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
         "tool_final": true,
-        "tool_output": "{\"stdout\": \"acp-replay-corpus\\n\", \"exitStatus\": {\"exitCode\": 0}}"
+        "tool_output": "{\"output\":\"hello-from-corpus\\n\",\"exitCode\":0,\"message\":\"Output:\\nhello-from-corpus\\n\\n\\nExit Code: 0\"}"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo hello-from-corpus",
+          "run_in_background": false
+        },
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
+        "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"run_in_background\": false\n}",
+        "wire_title": "Run Command"
       }
     ],
     "frame": "session/update",
@@ -104,13 +417,28 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "done"
+        "text": "Ran it:\n\n```\nhello"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "done",
+      "text": "Ran it:\n\n```\nhello",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "-from-corpus\n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-from-corpus\n```",
       "thinking": false
     }
   },

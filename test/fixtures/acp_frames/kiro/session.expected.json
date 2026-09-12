@@ -1,12 +1,20 @@
 [
   {
     "agent_capabilities": {
+      "auth": {},
       "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
       "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
         "image": true
-      }
+      },
+      "sessionCapabilities": {}
     },
-    "agent_version": "2.21.1",
+    "agent_version": "2.21.4",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -16,43 +24,16 @@
     "id": 2,
     "modes": {
       "advertised": true,
-      "current": "default",
-      "ids": [
-        "default",
-        "plan"
-      ]
+      "current": "",
+      "ids": []
     },
-    "session_id": "kiro-session-0001"
+    "session_id": "14c95094-e1b8-4799-9a9d-5e19ad07485f"
   },
   {
-    "action": "update",
-    "events": [
-      {
-        "kind": "thinking_chunk",
-        "text": "The user wants the corpus echoed back."
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_thought_chunk",
-    "text_chunk": {
-      "text": "The user wants the corpus echoed back.",
-      "thinking": true
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "Running one command."
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "Running one command.",
-      "thinking": false
-    }
+    "action": "subagent_activity",
+    "events": [],
+    "frame": "_kiro.dev/session/update",
+    "session_update": "tool_call_chunk"
   },
   {
     "action": "update",
@@ -61,15 +42,16 @@
         "is_shell": true,
         "kind": "tool_call",
         "raw_tool_params": {
-          "__tool_use_purpose": "Echo the corpus marker",
-          "command": "echo acp-replay-corpus"
+          "__tool_use_purpose": "Run the requested echo command exactly as specified",
+          "command": "echo hello-from-corpus"
         },
-        "title": "echo acp-replay-corpus",
-        "tool_call_id": "kiro-tool-0001",
-        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__tool_use_purpose\": \"Echo the corpus marker\"\n}",
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested echo command exactly as specified\",\n  \"command\": \"echo hello-from-corpus\"\n}",
         "tool_kind": "execute",
-        "tool_purpose": "Echo the corpus marker",
-        "wire_title": "echo acp-replay-corpus"
+        "tool_name": "shell",
+        "tool_purpose": "Run the requested echo command exactly as specified",
+        "wire_title": "Running: echo hello-from-corpus"
       }
     ],
     "frame": "session/update",
@@ -85,28 +67,28 @@
         "options": [
           {
             "id": "allow_once",
-            "label": "Allow once"
+            "label": "Yes"
           },
           {
             "id": "allow_always",
-            "label": "Always allow"
+            "label": "Always"
           },
           {
             "id": "reject_once",
-            "label": "Reject"
+            "label": "No"
           }
         ],
         "raw_params_trusted": true,
         "raw_tool_params": {
-          "__tool_use_purpose": "Echo the corpus marker",
-          "command": "echo acp-replay-corpus"
+          "__tool_use_purpose": "Run the requested echo command exactly as specified",
+          "command": "echo hello-from-corpus"
         },
-        "request_id": 9001,
+        "request_id": "2c535cd4-c4bf-4c17-bd40-95de8a37da4c",
         "shell_classified": true,
-        "title": "echo acp-replay-corpus",
-        "tool_call_id": "kiro-tool-0001",
-        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__tool_use_purpose\": \"Echo the corpus marker\"\n}",
-        "tool_kind": "execute"
+        "title": "Running: echo hello-from-corpus",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested echo command exactly as specified\",\n  \"command\": \"echo hello-from-corpus\"\n}",
+        "tool_name": "shell"
       }
     ],
     "frame": "session/request_permission",
@@ -121,9 +103,35 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "kiro-tool-0001",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_output": "hello-from-corpus\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
         "tool_final": true,
-        "tool_output": "{\"exitStatus\": {\"exitCode\": 0}, \"stdout\": \"acp-replay-corpus\\n\"}"
+        "tool_output": "hello-from-corpus\n"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run the requested echo command exactly as specified",
+          "command": "echo hello-from-corpus"
+        },
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested echo command exactly as specified\",\n  \"command\": \"echo hello-from-corpus\"\n}",
+        "tool_kind": "execute",
+        "tool_purpose": "Run the requested echo command exactly as specified",
+        "wire_title": "Running: echo hello-from-corpus"
       }
     ],
     "frame": "session/update",
@@ -134,36 +142,49 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "done"
+        "text": "```"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "done",
+      "text": "```",
       "thinking": false
     }
   },
   {
     "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "usage_update",
-    "usage": [
-      18422,
-      200000
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "\nhello-from-corp"
+      }
     ],
-    "usage_cost": null
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\nhello-from-corp",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "us\n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "us\n```",
+      "thinking": false
+    }
   },
   {
     "frame": "response",
     "id": 3,
-    "prompt_tokens": [
-      1204,
-      88,
-      15900,
-      0
-    ],
     "stop_reason": "end_turn"
   }
 ]

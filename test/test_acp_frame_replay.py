@@ -82,6 +82,18 @@ _UPDATE_SCRIPT = "scripts/update_acp_frame_snapshots.py"
 #: A fixture is read by people, so it stays small enough to read.
 _MAX_FRAMES = 50
 
+#: Directories whose backend answers ``initialize`` without an ``agentInfo``
+#: object, so no agent version reaches the wire for the corpus to carry. Listed
+#: by name rather than inferred: an omission has to be a decision someone wrote
+#: down, or the version signal decays for every backend at once.
+#:
+#: ``kas``: KAS 0.63.3 answers with ``protocolVersion``, ``agentCapabilities``
+#: and ``authMethods`` only. Nothing consumes a KAS version --
+#: ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`` holds ``kiro`` alone, and
+#: ``agent_version_from_init`` reads a missing ``agentInfo`` as ``""`` rather
+#: than raising -- so the handshake is unaffected.
+_BACKENDS_WITHOUT_AGENT_VERSION = frozenset({"kas"})
+
 
 # ── the snapshot walk ───────────────────────────────────────────────────────
 
@@ -156,6 +168,13 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
 
     Without this a directory holding one text chunk would satisfy the ratchet
     above while locking almost nothing.
+
+    An initialize response is recognised by ``protocolVersion``, which the
+    handshake makes mandatory, and the agent version is a SECOND assertion over
+    the same frame. The two are separate because they are separately true:
+    ``agentInfo`` is optional in ACP, and one shipped backend omits it
+    (``_BACKENDS_WITHOUT_AGENT_VERSION``), so folding them together would force
+    that backend's corpus to claim a field its wire never carried.
     """
     gaps: list[str] = []
     for directory in backend_dirs():
@@ -163,6 +182,7 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
         updates: set[str] = set()
         stop_reasons: set[str] = set()
         saw_init = False
+        saw_version = False
         saw_session = False
         for path in sorted(directory.glob("*.jsonl")):
             _meta, frames = read_fixture(path)
@@ -172,8 +192,10 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
                     methods.add(method)
                 result = frame.get("result")
                 if isinstance(result, dict):
-                    if agent_version_from_init(result):
+                    if "protocolVersion" in result:
                         saw_init = True
+                    if agent_version_from_init(result):
+                        saw_version = True
                     if "sessionId" in result:
                         saw_session = True
                     if result.get("stopReason"):
@@ -185,7 +207,12 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
 
         name = directory.name
         if not saw_init:
-            gaps.append(f"{name}: no initialize response (a result carrying agentInfo.version)")
+            gaps.append(f"{name}: no initialize response (a result carrying protocolVersion)")
+        if not saw_version and name not in _BACKENDS_WITHOUT_AGENT_VERSION:
+            gaps.append(
+                f"{name}: initialize response carries no agentInfo.version; if this backend "
+                "really sends none, name it in _BACKENDS_WITHOUT_AGENT_VERSION with the evidence"
+            )
         if not saw_session:
             gaps.append(f"{name}: no session/new response (a result carrying sessionId)")
         if "agent_message_chunk" not in updates:
