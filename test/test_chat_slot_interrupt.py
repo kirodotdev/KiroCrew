@@ -200,26 +200,86 @@ class TestChatSlotInterrupt:
 
 
 class TestRefusalRecoverySkippedOnCancel:
-    """Recovery prompt should not fire when the turn was cancelled by the
-    user (stop_reason='cancelled')."""
+    """Recovery prompt should not fire when the user pressed Stop during the turn."""
 
-    def test_cancelled_turn_suppresses_recovery(self):
-        """The guard must return False when stop_reason is cancelled,
-        even with non-empty refusal_reasons."""
-        from kiro_crew.acp.types import STOP_REASON_CANCELLED
+    def test_stop_press_suppresses_recovery(self):
+        """The guard must return False when the user stopped, even with
+        non-empty refusal_reasons."""
         from kiro_crew.dashboard.state import should_queue_refusal_recovery
 
-        refusal_reasons = [("Creating /tmp/name.txt", "command '---' is not on the read-only allowlist")]
+        refusal_reasons = [
+            ("Creating /tmp/name.txt", "command '---' is not on the read-only allowlist")
+        ]
         assert not should_queue_refusal_recovery(
-            refusal_reasons, stopping=False, needs_reset=False, stop_reason=STOP_REASON_CANCELLED
+            refusal_reasons, stopping=False, needs_reset=False, user_stopped=True
         )
 
     def test_normal_refusal_still_triggers_recovery(self):
-        """When the turn ends normally (not cancelled) with refusal reasons,
-        recovery should still fire."""
+        """When the turn ends with refusal reasons and no Stop, recovery fires."""
         from kiro_crew.dashboard.state import should_queue_refusal_recovery
 
         refusal_reasons = [("write /tmp/x", "not on read-only allowlist")]
         assert should_queue_refusal_recovery(
-            refusal_reasons, stopping=False, needs_reset=False, stop_reason=""
+            refusal_reasons, stopping=False, needs_reset=False, user_stopped=False
+        )
+
+
+class TestRefusalRecoveryOnBackendAbort:
+    """A ``cancelled`` stop reason is not, by itself, a user cancel.
+
+    Measured on codex-acp 1.11.0 / codex 0.153.4: a command approval advertises
+    ``allow_once``, ``accept_execpolicy_amendment`` and ``cancel`` -- no
+    ``decline`` -- so the host's policy deny can only answer ``cancel``, and
+    codex aborts the turn with ``stopReason: "cancelled"`` before the model is
+    called again. A recovery gate keyed on the wire stop reason reads that as a
+    Stop press and skips, which makes every policy block on codex a silent stop.
+    The gate takes the host's own Stop signal instead, and only that.
+    """
+
+    REFUSALS = [("python3 -c ...", "Blocked by security policy: credential-exfil-kirocrew-token")]
+
+    def test_backend_abort_without_a_stop_press_queues_recovery(self):
+        # The wire said "cancelled"; the host's Stop signal says nobody pressed
+        # Stop. The gate only ever sees the latter, so recovery is owed.
+        from kiro_crew.dashboard.state import should_queue_refusal_recovery
+
+        assert should_queue_refusal_recovery(
+            self.REFUSALS, stopping=False, needs_reset=False, user_stopped=False
+        )
+
+    def test_a_real_stop_press_still_suppresses_recovery(self):
+        # The person pressed Stop during the turn (and it may already have
+        # resolved, so stopping is False again): the continuation must not
+        # jump ahead of whatever they type next.
+        from kiro_crew.dashboard.state import should_queue_refusal_recovery
+
+        assert not should_queue_refusal_recovery(
+            self.REFUSALS, stopping=False, needs_reset=False, user_stopped=True
+        )
+
+    def test_the_gate_has_no_stop_reason_input_at_all(self):
+        # Structural: a wire stop reason cannot be reintroduced as the user-cancel
+        # signal by omission, because there is no parameter to carry one, and the
+        # Stop signal is required rather than defaulted.
+        import inspect
+
+        from kiro_crew.dashboard.state import should_queue_refusal_recovery
+
+        params = inspect.signature(should_queue_refusal_recovery).parameters
+        assert "stop_reason" not in params
+        assert params["user_stopped"].default is inspect.Parameter.empty
+        assert params["user_stopped"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_in_band_delivery_still_short_circuits_on_an_abort(self):
+        # Not reachable on codex today (the abort discards a pending steer), but
+        # the precedence must hold: a confirmed in-band notice owes no extra turn.
+        from kiro_crew.dashboard.state import should_queue_refusal_recovery
+
+        assert not should_queue_refusal_recovery(
+            self.REFUSALS,
+            stopping=False,
+            needs_reset=False,
+            notices_sent=1,
+            notices_pending=0,
+            user_stopped=False,
         )

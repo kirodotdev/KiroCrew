@@ -332,7 +332,7 @@ class TestRecoveryIsNowAFallback:
             self.REFUSALS,
             stopping=False,
             needs_reset=False,
-            stop_reason="end_turn",
+            user_stopped=False,
             notices_sent=1,
             notices_pending=0,
         )
@@ -344,7 +344,7 @@ class TestRecoveryIsNowAFallback:
             self.REFUSALS,
             stopping=False,
             needs_reset=False,
-            stop_reason="end_turn",
+            user_stopped=False,
             notices_sent=1,
             notices_pending=1,
         )
@@ -355,16 +355,16 @@ class TestRecoveryIsNowAFallback:
             [("bash", "denied"), ("fs_write", "blocked")],
             stopping=False,
             needs_reset=False,
-            stop_reason="end_turn",
+            user_stopped=False,
             notices_sent=1,
             notices_pending=0,
         )
 
     def test_defaults_preserve_pre_existing_behaviour(self):
-        # A caller that knows nothing about notices (harness without steer, and
-        # every existing call site) must behave exactly as before.
+        # A caller that knows nothing about notices (harness without steer)
+        # behaves as if nothing was steered: the extra turn is owed.
         assert should_queue_refusal_recovery(
-            self.REFUSALS, stopping=False, needs_reset=False, stop_reason="end_turn"
+            self.REFUSALS, stopping=False, needs_reset=False, user_stopped=False
         )
 
     def test_user_cancel_still_wins_over_in_band_accounting(self):
@@ -372,14 +372,14 @@ class TestRecoveryIsNowAFallback:
             self.REFUSALS,
             stopping=False,
             needs_reset=False,
-            stop_reason="cancelled",
+            user_stopped=True,
             notices_sent=0,
             notices_pending=0,
         )
 
     def test_no_refusals_never_queues_even_with_notices(self):
         assert not should_queue_refusal_recovery(
-            [], stopping=False, needs_reset=False, stop_reason="end_turn", notices_sent=3
+            [], stopping=False, needs_reset=False, user_stopped=False, notices_sent=3
         )
 
 
@@ -723,6 +723,40 @@ class TestEveryHostDenyCallSiteIsWired:
             "these host-deny call sites reach the model through no channel -- "
             f"pass refusal_notices= and refusal_reasons=: lines {missing}"
         )
+
+    def test_both_continuation_gates_read_the_live_stop_signal(self):
+        # Both end-of-turn continuation gates take the host's Stop signal, read
+        # LIVE at each call (`_stop_pressed()`), never a snapshot and never the
+        # backend's wire stop reason. A snapshot taken before the awaited Stop
+        # hook goes stale when a Stop presses and resolves during it; a wire
+        # stop reason reads codex's `cancel`-only reject (stopReason
+        # "cancelled", no Stop pressed) as a user cancel -- the silent-stop
+        # defect. Pinned at source level because both sites live inside the
+        # turn coroutine.
+        src = self._src()
+        assert src.count("def _stop_pressed() -> bool:") == 1, "the live Stop signal helper moved"
+        body = src.split("def _stop_pressed() -> bool:", 1)[1][:1400]
+        assert "_stop_generation" in body and "_stop_gen_at_entry" in body
+        # refusal recovery: the gate call, and the re-read after the awaited
+        # credential-hint lookup, before the queue write.
+        gate = "if should_queue_refusal_recovery("
+        assert (
+            src.count(gate) == 1
+        ), "the refusal-recovery gate moved or multiplied -- guard is stale"
+        window = src.split(gate, 1)[1][:2400]
+        assert "user_stopped=_stop_pressed()" in window[:600]
+        assert "_stop_reason" not in window[:400], "the gate must not take the wire stop reason"
+        after_await = window.split("await _credential_tool_hint_for(", 1)[1]
+        assert "if _stop_pressed()" in after_await.split("_queue_recovery(", 1)[0]
+        assert "turn_aborted=(_stop_reason == STOP_REASON_CANCELLED)" in window
+        # stop-hook continuation: outer gate and the recheck after the config load.
+        hook_calls = re.findall(
+            r"should_queue_hook_continuation\(\s*slot\._stopping, needs_session_reset, user_stopped=_stop_pressed\(\)\s*\)",
+            src,
+        )
+        assert (
+            len(hook_calls) == 2
+        ), f"expected the hook gate + its post-await recheck, saw {len(hook_calls)}"
 
     def test_interactive_approved_path_is_wired(self):
         # The sharpest case: the person clicked APPROVE and the host denied

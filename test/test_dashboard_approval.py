@@ -1644,6 +1644,42 @@ class TestBuildRefusalRecoveryPrompt:
         assert "continue the task where you left off" in out
         assert "this note is for awareness" not in out
 
+    def test_backend_abort_overrules_the_harness_interrupted_message(self):
+        """codex ends a denied turn as cancelled and then tells the model, twice,
+        that the USER interrupted ('aborted by user' on the tool result, a
+        <turn_aborted> note). The generic 'not a user action' line loses to two
+        harness-authored messages saying the opposite unless the body names them.
+        """
+        out = build_refusal_recovery_prompt([("bash", "reason")], turn_aborted=True)
+        assert "aborted by user" in out
+        assert "interrupted the previous turn on purpose" in out
+        assert "not an interruption by the user" in out
+        assert "disregard those messages" in out
+        # The reason and the remediation instruction are unchanged by the flag.
+        assert "bash" in out and "reason" in out
+        assert "continue the task where you left off" in out
+
+    def test_abort_clause_is_absent_when_the_turn_ran_on(self):
+        out = build_refusal_recovery_prompt([("bash", "reason")])
+        assert "aborted by user" not in out
+        assert "disregard those messages" not in out
+
+    def test_abort_clause_does_not_inflate_the_blocked_count(self):
+        # RecoveryCard counts bullet-shaped lines as blocked calls; the clause is
+        # prose and must not read as one more blocked tool.
+        plain = build_refusal_recovery_prompt([("bash", "reason")])
+        aborted = build_refusal_recovery_prompt([("bash", "reason")], turn_aborted=True)
+
+        def bullets(body: str) -> int:
+            return sum(1 for line in body.splitlines() if line.lstrip().startswith("- "))
+
+        assert bullets(aborted) == bullets(plain) == 1
+
+    def test_abort_clause_composes_with_the_awareness_body(self):
+        out = build_refusal_recovery_prompt([("bash", "reason")], answered=True, turn_aborted=True)
+        assert "this note is for awareness" in out
+        assert "disregard those messages" in out
+
     def test_answered_keeps_per_class_remediation(self):
         # The awareness variant drops the resume instruction, not the guidance:
         # "how to do this properly" is the awareness the user is owed.
