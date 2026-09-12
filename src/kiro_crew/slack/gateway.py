@@ -4791,7 +4791,7 @@ class GatewayOrchestrator:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
                     _acq = False
                     try:
-                        client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
+                        client, is_new, resumed, _downgraded = await _acquire_with_model_fallback(
                             agent_session_key, agent
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
@@ -4812,10 +4812,11 @@ class GatewayOrchestrator:
                         full_message, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
                             msg,
-                            True,
+                            is_new,
                             interactive=False,
                             agent=agent,
                             memory_store=cron_memory_store or None,
+                            resumed=resumed,
                         )
                         # Wall clock for the cron agent turn: acp never assigns
                         # TurnUsage.duration_ms, so the row falls back to this.
@@ -4935,7 +4936,7 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
-                client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
+                client, is_new, resumed, _model_downgraded = await _acquire_with_model_fallback(
                     session_key, cron_agent or None
                 )
                 _acquired = True
@@ -4954,10 +4955,11 @@ class GatewayOrchestrator:
                 full_message, _ = await run_in_embed_pool(
                     self.ctx_builder.build_message,
                     msg,
-                    True,
+                    is_new,
                     interactive=False,
                     agent=job.agent_id or None,
                     memory_store=cron_memory_store or None,
+                    resumed=resumed,
                     provider_type=_provider,
                     minimal_context=job.minimal_context,
                 )

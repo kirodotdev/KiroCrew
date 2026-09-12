@@ -1551,6 +1551,81 @@ class TestInitCron:
         job.set_run_result.assert_called_once_with("cron result")
 
     @pytest.mark.asyncio
+    async def test_cron_callback_reuses_persistent_session_context(self):
+        """A persistent cron job on an existing session must not re-inject
+        session-start context.
+
+        ``build_message`` receives the ``is_new``/``resumed`` freshness that
+        acquisition returns, so a reused persistent session keeps its
+        context instead of re-injecting the full session-start block.
+        """
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        # The persistent session already exists: reused, not new.
+        orch.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, True))
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = MagicMock()
+        job.script = ""
+        job.command = ""
+        job.id = "j1"
+        job.name = "test-job"
+        job.persistent_session = True
+        job.agent_sequence = []
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = "U1"
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+        job.member_id = ""
+        job.memory_store = ""
+
+        with patch(
+            "kiro_crew.slack.gateway.stream_and_collect",
+            new_callable=AsyncMock,
+            return_value="cron result",
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:j1", "run task"),
+            ):
+                await callback(job)
+
+        positional, keywords = orch.ctx_builder.build_message.call_args
+        assert positional[1] is False
+        assert keywords.get("resumed") is True
+
+    @pytest.mark.asyncio
     async def test_cron_callback_publishes_turn_identity(self):
         """Regression: the cron turn must publish session_pid_<pid>.txt.
 
