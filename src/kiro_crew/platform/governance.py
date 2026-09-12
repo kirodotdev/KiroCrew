@@ -917,20 +917,30 @@ class _AndRuleset:
     """The AND of two rulesets; ``permits`` requires both to permit.
 
     Used when :meth:`ScopedRuleset.compose` cannot flatten to a single ruleset.
+    The halves are named ``outer`` / ``inner`` rather than ceiling/profile: a
+    fold of three or more tiers nests one ``_AndRuleset`` inside another, so a
+    half may itself be a composed pair (another policy tier), not the profile.
+    The two-party denial labels keep the ``policy:`` / ``profile:`` prefixes
+    and layers; a denial from a NESTED inner pair propagates that pair's own
+    layer and label instead of being stamped ``profile``.
     Deliberately NOT a ``ScopedRuleset`` subclass — it satisfies
     :class:`RulesetLike` structurally, so the evaluator stays shape-agnostic.
     """
 
-    ceiling: RulesetLike
-    profile: RulesetLike
+    outer: RulesetLike
+    inner: RulesetLike
 
     def permits(self, item: str) -> Decision:
-        c = self.ceiling.permits(item)
-        if not c.permitted:
-            return Decision(False, f"policy: {c.reason}", rule="rule2-intersect", layer="policy")
-        p = self.profile.permits(item)
-        if not p.permitted:
-            return Decision(False, f"profile: {p.reason}", rule="rule2-intersect", layer="profile")
+        o = self.outer.permits(item)
+        if not o.permitted:
+            return Decision(False, f"policy: {o.reason}", rule="rule2-intersect", layer="policy")
+        i = self.inner.permits(item)
+        if not i.permitted:
+            if isinstance(self.inner, _AndRuleset):
+                # A nested pair is another policy tier, not the profile — its
+                # decision already carries the right prefix and layer.
+                return Decision(False, i.reason, rule="rule2-intersect", layer=i.layer)
+            return Decision(False, f"profile: {i.reason}", rule="rule2-intersect", layer="profile")
         return Decision(True, "permitted by both levels", rule="rule2-intersect", layer="both")
 
 
@@ -1099,7 +1109,14 @@ class ScopedMap:
     def compose(self, narrower: "ScopedMap") -> "ScopedMap":
         # members intersect; posture is policy-only so the ceiling's wins.
         base = self.members
-        composed = base.compose(narrower.members) if isinstance(base, ScopedRuleset) else base
+        if isinstance(base, ScopedRuleset):
+            composed: RulesetLike = base.compose(narrower.members)
+        else:
+            # An earlier fold already produced an ``_AndRuleset``; wrap it the
+            # same way the sibling composers (``CapabilityGate.compose``,
+            # ``_compose_controls``) do, so a third — and any later — tier's
+            # narrowing is honoured instead of being silently dropped.
+            composed = _AndRuleset(base, narrower.members)
         return ScopedMap(members=composed, posture=self.posture)
 
     def permits_member(self, member: str) -> Decision:

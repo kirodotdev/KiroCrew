@@ -1867,8 +1867,8 @@ def _serialize_ruleset(value: object) -> dict:
         return {
             "mode": "intersect",
             "components": [
-                _serialize_ruleset(value.ceiling),
-                _serialize_ruleset(value.profile),
+                _serialize_ruleset(value.outer),
+                _serialize_ruleset(value.inner),
             ],
         }
     return {}

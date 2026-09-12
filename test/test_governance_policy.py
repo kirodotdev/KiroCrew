@@ -41,6 +41,7 @@ from kiro_crew.platform.governance import (
     assert_governance_floor,
     assert_policy_signature_satisfied,
     compose_profiles,
+    compose_tier_ladder,
     deny_all_profile,
     load_security_policy,
     mcp_title_to_ref,
@@ -314,6 +315,96 @@ class TestScopedMap:
         assert not composed.permits_member("discord").permitted  # profile narrowed
         # posture is policy-only → preserved from ceiling.
         assert composed.posture_permits("slack", "allowed_team_ids", "T1").permitted
+
+    def test_three_tier_members_all_tighten(self):
+        # Regression: once one fold has produced an ``_AndRuleset``, the next
+        # fold must still honour that tier's narrowing instead of returning
+        # the existing pair unchanged.
+        t1 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}},
+            allow_posture=True,
+        )
+        t2 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "discord"]}}, allow_posture=False
+        )
+        t3 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack"]}}, allow_posture=False
+        )
+        composed = t1.compose(t2).compose(t3)
+        assert composed.permits_member("slack").permitted
+        # The third tier must tighten the already-composed pair.
+        assert not composed.permits_member("discord").permitted
+        assert not composed.permits_member("telegram").permitted
+
+    def test_nested_inner_denial_not_labelled_profile(self):
+        # When the inner half of an ``_AndRuleset`` is itself a nested pair,
+        # its denial is another policy tier, not the profile: the nested
+        # decision's own layer and label must propagate.
+        t1 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}},
+            allow_posture=True,
+        )
+        t2 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack"]}}, allow_posture=False
+        )
+        t3 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "telegram"]}}, allow_posture=False
+        )
+        composed = t1.compose(t2.compose(t3))
+        decision = composed.permits_member("discord")  # denied by t2, a nested tier
+        assert not decision.permitted
+        assert decision.layer == "policy"
+        assert not decision.reason.startswith("profile:")
+
+    def test_extends_chain_third_link_channels_narrowing_applies(self):
+        # Same shape through the public entry point: a three-link ``extends``
+        # chain carrying a channels ScopedMap.
+        grandparent = parse_profile(
+            {
+                "name": "gp",
+                "channels": {
+                    "members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}
+                },
+            }
+        )
+        parent = parse_profile(
+            {
+                "name": "parent",
+                "extends": "gp",
+                "channels": {"members": {"mode": "allow", "allow": ["slack", "discord"]}},
+            }
+        )
+        child = parse_profile(
+            {
+                "name": "child",
+                "extends": "parent",
+                "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+            }
+        )
+        merged = compose_profiles(compose_profiles(grandparent, parent), child)
+        assert resolve(None, merged, "channels", "slack").permitted
+        assert not resolve(None, merged, "channels", "discord").permitted
+        assert not resolve(None, merged, "channels", "telegram").permitted
+
+    def test_tier_ladder_third_tier_channels_members_tighten(self):
+        # The tier ladder folds through the same ``ScopedMap.compose`` path;
+        # the lowest tier's channels narrowing must survive a three-tier fold.
+        managed = parse_policy(
+            _policy_body(
+                channels={"members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}}
+            )
+        )
+        central = parse_policy(
+            _policy_body(channels={"members": {"mode": "allow", "allow": ["slack", "discord"]}})
+        )
+        subordinate = parse_policy(
+            _policy_body(channels={"members": {"mode": "allow", "allow": ["slack"]}})
+        )
+        ceiling = compose_tier_ladder(managed, central, subordinate)
+        assert ceiling is not None
+        assert resolve(ceiling, None, "channels", "slack").permitted
+        assert not resolve(ceiling, None, "channels", "discord").permitted
+        assert not resolve(ceiling, None, "channels", "telegram").permitted
 
 
 # ──────────────────────────────────────────────────────────────────────────
