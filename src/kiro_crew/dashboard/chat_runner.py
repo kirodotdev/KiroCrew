@@ -134,6 +134,7 @@ from kiro_crew.dashboard.session_directive_apply import (
     QUESTION_CARD_SHOWN_PREFIX,
     apply_session_directive,
 )
+from kiro_crew.dashboard.slack_mirror import open_slack_mirror
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
@@ -225,7 +226,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.mcp_discovery import kirocrew_managed_names
 from kiro_crew.members import member_lifecycle, record_activity
-from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.display_safety import mirror_echo_text, redact_for_display
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
@@ -280,7 +281,7 @@ from kiro_crew.security import (
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
-from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.slack.renderer import SlackRenderer
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
     approval_command,
@@ -3359,22 +3360,18 @@ async def _deliver_cross_surface_user_message(
 
 
 def _prepare_mirror_msg(raw_user_message: str) -> str:
-    """Prepare a user message for the cross-surface / Slack mirror echo.
+    """Prepare a user message for the channel-neutral cross-surface echo.
 
-    Redacts through the canonical ``redact_via_context`` egress shim over the
-    FULL text, then truncates — bounding first can cut a credential at the
-    boundary into fragments no redaction regex matches, so it would escape into
-    the mirrored echo. The shim's standalone fallback is the OSS baseline
-    ``security.redact``, so a standalone host keeps the previous redaction
-    behaviour.
-
-    Scanned in DISPLAY form as well, like the assistant leg above and the Slack
-    chokepoint: this echo goes to a channel without passing a renderer, and a
-    credential the user typed with markdown between its halves is whole once the
-    client renders the markup away.
+    Delegates to :func:`kiro_crew.messaging.display_safety.mirror_echo_text` --
+    redact the FULL text through the canonical ``redact_via_context`` egress shim,
+    in DISPLAY form, then truncate -- which is the same function the Slack
+    renderer's ``echo_user_message`` applies, so the two echoes cannot drift on
+    ordering or limit. Bounding first would cut a credential at the boundary into
+    fragments no redaction regex matches; scanning the display form catches a
+    credential the user typed with markdown between its halves, which is whole
+    once the client renders the markup away.
     """
-    safe, _ = redact_for_display(raw_user_message or "", redact_via_context)
-    return safe[:500]
+    return mirror_echo_text(raw_user_message, redact_via_context)
 
 
 def _redaction_notice(cred_count: int, url_count: int) -> str:
@@ -5832,6 +5829,15 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     directive_user_origin = bool(consumed) and all(
         item.get("_directive_user_origin") is True for item in consumed
     )
+    # The surface the queued message ARRIVED from. Conservative in the same way
+    # as the provenance flag above: only a batch made entirely of Slack-routed
+    # entries counts as Slack ingress, so a merged batch that also holds a
+    # dashboard-typed message still gets its echo.
+    ingress = (
+        SLACK_NAMESPACE
+        if consumed and all(item.get("_ingress") == SLACK_NAMESPACE for item in consumed)
+        else ""
+    )
     if slot._stopping and not is_system_injection:
         slot.append(
             "error",
@@ -6034,6 +6040,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     _run_kwargs: dict[str, Any] = {
         "_synthetic_payload": synthetic_payload,
         "_directive_user_origin": directive_user_origin,
+        "_ingress": ingress,
     }
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
@@ -6281,6 +6288,14 @@ async def _run_chat(
     # issues from inside that wake is its own act. Cron, app and sub-agent
     # injections never set it.
     _directive_self_wake: bool = False,
+    # The surface this turn ARRIVED from, when it is not the dashboard's own
+    # composer: ``SLACK_NAMESPACE`` for a message the linked-thread router
+    # (``maybe_route_linked_thread``) forwarded from Slack. Per the session
+    # address model, the attachment says where a reply is REACHABLE and the
+    # ingress says how it is SHAPED: a Slack-born message already sits in the
+    # thread with its files, so the mirror must not echo it (or re-upload them)
+    # back into the thread it came from. Empty means "the dashboard".
+    _ingress: str = "",
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -6505,6 +6520,29 @@ async def _run_chat(
         wire = _thinkred.flush()
         if wire:
             state.broadcast_ws("chat_thinking", {"slot": slot.key, "content": wire})
+
+    # Same rolling-buffer protection for the linked Slack stream. Slack streams
+    # by APPENDING and appended text is final, so two appends are rendered as
+    # one run: a credential split across two provider chunks, each redacted on
+    # its own, reaches the thread whole. Feeding the renderer only the
+    # confirmed-safe prefix -- and the withheld tail at every boundary -- is the
+    # same contract the transport dispatcher's TurnDriver gives a Slack-born
+    # turn.
+    _mirred = StreamRedactor()
+
+    async def _flush_mirror_text() -> None:
+        """Hand the mirror redactor's withheld tail to the renderer.
+
+        Called before a tool card (the renderer flushes its own buffer there and
+        the tail must be in it), before the seal, and at teardown. No-op when
+        there is no mirror or nothing withheld.
+        """
+        tail = _mirred.flush()
+        if tail and _mirror is not None:
+            try:
+                await _mirror.on_text_chunk(tail)
+            except Exception:
+                logger.debug("Mirror text flush failed", exc_info=True)
 
     def _steer_segment_cut() -> None:
         """Finalize the accumulated text as a segment at a mid-turn steer.
@@ -6928,6 +6966,7 @@ async def _run_chat(
                     _prompt_depth=1,
                     _directive_user_origin=_directive_user_origin,
                     _directive_self_wake=_directive_self_wake,
+                    _ingress=_ingress,
                 )
             elif status == "blocked":
                 sel().log_tool_invocation(
@@ -7100,12 +7139,13 @@ async def _run_chat(
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)
     _acquired = False
-    _mirror_stream_ts: str = ""
+    # The ONE Slack output for this turn when the session has a Slack attachment
+    # (``sessions.get_slack_link``) and the mirror is not paused. Built at the
+    # mirror site below and driven from the same event sites a Slack-born turn
+    # drives it from; ``None`` means the thread hears nothing from this turn.
+    _mirror: SlackRenderer | None = None
     _mirror_chan: str | None = ""
-    _mirror_active_task = ""
-    _mirror_active_task_title = ""
     _mirror_thread: str | None = ""
-    _mirror_task_counter = 0
     _memory_preparation_admitted = False
     # Bound before the try because cancellation may land while this turn waits
     # for shared memory preparation, before any provider is allocated.
@@ -8141,35 +8181,50 @@ async def _run_chat(
             "activity_event", {"slot": slot.key, "kind": "status", "text": "Thinking…"}
         )
 
-        # ── Bidirectional sync: mirror user message to linked Slack thread ──
+        # ── Bidirectional sync: open the Slack mirror for this turn ──
         # Resolving the link is deliberately NOT gated on syntheticness — only the
         # user ECHO below is runner-authored. A recovery continuation still owes its
         # ANSWER to the thread that asked: gating the whole setup leaves
-        # `_mirror_thread` empty, the reply leg downstream silently no-ops, and the
+        # `_mirror` unset, the reply leg downstream silently no-ops, and the
         # question already sitting on Slack is never answered at all.
         # A DISCONNECTED thread stops here and nowhere else: `_mirror_thread` and
-        # `_mirror_chan` stay empty, which is what silences the echo, the tool
-        # stream, the assistant reply and the stream teardown together. Disconnect
-        # is the user saying "not into this conversation", which applies to the
-        # answer as much as to the echo — so it is one gate, not four.
+        # `_mirror_chan` stay empty and `_mirror` stays None, which is what silences
+        # the echo, the tool stream, the assistant reply and the stream teardown
+        # together. Disconnect is the user saying "not into this conversation",
+        # which applies to the answer as much as to the echo — so it is one gate,
+        # not four.
+        #
+        # The mirror IS a SlackRenderer -- the same class the Slack transport
+        # dispatcher drives for a Slack-born turn -- so a dashboard-born turn on a
+        # linked session reaches the thread with the same streaming reply, task
+        # cards, OPTIONS control and picture uploads (RFC session-address-model
+        # §5.3: one renderer per attachment, whatever the ingress). Its ``on_*``
+        # methods are called from the event sites below.
         if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
                 try:
-                    if not _is_synthetic:
-                        _mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
-                        await state.slack_client.post_message(
-                            _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
-                        )
-                    # Start a stream for real-time tool animations
-                    _mirror_stream_ts = (
-                        await state.slack_client.start_stream(
-                            _mirror_chan, _mirror_thread, initial_text="Thinking…"
-                        )
-                        or ""
+                    _mirror = await open_slack_mirror(
+                        state,
+                        slot,
+                        session_key,
+                        _mirror_chan,
+                        _mirror_thread,
+                        # The provider exists by now, so its resolved cwd is the
+                        # upload root (plus the uploads directory the renderer
+                        # adds); a client with no string cwd leaves uploads off.
+                        cwd=getattr(client, "cwd", None),
                     )
+                    await _mirror.on_turn_start()
+                    # The echo repeats what a person typed in the DASHBOARD. A
+                    # runner-authored recovery message is not theirs, and a
+                    # message that ARRIVED from Slack is already in the thread
+                    # with its files -- echoing it back would show the reader
+                    # their own words (and pictures) twice.
+                    if not _is_synthetic and _ingress != SLACK_NAMESPACE:
+                        await _mirror.echo_user_message(_user_msg_for_mirror)
                 except Exception:
-                    logger.debug("Failed to mirror user message to Slack", exc_info=True)
+                    logger.debug("Failed to open the Slack mirror for this turn", exc_info=True)
 
         # Channel-neutral leg: mirror the user message to a linked non-Slack
         # proactive channel (e.g. Telegram) so the remote conversation reads
@@ -8327,6 +8382,20 @@ async def _run_chat(
                     # and leave the request unanswered — the exact hang this PR
                     # exists to fix.
                     _compaction_notice_chunks.append(safe_chunk)
+                # Same event, same renderer method a Slack-born turn's driver
+                # calls: the thread streams the reply as it is produced -- every
+                # segment, not only the text after the last tool -- and the
+                # renderer withholds image markup until its seal uploads it. Fed
+                # through the mirror's rolling redactor, never the bare chunk: a
+                # credential split across two chunks is whole once Slack renders
+                # the two appends as one run (see ``_mirred``).
+                if _mirror is not None:
+                    _mirror_wire = _mirred.feed(event.text)
+                    if _mirror_wire:
+                        try:
+                            await _mirror.on_text_chunk(_mirror_wire)
+                        except Exception:
+                            logger.debug("Mirror text chunk failed", exc_info=True)
                 # Mirror into the never-reset whole-turn buffer so a plan
                 # emitted before later tool calls survives the tool-boundary
                 # reset of assistant_text above (planning turn only).
@@ -8367,6 +8436,15 @@ async def _run_chat(
                         "chat_thinking",
                         {"slot": slot.key, "content": wire},
                     )
+                # The renderer decides what Slack sees of the reasoning: with
+                # ``slack.show_thinking`` on it lands as a 💭 reply above the
+                # answer, off it only moves the typing indicator. Redacted by the
+                # renderer's own display floor before posting.
+                if _mirror is not None:
+                    try:
+                        await _mirror.on_thinking(event.text)
+                    except Exception:
+                        logger.debug("Mirror thinking chunk failed", exc_info=True)
                 # Deliberately NOT a turn-emit: do not flip _turn_emitted here.
                 # Thinking is ephemeral, broadcast-only (never persisted to
                 # slot.messages and never an irreversible side effect), so a
@@ -8516,30 +8594,23 @@ async def _run_chat(
                         {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
                     )
                 await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
-                # Mirror tool call to linked Slack stream
-                if _mirror_stream_ts:
+                # Mirror the tool call to the linked thread as a task card. The
+                # renderer completes the previous card, opens this one and runs
+                # its elapsed timer; the title and purpose are redacted and
+                # bounded here because they are provider-authored text on their
+                # way to a channel.
+                if _mirror is not None:
                     try:
-                        if _mirror_active_task:
-                            await state.slack_client.append_task(
-                                _mirror_chan,
-                                _mirror_stream_ts,
-                                _mirror_active_task,
-                                _mirror_active_task_title,
-                                "complete",
-                            )
-                        _mirror_task_counter += 1
-                        _mirror_active_task = f"tool_{_mirror_task_counter}"
-                        _task_title = event.tool_purpose or event.title
-                        _task_title, _ = redact_exfiltration_urls(_task_title)
-                        _task_title, _ = redact_credentials(_task_title)
-                        _task_title = _task_title[:75]
-                        _mirror_active_task_title = _task_title
-                        await state.slack_client.append_task(
-                            _mirror_chan,
-                            _mirror_stream_ts,
-                            _mirror_active_task,
-                            _task_title,
-                            "in_progress",
+                        await _flush_mirror_text()
+                        _m_title, _ = redact_exfiltration_urls(event.title or "")
+                        _m_title, _ = redact_credentials(_m_title)
+                        _m_purpose, _ = redact_exfiltration_urls(event.tool_purpose or "")
+                        _m_purpose, _ = redact_credentials(_m_purpose)
+                        await _mirror.on_tool_call(
+                            event.tool_call_id or "",
+                            _m_title[:75],
+                            tool_kind=event.tool_kind or "",
+                            tool_purpose=_m_purpose[:75],
                         )
                     except Exception:
                         logger.debug("Mirror tool task failed", exc_info=True)
@@ -12273,79 +12344,61 @@ async def _run_chat(
                     payload=RecoveryPayload.CONTINUATION,
                 )
 
-        # ── Bidirectional sync: mirror response to linked Slack thread ──
-        if assistant_text and state.slack_client and _mirror_thread and _mirror_chan:
+        # ── Bidirectional sync: seal the reply on the linked Slack thread ──
+        # ``on_done`` is the renderer's semantic seal: it flushes the streamed
+        # text, extracts and uploads the reply's local images (the uploads
+        # directory is an authorized root, so a picture pasted in the dashboard
+        # or drawn by the agent there travels too), posts the timing footer with
+        # the OPTIONS control, and clears the thread status -- the same end a
+        # Slack-born turn gets. Gated on ``_mirror`` alone: the pause gate and the
+        # link resolution already ran once at turn start. An empty-response
+        # re-queue is the one exception: that turn produced nothing and re-runs
+        # at once, so sealing it would post a footer for an answer that is about
+        # to arrive from the retry; teardown in the ``finally`` closes its stream.
+        if _mirror is not None and not _retrying_empty:
             try:
-                from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
-                    build_options_blocks,
-                    extract_options,
-                    render_for_slack,
+                # The asker is THIS session, named explicitly. Resolving it from
+                # the thread would name whoever owns the thread at mint time, so a
+                # relink landing mid-turn would stamp the control with a
+                # conversation that never asked the question. Off-loop, because a
+                # mint may read the transcript tail under its cross-process lock.
+                async def _stamp_mirror_options(_final_text: str) -> str | None:
+                    return await asyncio.to_thread(mint_options_token, state, session_key)
+
+                _mirror.stamp_options = _stamp_mirror_options
+                # The last confirmed-safe text has to be on the stream before
+                # the seal reads its accumulated source.
+                await _flush_mirror_text()
+                # The thread's owner BEFORE the post. A relink landing while the
+                # footer is in flight moves the conversation to another session,
+                # and a control recorded under the key this turn started with
+                # would be filed where that session's expiry never looks -- and
+                # clickable into a conversation it does not belong to.
+                _pre_owner = (
+                    state.sessions.get_session_for_thread(_mirror_thread) or session_key
+                    if getattr(state, "sessions", None) and _mirror_thread
+                    else session_key
                 )
-
-                # Extract the OPTIONS tag from the RAW text, before rendering.
-                # It is a plain-text marker, so pulling it off after conversion
-                # means whatever conversion did to the tail decides whether the
-                # controls render at all -- and a >39,000-char turn loses the tag
-                # entirely to to_slack_mrkdwn's self-truncation.
-                _mirror_body, _mirror_options = extract_options(assistant_text)
-
-                for _part in render_for_slack(_mirror_body):
-                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
-                if _mirror_options:
-                    # Keep the ts this posts: the control has to be spendable
-                    # later, and discarding the ts is what leaves a superseded
-                    # question clickable forever. build_options_blocks already
-                    # redacts each choice through redact_for_display, so nothing
-                    # extra is needed here.
-                    # The asker is THIS session, named explicitly. Resolving it
-                    # from the thread would name whoever owns the thread at mint
-                    # time, so a relink landing mid-turn would stamp the control
-                    # with a conversation that never asked the question.
-                    _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
-                    _mirror_blocks = build_options_blocks(
-                        _mirror_options, staleness_token=_mirror_token
-                    )
-                    # The thread's owner BEFORE the post. A relink landing while
-                    # post_blocks is in flight moves the conversation to another
-                    # session, and a control recorded under the key this turn
-                    # started with would be filed where that session's expiry
-                    # never looks -- and clickable into a conversation it does not
-                    # belong to. Same treatment the other two posting paths get.
-                    _pre_owner = (
+                await _mirror.on_done(stop_reason=_stop_reason)
+                _posted = _mirror.posted_options
+                if _posted is not None:
+                    # Keep the ts the footer posted: the control has to be
+                    # spendable later, and discarding the ts is what leaves a
+                    # superseded question clickable forever.
+                    _owner = (
                         state.sessions.get_session_for_thread(_mirror_thread) or session_key
-                        if getattr(state, "sessions", None)
+                        if getattr(state, "sessions", None) and _mirror_thread
                         else session_key
                     )
-                    _mirror_ts = await state.slack_client.post_blocks(
-                        _mirror_chan,
-                        _mirror_blocks,
-                        "Options",
-                        _mirror_thread,
-                    )
-                    if _mirror_ts:
-                        _owner = (
-                            state.sessions.get_session_for_thread(_mirror_thread) or session_key
-                            if getattr(state, "sessions", None)
-                            else session_key
-                        )
-                        remember_slack_options(
-                            state,
-                            _owner,
-                            PostedOptions(
-                                channel=_mirror_chan,
-                                ts=_mirror_ts,
-                                choices=tuple(_mirror_options),
-                                blocks=tuple(_mirror_blocks),
-                            ),
-                        )
-                        if _owner != _pre_owner:
-                            # An owner change IS supersession: the question we just
-                            # posted would be answered into a conversation that has
-                            # moved on. Narrowed to OUR ts so a control the new
-                            # owner recorded meanwhile survives.
-                            await expire_slack_options(state, _owner, ts=_mirror_ts)
+                    remember_slack_options(state, _owner, _posted)
+                    if _owner != _pre_owner:
+                        # An owner change IS supersession: the question we just
+                        # posted would be answered into a conversation that has
+                        # moved on. Narrowed to OUR ts so a control the new owner
+                        # recorded meanwhile survives.
+                        await expire_slack_options(state, _owner, ts=_posted.ts)
             except Exception:
-                logger.debug("Failed to mirror response to Slack", exc_info=True)
+                logger.debug("Failed to seal the Slack mirror", exc_info=True)
 
         # Channel-neutral leg: deliver the completed reply to a linked non-Slack
         # proactive channel (e.g. Telegram) via Transport.send_message. Slack is
@@ -13200,22 +13253,18 @@ async def _run_chat(
         # clears it. The nested try/finally makes the release unconditional
         # while preserving the reset-then-release ordering.
         try:
-            if _mirror_stream_ts and state.slack_client and _mirror_chan:
+            if _mirror is not None:
+                # Every exit path: a turn that ended normally already sealed the
+                # thread in ``on_done`` (close is then a no-op); one that did not
+                # -- cancelled, crashed, timed out -- gets its withheld tail
+                # appended, its open task card completed, its stream stopped and
+                # its thread status cleared here, so the thread reads as ended
+                # rather than still running.
                 try:
-                    if _mirror_active_task:
-                        await state.slack_client.append_task(
-                            _mirror_chan,
-                            _mirror_stream_ts,
-                            _mirror_active_task,
-                            _mirror_active_task_title,
-                            "complete",
-                        )
+                    await _flush_mirror_text()
+                    await _mirror.close()
                 except Exception:
-                    logger.debug("Task append cleanup failed", exc_info=True)
-                try:
-                    await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
-                except Exception:
-                    logger.debug("Stream cleanup failed", exc_info=True)
+                    logger.debug("Slack mirror teardown failed", exc_info=True)
             if _acquired and (needs_session_reset or needs_conversation_discard):
                 # Neither branch below goes through `_reset_slot_session`, so the
                 # withhold verdict is dropped here: both replace the session that

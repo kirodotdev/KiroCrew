@@ -16367,11 +16367,26 @@ class TestAcpProcessDiedRecovery:
 
         await _run_chat(state, slot, _CONN_RECOVER_MSG, _synthetic_payload=True)
 
-        posted = [str(c.args) for c in state.slack_client.post_message.await_args_list]
+        # The reply reaches the thread through the session's Slack renderer: with
+        # streaming unavailable (start_stream returned "") it lands on the
+        # chat.update placeholder, so every reply-carrying sink is read, not
+        # post_message alone.
+        slack = state.slack_client
+        shown = [
+            str(c.args) + str(c.kwargs)
+            for m in (
+                slack.post_message,
+                slack.update_message,
+                slack.append_stream,
+                slack.stop_stream,
+            )
+            for c in m.await_args_list
+        ]
         assert any(
-            "the finished answer" in a for a in posted
-        ), f"recovery reply never delivered to the linked thread; posted={posted}"
+            "the finished answer" in a for a in shown
+        ), f"recovery reply never delivered to the linked thread; shown={shown}"
         # The user echo stays withheld: that text is the runner's, not the user's.
+        posted = [str(c.args) for c in slack.post_message.await_args_list]
         assert not any("\U0001f4ac" in a for a in posted), f"echoed runner text: {posted}"
 
     @pytest.mark.asyncio

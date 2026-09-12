@@ -1245,8 +1245,9 @@ class _Slot:
             "meta": {**(meta or {}), "mid": f"m-slot-{len(self.appended)}"},
         }
 
-    def queue_append(self, text, *, meta=None, directive_user_origin):
+    def queue_append(self, text, *, meta=None, directive_user_origin, ingress=""):
         assert directive_user_origin is True
+        assert ingress == "slack"
         # The linked-thread enqueue stamps the admission-time containment
         # snapshot so the drain can re-assert it at delivery.
         assert isinstance(meta, dict)
@@ -1277,8 +1278,10 @@ class TestLinkedThreadRouting:
 
         ran: list[str] = []
 
-        async def _fake_run_chat(state, slot, text, *, _directive_user_origin):
+        async def _fake_run_chat(state, slot, text, *, _directive_user_origin, _ingress=""):
             assert _directive_user_origin is True
+            # Arrived from Slack: the mirror must not echo it back into the thread.
+            assert _ingress == "slack"
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)

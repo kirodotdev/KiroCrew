@@ -8,8 +8,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.constants import strip_control_comments
+from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
 from kiro_crew.dashboard import state as dashboard_state
 from kiro_crew.dashboard.chat_backfill import (
     backfill_content,
@@ -26,9 +25,9 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_keys_snapshot,
     slot_history_key,
 )
+from kiro_crew.dashboard.slack_mirror import open_slack_mirror
 from kiro_crew.dashboard.state import DashboardState, _log_task_exception
 from kiro_crew.messaging.link import SLACK_NAMESPACE
-from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.sel import sel
@@ -37,7 +36,6 @@ from kiro_crew.slack.format import (
     build_options_blocks,
     build_options_selected_blocks,
     extract_options,
-    render_for_slack,
 )
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.sync_bridge import handoff_to_slack
@@ -76,23 +74,6 @@ def _get_channel_resolver(state: DashboardState) -> ChannelNameResolver:
     return state._channel_resolver
 
 
-_USER_ICON = "\U0001f9d1"
-_AGENT_ICON = "\U0001f916"
-
-
-def _format_backfill_parts(content: str, icon: str) -> list[str]:
-    """Render one transcript row into postable Slack parts, icon included.
-
-    Thin delegate to :func:`kiro_crew.slack.format.render_for_slack`, which owns
-    the redact/convert/split ordering. The icon is passed as the prefix rather
-    than prepended afterwards: decorating a maximally-sized part after the split
-    pushes it past ``SLACK_MSG_LIMIT`` by the width of the icon plus its space.
-    """
-    return render_for_slack(
-        strip_control_comments(content), prefix=f"{icon} ", redactor=redact_via_context
-    )
-
-
 async def drain_slack_backfill(
     state: DashboardState,
     slot: Any,
@@ -107,6 +88,14 @@ async def drain_slack_backfill(
     so a long history split across many parts would hold the HTTP request open
     long enough for the browser fetch to time out while posts kept landing --
     the user would see a failure on a link that actually worked.
+
+    Each row goes through the session's Slack renderer
+    (:meth:`~kiro_crew.slack.renderer.SlackRenderer.post_history_row`), the
+    same object that carries a live turn to the thread, so a pasted picture or an
+    agent-drawn chart in the history arrives as an upload rather than as the
+    filesystem path a text-only post would carry. The OPTIONS control of a
+    replayed reply is still posted here: it needs the staleness token and the
+    expiry bookkeeping only this module holds.
 
     Backgrounding is safe here specifically because the Slack link path has no
     per-message governance gate to fail closed on (unlike the configured-channel
@@ -138,6 +127,19 @@ async def drain_slack_backfill(
     selection = await asyncio.to_thread(select_backfill_messages, state, slot)
     if not selection.messages:
         return
+
+    # The upload root at link time is the slot's working directory -- no provider
+    # is guaranteed to be live yet. ``default_project_dir`` reads config, so it is
+    # offloaded like the config load below; a failure leaves uploads off rather
+    # than failing the seed.
+    cwd: str | None = getattr(slot, "project", None) or None
+    if not cwd:
+        try:
+            cwd = await asyncio.to_thread(default_project_dir, getattr(slot, "workspace", None))
+        except Exception:
+            logger.debug("slack backfill: could not resolve the session cwd", exc_info=True)
+            cwd = None
+    renderer = await open_slack_mirror(state, slot, session_key, channel, thread_ts, cwd=cwd)
 
     async def _post(text: str) -> bool:
         try:
@@ -200,11 +202,9 @@ async def drain_slack_backfill(
         return None
 
     for row in selection.first_turn:
-        icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
         content, choices = _split_backfill_options(row)
-        for part in _format_backfill_parts(content, icon):
-            if not await _post(part):
-                return
+        if not await renderer.post_history_row(str(row.get("role") or ""), content):
+            return
         if choices:
             # The opening turn is superseded by definition — spent, never live.
             await _post_options(choices, interactive=False)
@@ -225,11 +225,9 @@ async def drain_slack_backfill(
     newest = len(selection.recent_rows) - 1
     live_ts: str | None = None
     for idx, row in enumerate(selection.recent_rows):
-        icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
         content, choices = _split_backfill_options(row)
-        for part in _format_backfill_parts(content, icon):
-            if not await _post(part):
-                return
+        if not await renderer.post_history_row(str(row.get("role") or ""), content):
+            return
         if choices:
             posted_ts = await _post_options(
                 choices, interactive=idx == newest, row_ts=row.get("ts")
@@ -288,7 +286,7 @@ def _split_backfill_options(row: dict[str, Any]) -> tuple[str, list[str]]:
     choice through ``redact_for_display``, which canonicalises the form Slack
     actually shows (ANSI, emphasis and backtick splits, link markup) before
     scanning — strictly stronger than redacting the raw bytes here, and the body
-    is covered by ``_format_backfill_parts``. Duplicating the ordering in this
+    is covered by ``SlackRenderer.post_history_row``. Duplicating the ordering in this
     function would let the two copies drift apart.
     """
     content = backfill_content(row)

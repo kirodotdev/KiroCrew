@@ -2013,13 +2013,16 @@ class TestControlPostedAfterTheWindowIsSpent:
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner)
-        mirror = src[src.find("_mirror_blocks = build_options_blocks(") :][:2600]
+        # The dashboard mirror seals through the SAME renderer a Slack-born turn
+        # uses; the control's ts comes back as ``posted_options`` and the owner
+        # bookkeeping wraps that seal.
+        mirror = src[src.find("await _mirror.on_done(") - 1400 :][:2600]
         assert "_pre_owner" in mirror, "the mirror path must capture the owner before posting"
-        assert "remember_slack_options(\n                            state,\n                            _owner," in mirror, (
+        assert "remember_slack_options(state, _owner, _posted)" in mirror, (
             "the record must use the re-resolved owner, not the key the turn started with"
         )
         assert "_owner != _pre_owner" in mirror, "an owner change must supersede"
-        assert "ts=_mirror_ts" in mirror, (
+        assert "ts=_posted.ts" in mirror, (
             "the supersession expiry must be narrowed to OUR ts, or it strikes "
             "through a control the new owner recorded meanwhile"
         )

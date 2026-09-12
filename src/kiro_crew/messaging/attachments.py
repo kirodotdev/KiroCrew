@@ -47,6 +47,7 @@ from kiro_crew.doc_parser import extract_text, is_parseable_document
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.uploads import create_upload_file, safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,8 @@ class Attachment:
 @dataclass
 class IngestResult:
     #: Local paths to downloaded images. **The caller must delete these** once
-    #: the turn has consumed them.
+    #: the turn has consumed them -- EXCEPT the ones also listed in
+    #: :attr:`persisted_paths`, which belong to the user's transcript.
     image_paths: list[str] = field(default_factory=list)
     #: Local paths to downloaded audio, for the caller to transcribe. Caller
     #: deletes.
@@ -123,11 +125,23 @@ class IngestResult:
     rejections: list[str] = field(default_factory=list)
     #: Byte-identical opaque files for agent tools. Caller deletes after the turn.
     file_paths: list[str] = field(default_factory=list)
+    #: The subset of :attr:`image_paths` promoted into the dashboard's uploads
+    #: directory (``persist_images=True``). These are the user's files now, named
+    #: and stored exactly as a picture pasted into the dashboard composer, and
+    #: the transcript row points at them -- so they MUST survive the turn. They
+    #: are excluded from :attr:`temp_paths`; retention follows whatever the
+    #: uploads directory already does.
+    persisted_paths: list[str] = field(default_factory=list)
 
     @property
     def temp_paths(self) -> list[str]:
         """Every path the caller is responsible for cleaning up."""
-        return [*self.image_paths, *self.audio_paths, *self.file_paths]
+        persisted = set(self.persisted_paths)
+        return [
+            p
+            for p in (*self.image_paths, *self.audio_paths, *self.file_paths)
+            if p not in persisted
+        ]
 
 
 def safe_suffix(hint: str, default: str = "bin") -> str:
@@ -248,6 +262,27 @@ async def _fetch(download: DownloadFn, url: str, suffix: str) -> str:
     return dest
 
 
+def _promote_image(temp_path: str, name: str, suffix: str) -> str:
+    """Move a validated image from its temp file into the uploads directory.
+
+    Blocking; call offloaded. The stored name is the sender's, sanitized by the
+    dashboard's own rule, with its extension replaced by the SNIFFED type's --
+    the ACP encoder types a path by suffix alone, so the name must say what the
+    bytes are. The file is created ``O_EXCL`` and owner-only
+    (:func:`kiro_crew.uploads.create_upload_file`), and the temp copy is removed
+    once the promoted copy exists. Returns the promoted path.
+    """
+    with open(temp_path, "rb") as fh:
+        data = fh.read()
+    stem, _ = os.path.splitext(safe_upload_name(name))
+    dest = create_upload_file(f"{stem or 'image'}{suffix}", data)
+    try:
+        os.unlink(temp_path)
+    except OSError:
+        pass
+    return str(dest)
+
+
 def _read_text_file(path: str, limit: int) -> str:
     """Read a text attachment and redact+truncate it (blocking; call offloaded)."""
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -277,6 +312,7 @@ async def ingest_attachments(
     limits: IngestLimits | None = None,
     handle_audio: bool = False,
     audio_mimetypes: tuple[str, ...] = (),
+    persist_images: bool = False,
 ) -> IngestResult:
     """Download and convert *attachments* into prompt-ready material.
 
@@ -286,6 +322,17 @@ async def ingest_attachments(
 
     ``audio_mimetypes`` declares channel-specific types to treat as audio (see
     :func:`classify`) -- Slack's ``video/webm`` voice memos being the real case.
+
+    ``persist_images=True`` promotes every validated image out of its temp file
+    and into the dashboard's uploads directory, named the way the dashboard
+    composer names a pasted picture, and lists it in
+    :attr:`IngestResult.persisted_paths` so the caller keeps it after the turn.
+    The point is the transcript: a row that names a temp file shows a dead path
+    once the turn's cleanup runs, while a row that names an uploads-directory file
+    renders the picture for as long as the uploads directory keeps it. Opaque
+    files (video, archives, unknown types) keep the temp behaviour either way.
+    Off by default; a channel opts in when its transcript row is written in the
+    dashboard's ``![image](path)`` form (see :func:`append_attachment_context`).
 
     Never raises for a single bad attachment: each failure becomes a rejection so
     one unreadable file cannot lose the rest of the message.
@@ -400,6 +447,17 @@ async def ingest_attachments(
                     # travel with wrong metadata. REPLACE the declared suffix rather
                     # than appending, so the name does not claim two types at once.
                     want = _MIME_SUFFIX.get(actual_mime, "")
+                    if persist_images and want:
+                        # Promoted, not renamed: the bytes leave the temp tree for
+                        # the uploads directory and become the user's file. The
+                        # temp copy is gone once this returns, so nothing is left
+                        # for the caller's cleanup and ``dest`` is cleared below.
+                        promoted = await asyncio.to_thread(_promote_image, dest, att.name, want)
+                        out.image_paths.append(promoted)
+                        out.persisted_paths.append(promoted)
+                        dest = ""
+                        _audit(source, f"{source}.attachment_download", "success", att.name)
+                        continue
                     if want and os.path.splitext(dest)[1].lower() != want:
                         renamed = os.path.splitext(dest)[0] + want
                         try:
@@ -608,19 +666,39 @@ async def transcribe_audio_attachments(result: IngestResult, source: str) -> Ing
     return result
 
 
+def image_row_markdown(path: str) -> str:
+    """The transcript form of an image the uploads directory owns.
+
+    The dashboard composer's own shape (``![image](/abs/uploads/<file>)``): the
+    chat renders it inline, and the ACP prompt encoder finds the path inside the
+    markup exactly as it finds a bare line, so one string serves the row AND the
+    prompt. Alt text is the constant ``image`` on purpose -- a sender-supplied
+    name inside a markdown destination is one more place untrusted text would be
+    interpreted, and the filename already sits in the path.
+    """
+    return f"![image]({path})"
+
+
 def append_attachment_context(text: str, result: IngestResult) -> str:
     """Append prompt-ready attachment material to the user's message text.
 
-    Image and opaque-file paths are appended as bare lines. The ACP encoder
-    inlines recognized image paths as image content blocks; every other path remains
-    text for agent file tools. Text, metadata and rejection blocks follow, separated
-    by blank lines for prompt readability.
+    Image and opaque-file paths are appended as bare lines, except an image the
+    uploads directory owns (:attr:`IngestResult.persisted_paths`), which is
+    written in the dashboard's ``![image](path)`` form so the transcript row
+    renders it. The ACP encoder inlines recognized image paths as image content
+    blocks in both spellings; every other path remains text for agent file
+    tools. Text, metadata and rejection blocks follow, separated by blank lines
+    for prompt readability.
 
     Channel-neutral: every transport that ingests attachments uses this same
     layout, so the model sees a consistent attachment presentation regardless
     of whether the user sent from Slack, Discord, or Telegram.
     """
-    paths = [*result.image_paths, *result.file_paths]
+    persisted = set(result.persisted_paths)
+    paths = [
+        *(image_row_markdown(p) if p in persisted else p for p in result.image_paths),
+        *result.file_paths,
+    ]
     if paths:
         paths_text = "\n".join(paths)
         text = f"{text}\n{paths_text}" if text else paths_text

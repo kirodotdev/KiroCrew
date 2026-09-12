@@ -47,7 +47,10 @@ from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SEC
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
+from kiro_crew.messaging import privacy_mode
+from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -2022,6 +2025,37 @@ def _extract_shared_text(event: dict) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
+def _inbound_images_persist(orch: "GatewayOrchestrator", text: str, reply_ts: str) -> bool:
+    """Whether a picture posted in this thread may outlive the turn.
+
+    A promoted image lives in the dashboard's uploads directory for as long as
+    that directory keeps it, so it is refused for every conversation that
+    persists nothing: a thread whose durable ``temporary`` / ``incognito`` flag is
+    set (restored first, so a gateway restart cannot forget it), a message that
+    carries the ``!incognito`` or ``!temporary`` token itself (the flag is set
+    later in the handler, after this ingestion has run), and a thread linked to a
+    dashboard session in a restricted mode (the linked slot is where the turn
+    actually runs). Fails CLOSED on a lookup error: a temp file the turn cleans up
+    is the safe default, a persisted one is not.
+    """
+    session_key = canonical_key(reply_ts)
+    try:
+        privacy_mode.hydrate(orch.sessions, session_key)
+        if privacy_mode.is_restricted(session_key):
+            return False
+        for mode in (privacy_mode.MODE_INCOGNITO, privacy_mode.MODE_TEMPORARY):
+            if privacy_mode.strip_token(text or "", mode)[1]:
+                return False
+        ds = orch.dashboard_state
+        linked = ds.get_linked_slot(reply_ts) if ds is not None else None
+        if linked is not None and getattr(linked, "is_restricted", False) is True:
+            return False
+    except Exception:
+        logger.debug("inbound image persistence check failed; keeping temp", exc_info=True)
+        return False
+    return True
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -2436,18 +2470,24 @@ async def _route_message(
             text = _voice_memo_context(text, len(memos), len(transcripts), available=stt_ok)
 
         # ── Process non-audio files (images, text, opaque files, etc.) ──
-        attachment_paths, text_blocks = await process_slack_files(orch, files)
-        _attachment_temp_paths = attachment_paths
-
-        # Image paths are inlined by ACP; opaque paths remain available to agent tools.
-        if attachment_paths:
-            paths_text = "\n".join(attachment_paths)
-            text = f"{text}\n{paths_text}" if text else paths_text
-
-        # Inject text file contents
-        if text_blocks:
-            blocks_text = "\n\n".join(text_blocks)
-            text = f"{text}\n\n{blocks_text}" if text else blocks_text
+        # An image lands in the dashboard's uploads directory and is written into
+        # the text as ``![image](/abs/uploads/<file>)`` -- one string serves as
+        # the transcript row the dashboard renders AND the prompt the ACP encoder
+        # inlines from. Only the opaque temp files are the turn's to delete;
+        # a promoted image belongs to the transcript and survives it.
+        #
+        # EXCEPT for a conversation that persists nothing: a thread marked
+        # temporary or incognito (by an earlier turn, or by a token in THIS
+        # message) or one linked to a restricted dashboard session keeps the
+        # image a temp file, so the turn's cleanup removes it like everything
+        # else that conversation touched.
+        _ingested = await process_slack_files(
+            orch,
+            files,
+            persist_images=_inbound_images_persist(orch, text, thread_ts or msg_ts),
+        )
+        _attachment_temp_paths = _ingested.temp_paths
+        text = append_attachment_context(text, _ingested)
 
     # Bail out if we still have no text after attempting transcription
     if not text:
