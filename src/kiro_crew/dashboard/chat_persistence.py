@@ -2723,6 +2723,7 @@ def _save_slot_to_history(
     rewrite: bool = False,
     expected_history_key: str | None = None,
     expected_disk_older_count: int | None = None,
+    expected_slot_name: str | None = None,
     rows_only: bool = False,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
@@ -3245,6 +3246,29 @@ def _save_slot_to_history(
                     "permanently deleted while this save awaited the lock",
                     history_key,
                     slot.key,
+                )
+                return False
+            # ── Recreate-won guard ──────────────────────────────────────────
+            # Re-read the live occupant of the slot's map key INSIDE the lock,
+            # after the patient off-loop acquire. A truncating caller checks
+            # object identity before dispatching this write, but the executor
+            # wait between that check and here frees the event loop, and a
+            # same-name close-and-recreate is not serialized against the slot's
+            # own lock (the cleanup pops ``state._slots[name]`` and
+            # ``get_or_create_slot`` re-inserts, neither taking it). A recreate
+            # that resumes the SAME transcript keeps ``history_key`` identical,
+            # so the routing guard above waves it through. Confirming the map
+            # still holds THIS slot object, at the commit boundary with no await
+            # before the write, is what catches it: if the map now holds a
+            # replacement the original slot is being torn down and its
+            # truncation has no future, so refuse the whole save (``False``,
+            # nothing written) rather than land the stale snapshot on the
+            # replacement's transcript.
+            if expected_slot_name is not None and state._slots.get(expected_slot_name) is not slot:
+                logger.warning(
+                    "Slot %s save refused: slot %s was replaced before the write committed",
+                    history_key,
+                    expected_slot_name,
                 )
                 return False
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -3841,6 +3865,7 @@ async def save_slot_off_loop(
     rewrite: bool = False,
     best_effort: bool = True,
     expected_history_key: str | None = None,
+    expected_slot_name: str | None = None,
     rows_only: bool = False,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
@@ -3876,6 +3901,14 @@ async def save_slot_off_loop(
     the worker's routing snapshot, and without this pin the durable write
     would target a transcript the caller never authorized.
 
+    ``expected_slot_name``: the ``state._slots`` map key the caller checked its
+    slot object against before dispatching. The save refuses (returns ``False``,
+    nothing written) when the map holds a different slot object at the locked
+    commit boundary -- a same-name close-and-recreate that resumes the
+    same transcript keeps ``expected_history_key`` identical and slips past the
+    routing pin, so this object-identity recheck under the lock stops the
+    truncating snapshot from landing on the replacement's transcript.
+
     ``rows_only``: write the window but leave the metadata line's slot-owned
     fields as they stand on disk when the line was published by ANOTHER slot --
     for a caller persisting a slot's rows onto a transcript another live slot now
@@ -3902,6 +3935,7 @@ async def save_slot_off_loop(
             force=force,
             rewrite=rewrite,
             expected_history_key=expected_history_key,
+            expected_slot_name=expected_slot_name,
             rows_only=rows_only,
         )
 
