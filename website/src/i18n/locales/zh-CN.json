@@ -34,7 +34,6 @@
     "dsk": "DSK",
     "expand_sidebar": "展开侧边栏",
     "gateway_connected": "网关已连接",
-    "gateway_offline": "网关离线",
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
     "gateway_offline_session_expired_see_banner_above": "网关离线 — 会话已过期，见上方横幅",
     "gateway_restarting_reconnecting": "网关正在重启 — 正在重连…",

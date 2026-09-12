@@ -34,7 +34,6 @@
     "dsk": "DSK",
     "expand_sidebar": "Развернуть боковую панель",
     "gateway_connected": "Шлюз подключён",
-    "gateway_offline": "Шлюз офлайн",
     "gateway_offline_reconnecting": "Шлюз офлайн — переподключение",
     "gateway_offline_session_expired_see_banner_above": "Шлюз офлайн — срок сессии истёк, см. баннер выше",
     "gateway_restarting_reconnecting": "Шлюз перезапускается — переподключение…",

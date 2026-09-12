@@ -34,7 +34,6 @@
     "dsk": "DSK",
     "expand_sidebar": "사이드바 펼치기",
     "gateway_connected": "게이트웨이 연결됨",
-    "gateway_offline": "게이트웨이 오프라인",
     "gateway_offline_reconnecting": "게이트웨이 오프라인 — 재연결 중",
     "gateway_offline_session_expired_see_banner_above": "게이트웨이 오프라인 — 세션이 만료되었습니다. 위 배너를 확인하세요",
     "gateway_restarting_reconnecting": "게이트웨이 재시작 중 — 재연결 중…",

@@ -181,7 +181,9 @@ describe('App root store subscription scope', () => {
 
     expect(delta).toBeGreaterThan(0)
     // The offline signal is on screen, so the narrowed selector is genuinely wired.
-    expect(screen.getByLabelText('Gateway offline')).toBeTruthy()
+    // The dot's accessible name now carries the cause (reconnecting, since no
+    // auth banner is up here) rather than a bare "Gateway offline" — see #9692.
+    expect(screen.getByLabelText(/Gateway offline/i)).toBeTruthy()
   })
 
   it('still re-renders the root when the update progress changes', async () => {

@@ -34,7 +34,6 @@
     "dsk": "DSK",
     "expand_sidebar": "साइडबार विस्तृत करें",
     "gateway_connected": "गेटवे कनेक्ट है",
-    "gateway_offline": "गेटवे ऑफ़लाइन",
     "gateway_offline_reconnecting": "गेटवे ऑफ़लाइन — फिर से कनेक्ट हो रहा है",
     "gateway_offline_session_expired_see_banner_above": "गेटवे ऑफ़लाइन — सत्र समाप्त हो गया, ऊपर दिया बैनर देखें",
     "gateway_restarting_reconnecting": "गेटवे पुनः शुरू हो रहा है — फिर से कनेक्ट हो रहा है…",

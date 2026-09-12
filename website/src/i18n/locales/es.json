@@ -34,7 +34,6 @@
     "dsk": "DSK",
     "expand_sidebar": "Expandir la barra lateral",
     "gateway_connected": "Gateway conectado",
-    "gateway_offline": "Gateway sin conexión",
     "gateway_offline_reconnecting": "Gateway sin conexión — reconectando",
     "gateway_offline_session_expired_see_banner_above": "Gateway sin conexión — la sesión ha caducado, consulta el aviso de arriba",
     "gateway_restarting_reconnecting": "El gateway se está reiniciando — reconectando…",

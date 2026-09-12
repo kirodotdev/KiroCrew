@@ -34,7 +34,6 @@
     "dsk": "DSK",
     "expand_sidebar": "Développer la barre latérale",
     "gateway_connected": "Passerelle connectée",
-    "gateway_offline": "Passerelle hors ligne",
     "gateway_offline_reconnecting": "Passerelle hors ligne — reconnexion en cours",
     "gateway_offline_session_expired_see_banner_above": "Passerelle hors ligne — session expirée, voir la bannière ci-dessus",
     "gateway_restarting_reconnecting": "La passerelle redémarre — reconnexion en cours…",

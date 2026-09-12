@@ -34,7 +34,6 @@
     "dsk": "DSK",
     "expand_sidebar": "Espandi la barra laterale",
     "gateway_connected": "Gateway connesso",
-    "gateway_offline": "Gateway offline",
     "gateway_offline_reconnecting": "Gateway offline — riconnessione in corso",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — sessione scaduta, vedi il banner qui sopra",
     "gateway_restarting_reconnecting": "Il gateway si sta riavviando — riconnessione in corso…",

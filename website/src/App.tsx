@@ -1275,13 +1275,18 @@ export default function App() {
   const version = useAppSelector(s => s.dashboard.status?.version) || '—'
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
-  // the red top-banner already tells the user what to do (paste a fresh
-  // `kirocrew token` URL) -- showing the loud pulsing "Offline" pill on top
-  // of that just stacks two banners arguing about the same root cause. So
-  // when authRequired is true, we suppress the offline pill in the top bar;
-  // auth banner is the single canonical signal. `isAuthBannerShown()` seeds
-  // initial state in case the banner was injected before App mounted (e.g.
-  // a 403 fired during the very first /api/status before React hydrated).
+  // the red top-banner tells the user what to do (paste a fresh
+  // `kirocrew token` URL) and the capsule reddens quietly underneath it --
+  // for a sighted user the tint does not argue with the banner. But the
+  // banner is a plain <div> with no role="alert"/aria-live, so it is never
+  // announced; the capsule's accessible name and role="status" region are the
+  // only screen-reader carriers of the offline cause. So when authRequired is
+  // true the capsule announces the auth-specific wording (session expired, see
+  // banner) instead of the generic "Gateway offline", which would point a
+  // screen-reader user at reconnection when pasting a token is the fix.
+  // `isAuthBannerShown()` seeds initial state in case the banner was injected
+  // before App mounted (e.g. a 403 fired during the very first /api/status
+  // before React hydrated).
   const [authRequired, setAuthRequired] = useState<boolean>(isAuthBannerShown)
   useEffect(() => {
     const onRequired = () => setAuthRequired(true)
@@ -3498,6 +3503,37 @@ export default function App() {
               this fork's usage pill is Kiro-credits-only.) */}
           {(() => {
             const offline = !connected
+            // The accessible name and the role="status" live region are the
+            // ONLY screen-reader carriers of the offline cause: the
+            // session-expired banner api/client.ts injects is a plain <div>
+            // with no role="alert"/aria-live, so it is never announced. When
+            // auth is the real cause they must therefore say so -- announcing
+            // the generic "Gateway offline" points a screen-reader user at
+            // reconnection when pasting a token is the fix. This mirrors the
+            // branch the button `title` already uses (minus the collapse-toggle
+            // suffix, which is interaction text, not a status cause).
+            // Auth takes precedence over transport for the ANNOUNCED cause:
+            // `authRequired` (a 403 auth flag) and `connected` (Redux transport
+            // state) are independently sourced, so the session can expire while
+            // the socket is still up. In that state a transport-first ternary
+            // announces "Gateway connected" -- a reassuring lie -- and the
+            // session-expired banner api/client.ts injects is a plain <div>
+            // with no role="alert"/aria-live, so nothing else corrects it. The
+            // transport being up does not help a user whose session is dead, so
+            // the auth wording wins whenever auth is the real blocker.
+            const gatewayStatusMsg = authRequired
+              ? i18nT('app.gateway_offline_session_expired_see_banner_above')
+              : connected
+                ? i18nT('app.gateway_connected')
+                : i18nT('app.gateway_offline_reconnecting')
+            // The connection dot doubles as the capsule collapse toggle, so its
+            // accessible name must name that action -- not just the gateway
+            // state. title and aria-label share this composed value; the
+            // role="status" live region stays pure gatewayStatusMsg (a status
+            // region announces the connection cause, not the button's toggle
+            // affordance, which would speak "click to collapse" on every
+            // reconnect).
+            const capsuleActionMsg = `${gatewayStatusMsg} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`
             // whitespace-nowrap is the ladder's backstop for the BUILT-IN
             // segments that share this class string: if the group is ever
             // narrower than its contents (a locale wider than the measured
@@ -3516,15 +3552,15 @@ export default function App() {
                 key="conn"
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
-                title={`${connected ? i18nT('app.gateway_connected') : authRequired ? i18nT('app.gateway_offline_session_expired_see_banner_above') : i18nT('app.gateway_offline_reconnecting')} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`}
-                aria-label={connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}
+                title={capsuleActionMsg}
+                aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
                 <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
-                <span role="status" className="sr-only">{connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}</span>
+                <span role="status" className="sr-only">{gatewayStatusMsg}</span>
               </button>
             )
             // Resource pressure indicator — always visible when tight/critical
