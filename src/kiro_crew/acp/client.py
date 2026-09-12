@@ -2309,11 +2309,12 @@ def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> s
     if not available_models:
         return None
     rejected = match.group(1)
-    # Compare case-insensitively on the bare id: the rejection echoes back the
-    # id that was sent, but casing has no meaning in these ids and an
-    # entitled-but-differently-cased match must not be reported as unentitled.
-    advertised = {m.strip().lower() for m in available_models if m and m.strip()}
-    if rejected.strip().lower() in advertised:
+    # Route the served-list membership through the canonical helper: casing has
+    # no meaning in these ids, and an entitled-but-differently-cased match must
+    # not be reported as unentitled. The empty-list guard above preserves the
+    # None-on-empty contract, so the helper's empty-means-usable answer is
+    # never consulted here.
+    if not model_is_unusable(rejected, available_models):
         return None
     return rejected
 
@@ -2613,8 +2614,7 @@ def _auto_remedy(available_models: Sequence[str] | None) -> str:
     numbering of the remaining step shifts so the list still reads (1)(2)(3)
     or (1)(2).
     """
-    usable = [m.strip().lower() for m in (available_models or []) if m and m.strip()]
-    if usable and DEFAULT_MODEL not in usable:
+    if model_is_unusable(DEFAULT_MODEL, available_models):
         return "or (2) "
     return f"(2) set agent.model to '{DEFAULT_MODEL}' in ~/.kiro/crew/config.json, or (3) "
 
@@ -2711,7 +2711,7 @@ def _format_acp_error(
                     f"not help."
                     f"{req_id_suffix}"
                 )
-            elif DEFAULT_MODEL in {m.lower() for m in usable}:
+            elif not model_is_unusable(DEFAULT_MODEL, available_models):
                 # Same two-step shape as the branches around it (the error card
                 # says "do both" under every entitlement row): the picker fixes
                 # this session, the default stops the next one -- and here

@@ -448,6 +448,30 @@ class TestTransientMarkerCoupling:
         assert "set agent.model to 'auto'" not in _format_acp_error(unnamed, no_auto)
         assert "set agent.model to 'auto'" in _format_acp_error(unnamed, with_auto)
 
+    def test_auto_served_checks_agree_with_model_is_unusable(self):
+        """Both 'is ``auto`` served?' call sites route through the canonical
+        helper: feed mixed-case, whitespace-padded advertised lists and assert
+        each site's verdict is exactly the helper's, so a change to
+        advertised-list semantics lands once.
+        """
+        from kiro_crew.acp.client import (
+            DEFAULT_MODEL,
+            _auto_remedy,
+            _format_acp_error,
+            model_is_unusable,
+        )
+
+        for advertised in ([" Auto ", "claude-x"], ["CLAUDE-X"]):
+            served = not model_is_unusable(DEFAULT_MODEL, advertised)
+            # (a) _auto_remedy emits the "(2) set agent.model" step iff served.
+            remedy = _auto_remedy(advertised)
+            assert ("(2) set agent.model" in remedy) is served
+            # (b) an unentitled non-auto id picks the "set it to 'auto'"
+            # wording iff served ('claude-opus-4.8' is absent from both lists).
+            formatted = _format_acp_error(_MODEL_UNAVAILABLE, advertised)
+            assert "does not have access to model 'claude-opus-4.8'" in formatted
+            assert ("agent.model to 'auto' in ~/.kiro/crew/config.json to let" in formatted) is served
+
 
 class TestConnectionErrorClassification:
     """Connection failures are transient, while credential failures win precedence."""
