@@ -10,6 +10,13 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers.messaging import api_delete_message
 from kiro_crew.mcp_core import _call_tool
+from kiro_crew.mcp_tools.messaging import delete_message
+from kiro_crew.validation import (
+    CHANNEL_ID_RE,
+    CHANNEL_MAX_LEN,
+    ValidationError,
+    validate_string_field,
+)
 
 # ── Endpoint tests ──
 
@@ -127,3 +134,75 @@ class TestDeleteMessageTool:
         assert "delete_message" in MCP_CORE_SCHEMAS
         required = {f.name for f in MCP_CORE_SCHEMAS["delete_message"].fields if f.required}
         assert {"channel", "ts"} <= required
+
+
+class TestDeleteMessageChannelIsLengthBounded:
+    """The second of the two reviewer-counted uncapped sites (#7084).
+
+    `delete_message` reads `args["channel"]` straight off the MCP payload with
+    no schema in front of it, so `CHANNEL_ID_RE`'s unbounded `+` was the whole
+    length contract. This is the LLM-reachable entry point of the pair.
+    """
+
+    def test_overlength_channel_is_refused_before_the_post(self):
+        over_cap = "C" + "A" * CHANNEL_MAX_LEN  # 21 chars: matches the regex
+
+        assert CHANNEL_ID_RE.match(over_cap), "fixture must be shape-valid or it proves nothing"
+
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            result = delete_message(
+                "delete_message",
+                {"channel": over_cap, "ts": "1780088134.952549"},
+            )
+
+        assert "invalid channel" in result.lower()
+        mock_post.assert_not_called()
+
+    def test_a_channel_at_exactly_the_cap_still_posts(self):
+        """Negative control: the cap is inclusive, so a maximum-length id is
+        still a delete the tool must perform."""
+        at_cap = "C" + "A" * (CHANNEL_MAX_LEN - 1)
+        assert len(at_cap) == CHANNEL_MAX_LEN
+
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            mock_post.return_value = {"ok": True}
+            result = delete_message(
+                "delete_message",
+                {"channel": at_cap, "ts": "1780088134.952549"},
+            )
+
+        assert "deleted" in result.lower()
+        mock_post.assert_called_once_with(
+            "/api/delete-message", {"channel": at_cap, "ts": "1780088134.952549"}
+        )
+
+
+class TestCronChannelIsAlreadyBounded:
+    """CONTROL, not a third fix.
+
+    `dashboard/handlers/cron.py:261` reads as a third uncapped
+    `CHANNEL_ID_RE.match`, but the value reaching it came through
+    `validate_string_field(body, "channel", max_len=CHANNEL_MAX_LEN)` a few
+    lines above, which already refuses an over-length id. Adding a cap there
+    would be a second spelling of a bound that is already enforced.
+
+    This test asserts that upstream guard directly, so the claim "cron is not a
+    third site" is executable rather than a comment — and so that a later change
+    which drops the `max_len=` argument is caught here instead of silently
+    turning cron into the defect this PR is fixing.
+    """
+
+    def test_validate_string_field_refuses_an_overlength_channel(self):
+        over_cap = "C" + "A" * CHANNEL_MAX_LEN
+
+        assert CHANNEL_ID_RE.match(over_cap), "fixture must be shape-valid or it proves nothing"
+
+        with pytest.raises(ValidationError):
+            validate_string_field({"channel": over_cap}, "channel", max_len=CHANNEL_MAX_LEN)
+
+    def test_validate_string_field_admits_a_channel_at_the_cap(self):
+        at_cap = "C" + "A" * (CHANNEL_MAX_LEN - 1)
+        assert len(at_cap) == CHANNEL_MAX_LEN
+        assert validate_string_field({"channel": at_cap}, "channel", max_len=CHANNEL_MAX_LEN) == (
+            at_cap
+        )
