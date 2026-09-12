@@ -63,6 +63,7 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API 
 from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
 from kiro_crew.publish_provider import DEFAULT_PROVIDER
 from kiro_crew.security import is_sensitive_path
+from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -561,7 +562,8 @@ def _now_iso() -> str:
 def slugify(name: str) -> str:
     """Normalize a free-form name into a URL-safe slug.
 
-    Falls back to ``"artifact"`` if the input contains no slug-safe characters.
+    Falls back to ``artifact-<hash of the input>`` if the input contains no
+    slug-safe characters, so distinct non-ASCII names derive distinct slugs.
     Truncated to 80 characters.
     """
     if not isinstance(name, str):
@@ -573,8 +575,8 @@ def slugify(name: str) -> str:
     text = _SLUG_NORMALIZE_RE.sub("-", text)
     text = text.strip("-")
     if not text:
-        return "artifact"
-    return text[:80].rstrip("-") or "artifact"
+        return slug_hash_fallback(name, "artifact")
+    return text[:80].rstrip("-") or slug_hash_fallback(name, "artifact")
 
 
 def _validate_slug(slug: str) -> str:

@@ -7506,3 +7506,23 @@ class TestProxyHandlerPolicy:
         assert _body(await api_instances_proxy(req))["code"] == "proxy_method_not_allowed"
         req = self._req(tmp_path, monkeypatch, path="api/chat/slots", manager=None)
         assert _body(await api_instances_proxy(req))["code"] == "instances_manager_unavailable"
+
+
+# ── _slugify hash fallback ─────────────────────────────────────────
+
+
+class TestSlugifyHashFallback:
+    def test_non_ascii_names_derive_distinct_stable_ids(self) -> None:
+        from kiro_crew.instances.registry import _ID_RE, _slugify
+
+        chinese = _slugify("\u5f00\u53d1\u673a")
+        arabic = _slugify("\u062e\u0627\u062f\u0645 \u0627\u0644\u062a\u0637\u0648\u064a\u0631")
+        assert chinese.startswith("instance-")
+        assert chinese != arabic
+        assert chinese == _slugify("\u5f00\u53d1\u673a")
+        assert _ID_RE.match(chinese)
+
+    def test_ascii_names_are_unchanged(self) -> None:
+        from kiro_crew.instances.registry import _slugify
+
+        assert _slugify("Dev Box 2") == "dev-box-2"

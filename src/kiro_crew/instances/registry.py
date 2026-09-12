@@ -42,6 +42,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
 from kiro_crew.instances.constants import TTL_PATTERN
 from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
+from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ def _slugify(name: str) -> str:
     """Derive a slug-like id from a human name (lowercase, hyphen-separated)."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     slug = slug[:63]
-    return slug or "instance"
+    return slug or slug_hash_fallback(name, "instance")
 
 
 def validate_ttl(ttl: str) -> None:
