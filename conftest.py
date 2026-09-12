@@ -2726,6 +2726,7 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
         else:
             monkeypatch.setenv(_name, "")  # the undo for this entry is "was absent"
             monkeypatch.delenv(_name)
+    _reset_path_resolver_degradation(monkeypatch)
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:
         monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
@@ -2736,6 +2737,37 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
             raising=False,
         )
     request.node.stash[_HOME_PIN_ARMED] = True
+
+
+def _reset_path_resolver_degradation(monkeypatch) -> None:
+    """Give every test an unstalled sensitive-path resolver, and leave none behind.
+
+    ``security.paths`` remembers a resolution that missed its budget in three
+    PROCESS-GLOBAL structures, and a charged prefix makes ``is_sensitive_path()``
+    answer True for every path beneath it, without touching the filesystem, until
+    the cooldown lapses. Since ``_stall_prefix`` keys on the mount, one test whose
+    resolution is merely slow on a loaded runner can therefore fail every LATER
+    test on the same xdist worker whose paths live under the same prefix -- observed
+    as 77 ``ArtifactError: refusing to use sensitive path as artifact root`` errors
+    across four unrelated files on one Windows shard, from a single charged stall.
+    Resetting on both sides makes that cascade impossible to inherit and impossible
+    to export, so a test that provokes a stall on purpose still sees only its own.
+
+    ``_path_resolve_degraded`` and ``_path_resolve_wedged`` are re-exported by the
+    ``kiro_crew.security`` facade, so they are set THROUGH it: the facade mirrors a
+    write onto the owning submodule, while patching the owner alone would leave the
+    facade holding the original object and break the export-identity contract
+    ``test_security_facade`` pins. ``_path_resolve_load_probes`` is NOT re-exported,
+    so it must be set on the submodule -- a facade write for that name would mirror
+    nowhere and silently do nothing.
+    """
+    security = sys.modules.get("kiro_crew.security")
+    paths = sys.modules.get("kiro_crew.security.paths")
+    if security is not None:
+        monkeypatch.setattr(security, "_path_resolve_degraded", {}, raising=False)
+        monkeypatch.setattr(security, "_path_resolve_wedged", [], raising=False)
+    if paths is not None:
+        monkeypatch.setattr(paths, "_path_resolve_load_probes", {}, raising=False)
 
 
 def _breadcrumb_guard(real):

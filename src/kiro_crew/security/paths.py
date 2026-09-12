@@ -1096,6 +1096,31 @@ def _oversize_refusal(length: int, limit: int) -> str:
 # The thread is NOT freed by the timeout (a started future cannot be cancelled);
 # that is why this has its own pool -- see ``executors.path_resolve_executor``.
 _PATH_RESOLVE_TIMEOUT_SECS = 2.0
+# The ANCHOR REBUILD's own budget. One pool job there performs ~130 `realpath`
+# calls to build ~200 targets, where a candidate resolution performs one or two,
+# so a single budget sized for the candidate leaves the rebuild running ~130x
+# closer to its ceiling -- measured: a cold rebuild is 130 `_realpath_or_none`
+# calls, a warm one 4. Sizing this to the work actually done is what stops an
+# ordinarily-slow rebuild from being mistaken for a wedged mount on a loaded host
+# (4 xdist workers plus real-time antivirus on a 4-vCPU Windows runner is where it
+# was first observed); raising `_PATH_RESOLVE_TIMEOUT_SECS` globally instead would
+# relax the latency guarantee on the candidate path, which does not need it.
+_PATH_RESOLVE_REBUILD_TIMEOUT_SECS = 8.0
+# How much longer a resolution that missed its budget is given to finish before the
+# prefix is charged with a stall. A miss is not itself proof of a wedged mount -- a
+# merely slow one completes -- and on any platform where the syscall probe below
+# cannot discriminate, this is what separates the two, empirically rather than by
+# syscall table. Paid at most once per prefix per cooldown, because the charge that
+# follows a grace miss refuses later paths under the prefix without probing.
+#
+# Expressed as a FRACTION of the caller's budget, not a constant: the grace is "half
+# again as long as this caller already agreed to wait", so a caller that deliberately
+# chooses a tight budget keeps a tight worst case (the whole point of taking a budget
+# per call) instead of inheriting a fixed multi-second tail. Capped so the generous
+# rebuild budget cannot compound into the loop-stall watchdog this bound protects:
+# 8s + 4s stays well inside 25s.
+_PATH_RESOLVE_GRACE_FACTOR = 1.5
+_PATH_RESOLVE_GRACE_MAX_SECS = 4.0
 _PATH_RESOLVE_COOLDOWN_SECS = 30.0
 _PATH_RESOLVE_COOLDOWN_MAX_SECS = 1800.0
 # The load arm declines to charge the prefix, so it carries the event-loop bound the cooldown
@@ -1168,15 +1193,32 @@ def _stall_prefix(expanded: str) -> str:
 
     A wedged mount stalls everything beneath its mount point, and mount points
     sit at depth one or two (``/home/<user>`` autofs, ``/Volumes/<share>``,
-    ``/net/<host>``, ``C:\\Users``), so two components is the narrowest key
+    ``/net/<host>``, ``C:\\Users\\<user>``), so two components is the narrowest key
     that still covers the whole stalled subtree.  Scoping the cooldown here is
     what keeps a stall on the REMOTE half of an ``ssh`` command from switching
     resolution off for the local workspace where a bypass symlink would live.
+
+    **The DRIVE is split off first, and on Windows that is what makes the key two
+    components rather than one.**  A POSIX absolute path starts with an empty
+    component (``"/a/b"`` -> ``["", "a", "b"]``), which is why three are kept; a
+    Windows path does not (``"C:\\Users\\bob"`` -> ``["C:", "Users", "bob"]``), so
+    counting components without splitting the drive kept ``C:`` as one of the two
+    and collapsed every user path to ``C:\\Users``.  That single key contains
+    ``$HOME``, ``%TEMP%``, the workspace and the checkout, so one stall anywhere in
+    the profile refused path resolution for essentially the whole host -- the exact
+    opposite of the per-mount isolation this function exists to provide.
+
+    A UNC share root is returned whole: ``\\\\server\\share`` IS the mount point,
+    and ``splitdrive`` already reports it as the drive, so no component of the
+    remainder belongs in the key.
     """
     normalized = os.path.normpath(expanded)
-    parts = normalized.split(os.sep)
+    drive, rest = os.path.splitdrive(normalized)
+    if drive[:1] in ("\\", "/") and drive[1:2] in ("\\", "/"):
+        return drive
+    parts = rest.split(os.sep)
     keep = 3 if parts and parts[0] == "" else 2  # leading "" for an absolute path
-    return os.sep.join(parts[:keep]) or normalized
+    return (drive + os.sep.join(parts[:keep])) or normalized
 
 
 def _wedged_workers() -> int:
@@ -1345,7 +1387,7 @@ _ResolvedT = TypeVar("_ResolvedT")
 
 
 def _run_resolution_bounded(
-    expanded: str, worker: Callable[[str], _ResolvedT]
+    expanded: str, worker: Callable[[str], _ResolvedT], *, budget: float | None = None
 ) -> _ResolvedT | None:
     """Run *worker(expanded)* on the ``mc-pathres`` pool within the resolve budget.
 
@@ -1369,7 +1411,8 @@ def _run_resolution_bounded(
     prefix with a stall history is only re-probed while that leaves at least one
     worker free for everything else -- so a permanently dead mount is probed
     rarely and can never pin the whole pool.  Never blocks the caller for longer
-    than ``_PATH_RESOLVE_TIMEOUT_SECS``.
+    than *budget* plus its grace -- the bounded second wait a missed budget earns
+    before the prefix is charged, itself a capped fraction of *budget*.
 
     A stall is charged only to a resolution that RAN.  A future that times out
     still QUEUED (the pool saturated by concurrent callers, e.g. simultaneous
@@ -1386,8 +1429,15 @@ def _run_resolution_bounded(
     fence itself, and a UNC home with a junction inside ``KIROCREW_HOME`` must
     still be canonicalised or a canonical-spelling request would miss the
     governance file (found in review); the bound makes that probe safe.
+
+    *budget* sizes the wait to the work the caller submits: the anchor REBUILD is
+    one job performing ~130 ``realpath`` calls and passes
+    ``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS``, while a candidate resolution keeps the
+    default. One budget for both put the rebuild ~130x closer to its ceiling than
+    the path whose latency the default exists to guarantee.
     """
-    budget = _PATH_RESOLVE_TIMEOUT_SECS
+    if budget is None:
+        budget = _PATH_RESOLVE_TIMEOUT_SECS
     now = _path_resolve_clock()
     prefix = _stall_prefix(expanded)
     with _path_resolve_lock:
@@ -1472,6 +1522,48 @@ def _run_resolution_bounded(
             # so ordinary contention refuses THIS resolution instead of opening a
             # cooldown across every path under the prefix.
             raise PathResolutionStalled(expanded, prefix) from None
+        # A missed budget is not yet proof of a wedged mount, and charging the prefix
+        # is the expensive conclusion: it refuses EVERY path under that prefix for the
+        # cooldown, so one transient miss becomes a cascade of refusals across
+        # unrelated paths. Give the resolution a bounded GRACE to finish first. This is
+        # the only discriminator available wherever the syscall probe above cannot
+        # answer -- an architecture absent from `_FS_BLOCKING_SYSCALLS_BY_ARCH`, which
+        # is every Windows host (`platform.machine()` is "AMD64") and Apple silicon --
+        # because there it returns True for a merely slow resolution as readily as for
+        # a dead mount, and the prefix was charged either way.
+        #
+        # Costs nothing on a genuinely wedged mount beyond delaying the cooldown by
+        # the grace, and is paid at most ONCE per prefix per cooldown: the charge
+        # below refuses later paths under the prefix without probing at all. The
+        # future stays tracked as wedged while this waits, so a second token cannot
+        # pin the last worker meanwhile, and it self-prunes from that list if it does
+        # complete (`_wedged_workers` drops finished futures).
+        grace = min(budget * _PATH_RESOLVE_GRACE_FACTOR, _PATH_RESOLVE_GRACE_MAX_SECS)
+        # A one-element list, not an Optional: the sentinel has to distinguish "the
+        # future completed" from "it completed as None", and the worker's own return
+        # is Optional since the never-ran handshake above makes it return None.  That
+        # arm raises before reaching here, so a None here can only come from the
+        # worker itself and is passed through exactly like the on-time path does.
+        late: list[_ResolvedT | None] = []
+        try:
+            late.append(future.result(timeout=grace))
+        except FutureTimeoutError:
+            pass
+        except Exception:
+            logger.debug("sensitive-path symlink resolution failed", exc_info=True)
+            return None
+        if late:
+            logger.debug(
+                "sensitive-path resolution completed within %.1fs past its %.1fs "
+                "budget, so the prefix is NOT charged (tid=%s)",
+                grace,
+                budget,
+                tid,
+            )
+            if history is not None:
+                with _path_resolve_lock:
+                    _path_resolve_degraded.pop(prefix, None)
+            return late[0]
         logger.debug(
             "sensitive-path resolution timed out blocked in the filesystem (tid=%s)",
             tid,
@@ -2041,6 +2133,11 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     stall bookkeeping is charged to ``roots.home``'s prefix, the mount every
     anchor ordinarily lives under and the one the crash dumps named.
 
+    It carries its OWN budget (``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS``) because that
+    single job does ~130 ``realpath`` calls where a candidate resolution does one or
+    two: sharing the candidate's budget sized the wait to the wrong work and let an
+    ordinarily-slow rebuild on a loaded host read as a stalled mount.
+
     A rebuild that does not complete canonically within the budget RAISES, and
     every gate turns that into a refusal -- the same invariant as
     :func:`_resolved_root_key` (see the comment there for the three weaker
@@ -2053,7 +2150,9 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     """
     try:
         targets = _run_resolution_bounded(
-            roots.home, lambda _home: _home_dir_targets_uncached(home_dirs, roots)
+            roots.home,
+            lambda _home: _home_dir_targets_uncached(home_dirs, roots),
+            budget=_PATH_RESOLVE_REBUILD_TIMEOUT_SECS,
         )
     except PathResolutionStalled:
         targets = None
