@@ -14854,6 +14854,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "वह सत्र हटा दिया गया है, इसलिए इसे खोला नहीं जा सकता।",
+      "session_gone_current": "वह सत्र सर्वर पर हटा दिया गया।",
+      "session_gone_open_failed_named": "“{{name}}” हटा दिया गया है, इसलिए इसे खोला नहीं जा सकता।",
+      "session_gone_current_named": "“{{name}}” सर्वर पर हटा दिया गया।",
       "truncated": "…(छोटा किया गया)"
     }
   },

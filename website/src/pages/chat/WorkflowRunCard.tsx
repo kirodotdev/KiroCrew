@@ -142,7 +142,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
     // The Workflows panel is mounted for `activeSlot`, which split view never
     // moves with pane focus — so opening from a background pane must make this
     // card's session active first, or the panel belongs to another session.
-    if (slot && slot !== activeSlot) dispatch(switchSlot(slot))
+    if (slot && slot !== activeSlot) dispatch(switchSlot({ key: slot, announceOnMissing: true }))
     dispatch(openActivityToTab('workflows'))
   }
 

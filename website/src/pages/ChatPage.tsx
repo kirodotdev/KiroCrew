@@ -29,7 +29,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
-  switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection,
+  switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone,
   appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
@@ -507,6 +507,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const keyboardInset =
     typeof window === 'undefined' ? 0 : Math.max(0, window.innerHeight - vv.offsetTop - vv.height)
   const slots = useAppSelector(s => s.dashboard.slots)
+  // A user-facing switch gesture hit a session the server no longer has
+  // (#6372); rendered through the pane ErrorNotice below (errors-use-error-notice).
+  const switchSlotGone = useAppSelector(s => s.chat.switchSlotGone)
   // Unified chat view: show default, orchestrator and crew slots together.
   // App-owned worker slots (s.app) are excluded by the sidebar itself.
   const filteredSlots = useMemo(
@@ -6090,7 +6093,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // rect and appear to grow out of nothing.
   useEffect(() => { if (!sidebarOpen) setExpandFrom(null) }, [sidebarOpen])
   const flyoutSwitch = useCallback((key: string) => {
-    dispatch(switchSlot(key))
+    // User gesture on a listed session row (collapsed-sidebar flyout): the
+    // announced class, same as the expanded sidebar's own rows.
+    dispatch(switchSlot({ key, announceOnMissing: true }))
     setSplitMode(false)
     flyout.close()
   }, [dispatch, flyout])
@@ -6363,6 +6368,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           askAgent
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="action-error"
+        />
+        {/* A click on a listed-but-gone session (#6372): the fact at the click
+            locus, through the required ErrorNotice surface. The store carries
+            the NAME; the sentence resolves here so a locale switch re-renders it. */}
+        <ErrorNotice
+          message={switchSlotGone
+            ? (switchSlotGone.current
+              ? (switchSlotGone.name
+                ? i18nT('store.chatSlice.session_gone_current_named', { name: switchSlotGone.name })
+                : i18nT('store.chatSlice.session_gone_current'))
+              : switchSlotGone.name
+                ? i18nT('store.chatSlice.session_gone_open_failed_named', { name: switchSlotGone.name })
+                : i18nT('store.chatSlice.session_gone_open_failed'))
+            : ''}
+          onDismiss={() => dispatch(clearSwitchSlotGone())}
+          askAgent
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="switch-slot-gone"
         />
         <VoicePlaybackNotice slot={activeSlot} onBlockedSlotChange={setVoiceRecoverySlot} />
         <ErrorNotice

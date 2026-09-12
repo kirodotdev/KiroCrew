@@ -14853,6 +14853,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "Diese Sitzung wurde gelöscht und kann nicht geöffnet werden.",
+      "session_gone_current": "Diese Sitzung wurde auf dem Server gelöscht.",
+      "session_gone_open_failed_named": "„{{name}}“ wurde gelöscht und kann nicht geöffnet werden.",
+      "session_gone_current_named": "„{{name}}“ wurde auf dem Server gelöscht.",
       "truncated": "…(gekürzt)"
     }
   },

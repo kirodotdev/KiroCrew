@@ -556,7 +556,7 @@ export default function CommandBarOverlay({
         // Same activation the sidebar and the recents listing use, so a session
         // opened from here lands exactly where it lands from anywhere else.
         run: async () => {
-          dispatch(switchSlot(slot.key))
+          dispatch(switchSlot({ key: slot.key, announceOnMissing: true }))
           navigate('/chat')
         },
       })

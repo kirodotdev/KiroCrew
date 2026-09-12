@@ -15046,6 +15046,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "Cette session a été supprimée et ne peut pas être ouverte.",
+      "session_gone_current": "Cette session a été supprimée sur le serveur.",
+      "session_gone_open_failed_named": "« {{name}} » a été supprimée et ne peut pas être ouverte.",
+      "session_gone_current_named": "« {{name}} » a été supprimée sur le serveur.",
       "truncated": "…(tronqué)"
     }
   },

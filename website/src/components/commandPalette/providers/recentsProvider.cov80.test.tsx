@@ -237,7 +237,7 @@ describe('useRecentsProvider — Current group', () => {
     const { result } = harness([slot({ key: 'zzq-a', title: 'zzq A' })])
     const rows = await result.current.search('')
     rows.find((r) => r.id === 'recents:cur:zzq-a')?.onActivate?.()
-    expect(thunks.switchSlot).toHaveBeenCalledWith('zzq-a')
+    expect(thunks.switchSlot).toHaveBeenCalledWith({ key: 'zzq-a', announceOnMissing: true })
     expect(navigateSpy).toHaveBeenCalledWith('/chat')
   })
 

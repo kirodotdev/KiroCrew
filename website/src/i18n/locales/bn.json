@@ -14854,6 +14854,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "সেশনটি মুছে ফেলা হয়েছে, তাই এটি খোলা যাবে না।",
+      "session_gone_current": "সেই সেশনটি সার্ভারে মুছে ফেলা হয়েছে।",
+      "session_gone_open_failed_named": "“{{name}}” মুছে ফেলা হয়েছে, তাই এটি খোলা যাবে না।",
+      "session_gone_current_named": "“{{name}}” সার্ভারে মুছে ফেলা হয়েছে।",
       "truncated": "…(সংক্ষিপ্ত করা হয়েছে)"
     }
   },

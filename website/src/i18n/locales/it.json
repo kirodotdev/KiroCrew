@@ -15045,6 +15045,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "Quella sessione è stata eliminata e non può essere aperta.",
+      "session_gone_current": "Quella sessione è stata eliminata sul server.",
+      "session_gone_open_failed_named": "“{{name}}” è stata eliminata e non può essere aperta.",
+      "session_gone_current_named": "“{{name}}” è stata eliminata sul server.",
       "truncated": "…(troncato)"
     }
   },

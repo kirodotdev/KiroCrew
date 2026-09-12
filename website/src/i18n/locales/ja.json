@@ -14661,6 +14661,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "そのセッションは削除されたため開けません。",
+      "session_gone_current": "そのセッションはサーバー上で削除されました。",
+      "session_gone_open_failed_named": "「{{name}}」は削除されたため開けません。",
+      "session_gone_current_named": "「{{name}}」はサーバー上で削除されました。",
       "truncated": "…(省略)"
     }
   },
