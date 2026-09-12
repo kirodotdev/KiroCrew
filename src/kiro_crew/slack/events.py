@@ -103,8 +103,9 @@ from kiro_crew.slack.sessions_view import (
 )
 from kiro_crew.slack.transport_dispatch import handle_message_transport
 from kiro_crew.stats import Stats
+from kiro_crew.transcribe import audio_exceeds_secs, batch_duration_cap_secs
 from kiro_crew.transcribe import is_available as stt_available
-from kiro_crew.transcribe import transcribe_audio
+from kiro_crew.transcribe import load_stt_config, transcribe_audio
 
 if TYPE_CHECKING:
     from kiro_crew.slack.client import SlackClientOps
@@ -1632,7 +1633,29 @@ async def _transcribe_files(orch: "GatewayOrchestrator", files: list[dict]) -> l
                 source="transcribe",
                 resources=f.get("name", "?"),
             )
-            transcript = await transcribe_audio(dest)
+            stt_config = await asyncio.to_thread(load_stt_config)
+            duration_cap = batch_duration_cap_secs(stt_config)
+            if duration_cap is not None:
+                exceeds = await audio_exceeds_secs(
+                    dest, duration_cap, timeout_secs=stt_config.timeout_secs
+                )
+                if exceeds is not False:
+                    reason = "duration could not be verified"
+                    error = "audio_duration_unverified"
+                    if exceeds:
+                        reason = f"exceeds the {duration_cap // 60}-minute transcription limit"
+                        error = "audio_too_long"
+                    results.append(f"[Voice memo not transcribed: {reason}]")
+                    sel().log_api_access(
+                        caller="stt",
+                        operation="stt.transcribe",
+                        outcome="denied",
+                        source="transcribe",
+                        resources=f.get("name", "?"),
+                        error=error,
+                    )
+                    continue
+            transcript = await transcribe_audio(dest, stt_config)
             sel().log_api_access(
                 caller="stt",
                 operation="stt.transcribe",

@@ -1567,6 +1567,11 @@ class TestTranscribeWithReaction:
 
 
 class TestTranscribeFiles:
+    @pytest.fixture(autouse=True)
+    def _uncapped_provider(self, monkeypatch):
+        monkeypatch.setattr(ev, "load_stt_config", lambda: SimpleNamespace(timeout_secs=300))
+        monkeypatch.setattr(ev, "batch_duration_cap_secs", lambda _cfg: None)
+
     @pytest.mark.asyncio
     async def test_non_audio_and_urlless_files_skipped(self):
         orch = _make_orch()
@@ -1616,6 +1621,68 @@ class TestTranscribeFiles:
             assert await ev._transcribe_files(orch, files) == []
         outcomes = [c.kwargs.get("outcome") for c in _mock_sel.log_api_access.call_args_list]
         assert "empty" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_over_duration_memo_is_refused_before_transcription(self, _mock_sel):
+        orch = _make_orch()
+        files = [
+            {
+                "mimetype": "audio/webm",
+                "url_private": "https://x.invalid/a.webm",
+                "filetype": "webm",
+                "name": "long.webm",
+            }
+        ]
+        with (
+            patch(
+                "kiro_crew.slack.events.load_stt_config",
+                return_value=SimpleNamespace(timeout_secs=900),
+            ),
+            patch("kiro_crew.slack.events.batch_duration_cap_secs", return_value=3600),
+            patch(
+                "kiro_crew.slack.events.audio_exceeds_secs",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock) as transcribe,
+        ):
+            result = await ev._transcribe_files(orch, files)
+
+        assert result == ["[Voice memo not transcribed: exceeds the 60-minute transcription limit]"]
+        transcribe.assert_not_awaited()
+        assert any(
+            call.kwargs.get("error") == "audio_too_long"
+            for call in _mock_sel.log_api_access.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_unverified_duration_is_refused_before_transcription(self, _mock_sel):
+        orch = _make_orch()
+        files = [
+            {
+                "mimetype": "audio/webm",
+                "url_private": "https://x.invalid/a.webm",
+                "filetype": "webm",
+                "name": "unknown.webm",
+            }
+        ]
+        with (
+            patch(
+                "kiro_crew.slack.events.load_stt_config",
+                return_value=SimpleNamespace(timeout_secs=900),
+            ),
+            patch("kiro_crew.slack.events.batch_duration_cap_secs", return_value=3600),
+            patch(
+                "kiro_crew.slack.events.audio_exceeds_secs",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock) as transcribe,
+        ):
+            result = await ev._transcribe_files(orch, files)
+
+        assert result == ["[Voice memo not transcribed: duration could not be verified]"]
+        transcribe.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_download_failure_audits_error(self, _mock_sel):
