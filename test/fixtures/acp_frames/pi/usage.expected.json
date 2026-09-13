@@ -1,0 +1,128 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": false,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true,
+        "stdio": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.1.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "muse-spark-1.3-contributor",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "muse-spark-1.3-contributor",
+            "value": "muse-spark-1.3-contributor"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "read-only",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Every tool call asks KiroCrew for permission.",
+            "name": "read-only",
+            "value": "read-only"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "ses_pi_1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "USAGEONE"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "USAGEONE",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      3263,
+      1048576
+    ],
+    "usage_cost": 0.000331626
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      2986,
+      164,
+      113,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "USAGETWO"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "USAGETWO",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      3351,
+      1048576
+    ],
+    "usage_cost": 0.00037404
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      225,
+      69,
+      3057,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]
