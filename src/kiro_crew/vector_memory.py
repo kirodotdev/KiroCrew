@@ -2401,8 +2401,22 @@ class VectorMemoryStore:
             )
         return True
 
-    def delete_semantic(self, key: str, source: str) -> bool:
-        """Tombstone a semantic memory entry with its full prior revision."""
+    def delete_semantic(
+        self, key: str, source: str, *, expect_value_json: str | None = None
+    ) -> bool:
+        """Tombstone a semantic memory entry with its full prior revision.
+
+        Pass *expect_value_json* to make this a COMPARE-AND-DELETE: the row is
+        tombstoned only while its stored body is still that value, and the answer is
+        ``False`` when it is not. The comparison rides in the UPDATE rather than a
+        read before it, so no writer can land between the two -- ``_db_lock`` orders
+        this process alone, and a second process on the same database file is exactly
+        the writer a caller passing this argument is protecting. Same contract the
+        lazy embedding backfill applies to its own UPDATE, for the same reason.
+
+        A caller that omits it deletes whatever is stored under *key*, which is what
+        an explicit forget wants.
+        """
         now = _now_iso()
         with self._db_lock, self.db:
             row = self.db.execute(
@@ -2410,10 +2424,19 @@ class VectorMemoryStore:
             ).fetchone()
             if row is None:
                 return False
-            self.db.execute(
-                f"UPDATE {self._sem_rel} SET is_deleted=1, updated_at=? WHERE key=?{self._sem_guard}",
-                (now, key),
+            guard = "" if expect_value_json is None else " AND value_json = ?"
+            params: tuple[object, ...] = (
+                (now, key) if expect_value_json is None else (now, key, expect_value_json)
             )
+            cursor = self.db.execute(
+                f"UPDATE {self._sem_rel} SET is_deleted=1, updated_at=? "
+                f"WHERE key=?{guard}{self._sem_guard}",
+                params,
+            )
+            if not cursor.rowcount:
+                # The body moved under the guard, so nothing was tombstoned and
+                # there is no mutation to record.
+                return False
             self._record_mutation(
                 "directive" if key.startswith("lesson.") else "fact",
                 key,
@@ -4362,11 +4385,22 @@ class VectorMemoryStore:
           the two keyword sets, newer replaces older
         - Semantic similarity: if >85% cosine similarity, newer replaces older --
           unless a stored near-duplicate outranks this write (``user_explicit``
-          over a lower-authority source, or strictly higher stored confidence).
-          That verdict is decided in a non-mutating pre-pass BEFORE the scan
-          deletes anything, so a write declined on authority deletes nothing
-          and reports ``deduped`` / ``semantic_similarity`` with an empty
-          ``superseded``.
+          over a lower-authority source, or strictly higher stored confidence),
+          which reports ``deduped`` / ``semantic_similarity``.
+
+        **A call that stores nothing deletes nothing.** Every supersede the scan
+        decides on is QUEUED, and the queue drains only once ``set_semantic`` has
+        committed the submission. So a ``deduped`` verdict from any branch, and a
+        ``refused`` from the store's own validation, each preserve every live lesson
+        row and report an empty ``superseded``. They are not byte no-ops on the
+        database: a lazy embedding backfill for a row this call READ may already have
+        been flushed, which changes a vector and no lesson.
+
+        Draining after the commit puts the two outcomes in the safe order, and leaves
+        one window it cannot close: a drain that stops partway -- a raised error, a
+        killed process -- keeps the submission and leaves the rows it had not reached
+        yet. That direction is deliberate. The residue is a duplicate, never a lost
+        lesson, and the next write matching those rows retires them.
 
         Two of those three rules DELETE a stored lesson, and the substring rule's
         "longer wins" direction means a submitted rule can retire a stored one that
@@ -4695,20 +4729,22 @@ class VectorMemoryStore:
         # for every row) rather than per candidate — see _stored_similarity_scorer.
         similarity = self._stored_similarity_scorer(rule_emb) if rule_emb else None
 
-        # Every row this scan tombstones, in the order it went. Collected rather
+        # Every row this call tombstoned, in the order it went. Collected rather
         # than counted: a count tells the caller a lesson is gone without telling it
         # WHICH, and the row is a tombstone by the time the caller could look it up.
-        # Populated at all three delete sites below, never at pass 1's -- pass 1
-        # rewrites one row under its own key and deletes nothing, and ``matched``
-        # skips this scan entirely, so an ``enriched`` result always reports none.
+        # Populated only where the deletions actually run -- after the write lands --
+        # so a result that reports a supersede is always a result whose write landed.
         superseded: list[str] = []
 
-        # The mutating semantic branch's supersedes, DEFERRED (key, report,
-        # sim): they execute after the loop, only when the write proceeds, so
-        # a later refusal (main's ``substring_covered``) cannot strand a
-        # deletion this change's newest-wins took where the old tie-break
-        # would have refused. See the semantic branch below.
-        deferred_semantic: list[tuple[str, str, float]] = []
+        # Every supersede the scan decides on, DEFERRED as (key, report): the
+        # queue drains only after the write is COMMITTED, so no route that
+        # declines the submission can cost a stored lesson. Deferring is the
+        # whole invariant rather than one branch's detail -- rows are scanned in
+        # recency order, so an eager delete in any branch can precede a later
+        # row's refusal, and the caller is then handed a decline for a call that
+        # emptied part of the store. Draining after ``set_semantic`` extends the
+        # same guarantee to a value the store itself rejects.
+        deferred_supersedes: list[tuple[str, str, str, str]] = []
 
         # AUTHORITY PRE-PASS -- non-mutating, decided before the scan's first
         # deletion. The invariant (settled after three review rounds circled
@@ -4727,11 +4763,10 @@ class VectorMemoryStore:
         # whole list, while the scan can return early on a lexical claimant --
         # so the SETS can differ even though no row is ever double-charged.)
         # A ``user_explicit`` write can never be declined, so the pass is
-        # skipped for it entirely. Main's substring/topic-overlap branches
-        # keep their delete-as-you-go shape (their one pre-existing
-        # delete-then-decline route, via ``substring_covered``, predates this
-        # change and is spec-documented); scan-wide authority ordering is a
-        # tracked follow-up decision.
+        # skipped for it entirely. The pass is non-mutating for its own reason,
+        # independent of the scan's deferral below: an authority decline must not
+        # spend the call's embed budget rewriting rows it is about to refuse.
+        # Scan-wide authority ordering is a tracked follow-up decision.
         if (
             self.algorithm_version != "v2"
             and similarity is not None
@@ -4873,15 +4908,9 @@ class VectorMemoryStore:
                 # anything, so this adds no weak-hashing exposure -- ``_lesson_key``
                 # already derived these ids, and CodeQL flags that derivation at its own
                 # site, not at a line that merely logs the result.
-                logger.info(
-                    "Lesson supersede: %s contains and replaces %s [%s], %d so far",
-                    key,
-                    existing["key"],
-                    category,
-                    len(superseded) + 1,
+                deferred_supersedes.append(
+                    (existing["key"], existing_report, existing["value_json"], "contains")
                 )
-                superseded.append(existing_report)
-                self.delete_semantic(existing["key"], source)
                 continue
 
             # Topic overlap dedup
@@ -4898,15 +4927,14 @@ class VectorMemoryStore:
                     # two rules to genuinely be about the same thing.
                     ratio = len(overlap) / max(len(rule_words), len(existing_words))
                     if ratio >= 0.5:
-                        logger.info(
-                            "Lesson conflict: %s replaces %s [%s] (%.0f%% overlap)",
-                            key,
-                            existing["key"],
-                            category,
-                            ratio * 100,
+                        deferred_supersedes.append(
+                            (
+                                existing["key"],
+                                existing_report,
+                                existing["value_json"],
+                                "%.0f%% keyword overlap" % (ratio * 100),
+                            )
                         )
-                        superseded.append(existing_report)
-                        self.delete_semantic(existing["key"], source)
                         continue
 
             # Semantic dedup via embeddings (use stored embedding when available)
@@ -4966,34 +4994,26 @@ class VectorMemoryStore:
                         #
                         # No authority check HERE, by construction: the
                         # non-mutating pre-pass above already returned DEDUPED
-                        # if any purely-semantic row outranks the write. But a
-                        # LATER row can still decline the write via main's own
-                        # ``substring_covered`` return, and this branch's
-                        # newest-wins deletes where a length tie-break would
-                        # refuse -- so THIS branch's supersedes are DEFERRED
-                        # and executed only after the scan completes with the
-                        # write going ahead. A declined write executes none of
-                        # them. The substring and topic-overlap branches keep
-                        # main's delete-as-you-go shape, including before a
-                        # ``substring_covered`` refusal -- that composition
-                        # predates this change and is reported via
-                        # ``superseded``.
-                        deferred_semantic.append((existing["key"], existing_report, sim))
+                        # if any purely-semantic row outranks the write. Like
+                        # both lexical branches, this one only QUEUES its
+                        # supersede -- a later row can still decline the write
+                        # via ``substring_covered``, and a declined write
+                        # executes no deletion at all.
+                        deferred_supersedes.append(
+                            (
+                                existing["key"],
+                                existing_report,
+                                existing["value_json"],
+                                "%.2f cosine" % sim,
+                            )
+                        )
                         continue
 
-        # Execute the semantic supersedes the scan deferred: reachable only
-        # when no refusal claimed the write, so the submission WILL be stored
-        # and these rows are genuinely replaced.
-        for d_key, d_report, d_sim in deferred_semantic:
-            logger.info(
-                "Lesson semantic supersede: %.2f sim, %s replaces %s",
-                d_sim,
-                key,
-                d_key,
-            )
-            pending_backfills[:] = [entry for entry in pending_backfills if entry[1] != d_key]
-            superseded.append(d_report)
-            self.delete_semantic(d_key, source)
+        # No pending backfill is dropped for a queued row. The queue is a list of
+        # CANDIDATE deletions until the write commits, so discarding their vectors
+        # here would cost the surviving rows their embeddings on exactly the paths
+        # that delete nothing. A vector written to a row this call then retires is
+        # one spent UPDATE on a tombstone.
 
         _flush_backfills()
 
@@ -5010,13 +5030,45 @@ class VectorMemoryStore:
             facets = dataclasses.replace(prior, scope=repo_scope)
         err = self.set_semantic(key, value, confidence, source, facets=facets)
         if err is not None:
-            # Carries ``superseded`` too, and this is the path where it matters most:
-            # the scan above already deleted, so a refusal here means rows were
-            # destroyed and NOTHING was stored in their place. The preflight was
-            # added to keep this unreachable for the values it can screen; a refusal
-            # that gets past it must still name the cost rather than report a bare
-            # refusal for a call that emptied part of the store.
+            # Nothing was deleted: the scan only QUEUED its supersedes, and the
+            # queue drains below this return. So a value the store rejects costs
+            # no stored row, and ``superseded`` is empty here by construction.
             return LessonWriteResult(LessonWriteOutcome.REFUSED, err[0].value, tuple(superseded))
+        # THE WRITE HAS LANDED -- drain the supersede queue. Every route that
+        # declines the submission returned above, so reaching this line is what
+        # makes each queued deletion a genuine replacement rather than a loss.
+        #
+        # Each row is deleted only while its body is still the one the scan READ, and
+        # the comparison is the delete statement's own, so no writer can land between
+        # checking and tombstoning. Nothing serializes this method for its whole
+        # length and ``_lesson_key`` keys on the rule and scope alone, so a competing
+        # write CAN reach a queued key inside this window -- a user enriching the very
+        # rule being retired lands on it exactly -- and a second process on the same
+        # database file is ordered by no lock this process holds. The guard decides
+        # the write's OWN key too: ``set_semantic`` has committed by here, so a queued
+        # row sharing that key fails it, and no separate same-key check is needed.
+        #
+        # A supersede is LOGGED here because this is where one happens; the scan only
+        # nominates rows. IDENTITIES only, never row text -- a lesson holds whatever
+        # the user once told the agent, and this sink persists to disk.
+        for d_key, d_report, d_body, d_reason in deferred_supersedes:
+            if not self.delete_semantic(d_key, source, expect_value_json=d_body):
+                logger.info(
+                    "Lesson supersede skipped: %s changed or went while %s was written",
+                    d_key,
+                    key,
+                )
+                continue
+            logger.info(
+                "Lesson supersede: %s replaces %s [%s] (%s), %d so far",
+                key,
+                d_key,
+                category,
+                d_reason,
+                len(superseded) + 1,
+            )
+            superseded.append(d_report)
+
         if rule_emb:
             emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)
             with self._db_lock:

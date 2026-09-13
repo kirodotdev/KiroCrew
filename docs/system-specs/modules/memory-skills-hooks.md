@@ -2616,6 +2616,16 @@ why a caller that must never replace an existing lesson routes to
 `set_semantic_if_absent` instead (see `onboarding_import`, whose comment records that a
 foreign directive could otherwise delete a correction the user taught the agent).
 
+**A call that stores nothing deletes nothing.** Every branch above QUEUES its
+supersedes; the queue drains only after the semantic write commits the submission. The
+ordering carries the whole guarantee, because the branches read rows newest-first and
+each of them can be reached before a later row declines the write: deleting where a
+branch decides would let a row retired early in the scan be destroyed by a call that
+goes on to return `deduped` / `substring_covered`, leaving one stored lesson gone, the
+submission unstored, and a result naming the surviving lesson as still in effect beside
+the deletion. Draining after the write extends the same guarantee to a value the
+semantic write itself rejects.
+
 **What a write reports.** `write_lesson()` returns a `LessonWriteResult` naming WHICH
 outcome occurred: `inserted` / `enriched` / `unchanged` / `deduped` / `refused`, plus a
 short reason code (a `SemanticRejectCode` value for a refusal, the dedup rule's name for
@@ -2638,8 +2648,9 @@ lesson, so a write that tombstoned a stored rule reported a bare `inserted` with
 `reason=None` and the caller was told its lesson was saved with nothing naming the cost.
 The result is the only channel that can carry it: the deleted row is a tombstone, so by
 the time the caller looks it is absent from `get_lessons()`, from `learn_list` and from
-the injected lessons block. It is empty on every path that deleted nothing (including
-`enriched`, which is decided in pass 1 and skips the dedup scan), is forwarded by
+the injected lessons block. It is empty on every path that deleted nothing —
+`enriched` (decided in pass 1, which skips the dedup scan) and every `deduped` or
+`refused` outcome, none of which reach the drain — is forwarded by
 `/api/lessons` as a JSON array, and is rendered in full — not counted, not truncated —
 by the `learn add` CLI and the `learn_add` tool, because that text is the last readable
 copy of the removed rule.
@@ -2694,7 +2705,7 @@ lesson beat a contradicting preference in the same prompt.
 | Lesson contradicts a preference | Lesson wins via the `[Learned corrections]` framing | `context.py` |
 | Two semantic writes to one key in V1 | User-explicit writes win; automated writes cannot replace a user-explicit fact, and otherwise use the existing confidence precedence | `vector_memory._write_semantic()` |
 | Two semantic writes to one key in V2 | Owner correction or verified transcript correction with matching revision replaces the fact; other changed automated assertions remain reviewable proposals | `vector_memory._write_semantic()` |
-| Duplicate lessons in V1 | Substring dedup (contained-in-stored declines; contains-a-stored-one deletes it, longer wins, regardless of source), then topic-overlap dedup (shared keywords cover at least 50% of the LARGER keyword set; newer replaces older regardless of source), then embedding dedup (cosine > 0.85; newer replaces older unless a stored near-duplicate outranks the write: `user_explicit` over a lower-authority source, or strictly higher stored confidence). A non-mutating authority pre-pass decides semantic-match refusals before the scan; it mirrors the earlier substring/topic branches, which remain source-blind. Semantic-match deletions are deferred until the scan completes without refusal; substring/topic branches retain their delete-as-you-go behavior. The final semantic write follows those deletions and reports any superseded rows even if it refuses. A write declined on authority deletes nothing and reports empty `superseded`; every completed deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
+| Duplicate lessons in V1 | Substring dedup (contained-in-stored declines; contains-a-stored-one deletes it, longer wins, regardless of source), then topic-overlap dedup (shared keywords cover at least 50% of the LARGER keyword set; newer replaces older regardless of source), then embedding dedup (cosine > 0.85; newer replaces older unless a stored near-duplicate outranks the write: `user_explicit` over a lower-authority source, or strictly higher stored confidence). A non-mutating authority pre-pass decides semantic-match refusals before the scan; it mirrors the earlier substring/topic branches, which remain source-blind. Every branch's deletions are deferred and execute only after the semantic write commits, so a call that stores nothing deletes nothing: a `deduped` verdict from any branch and a `refused` from the semantic write each preserve every live lesson row and report empty `superseded` (a lazy embedding backfill for a row the call read may still have flushed, which changes a vector and no lesson). `delete_semantic` takes an optional `expect_value_json`, carrying the comparison inside its own UPDATE, so a queued row is tombstoned only while its stored body is still the version the scan read and one a competing writer changed is skipped -- the same compare-and-write contract the lazy embedding backfill applies, atomic against another process, and what covers the write's own key once `set_semantic` has committed under it. A drain that stops partway (raised error, killed process) keeps the submission and leaves the rows it had not reached: the residue is a duplicate, never a lost lesson, and the next write matching those rows retires them. Every completed deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
 | Distinct lessons in V2 | Different rule text coexists without substring, topic or embedding deduplication. Exact-rule enrichment remains; key-targeted corrections use the owner/revision machinery | `vector_memory.write_lesson()` |
 | Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `vector_memory.search_episodic()` |
 | A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | `vector_memory._write_semantic()` step 9 |
