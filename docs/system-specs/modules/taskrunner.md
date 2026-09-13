@@ -65,8 +65,31 @@ taskrunner.py        (orchestrator)
 The gateway attaches its singleton `WorkflowService` and `TaskRunner` after both
 are constructed. The dependency is optional so CLI, tests, and headless callers
 retain the existing TaskRunner behavior when no workflow service is present.
-Workflow publication is best-effort: an unavailable registry cannot fail task
-planning or execution. Every host lifecycle checkpoint — registration, source,
+An async dashboard host first calls `defer_workflow_attachment()` on the shared
+runner before yielding during startup. While deferred, `plan`, `run`,
+`start_background`, `execute_plan`, and `retry_from_task` reject new admission;
+`delete_run`, `update_plan`, and `update_task` also reject while deferred so a
+persisted task cannot be changed without propagating to its restored workflow.
+The shared check raises `WorkflowInitializing` (a `RuntimeError` subtype).
+Dashboard start, plan, retry, execute, delete and update handlers catch that type
+around the actual operation and return an initializing 503 with the stable code
+`workflow_initializing`; unrelated runtime errors retain their existing handling. Chat-to-plan retains an early check before
+allocating its own placeholder or directory and catches the same typed exception.
+The projects API's delete alias applies the same typed 503/code mapping around
+`delete_run`, while preserving its existing not-found and source behavior.
+Status and cancel
+remain available. These checks run before creating or mutating run state, including
+calls from messaging channels
+that retain the gateway's runner reference. Attachment releases that gate;
+explicit attachment of `None` releases standalone fallback after initialization
+failure. Cancellation or slow I/O does not release it. Standalone and headless
+callers that never defer attachment retain their existing admission behavior.
+Workflow publication is best-effort once attachment has settled: an absent or
+failed publication service cannot fail standalone planning or execution. Pending
+initialization is not that fallback: admitting even a fresh run would permanently
+omit its workflow identity because attachment does not backfill already-started
+runs. A retryable refusal preserves that evidence without a new reconciliation
+mechanism. Every host lifecycle checkpoint — registration, source,
 rebind, phase/step events, pause, terminal state, and deletion — awaits the workflow
 service's off-loop durable mirror, so a maximum-size YAML plan cannot block the
 gateway event loop while its shared run record is written.

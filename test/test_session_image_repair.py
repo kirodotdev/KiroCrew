@@ -871,11 +871,9 @@ class TestReplacementTranscriptIsLockedDown:
         handle -- which would leave a .tmp behind on every failed repair.
 
         Asserted by tracking the exact descriptor `tempfile.mkstemp` hands back
-        and confirming it is closed, rather than by a process-wide `/proc/self/fd`
-        census: the census counts descriptors opened and closed by the xdist
-        worker's own background threads too, so it flakes independently of
-        whether THIS repair leaked anything. Tracking the one fd this call path
-        owns is deterministic and still fails if the close is ever dropped.
+        and the successful close operation. A later fstat of that number is not
+        an ownership check: a background thread may already have reused the
+        closed descriptor for another file.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -889,7 +887,13 @@ class TestReplacementTranscriptIsLockedDown:
         monkeypatch.setattr(sir.platform_compat, "restrict_to_owner", boom)
 
         opened: list[int] = []
+        closed: list[int] = []
         real_mkstemp = tempfile.mkstemp
+        real_close = os.close
+
+        def tracking_close(fd):
+            real_close(fd)
+            closed.append(fd)
 
         def tracking_mkstemp(*args, **kwargs):
             fd, name = real_mkstemp(*args, **kwargs)
@@ -897,6 +901,7 @@ class TestReplacementTranscriptIsLockedDown:
             return fd, name
 
         monkeypatch.setattr(tempfile, "mkstemp", tracking_mkstemp)
+        monkeypatch.setattr(os, "close", tracking_close)
 
         with pytest.raises(OSError, match="icacls failed"):
             sir.apply_repair(p, lines, backup=False, expect=report.source_stat)
@@ -904,9 +909,7 @@ class TestReplacementTranscriptIsLockedDown:
         assert p.read_bytes() == before  # transcript untouched
         assert not list(tmp_path.glob("*.tmp"))
         assert len(opened) == 1
-        with pytest.raises(OSError) as info:
-            os.fstat(opened[0])
-        assert info.value.errno == errno.EBADF, "the temp file's descriptor was leaked"
+        assert opened[0] in closed, "the temp file's descriptor was not closed"
 
 
 class TestBackupIsNeverOverwritten:

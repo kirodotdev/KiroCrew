@@ -84,6 +84,13 @@ def _summarize(snapshot: dict) -> str:
             f"preserved — read them with `workflow_result('{run_id}')` under "
             "`partial_results` (keyed by agent call index)."
         )
+    result_count = snapshot.get("agent_result_count") or 0
+    if result_count:
+        lines.append(
+            f"\n{result_count} agent call result(s) recorded — read `agent_results` with "
+            f"workflow_result('{run_id}'). Finished means the workflow function returned; "
+            "required artifacts are not verified by this status."
+        )
     if error_count:
         lines.append(f"{error_count} agent call(s) failed; each reason is under `agent_errors`.")
     lines.append(

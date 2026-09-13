@@ -367,6 +367,8 @@ def workflow_result(name: str, args: dict[str, Any]) -> str:
         "error": _redact_obj(d.get("error")),
         "events": _redact_obj(d.get("events", [])),
     }
+    if d.get("agent_results"):
+        wf_payload["agent_results"] = _redact_obj(d.get("agent_results"))
     if d.get("partial_results"):
         wf_payload["partial_results"] = _redact_obj(d.get("partial_results"))
     if d.get("agent_errors"):

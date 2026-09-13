@@ -208,6 +208,7 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
         definition_library: Any = None,
         task_runner: Any = None,
+        _load_persisted: bool = True,
     ) -> None:
         # Durable store: runs are mirrored to disk so they survive gateway
         # restarts. Pass persist=False (or store=None) to keep a purely in-memory
@@ -260,12 +261,40 @@ class WorkflowService:
         self._host_streams: dict[str, EventStream] = {}
         # Rehydrate any persisted runs from a prior process, and continue the
         # run-id sequence past the highest seen so new ids never collide.
-        try:
-            n = self.registry.load_persisted()
-            if n:
-                self._seq = self._max_persisted_seq()
-        except Exception:  # noqa: BLE001
-            pass
+        if _load_persisted:
+            try:
+                n = self.registry.load_persisted()
+                if n:
+                    self._seq = self._max_persisted_seq()
+            except Exception:  # noqa: BLE001
+                pass
+
+    @classmethod
+    async def create(cls, **kwargs: Any) -> WorkflowService:
+        """Build for an async host; publish/attach only after restart I/O settles."""
+        # The unpublished constructor resolves both stores' paths/config. It
+        # creates no asyncio tasks/locks; live.bind only registers a weak setter
+        # under the watcher's thread lock. Hydration stays on the owning loop.
+        construction = asyncio.create_task(asyncio.to_thread(cls, _load_persisted=False, **kwargs))
+        cancelled = False
+        while not construction.done():
+            try:
+                await asyncio.shield(construction)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                # The worker has settled. Preserve caller cancellation if its
+                # constructor subsequently failed while we were draining it.
+                if cancelled:
+                    raise asyncio.CancelledError from None
+                raise
+        if cancelled:
+            construction.exception()  # retrieve any worker failure before discarding it
+            raise asyncio.CancelledError
+        service = construction.result()
+        await service.registry.load_persisted_async()
+        service._seq = service._max_persisted_seq()
+        return service
 
     @property
     def timeout_secs(self) -> int:

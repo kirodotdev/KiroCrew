@@ -161,6 +161,18 @@ class RunHandle:
             snap["partial_result_count"] = len(partials)
         if self.agent_errors:
             snap["agent_error_count"] = len(self.agent_errors)
+        # Settled per-call outputs of a FINISHED run. ``partial_results`` above is
+        # the channel for runs that ended WITHOUT a usable result
+        # (failed/cancelled); a finished run exposes its per-call outputs here
+        # instead — the COUNT in the compact view, the payloads only in the FULL
+        # detail view (mirroring result/events/partial_results). An active run
+        # omits both (still accumulating, so reporting would re-send churning
+        # state every poll), and a failed/cancelled run keeps partial_results (no
+        # double report). This is a factual record of the calls that settled, NOT
+        # a claim the run produced a validated business artifact.
+        finished_results = self.agent_results if self.status == STATUS_FINISHED else {}
+        if finished_results:
+            snap["agent_result_count"] = len(finished_results)
         if include_events:
             snap["events"] = [e.to_json() for e in self.events]
             # The authored/executed script — included only in the FULL snapshot
@@ -171,6 +183,8 @@ class RunHandle:
                 snap["partial_results"] = _str_keyed(partials)
             if self.agent_errors:
                 snap["agent_errors"] = _str_keyed(self.agent_errors)
+            if finished_results:
+                snap["agent_results"] = _str_keyed(finished_results)
         return snap
 
     def _latest(self, event_type: str, key: str) -> str:
@@ -550,20 +564,86 @@ class RunRegistry:
         loaded = 0
         try:
             for obj in self._store.load_all():
-                rid = obj.get("run_id")
-                if not rid or rid in self._runs:
+                handle = self._restore_persisted_record(obj)
+                if handle is None:
                     continue
-                try:
-                    handle = RunHandle.from_store_json(obj)
-                except Exception:  # noqa: BLE001 - skip a bad record
-                    continue
-                self._runs[rid] = handle
                 loaded += 1
+                # Idempotent restart writeback: a record stored as "running" is
+                # demoted to failed by from_store_json (it cannot resume in a new
+                # process). Persist the corrected state so the durable record
+                # matches memory and an external reader does not keep seeing
+                # "running". Only running->failed writes; an already-terminal
+                # record is left untouched, so repeated restarts converge.
+                # to_store_json carries the full record, so payloads
+                # (agent_results / agent_errors), source, provenance and args
+                # survive the writeback.
+                if obj.get("status") == STATUS_RUNNING:
+                    self._persist(handle)
         except Exception:  # noqa: BLE001
             pass
         # Honor the bounded-LRU ceiling: a store with more records than max_runs
         # must not leave the in-memory registry over its documented bound.
         self._evict()
+        return loaded
+
+    def _restore_persisted_record(self, obj: dict) -> Optional[RunHandle]:
+        """Install one missing record on the owning loop, without disk I/O."""
+        try:
+            rid = obj.get("run_id")
+            if not rid or rid in self._runs:
+                return None
+            handle = RunHandle.from_store_json(obj)
+        except Exception:  # noqa: BLE001 - skip a bad record
+            return None
+        self._runs[rid] = handle
+        return handle
+
+    async def load_persisted_async(self) -> int:
+        """Rehydrate an UNPUBLISHED startup registry, with all store I/O off-loop.
+
+        The caller must not expose this registry to runs/host reopen until this
+        returns. Cancellation drains the owned load (including writes/deletes)
+        before propagating, so a retry cannot race an abandoned store worker.
+        """
+        if self._store is None:
+            return 0
+
+        async def _load() -> int:
+            loaded = 0
+            try:
+                records = await asyncio.to_thread(self._store.load_all)
+                for obj in records:
+                    handle = self._restore_persisted_record(obj)
+                    if handle is None:
+                        continue
+                    loaded += 1
+                    if obj.get("status") == STATUS_RUNNING:
+                        await self.persist_async(handle.run_id)
+            except Exception:  # noqa: BLE001 - match the best-effort sync loader
+                pass
+            # Same oldest-terminal eviction as the sync API, but await deletion
+            # through the per-run write queue instead of doing disk I/O on-loop.
+            while len(self._runs) > self._max_runs:
+                rid = next(
+                    (rid for rid, h in self._runs.items() if h.status not in ACTIVE_STATUSES),
+                    None,
+                )
+                if rid is None:
+                    break
+                await self.delete_async(rid)
+            return loaded
+
+        load_task = asyncio.create_task(_load())
+        cancelled = False
+        while not load_task.done():
+            try:
+                await asyncio.shield(load_task)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not detach the uninterruptible I/O.
+                cancelled = True
+        loaded = load_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
         return loaded
 
     # --- queries ---
@@ -585,6 +665,11 @@ class RunRegistry:
     async def cancel(self, run_id: str) -> bool:
         h = self._runs.get(run_id)
         if h is None or h.status != STATUS_RUNNING or h.task is None:
+            return False
+        # The event commits the outcome before background completion cleanup.
+        # Keep status pending until cleanup settles, but do not accept a cancel
+        # that could contradict the already-published terminal event.
+        if h.events and h.events[-1].type in _TERMINAL_EVENT_TYPES:
             return False
         h.task.cancel()
         return True

@@ -104,6 +104,10 @@ _WORKFLOW_RESULT_SUMMARY_CAP = 120
 _UNATTENDED_SOURCES = frozenset({"cron", "mcp"})
 
 
+class WorkflowInitializing(RuntimeError):
+    """Task mutations are temporarily unavailable until workflow attachment."""
+
+
 class WorkflowRunPublisher(Protocol):
     """Narrow publication port from TaskRunner into shared workflow history."""
 
@@ -365,6 +369,7 @@ class TaskRunner:
         # remains the owner of planning/execution semantics; this port only
         # mirrors lifecycle and progress for one unified management surface.
         self._workflow_service = workflow_service
+        self._workflow_initializing = False
         self._agent: str = ""
         self._load_runs()
 
@@ -455,9 +460,18 @@ class TaskRunner:
     def _release_start(self, task_id: str) -> None:
         self._start_ids_in_flight.discard(task_id)
 
+    def defer_workflow_attachment(self) -> None:
+        """Hold new work while an async host initializes the publication port."""
+        self._workflow_initializing = True
+
+    def _require_workflow_ready(self) -> None:
+        if self._workflow_initializing:
+            raise WorkflowInitializing("Task runner is initializing workflows; retry shortly.")
+
     def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None:
-        """Attach the shared workflow publication port after gateway startup."""
+        """Release admission with a ready port, or standalone mode on init failure."""
         self._workflow_service = service
+        self._workflow_initializing = False
 
     async def _workflow_begin(
         self, run: Project, *, source: str = "", persist_link: bool = False
@@ -640,6 +654,7 @@ class TaskRunner:
         workflow_source: str = "",
         session_key: str = "",
     ) -> Project:
+        self._require_workflow_ready()
         self._agent = agent
         if source == "file":
             p = Path(spec_path)
@@ -832,6 +847,7 @@ class TaskRunner:
             self._plan_task.cancel()
 
     async def update_plan(self, task_id: str, tasks: list[dict]) -> Project:
+        self._require_workflow_ready()
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
@@ -849,6 +865,7 @@ class TaskRunner:
 
     async def update_task(self, task_id: str, index: int, updates: dict) -> dict:
         """Update a single PENDING task in-place without resetting the run."""
+        self._require_workflow_ready()
         run = self._resolve_task(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
@@ -915,6 +932,7 @@ class TaskRunner:
         workspace_dir: str = "",
         auto_approve: bool = False,
     ) -> str:
+        self._require_workflow_ready()
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
@@ -1080,6 +1098,7 @@ class TaskRunner:
         workspace_dir: str = "",
         auto_approve: bool = False,
     ) -> Project:
+        self._require_workflow_ready()
         spec_path = Path(spec_path)
         if not spec_path.exists():
             raise FileNotFoundError(f"Spec not found: {spec_path}")
@@ -1489,6 +1508,7 @@ class TaskRunner:
         """
         if self._admission_closed():
             raise ValueError("gateway admission is closed")
+        self._require_workflow_ready()
         # Validate the per-run workspace override before entering the admission
         # lock so a bad/sensitive path fails without blocking other starts.
         _resolve_workspace_dir(workspace_dir)
@@ -1730,6 +1750,7 @@ class TaskRunner:
             logger.debug("deactivate auto-approve scope failed for %s", run.task_id, exc_info=True)
 
     async def delete_run(self, task_id: str) -> bool:
+        self._require_workflow_ready()
         run = self._runs.get(task_id)
         if not run:
             return False
@@ -1825,6 +1846,7 @@ class TaskRunner:
         return False
 
     async def retry_from_task(self, task_id: str, from_task: int, agent: str = "") -> str:
+        self._require_workflow_ready()
         run = self._resolve_task(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")

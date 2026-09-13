@@ -12,7 +12,7 @@ import os
 import stat
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -3472,6 +3472,10 @@ async def start_dashboard(
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
+    # Channels retain this same runner on the gateway, independently of state.
+    # Close shared admission before the first startup await, not just the UI pointer.
+    if task_runner is not None:
+        task_runner.defer_workflow_attachment()
     # The generated service marker describes this launch, not every process the
     # dashboard may later spawn. Snapshot it before starting app backends or
     # child terminals, then use only that snapshot to choose the watchdog grace.
@@ -3628,6 +3632,9 @@ async def start_dashboard(
         logger.debug("Could not register pending-skill staged hook", exc_info=True)
 
     # --- Dynamic Workflows ---
+    _workflow_stopping = False
+    _workflow_task: asyncio.Task[None] | None = None
+    _workflow_start: Callable[[], Coroutine[Any, Any, None]] | None = None
     try:
         from kiro_crew.dashboard.handlers import workflows as wf_handlers
         from kiro_crew.dashboard.workflow_inject import inject_workflow_result
@@ -3728,25 +3735,41 @@ async def start_dashboard(
                 logger.info("workflow ctx.nudge not armed for %s: %s", slot_key, error)
             return error
 
-        state.workflow_service = WorkflowService(
-            sessions=sessions,
-            on_done=_wf_on_done,
-            on_event=_wf_on_event,
-            now_fn=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            concurrency=_wf_concurrency,
-            nudge_authorizer=_wf_nudge_authorizer,
-            timeout_secs=_wf_timeout_secs,
-        )
-        if state.task_runner is not None:
-            state.workflow_service.attach_task_runner(state.task_runner)
-            state.task_runner.attach_workflow_service(state.workflow_service)
-        logger.info(
-            "WorkflowService ready (dynamic workflows, max parallel agents=%s, run ceiling=%ss)",
-            _wf_concurrency,
-            state.workflow_service.timeout_secs,
-        )
+        async def _initialize_workflows() -> None:
+            try:
+                service = await WorkflowService.create(
+                    sessions=sessions,
+                    on_done=_wf_on_done,
+                    on_event=_wf_on_event,
+                    now_fn=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    concurrency=_wf_concurrency,
+                    nudge_authorizer=_wf_nudge_authorizer,
+                    timeout_secs=_wf_timeout_secs,
+                )
+                if _workflow_stopping:
+                    return
+                # No await across attachment/publication: requests cannot start a
+                # TaskRunner run without the restored registry or see half a service.
+                if task_runner is not None:
+                    service.attach_task_runner(task_runner)
+                    task_runner.attach_workflow_service(service)
+                state.workflow_service = service
+                logger.info(
+                    "WorkflowService ready (dynamic workflows, max parallel agents=%s, run ceiling=%ss)",
+                    _wf_concurrency,
+                    service.timeout_secs,
+                )
+            except Exception:
+                # Preserve the existing degraded TaskRunner mode on init failure,
+                # but never reopen admission after shutdown has started.
+                if not _workflow_stopping and task_runner is not None:
+                    task_runner.attach_workflow_service(None)
+                logger.warning("WorkflowService unavailable", exc_info=True)
+
+        _workflow_start = _initialize_workflows
     except Exception:
-        state.workflow_service = None
+        if task_runner is not None:
+            task_runner.attach_workflow_service(None)
         logger.warning("WorkflowService unavailable", exc_info=True)
 
     # Initialize script hook store
@@ -3780,6 +3803,27 @@ async def start_dashboard(
     # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
     # number as a global request cap is the false invariant to avoid.
     app["state"] = state
+
+    async def _workflow_stop_publication(_app: web.Application) -> None:
+        nonlocal _workflow_stopping
+        _workflow_stopping = True
+
+    async def _workflow_shutdown(_app: web.Application) -> None:
+        if _workflow_task is None:
+            return
+        if not _workflow_task.done():
+            _workflow_task.cancel()
+        drain = asyncio.gather(_workflow_task, return_exceptions=True)
+        while not drain.done():
+            try:
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                # Finish owned I/O even on repeated stop requests, then let the
+                # remaining aiohttp cleanup hooks run rather than abandoning them.
+                pass
+
+    # Fence before cleanup can yield in tunnel teardown; do not drain here.
+    app.on_shutdown.append(_workflow_stop_publication)
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots
     # coalescing, an off-loop websocket send, the log handler's fan-out --
@@ -3803,6 +3847,7 @@ async def start_dashboard(
     # ``setup_tunnel`` assigns it further below, and this is still well before
     # ``runner.setup()`` freezes the signal lists. See ``_wire_tunnel_shutdown``.
     _wire_tunnel_shutdown(app, state)
+    app.on_cleanup.append(_workflow_shutdown)
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
     app["kiro_prerequisite_service"] = await asyncio.to_thread(
@@ -4873,6 +4918,13 @@ async def start_dashboard(
         state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
+
+    # Post-readiness only: rehydration scales with user data and must not delay
+    # either socket bind or boot-to-ready. Cleanup owns cancellation and draining.
+    if _workflow_start is not None and not _workflow_stopping:
+        _workflow_task = asyncio.create_task(_workflow_start(), name="workflow-initialization")
+        state._background_tasks.add(_workflow_task)
+        _workflow_task.add_done_callback(state._background_tasks.discard)
 
     return runner, state
 

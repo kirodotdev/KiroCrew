@@ -7,6 +7,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.taskrunner import WorkflowInitializing
 
 _VISIBLE_SOURCES = {"text", "spec", "file", "chat", "dashboard", "mcp"}
 
@@ -88,8 +89,11 @@ async def api_project_update(request):
 async def api_project_delete(request):
     tr = _runner(request)
     pid = request.match_info["id"]
-    if not tr or not await tr.delete_run(pid):
-        raise web.HTTPNotFound(text=f"Project {pid} not found")
+    try:
+        if not tr or not await tr.delete_run(pid):
+            raise web.HTTPNotFound(text=f"Project {pid} not found")
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": "workflow_initializing"}, status=503)
     return web.json_response({"ok": True})
 
 
