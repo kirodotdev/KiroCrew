@@ -10034,6 +10034,11 @@
         "copy_text_failed": "Falha ao copiar",
         "copy_text_unavailable": "A área de transferência está bloqueada aqui. O texto da sua publicação está selecionado — pressione Ctrl+C / ⌘C. O texto do cartão que você editou, copie do próprio cartão.",
         "export_failed": "Não foi possível gerar o cartão de compartilhamento"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fim da seção: {{label}}",
+        "end_of_section": "Fim da seção",
+        "time_pair": "Solicitado {{requested}} · adicionado {{landed}}"
       }
     },
     "chatPage": {
@@ -10150,7 +10155,12 @@
       "could_not_generate_title": "Não foi possível gerar um título",
       "could_not_open_side_chat": "Não foi possível abrir o chat lateral",
       "side_command_not_run": "O comando /side não foi executado. Sua mensagem continua no editor.",
-      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral"
+      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral",
+      "fork_too_large_error_head": "Esta conversa é muito grande para ser bifurcada. Use o ícone de bifurcação “{{control}}” em uma mensagem anterior para copiar menos mensagens.",
+      "fork_too_large_error_tail": "Esta conversa é muito grande para ser bifurcada. Use o ícone de bifurcação “{{control}}” em uma mensagem posterior para copiar menos mensagens.",
+      "fork_too_large_offsite_unknown": "Esta conversa é muito grande para ser duplicada por completo. Abra-a e use o ícone de bifurcação “{{control}}” em uma mensagem mais próxima da extremidade que você quer manter.",
+      "fork_too_large_offsite_head": "Esta conversa é muito grande para ser duplicada por completo. Abra-a e use o ícone de bifurcação “{{control}}” em uma mensagem anterior.",
+      "fork_too_large_offsite_tail": "Esta conversa é muito grande para ser duplicada por completo. Abra-a e use o ícone de bifurcação “{{control}}” em uma mensagem posterior."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

@@ -10034,6 +10034,11 @@
         "copy_text_failed": "No se pudo copiar",
         "copy_text_unavailable": "El portapapeles está bloqueado aquí. El texto de tu publicación está seleccionado: pulsa Ctrl+C / ⌘C. El texto de la tarjeta que hayas editado, cópialo desde la propia tarjeta.",
         "export_failed": "No se pudo generar la tarjeta para compartir"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fin de la sección: {{label}}",
+        "end_of_section": "Fin de la sección",
+        "time_pair": "Solicitado {{requested}} · añadido {{landed}}"
       }
     },
     "chatPage": {
@@ -10150,7 +10155,12 @@
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
-      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral"
+      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
+      "fork_too_large_error_head": "Esta conversación es demasiado grande para bifurcarla. Usa el icono de bifurcación “{{control}}” en un mensaje anterior para copiar menos mensajes.",
+      "fork_too_large_error_tail": "Esta conversación es demasiado grande para bifurcarla. Usa el icono de bifurcación “{{control}}” en un mensaje posterior para copiar menos mensajes.",
+      "fork_too_large_offsite_unknown": "Esta conversación es demasiado grande para duplicarla completa. Ábrela y usa el icono de bifurcación “{{control}}” en un mensaje más cercano al extremo que quieres conservar.",
+      "fork_too_large_offsite_head": "Esta conversación es demasiado grande para duplicarla completa. Ábrela y usa el icono de bifurcación “{{control}}” en un mensaje anterior.",
+      "fork_too_large_offsite_tail": "Esta conversación es demasiado grande para duplicarla completa. Ábrela y usa el icono de bifurcación “{{control}}” en un mensaje posterior."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",

@@ -579,6 +579,50 @@ class TestChatRunnerDirectiveSeam:
         spy.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_an_unverifiable_identity_drop_is_reported_to_the_caller(
+        self, tmp_path, monkeypatch
+    ):
+        """A backend emitting no ``_meta.kiro`` must not read as success.
+
+        The operator gets a SEL ``denied`` row and a warning, but the AGENT saw only
+        the tool's own deliberately non-committal text, so a directive this build
+        cannot carry looked exactly like one that landed.
+        """
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("no-identity")
+        slot._titled = True
+        marker = session_directive.encode(
+            "section_marker", {"label": "item-42"}, "drawn"
+        )
+        events = [
+            # No mcp_server_name: the identity channel this backend never emits.
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-blind",
+                title="Drawing a section marker",
+                tool_name="section_marker",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-blind",
+                tool_output=marker,
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        # Positive control: the note must not be papering over an APPLIED
+        # directive -- the gate still has to refuse.
+        spy.assert_not_called()
+        outputs = _tool_result_outputs(state)
+        note = next((o for o in outputs if "[Not applied:" in o), "")
+        assert note, f"the caller was told nothing; outputs were {outputs!r}"
+        assert "identity" in note, f"the note never names the reason: {note!r}"
+        assert not any(
+            session_directive.has_marker(o) for o in outputs
+        ), f"the raw marker leaked into the transcript: {outputs!r}"
+
+    @pytest.mark.asyncio
     async def test_native_subagent_directive_is_refused(self, tmp_path, monkeypatch):
         """A GENUINE MCP directive tool call whose tool_call_id belongs to a
         native sub-agent (id in _native_tc_card) is refused: the applier is not

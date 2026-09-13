@@ -10034,6 +10034,11 @@
         "copy_text_failed": "Copia non riuscita",
         "copy_text_unavailable": "Gli appunti sono bloccati qui. Il testo del tuo post è selezionato: premi Ctrl+C / ⌘C. Il testo della card che hai modificato va copiato dalla card stessa.",
         "export_failed": "Impossibile generare la scheda di condivisione"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fine della sezione: {{label}}",
+        "end_of_section": "Fine della sezione",
+        "time_pair": "Richiesto {{requested}} · aggiunto {{landed}}"
       }
     },
     "chatPage": {
@@ -10150,7 +10155,12 @@
       "could_not_generate_title": "Impossibile generare un titolo",
       "could_not_open_side_chat": "Impossibile aprire la chat laterale",
       "side_command_not_run": "Il comando /side non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura.",
-      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale"
+      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale",
+      "fork_too_large_error_head": "Questa conversazione è troppo grande per essere biforcata. Usa l’icona di biforcazione «{{control}}» su un messaggio precedente per copiare meno messaggi.",
+      "fork_too_large_error_tail": "Questa conversazione è troppo grande per essere biforcata. Usa l’icona di biforcazione «{{control}}» su un messaggio successivo per copiare meno messaggi.",
+      "fork_too_large_offsite_unknown": "Questa conversazione è troppo grande per essere duplicata per intero. Aprila e usa l’icona di biforcazione «{{control}}» su un messaggio più vicino all’estremità che vuoi conservare.",
+      "fork_too_large_offsite_head": "Questa conversazione è troppo grande per essere duplicata per intero. Aprila e usa l’icona di biforcazione «{{control}}» su un messaggio precedente.",
+      "fork_too_large_offsite_tail": "Questa conversazione è troppo grande per essere duplicata per intero. Aprila e usa l’icona di biforcazione «{{control}}» su un messaggio successivo."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

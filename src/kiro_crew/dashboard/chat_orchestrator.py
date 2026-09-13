@@ -324,7 +324,7 @@ async def _exit_cancelled_plan(state: "DashboardState", slot: "_ChatSlot") -> No
     _own_task = slot.task
     if _own_task is None or _own_task is asyncio.current_task() or _own_task.done():
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=False)
         except Exception:
             logger.warning(
                 "Stage loop: held-note delivery failed at cancelled exit for slot %s",
@@ -1122,7 +1122,7 @@ async def _stage_loop(
         _note_owner = slot.task
         if _note_owner is None or _note_owner is asyncio.current_task() or _note_owner.done():
             try:
-                slot.flush_deferred_notes()
+                slot.flush_deferred_notes(markers_only=False)
             except Exception:
                 # Worst-placed of the flush seams: this is a ``finally``, so a raise
                 # here both skips the rest of it -- the queued-work handoff, the

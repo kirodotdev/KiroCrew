@@ -69,6 +69,7 @@ from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
@@ -3971,6 +3972,11 @@ async def save_slot_off_loop(
 def _build_history_prefix(slot: _ChatSlot) -> str:
     """Build a condensed history prefix from slot messages for session re-injection.
 
+    Structural rows are skipped: a section marker is a BOUNDARY rather than
+    conversational memory, and it is deliberately kept out of ``RECALL_ROLES``, so
+    injecting one would put it into a model prompt by another route. A visible
+    ``inject`` line is a message owed to the next turn, so it is carried.
+
     Redacts here as defence in depth. The returned prefix is prepended to the ACP
     prompt, so it leaves the dashboard's own storage and is persisted by kiro-cli
     into its session file — an egress path, not an internal read, so it does not
@@ -3981,7 +3987,16 @@ def _build_history_prefix(slot: _ChatSlot) -> str:
     total = 0
     for m in slot.messages:
         role = m.get("role", "")
-        if role in ("chunk", "done", "streaming", "queued", "permission", "error", "tool"):
+        if role in (
+            "chunk",
+            "done",
+            "streaming",
+            "queued",
+            "permission",
+            "error",
+            "tool",
+            SECTION_MARKER_ROLE,
+        ):
             continue
         label = "User" if role == "user" else "Assistant"
         text = m.get("content", "")[:500]

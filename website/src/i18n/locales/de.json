@@ -9892,6 +9892,11 @@
         "copy_text_failed": "Kopieren fehlgeschlagen",
         "copy_text_unavailable": "Die Zwischenablage ist hier blockiert. Dein Beitragstext ist markiert — drücke Strg+C / ⌘C. Bearbeiteten Kartentext kopierst du direkt aus der Karte.",
         "export_failed": "Die Share-Karte konnte nicht erzeugt werden"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Ende des Abschnitts: {{label}}",
+        "end_of_section": "Ende des Abschnitts",
+        "time_pair": "Angefordert {{requested}} · hinzugefügt {{landed}}"
       }
     },
     "chatPage": {
@@ -10007,7 +10012,12 @@
       "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
       "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
-      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen"
+      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
+      "fork_too_large_error_head": "Diese Unterhaltung ist zu groß, um sie zu verzweigen. Nutze das Verzweigungssymbol „{{control}}“ bei einer früheren Nachricht, um weniger Nachrichten zu kopieren.",
+      "fork_too_large_error_tail": "Diese Unterhaltung ist zu groß, um sie zu verzweigen. Nutze das Verzweigungssymbol „{{control}}“ bei einer späteren Nachricht, um weniger Nachrichten zu kopieren.",
+      "fork_too_large_offsite_unknown": "Diese Unterhaltung ist zu groß, um sie vollständig zu duplizieren. Öffne sie und nutze das Verzweigungssymbol „{{control}}“ bei einer Nachricht näher an dem Ende, das du behalten willst.",
+      "fork_too_large_offsite_head": "Diese Unterhaltung ist zu groß, um sie vollständig zu duplizieren. Öffne sie und nutze das Verzweigungssymbol „{{control}}“ bei einer früheren Nachricht.",
+      "fork_too_large_offsite_tail": "Diese Unterhaltung ist zu groß, um sie vollständig zu duplizieren. Öffne sie und nutze das Verzweigungssymbol „{{control}}“ bei einer späteren Nachricht."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

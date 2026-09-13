@@ -9750,6 +9750,11 @@
         "copy_text_failed": "复制失败",
         "copy_text_unavailable": "当前环境禁止写入剪贴板。文案已选中——按 Ctrl+C / ⌘C 复制。你改过的卡片文字请直接从卡片上复制。",
         "export_failed": "无法生成分享卡片"
+      },
+      "sectionMarkerRow": {
+        "end_of": "章节 {{label}} 结束",
+        "end_of_section": "本节结束",
+        "time_pair": "请求 {{requested}} · 添加 {{landed}}"
       }
     },
     "chatPage": {
@@ -9864,7 +9869,12 @@
       "could_not_generate_title": "无法生成标题",
       "could_not_open_side_chat": "无法打开随手问",
       "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",
-      "could_not_send_to_side_chat": "无法发送到随手问"
+      "could_not_send_to_side_chat": "无法发送到随手问",
+      "fork_too_large_error_head": "此对话过大，无法分叉。 请在更早的消息上使用分叉图标“{{control}}”以复制更少的消息。",
+      "fork_too_large_error_tail": "此对话过大，无法分叉。 请在更晚的消息上使用分叉图标“{{control}}”以复制更少的消息。",
+      "fork_too_large_offsite_unknown": "此对话过大，无法整体创建副本。 请打开对话，在更靠近你想保留的一端的消息上使用分叉图标“{{control}}”。",
+      "fork_too_large_offsite_head": "此对话过大，无法整体创建副本。 请打开对话，在更早的消息上使用分叉图标“{{control}}”。",
+      "fork_too_large_offsite_tail": "此对话过大，无法整体创建副本。 请打开对话，在更晚的消息上使用分叉图标“{{control}}”。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
