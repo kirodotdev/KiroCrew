@@ -1509,7 +1509,8 @@
         "highlight_5": "UI से पॉड लॉग स्ट्रीम करो और पॉड ऐक्सेस टोकन बनाओ",
         "highlight_6": "खुद Kiro Crew बनाने वालों के लिए — रोज़मर्रा के इस्तेमाल के लिए ज़रूरी नहीं",
         "highlight_7": "पॉड Linux (systemd --user) और macOS (launchd) पर चलते हैं — लेकिन macOS पॉड पर मेमोरी/CPU की कोई तय सीमा लागू नहीं होती; Make Live अभी भी सिर्फ़ Linux पर है; फ़्लीट व्यू, PR स्थिति, सिंक, रीबेस और प्रून हर प्लैटफ़ॉर्म पर काम करते हैं",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "नवीनतम स्टेबल रिलीज़ पर पिन किया गया एक वर्कट्री, जिससे अपनी ब्रांच के साथ-साथ एक जारी बिल्ड को पॉड किया जा सकता है; यह नहीं बदलता कि स्वयं का इंस्टॉल किस चैनल से अपडेट होता है"
       }
     },
     "designTweak": {
@@ -10594,7 +10595,32 @@
       "orphan_pods_label": "अनाथ पॉड होम: {{value}}",
       "total_disk_used_by_running_pod_homes": "चल रहे पॉड होम द्वारा उपयोग की गई कुल डिस्क",
       "pod_homes_left_on_disk_with_no_live_pod": "बिना किसी सक्रिय पॉड के डिस्क पर बचे पॉड होम",
-      "disk_usage_unavailable": "डिस्क उपयोग उपलब्ध नहीं"
+      "disk_usage_unavailable": "डिस्क उपयोग उपलब्ध नहीं",
+      "create": "बनाएँ",
+      "creating": "बनाया जा रहा है…",
+      "advance": "आगे बढ़ाएँ",
+      "advance_to_channel_tip": "चैनल के शीर्ष तक आगे बढ़ाएँ",
+      "at_the_channel_tip": "चैनल के शीर्ष पर",
+      "behind_suffix_tip": "शीर्ष",
+      "no_worktree_yet": "अभी कोई वर्कट्री नहीं",
+      "not_applicable_short": "लागू नहीं",
+      "release_channel_has_no_pr": "रिलीज़ वर्कट्री एक टैग पर डिटैच्ड रहती है, इसलिए उसका कोई पुल रिक्वेस्ट नहीं होता",
+      "release_channel_create_failed": "रिलीज़-चैनल वर्कट्री नहीं बनाई जा सकी",
+      "release_channel_advance_failed": "रिलीज़-चैनल वर्कट्री आगे नहीं बढ़ाई जा सकी",
+      "advance_release_channel_worktree": "{{lane}} को चैनल के शीर्ष तक आगे बढ़ाएँ?",
+      "moves_the_detached_worktree_to_the_channel_tip_refused_if_dirty": "इस डिटैच्ड वर्कट्री को चैनल की सबसे नई रिलीज़ पर ले जाता है। यदि वर्कट्री में बिना कमिट किए बदलाव हैं तो अस्वीकार कर दिया जाएगा।",
+      "release_channel_created": "{{ref}} पर {{lane}} वर्कट्री बनाई गई — चलाने के लिए पंक्ति मेनू से प्रोविज़न करें",
+      "release_channel_would_create_at": "Create नवीनतम {{lane}} रिलीज़ {{version}} को अलग अवस्था में चेकआउट करता है",
+      "release_channel_advanced": "{{lane}} को {{ref}} तक आगे बढ़ाया गया — फिर से बनाने के लिए पंक्ति मेनू से दोबारा प्रोविज़न करें",
+      "release_channel_already_at_tip": "{{lane}} पहले से ही चैनल के शीर्ष पर है",
+      "release_channel_pinned_at": "{{ref}} पर रिलीज़ चैनल {{lane}} से पिन किया गया",
+      "release_channel_unresolved": "{{lane}} को हल नहीं किया जा सका: {{error}}",
+      "release_channel_on_older_release": "{{version}} पर है; {{lane}} चैनल का शीर्ष अब {{tip}} है",
+      "release_channel_on_no_release": "किसी {{lane}} रिलीज़ टैग पर नहीं है; चैनल का शीर्ष {{tip}} है",
+      "release_channel_name_taken_by_branch": "{{name}} मौजूद है लेकिन एक ब्रांच पर है, इसलिए यह रिलीज़-चैनल वर्कट्री नहीं है",
+      "commits_behind_channel_tip_one": "चैनल के शीर्ष से {{count}} कमिट पीछे",
+      "commits_behind_channel_tip_other": "चैनल के शीर्ष से {{count}} कमिट पीछे",
+      "not_a_release_channel_worktree": "नाम रिलीज़ चैनल के लिए आरक्षित"
     },
     "developer": {
       "agentBackendTab": {

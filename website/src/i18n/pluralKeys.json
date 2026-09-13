@@ -153,6 +153,7 @@
   "pages.chatSidebar.sub_agent_needs_approval",
   "pages.chatSidebar.switch_session",
   "pages.chatSidebar.workflow_running",
+  "pages.devFleetPage.commits_behind_channel_tip",
   "pages.devFleetPage.commits_behind_main_2",
   "pages.discoverPage.updates_badge_label",
   "pages.knowledge.index.stats_entities",

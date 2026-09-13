@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps.builtins.dev_fleet import live, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet import live, release_channel_pin, repository, runtime
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import is_link_or_junction
@@ -1054,6 +1054,97 @@ def _orphan_count_sync(cfg: Any) -> int | None:
         return None
 
 
+async def _release_channel(worktrees: list[dict]) -> dict | None:
+    """The release channel's resolved tip, and where its tree sits. ``None`` if unknown.
+
+    Published as its OWN key rather than as an extra ``worktrees`` row. With no
+    worktree yet there is no path, and every existing consumer of a ``worktrees``
+    entry — disk measurement, pod matching, prune candidacy — assumes one. A
+    pathless row injected there would be a fabricated worktree, so the placeholder
+    stays here and the frontend renders it as a ghost row instead.
+
+    Never raises: this rides on the cached fleet snapshot, and a channel that
+    cannot be resolved must not take the whole fleet view down with it. ``None``
+    means "nothing can be said about it" — no repo, or the resolve itself blew up —
+    which is different from a resolved-but-failed channel, whose row carries the
+    error and still renders.
+    """
+    try:
+        repo = repository._repo()
+    except repository.RepoUnavailable:
+        return None
+    by_name = {Path(w["path"]).name: w for w in worktrees if not w.get("is_main") and w.get("path")}
+    try:
+        res = await release_channel_pin.resolve(repo=repo)
+    except Exception:  # noqa: BLE001
+        runtime.logger.exception("dev-fleet: release-channel resolution failed")
+        return None
+    name = release_channel_pin.WORKTREE_NAME
+    wt = by_name.get(name)
+    row: dict = {
+        "lane": release_channel_pin.CHANNEL,
+        # The basename this channel's worktree has or would have. Published even
+        # when nothing exists yet, because the frontend labels the
+        # not-yet-created row with it — deriving the name there instead would
+        # put the prefix rule on both sides of the boundary, where a change to
+        # WORKTREE_PREFIX silently desyncs the label from the real directory.
+        "name": name,
+        # Set only for a tree this app is willing to DRIVE as a channel pin.
+        "worktree": None,
+        # `ref` and `version` are what the row RENDERS. The resolved commit id
+        # and the worktree's own HEAD sha are deliberately absent: nothing
+        # reads them, and a field carried "for diagnostics" that no surface
+        # shows is a claim about the payload's contract that no consumer keeps.
+        #
+        # `version` is the release THIS ROW IS ON, which differs by row kind:
+        # on a placeholder it is the release Create would check out (the channel
+        # tip), and on an adopted row it is the release the tree actually
+        # holds — overwritten below. `tip_version` is always the channel tip, so
+        # a behind row can name both without either being ambiguous.
+        "ref": res.get("ref"),
+        "version": res.get("version"),
+        "tip_version": res.get("version"),
+        "error": None if res.get("ok") else res.get("error"),
+        "at_tip": None,
+        "behind": None,
+        # A worktree holds the reserved name but is NOT a channel pin, because it
+        # is POSITIVELY known to be on a branch. Distinct from "no worktree":
+        # Create would fail on the occupied path, so the UI must say what is in
+        # the way rather than offering an action that cannot work.
+        "name_taken_by_branch": False,
+    }
+    if wt is not None:
+        try:
+            st = await release_channel_pin.worktree_state(wt["path"], res if res.get("ok") else {})
+        except Exception:  # noqa: BLE001
+            runtime.logger.exception("dev-fleet: release-channel worktree probe failed")
+            st = {"at_tip": False, "behind": None, "detached": None, "version": None}
+        detached = st.get("detached")
+        # THREE states, not two. `detached is None` means the probe could not
+        # read HEAD at all, and neither of the other branches may claim it:
+        # adopting it would drive a tree of unknown shape, and reporting
+        # `name_taken_by_branch` would assert "this is on a branch" about a
+        # tree nobody read — which also hides the row entirely behind a
+        # fabricated explanation. Say the truth instead: the path exists and
+        # its state is unknown.
+        if detached is True:
+            row["worktree"] = name
+            if res.get("ok"):
+                row["at_tip"] = st.get("at_tip")
+                row["behind"] = st.get("behind")
+                # The tree's OWN release, not the channel's. Leaving the resolved
+                # version here would rename the row to a build it does not
+                # contain the moment a newer release ships. `None` when the
+                # tree is detached at no release tag at all, which the row
+                # says plainly rather than papering over with the tip.
+                row["version"] = st.get("version")
+        elif detached is False:
+            row["name_taken_by_branch"] = True
+        elif not row["error"]:
+            row["error"] = f"{name} exists but its git state could not be read"
+    return row
+
+
 async def _build_fleet() -> dict:
     live_path = await live._live_worktree_path()
     staged_path = live._staged_target()
@@ -1278,6 +1369,12 @@ async def _build_fleet() -> dict:
         "main_repo": runtime._redact(repository._repo()),
         "main_repo_inferred": repository.MAIN_REPO_INFERRED,
         "base_branch": repository.BASE_BRANCH,
+        # One entry per release channel, whether or not its worktree exists yet.
+        # See _release_channel for why this is not an extra `worktrees` row.
+        # Fed the RAW discovery entries, not the built rows: a row's `path` has
+        # been through `_redact` for display, and a redacted path is not safe to
+        # hand to git.
+        "release_channel": await _release_channel(worktrees),
         "build_pending": _build_pending(),
         "gateway_service_active": await live._gateway_service_active(),
         # Non-null while a cutover is staged but not yet running: the UI renders a
@@ -1598,6 +1695,7 @@ __all__ = (
     "_pr_query_one",
     "_pr_status_cached",
     "_provision_reattach_ids",
+    "_release_channel",
     "_render_ticket_url",
     "_repo_owner_name",
     "_resolve_context",

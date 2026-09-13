@@ -1473,7 +1473,8 @@
         "highlight_5": "在界面上流式查看 Pod 日志，并签发 Pod 访问令牌",
         "highlight_6": "给开发 Kiro Crew 本身的人用 — 日常使用并不需要它",
         "highlight_7": "Pod 可以跑在 Linux（systemd --user）和 macOS（launchd）上 — 但 macOS 上的 Pod 没有强制的内存/CPU 上限；Make Live 仍然只支持 Linux；机群视图、PR 状态、同步、变基和清理在任何平台都可用",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "工作树固定在最新稳定版发布，可在你的分支旁以 pod 运行已发布的构建；你自己安装从哪个通道更新不受影响"
       }
     },
     "designTweak": {
@@ -10439,7 +10440,31 @@
       "orphan_pods_label": "孤立 Pod 主目录：{{value}}",
       "total_disk_used_by_running_pod_homes": "运行中 Pod 主目录占用的磁盘总量",
       "pod_homes_left_on_disk_with_no_live_pod": "磁盘上没有对应运行 Pod 的遗留主目录",
-      "disk_usage_unavailable": "磁盘用量不可用"
+      "disk_usage_unavailable": "磁盘用量不可用",
+      "create": "创建",
+      "creating": "创建中…",
+      "advance": "推进",
+      "advance_to_channel_tip": "推进到通道最新版本",
+      "at_the_channel_tip": "已在通道最新版本",
+      "behind_suffix_tip": "最新",
+      "no_worktree_yet": "尚无工作树",
+      "not_applicable_short": "不适用",
+      "release_channel_has_no_pr": "发布工作树以分离方式停在标签上，因此没有拉取请求",
+      "release_channel_create_failed": "无法创建发布通道工作树",
+      "release_channel_advance_failed": "无法推进发布通道工作树",
+      "advance_release_channel_worktree": "将 {{lane}} 推进到通道最新版本？",
+      "moves_the_detached_worktree_to_the_channel_tip_refused_if_dirty": "将该分离工作树移动到通道的最新发布版本。如果工作树存在未提交的更改，则会被拒绝。",
+      "release_channel_created": "已在 {{ref}} 创建 {{lane}} 工作树 — 需从行菜单预配后才能运行",
+      "release_channel_would_create_at": "Create 会以分离状态检出最新的 {{lane}} 发布 {{version}}",
+      "release_channel_advanced": "已将 {{lane}} 推进到 {{ref}} — 需从行菜单重新预配以重新构建",
+      "release_channel_already_at_tip": "{{lane}} 已在通道最新版本",
+      "release_channel_pinned_at": "已置顶到发布通道 {{lane}} 的 {{ref}}",
+      "release_channel_unresolved": "无法解析 {{lane}}：{{error}}",
+      "release_channel_on_older_release": "当前位于 {{version}}；{{lane}} 通道最新版本现为 {{tip}}",
+      "release_channel_on_no_release": "未位于任何 {{lane}} 发布标签；通道最新版本为 {{tip}}",
+      "release_channel_name_taken_by_branch": "{{name}} 已存在，但处于某个分支上，因此不是发布通道工作树",
+      "commits_behind_channel_tip_other": "落后通道最新版本 {{count}} 个提交",
+      "not_a_release_channel_worktree": "该名称为发布通道保留"
     },
     "developer": {
       "agentBackendTab": {

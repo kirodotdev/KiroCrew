@@ -1699,7 +1699,8 @@
         "highlight_7": "Pods laufen unter Linux (systemd --user) und macOS (launchd) — der macOS-Pod hat allerdings keine erzwungene Speicher-/CPU-Obergrenze; „Live schalten“ bleibt auf Linux beschränkt; Flottenansicht, PR-Status, Synchronisieren, Rebasen und Bereinigen funktionieren auf jeder Plattform",
         "page_label": "Dev Fleet",
         "use_case_1": "Verwalte Kiro-Crew-Feature-Worktrees und isolierte Vorschau-Pods, ohne das Live-Gateway zu verändern.",
-        "configuration_1": "Verweise die App auf einen Checkout von Kiro Crew; PR-Aktionen benötigen ein authentifiziertes gh, Pods benötigen systemd --user unter Linux oder launchd unter macOS und müssen zuerst provisioniert werden."
+        "configuration_1": "Verweise die App auf einen Checkout von Kiro Crew; PR-Aktionen benötigen ein authentifiziertes gh, Pods benötigen systemd --user unter Linux oder launchd unter macOS und müssen zuerst provisioniert werden.",
+        "highlight_8": "Ein Worktree, der auf das neueste Stable-Release gepinnt ist — so kannst du einen ausgelieferten Build neben deinem Branch als Pod starten; welchen Channel deine eigene Installation für Updates nutzt, bleibt unberührt"
       }
     },
     "fileExplorer": {
@@ -10594,7 +10595,32 @@
       "orphan_pods_label": "Verwaiste Pod-Homes: {{value}}",
       "total_disk_used_by_running_pod_homes": "Gesamter von laufenden Pod-Homes genutzter Speicher",
       "pod_homes_left_on_disk_with_no_live_pod": "Pod-Homes auf der Festplatte ohne aktiven Pod",
-      "disk_usage_unavailable": "Speicherbelegung nicht verfügbar"
+      "disk_usage_unavailable": "Speicherbelegung nicht verfügbar",
+      "create": "Erstellen",
+      "creating": "Wird erstellt…",
+      "advance": "Vorrücken",
+      "advance_to_channel_tip": "Auf Channel-Spitze vorrücken",
+      "at_the_channel_tip": "Auf der Channel-Spitze",
+      "behind_suffix_tip": "Spitze",
+      "no_worktree_yet": "noch kein Worktree",
+      "not_applicable_short": "n. v.",
+      "release_channel_has_no_pr": "Ein Release-Worktree hängt losgelöst an einem Tag und hat daher keinen Pull Request",
+      "release_channel_create_failed": "Release-Channel-Worktree konnte nicht erstellt werden",
+      "release_channel_advance_failed": "Release-Channel-Worktree konnte nicht vorgerückt werden",
+      "advance_release_channel_worktree": "{{lane}} auf die Channel-Spitze vorrücken?",
+      "moves_the_detached_worktree_to_the_channel_tip_refused_if_dirty": "Verschiebt diesen losgelösten Worktree auf das neueste Release des Channels. Wird abgelehnt, wenn der Worktree nicht committete Änderungen enthält.",
+      "release_channel_created": "{{lane}}-Worktree bei {{ref}} erstellt — zum Ausführen über das Zeilenmenü bereitstellen",
+      "release_channel_would_create_at": "Create checkt das neueste {{lane}}-Release {{version}} abgelöst aus",
+      "release_channel_advanced": "{{lane}} auf {{ref}} vorgerückt — zum Neubauen über das Zeilenmenü erneut bereitstellen",
+      "release_channel_already_at_tip": "{{lane}} ist bereits auf der Channel-Spitze",
+      "release_channel_pinned_at": "An den Release-Channel {{lane}} bei {{ref}} gebunden",
+      "release_channel_unresolved": "{{lane}} konnte nicht aufgelöst werden: {{error}}",
+      "release_channel_on_older_release": "Auf {{version}}; die Spitze des Channels {{lane}} ist jetzt {{tip}}",
+      "release_channel_on_no_release": "Nicht auf einem {{lane}}-Release-Tag; die Channel-Spitze ist {{tip}}",
+      "release_channel_name_taken_by_branch": "{{name}} existiert, liegt aber auf einem Branch und ist daher kein Release-Channel-Worktree",
+      "commits_behind_channel_tip_one": "{{count}} Commit hinter der Channel-Spitze",
+      "commits_behind_channel_tip_other": "{{count}} Commits hinter der Channel-Spitze",
+      "not_a_release_channel_worktree": "Name für Release-Kanäle reserviert"
     },
     "developer": {
       "agentBackendTab": {

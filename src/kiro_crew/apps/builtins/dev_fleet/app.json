@@ -16,7 +16,8 @@
     "'Prune merged' refuses to delete a worktree with uncommitted or untracked work rather than discarding it",
     "Stream pod logs and mint pod access tokens from the UI",
     "Built for people developing Kiro Crew itself — not needed for everyday use",
-    "Pods run on Linux (systemd --user) and macOS (launchd) — but the macOS pod has no enforced memory/CPU ceiling; Make Live is still Linux-only; the fleet view, PR status, sync, rebase and prune work on any platform"
+    "Pods run on Linux (systemd --user) and macOS (launchd) — but the macOS pod has no enforced memory/CPU ceiling; Make Live is still Linux-only; the fleet view, PR status, sync, rebase and prune work on any platform",
+    "A worktree pinned to the newest stable release, so you can pod a shipped build beside your branch; it never changes which channel your own install updates from"
   ],
   "defaultEnabled": false,
   "platform": {

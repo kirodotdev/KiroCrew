@@ -1760,12 +1760,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/backend/routes.py",
         # Dev Fleet's redactor wrapper and the cohesive owners that apply it to
         # the app's own API/state/worktree surfaces, all carrying the same
-        # non-core-egress classification.
+        # non-core-egress classification. ``release_channel_pin`` scrubs one
+        # thing: the stderr of its release-tag fetch, before that text becomes a
+        # lane's ``error`` string on this app's own Dev Fleet page — the same
+        # git-stderr-into-a-lane-result path ``worktree_ops`` is allowlisted for,
+        # and it reaches no transport the siblings above do not already own.
         "apps/builtins/dev_fleet/runtime.py",
         "apps/builtins/dev_fleet/http_api.py",
         "apps/builtins/dev_fleet/fleet_state.py",
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",
+        "apps/builtins/dev_fleet/release_channel_pin.py",
         "apps/builtins/dev_fleet/worktree_ops.py",
         "apps/builtins/issue_radar/backend/routes.py",
         "apps/builtins/meetings/backend/domain/session.py",

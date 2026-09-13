@@ -11,7 +11,14 @@ from pathlib import Path
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, repository, runtime, worktree_ops
+from kiro_crew.apps.builtins.dev_fleet import (
+    fleet_state,
+    live,
+    release_channel_pin,
+    repository,
+    runtime,
+    worktree_ops,
+)
 from kiro_crew.apps.proxy_auth import raw_request_target
 
 # --- standalone backend config ---
@@ -153,33 +160,59 @@ async def api_dev_fleet_disk(request: web.Request) -> web.Response:
     return web.json_response(await fleet_state._disk())
 
 
-def _audited(tool_name: str):
+#: The body fields a worktree mutation may be audited against, in order. A channel
+#: field is deliberately absent: the release-channel routes take no body and declare
+#: a ``static_target``, so admitting one here could only let a body name the channel
+#: as the target of a mutation that never touched it.
+_TARGET_KEYS: tuple[str, ...] = ("name", "names", "path")
+
+
+def _audited(
+    tool_name: str,
+    *,
+    static_target: str = "",
+):
     """Audit every Dev Fleet mutation via SEL, exactly once per request.
 
     The decision is made at the single response boundary of the handler:
     2xx -> success, 4xx -> denied, 5xx/exception -> failure.  Target
     worktree name is read from the JSON body without consuming the stream
     (handlers re-parse independently); values are redacted before logging.
+
+    ``static_target`` is for a route whose target is not in the request at all:
+    the release-channel mutations act on one known worktree and take no body, so
+    the object they touch is a constant. Passing it here keeps the trail naming a
+    real target instead of the empty string a body scan would produce, and a route
+    that declares it never consults the body — a client cannot influence what its
+    own mutation is recorded against. Every other route reads :data:`_TARGET_KEYS`,
+    which names worktree fields only.
     """
 
     def _decorate(handler):
         async def _wrapped(request: web.Request) -> web.Response:
-            target = ""
+            target = static_target
             try:
-                if request.content_length and request.can_read_body:
+                if not static_target and request.content_length and request.can_read_body:
                     raw = await request.read()  # cached; handler .json() re-reads it
                     try:
                         parsed = json.loads(raw)
                         if isinstance(parsed, dict):
-                            t = parsed.get("name") or parsed.get("names") or parsed.get("path")
+                            t = next(
+                                (
+                                    parsed[k]
+                                    for k in _TARGET_KEYS
+                                    if parsed.get(k) not in (None, "", [])
+                                ),
+                                None,
+                            )
                             if isinstance(t, str):
                                 target = t
                             elif isinstance(t, list):
                                 target = ",".join(str(x) for x in t[:20])
                     except (ValueError, TypeError):
-                        target = ""
+                        target = static_target
             except Exception:
-                target = ""
+                target = static_target
             try:
                 resp = await handler(request)
             except Exception as exc:
@@ -480,6 +513,22 @@ async def api_dev_fleet_pod_provision_dismiss(request: web.Request) -> web.Respo
 @_audited("dev_fleet_rebase")
 async def api_dev_fleet_rebase(request: web.Request) -> web.Response:
     return await _pod_name_action(request, worktree_ops._rebase)
+
+
+@_audited(
+    "dev_fleet_release_channel_create",
+    static_target=release_channel_pin.WORKTREE_NAME,
+)
+async def api_dev_fleet_release_channel_create(request: web.Request) -> web.Response:
+    return web.json_response(await worktree_ops._release_channel_create())
+
+
+@_audited(
+    "dev_fleet_release_channel_advance",
+    static_target=release_channel_pin.WORKTREE_NAME,
+)
+async def api_dev_fleet_release_channel_advance(request: web.Request) -> web.Response:
+    return web.json_response(await worktree_ops._release_channel_advance())
 
 
 # =============================================================================
