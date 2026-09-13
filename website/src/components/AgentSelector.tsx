@@ -26,6 +26,12 @@ export interface KiroCrewAgent {
    *  older payloads predate the field, and it falls back to `description`. */
   triggers?: string
   source: string
+  /** What the user calls the crew. Server-resolved to `name` when the record
+   *  stores no label; `name` itself is the immutable id every route addresses.
+   *  Optional: older payloads predate the identity split. */
+  display_name?: string
+  /** Job title from the template it was hired from; optional for a hand-made crew. */
+  role?: string
   /** Default session color (#rrggbb hex) applied to new sessions using this
    *  agent. Empty or absent means no agent color. */
   session_color?: string

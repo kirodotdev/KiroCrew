@@ -24,6 +24,15 @@ def _write_cfg(tmp_path: Path) -> Path:
                 "triggers": "incident, prod outage",
             },
             "research": {"kiro_agent": "kirocrew", "description": "deep research crew"},
+            # A member whose free-text name was re-keyed to a minted id, plus
+            # two members sharing one display name.
+            "case-competition": {
+                "kiro_agent": "kirocrew",
+                "display_name": "case competition",
+                "triggers": "case study",
+            },
+            "judge-a": {"kiro_agent": "kirocrew", "display_name": "Judge"},
+            "judge-b": {"kiro_agent": "kirocrew", "display_name": "Judge"},
         },
         "default_agent": "default",
         "workspaces": {"default": {"dir": "workspace"}, "oncall-ws": {"dir": "oncall"}},
@@ -84,3 +93,35 @@ def test_schema_accepts_crew_names_with_spaces_and_dots():
     for name in ("on call", "crew.v2", "team-a"):
         cleaned = validate_tool_args({"crew": name}, SELECT_CREW_SCHEMA)
         assert cleaned["crew"] == name
+
+
+def test_old_free_text_handle_resolves_through_the_display_name(tmp_path):
+    """The name that WAS the key before the id split still selects the member.
+
+    A skill or steering file written as ``select_crew("case competition")``
+    keeps routing after the migration minted ``case-competition``; the bound
+    payload reports the id, which is what the caller must pass to ``spawn_run``.
+    """
+    p = _write_cfg(tmp_path)
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        out = json.loads(mcp_core._do_select_crew("case competition"))
+    assert "error" not in out
+    assert out["crew"] == "case-competition"
+    assert out["bound"]["kiro_agent"] == "kirocrew"
+
+
+def test_shared_display_name_is_refused_as_ambiguous_not_guessed(tmp_path):
+    p = _write_cfg(tmp_path)
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        out = json.loads(mcp_core._do_select_crew("Judge"))
+    assert "bound" not in out
+    assert out["error"].startswith("ambiguous crew 'Judge'")
+    assert "judge-a, judge-b" in out["error"]
+    assert "case-competition" in out["available"]
+
+
+def test_display_name_fallback_is_exact(tmp_path):
+    p = _write_cfg(tmp_path)
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        out = json.loads(mcp_core._do_select_crew("Case Competition"))
+    assert out["error"] == "unknown crew 'Case Competition'"

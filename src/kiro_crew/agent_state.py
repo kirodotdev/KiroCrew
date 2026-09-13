@@ -39,7 +39,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Iterator, MutableMapping
+from typing import Iterator, Mapping, MutableMapping
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
@@ -222,6 +222,97 @@ def clear_fork_info(name: str) -> None:
         else:
             data.pop(name, None)
         _write(data)
+
+
+def rename_private_owner(old: str, new: str) -> int:
+    """Re-attribute every private copy owned by crew *old* to *new*; return the count.
+
+    The member-id migration (``config.loader.MIGRATE_MEMBER_IDS``) re-keys an
+    ``agents`` row; a private copy whose lineage still names the OLD key would
+    then read as another crew's copy and every write to it -- a save, a
+    publish, a reset -- would be refused. Runs under the sidecar lock, reads
+    strict (a corrupt sidecar propagates rather than being erased) and is
+    idempotent: an entry already naming *new* is left as it is, so the locked
+    migration pass can retry it.
+    """
+    if not old or not new or old == new:
+        return 0
+    with _locked():
+        data = _read(strict=True)
+        moved = 0
+        for entry in data.values():
+            if isinstance(entry, dict) and entry.get(_PRIVATE_TO) == old:
+                entry[_PRIVATE_TO] = new
+                moved += 1
+        if moved:
+            _write(data)
+        return moved
+
+
+#: Sidecar key of the member-id migration's pending moves. Outside the agent-name
+#: grammar (a ``::`` prefix), so it can never collide with an agent's entry; the
+#: mapping sits under ``moves`` so the entry carries no fork field and every
+#: per-agent reader skips it. Lives HERE, in the sealed sidecar, because the
+#: moves authorize ownership renames: a marker an agent could write would let a
+#: forged pair re-own another member's private state.
+_PENDING_MEMBER_MOVES_KEY = "::pending_member_id_moves"
+
+
+def get_pending_member_moves() -> dict[str, str]:
+    """The member-id migration's pending ``{old key: minted id}`` pairs, or ``{}``.
+
+    Strict: the caller is a migration pass deciding ownership renames, and
+    "cannot read" must surface rather than read as "nothing pending".
+    """
+    with _lock:
+        entry = _read(strict=True).get(_PENDING_MEMBER_MOVES_KEY)
+    moves = entry.get("moves") if isinstance(entry, dict) else None
+    if not isinstance(moves, dict):
+        return {}
+    return {str(k): v for k, v in moves.items() if isinstance(k, str) and isinstance(v, str) and v}
+
+
+def set_pending_member_moves(moves: dict[str, str]) -> None:
+    """Record pending moves (merged into any pairs an earlier pass left)."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(_PENDING_MEMBER_MOVES_KEY)
+        current = entry.get("moves") if isinstance(entry, dict) else None
+        merged = dict(current) if isinstance(current, dict) else {}
+        merged.update({str(k): str(v) for k, v in moves.items()})
+        data[_PENDING_MEMBER_MOVES_KEY] = {"moves": merged}
+        _write(data)
+
+
+def discard_pending_member_moves(moves: Mapping[str, str]) -> int:
+    """Drop exactly the given ``{old key: minted id}`` pairs; return how many went.
+
+    Pair-specific on purpose: two migration passes can overlap (two gateways,
+    or a pass in one process while another replays), and a pass that finished
+    ITS renames must not erase a pair another pass recorded and has not
+    finished -- a dropped pair is a rename nobody retries, and the store keeps
+    the legacy owner for good. A pair is removed only when the stored id still
+    matches the one the caller renamed to; the entry goes when it empties.
+    """
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(_PENDING_MEMBER_MOVES_KEY)
+        current = entry.get("moves") if isinstance(entry, dict) else None
+        if not isinstance(current, dict):
+            return 0
+        dropped = 0
+        for old, new in moves.items():
+            if current.get(old) == new:
+                del current[old]
+                dropped += 1
+        if not dropped:
+            return 0
+        if current:
+            data[_PENDING_MEMBER_MOVES_KEY] = {"moves": current}
+        else:
+            data.pop(_PENDING_MEMBER_MOVES_KEY, None)
+        _write(data)
+        return dropped
 
 
 def all_fork_info() -> dict[str, dict]:

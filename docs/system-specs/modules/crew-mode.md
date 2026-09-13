@@ -171,11 +171,19 @@ Three rules define that list, and each is load-bearing:
            "memory_store": "oncall-mem", "model": ""}}
 ```
 
-An unknown name answers `{"error": "unknown crew '…'", "available": "…"}`. The
-membership test against `cfg.agents` is the deny-by-default gate;
-`SELECT_CREW_SCHEMA` deliberately does not impose a name grammar, because crew
-creation only strips the name, so a stricter schema would list a crew in the
-roster and then refuse to bind it.
+`crew` is the member's **id** (the `agents` key). A handle that is not a key is
+tried once as a **display name** (`member_identity.members_named`, exact after
+whitespace normalization): the free-text name that was the key before the id split
+minted one from it -- `select_crew("case competition")` in a skill written before the
+migration -- still binds, and `bound` reports the id, which is what `spawn_run`
+takes. Two members may share a display name, so an ambiguous handle answers
+`{"error": "ambiguous crew '…': N members carry that display name — select one by
+id: a, b", "available": "…"}` rather than guessing (binding the wrong member's
+memory is the worse failure). An unknown name answers
+`{"error": "unknown crew '…'", "available": "…"}`. The membership test against
+`cfg.agents` is the deny-by-default gate; `SELECT_CREW_SCHEMA` deliberately does
+not impose a name grammar, because the display-name fallback needs the raw string
+and a stricter schema would list a crew in the roster and then refuse to bind it.
 
 A bind also records a routing-decision pointer through
 `members.record_activity` with `via="select_crew"`. Two properties of that write
@@ -242,7 +250,7 @@ name, and it resolves an empty crew too so the concrete template stays inside
 
 | Test | What it holds |
 |---|---|
-| `test/test_select_crew.py` | Roster excludes the default crew and every triggerless crew, carries `default_agent` plus guidance; a named crew returns its bindings; an unknown name returns `error` plus `available`; the schema accepts spaces and dots in a crew name |
+| `test/test_select_crew.py` | Roster excludes the default crew and every triggerless crew, carries `default_agent` plus guidance; a named crew returns its bindings; an old free-text handle resolves through the display name and binds by id; a display name two members share is refused as ambiguous, naming both ids; an unknown name returns `error` plus `available`; the schema accepts spaces and dots in a crew name |
 | `test/test_crew_reasoning_effort.py` | Per-crew effort reaches a crew dispatch |
 | `test/test_members.py`, `test/test_members_dm_thread.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |

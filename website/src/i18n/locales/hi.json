@@ -10820,6 +10820,12 @@
       "test_failed_for": "{{name}} के लिए परीक्षण विफल"
     },
     "kiroCrewAgentsPage": {
+      "name_is_display_name_hint": "तुम इस सदस्य को क्या कहते हो। {{productName}} इससे एक स्थायी आईडी बनाता है।",
+      "display_name": "प्रदर्शित नाम",
+      "display_name_hint": "नाम बदलने से केवल लेबल बदलता है; आईडी {{id}} वही रहती है, इसलिए इस आईडी का उपयोग करने वाले लिंक, शेड्यूल और वेबहुक काम करते रहते हैं।",
+      "role": "भूमिका",
+      "role_hint": "पद का नाम। वैकल्पिक।",
+      "role_placeholder": "उदा. रिलीज़ मैनेजर",
       "a_unique_identifier_for_this_workspace_agents_re": "इस वर्कस्पेस के लिए एक अनूठा पहचानकर्ता। एजेंट वर्कस्पेस को नाम से संदर्भित करते हैं।",
       "add_crew_member": "क्रू सदस्य जोड़ें",
       "agent_template_is_required": "एजेंट टेम्पलेट ज़रूरी है",
@@ -14615,6 +14621,11 @@
       "show_controls": "नियंत्रण दिखाएँ"
     },
     "membersPage": {
+      "member_id": "सदस्य आईडी",
+      "role": "भूमिका",
+      "role_none": "कोई नहीं",
+      "provenance": "स्रोत",
+      "provenance_local": "यहाँ बनाया गया",
       "agent_template": "एजेंट टेम्पलेट",
       "configuration": "कॉन्फ़िगरेशन",
       "crew_summary": "सदस्य सारांश",

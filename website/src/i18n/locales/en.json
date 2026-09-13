@@ -6714,6 +6714,12 @@
       "user": "user"
     },
     "kiroCrewAgentsPage": {
+      "name_is_display_name_hint": "What you call this member. {{productName}} creates a permanent id from it.",
+      "display_name": "Display name",
+      "display_name_hint": "Renaming changes only the label; the id {{id}} stays, so links, schedules and webhooks that use the id keep working.",
+      "role": "Role",
+      "role_hint": "Job title. Optional.",
+      "role_placeholder": "e.g. Release Manager",
       "add_crew_member": "Add crew member",
       "agents": "Agents",
       "also_used_by_these_crews": "Also used by {{crews}}. Agents that share a store can read each other’s files and memory.",
@@ -6980,6 +6986,11 @@
       "without_gateway_per_session_copies": "Without gateway (per-session copies)"
     },
     "membersPage": {
+      "member_id": "Member id",
+      "role": "Role",
+      "role_none": "None",
+      "provenance": "Source",
+      "provenance_local": "Created here",
       "agent_template": "Agent template",
       "configuration": "Configuration",
       "crew_summary": "Crew summary",

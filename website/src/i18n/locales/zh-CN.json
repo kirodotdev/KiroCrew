@@ -10663,6 +10663,12 @@
       "test_failed_for": "{{name}} 测试失败"
     },
     "kiroCrewAgentsPage": {
+      "name_is_display_name_hint": "你对这位成员的称呼。{{productName}} 会据此生成一个永久 ID。",
+      "display_name": "显示名称",
+      "display_name_hint": "重命名只改变显示标签；ID {{id}} 保持不变，因此使用该 ID 的链接、计划任务和 webhook 继续有效。",
+      "role": "角色",
+      "role_hint": "职位名称。可选。",
+      "role_placeholder": "例如：发布经理",
       "a_unique_identifier_for_this_workspace_agents_re": "此工作区的唯一标识符。代理通过名称引用工作区。",
       "add_crew_member": "添加团队成员",
       "agent_template_is_required": "Agent 模板为必填项",
@@ -14426,6 +14432,11 @@
       "show_controls": "展开控制项"
     },
     "membersPage": {
+      "member_id": "成员 ID",
+      "role": "角色",
+      "role_none": "无",
+      "provenance": "来源",
+      "provenance_local": "在此创建",
       "agent_template": "Agent 模板",
       "configuration": "配置",
       "crew_summary": "成员概览",

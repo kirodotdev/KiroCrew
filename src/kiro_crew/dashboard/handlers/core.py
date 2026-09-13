@@ -145,6 +145,12 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "model",
     "source",
     "telegram_account",
+    # Wrapper identity (member_identity.py): all free text a user or a
+    # template author typed, so they take the same mask as description.
+    # `legacy_key` is the free-text name the migration re-keyed, verbatim.
+    "display_name",
+    "role",
+    "legacy_key",
 )
 
 

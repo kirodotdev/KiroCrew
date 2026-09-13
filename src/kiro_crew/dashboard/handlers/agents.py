@@ -114,6 +114,13 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.member_identity import (
+    DISPLAY_NAME_MAX_LEN,
+    display_name_too_long,
+    effective_display_name,
+    mint_member_id,
+    normalize_display_name,
+)
 from kiro_crew.member_memory_auth import require_member_memory_creation
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
@@ -3807,6 +3814,11 @@ def _agent_roster_row(
         "description": _roster_mask(agent_cfg.description),
         "triggers": _roster_mask(agent_cfg.triggers),
         "source": _roster_mask(agent_cfg.source),
+        # Wrapper identity (member_identity.py). ``display_name`` is resolved
+        # (the id when the row stores none) so no consumer re-implements the
+        # fallback; ``role`` is the job title the crew manager renders next to it.
+        "display_name": _roster_mask(effective_display_name(name, agent_cfg.display_name)),
+        "role": _roster_mask(agent_cfg.role),
         "session_color": _roster_mask(agent_cfg.session_color),
         # The one STRUCTURED value a row carries -- shape-allowlisted by
         # ``_safe_avatar`` with masking confined to user-authored ``traits``
@@ -4413,6 +4425,23 @@ def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str 
     return _validate_role_model(model, request, provider=provider)
 
 
+def _member_exists_message(member_id: str, display_name: str) -> str:
+    """The 409 text for a create whose minted id is already taken.
+
+    When the typed name IS the id the classic sentence stands. When it is not
+    (``"Case Competition"`` minting ``Case-Competition`` while a member of that
+    id exists), the message names both, because the user never saw the id they
+    collided on and "Agent 'case-competition' already exists" reads as a bug
+    when the roster shows no such name.
+    """
+    if display_name == member_id:
+        return f"Agent '{member_id}' already exists"
+    return (
+        f"'{display_name}' would get the member id '{member_id}', which already "
+        f"exists. Choose a name that shortens to a different id."
+    )
+
+
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     """POST /api/agents — create a new KiroCrew agent."""
 
@@ -4427,9 +4456,59 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
-    name = body.get("name", "").strip()
-    if not name:
+    # What the user typed is only ever the DISPLAY name (member_identity.py):
+    # the row's key -- its id -- is minted from it below, inside the config
+    # lock. ``display_name`` is the new spelling; ``name`` is kept for every
+    # client that predates the split. For a name already inside the id grammar
+    # the minted id IS the name, so those clients observe no change.
+    raw_display = body.get("display_name")
+    if raw_display is None:
+        raw_display = body.get("name", "")
+    if raw_display is not None and not isinstance(raw_display, str):
+        return web.json_response(
+            {"error": "display_name must be a string", "code": "invalid_display_name"},
+            status=400,
+        )
+    # Over-long is REFUSED, never cut: the credential-shaped check below must
+    # see the whole value, and a stored prefix of a refused value is exactly the
+    # exposure that check exists to prevent.
+    if display_name_too_long(raw_display):
+        return web.json_response(
+            {
+                "error": f"Agent name must be at most {DISPLAY_NAME_MAX_LEN} characters",
+                "code": "display_name_too_long",
+            },
+            status=400,
+        )
+    display_name = normalize_display_name(raw_display)
+    if not display_name:
         return web.json_response({"error": "Agent name is required"}, status=400)
+    # The variable the rest of this route keys on. Until the lock below mints
+    # the id it is the display name, which is what every pre-lock check (the
+    # credential-shaped rule, the lineage probe's log lines) should see anyway.
+    name = display_name
+    raw_role = body.get("role", "")
+    if raw_role is not None and not isinstance(raw_role, str):
+        return web.json_response(
+            {"error": "role must be a string", "code": "invalid_role"}, status=400
+        )
+    if display_name_too_long(raw_role):
+        return web.json_response(
+            {
+                "error": f"Role must be at most {DISPLAY_NAME_MAX_LEN} characters",
+                "code": "role_too_long",
+            },
+            status=400,
+        )
+    role = normalize_display_name(raw_role)
+    if role and _name_would_be_masked(role):
+        return web.json_response(
+            {
+                "error": "Role looks like a credential or a URL carrying one.",
+                "code": "credential_shaped_role",
+            },
+            status=400,
+        )
     # Refused at the SOURCE, not masked at one read site. Once such a name is
     # stored it reaches logs, error messages, telemetry and every other surface
     # that prints a crew name -- none of which this module controls -- so closing
@@ -4573,8 +4652,18 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
+        # Mint the id from the display name. The id is the ``agents`` key and
+        # what every keyed subsystem references; a collision on the SANITIZED
+        # candidate is still a 409 here (the caller may be retrying, and two
+        # members cannot share a key), matching the pre-split contract. The
+        # suffixing form of mint_member_id is for the migration and the hire
+        # flows, which have no user to ask.
+        name = mint_member_id(display_name, ())
         if name in cfg.agents:
-            return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
+            return web.json_response(
+                {"error": _member_exists_message(name, display_name), "code": "agent_exists"},
+                status=409,
+            )
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
@@ -4610,6 +4699,10 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             description=body.get("description", ""),
             triggers=body.get("triggers", ""),
             source=body.get("source", "kirocrew"),
+            # Stored only when it differs from the id: "" means "label = id",
+            # so a plain create leaves the row byte-identical to a pre-split one.
+            display_name="" if display_name == name else display_name,
+            role=role,
             session_color=session_color,
             avatar=avatar,
         )
@@ -4626,7 +4719,8 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 raise
         except MemberAlreadyExists:
             return web.json_response(
-                {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
+                {"error": _member_exists_message(name, display_name), "code": "agent_exists"},
+                status=409,
             )
         except (OSError, UnknownMemoryStore) as exc:
             return web.json_response(
@@ -4646,7 +4740,15 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         resources=name,
     )
     return web.json_response(
-        {"ok": True, "name": name, "memory_store": cfg.agents[name].memory_store}
+        {
+            "ok": True,
+            # ``name`` IS the minted id (the key every other route addresses);
+            # ``display_name`` is what the user typed. Equal for a well-formed
+            # name, which is what keeps pre-split clients navigating correctly.
+            "name": name,
+            "display_name": display_name,
+            "memory_store": cfg.agents[name].memory_store,
+        }
     )
 
 
@@ -4836,6 +4938,67 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    # Wrapper identity fields (member_identity.py), validated up here for the
+    # same reason as `starred`: a refused label must never move a staged
+    # avatar or touch the record first.
+    _display_name = ""
+    if "display_name" in body:
+        if not isinstance(body["display_name"], str):
+            return web.json_response(
+                {"error": "display_name must be a string", "code": "invalid_display_name"},
+                status=400,
+            )
+        if display_name_too_long(body["display_name"]):
+            return web.json_response(
+                {
+                    "error": f"display_name must be at most {DISPLAY_NAME_MAX_LEN} characters",
+                    "code": "display_name_too_long",
+                },
+                status=400,
+            )
+        _display_name = normalize_display_name(body["display_name"])
+        if not _display_name:
+            return web.json_response(
+                {"error": "display_name must not be empty", "code": "invalid_display_name"},
+                status=400,
+            )
+        # Same rule as the create route: a credential- or URL-shaped label is
+        # refused at the source, because the label reaches every surface that
+        # prints a member name.
+        if _name_would_be_masked(_display_name):
+            return web.json_response(
+                {
+                    "error": (
+                        "Display name looks like a credential or a URL carrying one. "
+                        "Pick a name that identifies the member instead."
+                    ),
+                    "code": "credential_shaped_name",
+                },
+                status=400,
+            )
+    _role = ""
+    if "role" in body:
+        if not isinstance(body["role"], str):
+            return web.json_response(
+                {"error": "role must be a string", "code": "invalid_role"}, status=400
+            )
+        if display_name_too_long(body["role"]):
+            return web.json_response(
+                {
+                    "error": f"role must be at most {DISPLAY_NAME_MAX_LEN} characters",
+                    "code": "role_too_long",
+                },
+                status=400,
+            )
+        _role = normalize_display_name(body["role"])
+        if _role and _name_would_be_masked(_role):
+            return web.json_response(
+                {
+                    "error": "Role looks like a credential or a URL carrying one.",
+                    "code": "credential_shaped_role",
+                },
+                status=400,
+            )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -5044,6 +5207,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "source" in body:
             agent.source = body["source"]
             changed.append("source")
+        if "display_name" in body:
+            # Rename = this field, nothing else. The key never moves, so a
+            # rename has zero blast radius on member dir, DM binding, slots,
+            # crons or governance. Already validated above.
+            agent.display_name = "" if _display_name == name else _display_name
+            changed.append("display_name")
+        if "role" in body:
+            agent.role = _role
+            changed.append("role")
         if "starred" in body:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]

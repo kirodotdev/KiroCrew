@@ -24,7 +24,7 @@ import stat as _stat
 import sys
 import threading
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import MISSING, asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +35,9 @@ from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility fac
 # FROZEN pre-split alias snapshot (test_loader_reexports_historical_snapshot_by_identity),
 # so new resolution helpers are reached through the module, not re-exported.
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import __version__, model_registry, pinned_fs, platform_compat, windows_acl
+from kiro_crew import __version__
+from kiro_crew import member_identity as _member_identity
+from kiro_crew import model_registry, pinned_fs, platform_compat, windows_acl
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
@@ -677,6 +679,11 @@ MIGRATE_WORKSPACES = "workspaces"
 MIGRATE_AGENTS = "agents"
 MIGRATE_DEFAULT_AGENT = "default_agent"
 MIGRATE_CONNECTIONS_UI = "connections_ui"
+#: Re-key ``agents`` rows whose key is outside the member-id grammar (the
+#: ``case competition`` incident: a row the create flow accepted but no roster
+#: could address). The key becomes a minted id and the original string is kept
+#: as the row's ``display_name`` — see :mod:`kiro_crew.member_identity`.
+MIGRATE_MEMBER_IDS = "member_ids"
 #: Un-materialize the stored values that still hold a superseded default an entry
 #: marked ``auto_adopt``. Unlike the three above, this one carries a payload: the
 #: keys the load decided on travel separately in ``adopt_keys``, because the set is
@@ -694,6 +701,453 @@ MIGRATE_SUPERSEDED_DEFAULTS = "superseded_defaults"
 #: full ``to_dict()`` rewrite carries only schema fields and would drop it.
 CONNECTIONS_UI_MIGRATION_MARKER = "connections_ui_migrated.json"
 
+#: The member-id migration's durable INTENT: ``{old key: minted id}`` recorded in
+#: the agent-state sidecar (``agent_state.set_pending_member_moves``) BEFORE the
+#: config write and cleared after the ownership records (private-store manifest
+#: + database owner row) were renamed. The
+#: order is marker -> config write -> ownership renames -> marker gone, so the
+#: minted id is on disk (and cannot be claimed by anyone else) before a
+#: single ownership record moves, and a crash or a refused rename anywhere
+#: after the write leaves the marker for the next load to REPLAY -- only for
+#: pairs the document confirms (``agents[new].legacy_key == old``), so a stale
+#: or forged pair can never re-own a store to an id the document does not
+#: hold. Removal is PER PAIR (a finished pass drops exactly the pairs it
+#: renamed, while the stored id still matches; unvouched pairs are dropped
+#: only inside the locked pass), so two overlapping passes cannot erase each
+#: other's unfinished intent. The record itself is GATEWAY-ONLY state: the sidecar is sealed
+#: read-only for sandboxed agents and refused to the agent file tools (the
+#: same protection its fork lineage relies on), so the moves cannot be forged
+#: by anything that can also write a config row -- the pair alone would
+#: otherwise let an agent-influenced write re-own another member's private
+#: state through the replay.
+MEMBER_ID_MOVES_MARKER = "::pending_member_id_moves"  # agent_state._PENDING_MEMBER_MOVES_KEY
+
+
+def _verbatim_text(value: object) -> str:
+    """A stored string exactly as written, ``""`` for anything else."""
+    return value if isinstance(value, str) else ""
+
+
+def _rekey_base(old_key: str) -> str:
+    """The id candidate a malformed key is re-keyed to.
+
+    The sanitized key, unless the key -- or what sanitizing leaves of it -- is
+    text the redactors would alter (a credential shape, an exfiltration URL, a
+    named secret parameter): then an opaque digest id, because the id is
+    rendered verbatim on every surface the display name is masked on (the
+    roster's ``name``, the slug, the slot key, the URL) and a sanitized
+    ``AKIA…`` key is still the key. The typed key itself still lands in
+    ``display_name`` / ``legacy_key``, both of which the read routes mask.
+    """
+    from kiro_crew.security.exfil import carries_sensitive_text  # circular import
+
+    candidate = _member_identity.sanitize_member_id(old_key)
+    if carries_sensitive_text(old_key) or carries_sensitive_text(candidate):
+        return _member_identity.opaque_member_id(old_key)
+    return candidate
+
+
+def _rekey_malformed_member_ids(
+    agents: dict, memory_stores: dict | None = None, *, extra_taken: Collection[str] = ()
+) -> dict[str, str]:
+    """Move every ``agents`` entry whose key is outside the member-id grammar.
+
+    Mutates *agents* in place and returns ``{old_key: new_id}`` for the moved
+    rows (empty when nothing needed moving). The original key is preserved as
+    the row's ``display_name`` unless the row already carries one — a user who
+    renamed the member before this migration keeps their rename — and, verbatim
+    and permanently, as its ``legacy_key``: the durable old-key → id mapping the
+    overlay re-key (:func:`_follow_migrated_member_ids_in_overlay`) resolves
+    through, which a rename must not be able to break. Insertion order of the
+    untouched rows is preserved; moved rows re-enter at the end.
+
+    *memory_stores*, when given, is re-attributed in the same pass: a private
+    V2 store records its owner BY MEMBER ID (``owner_member``), and ownership
+    is verified as ``owner_member == the bound row's key``, so a re-keyed row
+    whose store still named the old key would read as an ownership mismatch
+    and lose its memory. The on-disk half of that record (the store's manifest
+    and database owner row) is renamed by ``_reattribute_moved_members`` inside
+    the locked write-back pass, before the document is written, so a failure
+    there aborts the write and the next load retries the whole migration.
+
+    Shared by the in-memory half (on the parsed ``cfg.agents``, whose values are
+    dataclasses) and the on-disk half (on the raw document, whose values are
+    dicts): the two must agree on the minted id, so they call ONE function.
+    *extra_taken* is how the on-disk half sees the same collision set as the
+    merged view: it names the ``config.local.json`` overlay's agent keys, which
+    the base document alone cannot see, so a base row never mints an id the
+    merged view has already given to an overlay row.
+    """
+    malformed = [k for k in agents if not _member_identity.is_valid_member_id(k)]
+    if not malformed:
+        return {}
+    moved: dict[str, str] = {}
+    taken: set[str] = {k for k in agents if _member_identity.is_valid_member_id(k)}
+    taken.update(k for k in extra_taken if _member_identity.is_valid_member_id(k))
+    for old in malformed:
+        row = agents.pop(old)
+        new_id = _member_identity.mint_member_id_from_base(_rekey_base(str(old)), taken)
+        taken.add(new_id)
+        # ``legacy_key`` must be a non-empty STRING for the overlay re-key to
+        # follow it (a junk value -- a number, a list -- left in place would
+        # strand the overlay under the old key: the next load could not follow
+        # it, minted a suffixed twin and detached the operator's overrides).
+        if isinstance(row, dict):
+            if not _member_identity.normalize_display_name(row.get("display_name")):
+                row["display_name"] = _member_identity.normalize_display_name(str(old))
+            legacy = row.get("legacy_key")
+            if not isinstance(legacy, str) or not legacy:
+                row["legacy_key"] = str(old)
+        elif hasattr(row, "display_name"):
+            if not _member_identity.normalize_display_name(row.display_name):
+                row.display_name = _member_identity.normalize_display_name(str(old))
+            legacy = getattr(row, "legacy_key", "")
+            if not isinstance(legacy, str) or not legacy:
+                row.legacy_key = str(old)
+        agents[new_id] = row
+        moved[str(old)] = new_id
+    if memory_stores:
+        for store in memory_stores.values():
+            if isinstance(store, dict):
+                owner = store.get("owner_member")
+                if isinstance(owner, str) and owner in moved:
+                    store["owner_member"] = moved[owner]
+            elif getattr(store, "owner_member", None) in moved:
+                store.owner_member = moved[store.owner_member]
+    return moved
+
+
+def _mint_overlay_only_member_ids(
+    base_agents: dict, overlay_keys: Collection[str], *, already: Mapping[str, str]
+) -> dict[str, str]:
+    """``{old overlay key: id}`` for the malformed keys only the overlay declares.
+
+    Decides the id only (the caller materializes the row), against the base's
+    valid keys, the ids *already* minted for base rows in this pass and the
+    overlay's own valid keys -- the collision set the in-memory pass used for
+    the merged view. Deterministic in overlay order.
+    """
+    taken: set[str] = {k for k in base_agents if _member_identity.is_valid_member_id(k)}
+    taken.update(already.values())
+    taken.update(k for k in overlay_keys if _member_identity.is_valid_member_id(k))
+    out: dict[str, str] = {}
+    for key in overlay_keys:
+        if _member_identity.is_valid_member_id(key) or key in base_agents or key in already:
+            continue
+        new_id = _member_identity.mint_member_id_from_base(_rekey_base(str(key)), taken)
+        taken.add(new_id)
+        out[str(key)] = new_id
+    return out
+
+
+def _follow_migrated_member_ids_in_overlay(
+    local_data: object, base_agents: object
+) -> dict[str, str]:
+    """Re-key the overlay's malformed ``agents`` rows onto the base rows they override.
+
+    ``config.local.json`` is user-owned and never written back, so the member-id
+    migration cannot fix a malformed key THERE. Left alone, an overlay row keyed
+    ``case competition`` keeps overriding a base row of that key only until the
+    base is migrated; on the next load the deep-merge adds it back as a second
+    row, the in-memory pass mints ``case-competition-2`` for it, and the member
+    has become two — the original without its overrides, and a phantom that
+    exists only in memory and re-arms the migration on every load.
+
+    Mutates ``local_data`` in place and returns ``{old_key: new_id}``. An overlay
+    ``agents`` key outside the grammar that the base does not hold is moved to
+    the one base row whose ``legacy_key`` is that string — the DURABLE mapping
+    the migration writes (never the display name, which a rename changes: the
+    overlay must keep following the member after the most ordinary operation
+    this feature ships). A key the base still holds is left alone: the merge
+    combines the two rows and the same pass re-keys the result. No holder, or
+    two (a hand-edited duplicate), leaves the row where it is. An overlay
+    ``default_agent`` naming a legacy key, and an overlay ``memory_stores``
+    record whose ``owner_member`` is one, follow the same way. Called by
+    ``load()`` before the merge and by ``save()`` before the overlay
+    subtraction, so the subtraction recognizes the overlay's leaves under the
+    id the emitted document uses and does not copy them into the base file.
+    """
+    if not isinstance(local_data, dict) or not isinstance(base_agents, dict):
+        return {}
+    by_legacy_key: dict[str, list[str]] = {}
+    for key, row in base_agents.items():
+        if not _member_identity.is_valid_member_id(key):
+            continue
+        legacy = row.get("legacy_key") if isinstance(row, dict) else getattr(row, "legacy_key", "")
+        if isinstance(legacy, str) and legacy:
+            by_legacy_key.setdefault(legacy, []).append(key)
+    moved: dict[str, str] = {}
+    overlay_agents = local_data.get("agents")
+    if isinstance(overlay_agents, dict):
+        for old in [k for k in overlay_agents if not _member_identity.is_valid_member_id(k)]:
+            if old in base_agents:
+                continue
+            holders = by_legacy_key.get(str(old), [])
+            if len(holders) != 1 or holders[0] in overlay_agents:
+                continue
+            overlay_agents[holders[0]] = overlay_agents.pop(old)
+            moved[str(old)] = holders[0]
+    default = local_data.get("default_agent")
+    if isinstance(default, str) and default and not _member_identity.is_valid_member_id(default):
+        holders = by_legacy_key.get(default, [])
+        if len(holders) == 1 and default not in base_agents:
+            local_data["default_agent"] = holders[0]
+            moved.setdefault(default, holders[0])
+    # A store record the overlay declares keeps naming the member by the old
+    # key (the overlay is never rewritten); read it under the id, or the
+    # ownership check would refuse the member's memory on every load after the
+    # migration landed.
+    overlay_stores = local_data.get("memory_stores")
+    if isinstance(overlay_stores, dict):
+        for record in overlay_stores.values():
+            if not isinstance(record, dict):
+                continue
+            owner = record.get("owner_member")
+            if not isinstance(owner, str) or _member_identity.is_valid_member_id(owner):
+                continue
+            holders = by_legacy_key.get(owner, [])
+            if len(holders) == 1 and owner not in base_agents:
+                record["owner_member"] = holders[0]
+                moved.setdefault(owner, holders[0])
+    return moved
+
+
+def _write_member_moves_marker(moves: Mapping[str, str]) -> None:
+    """Persist the minted ids (``{old: new}``) before the config write, in the
+    sealed sidecar; merged into pairs an earlier interrupted pass may have left.
+    Raises on an unreadable or unwritable sidecar: the pass must not proceed to
+    the config write without its durable intent."""
+    from kiro_crew import agent_state  # near-leaf; no cycle
+
+    agent_state.set_pending_member_moves({str(k): str(v) for k, v in moves.items()})
+
+
+def _read_member_moves_marker() -> dict[str, str]:
+    """The pending moves, or ``{}``. An unreadable sidecar reads as none HERE
+    (this is a load-time probe that must not fail every load); the pass that
+    would act on the pairs reads strictly through the same accessor and fails
+    closed on its own."""
+    from kiro_crew import agent_state  # near-leaf; no cycle
+
+    try:
+        return agent_state.get_pending_member_moves()
+    except Exception:  # noqa: BLE001 - an unreadable sidecar is not a pending move
+        return {}
+
+
+def _member_moves_pending() -> bool:
+    return bool(_read_member_moves_marker())
+
+
+def _discard_member_moves_marker(moves: Mapping[str, str]) -> None:
+    """Drop exactly *moves* from the record -- never the whole record: a pass in
+    another process may have recorded a pair of its own in between, and its
+    renames may still be pending (``agent_state.discard_pending_member_moves``
+    removes a pair only while the stored id still matches)."""
+    from kiro_crew import agent_state  # near-leaf; no cycle
+
+    if not moves:
+        return
+    try:
+        agent_state.discard_pending_member_moves(moves)
+    except Exception:  # noqa: BLE001 - a stale record is inert (replay is idempotent)
+        logger.debug("config: could not drop the finished member-id moves", exc_info=True)
+
+
+def _confirmed_marker_moves(document: dict) -> dict[str, str]:
+    """The marker's pairs the DOCUMENT vouches for: ``agents[new]`` exists and
+    records ``legacy_key == old``. Anything else in the marker is a mint that
+    never landed (or a forgery) and renames nothing."""
+    marker = _read_member_moves_marker()
+    if not marker:
+        return {}
+    agents = document.get("agents")
+    if not isinstance(agents, dict):
+        return {}
+    out: dict[str, str] = {}
+    for old, new in marker.items():
+        row = agents.get(new)
+        if isinstance(row, dict) and row.get("legacy_key") == old:
+            out[old] = new
+    return out
+
+
+def _reattribute_moved_members(
+    data: dict,
+    moved: dict[str, str],
+    overlay_agent_stores: Mapping[str, str] | None = None,
+    overlay_memory_stores: Mapping[str, object] | None = None,
+) -> None:
+    """On-disk ownership half of the member-id migration, INSIDE the locked pass.
+
+    Called by :func:`_persist_config_migration` with the document the locked
+    pass re-keyed and the mapping THAT pass minted (never the in-memory pass's,
+    which can differ when a concurrent writer took an id in between). Runs
+    AFTER the config write landed (the minted ids are durable and unclaimable
+    by then; the pass recorded them in the sealed sidecar (``MEMBER_ID_MOVES_MARKER``) before the
+    write, and a rename this call does not finish is replayed from that marker
+    on the next load): the private store's manifest and
+    database owner row (``memory_stores.rename_private_owner``) are renamed for
+    EVERY V2 store the moved member owns -- the one its base row binds, every
+    record whose ``owner_member`` the re-key just moved (a store an overlay row
+    selects instead of the base's, a store left over from an earlier rebind),
+    and the store the overlay row keyed by the old name selects
+    (*overlay_agent_stores*, ``{overlay key: memory_store}``), and every store
+    whose RECORD lives only in the overlay's ``memory_stores`` and names the old
+    key as owner (*overlay_memory_stores*; a record is V2 when either document
+    says so): the overlay is never written back, so the migration fires once,
+    and a store it missed would keep the legacy owner for good and refuse the
+    member's memory as an ownership mismatch. The overlay record itself keeps
+    naming the old key -- the in-memory re-key follows it on every load, which
+    is why the merged view stays consistent while the file does not change.
+    Every rename is a no-op where the record already names the new id, so a
+    crash at any point is recoverable by the next load: the document already
+    carries the minted id (with ``legacy_key`` naming the old one) and the
+    marker names the pair, so the replay renames whatever is still behind and
+    nothing can have claimed the id in between -- the id was durable before the
+    first record moved. Inside one store the database row is renamed before the
+    manifest and a failed manifest write puts the row back
+    (``rename_private_owner``), so the ordinary failure -- a database a live
+    session holds -- changes nothing for that store.
+
+    Failures PROPAGATE to the caller, which leaves the marker in place and
+    logs; the next load replays the confirmed pairs. The document write is
+    never undone by a rename failure: an id on disk with stale ownership
+    records is a repairable state (the marker), an id that moved on disk after
+    the records were renamed is not.
+
+    Besides the memory store, the member's PRIVATE-COPY lineage follows: the
+    ``agent_state`` sidecar records a forked template as ``private_to`` the crew
+    that owns it, and a copy still naming the old key would read as another
+    crew's -- every save, publish and reset on it refused. Renamed here, in the
+    same locked pass and before the config write, so a failure aborts the write
+    and the next load retries; idempotent like the store rename. The DM binding,
+    the rules payload and a session's ``agent`` all pass the member name through
+    the shared agent-name grammar at their own boundaries before anything is
+    written, so a row whose key is outside that grammar has none of them to
+    move.
+    """
+    from kiro_crew import agent_state as _agent_state  # near-leaf; no cycle
+    from kiro_crew import memory_stores as _memory_stores  # imports this module
+
+    agents = data.get("agents")
+    if not isinstance(agents, dict):
+        return
+    for old, new in moved.items():
+        _agent_state.rename_private_owner(old, new)
+    # A base without a store map still has stores to re-attribute: the row's
+    # binding, the overlay's selection and overlay-only records all name stores
+    # the base document never mentions.
+    raw_stores = data.get("memory_stores")
+    stores: dict = raw_stores if isinstance(raw_stores, dict) else {}
+    for old, new in moved.items():
+        owned: list[str] = []
+        row = agents.get(new)
+        bound = row.get("memory_store") if isinstance(row, dict) else None
+        if isinstance(bound, str):
+            owned.append(bound)
+        selected = (overlay_agent_stores or {}).get(old)
+        if isinstance(selected, str):
+            owned.append(selected)
+        for name, record in stores.items():
+            if isinstance(record, dict) and record.get("owner_member") == new:
+                owned.append(name)
+        for name, record in (overlay_memory_stores or {}).items():
+            if isinstance(record, dict) and record.get("owner_member") in (old, new):
+                owned.append(name)
+        seen: set[str] = set()
+        for store in owned:
+            if store in seen:
+                continue
+            seen.add(store)
+            if _is_v2_record(stores.get(store)) or _is_v2_record(
+                (overlay_memory_stores or {}).get(store)
+            ):
+                _memory_stores.rename_private_owner(store, old, new)
+
+
+def _is_v2_record(record: object) -> bool:
+    return isinstance(record, dict) and record.get("memory_version") == 2
+
+
+#: One deferred member-id pass at a time: several on-loop loads before it lands
+#: would otherwise queue identical passes (each a no-op after the first).
+_member_id_migration_inflight = threading.Lock()
+
+
+def _schedule_member_id_migration(
+    path: Path,
+    *,
+    default_kiro_agent: str,
+    overlay_agent_keys: tuple[str, ...],
+    overlay_agent_stores: Mapping[str, str] | None,
+    overlay_memory_stores: Mapping[str, object] | None,
+) -> None:
+    """Run the member-id migration's disk half on the default executor.
+
+    Called from a ``load()`` that found itself on the event-loop thread with
+    ``MIGRATE_MEMBER_IDS`` pending (see the call site in ``_load_resolved``).
+    The pass is the same ``_persist_config_migration`` a worker-thread load
+    runs inline -- a locked read-modify-write that re-decides the moves
+    against the document as it is then and renames the ownership records
+    before the config write -- so nothing about the migration changes but the
+    thread it runs on. Coalesced: a second schedule while one is in flight is
+    dropped (the pass is a no-op once the keys are migrated). Never raises;
+    a scheduling failure leaves the migration to the next off-loop load.
+    """
+    if not _member_id_migration_inflight.acquire(blocking=False):
+        return
+
+    def _run() -> None:
+        try:
+            _persist_config_migration(
+                path,
+                frozenset({MIGRATE_MEMBER_IDS}),
+                default_kiro_agent=default_kiro_agent,
+                overlay_agent_keys=overlay_agent_keys,
+                overlay_agent_stores=overlay_agent_stores,
+                overlay_memory_stores=overlay_memory_stores,
+            )
+        except Exception:  # noqa: BLE001 - the next load retries the whole migration
+            logger.warning(
+                "config: deferred member-id migration failed; retried on the next load",
+                exc_info=True,
+            )
+        finally:
+            _member_id_migration_inflight.release()
+            _invalidate_config_cache()
+
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _run)
+    except Exception:  # noqa: BLE001 - no loop after all, or it is closing
+        _member_id_migration_inflight.release()
+        logger.debug(
+            "config: could not schedule the member-id migration off the loop", exc_info=True
+        )
+
+
+def _follow_locked_member_moves(
+    cfg: "KiroCrewConfig", in_memory: dict[str, str], locked: dict[str, str]
+) -> None:
+    """Re-key the parsed config to the ids the LOCKED migration pass minted.
+
+    Both passes mint from the same inputs, so they agree unless a writer added a
+    row between this load's read and the locked write; then the in-memory id may
+    carry a different collision suffix. The document is the truth (its
+    ownership records were renamed to ITS ids inside the lock), so the parsed
+    rows, ``default_agent`` and the store records follow it.
+    """
+    for old, mine in in_memory.items():
+        theirs = locked.get(old)
+        if theirs is None or theirs == mine or mine not in cfg.agents:
+            continue
+        cfg.agents[theirs] = cfg.agents.pop(mine)
+        if cfg.default_agent == mine:
+            cfg.default_agent = theirs
+        for record in cfg.memory_stores.values():
+            if getattr(record, "owner_member", None) == mine:
+                record.owner_member = theirs
+
 
 def _apply_document_migrations(
     data: dict,
@@ -703,6 +1157,11 @@ def _apply_document_migrations(
     default_kiro_agent: str,
     adopt_keys: frozenset[str] = frozenset(),
     recorded_adoptions: list[str] | None = None,
+    overlay_agent_keys: Collection[str] = (),
+    overlay_agent_stores: Mapping[str, str] | None = None,
+    overlay_memory_stores: Mapping[str, object] | None = None,
+    recorded_member_moves: dict[str, str] | None = None,
+    replayed_member_moves: dict[str, str] | None = None,
 ) -> bool:
     """Apply the pending write-back migrations to a raw config document in place.
 
@@ -766,6 +1225,100 @@ def _apply_document_migrations(
                 )
             }
             changed = True
+
+    # Re-key agents rows whose key fails the member-id grammar. Re-decided
+    # against *data*: only a key that is STILL malformed in the on-disk document
+    # is moved, so a writer that already migrated (or deleted the row) is a
+    # no-op here. A pre-existing row under the minted id is never overwritten —
+    # the collision resolves to the next free suffix, the same way a create
+    # would.
+    if MIGRATE_MEMBER_IDS in pending:
+        stored_agents = data.get("agents")
+        if isinstance(stored_agents, dict):
+            stored_stores = data.get("memory_stores")
+            moved = _rekey_malformed_member_ids(
+                stored_agents,
+                stored_stores if isinstance(stored_stores, dict) else None,
+                extra_taken=overlay_agent_keys,
+            )
+            if moved:
+                changed = True
+                stored_default = data.get("default_agent")
+                if isinstance(stored_default, str) and stored_default in moved:
+                    data["default_agent"] = moved[stored_default]
+            # A malformed key the OVERLAY alone declares has no base row to
+            # move, but the merged view re-keys it on every load (the overlay
+            # is never written back), and its private store's ownership
+            # records name the old key until this pass renames them: without
+            # this the member's memory reads as an ownership mismatch for
+            # good. Minted after the base rows, in overlay order -- the order
+            # the in-memory pass saw them in the merged dict -- against the
+            # same collision set, so both passes agree on the id.
+            overlay_moves = _mint_overlay_only_member_ids(
+                stored_agents, overlay_agent_keys, already=moved
+            )
+            if overlay_moves:
+                moved.update(overlay_moves)
+                # The id must be DURABLE: the overlay is never rewritten, so
+                # without a base record the merged view would re-mint this id
+                # on every load, and a base row that later takes the same id
+                # would shift it to a ``-2`` while the ownership records renamed
+                # below kept the first -- the member's memory refused for good.
+                # So an IDENTITY record for the overlay-only row is materialized
+                # into the base under its minted id -- ``legacy_key`` (the
+                # durable mapping) and the ``display_name`` derived from the old
+                # key, nothing else: the overlay's settings stay the overlay's,
+                # so removing ``config.local.json`` later removes them rather
+                # than leaving copies active in the base. From the next load on
+                # ``_follow_migrated_member_ids_in_overlay`` reads the overlay
+                # row under this id (its leaves win the merge) and the id is
+                # taken like any base row's.
+                for old, new_id in overlay_moves.items():
+                    stored_agents[new_id] = {
+                        "display_name": _member_identity.normalize_display_name(old),
+                        "legacy_key": old,
+                    }
+                changed = True
+                # The record for such a store can live in the BASE document
+                # (the maps merge): its owner is renamed like a moved base
+                # row's, which is a base write.
+                if isinstance(stored_stores, dict):
+                    for record in stored_stores.values():
+                        if isinstance(record, dict) and record.get("owner_member") in overlay_moves:
+                            record["owner_member"] = overlay_moves[str(record["owner_member"])]
+            if moved:
+                # The minted ids go to the DURABLE marker before the config
+                # write, and the ownership records are renamed by the caller
+                # only AFTER that write landed (see MEMBER_ID_MOVES_MARKER):
+                # once the document holds the id nobody else can claim it, so
+                # a crash or a refused rename after this point cannot
+                # strand a store under an id the retry mints differently. A
+                # marker write that fails aborts the pass before anything
+                # changes on disk.
+                _write_member_moves_marker(moved)
+                if recorded_member_moves is not None:
+                    recorded_member_moves.update(moved)
+            # Pairs an earlier pass wrote to the marker whose document write
+            # landed but whose renames did not finish: replayed by the caller
+            # (idempotent), never re-minted. Not a document change. Pairs the
+            # document does NOT vouch for are mints that never landed (or
+            # forgeries) and are dropped HERE, under the config lock, where
+            # the document is authoritative: every pass records its pair and
+            # writes its document inside one lock hold, so an unvouched pair
+            # seen under the lock cannot be another pass's write in flight --
+            # which is exactly what an outside-the-lock drop could erase.
+            if replayed_member_moves is not None:
+                marker = _read_member_moves_marker()
+                confirmed = _confirmed_marker_moves(data)
+                for old, new_id in confirmed.items():
+                    if old not in moved:
+                        replayed_member_moves[old] = new_id
+                stale = {
+                    old: new_id
+                    for old, new_id in marker.items()
+                    if old not in moved and old not in confirmed
+                }
+                _discard_member_moves_marker(stale)
 
     # Strip the pre-launch materialized ``connections_ui: false``. Re-checked
     # against *data*: only an exact stored ``false`` is touched, so a concurrent
@@ -867,6 +1420,10 @@ def _persist_config_migration(
     default_kiro_agent: str,
     adopt_keys: frozenset[str] = frozenset(),
     confirmed_adoptions: list[str] | None = None,
+    overlay_agent_keys: Collection[str] = (),
+    overlay_agent_stores: Mapping[str, str] | None = None,
+    overlay_memory_stores: Mapping[str, object] | None = None,
+    confirmed_member_moves: dict[str, str] | None = None,
 ) -> bool:
     """Write the pending migrations to *path* as a read-modify-write.
 
@@ -942,6 +1499,11 @@ def _persist_config_migration(
     # ``record_adoptions`` for why the marker deliberately goes first and what the
     # residual is.
     recorded_adoptions: list[str] = []
+    recorded_member_moves: dict[str, str] = {}
+    replayed_member_moves: dict[str, str] = {}
+    # The document the locked pass mutated (or found migrated), kept for the
+    # ownership renames that run after its write.
+    migrated_doc: list[dict] = []
 
     # ``applied`` means the delta was computed and the backup taken; ``wrote`` means
     # the ATOMIC WRITE returned. They are separate because the write happens AFTER
@@ -954,6 +1516,7 @@ def _persist_config_migration(
 
     def _mutate(current: dict) -> dict | None:
         nonlocal applied
+        migrated_doc[:] = [current]
         if not _apply_document_migrations(
             current,
             pending,
@@ -961,6 +1524,11 @@ def _persist_config_migration(
             default_kiro_agent=default_kiro_agent,
             adopt_keys=adopt_keys,
             recorded_adoptions=recorded_adoptions,
+            overlay_agent_keys=overlay_agent_keys,
+            overlay_agent_stores=overlay_agent_stores,
+            overlay_memory_stores=overlay_memory_stores,
+            recorded_member_moves=recorded_member_moves,
+            replayed_member_moves=replayed_member_moves,
         ):
             # Nothing left to migrate -- another writer got here first. Returning
             # None skips the write, so we do not rewrite a file we agree with.
@@ -1004,6 +1572,35 @@ def _persist_config_migration(
         # agree with.
         if recorded_adoptions and wrote and confirmed_adoptions is not None:
             confirmed_adoptions.extend(recorded_adoptions)
+        # Same rule for the member re-key: the caller learns the ids the LOCKED
+        # pass minted only when that pass's document reached disk.
+        if recorded_member_moves and wrote and confirmed_member_moves is not None:
+            confirmed_member_moves.update(recorded_member_moves)
+        # Ownership records AFTER the document write, for the ids that write
+        # landed plus the marker's confirmed leftovers. The document already
+        # holds every id renamed here, so nothing can claim one in between;
+        # a rename that is refused (a database a live session holds) leaves
+        # the marker in place and the next load replays exactly these pairs.
+        to_rename: dict[str, str] = dict(replayed_member_moves)
+        if wrote:
+            to_rename.update(recorded_member_moves)
+        if to_rename and migrated_doc:
+            try:
+                _reattribute_moved_members(
+                    migrated_doc[0], to_rename, overlay_agent_stores, overlay_memory_stores
+                )
+            except Exception:  # noqa: BLE001 - the marker keeps the intent for the next load
+                logger.warning(
+                    "config: %d member-id ownership rename(s) did not finish; "
+                    "retried on the next load",
+                    len(to_rename),
+                    exc_info=True,
+                )
+            else:
+                # Only the pairs THIS pass renamed, each only while the record
+                # still holds the id it renamed to: a pass overlapping in
+                # another process keeps its own unfinished pair for its replay.
+                _discard_member_moves_marker(to_rename)
     if wrote:
         # Same reason save() did: drop the validated-data cache so the next load
         # re-reads this write even where the filesystem mtime resolution is coarse.
@@ -2915,6 +3512,10 @@ class KiroCrewConfig:
         # disk path below; read from the sidecar on a cache hit. Empty when there
         # is no overlay, in which case the merged document IS the base.
         base_shadow: dict = {}
+        # The overlay document, read on the disk branch below; bound here so a
+        # cache hit that still finds a migration pending (a deferred write-back)
+        # sees "no overlay" rather than an unbound name.
+        local_data: dict = {}
         # Bound BEFORE the cache branch, because only the reading branch can decide
         # an adoption: a cache HIT means no base document was read this load, and a
         # load that did not look at the file must not adopt from it. Empty is
@@ -2974,7 +3575,7 @@ class KiroCrewConfig:
                 _report_superseded_defaults(data, skip={e.dotted_key for e in adoptable})
 
             # Deep-merge config.local.json overlay (user-owned, never touched by setup)
-            local_data: dict = {}
+            local_data = {}
             local_path = config_local_path()
             if local_path.is_file():
                 try:
@@ -2999,6 +3600,24 @@ class KiroCrewConfig:
                     _mark_file_degraded(local_path)
 
             if local_data:
+                # An overlay row keyed by a member's PRE-migration name follows
+                # the member to its minted id, so the merge lands on one row.
+                overlay_moves = _follow_migrated_member_ids_in_overlay(
+                    local_data, data.get("agents")
+                )
+                if overlay_moves:
+                    # A count only, never the keys or the ids: a key is
+                    # operator-typed free text that can be credential-shaped,
+                    # the id is minted FROM it, and warnings are served to the
+                    # dashboard's log surface. The rows to fix are the ones
+                    # carrying a legacy_key.
+                    logger.warning(
+                        "config.local.json: %d agents row(s) keyed by a pre-migration "
+                        "member name were read under the member's id; rename such a "
+                        "key in the overlay to the row's id (the rows carrying a "
+                        "legacy_key)",
+                        len(overlay_moves),
+                    )
                 # Remember the base copy of what the overlay is about to shadow —
                 # the last moment both documents exist. See _shadowed_base_sections.
                 base_shadow = _shadowed_base_sections(data, local_data)
@@ -3233,6 +3852,19 @@ class KiroCrewConfig:
                         description=entry.get("description", ""),
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
+                        # Wrapper identity fields (member_identity.py). All
+                        # presentation/provenance: a non-string collapses to ""
+                        # rather than crashing the load, and "" is meaningful
+                        # ("label = id", "not linked to a template").
+                        display_name=_member_identity.normalize_display_name(
+                            entry.get("display_name", "")
+                        ),
+                        role=_member_identity.normalize_display_name(entry.get("role", "")),
+                        # Byte-for-byte, never normalized: this is the string an
+                        # overlay row is still keyed by, and a save() writes the
+                        # parsed value back -- a collapsed copy would stop
+                        # matching the overlay's key and re-create the phantom.
+                        legacy_key=_verbatim_text(entry.get("legacy_key", "")),
                         # Hand-editable config: a quoted "true" or a stray int
                         # must not become a truthy star, so only a real bool
                         # is honoured and anything else reads as un-starred.
@@ -4460,6 +5092,15 @@ class KiroCrewConfig:
         adopt_keys: set[str] = set()
         adoption_landed = False
         confirmed_adoptions: list[str] = []
+        # Same shape for the member-id migration: a re-key this load decided but
+        # could not write must not be frozen behind the cache either. The cache
+        # hit binds ``local_data = {}`` (no overlay is read on the hot path), so a
+        # retry served from the cache would hand the on-disk re-key an EMPTY
+        # overlay key set and let it mint an id an overlay row already owns --
+        # two members collapsing onto one id. Dropping the cache makes the retry
+        # a real read, overlay included.
+        moved_ids: dict[str, str] = {}
+        member_moves_landed = False
 
         try:
             pending: set[str] = set()
@@ -4478,6 +5119,30 @@ class KiroCrewConfig:
                     memory_store="default",
                 )
                 pending.add(MIGRATE_AGENTS)
+            # Member-id split: a row keyed outside the grammar is re-keyed to a
+            # minted id (original string kept as display_name) so every roster
+            # and every keyed subsystem can address it. In memory now, on disk
+            # via the delta below; both halves mint through one function.
+            moved_ids = _rekey_malformed_member_ids(cfg.agents, cfg.memory_stores)
+            # A marker left by an interrupted pass (document written, renames
+            # not finished) is a pending migration too: one stat, and the
+            # pass replays the confirmed pairs.
+            if not moved_ids and _member_moves_pending():
+                pending.add(MIGRATE_MEMBER_IDS)
+            if moved_ids:
+                if cfg.default_agent in moved_ids:
+                    cfg.default_agent = moved_ids[cfg.default_agent]
+                pending.add(MIGRATE_MEMBER_IDS)
+                # A count only, never the typed names or the ids minted from
+                # them: the name is free text that can be credential-shaped,
+                # and this warning reaches the dashboard's log surface. The
+                # affected rows are the ones carrying a legacy_key.
+                logger.warning(
+                    "config: re-keyed %d crew member(s) whose name was outside the "
+                    "member-id grammar; the typed name is kept as display_name and "
+                    "the old key as legacy_key",
+                    len(moved_ids),
+                )
             if not cfg.default_agent or cfg.default_agent not in cfg.agents:
                 # Prefer "default" if it exists, otherwise use first available agent
                 if "default" in cfg.agents:
@@ -4527,14 +5192,84 @@ class KiroCrewConfig:
             # the handler at the end -- leaves it False and drops the cache in the
             # ``finally``.
             if needs_migration and not cfg._degraded_sections:
-                persisted = _persist_config_migration(
-                    path,
-                    frozenset(pending),
-                    default_kiro_agent=cfg.agent.default_agent or "kirocrew",
-                    adopt_keys=frozenset(adopt_keys),
-                    confirmed_adoptions=confirmed_adoptions,
+                overlay_agents = local_data.get("agents") if isinstance(local_data, dict) else None
+                confirmed_member_moves: dict[str, str] = {}
+                # The member-id migration's disk half renames private-store
+                # ownership records -- a SQLite commit and a manifest fsync per
+                # store (``_reattribute_moved_members``) -- which must not run
+                # on the event loop. ``load()`` is reached inline from async
+                # handlers (the config cache is what makes that cheap), so on
+                # the loop thread that half is DEFERRED to the default
+                # executor: this pass writes every other pending key as before
+                # and the in-memory re-key already applied stands (the mint is
+                # deterministic from the same inputs), while the off-loop pass
+                # re-decides the moves against the document under the lock and
+                # invalidates the cache so the next load reads what landed.
+                defer_member_ids = MIGRATE_MEMBER_IDS in pending and on_event_loop()
+                inline_pending = (
+                    frozenset(pending - {MIGRATE_MEMBER_IDS})
+                    if defer_member_ids
+                    else frozenset(pending)
+                )
+                default_kiro_agent = cfg.agent.default_agent or "kirocrew"
+                # Ordered: the on-disk pass mints overlay-only ids in the
+                # order the merged view saw them.
+                overlay_agent_keys: tuple[str, ...] = tuple(
+                    overlay_agents.keys() if isinstance(overlay_agents, dict) else ()
+                )
+                # The store an overlay row selects for a member the base
+                # keys by the old name: reattributed with the base's own.
+                overlay_agent_stores: dict[str, str] | None = (
+                    {
+                        k: v["memory_store"]
+                        for k, v in (overlay_agents or {}).items()
+                        if isinstance(v, dict) and isinstance(v.get("memory_store"), str)
+                    }
+                    if isinstance(overlay_agents, dict)
+                    else None
+                )
+                # Store records the overlay alone declares: their owner is
+                # renamed on disk like a base record's.
+                overlay_memory_stores: dict[str, object] | None = (
+                    local_data.get("memory_stores")
+                    if isinstance(local_data, dict)
+                    and isinstance(local_data.get("memory_stores"), dict)
+                    else None
+                )
+                if defer_member_ids:
+                    _schedule_member_id_migration(
+                        path,
+                        default_kiro_agent=default_kiro_agent,
+                        overlay_agent_keys=overlay_agent_keys,
+                        overlay_agent_stores=overlay_agent_stores,
+                        overlay_memory_stores=overlay_memory_stores,
+                    )
+                persisted = (
+                    _persist_config_migration(
+                        path,
+                        inline_pending,
+                        default_kiro_agent=default_kiro_agent,
+                        adopt_keys=frozenset(adopt_keys),
+                        confirmed_adoptions=confirmed_adoptions,
+                        overlay_agent_keys=overlay_agent_keys,
+                        overlay_agent_stores=overlay_agent_stores,
+                        overlay_memory_stores=overlay_memory_stores,
+                        confirmed_member_moves=confirmed_member_moves,
+                    )
+                    if inline_pending
+                    else True
                 )
                 adoption_landed = persisted
+                # Deferred: not landed by THIS pass, so the cache is dropped in
+                # the ``finally`` and the next load observes the off-loop write.
+                member_moves_landed = persisted and not defer_member_ids
+                # The locked pass is authoritative: if a concurrent writer took
+                # an id between this load's read and the locked write, the
+                # document (and the ownership records, renamed inside that
+                # pass) carry a different id than the in-memory pass minted.
+                # Follow the document, so this load never serves an id that is
+                # not the one on disk.
+                _follow_locked_member_moves(cfg, moved_ids, confirmed_member_moves)
                 # In memory only for keys the migration CONFIRMED it removed, and
                 # only where the overlay does not supply the field: there the stale
                 # base bytes are cleared like any other, but the effective value
@@ -4606,7 +5341,7 @@ class KiroCrewConfig:
             # rather than beside the write, because the write is skipped by three
             # different paths (a contended lock, a degraded load, an exception) and
             # all three leave the same stale cache entry.
-            if adopt_keys and not adoption_landed:
+            if (adopt_keys and not adoption_landed) or (moved_ids and not member_moves_landed):
                 _invalidate_config_cache()
 
         return cfg, ticket
@@ -4798,6 +5533,15 @@ class KiroCrewConfig:
                                 k: canonical[k] for k in rl_overlay if k in canonical
                             },
                         }
+                    # Same re-key as load(): an overlay agents row keyed by a
+                    # member's pre-migration name is subtracted under the id
+                    # the emitted document uses, or its leaves would be copied
+                    # into the base file as that member's own values.
+                    raw_local = dict(raw_local)
+                    overlay_agents = raw_local.get("agents")
+                    if isinstance(overlay_agents, dict):
+                        raw_local["agents"] = dict(overlay_agents)
+                    _follow_migrated_member_ids_in_overlay(raw_local, d.get("agents"))
                     d = _subtract_overlay(d, raw_local)
             except (json.JSONDecodeError, OSError):
                 pass

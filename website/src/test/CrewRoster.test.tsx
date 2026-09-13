@@ -632,6 +632,7 @@ describe('crew editor — create', () => {
     await waitFor(() =>
       expect(mockApi.createKirocrewAgent).toHaveBeenCalledWith({
         name: 'staging',
+        role: '',
         kiro_agent: 'oncall-agent',
         workspace: 'default',
         memory_store: 'default',
@@ -655,13 +656,12 @@ describe('crew editor — save', () => {
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', {
-      kiro_agent: 'oncall-agent',
-      workspace: 'oncall',
-      memory_store: 'oncall-mem',
+      // Only the field this editor changed rides (plus the face's "nothing to
+      // say" spelling): an untouched binding, workspace, store, model or label
+      // is not echoed back over what another surface committed while the sheet
+      // was open (see the page's save payload and
+      // KiroCrewAgentsPage.identitySave.test.tsx).
       triggers: 'pager',
-      model: 'claude-opus-5',
-      reasoning_effort: '',
-      session_color: '',
       avatar: {},
     })
   })
@@ -1425,5 +1425,61 @@ describe('crew avatar — uploaded picture', () => {
     // The ghost pane's draft survives the round-trip through the picture tab.
     fireEvent.click(within(builder).getByRole('button', { name: 'Ghost face' }))
     expect(within(builder).getByTestId('avatar-builder-preview')).toBeInTheDocument()
+  })
+})
+
+describe('crew identity — id vs display name (wrapper step 1)', () => {
+  /** The oncall crew as the roster sees it after a rename: the id stays
+   *  `oncall`; the label is what the user typed. */
+  const RENAMED_ONCALL = { ...OTHER_CREW, display_name: 'Checkout triage', role: 'Oncall Triage Engineer' }
+
+  it('a card wears the label and shows the id beside it only when they differ', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({ agents: [DEFAULT_CREW, RENAMED_ONCALL], default_agent: 'kirocrew' })
+    await renderRoster()
+    const labels = screen.getAllByTestId('crew-card-label').map((el) => el.textContent)
+    expect(labels).toEqual(expect.arrayContaining(['kirocrew', 'Checkout triage']))
+    // The plain crew shows no id twin; the renamed one does, so the handle a
+    // cron or webhook needs stays readable next to the human label.
+    const ids = screen.getAllByTestId('crew-card-id').map((el) => el.textContent)
+    expect(ids).toEqual(['oncall'])
+  })
+
+  it('the editor is addressed by id and saves a rename as display_name only', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    // On the LANDING pane, not behind a rail item: "rename it" is the first
+    // thing a user opening the editor looks for.
+    const input = within(sheet).getByTestId('crew-display-name-input') as HTMLInputElement
+    // Seeded with the label, which for a pre-split crew IS the id.
+    expect(input.value).toBe('oncall')
+    fireEvent.change(input, { target: { value: '  Checkout  triage ' } })
+    fireEvent.change(within(sheet).getByTestId('crew-role-input'), { target: { value: 'Oncall Triage Engineer' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    const [name, body] = mockApi.updateKirocrewAgent.mock.calls[0]
+    // The KEY in the URL is the id; the rename rides the body.
+    expect(name).toBe('oncall')
+    expect(body).toMatchObject({ display_name: 'Checkout  triage', role: 'Oncall Triage Engineer' })
+    // The untouched binding does not ride with a rename.
+    expect('kiro_agent' in body).toBe(false)
+  })
+
+  it('a create from the Members roster lands on the MINTED id, not the typed text', async () => {
+    // "case competition" — the incident. The server mints `case-competition`
+    // and keeps the typed string as the display name.
+    mockApi.createKirocrewAgent.mockResolvedValue({ ok: true, name: 'case-competition', id: 'case-competition', display_name: 'case competition' })
+    renderPage('/capabilities?tab=crews&new=1&from=members')
+    const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
+    const user = userEvent.setup()
+    await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'case competition')
+    await user.type(within(sheet).getByTestId('crew-role-input'), 'Judge')
+    const template = within(sheet).getByRole('combobox', { name: 'Agent Template' })
+    fireEvent.keyDown(template, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Create member' }))
+    await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
+    expect(mockApi.createKirocrewAgent.mock.calls[0][0]).toMatchObject({ name: 'case competition', role: 'Judge' })
+    await waitFor(() => expect(screen.getByTestId('location-pathname')).toHaveTextContent('/members'))
+    expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?member=case-competition$/)
   })
 })

@@ -11134,6 +11134,12 @@
       "test_failed_for": "Тест для {{name}} не пройден"
     },
     "kiroCrewAgentsPage": {
+      "name_is_display_name_hint": "Как вы называете этого участника. {{productName}} создаёт из него постоянный ID.",
+      "display_name": "Отображаемое имя",
+      "display_name_hint": "Переименование меняет только подпись; ID {{id}} сохраняется, поэтому ссылки, расписания и вебхуки, использующие ID, продолжают работать.",
+      "role": "Роль",
+      "role_hint": "Должность. Необязательно.",
+      "role_placeholder": "напр., Релиз-менеджер",
       "a_unique_identifier_for_this_workspace_agents_re": "Уникальный идентификатор этой рабочей области. Агенты ссылаются на рабочие области по имени.",
       "add_crew_member": "Добавить участника команды",
       "agent_template_is_required": "Шаблон агента обязателен",
@@ -14991,6 +14997,11 @@
       "show_controls": "Показать управление"
     },
     "membersPage": {
+      "member_id": "ID участника",
+      "role": "Роль",
+      "role_none": "Нет",
+      "provenance": "Источник",
+      "provenance_local": "Создан здесь",
       "agent_template": "Шаблон агента",
       "configuration": "Конфигурация",
       "crew_summary": "Сводка участника",

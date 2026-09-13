@@ -157,28 +157,32 @@ class TestPrivateOwnership:
     def test_store_listing_follows_exact_member_avatar_and_updates_without_rebinding(self):
         from kiro_crew.dashboard.handlers.memory_admin import _list_stores_blocking
 
-        cfg, first = _new_member("Code Review")
-        cfg.agents["Code Review"].avatar = {"kind": "image", "v": 11}
-        persist_member_config(cfg, "Code Review", create=True)
+        # Two ids that share a lossy slug (code-review) but are distinct keys:
+        # ownership must follow the EXACT id. (Both sit inside the member-id
+        # grammar; a key with a space would be re-keyed by the loader.)
+
+        cfg, first = _new_member("Code_Review")
+        cfg.agents["Code_Review"].avatar = {"kind": "image", "v": 11}
+        persist_member_config(cfg, "Code_Review", create=True)
         cfg = KiroCrewConfig.load()
         cfg.agents["Code-Review"] = KiroCrewAgentConfig(avatar={"kind": "image", "v": 22})
         second = provision_member_memory(cfg, "Code-Review")
         persist_member_config(cfg, "Code-Review", create=True)
 
         rows = {row["name"]: row for row in _list_stores_blocking()}
-        assert rows[first]["owner_member"] == "Code Review"
+        assert rows[first]["owner_member"] == "Code_Review"
         assert rows[first]["owner_avatar"] == {"kind": "image", "v": 11}
         assert rows[second]["owner_member"] == "Code-Review"
         assert rows[second]["owner_avatar"] == {"kind": "image", "v": 22}
         assert rows["default"]["owner_avatar"] == {}
 
         cfg = KiroCrewConfig.load()
-        cfg.agents["Code Review"].avatar = {"kind": "image", "v": 33}
-        persist_member_config(cfg, "Code Review", create=False, expected_store=first)
+        cfg.agents["Code_Review"].avatar = {"kind": "image", "v": 33}
+        persist_member_config(cfg, "Code_Review", create=False, expected_store=first)
         refreshed = {row["name"]: row for row in _list_stores_blocking()}
         assert refreshed[first]["owner_avatar"] == {"kind": "image", "v": 33}
         assert refreshed[second]["owner_avatar"] == rows[second]["owner_avatar"]
-        assert require_member_memory_store(KiroCrewConfig.load(), "Code Review") == first
+        assert require_member_memory_store(KiroCrewConfig.load(), "Code_Review") == first
 
     def test_mcp_advisory_binding_does_not_open_hidden_files_but_runtime_does(self):
         cfg, store = _new_member()
@@ -269,7 +273,9 @@ class TestPrivateOwnership:
         with pytest.raises(UnknownMemoryStore):
             resolve_agent_bindings(cfg, "reviewer")
 
-    @pytest.mark.parametrize("member", ["reviewer", "r" * 1100])
+    # 64 is the longest member id the grammar admits; a longer key is re-keyed
+    # by the loader's identity migration and would not name this row.
+    @pytest.mark.parametrize("member", ["reviewer", "r" * 64])
     @pytest.mark.parametrize("matching_owner", [True, False])
     def test_custom_store_database_owner_survives_lost_manifest_and_declaration(
         self, member, matching_owner

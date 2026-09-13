@@ -10820,6 +10820,12 @@
       "test_failed_for": "Test für {{name}} fehlgeschlagen"
     },
     "kiroCrewAgentsPage": {
+      "name_is_display_name_hint": "Wie du dieses Mitglied nennst. {{productName}} erzeugt daraus eine dauerhafte ID.",
+      "display_name": "Anzeigename",
+      "display_name_hint": "Umbenennen ändert nur die Beschriftung; die ID {{id}} bleibt, sodass Links, Zeitpläne und Webhooks, die die ID verwenden, weiter funktionieren.",
+      "role": "Rolle",
+      "role_hint": "Berufsbezeichnung. Optional.",
+      "role_placeholder": "z. B. Release-Manager",
       "a_unique_identifier_for_this_workspace_agents_re": "Eine eindeutige Kennung für diesen Workspace. Agenten verweisen über den Namen auf Workspaces.",
       "add_crew_member": "Crew-Mitglied hinzufügen",
       "agent_template_is_required": "Agent-Template ist erforderlich",
@@ -14614,6 +14620,11 @@
       "show_controls": "Steuerung anzeigen"
     },
     "membersPage": {
+      "member_id": "Mitglieds-ID",
+      "role": "Rolle",
+      "role_none": "Keine",
+      "provenance": "Quelle",
+      "provenance_local": "Hier erstellt",
       "agent_template": "Agent-Vorlage",
       "configuration": "Konfiguration",
       "crew_summary": "Crew-Übersicht",

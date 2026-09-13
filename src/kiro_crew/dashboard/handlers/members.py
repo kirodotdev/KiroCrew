@@ -32,7 +32,9 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.member_identity import effective_display_name
 from kiro_crew.members import MemberSlugError
 from kiro_crew.validation import _AGENT_NAME_RE
 
@@ -131,6 +133,22 @@ _SOURCE_BUILTIN = "builtin"
 _SOURCE_PACKAGE = "package"
 
 
+def _identity_text(value: object) -> str:
+    """Bound a wrapper identity string for the roster: text only, redacted.
+
+    ``display_name``, ``role`` and the template link are user- or
+    template-author-typed and live in a hand-editable, agent-writable config,
+    so they get the same treatment as the roster's message preview: the
+    credential / exfiltration-URL redactors run over the text before it ships.
+    The create and rename routes already REFUSE a credential-shaped label, so
+    for a value written through the API this is a no-op; it exists for the
+    value that was not. Non-strings (a hand-edited object) render as "".
+    """
+    if not isinstance(value, str):
+        return ""
+    return _redact_external(value)
+
+
 def normalize_member_source(raw: object) -> str:
     """Bound a record's ``source`` to the three values the roster renders."""
     if raw == _SOURCE_KIROCREW:
@@ -206,6 +224,16 @@ async def api_members(request: web.Request) -> web.Response:
                 # operator's opt-out from being routed to at all.
                 "description": agent_cfg.description,
                 "triggers": agent_cfg.triggers,
+                # Wrapper identity (member_identity.py). `name` above is the
+                # member's ID -- the key every other route addresses -- and
+                # `display_name` is what the user reads and renames; the server
+                # resolves the "" -> id fallback so no page re-implements it.
+                # `role` is the job title. Where the member came from is the
+                # normalized `source` above; nothing re-derives it here.
+                "display_name": _identity_text(
+                    effective_display_name(name, agent_cfg.display_name)
+                ),
+                "role": _identity_text(agent_cfg.role),
             }
         )
 

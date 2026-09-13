@@ -10820,6 +10820,12 @@
       "test_failed_for": "{{name}}-এর পরীক্ষা ব্যর্থ"
     },
     "kiroCrewAgentsPage": {
+      "name_is_display_name_hint": "আপনি এই সদস্যকে যে নামে ডাকেন। {{productName}} এটি থেকে একটি স্থায়ী আইডি তৈরি করে।",
+      "display_name": "প্রদর্শিত নাম",
+      "display_name_hint": "নাম বদলালে কেবল লেবেল বদলায়; আইডি {{id}} একই থাকে, তাই আইডি ব্যবহার করা লিংক, সময়সূচি ও ওয়েবহুক কাজ করতে থাকে।",
+      "role": "ভূমিকা",
+      "role_hint": "পদের নাম। ঐচ্ছিক।",
+      "role_placeholder": "যেমন রিলিজ ম্যানেজার",
       "a_unique_identifier_for_this_workspace_agents_re": "এই ওয়ার্কস্পেসের জন্য একটি অনন্য শনাক্তকারী। এজেন্ট নাম দিয়ে ওয়ার্কস্পেস উল্লেখ করে।",
       "add_crew_member": "ক্রু সদস্য যোগ করুন",
       "agent_template_is_required": "এজেন্ট টেমপ্লেট দেওয়া বাধ্যতামূলক",
@@ -14615,6 +14621,11 @@
       "show_controls": "কন্ট্রোল দেখাও"
     },
     "membersPage": {
+      "member_id": "সদস্য আইডি",
+      "role": "ভূমিকা",
+      "role_none": "কোনোটি নয়",
+      "provenance": "উৎস",
+      "provenance_local": "এখানে তৈরি",
       "agent_template": "এজেন্ট টেমপ্লেট",
       "configuration": "কনফিগারেশন",
       "crew_summary": "সদস্যের সারসংক্ষেপ",

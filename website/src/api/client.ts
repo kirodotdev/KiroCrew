@@ -2274,8 +2274,16 @@ export interface WebhookTestResult {
  *  are typed here, and extras pass through untyped by design so a new backend
  *  field is not a frontend break. */
 export interface MemberRosterRow {
-  /** Crew name — the display identity and the agent the DM thread pins to. */
+  /** The member's ID — the crew record key, the agent the DM thread pins to,
+   *  and the handle every route addresses. System-minted, immutable. Read
+   *  `display_name` for anything a person sees. */
   name: string
+  /** What the user calls the member. Server-resolved: the id when the record
+   *  stores no label, so a consumer never re-implements the fallback. Free
+   *  rename via PUT /api/agents/{name} { display_name }. */
+  display_name?: string
+  /** Job title, e.g. "Oncall Triage Engineer". Optional for a hand-made member. */
+  role?: string
   /** Stable path-safe slug deriving the member dir and the slot key. */
   slug: string
   /** The pinned DM thread's slot key ('' until first open / unbound). */

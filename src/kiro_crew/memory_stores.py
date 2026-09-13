@@ -1428,3 +1428,125 @@ def persist_member_config(
 
     update_config_locked(mutate=mutate)
     _invalidate_config_cache()
+
+
+def rename_private_owner(store: str, old: str, new: str) -> None:
+    """Re-attribute a private V2 store from member id *old* to *new*, on disk.
+
+    The member-id migration (``config.loader.MIGRATE_MEMBER_IDS``) re-keys an
+    ``agents`` row and its ``memory_stores[...].owner_member`` inside
+    ``config.json``; this is the filesystem half. Ownership is asserted from
+    THREE places that must agree — the config record, the store's manifest and
+    the ``memory_meta`` owner row inside the database — so a row re-keyed
+    without this step reads as an ownership mismatch and the member's memory
+    is refused. Each place is rewritten only when it still names *old*; a
+    manifest or database already naming *new* (a retried migration) is left
+    alone, and one naming a THIRD member is not touched — that is someone
+    else's store, and the config mismatch it leaves is the correct verdict.
+
+    Raises :class:`UnknownMemoryStore` for a store name outside the grammar;
+    lets ``OSError``/``sqlite3.Error`` propagate so the caller's locked
+    write-back aborts and the next load retries the whole migration. Never
+    waits on a lock (see the connect below): the caller may be on the event
+    loop, and a busy database is a reason to retry later, not to stall.
+
+    The DATABASE is renamed first and the manifest second, and a manifest
+    write that fails puts the database row back: the database is the step
+    that fails in ordinary operation (a live session holds it), so it must
+    fail before anything has changed. The other order left the manifest
+    renamed and the database not, and the retry is not guaranteed to mint the
+    same id -- a collision landing in between shifts the suffix -- so a
+    half-renamed store could be split for good.
+
+    Both writes happen while the store's LIFETIME lock is held shared -- the
+    lock every open store holds and a snapshot restore takes exclusively to
+    swap the directory (``member_memory_backup.hold_stores_for_replace``). A
+    replace cannot land between the two writes, and a replace in progress
+    makes the acquisition fail at once (no wait, same reason as the database
+    connect) so the pass aborts with nothing renamed and the next load
+    retries against whatever the replace put there.
+    """
+    from kiro_crew import member_memory_backup, platform_compat
+
+    target = _named_store_dir(validate_memory_store_name(store))
+    manifest_path = target / MEMBER_MEMORY_MANIFEST
+    database = target / MEMORY_DB_FILE
+    lifetime_fd: int | None = None
+    if platform_compat.IS_POSIX:
+        # Shared, never blocking: a restore holding this exclusively is swapping
+        # the directory under us, and the migration must not park the event
+        # loop behind it.
+        lifetime_fd = member_memory_backup._open_store_use_lock(database)
+        try:
+            if not platform_compat.try_acquire_lock(lifetime_fd, exclusive=False):
+                raise OSError(
+                    f"memory store {store!r} is being replaced; ownership rename deferred"
+                )
+        except BaseException:
+            os.close(lifetime_fd)
+            raise
+    try:
+        # The manifest is read INSIDE the lock: read before it, a replace landing
+        # between the read and the acquisition would have this pass write a
+        # stale owner record over the directory the restore just put there.
+        # A missing or unreadable manifest is NOT rewritten: there is no owner
+        # record to move, and inventing one would make a corrupt store readable.
+        try:
+            manifest: dict | None = _member_manifest(store)
+        except UnknownMemoryStore:
+            manifest = None
+        _rename_private_owner_held(store, old, new, manifest, manifest_path, database)
+    finally:
+        member_memory_backup.release_store_use_lock(lifetime_fd)
+
+
+def _rename_private_owner_held(
+    store: str, old: str, new: str, manifest: dict | None, manifest_path: Path, database: Path
+) -> None:
+    """The two writes of :func:`rename_private_owner`, with the lifetime lock held."""
+    import sqlite3
+
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.memory_schema import OWNER_MEMBER_META_KEY
+
+    has_database = database.is_file() and database.resolve() == database
+
+    def _set_owner_row(current: str, wanted: str) -> None:
+        # NO lock wait: this runs inside the config loader's locked write-back,
+        # which ``KiroCrewConfig.load()`` performs synchronously -- on the event
+        # loop when a handler loads config -- so a database held by a live
+        # session must fail the pass at once (the next load retries) rather than
+        # park the gateway on a busy handler. ``timeout=0`` makes a lock an
+        # immediate ``OperationalError``; the UPDATE itself is one indexed row.
+        connection = sqlite3.connect(database, timeout=0)
+        try:
+            with connection:
+                connection.execute(
+                    "UPDATE memory_meta SET value=? WHERE key=? AND value=?",
+                    (wanted, OWNER_MEMBER_META_KEY, current),
+                )
+        except sqlite3.OperationalError as exc:
+            # ONLY a database without the meta table is tolerated: that is a
+            # legacy V1 file with no ownership row to rename, and the manifest
+            # is its identity. A lock, a read-only file or any other
+            # operational error propagates so the caller aborts the write and
+            # retries; nothing has been renamed yet when it does.
+            if "no such table" not in str(exc):
+                raise
+        finally:
+            connection.close()
+
+    if has_database:
+        _set_owner_row(old, new)
+    if manifest is not None and manifest.get("owner_member") == old:
+        manifest["owner_member"] = new
+        try:
+            atomic_write(manifest_path, json.dumps(manifest), fsync=True)
+        except BaseException:
+            # The database already names *new*; put it back so the store is
+            # whole on either side of this failure and the retry starts from
+            # *old* in both places. A revert that fails too is a double fault
+            # and propagates as the original error's context.
+            if has_database:
+                _set_owner_row(new, old)
+            raise

@@ -73,7 +73,7 @@ import { useConnected } from '../../hooks/useConnected'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../../components/SearchFilterBar'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import {
-  countByFilter, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster,
+  countByFilter, memberLabel, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster,
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
@@ -1690,7 +1690,23 @@ export default function MembersPage() {
                   </AnimatePresence>
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{m.name}</span>
+                  {/* The LABEL (display_name, else id) is what a person reads;
+                      `m.name` is the id every route addresses and never shows
+                      here. The role rides the same line, muted, so the roster
+                      reads like a team directory: who, then what they do. The
+                      two truncate INDEPENDENTLY: with a role present the label
+                      takes at most 60% of the line (ellipsizing past that) and
+                      the role gets the rest, so a long label cannot eat the role
+                      down to "Jud…" and a short label leaves the role its whole
+                      width. Without a role the label has the line. */}
+                  <span className={`flex min-w-0 items-baseline ${ROW_TITLE_CLS} font-semibold text-text`} data-testid="member-row-label">
+                    <span className={`min-w-0 truncate ${m.role ? 'max-w-[60%] shrink-0' : ''}`}>{memberLabel(m)}</span>
+                    {m.role && (
+                      <span className="min-w-0 truncate font-normal text-muted" data-testid="member-row-role">
+                        {PROJECT_SEPARATOR}{m.role}
+                      </span>
+                    )}
+                  </span>
                   {/* Last-message preview, like a session row — presence
                       already rides the avatar dot, so a textual Idle/Working
                       label said nothing the dot did not. */}
@@ -1727,8 +1743,8 @@ export default function MembersPage() {
                 }}
                 aria-pressed={!!m.starred}
                 disabled={starPending.has(m.name)}
-                aria-label={t(m.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: m.name })}
-                title={t(m.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: m.name })}
+                aria-label={t(m.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: memberLabel(m) })}
+                title={t(m.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: memberLabel(m) })}
                 // 24x24 minimum target (the icon is 13px): a touch that lands beside
                 // the glyph must hit the star, not the row button underneath.
                 className={`absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded hover:bg-bg-hover transition-opacity ${
@@ -1822,7 +1838,12 @@ export default function MembersPage() {
                   writer (issue #9103). `group/title` is scoped to this row so
                   the drawer toggle to the right does not reveal it. */}
               <div className="group/title min-w-0 flex-1 flex items-center gap-1.5" data-testid="member-title-row">
-                <div className="text-[13.5px] font-semibold truncate">{active.name}</div>
+                <div className="min-w-0 truncate">
+                  <span className="text-[13.5px] font-semibold" data-testid="member-header-label">{memberLabel(active)}</span>
+                  {active.role && (
+                    <span className="text-[12px] text-muted" data-testid="member-header-role">{PROJECT_SEPARATOR}{active.role}</span>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => navigate(crewEditPath(active.name))}
@@ -1993,7 +2014,12 @@ export default function MembersPage() {
               (Crew summary) and wears the face; this row names the member. */}
           <div className="flex items-center gap-2 mb-3 min-w-0">
             <CrewAvatar seed={active.name} avatar={active.avatar} size={22} />
-            <span className="text-[13px] font-semibold truncate">{active.name}</span>
+            <span className="min-w-0 truncate">
+              <span className="text-[13px] font-semibold" data-testid="member-summary-label">{memberLabel(active)}</span>
+              {active.role && (
+                <span className="block text-[11px] text-muted truncate" data-testid="member-summary-role">{active.role}</span>
+              )}
+            </span>
             <span className="text-[11px] truncate ml-auto shrink-0" data-testid="member-summary-status">
               {isRunning(active) ? (
                 <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
@@ -2449,6 +2475,32 @@ export default function MembersPage() {
             {t('pages.membersPage.configuration')}
           </div>
           <dl className="text-xs space-y-2">
+            {/* Identity first: the id is what crons, webhooks and other
+                members address (and what the URL carries), so a user renaming
+                "triage" to "Checkout" can still see which handle to type. */}
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.member_id')}</dt>
+              <dd className="min-w-0 truncate font-mono" data-testid="member-config-id">{active.name}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.role')}</dt>
+              <dd className="min-w-0 truncate" data-testid="member-config-role">
+                {active.role || <span className="text-muted">{t('pages.membersPage.role_none')}</span>}
+              </dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.provenance')}</dt>
+              <dd className="min-w-0 truncate" data-testid="member-config-provenance">
+                {/* The row's normalized `source` (kirocrew | builtin | package),
+                    in the filter menu's own words so the drawer and the filter
+                    never name one origin two ways. */}
+                {active.source === 'builtin'
+                  ? t('pages.membersPage.filter_source_builtin')
+                  : active.source === 'kirocrew'
+                    ? t('pages.membersPage.provenance_local')
+                    : t('pages.membersPage.filter_source_package')}
+              </dd>
+            </div>
             <div className="flex gap-2">
               <dt className="w-24 shrink-0 text-muted">
                 {t('pages.membersPage.agent_template')}
@@ -2549,7 +2601,7 @@ export default function MembersPage() {
             onArtifactOpen: openArtifact,
             onFileSave: saveFile,
             leadingTab,
-            slotTitle: active.name,
+            slotTitle: memberLabel(active),
             canDockBottom: false,
           }
           // ONE SidePanel instance for both placements. Docked and overlay differ

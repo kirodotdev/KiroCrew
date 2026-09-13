@@ -54,6 +54,10 @@ ROSTER_ROW_KEYS = frozenset(
         "description",
         "triggers",
         "source",
+        # Wrapper identity (member_identity.py): the resolved label and the
+        # job title the crew manager renders beside the name.
+        "display_name",
+        "role",
         "session_color",
         "avatar",
     }
@@ -63,13 +67,15 @@ ROSTER_ROW_KEYS = frozenset(
 # ``website/src``: the two watchdog windows are backend scheduling knobs the
 # roster does not render, ``telegram_account`` is deprecated and inert, and
 # ``starred`` is a Crew Members roster preference that only ``GET /api/members``
-# renders (the crew manager has no star affordance).
+# renders (the crew manager has no star affordance), and ``legacy_key`` is the
+# loader's own bookkeeping (the pre-migration key an overlay row is read under).
 WITHHELD_RECORD_FIELDS = frozenset(
     {
         "watchdog_tool_stall_suspect_secs",
         "watchdog_tool_stall_hard_cap_secs",
         "telegram_account",
         "starred",
+        "legacy_key",
     }
 )
 
@@ -102,6 +108,8 @@ def _seed_config_with_every_field_set() -> dict:
                 "description": "probe description",
                 "triggers": "probe triggers",
                 "source": "kirocrew",
+                "display_name": "Probe Display",
+                "role": "Probe Role",
                 "session_color": "#abcdef",
                 # Withheld — must NOT appear in the response.
                 "watchdog_tool_stall_suspect_secs": 111.0,
@@ -312,6 +320,8 @@ class TestUnshowableValuesAreMasked:
             session_color=self.PROBE,
             description=f"see {self.PROBE}",
             source=self.PROBE,
+            display_name=f"call me {self.PROBE}",
+            role=f"role {self.PROBE}",
         )
 
     @pytest.mark.parametrize("redact", [False, True])

@@ -447,7 +447,9 @@ class TestDoSelectCrew:
         assert "high confidence" in out["guidance"]
 
     def test_unknown_crew_returns_error_with_available_names(self, monkeypatch: pytest.MonkeyPatch):
-        cfg = _crew_config({"main": SimpleNamespace(triggers="", model="auto")}, "main")
+        cfg = _crew_config(
+            {"main": SimpleNamespace(triggers="", model="auto", display_name="")}, "main"
+        )
         self._patch_cfg(monkeypatch, cfg)
         out = json.loads(_do_select_crew("ghost"))
         assert out["error"] == "unknown crew 'ghost'"

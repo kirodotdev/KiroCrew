@@ -10663,6 +10663,12 @@
       "test_failed_for": "{{name}} のテストに失敗しました"
     },
     "kiroCrewAgentsPage": {
+      "name_is_display_name_hint": "このメンバーの呼び名です。{{productName}} はここから永続的な ID を作成します。",
+      "display_name": "表示名",
+      "display_name_hint": "名前の変更はラベルだけを変えます。ID {{id}} はそのままなので、ID を使うリンク、スケジュール、webhook はそのまま動き続けます。",
+      "role": "役割",
+      "role_hint": "職種名。任意です。",
+      "role_placeholder": "例: リリースマネージャー",
       "a_unique_identifier_for_this_workspace_agents_re": "このワークスペースの一意な識別子。エージェントは名前でワークスペースを参照します。",
       "add_crew_member": "クルーメンバーを追加",
       "agent_template_is_required": "エージェントテンプレートは必須です",
@@ -14426,6 +14432,11 @@
       "show_controls": "コントロールを表示"
     },
     "membersPage": {
+      "member_id": "メンバー ID",
+      "role": "役割",
+      "role_none": "なし",
+      "provenance": "由来",
+      "provenance_local": "ここで作成",
       "agent_template": "エージェントテンプレート",
       "configuration": "設定",
       "crew_summary": "メンバー概要",

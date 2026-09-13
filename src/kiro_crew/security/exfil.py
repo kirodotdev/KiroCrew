@@ -1069,6 +1069,46 @@ def scan_exfiltration_urls(text: str) -> list[str]:
 EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
 
 
+#: Credential-bearing URL query/fragment parameters. :func:`redact_credentials`
+#: matches credential SHAPES (AKIA…, xoxb-…, PEM headers) and
+#: :func:`redact_exfiltration_urls` is a length/entropy heuristic, so a SHORT
+#: opaque value in a conventionally-named parameter -- ``?api_key=abc123`` --
+#: slips past both; here the parameter NAME is the signal, not the value's
+#: shape. The ``(?!\[REDACTED)`` guard skips a value an earlier layer already
+#: replaced, so ``?token=[REDACTED: credential]`` is not re-matched into a
+#: mangled label. Shared with the dashboard's provider-text scrub
+#: (``handlers.discover._redact_external``) and :func:`carries_sensitive_text`,
+#: so the two cannot drift apart.
+URL_SECRET_PARAM_RE = re.compile(
+    r"(?i)\b(access_token|refresh_token|id_token|api[-_]?key|auth|token|"
+    r"password|passwd|secret|signature|sig|credential)"
+    r"(=|%3D)(?!\[REDACTED)[^\s&#\"']+"
+)
+
+
+def carries_sensitive_text(text: str) -> bool:
+    """True when any output redactor would alter *text*.
+
+    The one predicate for "this string must not become an identifier": the
+    credential-shape scan, the exfiltration-URL scan and the named-parameter
+    scrub, in the order the dashboard's provider-text scrub runs them. A member
+    id, a slot key, a URL segment minted from such a string would carry the
+    secret into every surface that renders identifiers verbatim, so the caller
+    mints an opaque id instead. Benign text reads False.
+    """
+    if not text:
+        return False
+    from .redaction import redact_credentials  # this module is imported by redaction's callers
+
+    scrubbed, _ = redact_credentials(text)
+    if scrubbed != text:
+        return True
+    scrubbed, _ = redact_exfiltration_urls(text)
+    if scrubbed != text:
+        return True
+    return URL_SECRET_PARAM_RE.search(text) is not None
+
+
 def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     """Scan and redact suspicious exfiltration URLs from text.
 
