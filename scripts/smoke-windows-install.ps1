@@ -10,8 +10,16 @@
 # Everything here is invisible to a unit test, because it lives in the NSIS
 # metadata and the registry rather than in code we run:
 #
-#   * the uninstall registration, whose InstallLocation is what an in-place
-#     update and the auto-updater both resolve against.
+#   * the uninstall registration, and beside it the install-info key whose
+#     InstallLocation is what an in-place update and the auto-updater both
+#     resolve against. Two keys, not one: electron-builder's NSIS template
+#     (registryAddInstallInfo) writes InstallLocation, KeepShortcuts and
+#     ShortcutName under `<hive>\Software\<APP_GUID>` and only the Add/Remove
+#     Programs values (DisplayName, DisplayVersion, UninstallString, ...) under
+#     the Uninstall key. Its own initMultiUser reads InstallLocation back from
+#     the FIRST, and this script reads it from the same place. Reading it off
+#     the Uninstall entry is what failed this gate on its first nightly run: the
+#     install was fine, the value was simply never there.
 #   * the install-root OWNERSHIP boundary. The generated uninstaller removes
 #     $INSTDIR recursively, so a fresh install must own a directory that did not
 #     exist beforehand. installer.nsh's KiroEnsureAppInstallDir is what enforces
@@ -108,6 +116,34 @@ function Get-UninstallRegistrations {
     }
   }
   return @($found)
+}
+
+function Resolve-InstallInfoKey {
+  <#
+    The install-info key that pairs with an uninstall registration.
+
+    electron-builder registers under two keys in the SAME hive: the Uninstall
+    entry `<hive>\Software\Microsoft\Windows\CurrentVersion\Uninstall\<leaf>`
+    and the install-info key `<hive>\Software\<APP_GUID>`, and the Uninstall
+    leaf IS the GUID (UNINSTALL_APP_KEY defaults to APP_GUID; a GUID carries no
+    backslash, so the one rewrite that define applies is a no-op). So the pair
+    is derived by lifting the leaf out of the Uninstall branch into the hive's
+    Software root, the same derivation .github/scripts/test-windows-installer.ps1
+    makes with its Uninstall/Install root pairs. Nothing here is a name we chose.
+  #>
+  param([Parameter(Mandatory = $true)][string]$UninstallKey)
+
+  $marker = "\Microsoft\Windows\CurrentVersion\Uninstall\"
+  $index = $UninstallKey.IndexOf($marker, [StringComparison]::OrdinalIgnoreCase)
+  if ($index -lt 0) {
+    throw "Not an uninstall registration path: $UninstallKey"
+  }
+  $softwareRoot = $UninstallKey.Substring(0, $index)
+  $leaf = $UninstallKey.Substring($index + $marker.Length)
+  if (-not $leaf) {
+    throw "Uninstall registration path has no leaf: $UninstallKey"
+  }
+  return "$softwareRoot\$leaf"
 }
 
 function Resolve-OneInstaller {
@@ -227,13 +263,23 @@ if ($added.Count -ne 1) {
 $registrationKey = $added[0]
 $registration = Get-ItemProperty -LiteralPath $registrationKey -ErrorAction Stop
 
-# From here on, every name comes out of this registration.
+# From here on, every name comes out of this registration and its paired
+# install-info key. InstallLocation is read from the LATTER (see the header):
+# the Uninstall entry never carries it, and asking it there reports a healthy
+# install as "registered no InstallLocation".
 $displayName = Get-PropertyOrNull $registration "DisplayName"
 $displayVersion = Get-PropertyOrNull $registration "DisplayVersion"
-$installLocation = Get-PropertyOrNull $registration "InstallLocation"
 if (-not $displayName) { throw "The new registration at $registrationKey has no DisplayName." }
-if (-not $installLocation) { throw "$displayName registered no InstallLocation." }
+$installInfoKey = Resolve-InstallInfoKey -UninstallKey $registrationKey
+if (-not (Test-Path -LiteralPath $installInfoKey)) {
+  throw "$displayName registered at $registrationKey but wrote no install-info key at $installInfoKey; the updater's initMultiUser would read no InstallLocation."
+}
+$installInfo = Get-ItemProperty -LiteralPath $installInfoKey -ErrorAction Stop
+$installLocation = Get-PropertyOrNull $installInfo "InstallLocation"
+if (-not $installLocation) { throw "$displayName registered no InstallLocation at $installInfoKey." }
 Write-Host "> Registered as '$displayName' (version '$displayVersion') at $installLocation"
+Write-Host "> Uninstall entry: $registrationKey"
+Write-Host "> Install-info key: $installInfoKey"
 
 if (-not (Test-Path -LiteralPath $installLocation -PathType Container)) {
   throw "The registered install location does not exist: $installLocation"
@@ -486,12 +532,20 @@ if ($uninstallExit -ne 0) {
 $deadline = [DateTime]::UtcNow.AddSeconds($MaxUninstallSeconds)
 do {
   $registrationGone = -not (Test-Path -LiteralPath $registrationKey)
+  $installInfoGone = -not (Test-Path -LiteralPath $installInfoKey)
   $treeGone = -not (Test-Path -LiteralPath $installLocation)
-  if (-not ($registrationGone -and $treeGone)) { Start-Sleep -Milliseconds 500 }
-} while (-not ($registrationGone -and $treeGone) -and [DateTime]::UtcNow -lt $deadline)
+  $allGone = $registrationGone -and $installInfoGone -and $treeGone
+  if (-not $allGone) { Start-Sleep -Milliseconds 500 }
+} while (-not $allGone -and [DateTime]::UtcNow -lt $deadline)
 
 if (-not $registrationGone) {
   throw "The uninstall left its registration behind at $registrationKey."
+}
+if (-not $installInfoGone) {
+  # The generated uninstaller deletes INSTALL_REGISTRY_KEY alongside the
+  # Uninstall entry; a survivor here is what makes the NEXT install read a
+  # stale InstallLocation and update into a directory that no longer exists.
+  throw "The uninstall left its install-info key behind at $installInfoKey."
 }
 if (-not $treeGone) {
   $leftoverFiles = @(
@@ -509,7 +563,7 @@ if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
   throw "The uninstall removed a file that existed before setup started: $sentinel"
 }
 
-Write-Host "> Uninstalled; registration and install tree are gone and the pre-existing file survived"
+Write-Host "> Uninstalled; registration, install-info key and install tree are gone and the pre-existing file survived"
 
 if ($env:GITHUB_STEP_SUMMARY) {
   Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(

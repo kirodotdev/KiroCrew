@@ -149,12 +149,14 @@ Current status:
   `build-windows.yml`'s `Smoke-install Windows installer (x64)` job downloads the
   installer that workflow just built, installs it silently on a clean
   `windows-latest` runner, and runs `scripts/smoke-windows-install.ps1`: it
-  asserts the uninstall registration and its `InstallLocation`, that the install
+  asserts the uninstall registration and the `InstallLocation` in its paired
+  install-info key (`<hive>\Software\<GUID>`, which is where electron-builder
+  writes it and where its updater reads it back), that the install
   claimed an owned subdirectory rather than the pre-existing directory it was
   pointed at, that a Start Menu shortcut targets the executable THIS install
   wrote, that the bundled CLI runs, that the installed gateway answers
-  `/api/health`, and that a silent uninstall removes both the registration and
-  the tree. `build-windows.yml` is `workflow_call`-only from `nightly.yml` and
+  `/api/health`, and that a silent uninstall removes the registration, the
+  install-info key and the tree. `build-windows.yml` is `workflow_call`-only from `nightly.yml` and
   `release.yml` plus a `workflow_dispatch` packaging probe, so this leg costs a
   PR nothing and a packaging change that only breaks a real install is caught by
   the next nightly — or before merge by dispatching that probe. There is **no

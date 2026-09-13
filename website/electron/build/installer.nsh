@@ -188,9 +188,15 @@ FunctionEnd
 ; is missing both flags read 0, the guards fall through, and the update nests.
 ; That is not hypothetical: on a machine that hit this loop the uninstall key
 ; carried DisplayVersion, UninstallString and DisplayIcon all pointing at the
-; real install root while `InstallLocation` itself was absent. Why it was absent
-; is not established -- registryAddInstallInfo writes it unconditionally -- which
-; is exactly why the update path must not depend on it being there.
+; real install root while `InstallLocation` itself was absent from it. Note
+; which key that observation is about: registryAddInstallInfo writes
+; `InstallLocation` under ${INSTALL_REGISTRY_KEY} (Software\<GUID>) and never
+; under the Uninstall entry, so an Uninstall entry WITHOUT it is what every
+; healthy install looks like, and that reading proves nothing about the value
+; initMultiUser actually consults (scripts/smoke-windows-install.ps1 failed its
+; first run on the same misread). Whether the install-info key itself was
+; missing on that machine is not established -- which is exactly why the update
+; path must not depend on it being there.
 ;
 ; The guard tests $KiroVisibleUpdate rather than ${isUpdated}, and that is NOT
 ; interchangeable here. ${isUpdated} expands to a StdUtils::TestParameter plugin
