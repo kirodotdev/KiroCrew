@@ -296,6 +296,8 @@ class TestBrowserMutationsAreOwnerOnly:
             # leaking into JSON serialization).
             state._browser_install_task = None
             state._browser_install_error = None
+            state._browser_install_notice = None
+            state._browser_install_notice_command = None
             self.app = {"state": state}
             self.path = path
             self._claims: dict[str, str] = {"app": app_claim, "user": user}
@@ -976,3 +978,101 @@ class TestStopGuardsAgainstUnownedProcesses:
         assert kill_calls == [77777]
         assert view_mod._proc is None
         assert view_mod._info is None
+
+
+class TestTheLibraryAdvisoryReachesTheOperator:
+    """A computed advisory that nothing surfaces has no value.
+
+    The verify step ships `ok: True`, and the failure path reads a step only when
+    the install FAILED (and only the decisive last one). So without a dedicated
+    path the probe's whole point -- naming the libraries to install before the
+    operator meets a cryptic launch failure -- is computed and dropped.
+    """
+
+    @staticmethod
+    def _result(*, ok: bool, steps: list[dict]) -> dict:
+        return {"ok": ok, "steps": steps}
+
+    def test_an_advisory_step_becomes_a_notice(self):
+        from kiro_crew.dashboard.handlers import messaging as mod
+
+        result = self._result(
+            ok=True,
+            steps=[
+                {"name": "install-browser", "ok": True, "returncode": 0},
+                {
+                    "name": "verify-browser-libraries-chromium",
+                    "ok": True,
+                    "advisory": True,
+                    "returncode": 0,
+                    "advisory_prose": (
+                        "Chromium downloaded, but 1 shared library it needs may be "
+                        "missing: libgbm.so.1. Install them with the command below."
+                    ),
+                    "advisory_command": "sudo dnf install -y mesa-libgbm",
+                },
+                {"name": "install-skills", "ok": True, "returncode": 0},
+            ],
+        )
+
+        notice, command = mod._browser_install_notice(result)
+
+        assert notice is not None
+        assert "libgbm.so.1" in notice
+        # The step's internal name is NOT prefixed: this is a sentence about the
+        # operator's machine, not a log line naming a failing command.
+        assert not notice.startswith("verify-browser-libraries")
+        # The command comes back separately, for the `<pre>` + copy button.
+        assert command == "sudo dnf install -y mesa-libgbm"
+        assert "sudo dnf" not in notice
+
+    def test_an_install_with_no_advisory_produces_no_notice(self):
+        from kiro_crew.dashboard.handlers import messaging as mod
+
+        result = self._result(ok=True, steps=[{"name": "install-browser", "ok": True}])
+
+        assert mod._browser_install_notice(result) == (None, None)
+
+    def test_a_failed_install_produces_no_notice(self):
+        """The error path owns that case; two banners for one event is noise."""
+        from kiro_crew.dashboard.handlers import messaging as mod
+
+        result = self._result(
+            ok=False,
+            steps=[
+                {"name": "install-browser", "ok": False, "advisory": True, "advisory_prose": "boom"}
+            ],
+        )
+
+        assert mod._browser_install_notice(result) == (None, None)
+
+    def test_the_notice_is_redacted(self):
+        """Rendered verbatim in Settings, so it goes through the same redaction.
+
+        Asserted with an inline-URL credential, which is what `redact_credentials`
+        actually covers. It does NOT strip a bare `_authToken=<value>`; that gap is
+        pre-existing on this surface (`last_error` uses the same helper) and
+        widening a shared redactor is not this change's business.
+        """
+        from kiro_crew.dashboard.handlers import messaging as mod
+
+        result = self._result(
+            ok=True,
+            steps=[
+                {
+                    "name": "verify-browser-libraries-chromium",
+                    "ok": True,
+                    "advisory": True,
+                    "advisory_prose": (
+                        "fetched via https://user:s3cret@proxy.example.com/ -- install libgbm.so.1"
+                    ),
+                }
+            ],
+        )
+
+        notice, _ = mod._browser_install_notice(result)
+
+        assert notice is not None
+        assert "s3cret" not in notice
+        # The actionable part survives redaction.
+        assert "libgbm.so.1" in notice

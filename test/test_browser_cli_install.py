@@ -421,6 +421,157 @@ def test_install_falls_back_without_deps_when_the_package_step_is_refused(
     assert ["/n/pw", "install-browser", "chromium"] in calls
 
 
+# --- the browser downloaded but cannot resolve its libraries -------------------
+
+
+def test_a_download_that_cannot_resolve_its_libraries_is_reported_not_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: Playwright's host validation FALSE-NEGATIVES on linux-arm64.
+
+    Its registry declares the scan directory as ``chrome-linux`` while the arm64
+    build unpacks into ``chrome-linux-arm64``, so it scans nothing, calls the
+    host good and writes ``DEPENDENCIES_VALIDATED`` -- MEASURED as written 23
+    minutes before the libraries were actually installed. With no marker in the
+    output, ``host_deps_unsatisfied`` sees nothing, the download reports ok, and
+    the failure only lands at the user's first browse. So a real library probe
+    runs after a successful download.
+
+    It REPORTS rather than fails. The probe re-implements the loader's search, so
+    it will be wrong on some host; a heuristic that reproduces a platform component
+    must not be able to withdraw a working install, and ``install-skills`` must
+    still run.
+    """
+    _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+    monkeypatch.setattr(
+        mod.os_deps, "missing_shared_libraries", lambda dirs: {"libatk-1.0.so.0", "libgbm.so.1"}
+    )
+    monkeypatch.setattr(mod.os_deps, "manual_deps_command", lambda: "sudo dnf install -y atk")
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "stage-node",
+        "install-browser",
+        "verify-browser-libraries-chromium",
+        "install-skills",
+    ]
+    verdict = next(s for s in result["steps"] if s["name"].startswith("verify-"))
+    # Flagged as advisory and carrying both names, so the operator still learns
+    # exactly what to install.
+    assert verdict["advisory"] is True
+    assert "libatk-1.0.so.0" in verdict["advisory_prose"]
+    assert "libgbm.so.1" in verdict["advisory_prose"]
+    # The download genuinely succeeded and is reported honestly -- sending the
+    # operator to re-download bytes already on disk is not the remedy.
+    # Located by name: a positional index silently re-targets whenever install()
+    # gains a step ahead of the download.
+    download = next(s for s in result["steps"] if s["name"] == "install-browser")
+    assert download["ok"] is True
+    assert verdict["returncode"] == 0
+    # THREE distinct strings, each with exactly one consumer, and no duplication.
+    # A composed `stderr` alongside them would repeat both with no reader: the only
+    # step consumers read `stderr` on a FAILED step.
+    assert verdict["advisory_command"] == "sudo dnf install -y atk"
+    assert "sudo dnf" not in verdict["advisory_prose"]
+    assert "command below" in verdict["advisory_prose"]
+    assert "advisory_lead" not in verdict
+    assert "stderr" not in verdict
+    # Not the failure path's "retry the install" wording: that contradicts the
+    # panel's own green result above it.
+    # Names no affordance: the failure path's "retry the install" contradicts the
+    # panel's green result, and there is no re-check button to point at either.
+    assert "retry the install" not in verdict["advisory_prose"]
+    assert "Re-check" not in verdict["advisory_prose"]
+    # The command is its own field now, so it needs no in-prose line break: the
+    # panel renders it in a `<pre>` with a copy button.
+    assert "\n" not in verdict["advisory_prose"]
+    # The skills reference is independent of browser launchability, so a probe
+    # that only SUSPECTS a missing library must not cost it too.
+    assert any(s["name"] == "install-skills" for s in result["steps"])
+
+
+def test_a_resolvable_download_adds_no_extra_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The common case must stay a three-step install."""
+    _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+    monkeypatch.setattr(mod.os_deps, "missing_shared_libraries", lambda dirs: set())
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "stage-node",
+        "install-browser",
+        "install-skills",
+    ]
+
+
+def test_an_unprobeable_host_never_fails_the_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "Could not check" must not become "broken".
+
+    The download needs no privilege and may be perfectly good; withdrawing it
+    because ``ldd`` is absent would break hosts that work today.
+    """
+    _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+    monkeypatch.setattr(mod.os_deps, "missing_shared_libraries", lambda dirs: None)
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert not any("verify-browser-libraries" in s["name"] for s in result["steps"])
+
+
+def test_the_library_check_covers_the_headless_shell_not_just_chromium(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Headless is the default launch mode, so the shell is what a browse starts.
+
+    Checking only ``chromium-<rev>`` would clear the build that is not the one
+    being run.
+    """
+    cache = tmp_path / "ms-playwright"
+    for name in ("chromium-1243", "chromium_headless_shell-1243", "firefox-1542"):
+        (cache / name).mkdir(parents=True)
+    monkeypatch.setattr(mod, "_browsers_cache_dir", lambda: cache)
+
+    names = sorted(p.name for p in mod._engine_cache_dirs("chromium"))
+
+    assert names == ["chromium-1243", "chromium_headless_shell-1243"]
+
+
+def test_a_refused_with_deps_retry_is_still_library_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recovery path must not skip the probe the direct path runs."""
+    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "")
+    monkeypatch.setattr(mod.os_deps, "missing_shared_libraries", lambda dirs: {"libgbm.so.1"})
+    calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+
+    def fake_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
+        calls.append(list(argv))
+        if "--with-deps" in argv:
+            return 1, "", "sudo: a password is required"
+        return 0, "", ""
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "stage-node",
+        "install-browser",
+        "install-browser-no-deps",
+        "verify-browser-libraries-chromium",
+        "install-skills",
+    ]
+
+
 def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
