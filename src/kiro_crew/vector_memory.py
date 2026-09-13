@@ -2599,11 +2599,12 @@ class VectorMemoryStore:
     ) -> list[dict]:
         """The existing V1 hybrid policy, exposed to explicit bounded recall."""
         query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
-        query_embedding = (
-            recall_query.vector
-            if recall_query is not None
-            else self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
-        )
+        if recall_query is not None:
+            query_embedding = recall_query.vector
+        elif self.embed_fn:
+            query_embedding = self._try_embed(query_text, PRIORITY_INTERACTIVE)
+        else:
+            query_embedding = None
 
         # Context assembly runs on executor threads (subagent context builds,
         # run_in_embed_pool) concurrent with writers on worker threads, and
@@ -2624,6 +2625,7 @@ class VectorMemoryStore:
         # the write path or backfill has not embedded yet contribute 0.0 on
         # the vector term of the same weighted scale (see _hybrid_score).
         similarity = self._stored_similarity_scorer(query_embedding)
+        query_has_vector = query_embedding is not None
 
         # Both token sets depend only on the row's own text, so re-deriving
         # them per query is the bulk of a warm call — but only a scan that
@@ -2654,20 +2656,19 @@ class VectorMemoryStore:
             # keyword-only floor a merely-dissimilar row should get.
             vec_score = max(0.0, similarity(r))
 
-            score = _hybrid_score(kw_score, vec_score, query_has_vector=query_embedding is not None)
+            score = _hybrid_score(kw_score, vec_score, query_has_vector=query_has_vector)
 
             if score > 0:
                 r["retrieval"] = {
                     "reason": "v1_hybrid_match",
                     "score": score,
                     "matched_terms": sorted(query_words & (key_words | val_words)),
-                    "cosine": vec_score if query_embedding is not None else None,
+                    "cosine": vec_score if query_has_vector else None,
                 }
                 scored_rows.append((score, r))
 
         scored_rows.sort(key=lambda x: (-x[0], x[1]["updated_at"]))
-        rows = [r[1] for r in scored_rows]
-        return rows
+        return [r[1] for r in scored_rows]
 
     def get_semantic_context(self, query_text: str = "", cap: int = 1500) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval.
@@ -2723,15 +2724,12 @@ class VectorMemoryStore:
         self, query_text: str, *, recall_query: _RecallQuery | None = None
     ) -> list[dict]:
         """Keep member preferences; retrieve facts only with relevant evidence."""
-        query_embedding = (
-            recall_query.vector
-            if recall_query is not None
-            else (
-                self._try_embed(query_text, PRIORITY_INTERACTIVE)
-                if query_text and self.embed_fn
-                else None
-            )
-        )
+        if recall_query is not None:
+            query_embedding = recall_query.vector
+        elif query_text and self.embed_fn:
+            query_embedding = self._try_embed(query_text, PRIORITY_INTERACTIVE)
+        else:
+            query_embedding = None
         query_terms = memory_v2.terms(query_text)
         similarity = self._stored_similarity_scorer(query_embedding)
         with self._db_lock:
@@ -5329,11 +5327,12 @@ class VectorMemoryStore:
         that matches nothing degrades to plain recency.
         """
         query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
-        query_emb = (
-            recall_query.vector
-            if recall_query is not None
-            else self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
-        )
+        if recall_query is not None:
+            query_emb = recall_query.vector
+        elif self.embed_fn:
+            query_emb = self._try_embed(query_text, PRIORITY_INTERACTIVE)
+        else:
+            query_emb = None
         similarity = self._stored_similarity_scorer(query_emb)
         # Same row-side derivation, and the same width rule, as the semantic scan:
         # a lesson's tokens depend only on its own rendered text, and only a pass
