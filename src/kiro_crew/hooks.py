@@ -349,6 +349,20 @@ class HooksConfig:
     denied_commands_disabled_ids: list[str] = field(default_factory=list)
     denied_commands_disable_all: bool = False
     denied_commands_user_added: list[UserDeniedPattern] = field(default_factory=list)
+    # Structural, non-operator-configurable flag (never populated by
+    # ``from_dict`` — set only by a scoped HookManager builder, e.g.
+    # ``slack.gateway._build_heartbeat_hooks``). When True, ``on_tool_call``'s
+    # unconditional ACP-``kind``-based auto-approve (``kind in
+    # _READ_ONLY_TOOL_KINDS``) is suppressed for this HookManager instance: the
+    # ACP ``kind`` string is agent-influenced (``acp/_dispatch.py`` passes it
+    # through verbatim from the model/tool-server side), so on a session with
+    # no interactive approver a mutating edition MCP tool that merely declares
+    # ``kind="read"`` would auto-approve here and never reach that session's
+    # own approval callback (e.g. heartbeat's ``_heartbeat_approval`` allowlist
+    # + SEL audit). Suppressing this branch does not widen anything: a call
+    # that fails to auto-approve here simply falls through to the caller's own
+    # approval path, same as any other non-match.
+    deny_kind_based_read_only: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> HooksConfig:
@@ -1325,9 +1339,23 @@ class HookManager:
             # classifier (rejects redirects/substitution/backgrounding). When the
             # command could not be recovered we already denied above; a present
             # command that is not read-only falls through to interactive approval.
+            #
+            # Gated on ``deny_kind_based_read_only`` for the same reason as the
+            # non-shell branch below: ``is_shell`` derives from the ACP ``kind``
+            # field (``is_shell_kind(kind)``, ``_dispatch.py``), which is
+            # agent/tool-server-influenced — an edition MCP tool can declare
+            # ``kind="execute"`` on a call whose recovered ``command`` happens to
+            # look read-only while the tool itself performs a mutation via a
+            # side channel the bash classifier cannot see. Suppressed here, a
+            # miss falls through to the caller's own approver (heartbeat's
+            # allowlist), never to a silent auto-approve.
             from kiro_crew.dashboard.state import is_read_only_bash
 
-            if command and is_read_only_bash(command):
+            if (
+                command
+                and is_read_only_bash(command)
+                and not self._config.deny_kind_based_read_only
+            ):
                 return ToolHookResult.auto_approve(read_only=True)
         else:
             from kiro_crew.slack.gateway import _is_read_only_tool
@@ -1367,12 +1395,25 @@ class HookManager:
             # is an arbitrary agent-influenced string and a DENYLIST of mutating kinds
             # can never be complete — `kind="other"` is a real ACP value. Only these
             # two spellings mean "this cannot change anything".
-            if kind in _READ_ONLY_TOOL_KINDS:
+            #
+            # Suppressed entirely when ``deny_kind_based_read_only`` is set (a
+            # scoped HookManager for a session with no interactive approver,
+            # e.g. heartbeat): a mutating tool that merely reports
+            # ``kind="read"`` would otherwise auto-approve here and never reach
+            # that session's own approval callback. A miss here falls through
+            # to ``allow()`` below, same as any other non-match — never a deny.
+            if kind in _READ_ONLY_TOOL_KINDS and not self._config.deny_kind_based_read_only:
                 return ToolHookResult.auto_approve(read_only=True)
             # Computer-use observation tools ("reads don't nag" for this feature too),
-            # and they require an EXPLICIT read-only kind — reached only under the
-            # branch above. Two agent-controlled inputs meet here and neither may
-            # decide alone:
+            # and they require an EXPLICIT read-only kind. Gated on
+            # ``deny_kind_based_read_only`` the same way as the sibling branch
+            # above and the kind-absent branch below: without that gate this
+            # branch would be reachable directly whenever the sibling above
+            # suppresses (a scoped HookManager for a session with no
+            # interactive approver, e.g. heartbeat), letting a mutating tool
+            # that forges a read-shaped title auto-approve here and never
+            # reach that session's own approval callback. Two agent-controlled
+            # inputs meet here and neither may decide alone:
             #
             #   * `tool_name` comes from `select_tool_title`, which prefers the
             #     LLM-authored `description`, so a mutating call can title itself
@@ -1392,19 +1433,27 @@ class HookManager:
             # only AFTER the deny floor and `_governance_denial`, so a governance deny
             # still wins. There is deliberately no approval-floor clamp to mention: the
             # `computer_use.approval` ordinal was removed with the rest of that model.
-            if kind in _READ_ONLY_TOOL_KINDS and _cu_read_only_auto_approve(tool_name):
+            if (
+                kind in _READ_ONLY_TOOL_KINDS
+                and _cu_read_only_auto_approve(tool_name)
+                and not self._config.deny_kind_based_read_only
+            ):
                 return ToolHookResult.auto_approve(read_only=True)
             # Any other non-empty kind falls through to interactive approval, whatever
             # the call titles itself. Over-blocking costs one prompt; under-blocking
             # costs the prompt.
             if kind:
                 return ToolHookResult.allow()
-            # Kind ABSENT: the pre-existing generic fallback, unchanged. It is safe for
-            # computer use specifically because `_is_read_only_tool` matches on a
-            # leading read-ish verb and rejects EVERY `mcp__kirocrew-computer__*` title
-            # (verified) — so a forged computer-use title cannot reach an auto-approve
-            # through this path either.
-            if _is_read_only_tool(tool_name):
+            # Kind ABSENT: the pre-existing generic fallback, gated the same way as
+            # the kind="read"/"fetch" branch above. `_is_read_only_tool` matches
+            # only on the model-authored title — no identity check at all — so an
+            # edition tool that mutates state and simply omits `kind` would
+            # otherwise auto-approve here on a read-shaped title alone, in a
+            # session (heartbeat) with no interactive approver behind it. Suppressed
+            # under ``deny_kind_based_read_only`` for the same reason as the branch
+            # above: a miss here falls through to ``allow()`` below, same as any
+            # other non-match — never a deny.
+            if not self._config.deny_kind_based_read_only and _is_read_only_tool(tool_name):
                 return ToolHookResult.auto_approve(read_only=True)
 
         return ToolHookResult.allow()

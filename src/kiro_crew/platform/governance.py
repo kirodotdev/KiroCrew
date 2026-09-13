@@ -4132,7 +4132,13 @@ def strip_ungoverned_auto_approve(servers: Mapping[str, object]) -> Dict[str, ob
 
     Only the key is dropped, never the server: the tools stay available and go
     through the approval gate, which is where a per-tool ceiling rule is applied.
-    Unchanged on an ungoverned host.
+    Unchanged on an ungoverned host — ``may_skip_gate_now`` answers True with no
+    ceiling installed, which is the intended behavior for THIS caller's question
+    ("could the ceiling ever have something to say"), but is the WRONG predicate
+    for a caller whose reason to strip is unconditional. Use
+    ``strip_auto_approve_unconditionally`` for that case (e.g. the unattended
+    heartbeat agent) rather than gating this helper's call sites on a ceiling
+    check the underlying risk does not depend on.
     """
     out: Dict[str, object] = {}
     for name, spec in servers.items():
@@ -4142,31 +4148,71 @@ def strip_ungoverned_auto_approve(servers: Mapping[str, object]) -> Dict[str, ob
         if may_skip_gate_now(f"@{name}"):
             out[name] = spec
             continue
-        trimmed = dict(spec)
-        trimmed.pop("autoApprove", None)
-        logger.info(
-            "Dropped autoApprove from MCP server %s: the governance ceiling "
-            "constrains it, so its tools go through the approval gate",
+        out[name] = _pop_auto_approve_and_audit(
             name,
+            spec,
+            source="strip_ungoverned_auto_approve",
+            reason="the governance ceiling constrains it",
         )
-        # Revoking a gate exemption is a permission DECISION — the allowedTools
-        # writers emit this same SEL event, so a silent pop here would be the one
-        # withhold path with no audit trail. Best-effort; never break a rebuild.
-        try:
-            sel().log_api_access(
-                caller="system",
-                operation="mcp_auto_approve_withheld",
-                outcome="ok",
-                source="strip_ungoverned_auto_approve",
-                resources=(
-                    f"@{name} autoApprove removed (governance ceiling); "
-                    "calls go through the approval gate"
-                ),
-            )
-        except Exception:  # noqa: BLE001 — audit must not break the filter
-            logger.debug("SEL audit unavailable for autoApprove strip", exc_info=True)
-        out[name] = trimmed
     return out
+
+
+def strip_auto_approve_unconditionally(servers: Mapping[str, object]) -> Dict[str, object]:
+    """Return ``servers`` with EVERY ``autoApprove`` removed, ceiling or not.
+
+    ``strip_ungoverned_auto_approve`` answers "could the governance ceiling ever
+    have something to say about this server" — the right question for its own
+    callers, wrong for a caller whose reason to strip does not depend on
+    governance at all. The unattended heartbeat agent is that caller: any
+    ``autoApprove`` on a heartbeat MCP spec lets kiro-cli approve calls locally,
+    which never reaches ``GatewayOrchestrator._heartbeat_approval`` and so
+    bypasses both ``HEARTBEAT_SAFE_TOOLS`` and SEL audit on that unattended
+    session — true whether or not a governance ceiling is installed, because
+    the bypass is the approval callback being skipped, not a ceiling being
+    exceeded. On the default public install (no ceiling), the governed helper
+    is a no-op and would leave this bypass open; this helper is not.
+
+    Same shape and same SEL emit as ``strip_ungoverned_auto_approve`` otherwise,
+    so a diff between their outputs is exactly the ceiling-gating difference.
+    """
+    out: Dict[str, object] = {}
+    for name, spec in servers.items():
+        if not isinstance(spec, dict) or "autoApprove" not in spec:
+            out[name] = spec
+            continue
+        out[name] = _pop_auto_approve_and_audit(
+            name,
+            spec,
+            source="strip_auto_approve_unconditionally",
+            reason="this agent's approval boundary must not be bypassable regardless of governance",
+        )
+    return out
+
+
+def _pop_auto_approve_and_audit(name: str, spec: dict, *, source: str, reason: str) -> dict:
+    """Drop ``autoApprove`` from ``spec`` and emit the shared SEL audit event.
+
+    Factored out so the governed and unconditional strips above emit the
+    identical event shape — a diff between their outputs should be exactly the
+    ceiling-gating difference, not a drifted audit record too.
+    """
+    trimmed = dict(spec)
+    trimmed.pop("autoApprove", None)
+    logger.info("Dropped autoApprove from MCP server %s: %s", name, reason)
+    # Revoking a gate exemption is a permission DECISION — the allowedTools
+    # writers emit this same SEL event, so a silent pop here would be the one
+    # withhold path with no audit trail. Best-effort; never break a rebuild.
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_withheld",
+            outcome="ok",
+            source=source,
+            resources=f"@{name} autoApprove removed ({reason}); calls go through the approval gate",
+        )
+    except Exception:  # noqa: BLE001 — audit must not break the filter
+        logger.debug("SEL audit unavailable for autoApprove strip", exc_info=True)
+    return trimmed
 
 
 def may_skip_gate_now(ref: str) -> bool:

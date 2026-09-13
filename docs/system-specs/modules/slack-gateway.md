@@ -763,15 +763,23 @@ stall cron, heartbeat, task-runner, or AutoNudge turns.
 
 ### Heartbeat Tool Allowlist (`HEARTBEAT_SAFE_TOOLS`)
 
-Heartbeat sessions run unattended and cannot prompt a human for tool approval. `_is_heartbeat_safe_tool(event_title)` checks whether a tool is safe to auto-approve using a strict **exact-match** against the `HEARTBEAT_SAFE_TOOLS` frozenset — no verb/heuristic fallback (deny-by-default, per security-controls).
+Heartbeat sessions run unattended and cannot prompt a human for tool approval. `_is_heartbeat_safe_tool(event)` checks whether a tool is safe to auto-approve — no verb/heuristic fallback (deny-by-default, per security-controls).
 
-**Title normalization** (applied before the set lookup):
+**Authorization keys on the event's TRUSTED identity, never on `event.title`.** `event.title` is LLM-authored display prose — `select_tool_title` can even prefer the model's own `description` for some tools — so a heartbeat task that polls untrusted external content (a CR comment, a ticket body) could otherwise forge a title spelled like a trusted tool name over a real write call. Instead the gate reads:
 
-1. Strip leading status prefix (`Running: `) via `_HEARTBEAT_STATUS_PREFIXES`.
-2. Strip ACP `mcp__<server>__<Tool>` prefix.
-3. Strip runtime `@<server>/<Tool>` prefix (kiro-cli titles arrive as `Running: @internal-mcp/ReadInternalWebsites`).
+- `event.mcp_identity_trusted` — set only when `event.tool_name` / `event.mcp_server_name` were populated from the trusted `_meta.kiro` cache-hit path (never from agent-authored content, and never from `title`). `False` denies outright, with no fallback to parsing the title.
+- `event.tool_name` — the canonical, non-model-authored tool identity.
+- `event.mcp_server_name` — the owning MCP server, empty only for a genuine host builtin (no MCP server ever fronts one); this is a cache-hit provenance signal, not a plain non-emptiness check, so a trusted builtin call is correctly distinguished from an untrusted/unresolved one.
 
-Only the **bare tool name** (e.g. `ReadInternalWebsites`) is tested against the frozenset. Unknown tools are denied and a SEL audit event (`outcome: denied`, `reason: not_in_heartbeat_safe_tools`) is emitted so operators can tune the list. SEL failure on the approve path fails closed (denies the tool).
+Matching then splits on tool origin rather than testing one flat set:
+
+- **Host builtins** delegate to `hooks._is_host_read_only_builtin()` / `hooks._HOST_READ_ONLY_BUILTIN_TOOLS` (the same trusted read-only builtin set the interactive `READ_ONLY` classifier policy uses) — the real `_meta.kiro.toolName` spellings kiro-cli stamps for built-ins (`fs_read`, `glob`, `grep`, `web_fetch`, `web_search`; lowercase snake_case), matched only when `mcp_server_name` is empty. A trusted event carrying a server for one of these names (e.g. server `some-mcp`, name `fs_read`) is denied: no built-in ever carries a server, so a server-qualified identity using a builtin's name can only be an MCP server (edition or otherwise) claiming that identity.
+- **Core MCP tools** (`_HEARTBEAT_SAFE_CORE_MCP_TOOLS`: a name → owning-server mapping, e.g. `learn_list`/`spawn_list`/`artifact_get`/etc. → `kirocrew-core`, `cron_list` → `kirocrew-cron`) match ONLY when `mcp_server_name` equals that name's specific recorded owner. An empty or wrong-server identity for one of these names is denied: `HEARTBEAT_SAFE_TOOLS` membership by itself is not sufficient for approval.
+- **Edition-contributed additions** (from `SlackEnterpriseGate.heartbeat_safe_tools()`, deferred context read, fails closed to the core set on any error) match ONLY the exact `@server/tool` identity (built from the trusted `mcp_server_name`/`tool_name` pair) a companion pinned; an empty `mcp_server_name` can never match an edition entry.
+
+`HEARTBEAT_SAFE_TOOLS` (the frozenset union of builtins and core-MCP-tool names) remains as a compatibility constant for callers that only need "what names are in the allowlist," but the actual approval decision always additionally requires the trusted-identity and qualification rule for its branch above.
+
+Any event that fails every branch is denied and a SEL audit event (`outcome: denied`, `reason: not_in_heartbeat_safe_tools`) is emitted so operators can tune the list. SEL failure on the approve path fails closed (denies the tool).
 
 ## Dashboard Token Authentication
 

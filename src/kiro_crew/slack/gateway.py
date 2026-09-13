@@ -154,6 +154,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    is_read_only_bash,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
@@ -188,7 +189,15 @@ from kiro_crew.heartbeat import (
     strip_keep_sentinel,
 )
 from kiro_crew.history import ConversationLog, HistoryConsolidator
-from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
+from kiro_crew.hooks import (
+    _HOST_READ_ONLY_BUILTIN_TOOLS,
+    HookManager,
+    HooksConfig,
+)
+from kiro_crew.hooks import _is_host_read_only_builtin as is_host_read_only_builtin
+from kiro_crew.hooks import (
+    hooks_config_from_config_dict,
+)
 from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
@@ -654,96 +663,191 @@ def _is_read_only_tool(event_title: str) -> bool:
 # When a legitimate new read tool needs to run in heartbeat, operators
 # observe the SEL ``denied`` events for it and explicitly add the name to
 # this set.  This is deny-by-default per the security-controls guideline.
-HEARTBEAT_SAFE_TOOLS = frozenset(
-    {
-        # Local / built-in read tools
-        "Read",
-        "Grep",
-        "Glob",
-        # Workspace exploration
-        "WorkspaceSearch",
-        # KiroCrew-core reads (no side effects)
-        "learn_list",
-        "cron_list",
-        "spawn_list",
-        "spawn_status",
-        "artifact_list",
-        "artifact_get",
-        "artifact_versions",
-        "local_knowledge_search",
-    }
-)
+#
+# Split into a builtin frozenset and a core-MCP-tool mapping, not one flat
+# set, because they need DIFFERENT match rules below: a host BUILTIN (no MCP
+# server, no ``@server/`` identity ever exists for it) is matched by bare name
+# safely, but an MCP-ORIGINATED tool matched by bare name is not — any MCP
+# server, including an edition-contributed heartbeat server, could expose a
+# tool sharing one of these bare names and get auto-approved as if it were
+# the trusted core read. So an MCP-originated safe tool is matched only when
+# qualified to its OWN owning server's identity — the same qualified-identity
+# discipline already applied to the edition allowlist below, just applied to
+# the core set too. The owning server is not uniformly ``kirocrew-core``:
+# ``cron_list`` is served by the separate ``kirocrew-cron`` server, hence a
+# per-name mapping rather than one hardcoded server.
+#
+# Host builtins are NOT a separate constant here. ``hooks._is_host_read_only_builtin``
+# / ``hooks._HOST_READ_ONLY_BUILTIN_TOOLS`` already answer "is this a trusted
+# read-only host builtin" against the REAL ``_meta.kiro.toolName`` spellings
+# kiro-cli stamps (``fs_read``/``glob``/``grep``/``web_fetch``/``web_search`` —
+# lowercase snake_case). A prior revision hand-maintained a second set here
+# using ACP TITLE-space spellings (``Read``/``Grep``/``Glob``) that the
+# trusted ``_meta.kiro`` channel never emits — Design Review on
+# kirodotdev/KiroCrew#10158 caught that the two vocabularies had silently
+# diverged, which would have denied every real builtin heartbeat call on any
+# backend that actually populates ``_meta.kiro``. Reusing the hooks module's
+# function keeps exactly one source of truth for "trusted read-only builtin."
+
+# Builtins that ``hooks._HOST_READ_ONLY_BUILTIN_TOOLS`` trusts for the
+# INTERACTIVE path (a human approver is present) but that heartbeat — running
+# unattended, on a timer, over untrusted polled content — must not gain by
+# silent delegation. Network egress (web_fetch/web_search) is the one
+# category excluded: the interactive builtin set trusts them for the "reads
+# don't nag" UX, but heartbeat's own allowlist never grants outbound network
+# calls. This set preserves that heartbeat-specific narrowing without
+# reintroducing a second hand-maintained read-only vocabulary that could drift
+# from ``_HOST_READ_ONLY_BUILTIN_TOOLS``.
+_HEARTBEAT_EXCLUDED_BUILTIN_TOOLS: frozenset[str] = frozenset({"web_fetch", "web_search"})
+
+_HEARTBEAT_SAFE_CORE_MCP_TOOLS: dict[str, str] = {
+    # Kiro Crew core reads (no side effects), each mapped to its ACTUAL owning
+    # server — most are ``kirocrew-core``, but ``cron_list`` is served by the
+    # separate ``kirocrew-cron`` server, not ``kirocrew-core``. Matched ONLY as
+    # the qualified "@<server>/<name>" identity below, never bare — see the
+    # module-level comment above.
+    "learn_list": "kirocrew-core",
+    "cron_list": "kirocrew-cron",
+    "spawn_list": "kirocrew-core",
+    "spawn_status": "kirocrew-core",
+    "artifact_list": "kirocrew-core",
+    "artifact_get": "kirocrew-core",
+    "artifact_versions": "kirocrew-core",
+    "local_knowledge_search": "kirocrew-core",
+}
+
+# Public alias: the full set of names this module will approve, PROVIDED the
+# qualification/trust rule in ``_is_heartbeat_safe_tool`` is honored. Existing
+# external references (tests, operator docs) that read this constant to see
+# "what is currently allowlisted" keep working unchanged; internal matching
+# treats only the builtins (delegated to ``hooks._HOST_READ_ONLY_BUILTIN_TOOLS``)
+# as bare-matchable, and requires the qualified identity for everything else.
+# Network egress (web_fetch/web_search) is subtracted: heartbeat excludes it
+# (see ``_HEARTBEAT_EXCLUDED_BUILTIN_TOOLS`` above), so a constant advertised
+# as "what this module will approve" must not list names it never approves.
+HEARTBEAT_SAFE_TOOLS = (
+    _HOST_READ_ONLY_BUILTIN_TOOLS - _HEARTBEAT_EXCLUDED_BUILTIN_TOOLS
+) | frozenset(_HEARTBEAT_SAFE_CORE_MCP_TOOLS)
 
 
-_HEARTBEAT_STATUS_PREFIXES = ("Running: ",)
+def _is_heartbeat_safe_tool(event: LLMEvent) -> bool:
+    """Return True if *event* is safe to auto-approve in a heartbeat task.
 
+    Authorizes on the event's TRUSTED identity fields (``mcp_identity_trusted``,
+    ``tool_name``, ``mcp_server_name`` — populated from ``_meta.kiro``, never
+    from agent-authored content) rather than on ``event.title``, which is
+    LLM-authored prose. ``select_tool_title`` can even prefer the model's own
+    ``description`` for some tools, so a heartbeat task that polls untrusted
+    external content (a CR comment, a ticket body) could otherwise forge a
+    title spelled like a trusted tool name over a real write call, and this
+    gate would approve it without ever executing the write it actually
+    dispatches. Per security-controls: a security decision MUST key on
+    ``tool_name``/``mcp_server_name``, never on ``title``.
 
-def _is_heartbeat_safe_tool(event_title: str) -> bool:
-    """Return True if *event_title* is safe to auto-approve in a heartbeat task.
+    ``event.mcp_identity_trusted`` is False whenever the identity pair was not
+    read from the trusted ``_meta.kiro`` cache-hit path (including a backend
+    that never populates ``_meta.kiro`` at all) — deny-by-default in that case,
+    with no fallback to parsing the title. A trusted host BUILTIN legitimately
+    carries an empty ``mcp_server_name`` (no MCP server ever fronts one); this
+    is exactly what ``hooks._is_host_read_only_builtin`` verifies (it also
+    treats ``mcp_identity_trusted`` as a cache-hit provenance flag, never a
+    plain non-emptiness check).
 
-    Strict exact-name match against ``HEARTBEAT_SAFE_TOOLS``.  No verb-based
-    fallback — heartbeat polls untrusted external content (CR comments,
-    ticket bodies) where prompt-injection could try to widen approval via a
-    clever read-shaped tool name (``get_all_credentials``,
-    ``list_env_secrets``, etc.).  Per security-controls deny-by-default:
-    reject unless positively confirmed.
+    A trusted host BUILTIN is matched via ``hooks._is_host_read_only_builtin``
+    against the REAL trusted-channel spellings (``fs_read``/``glob``/``grep``),
+    not a hand-maintained title-space set — network egress
+    (``web_fetch``/``web_search``) is excluded for heartbeat specifically, see
+    ``_HEARTBEAT_EXCLUDED_BUILTIN_TOOLS``. A
+    trusted MCP-served core tool (``_HEARTBEAT_SAFE_CORE_MCP_TOOLS``) is
+    matched ONLY against the SPECIFIC server that actually owns that name
+    (most are ``kirocrew-core``, but ``cron_list`` is served by
+    ``kirocrew-cron``) — a tool name qualified to the wrong server is
+    deliberately not trusted, the same collision class the edition-additions
+    check below already guards against. Edition-contributed additions match
+    ONLY the exact ``@server/tool`` identity a companion pinned; a builtin or
+    core-tool name served by any OTHER server is not automatically an edition
+    addition just because it is unrecognized.
 
-    Title normalization (applied before the set lookup):
-
-    1. Strip leading status prefix (e.g. ``Running: ``).
-    2. Strip ACP ``mcp__<server>__<Tool>`` prefix.
-    3. Strip runtime ``@<server>/<Tool>`` prefix — kiro-cli titles arrive as
-       ``Running: @example-mcp/SomeTool`` at the gateway.
-
-    Only the **bare tool name** is tested against the frozenset.
-
-    Returns False on empty / whitespace-only / unrecognised names.
+    Returns False when the event carries no trusted identity, or when the
+    resulting name/server pair matches nothing in any allowlist.
     """
-    if not event_title:
+    if not event.mcp_identity_trusted:
         return False
-    name = event_title.strip()
-    if not name:
+    tool_name = event.tool_name
+    mcp_server_name = event.mcp_server_name
+    # Shell commands. ``HookManager.on_tool_call`` suppresses its own
+    # kind-based shell auto-approve under ``deny_kind_based_read_only`` — a
+    # mutating edition tool could otherwise declare ``kind="execute"`` on a
+    # call whose recovered command happens to look read-only, slipping past
+    # this allowlist's identity check entirely — and falls through to this
+    # function, per its own comment: "a miss falls through to the caller's
+    # own approver (heartbeat's allowlist), never to a silent auto-approve."
+    # This is that landing: it decides on the RECOVERED command string
+    # (host-observed bytes from the tool_call cache, via
+    # ``AcpEvent.shell_command`` — never the agent-declared ``kind`` or the
+    # LLM-authored title) through the SAME deny-by-default bash classifier
+    # (``is_read_only_bash``) the interactive path already trusts for this
+    # judgment. No new trust surface: an unrecoverable command returns None
+    # and is denied here exactly as it is on the interactive path. Residual
+    # risk accepted, not overlooked: ``is_read_only_bash`` is a text
+    # classifier and cannot see a mutation performed through a side channel a
+    # read-shaped command string hides (e.g. an aliased binary) — the same
+    # imperfection every other session already accepts from this classifier.
+    if event.is_shell:
+        # A cache HIT on two empty strings still satisfies
+        # mcp_identity_trusted (acp/_dispatch.py:1097 checks presence, not
+        # value) — a backend with no _meta.kiro support at all still sends
+        # tool_call frames and gets both caches written as "". Requiring a
+        # genuinely non-empty tool_name distinguishes a real host shell
+        # identity from that empty-but-"trusted" default; mcp_server_name
+        # stays required-empty (only a true host shell tool has no server
+        # behind it — same discipline as _is_host_read_only_builtin below).
+        # An MCP-served tool declaring kind="execute" carries a real
+        # mcp_server_name and must go through the edition allowlist's exact
+        # @server/tool pinning, never approve on the command string alone.
+        if mcp_server_name or not tool_name:
+            return False
+        shell_command = event.shell_command
+        if not shell_command:
+            return False
+        return is_read_only_bash(shell_command)
+    if not tool_name:
         return False
-    # Strip leading status prefix: "Running: @example-mcp/Tool" → "@example-mcp/Tool"
-    for prefix in _HEARTBEAT_STATUS_PREFIXES:
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
-    # Preserve the server-QUALIFIED form (before the prefix is stripped) so the
-    # edition allowlist can match on the full identity and avoid bare-name
-    # collisions — normalized to the "@server/Tool" spelling regardless of which
-    # wire form arrived ("mcp__server__Tool" or "@server/Tool").
-    qualified = ""
-    if name.startswith("mcp__"):
-        parts = name.split("__", 2)
-        if len(parts) == 3:
-            qualified = f"@{parts[1]}/{parts[2]}"
-    elif name.startswith("@") and "/" in name:
-        qualified = name
-    # Strip MCP server prefix: "mcp__example-mcp__ToolName" → "ToolName"
-    if name.startswith("mcp__"):
-        parts = name.split("__", 2)
-        if len(parts) == 3:
-            name = parts[2]
-    # Strip @server/Tool prefix: "@example-mcp/SomeTool" → "SomeTool"
-    if name.startswith("@") and "/" in name:
-        name = name.rsplit("/", 1)[-1]
-    if name in HEARTBEAT_SAFE_TOOLS:
+    # Host builtins: delegate to hooks._is_host_read_only_builtin, the single
+    # source of truth for "trusted read-only host builtin" against the REAL
+    # _meta.kiro.toolName spellings (fs_read/glob/grep/web_fetch/web_search),
+    # rather than a second, hand-maintained set that can silently diverge from
+    # them (see the module-level comment above _HEARTBEAT_SAFE_CORE_MCP_TOOLS).
+    #
+    # EXCEPT network egress (web_fetch/web_search): delegating unconditionally
+    # would silently widen heartbeat specifically to outbound network calls,
+    # which heartbeat's own allowlist otherwise never grants. Heartbeat polls
+    # untrusted external content (a CR comment, a ticket body) unattended;
+    # auto-approving outbound network calls on that surface is a materially
+    # different risk than auto-approving local reads. hooks._is_host_read_only_builtin
+    # (the interactive path, which has a human approver behind it) is
+    # untouched — only THIS
+    # heartbeat-scoped check excludes the two network tools.
+    if tool_name not in _HEARTBEAT_EXCLUDED_BUILTIN_TOOLS and is_host_read_only_builtin(
+        tool_name, mcp_server_name, mcp_identity_trusted=event.mcp_identity_trusted
+    ):
         return True
+    owning_server = _HEARTBEAT_SAFE_CORE_MCP_TOOLS.get(tool_name)
+    if owning_server is not None and mcp_server_name == owning_server:
+        return True
+    if not mcp_server_name:
+        return False
     # Edition-contributed additions. Deferred context read via the sel.py pattern
     # so this module never imports the platform package at load time; fails closed
     # to the core set on any error.
     #
-    # SECURITY — match ONLY the server-qualified "@server/Tool" identity, never a
+    # SECURITY — match ONLY the trusted "@server/tool" identity pair, never a
     # bare tool name: a bare-name allowlist entry would let a DIFFERENT (or
     # compromised) MCP server expose a destructive tool with the same bare name
     # as an allowlisted read-only one, and an injected heartbeat could get it
-    # auto-approved. So a title with no resolvable server (``qualified == ""``)
-    # can never match an edition entry, and an edition entry that is itself a
-    # bare name simply never matches any qualified title. This keeps the
-    # deny-by-default boundary intact; the companion MUST pin "@server/Tool".
-    if not qualified:
-        return False
+    # auto-approved. This keeps the deny-by-default boundary intact; the
+    # companion MUST pin "@server/tool".
+    qualified = f"@{mcp_server_name}/{tool_name}"
     empty: frozenset[str] = frozenset()
     extra: frozenset[str] = safe_context_call(
         lambda: current_context().slack_gate.heartbeat_safe_tools(),
@@ -782,6 +886,14 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
       - ``auto_approve_tools`` (set to empty so ``HEARTBEAT_SAFE_TOOLS`` is
         the sole approval authority)
       - ``auto_replies`` / ``transforms`` / ``context_rules`` (chat-only)
+      - the unconditional ACP-``kind``-based read-only auto-approve in
+        ``HookManager.on_tool_call`` (via ``deny_kind_based_read_only=True``):
+        that branch trusts the agent-influenced ACP ``kind`` field alone, so
+        an edition-contributed heartbeat MCP tool that merely declares
+        ``kind="read"`` would otherwise auto-approve here and bypass
+        ``_heartbeat_approval``'s allowlist + SEL audit entirely — the same
+        class of bypass ``autoApprove``-stripping closes for the config-level
+        field, applied here to the classifier's own read-kind shortcut.
 
     The result: every tool call in a heartbeat session takes the
     ``on_tool_approval`` branch, where ``_heartbeat_approval`` enforces
@@ -797,6 +909,7 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
         denied_commands_disabled_ids=list(user_cfg.denied_commands_disabled_ids),
         denied_commands_disable_all=user_cfg.denied_commands_disable_all,
         denied_commands_user_added=list(user_cfg.denied_commands_user_added),
+        deny_kind_based_read_only=True,
     )
     return HookManager(scoped)
 
@@ -2336,6 +2449,22 @@ class GatewayOrchestrator:
         # surface — SEL audit AND dashboard-visible logger warnings —
         # per the security-controls "never trust LLM output" guideline.
         safe_title = redact(title)
+        # The audit label prefers the trusted identity fields
+        # (`mcp_identity_trusted`, `tool_name`, `mcp_server_name`) over the
+        # redacted title when the event is genuinely trusted: `_is_heartbeat_safe_tool`
+        # authorizes on those trusted fields, not on the title, so logging the
+        # title alone can record a different name than the one the approval
+        # decision actually keyed on (e.g. a real `fs_read` builtin displays
+        # as `Read`). On the deny path — or any untrusted event — the trusted
+        # fields are not provable, so the redacted title remains the label:
+        # it is the (possibly forged) input that was rejected.
+        audit_label = safe_title or "<unknown>"
+        if event.mcp_identity_trusted and event.tool_name:
+            audit_label = (
+                f"{event.mcp_server_name}/{event.tool_name}"
+                if event.mcp_server_name
+                else event.tool_name
+            )
 
         def _audit(outcome: str, *, critical: bool = False, **metadata: str) -> None:
             """Emit a SEL ``log_tool_invocation`` event.
@@ -2351,7 +2480,7 @@ class GatewayOrchestrator:
                 session_key=HEARTBEAT_KEY,
                 source="heartbeat",
                 agent="kirocrew-heartbeat",
-                tool_name=safe_title or "<unknown>",
+                tool_name=audit_label,
                 tool_kind=event.tool_kind,
                 outcome=outcome,
                 request_id=event.request_id,
@@ -2359,7 +2488,42 @@ class GatewayOrchestrator:
                 critical=critical,
             )
 
-        if _is_heartbeat_safe_tool(title):
+        if _is_heartbeat_safe_tool(event):
+            # Shell commands additionally need the name-grant check every
+            # other unattended auto-approve path runs unconditionally
+            # (llm_helpers._resolve_permission): the shell resolves the
+            # program name again through a PATH that can lead with
+            # agent-writable directories, so a read-only-looking command
+            # can still execute a shadowed binary. _is_heartbeat_safe_tool
+            # judges the command text; this judges the executable identity
+            # behind it — a refusal here downgrades to deny, matching this
+            # session's own no-approver fallback.
+            if event.is_shell:
+                _ng_refusal = await name_grant.refusal_for_event(event)
+                if _ng_refusal is not None:
+                    logger.warning(
+                        "declining a heartbeat shell auto-approve: %s; the "
+                        "request falls through to deny-by-default",
+                        _ng_refusal.log_text,
+                    )
+                    name_grant.log_decline(
+                        source="heartbeat",
+                        session_key=HEARTBEAT_KEY,
+                        event=event,
+                        refusal=_ng_refusal,
+                        tier="heartbeat_safe_tool",
+                        agent="kirocrew-heartbeat",
+                        sel_factory=sel,
+                    )
+                    try:
+                        _audit("denied", reason="name_grant_refused")
+                    except Exception:
+                        logger.warning(
+                            "SEL audit failed on heartbeat name-grant deny path — "
+                            "tool was still rejected",
+                            exc_info=True,
+                        )
+                    return False
             # Fail-closed: if SEL is down we cannot record the auto-approve
             # decision, and unattended sessions must not run tools without
             # an auditable permission record. Deny rather than approve

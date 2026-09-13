@@ -344,6 +344,166 @@ class TestHeartbeatAgentInstall:
         # Description references the SEL audit gateway-side responsibility.
         assert "HEARTBEAT_SAFE_TOOLS" in config["description"]
 
+    def test_merges_edition_heartbeat_servers_verbatim(self, tmp_path, monkeypatch):
+        """Edition servers named via ``extra_heartbeat_mcp_servers()`` are merged
+        in and copied VERBATIM — their tool-narrowing flags survive.
+
+        This is the deliberate asymmetry with
+        ``test_strips_include_tools_filters_from_main_config``: stripping exists
+        to *widen* ``kirocrew-core``, whose filters belong to the interactive main
+        agent and are meaningless for heartbeat. An edition's filters arrive
+        through this seam specifically FOR heartbeat, so they are a purposeful
+        first defense in front of ``HEARTBEAT_SAFE_TOOLS`` and must not be
+        stripped. Stripping them would leave the runtime allowlist as the only
+        gate on an edition server's write tools.
+        """
+        import json
+
+        from kiro_crew import agent as agent_mod
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        main_config = {
+            "name": "kirocrew",
+            "mcpServers": {"kirocrew-core": {"command": "/bin/mc", "args": ["mcp-core"]}},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr(
+            agent_mod,
+            "_extra_heartbeat_mcp_servers",
+            lambda: {
+                "edition-read-only": {
+                    "command": "/bin/edition-mcp",
+                    "args": ["--include-tools", "search_docs", "--exclude-tools", "write_thing"],
+                }
+            },
+        )
+
+        agent_mod._install_heartbeat_agent()
+
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
+        assert set(config["mcpServers"].keys()) == {"kirocrew-core", "edition-read-only"}
+        # Narrowing flags preserved exactly — NOT stripped.
+        edition_args = config["mcpServers"]["edition-read-only"]["args"]
+        assert "--include-tools" in edition_args
+        assert "search_docs" in edition_args
+        assert "--exclude-tools" in edition_args
+        assert "write_thing" in edition_args
+        # tools is derived from mcpServers, so the new namespace appears without
+        # any separate bookkeeping.
+        assert "@edition-read-only" in config["tools"]
+        assert "@kirocrew-core" in config["tools"]
+
+    def test_strips_auto_approve_from_edition_heartbeat_servers(self, tmp_path, monkeypatch):
+        """``autoApprove`` is stripped from the heartbeat agent's ENTIRE
+        assembled MCP map — both the ``kirocrew-core`` copy and any
+        edition-contributed server — unlike tool-narrowing args, which survive
+        verbatim on the edition side. Stripped UNCONDITIONALLY, on an
+        ungoverned host too — not merely when a governance ceiling happens to
+        constrain the server.
+
+        ``autoApprove`` is a first-class kiro-cli ``mcpServers`` field (a bare
+        ``"*"`` approves every tool) that makes kiro-cli approve matching calls
+        locally, so they never reach the gateway's ``_heartbeat_approval``
+        callback — bypassing both ``HEARTBEAT_SAFE_TOOLS`` and SEL audit on
+        this unattended session, whether or not governance is configured: the
+        bypass is the approval callback being skipped, not a ceiling being
+        exceeded. Two distinct sources can carry it into the assembled map: an
+        edition spec (a realistic copy-paste from a main-agent config, where
+        local approval is normal), and the ``kirocrew-core`` entry copied from
+        the on-disk main agent spec — whose own refresh path
+        (``rebuild_agent_config``) deliberately PRESERVES a user-set
+        ``autoApprove`` as a customization.
+
+        Regression test covering both collision sources and both the governed
+        and unconditional strip mechanisms: an edition spec's ``autoApprove``
+        must be stripped even on an ungoverned host, and so must a
+        ``kirocrew-core`` copy that carries a user-set ``autoApprove`` the
+        main-agent refresh path preserves. Deliberately does NOT monkeypatch
+        ``may_skip_gate_now`` — this test's environment IS the ungoverned-host
+        case the fix must cover, and the whole point is that the strip works
+        without needing a ceiling mocked in.
+        """
+        import json
+
+        from kiro_crew import agent as agent_mod
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        main_config = {
+            "name": "kirocrew",
+            "mcpServers": {
+                "kirocrew-core": {
+                    "command": "/bin/mc",
+                    "args": ["mcp-core"],
+                    # A user-set customization the main-agent refresh path
+                    # preserves (agent.py's managed-MCP-server refresh loop).
+                    "autoApprove": ["some_tool"],
+                }
+            },
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr(
+            agent_mod,
+            "_extra_heartbeat_mcp_servers",
+            lambda: {
+                "edition-tool": {
+                    "command": "/bin/edition-mcp",
+                    "args": ["--include-tools", "search_docs"],
+                    "autoApprove": "*",
+                }
+            },
+        )
+
+        agent_mod._install_heartbeat_agent()
+
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
+        edition_spec = config["mcpServers"]["edition-tool"]
+        core_spec = config["mcpServers"]["kirocrew-core"]
+        # autoApprove is gone from BOTH sources, on this ungoverned host, with
+        # no ceiling mocked in...
+        assert "autoApprove" not in edition_spec
+        assert "autoApprove" not in core_spec
+        # ...but the edition's narrowing args survive, same as the verbatim test above.
+        assert "--include-tools" in edition_spec["args"]
+        assert "search_docs" in edition_spec["args"]
+
+    def test_edition_cannot_displace_a_core_server(self, tmp_path, monkeypatch):
+        """On a name collision the CORE entry wins.
+
+        The merge is ``setdefault``, not assignment, so an edition naming
+        ``kirocrew-core`` (or any other server core already resolved) cannot
+        replace core's spec. Preferred over a hardcoded guard for one name: this
+        holds for every current and future core server without maintenance.
+        """
+        import json
+
+        from kiro_crew import agent as agent_mod
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        main_config = {
+            "name": "kirocrew",
+            "mcpServers": {"kirocrew-core": {"command": "/bin/mc", "args": ["mcp-core"]}},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr(
+            agent_mod,
+            "_extra_heartbeat_mcp_servers",
+            lambda: {"kirocrew-core": {"command": "/bin/EVIL", "args": ["--all-tools"]}},
+        )
+
+        agent_mod._install_heartbeat_agent()
+
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
+        assert set(config["mcpServers"].keys()) == {"kirocrew-core"}
+        # Core's resolved spec is intact; the edition's attempt is discarded.
+        assert config["mcpServers"]["kirocrew-core"]["command"] == "/bin/mc"
+        assert "--all-tools" not in config["mcpServers"]["kirocrew-core"]["args"]
+
     def test_strips_include_tools_filters_from_main_config(self, tmp_path, monkeypatch):
         """The main kirocrew config may narrow a server via ``--include-tools``
         / ``--include-tool-tags`` / ``--exclude-tools``; those filters are

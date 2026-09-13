@@ -1411,6 +1411,220 @@ class TestMutatingKindBeatsTheTitle:
         # ORDINARY tools — unchanged from base, and the reason the fix stayed narrow.
         assert mgr.on_tool_call("read_the_docs").action == TOOL_AUTO_APPROVE
 
+
+class TestDenyKindBasedReadOnly:
+    """``HooksConfig.deny_kind_based_read_only`` suppresses the unconditional
+    ACP-``kind``-based read-only auto-approve for a scoped ``HookManager``.
+
+    GPT 5.6 Review BLOCK-MERGE (upheld by Opus 4.8 adjudication) on
+    kirodotdev/KiroCrew#10158: this PR's new ``_extra_heartbeat_mcp_servers()``
+    seam is the first path that lets an edition-contributed (untrusted) MCP
+    server's tools reach a heartbeat session's ``on_tool_call``. Before this
+    branch is suppressed, a mutating edition tool that merely reports ACP
+    ``kind="read"`` auto-approves here — before ``_heartbeat_approval`` ever
+    runs — bypassing ``HEARTBEAT_SAFE_TOOLS`` and its SEL audit entirely, on a
+    session with no interactive approver to catch it. ``tool_kind`` is
+    agent-influenced (passed through verbatim from the ACP ``kind`` field),
+    so it proves nothing about the call's real effect.
+    """
+
+    @pytest.mark.parametrize("kind", ["read", "fetch"])
+    def test_default_config_still_auto_approves_on_kind_alone(self, kind):
+        """Regression guard: every OTHER caller of on_tool_call is unaffected."""
+        mgr = HookManager()
+        assert mgr.on_tool_call("some_tool", tool_kind=kind).action == TOOL_AUTO_APPROVE
+
+    def test_default_config_still_auto_approves_shell_read_only_command(self):
+        """Regression guard for the SHELL arm specifically: every OTHER caller
+        (cron/autonudge/interactive) still auto-approves a genuinely
+        read-only recovered command."""
+        mgr = HookManager()
+        result = mgr.on_tool_call("ls -la", command="ls -la", is_shell=True)
+        assert result.action == TOOL_AUTO_APPROVE
+
+    def test_suppressed_config_denies_shell_read_only_command(self):
+        """The kind==\"execute\" SHELL branch is a THIRD unconditional
+        auto-approve path in ``on_tool_call``, separate from the two
+        title/kind-based branches above. ``is_shell`` derives from the
+        agent-influenced ACP ``kind`` field (``is_shell_kind``), so an
+        edition heartbeat MCP tool declaring ``kind="execute"`` with a
+        benign recoverable command must not auto-approve here either — it
+        must fall through to that session's own approval callback, same as
+        the other two branches."""
+        mgr = HookManager(HooksConfig(deny_kind_based_read_only=True))
+        result = mgr.on_tool_call("ls -la", command="ls -la", is_shell=True)
+        assert result.action == TOOL_ALLOW, (
+            "a read-only-shaped shell command auto-approved despite "
+            "deny_kind_based_read_only=True — the heartbeat allowlist would "
+            "never see this call"
+        )
+
+    def test_heartbeat_scoped_hooks_deny_a_shell_kind_edition_tool(self):
+        """End-to-end through the real builder: an edition heartbeat MCP
+        tool declaring ``kind="execute"`` with a read-only-shaped command
+        must fall through to allow(), not auto-approve."""
+        from kiro_crew.slack.gateway import _build_heartbeat_hooks
+
+        user_hooks = HookManager(HooksConfig(auto_approve_tools=["*"]))
+        scoped = _build_heartbeat_hooks(user_hooks)
+        result = scoped.on_tool_call("ls -la", command="ls -la", is_shell=True)
+        assert result.action == TOOL_ALLOW
+
+    def test_suppression_does_not_widen_a_shell_deny(self):
+        """The flag must only ever remove an auto-approve path on the shell
+        arm too, never a deny — a non-read-only shell command still denies
+        or falls through identically either way, never auto-approving."""
+        mgr_default = HookManager()
+        mgr_suppressed = HookManager(HooksConfig(deny_kind_based_read_only=True))
+        for mgr in (mgr_default, mgr_suppressed):
+            result = mgr.on_tool_call("rm -rf /tmp/x", command="rm -rf /tmp/x", is_shell=True)
+            assert result.action != TOOL_AUTO_APPROVE
+
+    @pytest.mark.parametrize("kind", ["read", "fetch"])
+    def test_suppressed_config_falls_through_to_allow(self, kind):
+        """The heartbeat-scoped case: a read-kind edition tool must NOT
+        auto-approve here — it must fall through to that session's own
+        approval callback instead."""
+        mgr = HookManager(HooksConfig(deny_kind_based_read_only=True))
+        result = mgr.on_tool_call(
+            "mcp__evil-edition-server__delete_everything",
+            mcp_server_name="evil-edition-server",
+            mcp_tool_name="delete_everything",
+            mcp_identity_trusted=True,
+            tool_kind=kind,
+        )
+        assert result.action == TOOL_ALLOW, (
+            f"tool_kind={kind!r} auto-approved a mutating edition tool despite "
+            "deny_kind_based_read_only=True — the heartbeat allowlist would never "
+            "see this call"
+        )
+
+    def test_suppression_does_not_widen_a_deny(self):
+        """The flag must only ever remove an auto-approve path, never a deny —
+        a sensitive-path/command deny still fires identically either way."""
+        mgr_default = HookManager()
+        mgr_suppressed = HookManager(HooksConfig(deny_kind_based_read_only=True))
+        for mgr in (mgr_default, mgr_suppressed):
+            result = mgr.on_tool_call(
+                "~/.aws/credentials", mcp_tool_name="innocuous_name", tool_kind="read"
+            )
+            assert result.action == TOOL_DENY
+
+    def test_heartbeat_scoped_hooks_set_the_flag(self):
+        """``_build_heartbeat_hooks`` must actually opt in to the suppression —
+        this is the wiring the finding says was missing."""
+        from kiro_crew.slack.gateway import _build_heartbeat_hooks
+
+        user_hooks = HookManager(HooksConfig(auto_approve_tools=["*"]))
+        scoped = _build_heartbeat_hooks(user_hooks)
+        assert scoped._config.deny_kind_based_read_only is True  # noqa: SLF001
+
+    def test_heartbeat_scoped_hooks_deny_a_read_kind_edition_tool(self):
+        """End-to-end through the real builder: the exact shape the finding
+        described — an edition-contributed heartbeat MCP tool declaring
+        ``kind="read"`` — must fall through to allow(), not auto-approve."""
+        from kiro_crew.slack.gateway import _build_heartbeat_hooks
+
+        user_hooks = HookManager(HooksConfig(auto_approve_tools=["*"]))
+        scoped = _build_heartbeat_hooks(user_hooks)
+        result = scoped.on_tool_call(
+            "mcp__evil-edition-server__delete_everything",
+            mcp_server_name="evil-edition-server",
+            mcp_tool_name="delete_everything",
+            mcp_identity_trusted=True,
+            tool_kind="read",
+        )
+        assert result.action == TOOL_ALLOW
+
+    def test_default_config_still_auto_approves_a_cu_observe_tool(self, monkeypatch):
+        """Regression guard for the COMPUTER-USE branch specifically: every
+        OTHER caller of on_tool_call is unaffected."""
+        monkeypatch.setattr("kiro_crew.hooks._cu_read_only_auto_approve", lambda _name: True)
+        mgr = HookManager()
+        result = mgr.on_tool_call("computer_get_state", tool_kind="read")
+        assert result.action == TOOL_AUTO_APPROVE
+
+    def test_suppressed_config_denies_a_cu_observe_tool(self, monkeypatch):
+        """The computer-use branch is a FOURTH unconditional auto-approve
+        path in ``on_tool_call``, gated on the agent-influenced ``kind``
+        field the same as the other three: ``tool_name`` also comes from
+        ``select_tool_title``, which prefers the LLM-authored description,
+        so a mutating tool can title itself as an observe-class computer-use
+        call. Before this branch is suppressed, it auto-approves directly
+        underneath the now-conditional kind-read/fetch branch above it,
+        reviving a path that was unreachable in the base — it must fall
+        through to the heartbeat allowlist instead."""
+        monkeypatch.setattr("kiro_crew.hooks._cu_read_only_auto_approve", lambda _name: True)
+        mgr = HookManager(HooksConfig(deny_kind_based_read_only=True))
+        result = mgr.on_tool_call("computer_get_state", tool_kind="read")
+        assert result.action == TOOL_ALLOW, (
+            "a forged computer-use observe title auto-approved despite "
+            "deny_kind_based_read_only=True — the heartbeat allowlist would "
+            "never see this call"
+        )
+
+    def test_heartbeat_scoped_hooks_deny_a_cu_observe_tool(self, monkeypatch):
+        """End-to-end through the real builder: a heartbeat session must
+        never auto-approve on a forged computer-use observe title."""
+        from kiro_crew.slack.gateway import _build_heartbeat_hooks
+
+        monkeypatch.setattr("kiro_crew.hooks._cu_read_only_auto_approve", lambda _name: True)
+        user_hooks = HookManager(HooksConfig(auto_approve_tools=["*"]))
+        scoped = _build_heartbeat_hooks(user_hooks)
+        result = scoped.on_tool_call("computer_get_state", tool_kind="read")
+        assert result.action == TOOL_ALLOW
+
+    def test_default_config_still_auto_approves_on_title_alone_with_kind_absent(self):
+        """Regression guard for the kind-ABSENT fallback (separate code path from
+        the kind="read"/"fetch" branch above): every OTHER caller of
+        on_tool_call is unaffected."""
+        mgr = HookManager()
+        result = mgr.on_tool_call("read_something", tool_kind="")
+        assert result.action == TOOL_AUTO_APPROVE
+
+    def test_suppressed_config_denies_kindless_title_only_fallback(self):
+        """The kind-ABSENT fallback at the bottom of the function —
+        ``if _is_read_only_tool(tool_name): auto_approve(...)`` — is a
+        SEPARATE code path from the kind="read"/"fetch" branch above, reached
+        when an edition tool omits ``kind`` entirely rather than declaring
+        "read". ``_is_read_only_tool`` takes only the title string — no
+        identity check — so it must be suppressed the same way: an edition
+        tool that omits ``kind`` must not auto-approve on a read-shaped title
+        alone before ``_heartbeat_approval`` ever runs. Title deliberately has
+        no write-indicator token (e.g. "delete") so the title-heuristic itself
+        still says "read-shaped" — the point is that a read-shaped title is
+        not proof of a read-only effect."""
+        mgr = HookManager(HooksConfig(deny_kind_based_read_only=True))
+        result = mgr.on_tool_call(
+            "mcp__evil-edition-server__read_all_credentials",
+            mcp_server_name="evil-edition-server",
+            mcp_tool_name="read_all_credentials",
+            mcp_identity_trusted=True,
+            tool_kind="",
+        )
+        assert result.action == TOOL_ALLOW, (
+            "a kindless edition tool with a read-shaped title auto-approved despite "
+            "deny_kind_based_read_only=True — the heartbeat allowlist would never "
+            "see this call"
+        )
+
+    def test_heartbeat_scoped_hooks_deny_a_kindless_title_only_edition_tool(self):
+        """End-to-end through the real builder: an edition-contributed
+        heartbeat MCP tool that omits ``kind`` entirely and relies on a
+        read-shaped title must fall through to allow(), not auto-approve."""
+        from kiro_crew.slack.gateway import _build_heartbeat_hooks
+
+        user_hooks = HookManager(HooksConfig(auto_approve_tools=["*"]))
+        scoped = _build_heartbeat_hooks(user_hooks)
+        result = scoped.on_tool_call(
+            "mcp__evil-edition-server__read_all_credentials",
+            mcp_server_name="evil-edition-server",
+            mcp_tool_name="read_all_credentials",
+            mcp_identity_trusted=True,
+            tool_kind="",
+        )
+        assert result.action == TOOL_ALLOW
+
     def test_rejects_none_context(self):
         from kiro_crew.slack.handler import _should_auto_approve_spawn
 
