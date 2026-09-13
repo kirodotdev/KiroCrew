@@ -256,8 +256,35 @@ def _frames(handle: IO[bytes], cap: int) -> Iterator[bytes | _Oversized]:
     stops consuming this generator, and generators are lazy, so the work of
     discarding a multi-GB tail is never done for it. That is the same guarantee
     the old explicit flag gave, with no flag to pass or get wrong.
+
+    Implemented as a thin projection of :func:`_frames_with_offsets`, which owns
+    the buffer walk; the two readers therefore frame identically by construction
+    rather than by parallel maintenance.
+    """
+    for _start, _end, frame in _frames_with_offsets(handle, cap):
+        yield frame
+
+
+def _frames_with_offsets(
+    handle: IO[bytes], cap: int
+) -> Iterator[tuple[int, int, bytes | _Oversized]]:
+    """Frame *handle* into complete records with absolute byte offsets.
+
+    This is the single framing implementation: :func:`_frames` projects it.
+    Offsets name exact record boundaries, so they are safe seek targets for a
+    later bounded read of the same stamped file revision. Everything the
+    :func:`_frames` docstring says about boundaries, the cap, drops, and peak
+    memory holds here verbatim.
     """
     buf = b""
+    # Absolute offset of buf[0]. Seeded from the handle's position when it has
+    # one (callers may hand a pre-seeked file) and advanced by bytes CONSUMED,
+    # so a readline-only handle with no `tell` frames identically.
+    try:
+        buf_offset = handle.tell()
+    except (AttributeError, OSError):
+        buf_offset = 0
+    consumed = buf_offset
     # True while discarding the remainder of an over-cap record, whose own
     # terminator is what ends the discard.
     dropping = False
@@ -274,21 +301,26 @@ def _frames(handle: IO[bytes], cap: int) -> Iterator[bytes | _Oversized]:
         if not chunk:
             break
         buf += chunk
+        consumed += len(chunk)
         # Walk by offset and slice the remainder ONCE at the end of the chunk:
         # re-slicing per record copies the whole tail each time, which is
         # quadratic in the number of records a single read holds.
         start = 0
         while (idx := _boundary_end(buf, start)) is not None:
+            piece_start = start
             piece, start = buf[start:idx], idx
+            absolute_start = buf_offset + piece_start
+            absolute_end = buf_offset + idx
             if dropping:
                 dropping = False  # this piece's terminator ended the dropped record
                 continue
             if _body_len(piece) > cap:
                 # Already terminated, so there is nothing left to discard and
                 # `dropping` must stay clear -- the next piece is a real record.
-                yield _OVERSIZED
+                yield absolute_start, absolute_end, _OVERSIZED
                 continue
-            yield piece
+            yield absolute_start, absolute_end, piece
+        buf_offset += start
         buf = buf[start:]
         # A trailing \r is a pending TERMINATOR half, not body: it was left
         # unsplit above in case its \n is in the next read, so counting it would
@@ -296,18 +328,40 @@ def _frames(handle: IO[bytes], cap: int) -> Iterator[bytes | _Oversized]:
         pending_cr = buf.endswith(b"\r")
         if len(buf) - pending_cr > cap:
             if not dropping:
-                yield _OVERSIZED
+                yield buf_offset, buf_offset + len(buf), _OVERSIZED
                 dropping = True
             # KEEP a pending \r. It is the dropped record's own terminator, and
             # dropping it would leave the NEXT record's terminator to end the
             # discard -- silently consuming a valid record.
-            buf = b"\r" if pending_cr else b""
+            if pending_cr:
+                buf_offset = consumed - 1
+                buf = b"\r"
+            else:
+                buf_offset = consumed
+                buf = b""
     if buf and not dropping:
         # A crash mid-append leaves a final record with no terminator. Its BODY
         # is within the cap because the per-read check above reported and dropped
         # any longer tail; the piece itself may be one byte longer, when the file
         # ends on a bare \r that is a terminator here rather than a pending half.
-        yield buf
+        yield buf_offset, buf_offset + len(buf), buf
+
+
+def strict_raw_records_with_offsets(
+    handle: IO[bytes], path: Path, *, cap: int = RECORD_CAP
+) -> Iterator[tuple[int, int, bytes]]:
+    """Yield ``(start, end, record)``, aborting on an oversized record.
+
+    The pagination index is an INDEX SPACE: every row it counts positions the
+    rows above it, so a skipped record does not merely go missing, it shifts
+    every later cursor. That is the strict posture, so an over-cap record raises
+    :class:`OversizedRecord` and the caller falls back to the authoritative full
+    reader, which has no per-record cap.
+    """
+    for start, end, frame in _frames_with_offsets(handle, cap):
+        if isinstance(frame, _Oversized):
+            raise OversizedRecord(f"record over {cap} bytes in {path!r}")
+        yield start, end, frame
 
 
 def _decode(raw: bytes) -> str:
