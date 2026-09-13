@@ -15238,6 +15238,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "Этот сеанс удалён, его нельзя открыть.",
+      "session_gone_current": "Эта сессия была удалена на сервере.",
+      "session_gone_open_failed_named": "Сеанс «{{name}}» удалён, его нельзя открыть.",
+      "session_gone_current_named": "«{{name}}» была удалена на сервере.",
       "truncated": "...(усечено)"
     }
   },

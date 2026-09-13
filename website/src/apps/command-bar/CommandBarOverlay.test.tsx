@@ -588,7 +588,7 @@ describe('CommandBarOverlay rows', () => {
     expect(rows[0].textContent).not.toContain('Command')
     // Activating one switches to it, the same way every other surface opens a session.
     fireEvent.mouseDown(rows[0])
-    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a' })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a', announceOnMissing: true })
   })
 
   it('shows no attention section when nothing is waiting on the user', () => {

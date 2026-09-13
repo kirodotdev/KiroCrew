@@ -150,7 +150,7 @@ export function useSceneInteraction(
 
   const openChat = useCallback((agent: SceneAgent) => {
     const slotKey = agent.id.replace(/^slot-/, '')
-    dispatch(switchSlot(slotKey))
+    dispatch(switchSlot({ key: slotKey, announceOnMissing: true }))
     navigate('/chat')
   }, [dispatch, navigate])
 

@@ -307,7 +307,7 @@ export function useRecentsProvider(): ResourceProvider {
             isNew: isNew || undefined,
             timestamp: isNew ? undefined : fmtRelativeTime(s.last_activity_ts ?? s.last_ts),
             onActivate: () => {
-              dispatch(switchSlot(s.key))
+              dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
               navigate('/chat')
             },
           }

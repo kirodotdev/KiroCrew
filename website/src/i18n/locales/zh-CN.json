@@ -14661,6 +14661,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "该会话已被删除，无法打开。",
+      "session_gone_current": "该会话已在服务器上被删除。",
+      "session_gone_open_failed_named": "“{{name}}”已被删除，无法打开。",
+      "session_gone_current_named": "“{{name}}”已在服务器上被删除。",
       "truncated": "…（已截断）"
     }
   },

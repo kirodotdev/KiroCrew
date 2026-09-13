@@ -6335,6 +6335,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "That session was deleted and cannot be opened.",
+      "session_gone_current": "That session was deleted on the server.",
+      "session_gone_open_failed_named": "“{{name}}” was deleted and cannot be opened.",
+      "session_gone_current_named": "“{{name}}” was deleted on the server.",
       "truncated": "…(truncated)"
     }
   },

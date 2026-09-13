@@ -14661,6 +14661,10 @@
   },
   "store": {
     "chatSlice": {
+      "session_gone_open_failed": "해당 세션은 삭제되어 열 수 없습니다.",
+      "session_gone_current": "해당 세션은 서버에서 삭제되었습니다.",
+      "session_gone_open_failed_named": "‘{{name}}’은(는) 삭제되어 열 수 없습니다.",
+      "session_gone_current_named": "‘{{name}}’은(는) 서버에서 삭제되었습니다.",
       "truncated": "…(생략됨)"
     }
   },
