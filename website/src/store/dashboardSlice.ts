@@ -804,6 +804,26 @@ export function slotSurfaceKey(slot: { mode?: string; surface?: string }): strin
 }
 
 /**
+ * True when a slot's turns run on a connected crew rather than THIS machine —
+ * the single spelling of "crew-bound". Two client surfaces must agree with each
+ * other and with the server on it: `selectContinuable` (which must not OFFER
+ * Continue on a bound slot) and ChatPage's regenerate / edit-resend gates
+ * (which must not offer those either). Mirrors `remote_bound_refusal` in
+ * `src/kiro_crew/dashboard/remote_relay.py`, which REFUSES the same actions with
+ * 409 `remote_action_unsupported`.
+ *
+ * Keyed on `executor` (the binding INTENT), never `instance_id` or `is_remote`:
+ * the server refuses a half-open binding (marker set, triple incomplete) too, so
+ * an unbound `executor` must read as bound here exactly as it does there. An
+ * absent slot is not bound — an older gateway ships `executor` on every slot, so
+ * only a genuinely missing lookup lands here, and a missing slot has no local
+ * action to gate.
+ */
+export function slotIsRemoteBound(slot: { executor?: string } | null | undefined): boolean {
+  return slot?.executor === 'remote'
+}
+
+/**
  * Count unread slots whose surface matches `mode`. Slots present in
  * `unreadSlots` but missing from `slots` (e.g. deleted but not yet drained)
  * are treated as the default chat surface (`""`) so they keep contributing

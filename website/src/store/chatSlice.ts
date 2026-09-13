@@ -4,7 +4,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { api } from '../api/client'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
-import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
+import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, slotIsRemoteBound, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
@@ -3842,6 +3842,18 @@ export const selectContinuable = (state: RootState): boolean => {
   // `slot_orchestrating`. Mirrors the same guard in `api_chat_slot_continue`.
   const dashSlot = state.dashboard.slots.find((sl) => sl.key === c.activeSlot)
   if (dashSlot?.orchestrating || dashSlot?.subagents_running) return false
+  // A crew-bound session has NO local continue: `remote_bound_refusal` rejects
+  // `executor === 'remote'` with 409 `remote_action_unsupported` ahead of every
+  // guard above, because the synthetic turn Continue queues would dispatch on
+  // THIS machine and diverge from the peer's transcript. Without the same guard
+  // here the offer is self-defeating on the one path that guarantees the state:
+  // `relay_remote_turn`'s failure path appends a trailing `error` row, which is
+  // exactly the shape `selectTurnInterrupted` reads as an interruption, so a
+  // dropped tunnel leaves a Resume whose only possible answer is that 409.
+  // Typing is unaffected; a plain send DOES relay.
+  // Keyed on `executor`, not `instance_id`: a half-open binding (marker set,
+  // triple incomplete) is refused server-side too, so it must not offer here.
+  if (slotIsRemoteBound(dashSlot)) return false
   const msgs = c.messages
   if (!msgs.length) return false
   for (let i = msgs.length - 1; i >= 0; i--) {

@@ -55,7 +55,7 @@ import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFe
 import { runInTerminalText } from '../utils/fenceShell'
 import { addTab as addDockTerminal } from '../hooks/useBottomTerminal'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
-import { sseSlotTitle, triggerRefresh, updateSlot } from '../store/dashboardSlice'
+import { sseSlotTitle, triggerRefresh, updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -866,6 +866,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // project changes which project-scoped agents exist. Derived here rather than
   // from `currentSlot`, which is computed further down the render body.
   const activeSlotProject = slots.find(s => s.key === activeSlot)?.project || undefined
+  // Crew-bound (remote-executor) sessions refuse every local turn-starting
+  // action server-side (`remote_bound_refusal`): regenerate, edit-resend, rewind
+  // and continue would run the crew's turn on THIS machine and diverge the
+  // transcripts. So the client must not OFFER them here either — same predicate
+  // and same `executor` keying `selectContinuable` already uses for Resume.
+  const activeSlotRemoteBound = slotIsRemoteBound(slots.find(s => s.key === activeSlot))
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
   // Is this session bound to a peer crew for execution, and what does that crew
   // offer? Read once here and threaded into the shelf's pickers below, so every
@@ -3819,7 +3825,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // with is over, so the old reason would now describe a state that passed.
   useEffect(() => { if (slotRunning) setRefusedPress(null) }, [slotRunning])
   const handleRegenerate = useCallback(() => {
-    if (!activeSlot || regenerating || slotRunning) return
+    if (!activeSlot || regenerating || slotRunning || activeSlotRemoteBound) return
     // Mirror the server's scan exactly (chat_regenerate.py): the turn being
     // regenerated ends at the last assistant row BY ROLE — hidden
     // invisible-only rows included — so this optimistic truncation cannot
@@ -3851,7 +3857,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
     })
-  }, [activeSlot, regenerating, slotRunning, messages, dispatch, showRefusedPress])
+  }, [activeSlot, regenerating, slotRunning, activeSlotRemoteBound, messages, dispatch, showRefusedPress])
 
   // ---- Continue the thread ---------------------------------------------------
   // A turn can end without the assistant handing the floor back: the connection
@@ -3996,7 +4002,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [activeSlot, boundStore, dispatch, showActionError])
 
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
-    if (!activeSlot || slotRunning) return
+    if (!activeSlot || slotRunning || activeSlotRemoteBound) return
     const snapshot = [...messages]
     dispatch(truncateAfterIndex(index))
     dispatch(appendMessage({ role: 'user', content: newContent, cls: '', ts: new Date().toISOString() }))
@@ -4009,7 +4015,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
     })
-  }, [activeSlot, slotRunning, messages, dispatch])
+  }, [activeSlot, slotRunning, activeSlotRemoteBound, messages, dispatch])
 
   const searchCtxValue = useMemo(() => ({
     term: search.term,
@@ -5365,7 +5371,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               timestamp={chatConfig.showTimestamps ? msgTime : undefined}
               timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}
-              canEdit={!slotRunning && !regenerating && !!activeSlot}
+              canEdit={!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound}
               slotRunning={slotRunning}
               messageIndex={i}
               messageTs={m.ts || ''}
@@ -5434,7 +5440,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 const stats = (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined
                 if (stats && (stats.elapsed_ms ?? 0) > 0) return true
                 return !slotRunning
-              })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
+              })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
               }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} onPlanFromHere={embedded && !popout ? undefined : handlePlanFromHere} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
             </div>
@@ -5519,7 +5525,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

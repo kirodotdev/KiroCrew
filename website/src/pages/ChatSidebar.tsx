@@ -23,7 +23,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectAutomationForSlot } from '../store/chatSlice'
-import { sseSlotTitle, setSidebarOrder } from '../store/dashboardSlice'
+import { sseSlotTitle, setSidebarOrder, slotIsRemoteBound } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -2057,7 +2057,20 @@ const SessionRow = memo(function SessionRow({
         key: 'interrupted',
         when: turnNeedsAttention,
         build: () => {
-          const label = `${i18nT('pages.chat.recoveryCard.turn_interrupted')} · ${i18nT('components.chatInput.resume')}`
+          // A crew-bound row must not name Resume: the composer offers no such
+          // control there (`selectContinuable` mirrors the server's
+          // `remote_action_unsupported` refusal), so the instruction would point
+          // at a button that is not on screen. The interruption is still real and
+          // still needs the marker — only the instruction is dropped.
+          //
+          // Shares `slotIsRemoteBound` with the composer deliberately: this row
+          // and that gate answer the SAME question, so one spelling keeps the
+          // label from drifting if the server's refusal is ever keyed elsewhere.
+          // The crew chip below stays inline because it answers a different
+          // question — which crew a row runs on, not whether an action is refused.
+          const label = slotIsRemoteBound(s)
+            ? i18nT('pages.chat.recoveryCard.turn_interrupted')
+            : `${i18nT('pages.chat.recoveryCard.turn_interrupted')} · ${i18nT('components.chatInput.resume')}`
           return (
             <div className={ROW_STATUS_LINE_CLS} title={label}>
               <TriangleAlert size={ROW_ICON_PX} className="shrink-0 text-danger" aria-hidden />
