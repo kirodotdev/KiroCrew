@@ -228,7 +228,14 @@ def test_escaped_failed_is_reported_against_its_test_not_as_internalerror(tmp_pa
     skipped_nodeid = "test_escape.py::test_skipped_bystander@escape_guard"
     assert skipped_nodeid in durations
     assert victim_duration >= 3.0, (escape_site, durations)
-    assert victim_duration - bystander_duration < 4.5, (escape_site, durations)
+    # The ceiling proves ONE thing: the victim ended because its body finished
+    # (the 3.0 s sleep), not because the 120 s timeout fired -- a fired timer
+    # reads as ~120 s here. Any bound far below the timeout budget makes that
+    # distinction. It must not also assert the runner's scheduling latency: a
+    # hosted Windows runner under load adds a second or more to a ~3 s
+    # in-process pytest run, and a margin of a few seconds over the sleep flakes
+    # there while proving nothing extra.
+    assert victim_duration - bystander_duration < 30.0, (escape_site, durations)
 
     collect_proc = _run_inner_pytest(
         tmp_path,
