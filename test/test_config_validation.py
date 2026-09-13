@@ -9,10 +9,7 @@ global.
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
-from email.parser import Parser
-from pathlib import Path
+from importlib import metadata
 
 import pytest
 
@@ -20,21 +17,9 @@ from kiro_crew.config import loader as _loader_module
 from kiro_crew.config import validation
 
 
-def test_published_metadata_requires_config_validator(tmp_path: Path) -> None:
-    """A wheel install must bring the validator that the loader calls at runtime."""
-    root = Path(__file__).resolve().parents[1]
-    result = subprocess.run(
-        [sys.executable, "setup.py", "egg_info", "--egg-base", str(tmp_path)],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    metadata = Parser().parsestr(
-        (tmp_path / "kirocrew.egg-info" / "PKG-INFO").read_text(encoding="utf-8")
-    )
-    requirements = metadata.get_all("Requires-Dist", [])
+def test_published_metadata_requires_config_validator() -> None:
+    """A base install must declare the validator used by the config loader."""
+    requirements = metadata.requires("kirocrew") or []
     assert any(
         req.lower().startswith("jsonschema") and "extra" not in req.partition(";")[2].lower()
         for req in requirements
