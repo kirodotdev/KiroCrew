@@ -73,7 +73,7 @@ import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBran
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
-import { collectFolderSubtreeIds } from '../utils/folderTree'
+import { bySidebarOrder, collectFolderSubtreeIds } from '../utils/folderTree'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { PaletteBoost } from '../utils/sessionColors'
@@ -4405,14 +4405,14 @@ function ChatSidebar({
       const list = m.get(key)
       if (list) list.push(f); else m.set(key, [f])
     }
-    for (const list of m.values()) list.sort((a, b) => a.order - b.order)
+    for (const list of m.values()) list.sort(bySidebarOrder)
     return m
   }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden])
 
   // Every folder the filter is hiding, flattened — the flat lane has no
   // containers to anchor to, so all hides collapse into its single row.
   const allHiddenFolders = useMemo(
-    () => [...hiddenByContainer.values()].flat().sort((a, b) => a.order - b.order),
+    () => [...hiddenByContainer.values()].flat().sort(bySidebarOrder),
     [hiddenByContainer],
   )
 
@@ -4543,9 +4543,8 @@ function ChatSidebar({
     }
     // Same roots + childrenOf walk the "New chat in folder" menu uses, with a
     // visited set so a parent_id cycle terminates instead of recursing forever.
-    const byOrder = (a: ChatFolder, b: ChatFolder) => a.order - b.order
-    const roots = folders.filter(f => !f.parent_id).sort(byOrder)
-    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(byOrder)
+    const roots = folders.filter(f => !f.parent_id).sort(bySidebarOrder)
+    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(bySidebarOrder)
     const rows: { folder: ChatFolder; depth: number; count: number; hidden: boolean; hiddenByAncestor: boolean }[] = []
     const visited = new Set<string>()
     const walk = (list: ChatFolder[], depth: number) => {
@@ -5330,7 +5329,7 @@ function ChatSidebar({
   // Render a folder block scoped to a single column: only slots matching the column predicate.
   // Always render the folder header (even with 0 matches) so users can see + drop into it.
   const renderColumnFolder = (folder: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean): React.ReactNode => {
-    const childFolders = folders.filter(f => f.parent_id === folder.id)
+    const childFolders = folders.filter(f => f.parent_id === folder.id).sort(bySidebarOrder)
     const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
     const deepChildren = childFolders
     // Same opt-in as the tree (see the note in renderFolderBlock): only when the
@@ -5999,7 +5998,9 @@ function ChatSidebar({
   const renderFolderBlock = (folder: ChatFolder, depth: number, visited = new Set<string>(), dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed = false): React.ReactNode[] => {
     if (depth > 10 || visited.has(folder.id)) return []
     visited.add(folder.id)
-    const childFolders = folders.filter(f => f.parent_id === folder.id)
+    // Sorted, not raw array order: a subfolder's `order` is set by a drag AND by
+    // chat_folder_move's before/after, and the cache order reflects neither.
+    const childFolders = folders.filter(f => f.parent_id === folder.id).sort(bySidebarOrder)
     const childSlots = filteredSlots.filter(s => slotFolders[s.key] === folder.id)
     const childNodes: React.ReactNode[] = []
     // Nested subfolders are plain draggables (not sortables): dragging one
@@ -6105,7 +6106,7 @@ function ChatSidebar({
     ]
   }
 
-  const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort((a, b) => a.order - b.order), [folders])
+  const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort(bySidebarOrder), [folders])
   const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
   const rootFolderIds = useMemo(() => visibleRootFolders.map(f => f.id), [visibleRootFolders])
   const ungroupedSlots = useMemo(() => filteredSlots.filter(s => !slotFolders[s.key]), [filteredSlots, slotFolders])
@@ -6396,8 +6397,8 @@ function ChatSidebar({
                 </DropdownMenuItem>
                 {folders.length > 0 && (() => {
                   const folderRows = (() => {
-                    const roots = folders.filter(f => !f.parent_id)
-                    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid)
+                    const roots = folders.filter(f => !f.parent_id).sort(bySidebarOrder)
+                    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(bySidebarOrder)
                     const items: { f: ChatFolder; depth: number }[] = []
                     const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                     walk(roots, 0)

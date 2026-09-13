@@ -92,6 +92,125 @@ def _by_id(state: DashboardState, fid: str) -> dict[str, Any] | None:
     return next((f for f in state._folders if f["id"] == fid), None)
 
 
+class TestOrderIsStoredVerbatim:
+    """The endpoint stores whatever int the body carries, sign included.
+
+    ``chat_folder_move``'s free-slot placement puts a folder ahead of the first
+    sibling by writing ``first.order - 1``, which is NEGATIVE once the sidebar has
+    renumbered a set from 0 — the ordinary case. Nothing in the tool layer can make
+    that work if the endpoint clamps or rejects it, and the tool writes it as the
+    single request that keeps a reposition from landing half-applied.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_negative_order_is_accepted(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch(
+                f"/api/chat/folders/{PERSON}",
+                json={"order": -1},
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+        assert resp.status == 200
+        assert _by_id(state, PERSON)["order"] == -1
+
+    @pytest.mark.asyncio
+    async def test_a_gap_midpoint_is_accepted(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch(
+                f"/api/chat/folders/{PERSON}",
+                json={"order": 5},
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+        assert resp.status == 200
+        assert _by_id(state, PERSON)["order"] == 5
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_order_is_not_refused(self) -> None:
+        """Two siblings may share a number; the name tie-break resolves them.
+
+        The free-slot check treats equal neighbours as no room precisely because
+        the store allows this, so the allowance has to be pinned.
+        """
+        state = _state(_ChatSlot("chat-1-100"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            first = await client.patch(
+                f"/api/chat/folders/{PERSON}",
+                json={"order": 7},
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+            second = await client.patch(
+                f"/api/chat/folders/{RADAR}",
+                json={"order": 7},
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+        assert (first.status, second.status) == (200, 200)
+        assert _by_id(state, PERSON)["order"] == 7
+        assert _by_id(state, RADAR)["order"] == 7
+
+
+class TestTheToolPreCheckMatchesTheEndpointRule:
+    """The tool's renumber pre-check and this endpoint must agree on ownership.
+
+    ``chat_folder_move`` refuses an app a placement that would renumber a row it
+    does not own, and it decides that in the TOOL layer, before its first write —
+    because the endpoint judges one row at a time, so a refusal arriving halfway
+    leaves the sidebar in an order nobody chose. That means the same rule is
+    expressed twice: ``owner_app``-vs-caller in ``mcp_dashboard`` and
+    ``_folder_owner_app`` inside this endpoint's ``_apply``.
+
+    These drive the real endpoint rather than a patched ``_patch``, so a change to
+    either side's rule — a tightened check, a different absent-key default — turns
+    one of them red instead of letting the pre-check quietly permit a write the
+    endpoint then refuses (or refuse one it would have allowed).
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_endpoint_refuses_the_order_write_the_pre_check_refuses(self) -> None:
+        """An app writing order on a foreign row: refused, exactly as pre-checked."""
+        state = _state(_app_slot("chat-1-200", "issue-radar"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch(
+                f"/api/chat/folders/{PERSON}",
+                json={"order": 3},
+                headers={"X-Session-Key": "dashboard:chat-1-200"},
+            )
+        assert resp.status == 403
+        assert "order" not in (_by_id(state, PERSON) or {})
+
+    @pytest.mark.asyncio
+    async def test_the_endpoint_allows_the_order_write_the_pre_check_allows(self) -> None:
+        """The same app on its OWN row: allowed, so the pre-check is not over-broad."""
+        state = _state(_app_slot("chat-1-200", "issue-radar"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch(
+                f"/api/chat/folders/{RADAR}",
+                json={"order": 3},
+                headers={"X-Session-Key": "dashboard:chat-1-200"},
+            )
+        assert resp.status == 200
+        assert _by_id(state, RADAR)["order"] == 3
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_row_reads_as_the_persons_on_both_sides(self) -> None:
+        """The absent-key default is the drift the pre-check is most exposed to.
+
+        ``LEGACY`` carries no ``owner_app`` at all. The pre-check reads a missing
+        key as the person's via ``.get("owner_app")``; if the endpoint ever read it
+        as unowned instead, an app renumber would sail past the pre-check and land.
+        """
+        state = _state(_app_slot("chat-1-200", "issue-radar"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch(
+                f"/api/chat/folders/{LEGACY}",
+                json={"order": 9},
+                headers={"X-Session-Key": "dashboard:chat-1-200"},
+            )
+        assert resp.status == 403
+        assert "order" not in (_by_id(state, LEGACY) or {})
+
+
 class TestCreateStampsTheOwner:
     @pytest.mark.asyncio
     async def test_an_apps_folder_is_stamped_with_that_app(self) -> None:

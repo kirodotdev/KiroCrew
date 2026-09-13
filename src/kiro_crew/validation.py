@@ -1995,6 +1995,12 @@ CHAT_FOLDER_MOVE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("folder", str, required=True, max_len=_ARTIFACT_FOLDER_REF_MAX),
         FieldSpec("new_parent", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+        # Sibling anchors for the folder's POSITION among its siblings. Mutually
+        # exclusive, and refused unless the anchor already sits directly under
+        # the destination -- the handler owns both rules, since neither is
+        # expressible as a field constraint.
+        FieldSpec("before", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("after", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
     ],
 )
 
