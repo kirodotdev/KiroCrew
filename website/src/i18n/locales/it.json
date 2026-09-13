@@ -10044,6 +10044,10 @@
         "copy_text_failed": "Copia non riuscita",
         "copy_text_unavailable": "Gli appunti sono bloccati qui. Il testo del tuo post è selezionato: premi Ctrl+C / ⌘C. Il testo della card che hai modificato va copiato dalla card stessa.",
         "export_failed": "Impossibile generare la scheda di condivisione"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fine della sezione: {{label}}",
+        "end_of_section": "Fine della sezione"
       }
     },
     "chatPage": {
@@ -10160,7 +10164,11 @@
       "could_not_generate_title": "Impossibile generare un titolo",
       "could_not_open_side_chat": "Impossibile aprire la chat laterale",
       "side_command_not_run": "Il comando /side non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura.",
-      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale"
+      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale",
+      "fork_too_large_error_head": "Questa conversazione è troppo grande per essere biforcata. Passa il puntatore su un messaggio precedente o mettilo a fuoco e scegli «{{control}}» per copiare meno messaggi.",
+      "fork_too_large_error_tail": "Questa conversazione è troppo grande per essere biforcata. Passa il puntatore su un messaggio successivo o mettilo a fuoco e scegli «{{control}}» per copiare meno messaggi.",
+      "fork_too_large_offsite_unknown": "«{{title}}» è troppo grande per essere biforcata per intero. Passa il puntatore su un messaggio più vicino all’estremità da conservare o mettilo a fuoco, e scegli «{{control}}».",
+      "fork_too_large_offsite_compact": "«{{title}}» è troppo grande per essere duplicata per intero. Aprila, poi passa il puntatore su un messaggio più vicino all’estremità da conservare o mettilo a fuoco, e scegli «{{control}}»."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

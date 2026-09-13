@@ -190,7 +190,12 @@ def test_applier_posts_the_card_to_the_slot_and_ends_the_turn():
     questions = _validated_questions()
     result = asyncio.run(
         apply_session_directive(
-            state, slot, "dashboard:chat-1-1700000000", "ask_question", {"questions": questions}
+            state,
+            slot,
+            "dashboard:chat-1-1700000000",
+            "ask_question",
+            {"questions": questions},
+            producer_is_user_facing=True,
         )
     )
     assert state.calls == [(slot.key, questions)]
@@ -209,7 +214,28 @@ def test_applier_with_no_attached_client_steers_to_plain_text():
             "dashboard:chat-1-1700000000",
             "ask_question",
             {"questions": _validated_questions()},
+            producer_is_user_facing=True,
         )
     )
     assert len(state.calls) == 1
     assert "plain text" in result.lower()
+
+
+def test_applier_still_posts_for_an_unattended_patrol_cycle():
+    """A conductor charter grants this tool by name so a cycle waking on a nudge with
+    nobody at the keyboard can put a decision to its operator, read later from the open
+    tab. Gating it on human provenance would make that a silent no-op."""
+    state = _FakeState(clients=1)
+    slot = _FakeSlot()
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1-1700000000",
+            "ask_question",
+            {"questions": _validated_questions()},
+            producer_is_user_facing=False,
+        )
+    )
+    assert len(state.calls) == 1, "an unattended cycle could not ask its question"
+    assert "error" not in result.lower()

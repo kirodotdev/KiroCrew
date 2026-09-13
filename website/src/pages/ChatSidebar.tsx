@@ -4911,6 +4911,7 @@ function ChatSidebar({
   // each behaviour has one definition. Rename + Tags stay local (they drive this
   // component's inline-edit + tag-popover state).
   const sessionActions = useSessionActions(mode)
+  const { forkError: duplicateError, clearForkError: clearDuplicateError } = sessionActions
   // Which sessions are currently open in a popped-out window (shared singleton).
   const { poppedOut } = useChatPopouts()
   // Unified dnd-kit handlers for the legacy single-lane layout. One DndContext
@@ -5580,6 +5581,8 @@ function ChatSidebar({
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
     const orderStamp = Math.min(sessionRowOrderStamp++, SIDEBAR_DISPLACEMENT_WINDOW)
+    // A refused Duplicate belongs beside the row it was invoked on: the panel top is
+    // off-screen once the list scrolls, so the feedback lands away from the pointer.
     return (
       <SessionRow key={s.key} slot={s} orderStamp={orderStamp}
         showDivider={showDivider} scope={scope} navScope={navScope} holdContainer={holdContainer}
@@ -6163,6 +6166,20 @@ function ChatSidebar({
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
     <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: sidebarWidth }}>
+      {/* Outside the row list on purpose: a notice under a row adds a line every session
+          pays for in above-fold density (AUTOSDE session-row-fixed-height). */}
+      {duplicateError ? (
+        <ErrorNotice
+          message={duplicateError.message}
+          report={duplicateError.report}
+          variant="inline"
+          askAgent
+          onDismiss={clearDuplicateError}
+          testId={`sidebar-duplicate-error-${duplicateError.slotKey}`}
+          className="mx-1 mt-1 mb-0 min-w-0 flex-wrap shrink-0"
+          messageClassName="min-w-0 break-words"
+        />
+      ) : null}
       {/* Drag handle — the shared column grip (components/ResizeHandle), so
           this edge looks and behaves exactly like the Crew Members roster's and
           the app workspaces'. Positioned absolutely on the card's right border
@@ -6180,6 +6197,7 @@ function ChatSidebar({
         inset={12}
         className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-10"
       />
+
 
       {/* Header — all elements ("Sessions" title, kebab, New button) centered
           on one line 23px from the panel top (1px card border + mt-0.5, then

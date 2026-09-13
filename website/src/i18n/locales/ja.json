@@ -9760,6 +9760,10 @@
         "copy_text_failed": "コピーできませんでした",
         "copy_text_unavailable": "この環境ではクリップボードがブロックされています。投稿テキストは選択済みです — Ctrl+C / ⌘C を押してください。編集したカードのテキストはカードから直接コピーしてください。",
         "export_failed": "共有カードを生成できませんでした"
+      },
+      "sectionMarkerRow": {
+        "end_of": "セクション {{label}} の終わり",
+        "end_of_section": "セクションの終わり"
       }
     },
     "chatPage": {
@@ -9874,7 +9878,11 @@
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
-      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "fork_too_large_error_head": "この会話は分岐するには大きすぎます。前のメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選ぶと、コピーするメッセージを減らせます。",
+      "fork_too_large_error_tail": "この会話は分岐するには大きすぎます。後のメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選ぶと、コピーするメッセージを減らせます。",
+      "fork_too_large_offsite_unknown": "「{{title}}」は全体を分岐するには大きすぎます。残したい端に近いメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選んでください。",
+      "fork_too_large_offsite_compact": "「{{title}}」は全体を複製するには大きすぎます。開いてから、残したい端に近いメッセージにカーソルを合わせるかフォーカスして「{{control}}」を選んでください。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

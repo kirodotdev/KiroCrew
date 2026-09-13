@@ -26,7 +26,7 @@
  * (the technique ChatPageCoverage.test.tsx uses). Nothing else about the page is
  * faked: grouping, the render dispatch and the handlers run for real.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, act, waitFor, fireEvent, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -234,17 +234,26 @@ vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
 }))
 
-Object.defineProperty(window, 'matchMedia', {
-  writable: true,
-  value: vi.fn().mockImplementation((q: string) => ({
+// A direct assignment outlives this file: a sibling in the same shard would inherit a
+// matchMedia that never matches and a fetch that resolves empty. stubGlobal reverses.
+vi.stubGlobal(
+  'matchMedia',
+  vi.fn().mockImplementation((q: string) => ({
     matches: false, media: q, onchange: null,
     addListener: vi.fn(), removeListener: vi.fn(),
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
+)
+vi.stubGlobal(
+  'fetch',
+  vi.fn().mockResolvedValue({
+    ok: true, status: 200, text: () => Promise.resolve(''), json: () => Promise.resolve({}),
+  }),
+)
+
+afterAll(() => {
+  vi.unstubAllGlobals()
 })
-globalThis.fetch = vi.fn().mockResolvedValue({
-  ok: true, status: 200, text: () => Promise.resolve(''), json: () => Promise.resolve({}),
-}) as never
 
 import ChatPage from '../pages/ChatPage'
 import { readSideChatDraft } from '../chat-core/composer/sideChatDrafts'
@@ -405,31 +414,30 @@ describe('ChatPage row callbacks — fork', () => {
     expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 3, undefined, undefined, 'tail')
   })
 
-  it('reports a refused fork through the in-page ErrorNotice instead of switching sessions', async () => {
+  it('reports a refused fork through the error notice instead of switching sessions', async () => {
     apiSpy('forkChatSlot').mockResolvedValue({ ok: false, error: 'slot is busy' })
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    // The surface is the shared ErrorNotice (role="alert" + agent hand-off),
-    // never a native alert(): the rule `errors-use-error-notice` forbids the
-    // browser dialog, which also carried no structured context to the agent.
-    const notice = await screen.findByTestId('action-error')
+    const notice = await waitFor(() => screen.getByTestId('action-error'))
+    // The id rides `ErrorNotice`'s own `testId`, so the element found by it is the
+    // one carrying `role="alert"`. A wrapper div would split those apart.
     expect(notice).toHaveAttribute('role', 'alert')
     expect(notice.textContent).toContain('slot is busy')
+    // A fork failure rides the surface that already existed rather than a second
+    // one of its own, so there is no `fork-error` slot to find.
+    expect(screen.queryByTestId('fork-error')).toBeNull()
     expect(alertSpy).not.toHaveBeenCalled()
   })
 
-  it('still reports when the fork request throws, naming the real reason', async () => {
+  it('still surfaces a thrown fork request, naming the real reason', async () => {
     apiSpy('forkChatSlot').mockRejectedValue(new Error('network down'))
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    const said = (await screen.findByTestId('action-error')).textContent ?? ''
+    const notice = await waitFor(() => screen.getByTestId('action-error'))
+    const said = notice.textContent ?? ''
     expect(said).toContain('Fork failed')
-    // Flipped, as this assertion's previous form asked to be: it pinned the
-    // reason being LOST — `unwrap()` rejects with a redux-toolkit
-    // SerializedError (a PLAIN OBJECT), so the handler's `e instanceof Error`
-    // test was false and the `String(e)` fallback rendered '[object Object]'.
-    // The handler now reads the message through `utils/thunkError.errMessage`,
-    // which knows that shape, so the notice carries the real text.
+    // `unwrap()` rejects with a SerializedError (a PLAIN OBJECT), so an `e instanceof
+    // Error` test reads false and a `String(e)` fallback renders '[object Object]'.
     expect(said).toContain('network down')
     expect(said).not.toContain('[object Object]')
     expect(alertSpy).not.toHaveBeenCalled()

@@ -10044,6 +10044,10 @@
         "copy_text_failed": "Échec de la copie",
         "copy_text_unavailable": "Le presse-papiers est bloqué ici. Le texte de ta publication est sélectionné — appuie sur Ctrl+C / ⌘C. Le texte de la carte que tu as modifié se copie depuis la carte elle-même.",
         "export_failed": "Impossible de générer la carte de partage"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fin de la section : {{label}}",
+        "end_of_section": "Fin de la section"
       }
     },
     "chatPage": {
@@ -10160,7 +10164,11 @@
       "could_not_generate_title": "Impossible de générer un titre",
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
-      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe"
+      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
+      "fork_too_large_error_head": "Cette conversation est trop volumineuse pour être bifurquée. Survolez un message antérieur ou placez-y le focus, puis choisissez «{{control}}» pour copier moins de messages.",
+      "fork_too_large_error_tail": "Cette conversation est trop volumineuse pour être bifurquée. Survolez un message ultérieur ou placez-y le focus, puis choisissez «{{control}}» pour copier moins de messages.",
+      "fork_too_large_offsite_unknown": "«{{title}}» est trop volumineuse pour être bifurquée en entier. Survolez un message plus proche de l’extrémité à conserver ou placez-y le focus, et choisissez «{{control}}».",
+      "fork_too_large_offsite_compact": "«{{title}}» est trop volumineuse pour être dupliquée en entier. Ouvrez-la, puis survolez un message plus proche de l’extrémité à conserver ou placez-y le focus, et choisissez «{{control}}»."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",
