@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 from pathlib import Path
 
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
+from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.memory_stores import UnknownMemoryStore, require_member_memory_store
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+
+logger = logging.getLogger(__name__)
 
 ESSENTIAL_MAX_CHARS = 64_000
 _MAX_SOURCE_BYTES = ESSENTIAL_MAX_CHARS * 4
@@ -246,6 +250,57 @@ def _matches(root: Path, pattern: str) -> list[Path]:
     return sorted(result)
 
 
+def resolve_template_path(template: str, project: str | None = None) -> Path | None:
+    """Resolve one template, with a project override ahead of the global copy."""
+    from kiro_crew.agent import agent_spec_path
+    from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
+
+    spec_path: Path | None = None
+    if project:
+        admitted = validate_file_path(project)
+        if admitted is None:
+            raise MemberEssentialContextError(f"Essential project {project}: cannot be read safely")
+        for path in project_agent_files(Path(admitted)):
+            spec = _read_agent_spec(path, operation="member_essentials", source="context")
+            if spec is None and path.stem == template:
+                raise MemberEssentialContextError(
+                    f"Essential template {path}: cannot be read safely"
+                )
+            if spec is not None and spec.get("name", path.stem) == template:
+                if spec_path is not None:
+                    raise MemberEssentialContextError(f"Ambiguous essential template {template!r}")
+                spec_path = path
+    if spec_path is None:
+        try:
+            spec_path = agent_spec_path(template)
+        except ValueError as exc:
+            raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
+    return spec_path
+
+
+def resolve_relative_prompt_path(
+    source: Path, spec_path: Path, project: str | None
+) -> tuple[Path, Path] | None:
+    """Return a canonical relative prompt and the root that supplied its template."""
+    try:
+        root = _admitted_root(Path.home())
+        if project:
+            project_root = _admitted_root(Path(project))
+            if project_root is None:
+                raise ValueError("project root is not admitted")
+            if spec_path.parent == project_agents_dir(project_root):
+                root = project_root
+        if root is None:
+            raise ValueError("template root is not admitted")
+        admitted = validate_file_path(str(root / source))
+        if admitted is None or not Path(admitted).is_relative_to(root):
+            raise ValueError("prompt is outside its template root")
+        return Path(admitted), root
+    except (OSError, ValueError):
+        logger.debug("Skipping relative agent prompt outside its admitted root")
+        return None
+
+
 def documents_for_member(
     template: str, project: str | None, *, include_project: bool = True
 ) -> list[tuple[str, str]]:
@@ -255,8 +310,8 @@ def documents_for_member(
     documents are deliberately left to their native trigger. Generic product
     prompts keep their existing provider/session-start path.
     """
-    from kiro_crew.agent import _prompt_path, agent_spec_path
-    from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
+    from kiro_crew.agent import _prompt_path
+    from kiro_crew.agent_discovery import _read_agent_spec
 
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
@@ -294,23 +349,7 @@ def documents_for_member(
         for path in _matches(project_root, ".kiro/steering/**/*.md"):
             add(path, project_root, steering=True)
 
-    spec_path: Path | None = None
-    if project_root is not None:
-        for path in project_agent_files(project_root):
-            spec = _read_agent_spec(path, operation="member_essentials", source="context")
-            if spec is None and path.stem == template:
-                raise MemberEssentialContextError(
-                    f"Essential template {path}: cannot be read safely"
-                )
-            if spec is not None and spec.get("name", path.stem) == template:
-                if spec_path is not None:
-                    raise MemberEssentialContextError(f"Ambiguous essential template {template!r}")
-                spec_path = path
-    if spec_path is None:
-        try:
-            spec_path = agent_spec_path(template)
-        except ValueError as exc:
-            raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
+    spec_path = resolve_template_path(template, project)
     if spec_path is None:
         if template != "kirocrew":
             raise MemberEssentialContextError(f"Essential template {template!r}: not found")
@@ -333,10 +372,12 @@ def documents_for_member(
     if prompt and prompt != f"file://{_prompt_path()}":
         if prompt.startswith("file://"):
             path = Path(prompt[7:]).expanduser()
-            add(
-                path if path.is_absolute() else source_root / path,
-                absolute_root if path.is_absolute() else source_root,
-            )
+            if path.is_absolute():
+                add(path, absolute_root)
+            else:
+                resolved = resolve_relative_prompt_path(path, spec_path, project)
+                if resolved is not None:
+                    add(*resolved)
         else:
             documents.append((f"{spec_path}#prompt", prompt))
     resources = spec.get("resources", [])

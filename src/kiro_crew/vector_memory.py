@@ -89,6 +89,20 @@ from kiro_crew.vector_memory_constants import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class _RecallQuery:
+    """One inference result, including failure, scoped to a single recall."""
+
+    vector: list[float] | None
+    generation: int | None
+    signature: str | None
+
+
+class _RecallSpaceChanged(Exception):
+    """Discard a partial recall rather than mix embedding spaces."""
+
+
 # ── Optional deps ──
 
 try:
@@ -2296,9 +2310,7 @@ class VectorMemoryStore:
         # concurrent re-write of the same key a no-op here — the later writer
         # persists its own vector.
         already_embedded = bool(
-            existing
-            and existing["value_json"] == value_json
-            and existing["embedding"] is not None
+            existing and existing["value_json"] == value_json and existing["embedding"] is not None
         )
         if self.embed_fn is not None and not key.startswith("lesson.") and not already_embedded:
             embed_generation = self._space_generation
@@ -2582,11 +2594,15 @@ class VectorMemoryStore:
         )
         return f"{row['key']} ({details})" if details else row["key"]
 
-    def _semantic_candidates_v1(self, query_text: str) -> list[dict]:
+    def _semantic_candidates_v1(
+        self, query_text: str, *, recall_query: _RecallQuery | None = None
+    ) -> list[dict]:
         """The existing V1 hybrid policy, exposed to explicit bounded recall."""
         query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
         query_embedding = (
-            self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
+            recall_query.vector
+            if recall_query is not None
+            else self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
         )
 
         # Context assembly runs on executor threads (subagent context builds,
@@ -2594,11 +2610,13 @@ class VectorMemoryStore:
         # context.py does not guard this call — an unserialized fetch here
         # kills the whole subagent run (see the locked-fetch helper
         # contract). The helper materializes the rows.
-        all_rows = self._fetch_all_locked(
-            "SELECT key, value_json, updated_at, embedding FROM semantic_memory "
-            "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'",
-            scan="semantic",
-        )
+        with self._db_lock:
+            self._check_recall_query(recall_query)
+            all_rows = self._fetch_all_locked(
+                "SELECT key, value_json, updated_at, embedding FROM semantic_memory "
+                "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'",
+                scan="semantic",
+            )
 
         # Stored write-time vectors only — one embed per request (the query),
         # same as the lessons path. Re-embedding every row here was an
@@ -2701,20 +2719,28 @@ class VectorMemoryStore:
             + "\n[End of semantic memory]\n"
         )
 
-    def _semantic_candidates_v2(self, query_text: str) -> list[dict]:
+    def _semantic_candidates_v2(
+        self, query_text: str, *, recall_query: _RecallQuery | None = None
+    ) -> list[dict]:
         """Keep member preferences; retrieve facts only with relevant evidence."""
         query_embedding = (
-            self._try_embed(query_text, PRIORITY_INTERACTIVE)
-            if query_text and self.embed_fn
-            else None
+            recall_query.vector
+            if recall_query is not None
+            else (
+                self._try_embed(query_text, PRIORITY_INTERACTIVE)
+                if query_text and self.embed_fn
+                else None
+            )
         )
         query_terms = memory_v2.terms(query_text)
         similarity = self._stored_similarity_scorer(query_embedding)
-        rows = self._fetch_all_locked(
-            f"SELECT * FROM {self._sem_rel} WHERE key NOT LIKE 'lesson.%' "
-            f"AND is_deleted = 0{self._sem_guard}",
-            scan="semantic",
-        )
+        with self._db_lock:
+            self._check_recall_query(recall_query)
+            rows = self._fetch_all_locked(
+                f"SELECT * FROM {self._sem_rel} WHERE key NOT LIKE 'lesson.%' "
+                f"AND is_deleted = 0{self._sem_guard}",
+                scan="semantic",
+            )
         identities = self._fact_identities()
         selected = []
         for raw in self._eligible_rows(rows, "fact"):
@@ -3280,6 +3306,8 @@ class VectorMemoryStore:
         mmr: bool = True,
         tag_filter: list[str] | None = None,
         relevance_filter: bool = False,
+        *,
+        recall_query: _RecallQuery | None = None,
     ) -> list[dict]:
         """Search episodic memories by vector similarity with decay scoring.
 
@@ -3296,6 +3324,14 @@ class VectorMemoryStore:
         callers still receive the full ranked set.
         Falls back to FTS5 text search if no embedding provided.
         """
+        if recall_query is not None:
+            # Inference has already finished. Keep the identity check and the
+            # local vector/index reads together, never the model wait.
+            with self._db_lock:
+                self._check_recall_query(recall_query)
+                return self.search_episodic(
+                    recall_query.vector, query_text, limit, mmr, tag_filter, relevance_filter
+                )
         if self.algorithm_version == "v2":
             return self._search_episodic_v2(
                 query_embedding, query_text, limit, mmr, tag_filter, relevance_filter
@@ -3582,9 +3618,7 @@ class VectorMemoryStore:
                 # One mat-vec over every surviving row (both sides are
                 # pre-normalized → the dot product IS the cosine similarity).
                 # float32 matches the stored dtype and the FAISS path.
-                mat = np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(
-                    len(blobs), q_len
-                )
+                mat = np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), q_len)
                 sims: list[float] = [float(s) for s in mat @ np.asarray(q, dtype=np.float32)]
             else:
                 sims = []
@@ -4430,10 +4464,10 @@ class VectorMemoryStore:
         if rule_emb is None:
             rule_emb = self._try_embed(rule) if self.embed_fn else None
         backfills_done = 0
-        # (blob, key, space generation the blob was embedded in). The generation is
+        # (blob, key, space generation, exact value embedded). The generation is
         # recorded per entry, not once for the call: these lazy backfills embed
         # inside the dedup scan below, so a swap can land between entries.
-        pending_backfills: list[tuple[bytes, str, int]] = []
+        pending_backfills: list[tuple[bytes, str, int, str]] = []
 
         # PREFLIGHT the final value BEFORE the dedup scan below, which DELETES
         # superseded rows. The value was only validated by set_semantic at the very
@@ -4470,7 +4504,7 @@ class VectorMemoryStore:
         def _flush_backfills() -> None:
             if pending_backfills:
                 with self._db_lock:
-                    for blob, bk, gen in pending_backfills:
+                    for blob, bk, gen, body in pending_backfills:
                         if gen != self._space_generation:
                             # Swap landed after this blob was embedded. Leave the row
                             # NULL for the post-activation backfill rather than
@@ -4478,8 +4512,10 @@ class VectorMemoryStore:
                             logger.debug("Dropping a lazy lesson backfill from a previous space")
                             continue
                         self.db.execute(
-                            f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ?{self._sem_guard}",
-                            (blob, bk),
+                            f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ? "
+                            f"AND value_json = ? AND embedding IS NULL AND is_deleted = 0"
+                            f"{self._sem_guard}",
+                            (blob, bk, body),
                         )
                     self.db.commit()
 
@@ -4747,7 +4783,7 @@ class VectorMemoryStore:
                     if existing_emb:
                         row_blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
                         pending_backfills.append(
-                            (row_blob, existing["key"], backfill_generation)
+                            (row_blob, existing["key"], backfill_generation, existing["value_json"])
                         )
                         existing["embedding"] = row_blob
                     else:
@@ -4910,7 +4946,9 @@ class VectorMemoryStore:
                     )
                     if existing_emb:
                         row_blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
-                        pending_backfills.append((row_blob, existing["key"], backfill_generation))
+                        pending_backfills.append(
+                            (row_blob, existing["key"], backfill_generation, existing["value_json"])
+                        )
                     backfills_done += 1
                 if row_blob is not None:
                     sim = similarity({"embedding": row_blob})
@@ -4942,9 +4980,7 @@ class VectorMemoryStore:
                         # ``substring_covered`` refusal -- that composition
                         # predates this change and is reported via
                         # ``superseded``.
-                        deferred_semantic.append(
-                            (existing["key"], existing_report, sim)
-                        )
+                        deferred_semantic.append((existing["key"], existing_report, sim))
                         continue
 
         # Execute the semantic supersedes the scan deferred: reachable only
@@ -4957,9 +4993,7 @@ class VectorMemoryStore:
                 key,
                 d_key,
             )
-            pending_backfills[:] = [
-                (b, k, g) for b, k, g in pending_backfills if k != d_key
-            ]
+            pending_backfills[:] = [entry for entry in pending_backfills if entry[1] != d_key]
             superseded.append(d_report)
             self.delete_semantic(d_key, source)
 
@@ -4994,9 +5028,13 @@ class VectorMemoryStore:
                     # row itself is already written.
                     logger.debug("Dropping a lesson embedding produced in a previous space")
                 else:
+                    # Body equality pins the actual embedding input. A later edit,
+                    # tombstone or completed backfill must win this tail race.
                     self.db.execute(
-                        f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ?{self._sem_guard}",
-                        (emb_blob, key),
+                        f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ? "
+                        f"AND value_json = ? AND embedding IS NULL AND is_deleted = 0"
+                        f"{self._sem_guard}",
+                        (emb_blob, key, json.dumps(value)),
                     )
                     self.db.commit()
         # ``matched`` is pass 1's verdict: it rewrote an EXISTING row under that row's
@@ -5126,8 +5164,7 @@ class VectorMemoryStore:
         blob is the duplicate-SELECT cost the rendering path was written to avoid.
         """
         rows = self._fetch_all_locked(
-            "SELECT value_json FROM semantic_memory "
-            "WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
+            "SELECT value_json FROM semantic_memory " "WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
         )
         for row in rows:
             try:
@@ -5195,7 +5232,12 @@ class VectorMemoryStore:
         return deleted
 
     def get_lessons_context(
-        self, query_text: str = "", cap: int = 0, project_dir: str | Path | None = None
+        self,
+        query_text: str = "",
+        cap: int = 0,
+        project_dir: str | Path | None = None,
+        *,
+        recall_query: _RecallQuery | None = None,
     ) -> str:
         """Format lessons for prompt injection, most relevant first.
 
@@ -5216,7 +5258,10 @@ class VectorMemoryStore:
         # the budget", and conflating the two would tell the model that rules it
         # should never see are being kept from it for space.
         entries: list[tuple[dict, str]] = []
-        for row in self._eligible_rows(self.get_lessons(), "directive"):
+        with self._db_lock:
+            self._check_recall_query(recall_query)
+            lesson_rows = self._eligible_rows(self.get_lessons(), "directive")
+        for row in lesson_rows:
             decoded = json.loads(row["value_json"])
             text = _lesson_display_text(decoded)
             if not text:
@@ -5230,7 +5275,11 @@ class VectorMemoryStore:
         if not entries:
             return ""
         total = len(entries)
-        ranked = self._rank_lessons(entries, query_text) if query_text else entries
+        ranked = (
+            self._rank_lessons(entries, query_text, recall_query=recall_query)
+            if query_text
+            else entries
+        )
         order = "most relevant" if query_text else "most recent"
 
         def render(rows: list[tuple[dict, str]]) -> str:
@@ -5266,7 +5315,11 @@ class VectorMemoryStore:
         return render(selected)
 
     def _rank_lessons(
-        self, entries: list[tuple[dict, str]], query_text: str
+        self,
+        entries: list[tuple[dict, str]],
+        query_text: str,
+        *,
+        recall_query: _RecallQuery | None = None,
     ) -> list[tuple[dict, str]]:
         """Order *entries* by hybrid relevance to *query_text*, most relevant first.
 
@@ -5276,7 +5329,11 @@ class VectorMemoryStore:
         that matches nothing degrades to plain recency.
         """
         query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
-        query_emb = self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
+        query_emb = (
+            recall_query.vector
+            if recall_query is not None
+            else self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
+        )
         similarity = self._stored_similarity_scorer(query_emb)
         # Same row-side derivation, and the same width rule, as the semantic scan:
         # a lesson's tokens depend only on its own rendered text, and only a pass
@@ -5627,7 +5684,9 @@ class VectorMemoryStore:
         )
         return any(self._fetch_one_locked(query) is not None for query in queries)
 
-    def reconcile_embedding_space(self, signature: str, *, clear_when_unknown: bool = False) -> int:
+    def reconcile_embedding_space(
+        self, signature: str, *, clear_when_unknown: bool = False, force: bool = False
+    ) -> int:
         """Discard embeddings produced by a DIFFERENT model. Returns rows invalidated.
 
         Stored vectors are only comparable to each other when they came from the
@@ -5670,14 +5729,14 @@ class VectorMemoryStore:
           would stamp the NEW signature onto bundled-model vectors and they would
           never be re-embedded.
 
-        A signature that already matches is a no-op regardless of
-        ``clear_when_unknown``, so a custom-model host does not re-clear on
-        every boot.
+        A signature that already matches is a no-op unless ``force=True``.
+        Explicit model apply uses force to rebuild inherited legacy vectors
+        whose old metadata cannot prove which weights produced them.
         """
         stored = self._read_meta(_EMBED_SIG_KEY)
-        if stored == signature:
+        if stored == signature and not force:
             return 0
-        if stored is None and not clear_when_unknown:
+        if stored is None and not clear_when_unknown and not force:
             self._write_meta(_EMBED_SIG_KEY, signature)
             logger.info("Recorded embedding vector space %s for existing memory", signature)
             return 0
@@ -6498,8 +6557,47 @@ class VectorMemoryStore:
             "lessons_count": len(self.get_lessons()),
         }
 
+    def _check_recall_query(self, query: _RecallQuery | None) -> None:
+        """Called under the store lock before a read and before publication."""
+        if query is not None and query.generation is not None:
+            if (
+                query.generation != self._space_generation
+                or query.signature != self.recorded_embedding_space()
+            ):
+                raise _RecallSpaceChanged
+
     def recall(
         self, query_text: str, *, cap: int = 3000, project_dir: str | Path | None = None
+    ) -> dict:
+        """Compute once; discard mixed-space results and retry keyword-only once."""
+        with self._db_lock:
+            generation = self._space_generation
+            signature = self.recorded_embedding_space()
+        vector = (
+            self._try_embed(query_text, PRIORITY_INTERACTIVE)
+            if query_text.strip() and cap > 0 and self.embed_fn
+            else None
+        )
+        query = _RecallQuery(vector, generation, signature)
+        try:
+            return self._recall_once(query_text, cap=cap, project_dir=project_dir, query=query)
+        except _RecallSpaceChanged:
+            # No inference on the retry, even when the first inference failed.
+            # Keyword ranking cannot mix vector spaces during another switch.
+            return self._recall_once(
+                query_text,
+                cap=cap,
+                project_dir=project_dir,
+                query=_RecallQuery(None, None, None),
+            )
+
+    def _recall_once(
+        self,
+        query_text: str,
+        *,
+        cap: int,
+        project_dir: str | Path | None,
+        query: _RecallQuery,
     ) -> dict:
         """Bounded on-demand member context with the evidence actually selected.
 
@@ -6537,13 +6635,11 @@ class VectorMemoryStore:
                 "episodic_preview": "",
                 "lessons_count": 0,
             }
-        query_embedding = (
-            self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
-        )
+        query_embedding = query.vector
         facts = (
-            self._semantic_candidates_v2(query_text)
+            self._semantic_candidates_v2(query_text, recall_query=query)
             if self.algorithm_version == "v2"
-            else self._semantic_candidates_v1(query_text)
+            else self._semantic_candidates_v1(query_text, recall_query=query)
         )
         for fact in facts:
             fact.setdefault("id", f"key:{fact['key']}")
@@ -6554,6 +6650,7 @@ class VectorMemoryStore:
             query_text=query_text,
             limit=self._episodic_limit,
             relevance_filter=True,
+            recall_query=query,
         )
 
         for episode in episodes:
@@ -6611,7 +6708,9 @@ class VectorMemoryStore:
 
         # Reserve the rules budget first; context never exceeds the requested
         # cap, including wrappers. Small caps may safely return no memory.
-        lessons = self.get_lessons_context(query_text, cap=cap // 3, project_dir=project_dir)
+        lessons = self.get_lessons_context(
+            query_text, cap=cap // 3, project_dir=project_dir, recall_query=query
+        )
         if len(lessons) > cap // 3:
             lessons = ""
         remainder = cap - len(lessons)
@@ -6623,7 +6722,7 @@ class VectorMemoryStore:
             episodes, max(0, remainder - semantic_chars - wrapper_size), episodic=True
         )
         # Contexts, char counts and previews are rendered from the evidence here.
-        return bound_recall_payload(
+        result = bound_recall_payload(
             {
                 "algorithm_version": self.algorithm_version,
                 "policy_revision": self.policy_revision,
@@ -6633,3 +6732,6 @@ class VectorMemoryStore:
             },
             context_cap=cap,
         )
+        with self._db_lock:
+            self._check_recall_query(query)
+        return result

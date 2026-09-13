@@ -210,7 +210,11 @@ async def test_long_episode_is_a_snippet_in_actual_http_and_mcp_json(
     result = learn.memory_recall("memory_recall", {"query": "PostgreSQL database"})
     assert len(result.encode("utf-8")) <= MAX_RECALL_PAYLOAD_BYTES
     assert "PRIVATE_TAIL_SENTINEL" not in result
-    assert json.loads(result)["retrieval"]["episodes"] == evidence
+    selected = json.loads(result)
+    assert selected["retrieval"]["episodes"] == [
+        {key: value for key, value in row.items() if key != "text"} for row in evidence
+    ]
+    assert selected["episodic_context"].count(evidence[0]["text"]) == 1
     assert tier.get_episodic_list()[0]["text"] == source
 
 
@@ -259,7 +263,7 @@ def test_selected_evidence_keeps_source_identity_and_compact_copy_provenance(
     monkeypatch.setattr(
         tier,
         "_semantic_candidates_v2" if name else "_semantic_candidates_v1",
-        lambda query: [
+        lambda query, **kwargs: [
             {
                 "key": "project.database",
                 "value_json": '"PostgreSQL"',
@@ -334,7 +338,12 @@ async def test_actual_stdio_frame_counts_nested_json_escaping_and_content_wrappe
         {row["id"] for row in payload["retrieval"]["facts"]}
     )
     for row in selected["retrieval"]["facts"]:
-        assert f"[memory:{row['id']}] {row['snippet']}" in selected["semantic_context"]
+        assert "snippet" not in row
+        assert f"[memory:{row['id']}] " in selected["semantic_context"]
+        source = next(item for item in payload["retrieval"]["facts"] if item["id"] == row["id"])
+        line = selected["semantic_context"].split(f"[memory:{row['id']}] ", 1)[1].split("\n", 1)[0]
+        body = line.removesuffix("… [truncated]")
+        assert body and source["snippet"].startswith(body)
 
 
 @pytest.mark.asyncio
@@ -372,6 +381,12 @@ async def test_final_redaction_cannot_expand_context_past_requested_char_budget(
     assert len(response.body) <= MAX_RECALL_PAYLOAD_BYTES
     for row in payload["retrieval"]["facts"]:
         assert f"[memory:{row['id']}] {row['snippet']}" in payload["semantic_context"]
+    monkeypatch.setattr(learn.mcp_core, "require_strict_session_key", lambda *args: ("test", ""))
+    monkeypatch.setattr(learn.mcp_core, "_get", lambda *args, **kwargs: payload)
+    wire = learn.memory_recall("memory_recall", {"query": "PostgreSQL database"})
+    assert "TOKEN" not in wire
+    assert json.loads(wire)["total_chars"] <= 3000
+    assert _transport_size(wire, mcp_envelope=True) <= MAX_RECALL_PAYLOAD_BYTES
 
 
 @pytest.mark.parametrize("content_length", [False, True])

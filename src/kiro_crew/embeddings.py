@@ -31,6 +31,7 @@ import asyncio
 import ctypes
 import functools
 import hashlib
+import heapq
 import importlib.util
 import json
 import logging
@@ -48,6 +49,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, NamedTuple, Protocol
 
@@ -58,6 +61,26 @@ from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EmbeddingWork:
+    """A caller's monotonic deadline and cancellation, carried into native jobs.
+
+    Queued inference is cancellable. A running native call retains its executor
+    worker and admission until completion because native inference cannot stop.
+    """
+
+    deadline: float
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    priority: int = 2
+
+    def expired(self) -> bool:
+        return self.cancelled.is_set() or time.monotonic() >= self.deadline
+
+
+embedding_work: ContextVar[EmbeddingWork | None] = ContextVar("embedding_work", default=None)
+_EMBED_WAIT_SECS = 30.0
 
 
 class _ReconcilableStore(Protocol):
@@ -186,6 +209,14 @@ PRIORITY_NORMAL = 1  # bounded explicit write (one lesson, one preference)
 PRIORITY_BULK = 2  # corpus loops: backfill, migration, ingestion, consolidation
 # Shutdown outranks everything so close() is not stuck behind a queued sweep.
 _PRIORITY_SENTINEL = -1
+
+
+def _work_for_priority(priority: int) -> EmbeddingWork:
+    """Only explicit deadlines expire bulk work waiting on the shared duty cycle."""
+    return embedding_work.get() or EmbeddingWork(
+        math.inf if priority >= PRIORITY_BULK else time.monotonic() + _EMBED_WAIT_SECS
+    )
+
 
 # ── Download constants ──
 
@@ -773,24 +804,124 @@ class CustomModelSpec(NamedTuple):
     error: str
 
 
-def _custom_model_id(path: Path, configured: str) -> str:
-    """Stable vector-space identifier for a custom model.
+class _ModelIdentityUnverified(OSError):
+    """The model needs off-loop weight verification before it can be served."""
 
-    An explicit ``memory.embed_model_id`` always wins. Otherwise it is derived
-    from the file's name and byte size, which is free to compute and changes
-    when a genuinely different model is dropped in. It deliberately does NOT
-    hash the file: a sha256 over ~600MB on every boot buys almost nothing here.
-    The tradeoff is that swapping in a different model of IDENTICAL byte size
-    will not be detected — set ``memory.embed_model_id`` explicitly if you do
-    that.
-    """
-    if configured:
-        return configured
+
+LEGACY_EMBEDDING_WARNING = (
+    "Custom-model vectors are inherited from a legacy identity without a recorded weight digest. "
+    "If weights were swapped before the upgrade, reapply the model in Memory settings "
+    "to rebuild these vectors."
+)
+
+_model_verification_lock = threading.Lock()
+_model_identity_lock = threading.Lock()
+_model_verification_thread: threading.Thread | None = None
+
+
+def _verify_custom_model(path: Path, configured: str, recorded_stamp: object, config: Path) -> str:
+    """Verify and persist only the configuration and file generation inspected."""
+    from kiro_crew.config.loader import ConfigReadError, update_config_locked
+
+    with _model_identity_lock:
+        if _is_sensitive_model_path(path):
+            raise OSError("custom model path is protected")
+        stamp = _model_file_stamp(path)
+        model_id = _custom_model_id(path, configured, recorded_stamp=recorded_stamp)
+        if recorded_stamp == list(stamp) and model_id == configured:
+            return model_id
+
+        inherited = False
+
+        def update(data: dict) -> dict | None:
+            nonlocal inherited
+            memory = data.get("memory", {})
+            if (
+                isinstance(memory, dict)
+                and Path(str(memory.get("embed_model_path", "") or "").strip()).expanduser() == path
+                and str(memory.get("embed_model_id", "") or "").strip() == configured
+                and _model_file_stamp(path) == stamp
+            ):
+                if not memory.get("embed_model_stamp") and ":sha256:" not in configured:
+                    labels = {f"custom:{path.name}:{stamp[2]}"}
+                    if configured:
+                        labels.add(configured)
+                    memory["embed_model_legacy_ids"] = sorted(labels)
+                    inherited = True
+                elif memory.get("embed_model_id") != model_id:
+                    memory.pop("embed_model_legacy_ids", None)
+                memory["embed_model_id"] = model_id
+                memory["embed_model_stamp"] = list(stamp)
+                return data
+            return None
+
+        try:
+            update_config_locked(config, mutate=update)
+        except ConfigReadError as exc:
+            raise OSError(
+                "custom model identity could not be persisted: unreadable config"
+            ) from exc
+        if inherited:
+            logger.warning(LEGACY_EMBEDDING_WARNING)
+        return model_id
+
+
+def _start_model_verification(path: Path, configured: str, recorded_stamp: object) -> None:
+    """Keep one off-loop verification worker; later polls retry a changed file."""
+    global _model_verification_thread
+    config = config_path()
+    with _model_verification_lock:
+        if _model_verification_thread is not None and _model_verification_thread.is_alive():
+            return
+
+        def verify() -> None:
+            try:
+                _verify_custom_model(path, configured, recorded_stamp, config)
+            except Exception:
+                logger.warning("Custom model identity verification failed", exc_info=True)
+
+        _model_verification_thread = threading.Thread(
+            target=verify, name="kc-model-verify", daemon=True
+        )
+        _model_verification_thread.start()
+
+
+@functools.lru_cache(maxsize=8)
+def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
+    """Reuse the digest until file identity, size or write timestamps change."""
     try:
-        size = path.stat().st_size
-    except OSError:
-        size = 0
-    return f"custom:{path.name}:{size}"
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise _ModelIdentityUnverified(
+            "custom model identity is unverified; verification is running"
+        )
+    digest = _sha256_file(path)
+    if _model_file_stamp(path) != stamp:
+        raise OSError("embedding model changed while computing its identity")
+    return digest
+
+
+def _model_file_stamp(path: Path) -> tuple[int, ...]:
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _custom_model_id(path: Path, configured: str, *, recorded_stamp: object = None) -> str:
+    """Reuse a verified file stamp; never hash model weights on the event loop."""
+    stamp = _model_file_stamp(path)
+    _label, separator, recorded_digest = configured.rpartition(":sha256:")
+    if (
+        recorded_stamp == list(stamp)
+        and separator
+        and len(recorded_digest) == 64
+        and all(char in "0123456789abcdef" for char in recorded_digest)
+    ):
+        return configured
+    digest = _model_content_digest(path, stamp)
+    label = configured.split(":sha256:", 1)[0] if configured else "custom"
+    return f"{label}:sha256:{digest}"
 
 
 def _is_sensitive_model_path(path: Path) -> bool:
@@ -969,7 +1100,7 @@ def install_shared_embedder(embedder: EmbeddingBackend) -> None:
     reporting not-ready, which is exactly what the UI should show.
     """
     global _shared_embedder
-    with _shared_embedder_lock:
+    with _embedding_alignment_lock, _shared_embedder_lock:
         outgoing = _shared_embedder
         _shared_embedder = embedder
     if outgoing is not None and outgoing is not embedder:
@@ -1002,8 +1133,31 @@ def resolve_custom_model() -> "CustomModelSpec | None":
     configured_id = str(memory_cfg.get("embed_model_id", "") or "").strip()
 
     path, error, _code = validate_custom_model_path(raw, origin)
+    model_id = "custom:unavailable"
+    if not error:
+        try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                model_id = _verify_custom_model(
+                    path, configured_id, memory_cfg.get("embed_model_stamp"), config_path()
+                )
+            else:
+                model_id = _custom_model_id(
+                    path, configured_id, recorded_stamp=memory_cfg.get("embed_model_stamp")
+                )
+                if _model_identity_lock.locked():
+                    raise _ModelIdentityUnverified(
+                        "custom model identity is unverified; verification is running"
+                    )
+        except _ModelIdentityUnverified as exc:
+            model_id = "custom:unverified"
+            error = str(exc)
+            _start_model_verification(path, configured_id, memory_cfg.get("embed_model_stamp"))
+        except OSError as exc:
+            error = f"{origin} could not be read: {exc}"
     _log_custom_model_error(error)
-    return CustomModelSpec(path, _custom_model_id(path, configured_id), dim, error)
+    return CustomModelSpec(path, model_id, dim, error)
 
 
 # Last error reported by resolve_custom_model(), so a persistent misconfiguration
@@ -1204,17 +1358,80 @@ def reconcile_store_embedding_space(store: "_ReconcilableStore") -> int:
     the affected rows stay keyword-searchable until the gateway's sweep refills
     them.
     """
-    active = active_embedding_space_signature()
-    if active != default_embedding_space_signature() and not get_shared_embedder().is_ready():
-        logger.info(
-            "Skipping embedding-space reconciliation: the active backend is not "
-            "ready, so clearing stored vectors would leave nothing able to "
-            "re-embed them"
-        )
+    backend = get_shared_embedder()
+    active = embedding_space_signature(backend.model_id, backend.dim)
+    if active == default_embedding_space_signature() and not backend.is_ready():
+        return store.reconcile_embedding_space(active, clear_when_unknown=False)
+    return align_store_embedding_space(store)
+
+
+_embedding_alignment_lock = threading.RLock()
+
+
+def align_store_embedding_space(store: "_ReconcilableStore") -> int:
+    """Align a store against one ready backend without racing its replacement."""
+    with _embedding_alignment_lock:
+        return _align_store_embedding_space(store)
+
+
+def _align_store_embedding_space(store: "_ReconcilableStore") -> int:
+    """Align width and signature from ONE ready backend, including late opens.
+
+    A gated candidate may align stores only after its identity and width are
+    persisted. No model load or inference happens while holding a store lock.
+    """
+    backend = get_shared_embedder()
+    dim = backend.dim
+    if isinstance(dim, bool) or not isinstance(dim, int) or not 0 < dim <= 65_536:
         return 0
-    return store.reconcile_embedding_space(
-        active, clear_when_unknown=active != default_embedding_space_signature()
-    )
+    active = embedding_space_signature(backend.model_id, dim)
+    if not backend.is_ready():
+        return 0
+    # Concrete stores share this lock with readers and generation-guarded writers.
+    # Protocol-only consumers need only the reconciliation API.
+    from contextlib import nullcontext
+
+    with getattr(store, "_db_lock", nullcontext()):
+        memory = _read_memory_config()
+        if isinstance(backend, LlamaCppEmbedder) and not backend._serving:
+            configured_id = (
+                memory.get("embed_model_id") if memory.get("embed_model_path") else _MODEL_ID
+            )
+            if backend.model_id != configured_id or dim != memory.get(
+                "embedding_dim", _DEFAULT_DIM
+            ):
+                return 0
+        legacy_ids = memory.get("embed_model_legacy_ids", [])
+        if (
+            isinstance(legacy_ids, list)
+            and legacy_ids
+            and isinstance(backend, LlamaCppEmbedder)
+            and backend.model_path == Path(str(memory.get("embed_model_path", ""))).expanduser()
+            and backend.model_id == memory.get("embed_model_id")
+            and getattr(store, "_embedding_dim", None) == dim
+            and store.recorded_embedding_space()
+            in {
+                embedding_space_signature(label, dim)
+                for label in legacy_ids
+                if isinstance(label, str)
+            }
+        ):
+            try:
+                stamp_matches = list(_model_file_stamp(backend.model_path)) == memory.get(
+                    "embed_model_stamp"
+                )
+            except OSError:
+                stamp_matches = False
+            if stamp_matches:
+                store._write_meta("embedding_space_sig", active)  # type: ignore[attr-defined]
+                return 0
+        setter = getattr(store, "set_embedding_dim", None)
+        if callable(setter):
+            if setter(dim) or store.recorded_embedding_space() not in (None, active):
+                store.begin_space_change()  # type: ignore[attr-defined]
+        return store.reconcile_embedding_space(
+            active, clear_when_unknown=active != default_embedding_space_signature()
+        )
 
 
 # ── Embedding backend interface ──
@@ -1281,9 +1498,10 @@ class EmbeddingBackend(abc.ABC):
 class _InferJob:
     """One ``create_embedding`` call handed to the embedder's worker thread."""
 
-    __slots__ = ("llm", "texts", "result", "error", "done", "started")
+    __slots__ = ("llm", "texts", "result", "error", "done", "started", "work")
 
-    def __init__(self, llm: object, texts: "list[str]") -> None:
+    def __init__(self, llm: object, texts: "list[str]", priority: int = PRIORITY_NORMAL) -> None:
+        self.work = _work_for_priority(priority)
         self.llm = llm
         self.texts = texts
         self.result: object | None = None
@@ -1633,6 +1851,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 return
             try:
                 with self._lock:
+                    if job.work.expired():
+                        job.error = TimeoutError("embedding work expired before inference")
+                        continue
                     self._apply_thread_class(job.llm, prio)
                     job.started = time.monotonic()
                     job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
@@ -1715,7 +1936,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
         bounded; overload returns an unavailable embedding so the stored row can
         remain pending and retrieval can use its lexical path.
         """
-        job = _InferJob(llm, texts)
+        job = _InferJob(llm, texts, priority)
         with self._dispatch_lock:
             # Retirement check, worker selection/spawn and the enqueue are ONE
             # atomic step. Split, they lose two ways: two callers racing an
@@ -1745,6 +1966,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 )
                 self._infer_thread = thread
                 thread.start()
+            priority = min(priority, job.work.priority)
             capacity = _MAX_PENDING_EMBEDS
             if priority >= PRIORITY_NORMAL:
                 capacity -= _INTERACTIVE_QUEUE_RESERVE
@@ -1752,12 +1974,36 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 job.error = RuntimeError("embedding queue is busy; retry deferred work later")
                 job.done.set()
                 return job
+            if job.work.expired():
+                job.error = TimeoutError("embedding work expired before admission")
+                job.done.set()
+                return job
             self._jobs.put((priority, self._next_seq(), job))
             self._jobs_changed.set()
-        # Wait OUTSIDE the lock: the wait is unbounded, and holding the dispatch
-        # lock across it would serialize every submitter behind this one job.
-        job.done.wait()
+        while not job.done.wait(0.05):
+            if job.work.expired():
+                with self._dispatch_lock, self._jobs.mutex:
+                    for index, entry in enumerate(self._jobs.queue):
+                        if entry[2] is job:
+                            self._jobs.queue.pop(index)
+                            heapq.heapify(self._jobs.queue)
+                            job.error = TimeoutError("embedding work expired in queue")
+                            job.done.set()
+                            self._jobs_changed.set()
+                            break
+                # A claimed native call is not interruptible. Keep this worker
+                # and its admission slot until the native owner finishes it.
         return job
+
+    def promote_pending(self, work: EmbeddingWork, priority: int) -> None:
+        """Upgrade an identical queued bulk request when a human starts waiting."""
+        with self._dispatch_lock, self._jobs.mutex:
+            work.priority = min(work.priority, priority)
+            for index, (old, seq, job) in enumerate(self._jobs.queue):
+                if job is not None and job.work is work and old > priority:
+                    self._jobs.queue[index] = (priority, seq, job)
+            heapq.heapify(self._jobs.queue)
+            self._jobs_changed.set()
 
     def _create_embedding(
         self, llm: object, texts: "list[str]", priority: int = PRIORITY_NORMAL
@@ -1978,8 +2224,19 @@ def get_shared_embedder() -> EmbeddingBackend:
     """
     global _shared_embedder
     with _shared_embedder_lock:
+        if _shared_embedder is not None:
+            return _shared_embedder
+        if _backend_factory is not None:
+            _shared_embedder = _backend_factory()
+            return _shared_embedder
+    # The default constructor does not load native weights. Verification may
+    # read them on a worker, so it must not hold the lock needed by loop readers.
+    candidate = default_embedding_backend()
+    with _shared_embedder_lock:
         if _shared_embedder is None:
-            _shared_embedder = (_backend_factory or default_embedding_backend)()
+            if candidate.model_id == "custom:unverified":
+                return candidate
+            _shared_embedder = candidate
         return _shared_embedder
 
 
@@ -2032,7 +2289,7 @@ def peek_shared_embedding_identity() -> tuple[str | None, str]:
 def reset_shared_embedder() -> None:
     """Drop the singleton (tests, disable-embeddings, KIROCREW_HOME changes)."""
     global _shared_embedder
-    with _shared_embedder_lock:
+    with _embedding_alignment_lock, _shared_embedder_lock:
         if _shared_embedder is not None:
             _retire_backend(_shared_embedder)
         _shared_embedder = None
@@ -2418,30 +2675,59 @@ _EMBED_CACHE_MAX = 128
 _sync_embed_cache: "OrderedDict[tuple[str, str], tuple[float, ...]]" = OrderedDict()
 _sync_embed_cache_lock = threading.Lock()
 _sync_embed_cache_backend: EmbeddingBackend | None = None
-# Fixed stripes coalesce concurrent identical requests without an unbounded map
-# of in-flight work. A hash collision only makes another query wait briefly.
+# Stripes guard only in-flight bookkeeping, never inference or another waiter.
 _sync_embed_stripes = tuple(threading.Lock() for _ in range(16))
+
+
+@dataclass
+class _EmbedFlight:
+    work: EmbeddingWork
+    done: threading.Event = field(default_factory=threading.Event)
+    vector: list[float] | None = None
+
+
+_sync_embed_flights: dict[tuple[int, str], _EmbedFlight] = {}
 
 
 def _shared_sync_embed(text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
     global _sync_embed_cache_backend
     text = text[:_MAX_EMBED_CHARS]
     backend = get_shared_embedder()
-    # The backend identity also gates the cache below: replacing a backend with
-    # another instance of the same model id must not reuse its old vectors.
     key = (backend.model_id, text)
-    with _sync_embed_stripes[hash(key) % len(_sync_embed_stripes)]:
-        with _sync_embed_cache_lock:
-            if _sync_embed_cache_backend is not backend:
-                _sync_embed_cache.clear()
-                _sync_embed_cache_backend = backend
-            cached = _sync_embed_cache.get(key)
-            if cached is not None:
-                _sync_embed_cache.move_to_end(key)
-                return list(cached)
+    flight_key = (id(backend), text)
+    work = _work_for_priority(priority)
+    if work.expired():
+        return None
+    stripe = _sync_embed_stripes[hash(flight_key) % len(_sync_embed_stripes)]
+    with stripe, _sync_embed_cache_lock:
+        if _sync_embed_cache_backend is not backend:
+            _sync_embed_cache.clear()
+            _sync_embed_cache_backend = backend
+        cached = _sync_embed_cache.get(key)
+        if cached is not None:
+            _sync_embed_cache.move_to_end(key)
+            return list(cached)
+        flight = _sync_embed_flights.get(flight_key)
+        owner = flight is None
+        if flight is None:
+            if len(_sync_embed_flights) >= _EMBED_CACHE_MAX:
+                return None
+            flight = _EmbedFlight(work)
+            _sync_embed_flights[flight_key] = flight
+    if not owner:
+        promote = getattr(backend, "promote_pending", None)
+        if callable(promote):
+            promote(flight.work, priority)
+        while not flight.done.wait(0.05):
+            if work.expired():
+                return None
+        return list(flight.vector) if flight.vector is not None and not work.expired() else None
+    token = embedding_work.set(work)
+    try:
         vector = backend.embed(text, priority=priority)
-        if vector is None:
+        if vector is None or work.expired():
             return None
+        flight.vector = list(vector)
         with _sync_embed_cache_lock:
             if _sync_embed_cache_backend is backend:
                 _sync_embed_cache[key] = tuple(vector)
@@ -2449,6 +2735,11 @@ def _shared_sync_embed(text: str, *, priority: int = PRIORITY_NORMAL) -> list[fl
                 while len(_sync_embed_cache) > _EMBED_CACHE_MAX:
                     _sync_embed_cache.popitem(last=False)
         return list(vector)
+    finally:
+        embedding_work.reset(token)
+        with stripe, _sync_embed_cache_lock:
+            _sync_embed_flights.pop(flight_key, None)
+            flight.done.set()
 
 
 _shared_sync_embed.accepts_priority = True  # type: ignore[attr-defined]

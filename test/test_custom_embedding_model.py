@@ -14,6 +14,7 @@ runtime is a fake class, as in ``test_embeddings.py``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -53,9 +54,7 @@ def _isolate(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("KIROCREW_EMBED_MODEL_URL", raising=False)
     # Point config_path at a file that does not exist by default, so a stray
     # real config on the dev host can never leak into these assertions.
-    monkeypatch.setattr(
-        "kiro_crew.embeddings.config_path", lambda: tmp_path / "config.json"
-    )
+    monkeypatch.setattr("kiro_crew.embeddings.config_path", lambda: tmp_path / "config.json")
     monkeypatch.setattr("kiro_crew.embeddings.config_dir", lambda: tmp_path / "home")
     reset_shared_embedder()
     reset_download_manager()
@@ -148,15 +147,16 @@ class TestResolveCustomModel:
         _write_config(tmp_path, {"embed_model_path": str(model)})
         spec = resolve_custom_model()
         assert spec is not None
-        assert spec.model_id == f"custom:mine.gguf:{_MODEL_SIZE}"
+        expected_id = embeddings_mod._custom_model_id(model, "")
+        assert spec.model_id == expected_id
+        assert expected_id == f"custom:sha256:{hashlib.sha256(model.read_bytes()).hexdigest()}"
 
     def test_explicit_model_id_wins(self, tmp_path: Path) -> None:
         model = _write_model(tmp_path / "mine.gguf")
-        _write_config(
-            tmp_path, {"embed_model_path": str(model), "embed_model_id": "bge-m3:local"}
-        )
+        _write_config(tmp_path, {"embed_model_path": str(model), "embed_model_id": "bge-m3:local"})
         spec = resolve_custom_model()
-        assert spec is not None and spec.model_id == "bge-m3:local"
+        assert spec is not None
+        assert spec.model_id == embeddings_mod._custom_model_id(model, "bge-m3:local")
 
     def test_different_file_changes_the_model_id(self, tmp_path: Path) -> None:
         """A swapped model file must produce a different vector-space identity."""
@@ -216,25 +216,19 @@ class TestSensitivePathGate:
     def test_credential_store_is_refused(self, monkeypatch, tmp_path: Path) -> None:
         secret = _write_model(tmp_path / "credentials")
         _write_config(tmp_path, {"embed_model_path": str(secret)})
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True)
         spec = resolve_custom_model()
         assert spec is not None
         assert "protected location" in spec.error
 
-    def test_refusal_precedes_existence_and_size_checks(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
+    def test_refusal_precedes_existence_and_size_checks(self, monkeypatch, tmp_path: Path) -> None:
         """A protected path must be refused as protected, not as 'missing'.
 
         Ordering matters: reporting the wrong reason would mislead the operator,
         and the gate must not depend on the file being readable.
         """
         _write_config(tmp_path, {"embed_model_path": str(tmp_path / "nope" / "id_rsa")})
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True)
         spec = resolve_custom_model()
         assert spec is not None and "protected location" in spec.error
 
@@ -264,9 +258,7 @@ class TestSensitivePathGate:
         assert embedding_model_is_custom() is True
         assert start_background_model_download() is None
 
-    def test_factory_does_not_hand_over_a_refused_path(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
+    def test_factory_does_not_hand_over_a_refused_path(self, monkeypatch, tmp_path: Path) -> None:
         """Recording the refusal is not enough — the path must not be adopted.
 
         A protected file can exist AND be large enough to satisfy
@@ -275,9 +267,7 @@ class TestSensitivePathGate:
         """
         secret = _write_model(tmp_path / "credentials")
         _write_config(tmp_path, {"embed_model_path": str(secret)})
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True)
         backend = default_embedding_backend()
         assert isinstance(backend, LlamaCppEmbedder)
         assert backend.model_path != secret
@@ -293,9 +283,7 @@ class TestSensitivePathGate:
         must refuse.
         """
         secret = _write_model(tmp_path / "credentials")
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True)
         opened: list = []
 
         class _Tripwire:
@@ -408,14 +396,16 @@ class TestDefaultEmbeddingBackend:
         backend = default_embedding_backend()
         assert isinstance(backend, LlamaCppEmbedder)
         assert backend.model_path == model
-        assert backend.model_id == "m:1"
+        assert backend.model_id == embeddings_mod._custom_model_id(model, "m:1")
         assert backend.dim == 768
 
     def test_shared_embedder_picks_up_the_custom_model(self, tmp_path: Path) -> None:
         """Consumers get the custom model without knowing it exists."""
         model = _write_model(tmp_path / "mine.gguf")
         _write_config(tmp_path, {"embed_model_path": str(model), "embed_model_id": "m:1"})
-        assert embeddings_mod.get_shared_embedder().model_id == "m:1"
+        assert embeddings_mod.get_shared_embedder().model_id == embeddings_mod._custom_model_id(
+            model, "m:1"
+        )
 
 
 class TestLoadTimeDimValidation:
@@ -460,9 +450,7 @@ class TestDownloadSuppression:
         _write_config(tmp_path, {"embed_model_path": str(_write_model(tmp_path / "m.gguf"))})
         assert start_background_model_download() is None
 
-    def test_background_download_skipped_even_when_custom_is_broken(
-        self, tmp_path: Path
-    ) -> None:
+    def test_background_download_skipped_even_when_custom_is_broken(self, tmp_path: Path) -> None:
         """A typo must not cause the bundled model to be installed instead."""
         _write_config(tmp_path, {"embed_model_path": str(tmp_path / "typo.gguf")})
         assert start_background_model_download() is None
@@ -555,9 +543,9 @@ class TestDefaultSpaceSignature:
         )
         active = embedding_space_signature(registered.model_id, registered.dim)
         assert embedding_model_is_custom() is False, "no config knob is set"
-        assert active != default_embedding_space_signature(), (
-            "yet the space is foreign, so clear_when_unknown must be True"
-        )
+        assert (
+            active != default_embedding_space_signature()
+        ), "yet the space is foreign, so clear_when_unknown must be True"
 
 
 class TestReconcileChokepoint:
@@ -601,7 +589,7 @@ class TestReconcileChokepoint:
     def test_default_model_does_not_request_clearing(self) -> None:
         store = self._FakeStore()
         assert reconcile_store_embedding_space(store) == 0
-        (sig, clear), = store.calls
+        ((sig, clear),) = store.calls
         assert sig == default_embedding_space_signature()
         assert clear is False, "a plain upgrade must not wipe anyone's vectors"
 
@@ -609,7 +597,7 @@ class TestReconcileChokepoint:
         self._ready_backend(monkeypatch, "m:1")
         store = self._FakeStore()
         assert reconcile_store_embedding_space(store) == 3
-        (sig, clear), = store.calls
+        ((sig, clear),) = store.calls
         assert sig != default_embedding_space_signature()
         assert clear is True
 
@@ -631,7 +619,8 @@ class TestReconcileChokepoint:
         model = _write_model(tmp_path / "mine.gguf")
         _write_config(tmp_path, {"embed_model_path": str(model), "embed_model_id": "m:1"})
         reset_shared_embedder()
-        assert active_embedding_space_signature() == embedding_space_signature("m:1", 1024)
+        expected_id = embeddings_mod._custom_model_id(model, "m:1")
+        assert active_embedding_space_signature() == embedding_space_signature(expected_id, 1024)
         assert embeddings_mod.get_shared_embedder().is_ready() is False
 
 
@@ -691,5 +680,5 @@ class TestKnowledgeReembedsOnModelSwap:
         reset_shared_embedder()
 
         custom = InProcessEmbedder()
-        assert custom.model == "bge:local"
+        assert custom.model == embeddings_mod._custom_model_id(model, "bge:local")
         assert embedder_signature(custom) != default_sig

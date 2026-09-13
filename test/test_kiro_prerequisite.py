@@ -5607,22 +5607,13 @@ class TestRejectedAgentSpecsNarrowReadiness:
         """
         agents = self._spec_dir(tmp_path)
         (agents / "kirocrew.json").write_text("{}", encoding="utf-8")
-        # The lite spec is PRESENT so this stays a pure rejection state; the
-        # mixed rejected-main/missing-lite state has its own repair test in
-        # TestAgentSpecRepair.
-        (agents / "kirocrew-lite.json").write_text("{}", encoding="utf-8")
         rebuilt: list[str] = []
         calls: list[list[str]] = []
 
         async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
             calls.append(args)
             if args[:2] == ["agent", "validate"]:
-                # Reject ONLY the main spec: the lite spec is staged present and
-                # accepted, keeping this a pure single-spec rejection state.
-                if Path(args[-1]).name == "kirocrew.json":
-                    return ProcessResult(
-                        ok=True, output="x is invalid: bad", returncode=0
-                    )
+                return ProcessResult(ok=True, output="x is invalid: bad", returncode=0)
             return ProcessResult(ok=True)
 
         service = self._service(tmp_path, run)
@@ -5885,11 +5876,6 @@ class TestAgentSpecRepair:
         step — so rebuilding over an existing spec can drop a concurrent toggle's
         edit and resurrect a server the user just disabled. Gating on the MAIN
         spec's ABSENCE removes that window: with no file there is no edit to lose.
-
-        The missing LITE spec is still repaired — via its own writer, never via
-        the whole-file rebuild. Remove the auxiliary arm from
-        ``repair_agent_specs`` and this test fails: the repair would report
-        success while the overlay keeps listing the lite spec.
         """
         from kiro_crew import agent as agent_module
         from kiro_crew.agent_files import LITE_AGENT_FILENAME
@@ -5899,117 +5885,11 @@ class TestAgentSpecRepair:
         calls: list[int] = []
         monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: calls.append(1))
 
-        def _write_lite() -> None:
-            (agents / LITE_AGENT_FILENAME).write_text(
-                '{"name": "kirocrew-lite"}', encoding="utf-8"
-            )
-
-        monkeypatch.setattr(agent_module, "_install_lite_agent_fallback", _write_lite)
-
         status = await self._service(tmp_path).repair_agent_specs("owner")
 
         assert calls == []
-        assert (agents / LITE_AGENT_FILENAME).is_file()
-        assert status["missing_agent_specs"] == []
+        assert status["missing_agent_specs"] == [LITE_AGENT_FILENAME]
         assert status["agent_spec_repair_error"] == ""
-        assert status["ready"] is True
-
-    @pytest.mark.asyncio
-    async def test_a_rejected_main_spec_does_not_block_the_lite_repair(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Rejection and a missing lite spec can coexist; both get their remedy.
-
-        Acceptance is only evaluated for PRESENT specs, so kirocrew.json can be
-        latched REJECTED while kirocrew-lite.json is missing. A rejection branch
-        that returns before the auxiliary arm leaves that mixed state with no
-        error, no write, and a permanently blocked gate. Writing a MISSING file
-        rewrites nothing, so the lost-update reasoning behind the rejection
-        guard does not apply to it.
-        """
-        from kiro_crew import agent as agent_module
-        from kiro_crew.agent_files import LITE_AGENT_FILENAME
-
-        agents = self._agents_dir(tmp_path, monkeypatch)
-        (agents / AGENT_FILENAME).write_text('{"name": "kirocrew"}', encoding="utf-8")
-        service = self._service(tmp_path)
-        service._status.rejected_agent_specs = [AGENT_FILENAME]
-        calls: list[int] = []
-        monkeypatch.setattr(
-            agent_module, "rebuild_agent_config", lambda: calls.append(1)
-        )
-
-        def _write_lite() -> None:
-            (agents / LITE_AGENT_FILENAME).write_text(
-                '{"name": "kirocrew-lite"}', encoding="utf-8"
-            )
-
-        monkeypatch.setattr(agent_module, "_install_lite_agent_fallback", _write_lite)
-
-        status = await service.repair_agent_specs("owner")
-
-        assert calls == []  # the rejected main spec is never regenerated
-        assert (agents / LITE_AGENT_FILENAME).is_file()
-        assert status["missing_agent_specs"] == []
-        assert status["agent_spec_repair_error"] == ""
-
-    @pytest.mark.asyncio
-    async def test_failed_lite_spec_write_reports_a_sanitized_exception(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The auxiliary arm reports its failure the way the main rebuild does.
-
-        Sanitized for the same reason as the main path: the error string is
-        dashboard-facing.
-        """
-        from kiro_crew import agent as agent_module
-
-        agents = self._agents_dir(tmp_path, monkeypatch)
-        (agents / AGENT_FILENAME).write_text('{"name": "kirocrew"}', encoding="utf-8")
-        monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: None)
-
-        def _boom() -> None:
-            raise PermissionError("agents dir is read-only")
-
-        monkeypatch.setattr(agent_module, "_install_lite_agent_fallback", _boom)
-
-        status = await self._service(tmp_path).repair_agent_specs("owner")
-
-        assert "PermissionError: agents dir is read-only" in (
-            status["agent_spec_repair_error"]
-        )
-        assert status["ready"] is False
-
-    @pytest.mark.asyncio
-    async def test_silent_no_op_lite_write_is_reported_as_a_failure(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A lite write that declines without raising must not read as success.
-
-        Mirrors ``test_silent_no_op_rebuild_is_reported_as_a_failure`` for the
-        auxiliary arm: the post-repair overlay is what turns a silent no-op into
-        a visible error instead of a success report, honoring the docstring's
-        no-op-is-failure rule.
-        """
-        from kiro_crew import agent as agent_module
-
-        agents = self._agents_dir(tmp_path, monkeypatch)
-        (agents / AGENT_FILENAME).write_text('{"name": "kirocrew"}', encoding="utf-8")
-        monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: None)
-        monkeypatch.setattr(
-            agent_module, "_install_lite_agent_fallback", lambda: None
-        )
-
-        status = await self._service(tmp_path).repair_agent_specs("owner")
-
-        assert "still missing" in status["agent_spec_repair_error"]
-        assert status["ready"] is False
 
     @pytest.mark.asyncio
     async def test_concurrent_repairs_rebuild_exactly_once(

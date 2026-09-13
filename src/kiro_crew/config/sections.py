@@ -1787,11 +1787,28 @@ class MemoryConfig:
         default="",
         metadata=_meta(
             "Embedding Model ID",
-            "Optional stable identifier for a custom model's vector space. Defaults to "
-            "'custom:<filename>:<size>', which changes when a different model file is "
-            "used. Set this explicitly if you swap between models of identical byte size, "
-            "which the default derivation cannot distinguish.",
+            "Optional label for a custom model. The vector-space identity is "
+            "'<label>:sha256:<digest>' of the model file's bytes, so different models "
+            "of identical name and size are always told apart; this key cannot pin or "
+            "override that identity. Applying a model from the dashboard writes the "
+            "resulting id together with embed_model_stamp.",
             restart=True,
+        ),
+    )
+    embed_model_stamp: list[int] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Embedding Model File Stamp",
+            "Managed file identity for verified custom weights: device, inode, byte size, "
+            "modification nanoseconds and change nanoseconds. An empty list means unverified.",
+        ),
+    )
+    embed_model_legacy_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Embedding Model Legacy IDs",
+            "Managed compatibility labels mapped to embed_model_id and embed_model_stamp. "
+            "Preserves matching stored vectors across restarts; cleared when the model identity changes.",
         ),
     )
     semantic_confidence_threshold: float = field(

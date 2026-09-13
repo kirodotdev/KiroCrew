@@ -10,6 +10,14 @@ Chat sessions are served from the warm pool when eligible (default pool
 agent, default cwd, no resume mapping); otherwise they cold-start on first
 message via `get_or_create()`.
 
+Successful native ACP resume suppresses replay from both disk and the
+dashboard's live slot window. The runner honors the actual provider client's
+resumed state as well as the SessionManager result. A real cold start uses the
+canonical merged replay; an explicit reset suppresses that replay instead of
+silently reloading a fallback. The current request is delivered once and is not
+replayed as historical input. This includes cron, recovery and user-replay
+injections; queue drain supplies the exact appended row to the runner.
+
 ## Implementation Boundaries
 
 `SessionManager` remains the compatibility facade in `session.py`; callers keep
@@ -410,6 +418,8 @@ send time.
   memory, leaving the new ACP process with zero history.
 - **Per-session semaphore**: serializes concurrent messages on the same
   thread key. `get_or_create()` acquires; caller must `release()` when done.
+  This includes named workflow steps: retaining conversation state requires
+  `release(cleanup=False)`, not retaining the semaphore between calls.
 - **Post-semaphore revalidation** (`_reacquire_and_validate`): the per-session
   semaphore may be held for a full turn, so it is ALWAYS acquired with the
   global `self._lock` RELEASED (pinning the lock across that wait would freeze

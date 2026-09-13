@@ -272,10 +272,20 @@ Common problems:
   corpus because of a typo. Embeddings stay unavailable (keyword search still
   works) until the path is fixed.
 - **Embedding-model dimension mismatch.** Set `memory.embedding_dim` to the output width named in the error. The width is checked at load so a mismatch is a loud refusal rather than an unexplained loss of semantic search.
-- **You swapped models but nothing re-embedded.** The default vector-space
-  identity is derived from the file's name and size, so two different models of
-  identical byte size look the same. Set `memory.embed_model_id` explicitly to
-  distinguish them.
+- **You swapped models but nothing re-embedded.** The vector-space identity
+  is `<label>:sha256:<digest>` of the model file's bytes, so a different model
+  under the same name and size is detected on its own; `memory.embed_model_id`
+  is only the label and cannot pin the old space. Applying the model from the
+  dashboard (Memory → Embedding Model) records the new digest together with
+  `memory.embed_model_stamp`, and an unchanged file reuses that digest at
+  startup without re-reading the weights. A file replaced behind a stale stamp
+  is re-hashed off the event loop. Status reports the model as unverified while
+  that check runs and recovers automatically after it succeeds; applying the
+  model again is not required.
+- **Status warns about inherited legacy vectors.** Older model identities used
+  the file name and size, so they cannot prove which weights produced the
+  vectors. If you changed weights before upgrading, reapply the same file in
+  Memory settings to rebuild inherited vectors while keeping memory text.
 
 ### High memory usage with embeddings
 

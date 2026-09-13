@@ -189,7 +189,6 @@ src/kiro_crew/dashboard/handlers/knowledge.py
 src/kiro_crew/dashboard/handlers/mcp.py
 src/kiro_crew/dashboard/handlers/mcp_apps.py
 src/kiro_crew/dashboard/handlers/mcp_custom.py
-src/kiro_crew/dashboard/handlers/memory.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/sso_login.py
@@ -321,10 +320,8 @@ src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
-src/kiro_crew/vector_memory.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
-src/kiro_crew/workflows/agent_exec.py
 src/kiro_crew/workflows/context.py
 test/conftest.py
 test/fake_mcp_app_server.py
@@ -523,7 +520,6 @@ test/test_cron_timezone_display.py
 test/test_cron_trigger.py
 test/test_cse_2026_08_05_fixes.py
 test/test_cse_2026_08_07_fixes.py
-test/test_custom_embedding_model.py
 test/test_dashboard.py
 test/test_dashboard_branding.py
 test/test_dashboard_config_gitlab_hosts.py
@@ -654,7 +650,6 @@ test/test_handlers_channel_clear_context.py
 test/test_handlers_channel_presets.py
 test/test_handlers_files_upload.py
 test/test_handlers_mcp_coverage.py
-test/test_handlers_memory_coverage.py
 test/test_heartbeat_atomic_merge.py
 test/test_heartbeat_prompt_deliver.py
 test/test_heartbeat_retention.py
@@ -1064,8 +1059,6 @@ test/test_weixin_wire.py
 test/test_windows_sim.py
 test/test_worker_pool.py
 test/test_workflow_permissions.py
-test/test_workflows_agent_exec.py
-test/test_workflows_agent_pool.py
 test/test_workflows_dsl.py
 test/test_workflows_inject.py
 test/test_workflows_invariants.py

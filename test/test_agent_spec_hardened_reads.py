@@ -910,7 +910,10 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("connections_warm_mint", "dashboard"),
         ("connections_warm_mint", "dashboard"),
     ],
-    "kiro_crew/context.py": [("steering_resources", "unknown")],
+    "kiro_crew/context.py": [
+        ("agent_prompt", "context"),
+        ("steering_resources", "unknown"),
+    ],
     "kiro_crew/cron_script.py": [("cron_resolve_mcp_server", "cron")],
     "kiro_crew/dashboard/handlers/agents.py": [
         ("api_agent_detail", "dashboard"),

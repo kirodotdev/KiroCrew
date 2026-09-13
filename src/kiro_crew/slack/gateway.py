@@ -9503,11 +9503,11 @@ class GatewayOrchestrator:
                 return
         if self._memory_repair_stop.is_set():
             return
+        reconcile_store_embedding_space(store)
         if not store.has_pending_embeddings() and not store_embedding_space_is_stale(store):
             return
         if store.embed_fn is None:
             store.embed_fn = make_sync_embed_fn()
-        reconcile_store_embedding_space(store)
         store.backfill_missing_embeddings(
             max_rows_per_kind=16, should_stop=self._memory_repair_stop.is_set
         )

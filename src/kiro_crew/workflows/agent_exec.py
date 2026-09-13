@@ -136,8 +136,12 @@ def build_agent_fn(
                         provider_last_turn_usage(provider),
                         provider="acp",
                         surface="workflow",
-                        agent=(read_effective_agent(provider)
-                               or opts.get("agent") or default_agent or ""),
+                        agent=(
+                            read_effective_agent(provider)
+                            or opts.get("agent")
+                            or default_agent
+                            or ""
+                        ),
                         context_used=_used,
                         context_window=_window,
                         elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
@@ -151,12 +155,11 @@ def build_agent_fn(
             text, _ = redact_exfiltration_urls(text)
             return text
         finally:
-            # Ephemeral per-call sessions are torn down; named sessions persist so
-            # a stateful chain (session=) keeps its history across steps.
-            if ephemeral:
-                try:
-                    sessions.release(key, cleanup=True)
-                except Exception:  # noqa: BLE001 - cleanup must not mask the result
-                    pass
+            # Every successful acquire owns a lease, including stateful calls.
+            # Returning it without cleanup keeps the named provider and history.
+            try:
+                sessions.release(key, cleanup=ephemeral)
+            except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                logger.warning("workflow session lease release failed", exc_info=True)
 
     return agent_fn

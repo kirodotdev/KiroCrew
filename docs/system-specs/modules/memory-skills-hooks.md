@@ -122,6 +122,15 @@ profile reads in worker threads. Store cache generation and retirement checks
 still surround construction; no cache lock is held across an await. Global
 consolidation uses the same off-loop profile-read scheduling with unchanged
 content and write policy.
+
+Named-store preparation gives one worker ownership from construction through
+initialization, embedding wiring, validation and cache publication. Cancellation
+is serialized against publication. A published store belongs to the cache; every
+unpublished store, including an initialization failure, a race loser or a
+cache-generation mismatch, is closed by that worker after its final use.
+Cancellation never closes a connection while initialization is using it. No
+cache lock is held across blocking I/O or an await.
+
 Private consolidation allocates an ephemeral member-bound provider session,
 records its own billing and removes that provider after release. It never uses
 the shared V1 background provider. The default background path is unchanged.
@@ -1361,6 +1370,23 @@ owned V2 store and validates its exclusive binding. A supplied member that
 disagrees with that owner is an error. V1 and unowned legacy stores retain
 their existing context path.
 
+The owner persona and execution prompt share one project-first template resolver.
+A project override of a template takes precedence over its global copy. A
+relative `file://` prompt uses the project root when its template comes from the
+project's agents directory, and the user home when it comes from the global
+agents directory, even with a project bound. Both readers share the same path
+validator: resolve symlinks and require the result to remain inside that resolved
+root. A `..` segment that stays inside is valid; an escaping traversal or symlink
+is skipped with a debug log. Sensitive-path checks remain in force, and the
+essential reader also retains its managed-memory source refusal. Absolute
+`file://` prompts retain each reader's existing rules. Neither relative reader
+depends on the gateway process's working directory. When the
+execution template is the owner's template, its custom persona appears only in
+the per-turn essential envelope, not again in the session-start prompt. A
+different execution template still supplies its task instructions. An inherited
+exact product-prompt URI stays in the product session-start path, not in
+essentials. Essential sources continue to refresh on every private member turn.
+
 `ContextBuilder` injects the owner's identity, current permanent rules and
 bound custom-template persona on fresh, warm, resumed, post-compaction and
 minimal turns, including delegated and cron turns with no DM member argument.
@@ -1504,19 +1530,44 @@ keeps its existing sweep; exact-identity proposals and explicit V2 correction
 and review continue through the revision-aware write path.
 
 `recall(query_text, cap=3000, project_dir=None)` is the on-demand entry point
-for both versions, using the selected store's retrieval policy. It returns bounded semantic, episodic and lesson context plus
-the selected fact/episode snippets and their compact retrieval evidence, never
-unabridged source rows or vector blobs. Truncated episode evidence is marked;
-full source content remains available to the owner editor. The character cap
-includes wrappers; an empty query or zero cap yields no context. A separate
-16 KiB transport budget counts JSON escaping, previews, evidence and the MCP
-TextContent envelope, with 1 KiB reserved for ordinary RPC framing/request IDs.
-Caller-controlled arbitrarily large JSON-RPC IDs are outside this memory-data
-bound. The final HTTP/MCP serializers recheck the budget after redaction,
-omitting whole tail records and regenerating matching contexts, previews and
-counts when necessary. Omitted records are reported in the retrieval metadata.
-Episodic references carry their stable memory ids. The MCP transport derives the store
-from the caller's trusted binding; it accepts no model-selected store argument.
+for both versions, using the selected store's retrieval policy. Each nonempty
+recall computes its query embedding at most once and passes success or failure
+to fact, episode and lesson retrieval. The result carries the store's
+vector-space generation and recorded signature across those reads. Checks run
+under the store lock before vector-bearing reads and before publication;
+inference never runs while holding that lock. A changed space discards the
+complete partial result and performs one keyword-only retry, without another
+inference. Failure is retained only for that call, not in a negative cache.
+
+The store and dashboard return bounded semantic, episodic and lesson context
+plus selected snippets and retrieval evidence, never unabridged source rows or
+vector blobs. Truncated evidence is marked; full content remains available to
+the owner editor. The character cap includes wrappers; an empty query or zero
+cap yields no context. A separate 16 KiB transport budget counts JSON escaping
+and the MCP TextContent envelope, with 1 KiB reserved for ordinary RPC
+framing/request IDs. Caller-controlled arbitrarily large JSON-RPC IDs are
+outside this memory-data bound. The MCP boundary uses a model-facing projection:
+each body appears only once in its trusted reference context, evidence retains
+identifiers, scores, provenance and truncation flags without another body, and
+previews are omitted. Dashboard/UI payloads retain their existing shape. The
+final serializers recheck their actual representation after redaction,
+shortening snippets or omitting whole tail records and regenerating matching
+contexts and counts when necessary. Omitted records are reported in retrieval
+metadata. Episodic references carry their stable memory ids. The MCP transport
+derives the store from the caller's trusted binding; it accepts no model-selected
+store argument.
+
+HTTP recall has one nine-second server-side monotonic work deadline, shorter
+than its ten-second MCP client timeout. Retrieval uses a bounded `mc-recall`
+pool and separate admission from prompt preparation's `mc-embed` pool. The work
+budget follows the worker into native inference. Expired or cancelled queued
+jobs are removed without inference; a claimed native call cannot be interrupted
+in-process and retains its executor worker and admission until it completes.
+This change does not add process isolation or guarantee prompt progress when a
+prompt itself requires the same wedged native model. The registered
+`api_memory_recall` handler applies `memory_recall_deadline` before authorization,
+cold store opening, admission and retrieval; expiry returns HTTP 504 with
+`memory_recall_timeout` without changing caller-authority checks.
 `get_context_preview()` uses the same result for V2 and keeps V1's response.
 The `member_v2` harness report also carries the V2 classifier's admission confusion
 per mode on the same measured pair cosines, separately from its ranking and
@@ -1925,6 +1976,93 @@ same. Failures are not cached. Loading remains asynchronous: callers receive
 `None` until the shared model is resident. These are resource ceilings, not a
 claim of measured latency or RSS improvement on every supported platform.
 
+Embedding cache stripes protect only short cache and full-key in-flight
+bookkeeping. No stripe is held during model inference or another caller's wait.
+At most 128 in-flight keys are retained. Same-key callers share one inference;
+non-bulk work without an explicit budget expires after 30 seconds. This stops
+queued work and coalesced waits, but cannot interrupt an in-flight native call.
+Bulk inference and bulk coalescing have no implicit deadline, so shared duty-cycle
+cooldowns cannot expire unattended repair work. An explicit caller budget still
+applies to every priority, including recall's nine seconds. Expired work leaves
+vectors NULL and eligible for the next repair; failures are not cached.
+Model loading remains asynchronous and is not charged to this queue-wait budget.
+An interactive caller promotes an existing queued bulk job. Promotion cannot
+interrupt an already-running job or extend an explicit deadline. An expired
+shared producer yields the ordinary unavailable-vector fallback to its waiters.
+
+A custom model's identity is `<label>:sha256:<digest>` of its weights, even when
+the operator supplies a model label. `memory.embed_model_id` contributes only
+the label part; it is not an identity override and cannot pin a vector space
+across a change of weights. Explicit apply persists `memory.embed_model_id`
+and `memory.embed_model_stamp` together; the stamp contains device, inode, byte
+size, modification nanoseconds and change nanoseconds. An unchanged file reuses
+that digest at startup without reading its weights, even in a fresh process.
+A changed or missing stamp starts one deduplicated verification worker. Event-loop
+readers report a transient unverified model and never hash weights or cache its
+placeholder as the shared backend. The worker and synchronous resolvers verify
+the digest and persist its identity/stamp pair through the locked config writer,
+only while the configured path, identity and file generation still match.
+Subsequent polls construct the real backend without operator action, and the next
+process start reuses the persisted stamp. Default backend construction does not
+hold the shared-backend lock while hashing, so loop readers remain responsive.
+Applying also computes the digest off-loop and persists the new digest/stamp pair.
+Model identity and vector width define the vector space.
+The embedding-status response reports `server_healthy=false` while a configured
+custom model is unverified or has a validation error, even if its file exists or
+an older backend is loaded. Successful verification restores normal health
+reporting without requiring the operator to apply the model again.
+
+The first verified custom-model stamp and `memory.embed_model_legacy_ids` are
+written in one locked config update when the stamp is absent or empty and the
+configured identity contains no digest. The stored list names the basename/size
+identity and any explicit label superseded by that verified digest. A ready
+custom backend may re-stamp a matching V1 or V2 store without clearing vectors,
+rebuilding indexes, changing generation or submitting embedding work, including
+stores opened lazily in another process. The backend path, digest identity and
+file stamp must match the persisted configuration, and the store width must
+match the backend. Unrelated signatures do not qualify. An existing stamp alone
+cannot grant compatibility; the persisted legacy list is also required. A missing
+or unreadable current model stamp is a mismatch, so alignment uses normal
+reconciliation rather than aborting the caller or preserving unverified vectors.
+
+A same-name/same-size weight replacement, or reuse of an explicit identity label,
+made before the first verified stamp cannot be detected from the old metadata;
+this is the pre-upgrade identity limit. Weight changes after that stamp get a new
+digest, clear the compatibility list and invalidate vectors normally. Explicit
+model apply always removes the compatibility list. When that list is present,
+apply rebuilds vectors even for the same file and signature, using the existing
+backfill path. First verification emits one WARNING about inherited vectors;
+embedding status keeps the same text in `setup_warning` until explicit apply.
+The warning explains that a pre-upgrade weight swap requires reapplying the
+model. This compatibility choice preserves unchanged custom installations but
+does not prove the provenance of vectors created before any weight digest.
+Signatures retain the original SHA-256 encoding of `model_id|dim`, truncated to
+16 hex characters, so unchanged bundled vectors need no rebuild. Custom-model
+tests derive expected
+identities with `_custom_model_id(path, configured_label)` and spaces with
+`embedding_space_signature`, including an independent SHA-256 check of the
+weight bytes rather than a basename/size or label-only assertion.
+
+Store opening, model application and standing repair share
+`align_store_embedding_space`. It snapshots one ready backend, validates a
+positive width no greater than 65,536, then aligns width, generation and
+signature under the store lock. Replacing an existing signature advances the
+generation even when the width is unchanged, so a write already embedding
+against the outgoing model cannot commit that vector after reconciliation.
+First attribution of an unstamped store with unchanged width does not advance
+the generation. Backend replacement is serialized against this operation.
+A loaded candidate waits for its configured identity and width before aligning
+stores, and cannot serve vectors until reconciliation completes. Digest and
+configuration-write failures occur before vector clearing. The validated,
+expanded path is shared by candidate construction and persistence, including
+`~/...` input. A later alignment failure restores only the model settings that
+apply wrote, preserving unrelated config edits; if those model settings changed
+concurrently or rollback fails, the candidate remains gated and reports the
+failure. Late-opened stores are collected again after persistence and do not
+combine an old configuration width with a candidate signature.
+The legacy unready bundled-model attribution path remains non-clearing; strict
+alignment requires readiness.
+
 ### Model Download Manager (`embeddings.py`)
 
 `ModelDownloadManager` (singleton via `model_download_manager()`) downloads the embedding GGUF in the BACKGROUND at gateway startup — boot is never blocked by the 610MB transfer:
@@ -1945,9 +2083,9 @@ claim of measured latency or RSS improvement on every supported platform.
 - On failure: status resets to `idle` with error message, frontend shows error + Retry button
 - Prevents concurrent setup attempts (409 if already in progress)
 - `can_retry` flag in status response for frontend retry button
-- `GET /api/memory/embedding-status` — `enabled` is always `true`; `provider` reports the legacy `"ollama"` token (the shipped frontend hard-checks `provider === "ollama"` — kept until the frontend companion change lands); `setup_step` maps the manager's steps to the legacy vocabulary the shipped polling loop terminates on (`ready`→`done`, `failed`→`error`, `downloading`/`verifying`/`waiting_retry`→`downloading`); the raw step and attempt are additionally exposed as `download_step` + `download_attempt` for newer frontends; `server_healthy` = model file present OR model loaded; `model_id` + `model_dim` disclose the embedding model producing vectors (read live from the shared embedder — e.g. `qwen3-embedding:0.6b` / `1024`) so the Memory tab can show which model runs locally
+- `GET /api/memory/embedding-status` — `enabled` is always `true`; `provider` reports the legacy `"ollama"` token (the shipped frontend hard-checks `provider === "ollama"` — kept until the frontend companion change lands); `setup_step` maps the manager's steps to the legacy vocabulary the shipped polling loop terminates on (`ready`→`done`, `failed`→`error`, `downloading`/`verifying`/`waiting_retry`→`downloading`); the raw step and attempt are additionally exposed as `download_step` + `download_attempt` for newer frontends; `server_healthy` requires a present or loaded model and no custom-model validation error; `setup_warning` exposes inherited legacy-vector identity until explicit model apply; `model_id` + `model_dim` disclose the embedding model producing vectors (read live from the shared embedder — e.g. `qwen3-embedding:0.6b` / `1024`) so the Memory tab can show which model runs locally
 - `POST /api/memory/embedding-model` — changes the local embedding model at runtime. Two modes, and note which one is the default: `{"path": "...", "validate_only": true}` validates only (returns `size_bytes` without touching the live backend), while **omitting `validate_only` performs the swap** — there is no `apply` flag, so a caller that sends only `path` applies the model. An empty `path` reverts to the bundled model. Refuses with 403 on a restricted session (SEL-audited), 409 while a re-embed is already running (single-flight), and 409 `env_override_active` when `KIROCREW_EMBED_MODEL_PATH` is set, because the env var wins at load and persisting a config path under it would store a path/dim pair the process never uses
-- **Apply ordering** (each step gates the next, so a failure rolls back rather than half-applying): build the candidate **gated** (not serving) → install it, retiring the outgoing model in the same step so two ~700MB models never co-reside → `begin_space_change()` → bounded `wait_ready` (600s) → `set_embedding_dim()` → reconcile → **verify the recorded space equals the active signature** → persist config → `activate_shared_embedder()` → backfill in the background. Config is written LAST so a reconcile failure leaves config naming the PREVIOUS model, which is what makes the rollback rebuild that model instead of resurrecting an ungated new one. Every rollback also restores the store's previous vector width, since a store left on the new width rejects every vector against the restored model
+- **Apply ordering**: build the gated candidate, install it while retiring the outgoing model, advance the store generation, wait for readiness (600s bound), persist the verified model configuration, retarget and reconcile stores, verify every recorded signature, activate, then backfill. Configuration-write failure preserves stored vectors. Alignment failure conditionally restores the prior model settings before resetting the candidate and restoring widths; rollback failure leaves the candidate gated with an actionable error. Unrelated configuration fields are not rolled back.
 - `GET /api/memory/embedding-status` additionally returns a `reembed` snapshot (`step`: `idle`/`applying`/`running`/`done`/`failed`, plus `done`/`total`/`error`) so the dashboard can render background re-embed progress; the card polls only while that step is busy
 - `POST /api/memory/disable-embeddings` — **gone**: embeddings are always-on. Kept as a graceful HTTP 410 stub (not a 404) because the shipped frontend still renders a Disable button; remove together with the frontend button
 
@@ -1993,6 +2131,14 @@ When vector memory is active, lessons are stored as semantic entries:
 - Methods: `write_lesson()`, `get_lessons()`, `delete_lesson()`, `get_lessons_context()`
 - Context: injected as `[Learned corrections]` block, separate from `[Semantic Memory]`
 - Allowlist: `lesson.*` prefix in `_BUILTIN_PREFIXES`
+
+A lesson's final embedding commit and deferred lazy backfills match the exact
+`value_json` that was embedded, require `is_deleted = 0` and `embedding IS NULL`,
+and recheck the embedding-space generation under the store lock. An owner edit,
+including a revision-checked edit, a tombstone or a completed newer backfill
+cannot be overwritten by an older writer's vector tail. The body remains
+committed when its obsolete vector is discarded; ordinary backfill can fill a
+remaining NULL vector.
 
 Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Served in-process via the vendored llama-cpp-python runtime on all supported platforms.
 
@@ -2543,6 +2689,11 @@ named V1 stores retain their own files. `test/test_memory_v1_golden.py` pins
 the preserved V1 policies and eager session recall. Shared metadata, record
 editing and optional MCP recall do not convert V1 or replace its prompt path.
 
+Private member workflow execution is explicitly unsupported until author and
+worker sessions can retain the complete protected memory identity. Workflow
+service admission rejects private parents before any model work instead of
+silently executing on Global V1; this includes replay and reruns after restart.
+
 Deleting or package-pruning a Crew Member retires its private store by removing
 the member binding while retaining the ownership record and files for explicit
 recovery. A later member with the same display name is a new generation and is
@@ -2639,6 +2790,13 @@ share one SQLite file.
 It returns `None` for the default store (whose vector store is the global one, wired at
 startup). A private V2 failure raises; a declared legacy V1 store may return
 `None` and retain its own Markdown/keyword path.
+
+Before returning either a cached store or the freshly published winner,
+`ensure_store` awaits `align_store_embedding_space` off-loop, without holding
+the cache lock. A store opened while model configuration is still being written
+keeps its existing width and vectors. After persistence, alignment adopts the
+ready candidate's width and signature together; unpublished-store ownership
+stays with the preparation worker.
 
 It cannot live inside `get_memory_for`. That method is synchronous, is called
 unconditionally on every context build, and holds `_stores_lock`; `VectorMemoryStore.init()`
