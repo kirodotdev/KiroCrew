@@ -9,6 +9,8 @@ import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkAutolinkRules from '../utils/remarkAutolinkRules'
+import { remarkLatexDelimiters } from '../utils/remarkLatexDelimiters'
+import { pairedCloseIndices, singleTagName } from '../utils/htmlTagGrammar'
 import remarkCjkFriendly from 'remark-cjk-friendly'
 import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import remarkMath from 'remark-math'
@@ -2245,40 +2247,10 @@ export function rehypeSanitize() {
   }
 }
 
-/** A whole mdast `html` node that is exactly ONE tag: `<x>`, `</x>`, `<x a b>`,
- * `<x/>`. Attribute values are quote-aware, so a value may itself contain `>`
- * (`<x a="b>c">`); without that, such a tag misses this test and falls to the
- * lossy escapedNodeTree() path. A bare attribute may hold `/` (`<x a/b>`) so
- * this accepts everything the previous blanket `[^>]*` did. The leading
- * `[a-zA-Z]` excludes comments (`<!-- -->`) and doctypes, which keep their
- * existing handling. */
-const SINGLE_TAG_RE =
-  /^<\/?([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s=>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?)*)\s*\/?>$/
-
-/** Tag name of a single-tag html node, or undefined when it is not one. */
-function singleTagName(value: string): string | undefined {
-  return SINGLE_TAG_RE.exec(value)?.[1]?.toLowerCase()
-}
-
 /** Showable verbatim. Executable tags keep their `[unsupported: x]` marker; every
  * other unknown tag diverts, because a text node is inert wherever it lands. */
 function divertibleTag(tag: string): boolean {
   return !UNSAFE_RECONSTRUCT_TAGS.has(tag)
-}
-
-/** Index of the sibling that closes `tag`, tracking same-tag nesting; -1 if unclosed. */
-function matchingCloseIndex(kids: MdastNode[], start: number, tag: string): number {
-  let depth = 0
-  for (let j = start + 1; j < kids.length; j++) {
-    const k = kids[j]
-    if (k.type !== 'html' || typeof k.value !== 'string') continue
-    if (singleTagName(k.value) !== tag) continue
-    if (k.value.startsWith('</')) {
-      if (depth === 0) return j
-      depth--
-    } else if (!k.value.endsWith('/>')) depth++
-  }
-  return -1
 }
 
 /** Render non-allowlisted single tags VERBATIM instead of reconstructing them.
@@ -2300,19 +2272,27 @@ function matchingCloseIndex(kids: MdastNode[], start: number, tag: string): numb
  * parser — it ends up a text node, which React escapes on render, so the React
  * #290 guard still holds.
  */
+/** Allowlisted tags whose text content is verbatim, never prose (see remarkLatexDelimiters). */
+const VERBATIM_CONTENT_TAGS = new Set(['code', 'pre', 'kbd', 'samp', 'var', 'tt', 'textarea', 'svg', 'math'])
+
 export function remarkVerbatimUnknownTags() {
   return (tree: MdastNode) => {
     const walk = (node: MdastNode) => {
       const kids = node.children
       if (!kids) return
+      // Pairing is computed ONCE per sibling list (linear), never per opener:
+      // a run of unclosed unknown openers must not cost a suffix scan each.
+      let pairs: Map<number, number> | null = null
       for (let i = 0; i < kids.length; i++) {
         const child = kids[i]
         if (child.type === 'html' && typeof child.value === 'string') {
           const tag = singleTagName(child.value)
           if (tag && !ALLOWED_TAGS.has(tag) && divertibleTag(tag)) {
-            const paired = child.value.startsWith('</') || child.value.endsWith('/>')
-              ? -1
-              : matchingCloseIndex(kids, i, tag)
+            let paired = -1
+            if (!child.value.startsWith('</') && !child.value.endsWith('/>')) {
+              pairs ??= pairedCloseIndices(kids)
+              paired = pairs.get(i) ?? -1
+            }
             if (paired > i) {
               // A closed container: divert the whole span, so allowlisted tags
               // inside it stay literal instead of rendering as live elements.
@@ -2351,6 +2331,14 @@ const REMARK_PLUGINS: PluggableList = [
   remarkGfm,
   remarkCjkFriendlyGfmStrikethrough,
   [remarkMath, { singleDollarTextMath: false }],
+  // LaTeX-native `\( … \)` / `\[ … \]` → the same math nodes remark-math emits,
+  // from ELIGIBLE TEXT NODES only (code, html, link destinations and reference
+  // definitions are other node types and are never touched). After remark-math
+  // so `$$` math is already tokenized; before the verbatim pass -- and told
+  // which paired tags that pass will show as literal source, so text inside
+  // them is never converted (a `<customBlock>` shown verbatim must not carry
+  // a rendered KaTeX span in the middle of its source).
+  [remarkLatexDelimiters, { verbatimTag: (tag: string) => VERBATIM_CONTENT_TAGS.has(tag) || !ALLOWED_TAGS.has(tag) }],
   // After gfm so an autolink literal is already a `link` node, but BEFORE the
   // verbatim pass, which retypes an unknown tag to text and hides it.
   remarkAutolinkRules,
