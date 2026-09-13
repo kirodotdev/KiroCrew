@@ -101,8 +101,7 @@ describe.each([['Usage tab', UsageTab], ['Overview summary', OverviewPage]] as c
     expect(screen.getByText('Updated plan')).toBeInTheDocument()
   })
 
-  it('refreshes every five minutes even when the browser is in the background', async () => {
-    focusManager.setFocused(false)
+  it('refreshes every five minutes while the view is visible', async () => {
     mount(View)
     await tick()
     fetchUsage.mockResolvedValue(report('Updated plan'))
@@ -115,6 +114,19 @@ describe.each([['Usage tab', UsageTab], ['Overview summary', OverviewPage]] as c
     expect(fetchUsage).toHaveBeenCalledTimes(3)
   })
 
+  it('keeps refreshing a mounted report in a hidden browser tab', async () => {
+    mount(View)
+    await tick()
+    focusManager.setFocused(false)
+    fetchUsage.mockResolvedValue(report('Updated plan'))
+    await tick(FIVE_MINUTES)
+    expect(fetchUsage).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Updated plan')).toBeInTheDocument()
+    focusManager.setFocused(true)
+    await tick()
+    expect(fetchUsage).toHaveBeenCalledTimes(2)
+  })
+
   it('shows refresh errors alongside cached data and recovers on the next tick', async () => {
     mount(View)
     await tick()
@@ -122,6 +134,7 @@ describe.each([['Usage tab', UsageTab], ['Overview summary', OverviewPage]] as c
     await tick(FIVE_MINUTES)
     expect(screen.getByText('Cached plan')).toBeInTheDocument()
     expect(screen.getByText('Usage refresh failed')).toBeInTheDocument()
+    expect(screen.getByText(/showing the last values we read/i)).toBeInTheDocument()
     fetchUsage.mockResolvedValue(report('Recovered plan'))
     await tick(FIVE_MINUTES)
     expect(screen.getByText('Recovered plan')).toBeInTheDocument()
@@ -135,16 +148,21 @@ describe.each([['Usage tab', UsageTab], ['Overview summary', OverviewPage]] as c
     const error = screen.getByText('Usage unavailable')
     expect(error).toBeInTheDocument()
     expect(screen.queryByText('Cached plan')).not.toBeInTheDocument()
+    expect(screen.queryByText(/showing the last values we read/i)).not.toBeInTheDocument()
     const usageCard = error.closest('.card-glow')
     expect(usageCard).not.toBeNull()
     expect(usageCard?.querySelector('.skeleton')).toBeNull()
   })
 
-  it('does not fetch when the provider has no usage support', async () => {
+  it('shows neutral status, not an error, when the provider has no usage support', async () => {
     capability.usageBilling = false
     mount(View)
     await tick(FIVE_MINUTES * 2)
     expect(fetchUsage).not.toHaveBeenCalled()
+    const status = screen.getByText(/Usage tracking is not available for/)
+    expect(status).toHaveClass('text-muted')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText('Ask the agent')).not.toBeInTheDocument()
   })
 })
 

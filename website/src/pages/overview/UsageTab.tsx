@@ -17,11 +17,17 @@ function fmtNum(n: number): string {
 export default function UsageTab() {
   const provider = useProvider()
   const { data, error: queryErr } = useQuery(providerUsageQuery(provider))
-  const err = !provider.capabilities.usageBilling
-    ? i18nT('pages.overview.usageTab.usage_tracking_is_not_available_for', { provider: provider.displayName })
-    : queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
+  const err = queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
 
-  if (err && (!data || !provider.capabilities.usageBilling)) return (
+  if (!provider.capabilities.usageBilling) return (
+    <Card>
+      <div className="text-[13px] text-muted">
+        {i18nT('pages.overview.usageTab.usage_tracking_is_not_available_for', { provider: provider.displayName })}
+      </div>
+    </Card>
+  )
+
+  if (err && !data) return (
     <Card><ErrorNotice message={err} askAgent /></Card>
   )
 
@@ -33,7 +39,7 @@ export default function UsageTab() {
 
   return (
     <div className="space-y-4">
-      {err && <ErrorNotice message={err} askAgent />}
+      {err && <ErrorNotice title={i18nT('pages.sessionsTab.could_not_refresh')} message={err} askAgent />}
       {b && b.plan && (
         <Card>
           <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.billing')}</CardTitle>

@@ -81,7 +81,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
         </button>
       </CardTitle>
       {provider.capabilities.usageBilling && isError && (
-        <ErrorNotice message={error?.message} askAgent testId="overview-usage-error" />
+        <ErrorNotice title={data ? i18nT('pages.sessionsTab.could_not_refresh') : undefined} message={error?.message} askAgent testId="overview-usage-error" />
       )}
       {!provider.capabilities.usageBilling ? (
         <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.usage_tracking_is_not_available_for')} {provider.displayName}.</div>

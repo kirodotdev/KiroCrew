@@ -30,10 +30,11 @@ cache for the dashboard lifetime. Opening either view shows the last successful
 report immediately. Data is fresh for five minutes; an older report refreshes
 asynchronously on return. While either view is mounted, the query refreshes
 every five minutes, including in a background browser tab. Leaving both views
-stops polling but does not discard the report. A failed refresh shows an error
-alongside the cached report; the next refresh can recover without clearing it.
-No report is persisted to disk, and the top-bar credit readout keeps its separate
-billing refresh policy.
+stops polling but does not discard the report. A failed refresh identifies the
+figures as the last values read and shows the error alongside them; the next
+refresh can recover without clearing the report. A provider without usage
+support shows neutral status text, not an error. No report is persisted to disk,
+and the top-bar credit readout keeps its separate billing refresh policy.
 
 ## Self-Learning (`learn.py`)
 
