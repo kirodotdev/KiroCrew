@@ -198,7 +198,12 @@ class TestFileRead:
     async def test_forbidden_path_is_400(self, tmp_path, mock_sel):
         f = tmp_path / "blocked.txt"
         f.write_text("x", encoding="utf-8")
-        with patch.object(files_mod, "_validate_dashboard_path", return_value=None):
+        # Stubbed on the `handlers` package, not on `files_mod`: this endpoint
+        # opens through the shared open-and-check prefix, which resolves the
+        # validator through that package at call time (its documented
+        # monkey-patch seam, kept for the circular import). Same spelling the
+        # file-raw class below uses, for the same reason.
+        with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=None):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.get(f"/api/file-read?path={f}")
                 assert resp.status == 400

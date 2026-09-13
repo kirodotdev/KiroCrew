@@ -282,7 +282,9 @@ async def test_cancellation_is_sel_audited_and_reraised(tmp_path, mock_sel):
     with (
         patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)),
         patch(
-            "kiro_crew.dashboard.handlers.files.asyncio.to_thread",
+            # The parse is offloaded through the bounded transfer pool, so that
+            # is the seam a cancellation arrives through.
+            "kiro_crew.dashboard.handlers.files._run_path_probe",
             side_effect=asyncio.CancelledError(),
         ),
     ):

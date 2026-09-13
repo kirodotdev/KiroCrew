@@ -87,6 +87,8 @@ __all__ = [
     "image_executor",
     "stt_executor",
     "path_resolve_executor",
+    "path_probe_executor",
+    "path_transfer_executor",
     "governance_executor",
     "cron_gate_executor",
     "CronGateTimeout",
@@ -262,6 +264,28 @@ _MAX_STT_WORKERS = 2
 # ``security.paths._run_resolution_bounded``).
 _MAX_PATH_RESOLVE_WORKERS = 2
 
+# Dashboard file endpoints take a path from the REQUEST, so which mount it lands
+# on is the caller's choice, and a probe on an unresponsive mount blocks its
+# thread for as long as the kernel takes.  Two pools, split by how long a
+# healthy call holds a worker, so that a burst of large transfers cannot starve
+# the millisecond validation probes behind them:
+#
+# * ``mc-pathprobe`` -- validation and stats (``realpath``, ``isfile``,
+#   ``isdir``).  Milliseconds when healthy, so eight workers is a ceiling on how
+#   many can be WEDGED at once, not on ordinary throughput.
+# * ``mc-pathxfer`` -- the calls that hold a worker for the length of a transfer:
+#   the shared open-and-check envelope's bounded full read, the search walk, the
+#   browse listings, the spreadsheet and document parses.  Bounded by their own
+#   caps when healthy, wedged exactly like a stat when not.
+#
+# Both are reached only through the dashboard's admission gate
+# (``handlers.files._run_path_probe`` -> :func:`run_in_cron_pool`), which
+# refuses with a typed error when no worker frees within its queue budget, so
+# saturating either pool degrades the file surface alone and never the default
+# executor the rest of the gateway shares.
+_MAX_PATH_PROBE_WORKERS = 8
+_MAX_PATH_TRANSFER_WORKERS = 8
+
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _subprocess_pool: ThreadPoolExecutor | None = None
@@ -274,6 +298,8 @@ _stt_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
 _cron_gate_pool: ThreadPoolExecutor | None = None
 _path_resolve_pool: ThreadPoolExecutor | None = None
+_path_probe_pool: ThreadPoolExecutor | None = None
+_path_transfer_pool: ThreadPoolExecutor | None = None
 
 
 def configure_default_executor() -> None:
@@ -450,6 +476,47 @@ def path_resolve_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _path_resolve_pool
+
+
+def path_probe_executor() -> ThreadPoolExecutor:
+    """Return the dashboard request-path PROBE pool, creating it on first use.
+
+    Threads are named ``mc-pathprobe``.  Serves the validation and stat half of
+    the dashboard file endpoints (see :data:`_MAX_PATH_PROBE_WORKERS`).  Callers
+    go through ``handlers.files._run_path_probe``, never ``submit`` directly:
+    the gate is what turns a full pool into a refusal instead of an unbounded
+    queue.
+    """
+    global _path_probe_pool
+    if _path_probe_pool is None:
+        with _lock:
+            if _path_probe_pool is None:
+                _path_probe_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_PATH_PROBE_WORKERS,
+                    thread_name_prefix="mc-pathprobe",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _path_probe_pool
+
+
+def path_transfer_executor() -> ThreadPoolExecutor:
+    """Return the dashboard request-path TRANSFER pool, creating it on first use.
+
+    Threads are named ``mc-pathxfer``.  Serves the calls that hold a worker for
+    the length of a bounded transfer rather than a stat (see
+    :data:`_MAX_PATH_TRANSFER_WORKERS`); same gate, same refusal, separate
+    workers so transfers queue behind transfers and probes behind probes.
+    """
+    global _path_transfer_pool
+    if _path_transfer_pool is None:
+        with _lock:
+            if _path_transfer_pool is None:
+                _path_transfer_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_PATH_TRANSFER_WORKERS,
+                    thread_name_prefix="mc-pathxfer",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _path_transfer_pool
 
 
 def embed_executor() -> ThreadPoolExecutor:
@@ -871,6 +938,7 @@ def shutdown_maintenance_executor() -> None:
     """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
+    global _path_probe_pool, _path_transfer_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
@@ -883,6 +951,8 @@ def shutdown_maintenance_executor() -> None:
         cron_gate_pool, _cron_gate_pool = _cron_gate_pool, None
         stt_pool, _stt_pool = _stt_pool, None
         path_resolve_pool, _path_resolve_pool = _path_resolve_pool, None
+        path_probe_pool, _path_probe_pool = _path_probe_pool, None
+        path_transfer_pool, _path_transfer_pool = _path_transfer_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
@@ -905,3 +975,7 @@ def shutdown_maintenance_executor() -> None:
         stt_pool.shutdown(wait=False, cancel_futures=True)
     if path_resolve_pool is not None:
         path_resolve_pool.shutdown(wait=False, cancel_futures=True)
+    if path_probe_pool is not None:
+        path_probe_pool.shutdown(wait=False, cancel_futures=True)
+    if path_transfer_pool is not None:
+        path_transfer_pool.shutdown(wait=False, cancel_futures=True)
