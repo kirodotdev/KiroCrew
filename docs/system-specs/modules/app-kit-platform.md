@@ -750,6 +750,19 @@ are reported in separate lists precisely so "absent" stays distinguishable from
 Writers: `apps/dependency_ledger.py`, `apps/dependencies.py`;
 `apps/routes.py::handle_uninstall_preview`.
 
+### 11.1 Python runtime dependency installation is serialized
+
+Separately from capability resolution, `apps/backend.py::provision_app_deps`
+serializes each app's Python dependency install with `data/.kirocrew-deps.lock`.
+It first creates that lock with `O_CREAT | O_EXCL`. Only `FileExistsError`
+permits reopening the existing file, without creation or truncation flags.
+Both opens retain `O_RDWR`, `O_NOFOLLOW` where supported, and the same pinned
+parent directory descriptor. This avoids concurrent first-create `openat`
+returning `ENOENT` on macOS before callers can reach the file lock. A lock that
+vanishes before reopen is refused, not recreated. The file is never unlinked
+on release; contenders acquire the same lock and reuse the completed install's
+stamp instead of running pip twice.
+
 ## 12. Store visibility is a manifest flag, not a code removal
 
 Built-in apps ship default-DISABLED. `manager._DEFAULT_ON_BUILTINS` is the single

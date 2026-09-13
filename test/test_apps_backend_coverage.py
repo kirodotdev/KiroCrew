@@ -1513,6 +1513,105 @@ class TestDependencyInstall:
         r_val = pip_argv[pip_argv.index("-r") + 1]
         assert r_val == str(real / "requirements.txt"), pip_argv
 
+    @pytest.mark.parametrize("existing", [False, True])
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_deps_lock_is_created_exclusively_or_opened_without_create(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, existing: bool, pinned: bool
+    ) -> None:
+        import os
+
+        if pinned and not bmod.pinned_fs.supports_pinned_walk():
+            pytest.skip("directory-relative opens are unavailable")
+        if not pinned:
+            monkeypatch.setattr(bmod.pinned_fs, "supports_pinned_walk", lambda: False)
+        parent = spawn_root / "data"
+        parent.mkdir()
+        lock = parent / ".kirocrew-deps.lock"
+        (spawn_root / "requirements.txt").write_text("requests\n")
+        if existing:
+            lock.write_text("lock contents stay intact\n")
+        calls = []
+        real_open = os.open
+
+        def record_open(path, flags, mode=0o777, *, dir_fd=None):
+            if str(path).endswith(".kirocrew-deps.lock"):
+                calls.append((flags, dir_fd))
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        # Wrapping os.open must not turn off the pinned branch under test.
+        if real_open in os.supports_dir_fd:
+            monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {record_open})
+        monkeypatch.setattr(os, "open", record_open)
+        monkeypatch.setattr(bmod, "_provision_app_deps_locked", lambda *args: "")
+        assert bmod.provision_app_deps("deps-create", spawn_root) == ""
+        assert len(calls) == (2 if existing else 1)
+        assert (calls[0][1] is not None) == pinned
+        assert calls[0][0] & os.O_CREAT
+        assert calls[0][0] & os.O_EXCL
+        for flags, _fd in calls:
+            assert flags & os.O_RDWR
+            assert not flags & os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                assert flags & os.O_NOFOLLOW
+        if existing:
+            assert not calls[1][0] & (os.O_CREAT | os.O_EXCL)
+            assert calls[1][1] == calls[0][1]
+            assert lock.read_text() == "lock contents stay intact\n"
+
+    def test_a_lock_that_disappears_before_reopen_fails_closed(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        (spawn_root / "requirements.txt").write_text("requests\n")
+        calls = []
+        provisioned = []
+        real_open = os.open
+
+        def race_open(path, flags, mode=0o777, *, dir_fd=None):
+            if str(path).endswith(".kirocrew-deps.lock"):
+                calls.append(flags)
+                if len(calls) == 1:
+                    # A contender created the file, then removed it before reopen.
+                    raise FileExistsError("lock existed at exclusive create")
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        if real_open in os.supports_dir_fd:
+            monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {race_open})
+        monkeypatch.setattr(os, "open", race_open)
+        monkeypatch.setattr(
+            bmod, "_provision_app_deps_locked", lambda *args: provisioned.append(args)
+        )
+        error = bmod.provision_app_deps("deps-vanished", spawn_root)
+        assert "Failed to serialize dependency provisioning" in error
+        assert len(calls) == 2
+        assert not calls[1] & (os.O_CREAT | os.O_EXCL)
+        assert provisioned == []
+        assert not (spawn_root / "data" / ".kirocrew-deps.lock").exists()
+
+    def test_an_existing_lock_symlink_is_not_followed(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        if not hasattr(os, "O_NOFOLLOW"):
+            pytest.skip("this case exercises O_NOFOLLOW")
+        parent = spawn_root / "data"
+        parent.mkdir()
+        target = spawn_root / "unchanged.txt"
+        target.write_text("keep this content", encoding="utf-8")
+        lock = parent / ".kirocrew-deps.lock"
+        lock.symlink_to(target)
+        (spawn_root / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        provisioned = []
+        monkeypatch.setattr(
+            bmod, "_provision_app_deps_locked", lambda *args: provisioned.append(args)
+        )
+        assert bmod.provision_app_deps("deps-link", spawn_root)
+        assert provisioned == []
+        assert target.read_text(encoding="utf-8") == "keep this content"
+        assert lock.is_symlink()
+
     def test_concurrent_provisioning_is_serialized_by_the_deps_lock(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1527,9 +1626,24 @@ class TestDependencyInstall:
         (spawn_root / "requirements.txt").write_bytes(b"requests\n")
         inside = []
         overlap = []
+        installs = []
+        ready = threading.Barrier(2)
+        real_open = bmod.os.open
+
+        def concurrent_open(path, flags, mode=0o777, *, dir_fd=None):
+            if str(path).endswith(".kirocrew-deps.lock") and flags & bmod.os.O_CREAT:
+                ready.wait(timeout=5)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        if real_open in bmod.os.supports_dir_fd:
+            monkeypatch.setattr(
+                bmod.os, "supports_dir_fd", bmod.os.supports_dir_fd | {concurrent_open}
+            )
+        monkeypatch.setattr(bmod.os, "open", concurrent_open)
 
         def _fake_pip(argv: Any, **kwargs: Any) -> Any:
             if "install" in argv:
+                installs.append(True)
                 if inside:
                     overlap.append(True)
                 inside.append(True)
@@ -1550,9 +1664,11 @@ class TestDependencyInstall:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=10)
+        assert all(not t.is_alive() for t in threads), "dependency provisioning deadlocked"
         assert errs == ["", ""], errs
         assert not overlap, "two pip transactions ran concurrently"
+        assert len(installs) == 1, "the waiter must reuse the completed install"
         from kiro_crew.apps.interpreter import app_deps_dir
 
         assert (app_deps_dir(spawn_root) / "pkg.py").is_file()
