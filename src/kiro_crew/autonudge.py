@@ -160,14 +160,26 @@ class NudgeAdmissionRefused(RuntimeError):
 
 _TERMINAL_BOUND_REASONS = frozenset({"cycle_cap", "runtime_budget", APPROVAL_STALL_REASON})
 
+# Persisted reason for a loop ``_load`` deactivated because its kill-switch path
+# became sensitive (``repair_sentinel_path`` dropped it). System-imposed: the
+# re-arm path re-validates the sentinel, so displacing this row is safe.
+SENTINEL_DROPPED_REASON = "sentinel_dropped"
+
+# Persisted reason for a paused loop that recorded no reason of its own —
+# ``update(active=False)`` stores this default.
+MANUAL_STOP_REASON = "manual"
+
 #: Stops the SYSTEM imposed on a legacy loop, which a directive re-arm may
-#: therefore displace: a lapsed approval, a spent bound, a finished subject.
-#: Everything else — a manual pause (empty reason), a research tombstone
-#: (``AUTONUDGE_STOP_REASON``, consumed by the auto_research watchdog to tell
-#: deliberate completion from crash cleanup), and any reason this version does
-#: not know — is evidence some consumer may read, so it fails CLOSED to
-#: preserved.
-_REPLACEABLE_LOOP_STOP_REASONS = _TERMINAL_BOUND_REASONS | {MONITOR_TERMINAL_REASON}
+#: therefore displace: a lapsed approval, a spent bound, a finished subject, a
+#: dropped kill switch. Everything else — a manual pause (``"manual"``), a
+#: research tombstone (``AUTONUDGE_STOP_REASON``, consumed by the auto_research
+#: watchdog to tell deliberate completion from crash cleanup), and any reason
+#: this version does not know — is evidence some consumer may read, so it fails
+#: CLOSED to preserved.
+_REPLACEABLE_LOOP_STOP_REASONS = _TERMINAL_BOUND_REASONS | {
+    MONITOR_TERMINAL_REASON,
+    SENTINEL_DROPPED_REASON,
+}
 
 
 def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
@@ -179,6 +191,12 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
     while a stop a person or an app recorded — ``USER_STOP``, session-close
     retention, a manual pause, a research tombstone — is retained evidence.
     Unknown outcomes and reasons are treated as evidence (fail closed).
+
+    An EMPTY reason is evidence too: a pause recorded before the reason field
+    existed carries one, and the store holds nothing that tells it apart from a
+    torn write. The torn shape that CAN be told apart — no reason AND a live
+    deadline — is resumed by ``_load`` (``_is_torn_deactivation``) before any
+    re-arm asks, so refusing here costs nothing for that case.
     """
     state = loop.monitor
     if state is not None and state.outcome is not None:
@@ -646,6 +664,40 @@ def terminal_notification_delivery_matches(
 
 class MonitorUpdateConflict(ValueError):
     """A structured mutation would break active action correlation."""
+
+
+def _is_torn_deactivation(loop: NudgeLoop) -> bool:
+    """Whether a persisted row is inactive without any stop having been recorded.
+
+    Every deactivation this service performs leaves one of two marks: a
+    non-empty ``stopped_reason`` on the loop (``update`` defaults to
+    ``"manual"``; the timer bounds, the terminal settlement and the
+    sentinel-drop repair write theirs) or a terminal ``outcome`` on a monitor
+    record — and all of them clear ``next_due_ts``. A row that is inactive with
+    NEITHER mark and a deadline still set was therefore not stopped by this
+    service; ``_load`` resumes it. A monitor whose wake is in flight is left to
+    the claim-recovery branches, which own that state.
+
+    The row must still carry its kill-switch path. A sentinel-drop repair that
+    predates ``SENTINEL_DROPPED_REASON`` persisted this very shape MINUS the
+    sentinel (it blanked the path and recorded nothing), and that stop was a
+    fail-closed refusal to run without a kill switch -- so an empty sentinel is
+    the one persisted discriminator between a torn write and that refusal, and
+    the ambiguous shape stays inactive. A loop armed without a sentinel in the
+    first place therefore is not resumed here either; the dashboard revives it.
+    """
+    if loop.active or loop.stopped_reason or loop.next_due_ts <= 0:
+        return False
+    if not loop.stop_sentinel_path:
+        return False
+    state = loop.monitor
+    if state is None:
+        return True
+    return (
+        state.version == MONITOR_STATE_VERSION
+        and state.outcome is None
+        and not state.wake_in_flight
+    )
 
 
 def _repair_number(
@@ -1130,6 +1182,26 @@ class AutoNudgeService:
                     if scrubbed_msg != loop.message:
                         loop.message = scrubbed_msg
                         self._store_dirty = True
+                if _is_torn_deactivation(loop):
+                    # INACTIVE, NO stop reason, deadline still LIVE. No stop path
+                    # of this service produces that shape: ``update`` clears the
+                    # deadline and records a reason on every deactivation, the
+                    # timer bounds and the terminal paths record theirs, and the
+                    # repairs above zero the deadline when they retire a record.
+                    # The row was flipped by a write outside the stop paths (a
+                    # store migrated between hosts or edited by hand) and, left
+                    # alone, it is a loop that nobody stopped yet nothing will
+                    # ever arm again — every babysit silently dead after one
+                    # restart, with the re-arm refused on top. Resume it: the
+                    # schedule the user set is still on the row, and so is its
+                    # kill switch (the predicate requires the sentinel path).
+                    logger.warning(
+                        "AutoNudge: loop %s was inactive with no stop reason and a live "
+                        "deadline — resuming it; a paused loop records a reason",
+                        loop.id,
+                    )
+                    loop.active = True
+                    self._store_dirty = True
             except Exception:
                 logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
                 continue
@@ -1148,7 +1220,19 @@ class AutoNudgeService:
                         "AutoNudge: deactivating loop %s — its stop sentinel was dropped",
                         loop.id,
                     )
-                    loop.active = False
+                    # Record WHY and clear the schedule, like every other stop:
+                    # a reasonless inactive row with a live deadline is the
+                    # torn-write shape ``_is_torn_deactivation`` resumes on the
+                    # next boot, which would undo this refusal. Only a row THIS
+                    # branch deactivates gets the stamp: a row already paused
+                    # keeps the reason its own stop recorded (a manual pause
+                    # relabelled ``sentinel_dropped`` would become re-armable).
+                    if loop.active:
+                        loop.active = False
+                        loop.stopped_reason = SENTINEL_DROPPED_REASON
+                    loop.next_due_ts = 0.0
+                    if loop.monitor is not None:
+                        loop.monitor.next_probe_at = 0.0
                 self._store_dirty = True
         logger.info("AutoNudge: loaded %d loops", len(self._loops))
 
@@ -1827,9 +1911,9 @@ class AutoNudgeService:
                     # treated as evidence too.
                     raise MonitorUpdateConflict(
                         "the session's stopped automation is retained as evidence "
-                        f"(stop reason: {existing.stopped_reason or 'manual'!s}) and is "
-                        "not replaceable by a re-arm; its owner must clear it first "
-                        "from the dashboard's goal popover"
+                        f"(stop reason: {existing.stopped_reason or 'none recorded'!s}) "
+                        "and is not replaceable by a re-arm; its owner must clear it "
+                        "first from the dashboard's goal popover"
                     )
                 if existing_monitor is not None and existing_monitor.wake_in_flight:
                     raise MonitorUpdateConflict(
@@ -2238,7 +2322,7 @@ class AutoNudgeService:
                         "AutoNudge: loop %s already deactivated (%s) — %s bound "
                         "not overwriting it",
                         loop.id,
-                        loop.stopped_reason or "manual",
+                        loop.stopped_reason or MANUAL_STOP_REASON,
                         stopped_reason,
                     )
                 else:
@@ -2263,7 +2347,7 @@ class AutoNudgeService:
                         if not was_active:
                             loop.approval_stalled = False
                     else:
-                        loop.stopped_reason = stopped_reason or "manual"
+                        loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
             revived = loop.active and not was_active
             # Deadline bookkeeping (BEFORE the snapshot below so it persists):
             # an interval change restarts an EXISTING countdown at the new
