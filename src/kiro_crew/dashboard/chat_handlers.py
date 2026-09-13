@@ -63,6 +63,8 @@ from kiro_crew.dashboard.chat_persistence import (
     _restored_mode,
     _validate_autocompact_pct,
     get_reasoning_effort_values,
+    meta_unchanged_guard,
+    persist_meta_correction_without_messages,
     pin_private_agent_store,
     save_slot_off_loop,
 )
@@ -2760,7 +2762,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # of its own. This is a chat turn, so declining the move beats
             # failing the turn.
             if not await _unhide_folder(state, folder_id):
-                slot.folder_id = previous_folder
+                # ``previous_folder`` was captured BEFORE this await, so a delete of
+                # THAT folder can have landed inside the window -- and restoring it
+                # verbatim reattaches a deleted folder, which the next
+                # save makes durable. Validated through the same committed-vocabulary
+                # reader ``api_chat_slot_folder``'s revert uses, which keeps a value
+                # still in a KNOWN vocabulary (so the intent above is preserved: a
+                # conversation sitting in a good folder of its own is left alone) and
+                # still fails open while a folder write is in flight.
+                slot.folder_id = state.folder_id_for_restore(previous_folder)
                 slot._folder_changed = previous_changed
             else:
                 folder_applied = True
@@ -5303,9 +5313,34 @@ async def _close_slot(
         # writing `state._slots[name] = slot` would clobber that live replacement
         # with the failed original. Restore only when the slot is genuinely still
         # ours (or the key is now empty).
+        # Holds a cancellation delivered DURING the rollback so the rest of it still
+        # runs; re-raised at the end of this arm, never swallowed.
+        close_cancelled: asyncio.CancelledError | None = None
         restored = _slot_still_ours(state, name, slot)
         if restored:
+            # Captured before revalidation: the correction below may only land while disk
+            # still holds these, or it would overwrite a concurrent refile.
+            folder_before_revalidation = slot.folder_id
+            tags_before_revalidation = list(slot.tags or [])
+            # The TAG arm only. A folder id the sidebar cannot resolve renders as Unfiled
+            # and costs a withheld suggestion, which is too small to buy this surface.
+            slot.tags = state.tag_ids_for_restore(slot.tags)
             state._slots[name] = slot
+            # A GUARDED correction, never ``_dirty``: the flush rebuilds every slot-owned
+            # key from an object older than any edit that landed in the close window.
+            try:
+                await persist_meta_correction_without_messages(
+                    state,
+                    slot,
+                    {"folder_id": slot.folder_id, "tags": list(slot.tags)},
+                    meta_unchanged_guard(folder_before_revalidation, tags_before_revalidation),
+                    slot_history_key(slot),
+                    "close restore",
+                )
+            except asyncio.CancelledError as exc:
+                # The steps below put the nudge loop and the app dismissal back; a
+                # cancellation escaping here would leave a paused, clockless worker.
+                close_cancelled = exc
         else:
             # Not restored means not referenced: the periodic flush that would have
             # retried this write only visits `_slots`, so without this the failure
@@ -5369,6 +5404,10 @@ async def _close_slot(
             )
         _sync_dashboard_slots(state)
         state.push_slots_update()
+        # The rollback is complete, so the cancellation may now travel. Ahead of the
+        # close error on purpose: the caller was cancelled, it did not merely fail.
+        if close_cancelled is not None:
+            raise close_cancelled
         raise SlotCloseError("failed to save history", code="history_save_failed")
     else:
         # Through the shared postcondition rather than a bare discard: on the
@@ -5651,7 +5690,21 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # case; the error-row / dead-task handling below still applies to the
             # original object we hold.
             if _slot_still_ours(state, name, removed):
+                # Captured before revalidation, for the same reason as the close restore.
+                folder_before_revalidation = removed.folder_id
+                tags_before_revalidation = list(removed.tags or [])
+                # The TAG arm only, as in the sibling restore above.
+                removed.tags = state.tag_ids_for_restore(removed.tags)
                 state._slots[name] = removed
+                # Guarded, not ``_dirty``, for the reason given at the close restore.
+                await persist_meta_correction_without_messages(
+                    state,
+                    removed,
+                    {"folder_id": removed.folder_id, "tags": list(removed.tags)},
+                    meta_unchanged_guard(folder_before_revalidation, tags_before_revalidation),
+                    slot_history_key(removed),
+                    "cleanup restore",
+                )
             else:
                 # The restore is what this arm's own comment relies on to keep the
                 # flushed notes reachable ("restores the slot with its notes still
@@ -9408,6 +9461,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # next save of this slot drops it and the conversation is re-filed.
         slot._channel_folder_filed = True
     if meta.get("folder_id"):
+        # ADOPTED VERBATIM, as the base did: the in-lock verdict below handles deletion.
         slot.folder_id = meta["folder_id"]
         # Re-engaging a hidden empty folder (Model B) un-hides it so it stays
         # visible until the user hides it again. A folder deleted since this
@@ -9420,10 +9474,13 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # ``state._folders`` is the race its own docstring warns about; and it
         # cannot simply be re-run, because a second await here would reopen the
         # publish-to-hydrate window this ordering exists to close. Holding no
-        # verdict for a newly filed id, we KEEP it: a dangling id is visible and
-        # self-corrects on the next folder operation, whereas erasing a live
-        # filing is silent and indistinguishable from the user unfiling the
-        # session -- and the dirty-slot flush would then persist that erasure.
+        # verdict for a newly filed id, we KEEP it here rather than erase it:
+        # erasing a live filing is silent and indistinguishable from the user
+        # unfiling the session, and the dirty-slot flush would persist that
+        # erasure.
+        #
+        # The id is KEPT, and cold-start restore adopts it verbatim too; cleanup
+        # happens on the next folder operation, not at boot. See history.md.
         if not folder_unhidden and meta["folder_id"] == folder_checked_id:
             slot.folder_id = ""
     if meta.get("pinned"):
@@ -9454,14 +9511,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     raw_tags = meta.get("tags")
     if isinstance(raw_tags, list):
         slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
-        # Prune ids missing from the vocabulary (crash-atomic delete leaves
-        # dangling ids on disk; see api_chat_tag_delete). FAIL-OPEN only when
-        # the vocabulary is UNKNOWN (tags.json parse/I/O failure) — pruning
-        # then would wipe every assignment. A legitimately-empty vocabulary
-        # is authoritative and must prune dangling ids.
-        if getattr(state, "_tags_authoritative", True):
-            known = {t.get("id") for t in state._tags}
-            slot.tags = [t for t in slot.tags if t in known]
+        slot.tags = state.tag_ids_for_restore(slot.tags)
         # This slot is live and already broadcast: its tags just changed, so
         # its revision must too (invariant "tags changed => revision changed"),
         # or a client holding an accepted overlay keyed on the old revision

@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+from kiro_crew.dashboard.chat_persistence import (
+    meta_unchanged_guard,
+    persist_meta_correction_without_messages,
+    rehydrate_slot_from_history_async,
+    slot_history_key,
+)
 
 from . import repository as _repository
 from .decisions import (
@@ -837,6 +842,10 @@ async def _remove_orphaned_executions_with_service(state: Any, service: Any) -> 
             # cancellation. Keep the slot addressable for another recovery
             # attempt and refuse Create while that task can still edit files.
             try:
+                _revalidate_parked_vocabulary(
+                    state,
+                    slot,
+                )
                 state._slots[slot_key] = slot
             except Exception:
                 logger.warning("could not restore a still-running orphan slot %s", slot_key)
@@ -1357,6 +1366,36 @@ def _discard_queued_work(slot: Any) -> None:
         logger.debug("could not clear _pending_synthesis during stop", exc_info=True)
 
 
+def _revalidate_parked_vocabulary(
+    state: Any,
+    slot: Any,
+) -> None:
+    """Re-check *slot*'s ids before it re-enters the live registry.
+
+    Routes the slot's tag ids
+    through the shared tag validator every other adopter uses so a vocabulary deleted
+    while this slot was parked cannot come back durably attached to it. The FOLDER id is
+    left alone: an id the sidebar cannot resolve renders as Unfiled.
+
+    A validator failure leaves the value untouched rather than propagating: the caller
+    restores this slot to keep the user's transcript reachable, and losing that to a
+    metadata check would trade a phantom folder for a lost conversation.
+    """
+    before = (getattr(slot, "folder_id", ""), list(getattr(slot, "tags", None) or []))
+    validate_tags = getattr(state, "tag_ids_for_restore", None)
+    if callable(validate_tags):
+        try:
+            slot.tags = validate_tags(
+                list(getattr(slot, "tags", None) or []),
+            )
+        except Exception:
+            logger.debug("could not revalidate parked tag ids", exc_info=True)
+    if (getattr(slot, "folder_id", ""), list(getattr(slot, "tags", None) or [])) != before:
+        # The periodic flush skips a clean slot, so a change made only in memory would
+        # be read back from disk as the deleted id on the next restart.
+        slot._dirty = True
+
+
 async def _teardown_worker_slot(
     state: Any, name: str, *, only_slot: Any = _UNPINNED, require_archive: bool = False
 ) -> bool:
@@ -1407,6 +1446,8 @@ async def _teardown_worker_slot(
         state._slots.pop(slot_key, None)
     except Exception:
         logger.debug("slot registry pop failed for %s", slot_key, exc_info=True)
+    # Read HERE, before any post-pop await: that await is the window a delete commits
+    # in, and a parked slot is reachable from neither sweep pass.
     task = getattr(slot, "task", None)
     if getattr(slot, "running", False) and task is not None:
         task.cancel()
@@ -1431,7 +1472,25 @@ async def _teardown_worker_slot(
         logger.warning("closing save failed for %s", slot_key, exc_info=True)
         if require_archive:
             try:
+                folder_before_revalidation = getattr(slot, "folder_id", "")
+                tags_before_revalidation = list(getattr(slot, "tags", None) or [])
+                _revalidate_parked_vocabulary(
+                    state,
+                    slot,
+                )
                 state._slots[slot_key] = slot
+                if not getattr(slot, "messages", None):
+                    await persist_meta_correction_without_messages(
+                        state,
+                        slot,
+                        {
+                            "folder_id": getattr(slot, "folder_id", ""),
+                            "tags": list(getattr(slot, "tags", None) or []),
+                        },
+                        meta_unchanged_guard(folder_before_revalidation, tags_before_revalidation),
+                        slot_history_key(slot),
+                        "parked restore",
+                    )
             except Exception:
                 logger.warning("could not restore slot %s after a failed archive", slot_key)
             _audit("spec_slot_archive_failed", name, outcome="denied")

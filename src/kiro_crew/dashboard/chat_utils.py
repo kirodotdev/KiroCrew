@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from kiro_crew.context_blocks import attributable_user_chars
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
+from kiro_crew.dashboard.snapshot_commit import drain_shielded
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -133,17 +134,18 @@ async def run_config_write(fn, /, *args, **kwargs):
         # completion either way -- so this only decides whether the lock outlives
         # it. The cancellation is re-raised once, never swallowed.
         fut = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
-        cancelled = False
-        while True:
-            try:
-                result = await asyncio.shield(fut)
-            except asyncio.CancelledError:
-                cancelled = True
-                continue
-            break
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            # ONE definition, shared with the two vocabulary delete handlers; what this
+            # caller owns is the outcome below, since a config write publishes nothing.
+            await drain_shielded(fut)
+            # The write's own failure still wins over the cancellation; the drain returns
+            # on either outcome, so that choice is derived here.
+            failure = None if fut.cancelled() else fut.exception()
+            if failure is not None:
+                raise failure
+            raise
 
 
 async def drained_to_thread(fn, /, *args):
@@ -156,22 +158,28 @@ async def drained_to_thread(fn, /, *args):
     worker actually finishes, then re-raises the cancellation, so control only
     ever returns with no mutation in flight. Shared by the agents handler's
     config writers and the files handler's workspace-copy staging.
+
+    A worker FAILURE OUTRANKS the cancellation, and that is NOT a new contract -- it is
+    what every caller already had. The hand-rolled loop this replaced awaited
+    ``asyncio.shield(task)`` inside ``except asyncio.CancelledError``, so a worker
+    exception was never caught there and propagated even when a cancellation had already
+    been absorbed. Reading the result before re-raising reproduces that exactly, so no
+    consumer of this helper or of :func:`run_config_write` sees a changed ordering.
+
+    The consumer that would BREAK without it is
+    ``handlers/agents.py``'s agent save: its ``cfg.save`` is wrapped in ``except
+    Exception``, which does NOT catch ``CancelledError``, and that arm is what rolls back
+    a promoted avatar. Handing it the cancellation instead of the worker's failure skips
+    the rollback and orphans the promoted file.
     """
     task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
-    cancelled: asyncio.CancelledError | None = None
-    while True:
-        try:
-            result = await asyncio.shield(task)
-            break
-        except asyncio.CancelledError as exc:
-            if task.cancelled():
-                raise
-            # OUR await was cancelled, not the worker: remember it, keep
-            # draining the still-running thread.
-            cancelled = exc
+    # The drain itself is ``snapshot_commit.drain_shielded``; only the ENDING is local,
+    # because this caller owes the worker's outcome as well as the re-raise.
+    cancelled = await drain_shielded(task)
     if cancelled is not None:
+        task.result()
         raise cancelled
-    return result
+    return task.result()
 
 
 # Per-turn compaction-failure backoff. See
