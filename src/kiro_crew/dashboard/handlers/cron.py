@@ -24,6 +24,7 @@ from kiro_crew.cron import (
     CronPendingMismatch,
     CronStoreBusy,
     CronStoreUnreadable,
+    cron_owner_matches,
     is_valid_timezone,
     parse_time_string,
 )
@@ -43,6 +44,7 @@ from kiro_crew.dashboard.cron_inject import (
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.mcp_cron import _vet_script_file, _vet_shell_command
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
@@ -588,10 +590,41 @@ async def api_crons_create(request: web.Request) -> web.Response:
             body, "source_template_prompt", max_len=MAX_CRON_MESSAGE
         )
         member_id = validate_string_field(body, "member_id", max_len=MAX_SHORT_STRING)
+        # Zero-token job bodies (bypass the LLM): a Python callable path
+        # (``module:func`` / ``file.py:func``) or a shell command. Length is
+        # bounded by the same store-side gate the tool path uses; the SECURITY
+        # vet (below) is what actually admits a body.
+        script = validate_string_field(body, "script", max_len=MAX_CRON_MESSAGE)
+        command = validate_string_field(body, "command", max_len=MAX_CRON_MESSAGE)
     except ValidationError as exc:
         return web.json_response({"error": str(exc)}, status=400)
-    if not name or not message:
-        return web.json_response({"error": "name and message required"}, status=400)
+    # A job needs a name and SOMETHING to run. A ``script`` or ``command`` job is
+    # a zero-token deterministic wake with no prompt, so it needs no ``message``
+    # — relax the historical "name and message required" to
+    # "name and (message or script or command)". This matches the tool path
+    # (``cron_add`` accepts a bodyless message when script=/command= is set) and
+    # the store, whose ``_build_job`` requires ``name`` but treats an empty
+    # ``message`` as valid. A job with neither is still a 400.
+    if not name or not (message or script or command):
+        return web.json_response(
+            {"error": "name and one of message, script, or command required"}, status=400
+        )
+    # Vet a zero-token body with the SAME gates the tool path applies before it
+    # reaches the store: the shell-command deny-list / quoting check, and the
+    # script existence + safety check. Done here (not only in the store) so a
+    # rejected body is a clean 400 naming the reason, never an orphaned job.
+    if command:
+        cmd_err = _vet_shell_command(command)
+        if cmd_err is not None:
+            return web.json_response({"error": cmd_err}, status=400)
+    if script:
+        try:
+            script_path, _func = resolve_script_path(script)
+        except (ValueError, FileNotFoundError, PermissionError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        script_err = _vet_script_file(script_path)
+        if script_err is not None:
+            return web.json_response({"error": script_err}, status=400)
     every = body.get("every")
     if not every and not cron_expr and schedule:
         # Treat schedule string as cron expr if 5-field, else as interval
@@ -680,7 +713,24 @@ async def api_crons_create(request: web.Request) -> web.Response:
         # own copy. Both "" for a blank create. Never gate execution.
         "source_preset": (source_preset or ""),
         "source_template_prompt": (source_template_prompt or ""),
+        # Zero-token bodies (vetted above). Empty string = "not a script/command
+        # job"; the store treats both as unset.
+        "command": (command or ""),
+        "script": (script or ""),
     }
+    # Session-scoped ownership for an internal-secret caller (the supervised
+    # Kiro CLI creating a job on behalf of a `/crew cron add`). The job's
+    # ``session_key`` is what ``GET /api/crons`` filters on and what
+    # ``cron/list`` treats as "owned HERE", so without it a crew-created job is
+    # invisible to the session that made it (and to every other session), just
+    # like a job created from this dashboard page. Only honored for a
+    # constant-time-verified internal caller (``request["internal_auth"]``); a
+    # browser POST cannot set another session's owner by sending the header.
+    # A dashboard-authored job keeps its existing empty owner (page/CLI-managed).
+    if request.get("internal_auth") is True:
+        owner_key = request.headers.get("X-Session-Key", "").strip()
+        if owner_key:
+            add_kwargs["session_key"] = owner_key
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
     # Which schedule this job carries. Resolved to kwargs FIRST, then handed to a
@@ -768,6 +818,28 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     ids = body.get("ids")
+    # Session-scoped remove-all (bridge ``cron/removeAll``): an internal-secret
+    # caller (the supervised Kiro CLI) with an X-Session-Key and NO explicit
+    # ``ids`` removes exactly the jobs THAT session owns — never another
+    # session's, and never the whole store. Resolved to the owned ids HERE, then
+    # handed to the SAME per-id batch path below, so the file-lock/history/
+    # refresh semantics are identical to an explicit delete. A caller with no
+    # X-Session-Key owns nothing addressable → an empty, no-op batch (not a
+    # store-wide wipe). The browser/dashboard DELETE carries no internal secret,
+    # so it keeps requiring an explicit ``ids`` array — byte-identical to before.
+    if ids is None and request.get("internal_auth") is True:
+        owner_key = request.headers.get("X-Session-Key", "").strip()
+        all_jobs = await state.crons.list_jobs_async(include_disabled=True)
+        ids = [
+            j.id
+            for j in all_jobs
+            if owner_key and cron_owner_matches(j.session_key or "", owner_key)
+        ]
+        if not ids:
+            # No owned jobs: report a well-formed empty batch, not a 400. The
+            # bridge treats "this session owns no jobs" as success, matching the
+            # ``cron_remove_all`` "session owns no jobs" outcome.
+            return web.json_response({"ok": False, "deleted": [], "failed": []})
     if not isinstance(ids, list) or not ids:
         return web.json_response({"error": "ids must be a non-empty array"}, status=400)
     if not all(isinstance(i, str) for i in ids):
@@ -2667,6 +2739,18 @@ async def api_crons(request: web.Request) -> web.Response:
     # loop with the store read/hash. The hot per-connection status push and the
     # other mutation handlers keep using the cache-only list_jobs().
     jobs = await state.crons.list_jobs_async(include_disabled=True)
+    # Session-scoped view for an internal-secret caller (the supervised Kiro CLI
+    # backing `/crew cron list`): return only the jobs THIS session owns, so the
+    # bridge contract "empty = none owned HERE" holds and one session never sees
+    # another's schedule. cron_owner_matches is the SAME predicate the MCP cron
+    # tools use for ownership (equal keys, or same cron-run principal). The
+    # browser/dashboard GET carries no X-Internal-Secret, so it is untouched and
+    # keeps seeing every job — byte-identical to before this change. An internal
+    # caller with no X-Session-Key owns nothing addressable, so it correctly
+    # sees an empty list rather than the whole store.
+    if request.get("internal_auth") is True:
+        owner_key = request.headers.get("X-Session-Key", "").strip()
+        jobs = [j for j in jobs if owner_key and cron_owner_matches(j.session_key or "", owner_key)]
     now = time.time()
     tz_name, _ = get_local_tz()
     # Secret-grant metadata is owner-view only (see the field comment below).

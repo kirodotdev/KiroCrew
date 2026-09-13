@@ -2085,6 +2085,7 @@ def token_auth_middleware(
     *,
     internal_paths: frozenset[str] = frozenset(),
     mixed_internal_paths: frozenset[str] = frozenset(),
+    mixed_internal_methods: dict[str, frozenset[str]] | None = None,
     internal_secret: str = "",
     port: int = 5476,
     local_only: bool = True,
@@ -2108,6 +2109,16 @@ def token_auth_middleware(
     of hard-denying, so DCV/SSH-forwarded browsers polling these routes
     (e.g. ``/api/spawn`` every 5s) don't trigger false session-expired
     banners.  Use this for any internal-path that the browser polls.
+
+    *mixed_internal_methods* is a ``path -> {allowed methods}`` map that adds
+    mixed-internal admission for a path ONLY on the listed methods. It exists
+    for the supervised-sidecar case where a route's bare prefix in
+    *mixed_internal_paths* would sweep in write children the internal caller
+    must not reach (e.g. admitting ``GET /api/knowledge/sources`` without its
+    ``POST``/``/{id}`` mutation family). A request is mixed-internal when its
+    path/method matches EITHER *mixed_internal_paths* (prefix, any method) OR
+    this map (prefix + method). Non-supervised launches pass ``None`` and the
+    behaviour is byte-for-byte the prefix-only path.
 
     *tailnet_trust* is the operator's identity-trust opt-in (RFC §2–§3.1,
     validated at config load). When set and enabled, a request arriving from
@@ -2165,6 +2176,9 @@ def token_auth_middleware(
                 return valid, uid, reason, app, query_token
         valid, uid, reason, app = validate_token_with_app(cookie_token, use_session_exp=True)
         return valid, uid, reason, app, cookie_token
+
+    # Normalize once so the closure captures a plain dict (never None).
+    _mixed_internal_methods: dict[str, frozenset[str]] = mixed_internal_methods or {}
 
     @web.middleware
     async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
@@ -2330,6 +2344,15 @@ def token_auth_middleware(
         # normal cookie auth so dashboard pages can call these routes.
         _matches_strict = internal_path_matches(path, internal_paths)
         _matches_mixed = internal_path_matches(path, mixed_internal_paths)
+        # Method-scoped mixed admission (supervised sidecar): a path whose bare
+        # prefix would over-admit write children is instead listed here with the
+        # exact methods the internal caller may use. Checked only when the flat
+        # prefix set did not already match, so it can only WIDEN, never narrow.
+        if not _matches_mixed and _mixed_internal_methods:
+            for _p, _methods in _mixed_internal_methods.items():
+                if (path == _p or path.startswith(_p + "/")) and request.method in _methods:
+                    _matches_mixed = True
+                    break
         # local_only=False: treat ALL internal paths as mixed (backward compat
         # with mainline's local_only semantics — user opted into remote access)
         if not local_only and _matches_strict and not _matches_mixed:

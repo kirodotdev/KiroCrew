@@ -33,6 +33,11 @@ def register(app: web.Application) -> None:
     app.router.add_put(
         "/api/notifications/channels/settings", handlers.api_notification_channel_settings
     )
+    # Crew sidecar supervision status (_kiro/crew/sidecar/status, §3.8). A
+    # terminal literal GET with no path children, so it cannot be swallowed by a
+    # later {id} pattern; admitted to a supervised sidecar's internal-secret
+    # caller via _SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS.
+    app.router.add_get("/api/sidecar/status", handlers.api_sidecar_status)
     app.router.add_get("/api/update/check", handlers.api_update_check)
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)

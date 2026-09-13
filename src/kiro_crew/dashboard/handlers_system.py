@@ -187,6 +187,105 @@ def _gateway_memory_fields() -> tuple[int, int]:
     return rss_mb, max(0, ceiling)
 
 
+#: Crew bridge protocol version this sidecar speaks. Mirrors ``crewProtocol`` in
+#: ``docs/crew-harness/spec/crew-bridge.ts`` (§3.8 / §4) and the ``{crewProtocol}``
+#: the KAS ``initialize`` capability block advertises. Bump both together on a
+#: breaking wire change.
+_CREW_PROTOCOL = 1
+
+
+def _sidecar_loopback_base(request: web.Request) -> str:
+    """``http://127.0.0.1:<port>`` for the port this sidecar is actually bound to.
+
+    Reads the real bound port from the accepting socket (``sockname``) so an
+    ephemeral ``--port auto`` launch reports the OS-assigned port, not 0. Falls
+    back to the request URL's port, then the config default — a supervised
+    sidecar is loopback-only, so the host is always 127.0.0.1.
+    """
+    port: int | None = None
+    transport = request.transport
+    if transport is not None:
+        sockname = transport.get_extra_info("sockname")
+        if isinstance(sockname, tuple) and len(sockname) >= 2:
+            with contextlib.suppress(TypeError, ValueError):
+                port = int(sockname[1])
+    if not port:
+        port = request.url.port
+    if not port:
+        port = 5476
+    return f"http://127.0.0.1:{port}"
+
+
+def _security_component_ready() -> bool:
+    """Whether the security/approval engine is constructed and answering.
+
+    The safety-override engine is the always-present gate every tool dispatch
+    consults; ``status()`` succeeding means it is constructed. On the
+    open-source edition it degrades to permit-all rather than raising, so a
+    successful call still proves the engine is wired — which is exactly the
+    "security ready" signal §6.4 requires before any tool dispatch.
+    """
+    try:
+        safety_override().status()
+        return True
+    except Exception:
+        logger.debug("safety_override().status() failed; security component down", exc_info=True)
+        return False
+
+
+async def api_sidecar_status(request: web.Request) -> web.Response:
+    """GET /api/sidecar/status — the ``_kiro/crew/sidecar/status`` shape (§3.8).
+
+    Returns ``{state, pid, loopbackBase, components, protocol}`` where every
+    component is derived from REAL readiness, never a hardcoded literal:
+
+    * ``dashboard`` — ``state.ready`` (memory startup complete + runner bound).
+    * ``security`` — the safety-override engine is constructed (see
+      :func:`_security_component_ready`).
+    * ``channels`` / ``apps`` — ``down`` on a supervised sidecar by design (a
+      loopback child of the Kiro CLI runs no channel transports and serves no
+      dashboard app UI); ``ready`` on an ordinary dashboard launch.
+
+    ``state`` is ``ready`` iff BOTH dashboard and security are ready, ``down``
+    when neither is, and ``degraded`` when exactly one is (a partially-up
+    sidecar the CLI must not dispatch tools through yet).
+    """
+    state: DashboardState = request.app["state"]
+    supervised = bool(request.app.get("supervised", False))
+
+    dashboard_ready = bool(state.ready)
+    security_ready = _security_component_ready()
+    # Supervised: no channel transports, no dashboard app UI — down by design,
+    # not a fault. Unsupervised dashboard launch: both are part of the surface.
+    channels_ready = not supervised
+    apps_ready = not supervised
+
+    if dashboard_ready and security_ready:
+        overall = "ready"
+    elif not dashboard_ready and not security_ready:
+        overall = "down"
+    else:
+        overall = "degraded"
+
+    def _flag(ok: bool) -> str:
+        return "ready" if ok else "down"
+
+    return web.json_response(
+        {
+            "state": overall,
+            "pid": os.getpid(),
+            "loopbackBase": _sidecar_loopback_base(request),
+            "components": {
+                "channels": _flag(channels_ready),
+                "dashboard": _flag(dashboard_ready),
+                "apps": _flag(apps_ready),
+                "security": _flag(security_ready),
+            },
+            "protocol": {"crewProtocol": _CREW_PROTOCOL},
+        }
+    )
+
+
 async def api_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     uptime = time.time() - state.start_time

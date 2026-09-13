@@ -24,9 +24,15 @@ def test_unsupervised_set_is_the_base_set_and_excludes_approvals() -> None:
     assert "/api/approvals" not in paths
 
 
-def test_supervised_set_adds_only_approvals() -> None:
+def test_supervised_set_admits_approvals_over_the_base() -> None:
+    # E3 (this workstream) added /api/approvals to the supervised set. Phase 3
+    # widened the same set further with the data-plane reads (see
+    # test_supervised_phase3_admissions.py, which owns the exact-set assertion);
+    # here we only pin the E3 contract: /api/approvals is a supervised-only
+    # addition over the base set, and the base set is still carried.
     paths = supervised_mixed_internal_paths(True)
-    assert paths - _MIXED_INTERNAL_API_PATHS == {"/api/approvals"}
+    assert "/api/approvals" in paths
+    assert "/api/approvals" not in _MIXED_INTERNAL_API_PATHS  # supervised-only
     assert "/api/spawn" in paths  # base set preserved
 
 

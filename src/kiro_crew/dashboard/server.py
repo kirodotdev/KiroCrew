@@ -884,7 +884,62 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
 # ``security.py`` sensitive-path denylist. Deliberately NOT in the base set:
 # an unsupervised gateway has a browser, and its approval decisions stay
 # cookie-authenticated.
-_SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS = frozenset({"/api/approvals"})
+#
+# Phase-3 data-plane domains widen this set further. Each entry below is a route
+# the supervising Kiro CLI reaches with its ``X-Internal-Secret`` so a `/crew`
+# subcommand (memory, knowledge, sidecar status) can RPC into the sidecar the
+# same way `/crew spawn` already does. Matching is prefix-based
+# (``path == p or path.startswith(p + "/")``, see ``internal_path_matches``), so
+# each line is annotated with why an internal-secret caller in supervised mode
+# may hold it — a read the parent is entitled to, or a write the supervising CLI
+# is the legitimate author of — AND, where the prefix would sweep in a write
+# sub-route, whether that sweep is intended. Where it is NOT (``/api/knowledge/
+# sources``, whose ``/{id}/...`` children mutate and ingest the knowledge store),
+# the route is admitted METHOD-scoped via
+# ``_SUPERVISED_ONLY_MIXED_INTERNAL_API_METHODS`` below instead of by bare prefix.
+_SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS = frozenset(
+    {
+        # C2 approval surface (Phase-2 E3). See the paragraph above.
+        "/api/approvals",
+        # Semantic memory: GET (``memory/list``/``memory/get``) and PUT
+        # (``memory/add``). The prefix also admits ``DELETE /api/memory/
+        # semantic/{key}`` — intended: the supervising CLI owns the memory it
+        # writes and is the legitimate author of a delete of its own key.
+        "/api/memory/semantic",
+        # Vector-memory records, the fallback list source for ``memory/list``.
+        # The prefix also admits ``POST /api/memory/records/refresh`` (recompute
+        # the caller's own embeddings) and ``GET .../history`` — both reads of, or
+        # recomputes over, the caller's own memory; no cross-session reach.
+        "/api/memory/records",
+        # Knowledge context search (``knowledge/search``). Terminal GET path, no
+        # write children under it.
+        "/api/knowledge/search-for-context",
+        # Sidecar supervision status (``sidecar/status``), added by this
+        # workstream. Terminal GET path, read-only, no secrets.
+        "/api/sidecar/status",
+        # Gateway status snapshot (``sidecar/status`` also reads this). Terminal
+        # GET path; the same coarse readiness/version the ``/api/health`` probe
+        # already exposes unauthenticated, plus uptime/rss — read-only.
+        "/api/status",
+    }
+)
+
+# Supervised-only admissions that are additionally scoped to specific METHODS,
+# because a bare-prefix entry above would admit write children the bridge never
+# calls and the parent is not the author of. ``path -> {allowed methods}``;
+# a request matches only when BOTH its path is an exact/child match AND its
+# method is listed. Read by :func:`supervised_mixed_internal_method_paths`.
+#
+# ``GET /api/knowledge/sources`` backs ``knowledge/listSources`` (a read). The
+# path prefix also covers ``POST /api/knowledge/sources`` (add a source) and the
+# whole ``/api/knowledge/sources/{id}/{sync,ingest-text,pause,resume,...}`` +
+# ``DELETE`` mutation family — a broad filesystem/ingest relay across the trust
+# boundary that the bridge does not use and the CLI is not the author of. The
+# scoped semantic write the bridge DOES need (``knowledge/add``) is
+# ``POST /api/knowledge/agent-document``, already in the STRICT internal set.
+_SUPERVISED_ONLY_MIXED_INTERNAL_API_METHODS: dict[str, frozenset[str]] = {
+    "/api/knowledge/sources": frozenset({"GET"}),
+}
 
 
 def supervised_mixed_internal_paths(supervised: bool) -> frozenset[str]:
@@ -892,6 +947,21 @@ def supervised_mixed_internal_paths(supervised: bool) -> frozenset[str]:
     if not supervised:
         return _MIXED_INTERNAL_API_PATHS
     return _MIXED_INTERNAL_API_PATHS | _SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS
+
+
+def supervised_mixed_internal_method_paths(
+    supervised: bool,
+) -> dict[str, frozenset[str]]:
+    """Method-scoped supervised admissions for this launch.
+
+    Empty unless ``supervised``. Kept separate from
+    :func:`supervised_mixed_internal_paths` so the flat prefix set and the
+    method-scoped map stay independently reviewable; the middleware admits a
+    request that matches EITHER.
+    """
+    if not supervised:
+        return {}
+    return dict(_SUPERVISED_ONLY_MIXED_INTERNAL_API_METHODS)
 
 
 # Base Content-Security-Policy applied to all dashboard responses.
@@ -3954,7 +4024,12 @@ async def start_dashboard(
     # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
     # number as a global request cap is the false invariant to avoid.
     app["state"] = state
-
+    # Whether this launch is a supervised sidecar (kirocrew gateway
+    # --supervised). Read by the /api/sidecar/status handler to report the
+    # channels/apps components as 'down' by design: a supervised sidecar is a
+    # loopback child of the Kiro CLI with no channel transports and no
+    # dashboard app UI. Absent/False on an ordinary dashboard launch.
+    app["supervised"] = supervised
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots
     # coalescing, an off-loop websocket send, the log handler's fan-out --
@@ -4466,6 +4541,7 @@ async def start_dashboard(
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
             mixed_internal_paths=supervised_mixed_internal_paths(supervised),
+            mixed_internal_methods=supervised_mixed_internal_method_paths(supervised),
             internal_secret=_internal_secret,
             port=port,
             local_only=local_only,
