@@ -10671,7 +10671,11 @@
       "opening_session_locally": "Abrindo esta sessão aqui…",
       "opens_here_runs_on_instance": "Abre esta sessão aqui — a execução dela continua em {{name}}",
       "opens_on_crew_switches_there": "Abre em {{name}} — muda para esse Crew, não aqui",
-      "remote_instances_list_unavailable": "Não foi possível listar as instâncias remotas, portanto as suas sessões não são exibidas."
+      "remote_instances_list_unavailable": "Não foi possível listar as instâncias remotas, portanto as suas sessões não são exibidas.",
+      "source_link_actions": "Desvincular um chip de PR ou issue",
+      "unlink_source_link": "Selecione um chip de PR ou issue para ocultá-lo permanentemente nesta sessão. A origem e a transcrição permanecem inalteradas.",
+      "unlink_source_link_confirm": "Selecione novamente para desvincular “{{label}}”",
+      "unlink_source_link_failed": "Não foi possível desvincular. Tente novamente."
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

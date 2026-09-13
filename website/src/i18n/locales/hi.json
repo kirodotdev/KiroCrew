@@ -10515,7 +10515,11 @@
       "opening_session_locally": "इस सत्र को यहाँ खोला जा रहा है…",
       "opens_here_runs_on_instance": "इस सत्र को यहाँ खोलता है — इसका निष्पादन {{name}} पर चलता रहता है",
       "opens_on_crew_switches_there": "{{name}} पर खुलता है — उस Crew पर स्विच करता है, यहाँ नहीं",
-      "remote_instances_list_unavailable": "रिमोट इंस्टैंस सूचीबद्ध नहीं किए जा सके, इसलिए उनके सत्र नहीं दिखाए गए हैं।"
+      "remote_instances_list_unavailable": "रिमोट इंस्टैंस सूचीबद्ध नहीं किए जा सके, इसलिए उनके सत्र नहीं दिखाए गए हैं।",
+      "source_link_actions": "कोई PR या Issue चिप अनलिंक करें",
+      "unlink_source_link": "इस सत्र से स्थायी रूप से छिपाने के लिए कोई PR या Issue चिप चुनें। स्रोत और बातचीत का रिकॉर्ड अपरिवर्तित रहेंगे।",
+      "unlink_source_link_confirm": "“{{label}}” अनलिंक करने के लिए फिर से चुनें",
+      "unlink_source_link_failed": "अनलिंक नहीं हो सका। पुनः प्रयास करें।"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

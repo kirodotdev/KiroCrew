@@ -29,11 +29,21 @@ class _FakeSlot:
         # assert the row went out exactly once, with identity.
         self._has_reader = False
         self.delivered: list[dict] = []
+        # Dismissed-source-link contract the fallback rebind now exercises: a
+        # reused fallback slot's stale set is cleared + marked unhydrated on a
+        # link change (mirrors the real _ChatSlot so the injector can call it).
+        self._dismissed_source_links: set[str] = set()
+        self._dismissed_hydrated = True
+
+    def invalidate_source_links(self) -> None:
+        pass
 
     def _on_message(self, _key, msg) -> None:
         self.delivered.append(msg)
 
-    def append(self, role, content, cls="", ts="", *, broadcast=True, broadcast_user=False, meta=None):
+    def append(
+        self, role, content, cls="", ts="", *, broadcast=True, broadcast_user=False, meta=None
+    ):
         # Mirror the real ``_ChatSlot.append`` contract: mint ``meta.mid``, hand
         # the appended row back, and deliver ONE live copy via ``_on_message``
         # when no reader is draining (the injector reads the id off the return
@@ -150,8 +160,11 @@ def test_inject_routes_to_originating_slot_and_broadcasts_live() -> None:
     origin = _FakeSlot("chat-2-123")
     state = _FakeState({"chat-2-123": origin})
     snap = {
-        "name": "pizza", "run_id": "wf_2", "status": "finished",
-        "session_key": "dashboard:chat-2-123", "result": {"report": "/tmp/r.md"},
+        "name": "pizza",
+        "run_id": "wf_2",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "result": {"report": "/tmp/r.md"},
     }
     ok = inject_workflow_result(state, "wf_2", snap)
     assert ok is True
@@ -170,8 +183,11 @@ def test_inject_routes_to_originating_slot_and_broadcasts_live() -> None:
 def test_inject_falls_back_when_origin_slot_gone() -> None:
     state = _FakeState({})  # originating slot is gone
     snap = {
-        "name": "pizza", "run_id": "wf_9", "status": "finished",
-        "session_key": "dashboard:chat-gone", "result": {"ok": True},
+        "name": "pizza",
+        "run_id": "wf_9",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
     }
     ok = inject_workflow_result(state, "wf_9", snap)
     assert ok is True
@@ -194,24 +210,30 @@ def test_durable_copy_carries_the_window_rows_id() -> None:
     state = _FakeState({"chat-2-123": origin})
     state.conversation_log = MagicMock()
     snap = {
-        "name": "pizza", "run_id": "wf_2", "status": "finished",
-        "session_key": "dashboard:chat-2-123", "result": {"ok": True},
+        "name": "pizza",
+        "run_id": "wf_2",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "result": {"ok": True},
     }
     with patch("kiro_crew.dashboard.workflow_inject.append_if_absent_off_loop") as durable:
         assert inject_workflow_result(state, "wf_2", snap) is True
     assert len(origin.messages) == 1
     window_mid = origin.messages[0]["meta"]["mid"]
-    assert durable.call_args.kwargs["mid"] == window_mid, (
-        "the durable copy did not carry the window row's id"
-    )
+    assert (
+        durable.call_args.kwargs["mid"] == window_mid
+    ), "the durable copy did not carry the window row's id"
 
 
 def test_inject_dedups_on_refire() -> None:
     origin = _FakeSlot("chat-5")
     state = _FakeState({"chat-5": origin})
     snap = {
-        "name": "x", "run_id": "wf_5", "status": "finished",
-        "session_key": "dashboard:chat-5", "result": {"v": 1},
+        "name": "x",
+        "run_id": "wf_5",
+        "status": "finished",
+        "session_key": "dashboard:chat-5",
+        "result": {"v": 1},
     }
     inject_workflow_result(state, "wf_5", snap)
     inject_workflow_result(state, "wf_5", snap)  # re-fire
@@ -230,11 +252,16 @@ def test_on_injected_fires_for_originating_slot() -> None:
     origin = _FakeSlot("chat-2-123")
     state = _FakeState({"chat-2-123": origin})
     snap = {
-        "name": "pizza", "run_id": "wf_2", "status": "finished",
-        "session_key": "dashboard:chat-2-123", "result": {"n": 1},
+        "name": "pizza",
+        "run_id": "wf_2",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "result": {"n": 1},
     }
     fired: list = []
-    ok = inject_workflow_result(state, "wf_2", snap, on_injected=lambda s, sn: fired.append((s, sn)))
+    ok = inject_workflow_result(
+        state, "wf_2", snap, on_injected=lambda s, sn: fired.append((s, sn))
+    )
     assert ok is True
     assert len(fired) == 1
     assert fired[0][0] is origin  # the live originating slot
@@ -246,8 +273,11 @@ def test_on_injected_not_fired_for_fallback_slot() -> None:
     # so the auto-turn callback must NOT fire.
     state = _FakeState({})
     snap = {
-        "name": "x", "run_id": "wf_9", "status": "finished",
-        "session_key": "dashboard:chat-gone", "result": {"ok": True},
+        "name": "x",
+        "run_id": "wf_9",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
     }
     fired: list = []
     ok = inject_workflow_result(state, "wf_9", snap, on_injected=lambda s, sn: fired.append(s))
@@ -260,8 +290,11 @@ def test_on_injected_not_fired_on_dedup_refire() -> None:
     origin = _FakeSlot("chat-5")
     state = _FakeState({"chat-5": origin})
     snap = {
-        "name": "x", "run_id": "wf_5", "status": "finished",
-        "session_key": "dashboard:chat-5", "result": {"v": 1},
+        "name": "x",
+        "run_id": "wf_5",
+        "status": "finished",
+        "session_key": "dashboard:chat-5",
+        "result": {"v": 1},
     }
     fired: list = []
     cb = lambda s, sn: fired.append(s)  # noqa: E731
@@ -275,5 +308,8 @@ def test_on_injected_not_fired_for_ui_only_run() -> None:
     state = _FakeState({})
     snap = {"name": "x", "run_id": "wf_0", "status": "finished", "result": {}, "session_key": ""}
     fired: list = []
-    assert inject_workflow_result(state, "wf_0", snap, on_injected=lambda s, sn: fired.append(s)) is False
+    assert (
+        inject_workflow_result(state, "wf_0", snap, on_injected=lambda s, sn: fired.append(s))
+        is False
+    )
     assert fired == []

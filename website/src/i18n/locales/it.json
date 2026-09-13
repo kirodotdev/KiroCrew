@@ -10671,7 +10671,11 @@
       "opening_session_locally": "Apertura di questa sessione qui…",
       "opens_here_runs_on_instance": "Apre questa sessione qui — la sua esecuzione continua su {{name}}",
       "opens_on_crew_switches_there": "Si apre su {{name}} — passa a quel Crew, non qui",
-      "remote_instances_list_unavailable": "Non è stato possibile elencare le istanze remote, quindi le loro sessioni non vengono mostrate."
+      "remote_instances_list_unavailable": "Non è stato possibile elencare le istanze remote, quindi le loro sessioni non vengono mostrate.",
+      "source_link_actions": "Scollega un chip PR o issue",
+      "unlink_source_link": "Seleziona un chip PR o issue per nasconderlo definitivamente in questa sessione. L’origine e la trascrizione restano invariate.",
+      "unlink_source_link_confirm": "Seleziona di nuovo per scollegare «{{label}}»",
+      "unlink_source_link_failed": "Impossibile scollegare. Riprova."
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
