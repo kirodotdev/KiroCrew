@@ -2807,7 +2807,18 @@ async def api_cron_folders_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# The most lessons ``GET /api/lessons`` returns. Both branches of the handler
+# apply it, so the vector-store and JSONL tiers cannot disagree about the cap.
+LESSON_LIST_LIMIT = 50
+
+
 async def api_lessons(request: web.Request) -> web.Response:
+    """GET /api/lessons — up to ``LESSON_LIST_LIMIT`` lessons, oldest-first.
+
+    The vector tier selects its newest rows. The JSONL tier appends workspace
+    rows after global rows before truncating, so a workspace union is not
+    strictly the newest rows across both stores.
+    """
     state: DashboardState = request.app["state"]
     # Block lesson reads only for temporary sessions (blocks_reads=True).
     # Incognito sessions can read lessons (memory context is already injected).
@@ -2860,7 +2871,15 @@ async def api_lessons(request: web.Request) -> web.Response:
         else _get_memory(state)
     )
     vs = _lesson_mem.vector_store
-    vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
+    # Bounded in SQL rather than sliced afterwards. ``get_lessons()`` orders
+    # ``updated_at DESC``, so the tail-slice idiom the JSONL branch below uses --
+    # correct there, because ``load_all()`` returns file append order -- selected
+    # the OLDEST rows here and hid every recent lesson: a lesson saved through
+    # ``learn_add`` was absent from the very next ``learn_list``, which reads as a
+    # silently failed write. Passing the cap to the store keeps the ordering and
+    # the limit in one place and stops the read from materializing every lesson
+    # row (embedding blobs included) to discard all but the newest handful.
+    vs_lessons = await asyncio.to_thread(vs.get_lessons, LESSON_LIST_LIMIT) if vs else None
     if vs_lessons:
         # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
         # optional numpy/faiss imports, and this helper is the handler's only
@@ -2868,7 +2887,11 @@ async def api_lessons(request: web.Request) -> web.Response:
         from kiro_crew.vector_memory import _lesson_display_text
 
         data = []
-        for e in vs_lessons[-50:]:
+        # Oldest-first, so both branches of this endpoint answer in the same
+        # order. Consumers rely on it: the Memory tab takes its recent rows from
+        # the TAIL of this list, so a newest-first response would show the oldest
+        # of the capped window there.
+        for e in reversed(vs_lessons):
             try:
                 decoded = json.loads(e["value_json"])
             except (json.JSONDecodeError, TypeError):
@@ -2898,7 +2921,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 for le in ws_lessons:
                     if le.rule.lower().strip() not in seen:
                         rows.append(le)
-        data = [_safe_lesson(le.rule, le.category, le.ts) for le in rows[-50:]]
+        data = [_safe_lesson(le.rule, le.category, le.ts) for le in rows[-LESSON_LIST_LIMIT:]]
     return web.json_response({"lessons": data})
 
 

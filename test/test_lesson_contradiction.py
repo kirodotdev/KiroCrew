@@ -1192,6 +1192,137 @@ class TestApiLessonsSanitizesStoredFields:
         assert lessons[0]["rule"] == "12345"
 
 
+@pytest.mark.asyncio
+class TestApiLessonsReturnsTheNewest:
+    """The endpoint caps its answer, so the cap must select the NEWEST lessons.
+
+    Its two tiers read stores with OPPOSITE orderings -- the vector store answers
+    ``updated_at DESC`` (newest first) while the JSONL store answers file append
+    order (oldest first) -- so one shared slice idiom cannot serve both. Taking the
+    tail of the vector tier returned the OLDEST rows and hid every recent lesson,
+    which made a just-saved lesson absent from the very next read and so looked
+    like a write that had silently failed.
+    """
+
+    def _request(self, state):
+        state.conversation_log = ConversationLog()
+        request = MagicMock()
+        request.app = {"state": state}
+        request.headers = {"X-Session-Key": "dashboard:ui"}
+        request.query = {}
+        return request
+
+    def _rows(self, n):
+        """``n`` vector rows, ``lesson-1`` oldest through ``lesson-n`` newest."""
+        return [
+            {
+                "key": f"lesson.{i}",
+                "value_json": json.dumps(
+                    {"rule": f"lesson-{i}", "category": "tool", "negative": None}
+                ),
+                "updated_at": f"2026-01-01T00:00:00.{i:04d}Z",
+            }
+            for i in range(1, n + 1)
+        ]
+
+    def _vector_store(self, rows):
+        """A store with the real one's contract: newest first, cap applied in SQL."""
+        newest_first = sorted(rows, key=lambda r: r["updated_at"], reverse=True)
+
+        def get_lessons(limit=None):
+            return newest_first[:limit] if limit else list(newest_first)
+
+        vs = MagicMock()
+        vs.get_lessons.side_effect = get_lessons
+        return vs
+
+    async def _get_vector(self, rows):
+        from kiro_crew.dashboard.handlers import cron
+
+        state = MagicMock()
+        vs = self._vector_store(rows)
+        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
+             patch.object(cron, "_blocks_reads_session", return_value=False):
+            resp = await cron.api_lessons(self._request(state))
+        assert resp.status == 200
+        return json.loads(resp.text)["lessons"], vs
+
+    async def _get_jsonl(self, rules):
+        from kiro_crew.dashboard.handlers import cron
+
+        state = MagicMock()
+        state.lessons.load_all.return_value = [
+            SimpleNamespace(rule=r, category="tool", ts=f"t{i}") for i, r in enumerate(rules)
+        ]
+        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
+             patch.object(cron, "_get_active_workspace", return_value="default"), \
+             patch.object(cron, "_blocks_reads_session", return_value=False):
+            resp = await cron.api_lessons(self._request(state))
+        assert resp.status == 200
+        return json.loads(resp.text)["lessons"]
+
+    async def test_vector_tier_answers_the_newest_lessons_not_the_oldest(self):
+        from kiro_crew.dashboard.handlers import cron
+
+        cap = cron.LESSON_LIST_LIMIT
+        lessons, _ = await self._get_vector(self._rows(cap + 20))
+        rules = [le["rule"] for le in lessons]
+        assert len(rules) == cap
+        assert f"lesson-{cap + 20}" in rules, f"the newest lesson is missing: {rules}"
+        assert "lesson-1" not in rules, f"the oldest lesson was returned instead: {rules}"
+
+    async def test_vector_tier_answers_oldest_first_like_the_jsonl_tier(self):
+        """Both tiers must agree on direction, because consumers depend on it: the
+        dashboard Memory tab takes its recent rows from the TAIL of this list, so a
+        newest-first response would show it the oldest end of the capped window."""
+        from kiro_crew.dashboard.handlers import cron
+
+        cap = cron.LESSON_LIST_LIMIT
+        total = cap + 20
+        lessons, _ = await self._get_vector(self._rows(total))
+        assert [le["rule"] for le in lessons] == [
+            f"lesson-{i}" for i in range(total - cap + 1, total + 1)
+        ]
+
+    async def test_a_lesson_saved_now_is_in_the_very_next_list(self):
+        """The reported symptom, stated as the user meets it."""
+        from kiro_crew.dashboard.handlers import cron
+
+        rows = self._rows(cron.LESSON_LIST_LIMIT)
+        rows.append(
+            {
+                "key": "lesson.just-added",
+                "value_json": json.dumps(
+                    {"rule": "just added", "category": "tool", "negative": None}
+                ),
+                "updated_at": "2026-01-02T00:00:00.0000Z",
+            }
+        )
+        lessons, _ = await self._get_vector(rows)
+        assert "just added" in [le["rule"] for le in lessons]
+
+    async def test_the_vector_read_is_bounded_by_the_store_not_after_the_fact(self):
+        """Lesson rows carry embedding blobs, so the cap goes to the store rather
+        than materializing the whole population to discard all but the newest few."""
+        from kiro_crew.dashboard.handlers import cron
+
+        _, vs = await self._get_vector(self._rows(cron.LESSON_LIST_LIMIT + 20))
+        vs.get_lessons.assert_called_once_with(cron.LESSON_LIST_LIMIT)
+
+    async def test_jsonl_tier_answers_the_newest_lessons(self):
+        """The append-ordered tier keeps its tail slice -- pinned here so a later
+        edit cannot invert this one while fixing the other."""
+        from kiro_crew.dashboard.handlers import cron
+
+        cap = cron.LESSON_LIST_LIMIT
+        total = cap + 20
+        lessons = await self._get_jsonl([f"lesson-{i}" for i in range(1, total + 1)])
+        rules = [le["rule"] for le in lessons]
+        assert len(rules) == cap
+        assert rules[-1] == f"lesson-{total}", f"the newest lesson is not last: {rules}"
+        assert "lesson-1" not in rules, f"the oldest lesson was returned instead: {rules}"
+
+
 class TestLessonStorageShape:
     """The NOT-clause is stored as its own field, not concatenated in-band.
 
