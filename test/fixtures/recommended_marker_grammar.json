@@ -1,0 +1,281 @@
+{
+  "_comment": "Shared (recommended)-marker grammar vectors. The grammar is implemented TWICE -- src/kiro_crew/constants.py::strip_recommended_marker and website/src/app-sdk/protocol/recommendation.ts::splitRecommendation -- and nothing but these vectors stops the two drifting. Asserted by test/test_dispatch_sigil_parity.py and website/src/test/recommendation.test.ts. LEADING ONLY: a trailing marker is not admitted, because no producer emits one, so it stays as ordinary label text. Both implementations return the ORIGINAL label when there is no leading marker, when the marker is the whole label, or when the cleaned label would open with a reserved dispatch sigil; so expected == label exactly when marker is false.",
+  "vectors": [
+    {
+      "why": "leading marker is stripped",
+      "label": "(recommended) Ship it",
+      "expected": "Ship it",
+      "marker": true
+    },
+    {
+      "why": "matching is case-insensitive, upper",
+      "label": "(RECOMMENDED) Ship it",
+      "expected": "Ship it",
+      "marker": true
+    },
+    {
+      "why": "matching is case-insensitive, mixed",
+      "label": "(Recommended) Ship it",
+      "expected": "Ship it",
+      "marker": true
+    },
+    {
+      "why": "leading whitespace before the marker is allowed",
+      "label": "   (recommended) Ship it",
+      "expected": "Ship it",
+      "marker": true
+    },
+    {
+      "why": "interior whitespace in the label survives byte-for-byte",
+      "label": "(recommended) Run printf 'a  b'",
+      "expected": "Run printf 'a  b'",
+      "marker": true
+    },
+    {
+      "why": "a bang command is a dispatch sigil too: stripping the marker off `!yolo on` would hand the click an executable command, and `!` is mapped to a slash command on the channel side",
+      "label": "(recommended) !yolo on",
+      "expected": "(recommended) !yolo on",
+      "marker": false
+    },
+    {
+      "why": "a trailing marker is NOT admitted -- it stays as label text",
+      "label": "Ship it (recommended)",
+      "expected": "Ship it (recommended)",
+      "marker": false
+    },
+    {
+      "why": "a trailing marker is not admitted whatever its casing",
+      "label": "Ship it (RECOMMENDED)",
+      "expected": "Ship it (RECOMMENDED)",
+      "marker": false
+    },
+    {
+      "why": "nor with trailing whitespace after it",
+      "label": "Ship it (recommended)   ",
+      "expected": "Ship it (recommended)   ",
+      "marker": false
+    },
+    {
+      "why": "leading only -- an interior marker is ordinary prose",
+      "label": "Do (recommended) the thing",
+      "expected": "Do (recommended) the thing",
+      "marker": false
+    },
+    {
+      "why": "marker-only label is a no-op, never an empty dispatch",
+      "label": "(recommended)",
+      "expected": "(recommended)",
+      "marker": false
+    },
+    {
+      "why": "marker-only with padding is still a no-op",
+      "label": "  (recommended)  ",
+      "expected": "  (recommended)  ",
+      "marker": false
+    },
+    {
+      "why": "no marker at all is a no-op",
+      "label": "Ship it",
+      "expected": "Ship it",
+      "marker": false
+    },
+    {
+      "why": "ordering variants are deliberately not admitted",
+      "label": "(recommended first) Ship it",
+      "expected": "(recommended first) Ship it",
+      "marker": false
+    },
+    {
+      "why": "sigil guard: stripping would promote the label to a slash command",
+      "label": "(recommended) /clear",
+      "expected": "(recommended) /clear",
+      "marker": false
+    },
+    {
+      "why": "sigil guard: stripping would promote the label to a mention",
+      "label": "(recommended) @deploy",
+      "expected": "(recommended) @deploy",
+      "marker": false
+    },
+    {
+      "why": "sigil guard: stripping would promote the label to reserved provenance",
+      "label": "(recommended) [Monitor wake]",
+      "expected": "(recommended) [Monitor wake]",
+      "marker": false
+    },
+    {
+      "why": "a bracket INSIDE the label is prose, so the guard must not fire",
+      "label": "(recommended) Read the [SYSTEM] log",
+      "expected": "Read the [SYSTEM] log",
+      "marker": true
+    },
+    {
+      "why": "a plan chip carries no sigil, and stripping would dispatch an auto-run",
+      "label": "(recommended) Go All",
+      "expected": "(recommended) Go All",
+      "marker": false
+    },
+    {
+      "why": "the orchestrator casefolds, so the lowercase spelling is the same promotion",
+      "label": "(recommended) go all",
+      "expected": "(recommended) go all",
+      "marker": false
+    },
+    {
+      "why": "single-stage plan advance is reserved for the same reason",
+      "label": "(recommended) Go",
+      "expected": "(recommended) Go",
+      "marker": false
+    },
+    {
+      "why": "cancel is a plan action too, so it is left verbatim",
+      "label": "(recommended) Cancel",
+      "expected": "(recommended) Cancel",
+      "marker": false
+    },
+    {
+      "why": "a plan word inside a longer label is ordinary prose and still strips",
+      "label": "(recommended) Go all the way back",
+      "expected": "Go all the way back",
+      "marker": true
+    },
+    {
+      "why": "a bracket that claims no reserved origin is ordinary label text and strips",
+      "label": "(recommended) [Draft] Reword the summary",
+      "expected": "[Draft] Reword the summary",
+      "marker": true
+    },
+    {
+      "why": "a real provenance opener is still refused, byte-for-byte",
+      "label": "(recommended) [Monitor wake] do the thing",
+      "expected": "(recommended) [Monitor wake] do the thing",
+      "marker": false
+    },
+    {
+      "why": "the synthesis opener is refused too",
+      "label": "(recommended) [SYSTEM] Sub-agent synthesis: wrap up",
+      "expected": "(recommended) [SYSTEM] Sub-agent synthesis: wrap up",
+      "marker": false
+    },
+    {
+      "why": "a bracket word merely resembling an opener is not one",
+      "label": "(recommended) [Monitor] check the dashboard",
+      "expected": "[Monitor] check the dashboard",
+      "marker": true
+    },
+    {
+      "why": "a BARE provenance token is an origin claim on its own -- guarded",
+      "label": "(recommended) [SYSTEM]",
+      "expected": "(recommended) [SYSTEM]",
+      "marker": false
+    },
+    {
+      "why": "the bare token guards whatever follows it, not just the known phrase",
+      "label": "(recommended) [SYSTEM] anything at all",
+      "expected": "(recommended) [SYSTEM] anything at all",
+      "marker": false
+    },
+    {
+      "why": "a lowercased lookalike is NOT ordinary text: the summary pass reads it as automation",
+      "label": "(recommended) [system] do it",
+      "expected": "(recommended) [system] do it",
+      "marker": false
+    },
+    {
+      "why": "U+0085 is stripped by Python but not by JS trim, so it must not evade the guard",
+      "label": "(recommended) Go",
+      "expected": "(recommended) Go",
+      "marker": false
+    },
+    {
+      "why": "U+0085 is stripped by Python but not by JS trim, so it must not evade the guard",
+      "label": "(recommended) Go All",
+      "expected": "(recommended) Go All",
+      "marker": false
+    },
+    {
+      "why": "U+0085 is stripped by Python but not by JS trim, so it must not evade the guard",
+      "label": "(recommended) Cancel",
+      "expected": "(recommended) Cancel",
+      "marker": false
+    },
+    {
+      "why": "U+001C likewise: a Python-only whitespace codepoint cannot smuggle a plan action",
+      "label": "(recommended) \u001cGo",
+      "expected": "(recommended) \u001cGo",
+      "marker": false
+    },
+    {
+      "why": "U+001C likewise: a Python-only whitespace codepoint cannot smuggle a plan action",
+      "label": "(recommended) \u001cGo All",
+      "expected": "(recommended) \u001cGo All",
+      "marker": false
+    },
+    {
+      "why": "U+001C likewise: a Python-only whitespace codepoint cannot smuggle a plan action",
+      "label": "(recommended) \u001cCancel",
+      "expected": "(recommended) \u001cCancel",
+      "marker": false
+    },
+    {
+      "why": "U+001D likewise",
+      "label": "(recommended) \u001dGo",
+      "expected": "(recommended) \u001dGo",
+      "marker": false
+    },
+    {
+      "why": "U+001D likewise",
+      "label": "(recommended) \u001dGo All",
+      "expected": "(recommended) \u001dGo All",
+      "marker": false
+    },
+    {
+      "why": "U+001D likewise",
+      "label": "(recommended) \u001dCancel",
+      "expected": "(recommended) \u001dCancel",
+      "marker": false
+    },
+    {
+      "why": "U+001E likewise",
+      "label": "(recommended) \u001eGo",
+      "expected": "(recommended) \u001eGo",
+      "marker": false
+    },
+    {
+      "why": "U+001E likewise",
+      "label": "(recommended) \u001eGo All",
+      "expected": "(recommended) \u001eGo All",
+      "marker": false
+    },
+    {
+      "why": "U+001E likewise",
+      "label": "(recommended) \u001eCancel",
+      "expected": "(recommended) \u001eCancel",
+      "marker": false
+    },
+    {
+      "why": "U+001F likewise",
+      "label": "(recommended) \u001fGo",
+      "expected": "(recommended) \u001fGo",
+      "marker": false
+    },
+    {
+      "why": "U+001F likewise",
+      "label": "(recommended) \u001fGo All",
+      "expected": "(recommended) \u001fGo All",
+      "marker": false
+    },
+    {
+      "why": "U+001F likewise",
+      "label": "(recommended) \u001fCancel",
+      "expected": "(recommended) \u001fCancel",
+      "marker": false
+    },
+    {
+      "why": "U+FEFF likewise: the frontend send path trims it away, so it cannot smuggle a plan action",
+      "label": "(recommended) ﻿Go",
+      "expected": "(recommended) ﻿Go",
+      "marker": false
+    }
+  ]
+}

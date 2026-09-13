@@ -136,6 +136,58 @@ not linger:
 const { followUpOptions } = deriveFollowUpOptions(messages, running)
 ```
 
+#### `recommended` arrives separately from `options`
+
+**An app that does not read `recommended` now silently drops the agent's steer.** The steer no
+longer arrives inside the label, so a renderer that draws only `options` shows the recommended
+choice looking exactly like every other one.
+
+> **Bind to the `recommended` field, never to how the marker is written inside the trailer.**
+> Anything below describes the FIELD, and the field is stable.
+>
+> **The placement is settled as IN-BAND for now, and here is why.** The marker travels inside the
+> option label because the label is the only part of the trailer every renderer already reads. A
+> control tag placed after `[OPTIONS:]` falls outside the literal a renderer matches on, so it stops
+> that renderer's option parse rather than reaching it — measured on the channel renderers, which
+> parse the buffer with no control-comment strip of their own: `discord/renderer.py`,
+> `teams/renderer.py`, `telegram/renderer.py`, `webex/renderer.py` and `wecom/renderer.py` all call
+> `split_options_trailer` and none references `strip_control_comments`. It does NOT hold on the
+> shared `messaging/renderer.py` projection, which strips first: with the tag stripped, the trailer
+> parses normally there, so that path is no argument for in-band and is not offered as one. The one
+> free slot in the trailer is already a documented absorber, and widening the trailer's shape
+> (`[OPTIONS(2): …]`) edits the shared literal every renderer matches against.
+> In-band costs a guard that must be mirrored in Python and TypeScript; out-of-band would cost
+> correct rendering on the five channel renderers above until each consumes a control-tag registry.
+>
+> **What would move it out-of-band:** a registry-based control-tag grammar that every renderer
+> consumes — the shape `strip_control_comments` already uses — so a marker can ride beside the
+> trailer instead of inside a label. Until such a registry exists, a future release may still
+> carry the marker out-of-band without any change to the field, its value, or the badge.
+
+An option the agent marked reaches you as a clean label, with the marked one named on
+`ParsedOptions.recommended` — a single label, or `null`. It is one label rather than a set because
+the sanctioned producer marks at most one option, and a plain label rather than a map because there
+is nothing per-option to carry beyond which label won:
+
+```tsx
+const { options, recommended } = parseOptions(cleaned)
+// options     -> ['Merge it now', 'Show me the diff']
+// recommended -> 'Merge it now'
+// test it with recommended === option
+```
+
+`deriveFollowUpOptions` exposes the same value as `followUpRecommended`.
+
+**If your app renders options itself, note two things.** The label you get is the one a click should
+send — the steer was never part of the user's instruction. And `recommended` is additive: an app
+built before it existed keeps working and simply renders no recommendation, so the agent's steer is
+dropped rather than shown. Comparing `recommended === label` is what restores it. Should a producer
+break the contract and mark several options, the first wins and the rest arrive unmarked.
+
+`recommended` can also be `null` on a menu that visibly shows a recommendation: the parser declines
+any label where naming it would change what a click dispatches. Treat `null` as "no recommendation to
+render" and never infer one from the label text.
+
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
 

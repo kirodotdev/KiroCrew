@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import FollowUpBar, { FOLLOWUP_CHIP_DEBOUNCE_MS } from '../components/FollowUpBar'
+import { parseOptions } from '../app-sdk/protocol/options'
+import { readFileSync } from 'node:fs'
 
 // jsdom polyfill: scroll-layout uses ResizeObserver to track when the chip
 // strip can scroll left/right.
@@ -444,6 +445,20 @@ describe('FollowUpBar', () => {
       }
     })
 
+    it('carries the full label on a BADGED chip too, where the badge takes row width', () => {
+      // The badge is `shrink-0`, so it is the recommended chip -- the one a reader most
+      // needs -- whose instruction clamps soonest; the title is the recovery.
+      const option = 'Rebase onto the latest main and re-run every check before merging'
+      const { container } = render(
+        <FollowUpBar options={[option]} recommended={option} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(container.querySelector('[data-testid="recommended-badge"]')).not.toBeNull()
+      const titled = Array.from(container.querySelectorAll('[title]'))
+        .map(n => n.getAttribute('title') ?? '')
+        .filter(t => t.startsWith(option))
+      expect(titled.length).toBeGreaterThan(0)
+    })
+
     it('still passes the untruncated option text to onSelect', () => {
       const onSelect = vi.fn()
       render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={onSelect} layout="scroll" />)
@@ -554,6 +569,471 @@ describe('FollowUpBar', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Send now: Go' }))
       expect(onSend).toHaveBeenCalledWith('Go', 'row-1')
       expect(onSelect).not.toHaveBeenCalled()
+    })
+  })
+
+  // ─── (recommended) badge ─────────────────────────────────────────────────
+  //
+  // The point of the badge is its POSITION. A marker left in the label sits
+  // inside the one clamped line and the ellipsis reaches it first, so these
+  // assert the badge is a SIBLING of the clamped span, never a descendant —
+  // an assertion on the text alone would pass either way and prove nothing.
+  describe('a declined label draws exactly what a click sends', () => {
+    const drawnText = (root: HTMLElement) => root.querySelector('.truncate')!.textContent
+    const declined = [
+      '(recommended) Stop the run',
+      '(recommended) go all',
+      '(recommended) /clear',
+    ]
+
+    it.each(declined)('draws %s verbatim, marker included', (label) => {
+      const { container } = render(
+        <FollowUpBar options={[label]} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(drawnText(container)).toBe(label)
+    })
+
+    it.each(declined)('explains %s without a per-chip note, which the label already carries', (label) => {
+      const { container } = render(
+        <FollowUpBar options={[label]} picked={new Set()} onSelect={() => {}} />,
+      )
+      // A sighted desktop user needs it without hovering, so the bar note stays visible.
+      const note = container.querySelector('[data-testid="recommended-kept-note"]')!
+      expect(note.className).not.toContain('sr-only')
+      // Consequence copy, read at the moment of a click, so it does not wear the muted
+      // token the surrounding chrome uses -- muting the one sentence that explains the send.
+      expect(note.className.split(/\s+/)).not.toContain('text-muted')
+      expect(note.className.split(/\s+/)).toContain('text-text')
+      expect(note.textContent).toContain('edit the prefix out before sending')
+      // No sr-only twin: the prefix is real label text, so a screen reader reads the marker
+      // out already, and duplicating the bar note at each chip only says it twice.
+      expect(container.querySelector('[data-testid="recommended-kept-a11y-note"]')).toBeNull()
+      // No typographic signal on the marker any more, so the label simply reads as sent.
+      expect(container.textContent).toContain('(recommended)')
+    })
+
+    it('says nothing when no option carries a kept marker', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      // A permanent note would be noise on every row and would stop meaning anything.
+      expect(container.querySelector('[data-testid="recommended-kept-note"]')).toBeNull()
+    })
+
+    it('floors the label width so a long badge cannot reduce the instruction to a sliver', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const label = container.querySelector('.truncate')!
+      const tokens = label.className.split(/\s+/)
+      // The badge is `shrink-0`, so an unfloored label absorbs the whole squeeze: at 6ch a
+      // 24-char `en-XA` badge left about one word of its neighbour readable.
+      // Below `sm` the floor RELAXES rather than vanishing -- a fixed 12ch plus a long-locale
+      // badge overflows a ~320px chip, but no floor at all left a sliver on that same surface.
+      expect(tokens).toContain('sm:min-w-[12ch]')
+      expect(tokens).toContain('min-w-[7ch]')
+      expect(tokens).not.toContain('min-w-0')
+    })
+
+    it('never fires a declined chip instantly, so the raw prefix always gets an edit chance', () => {
+      const onSend = vi.fn()
+      const onSelect = vi.fn()
+      const { container } = render(
+        <FollowUpBar
+          options={['(recommended) /clear']}
+          picked={new Set()}
+          quickSend
+          onSelect={onSelect}
+          onSend={onSend}
+        />,
+      )
+      fireEvent.click(container.querySelector('button')!)
+      // Instant send would dispatch `(recommended) /clear` as the user's own words with no
+      // chance to remove the prefix, which is the whole hazard the note describes.
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it('leaves the label width unfloored on an UNBADGED chip, nothing shrink-0 competing', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} picked={new Set()} onSelect={() => {}} />,
+      )
+      const tokens = container.querySelector('.truncate')!.className.split(/\s+/)
+      expect(tokens).toContain('min-w-0')
+      expect(tokens).not.toContain('sm:min-w-[12ch]')
+    })
+
+    it('leaves a SHORT badged label unfloored, which cannot truncate anyway', () => {
+      const { container } = render(
+        <FollowUpBar options={['Yes']} recommended={'Yes'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const tokens = container.querySelector('.truncate')!.className.split(/\s+/)
+      // Flooring a 3-char label pads dead space between the text and the separator: there is
+      // no squeeze to defend against, because the label is already shorter than the floor.
+      expect(tokens).toContain('min-w-0')
+      expect(tokens).not.toContain('sm:min-w-[12ch]')
+    })
+
+    it('offers a declined chip no send-now segment, matching the note it ships with', () => {
+      render(
+        <FollowUpBar
+          options={['(recommended) /clear']}
+          picked={new Set()}
+          onSelect={() => {}}
+          onSend={() => {}}
+        />,
+      )
+      // The bar's note promises the click leaves an edit chance in the composer. A send-now
+      // arrow offers the one gesture that skips it, dispatching the raw prefix immediately.
+      expect(screen.queryByRole('button', { name: 'Send now: (recommended) /clear' })).not.toBeInTheDocument()
+    })
+
+    it('keeps the send-now segment on a chip whose marker was stripped', () => {
+      render(
+        <FollowUpBar
+          options={['Merge it now']}
+          recommended={'Merge it now'}
+          picked={new Set()}
+          onSelect={() => {}}
+          onSend={() => {}}
+        />,
+      )
+      expect(screen.getByRole('button', { name: 'Send now: Merge it now' })).toBeInTheDocument()
+    })
+
+    it('does not advertise a send gesture in a declined chip tooltip', () => {
+      const { container } = render(
+        <FollowUpBar
+          options={['(recommended) /clear']}
+          picked={new Set()}
+          onSelect={() => {}}
+          onSend={() => {}}
+        />,
+      )
+      const title = container.querySelector('button')!.getAttribute('title')!
+      expect(title).not.toMatch(/double.click/i)
+    })
+
+    it('never sends a declined chip on double-click, the gesture the note cannot survive', () => {      const onSend = vi.fn()
+      const { container } = render(
+        <FollowUpBar
+          options={['(recommended) /clear']}
+          picked={new Set()}
+          onSelect={() => {}}
+          onSend={onSend}
+        />,
+      )
+      // Suppressing only the send-now SEGMENT left onDoubleClick bound, so the raw prefix
+      // still went out verbatim -- the one outcome the bar's note promises cannot happen.
+      fireEvent.doubleClick(container.querySelector('button')!)
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it('still sends a stripped-marker chip on double-click', () => {
+      const onSend = vi.fn()
+      const { container } = render(
+        <FollowUpBar
+          options={['Merge it now']}
+          recommended={'Merge it now'}
+          picked={new Set()}
+          onSelect={() => {}}
+          onSend={onSend}
+        />,
+      )
+      fireEvent.doubleClick(container.querySelector('button')!)
+      expect(onSend).toHaveBeenCalled()
+    })
+
+
+
+
+    it.each(declined)('dispatches %s byte-identical to the drawn text', (label) => {
+      const onSelect = vi.fn()
+      const { container } = render(
+        <FollowUpBar options={[label]} picked={new Set()} onSelect={onSelect} />,
+      )
+      const drawn = drawnText(container)
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(label.slice(-6)) }))
+      expect(onSelect).toHaveBeenCalledWith(drawn, expect.any(Object))
+    })
+
+    it('an ordinary marked option draws clean and dispatches clean', () => {
+      const onSelect = vi.fn()
+      const { options, recommended } = parseOptions('[OPTIONS: (recommended) Merge it now]')
+      expect(options).toEqual(['Merge it now'])
+      expect(recommended).toBe('Merge it now')
+      const { container } = render(
+        <FollowUpBar options={options} recommended={recommended} picked={new Set()} onSelect={onSelect} />,
+      )
+      expect(drawnText(container)).toBe('Merge it now')
+      fireEvent.click(screen.getByRole('button', { name: /Merge it now/ }))
+      expect(onSelect).toHaveBeenCalledWith('Merge it now', expect.any(Object))
+    })
+  })
+
+  describe('recommendation badge', () => {
+    const clamped = (root: HTMLElement) => root.querySelector('.truncate')
+    const badges = (root: HTMLElement) => root.querySelectorAll('[data-testid="recommended-badge"]')
+
+    it('a duplicate label is reachable from an options line, so the case is real', () => {
+      expect(parseOptions('[OPTIONS: (recommended) A | A]').options).toEqual(['A', 'A'])
+    })
+
+    it.each(['scroll', 'multiline'] as const)(
+      'badges only the first of two identical labels in the %s layout',
+      (layout) => {
+        const { container } = render(
+          <FollowUpBar
+            options={['A', 'A']}
+            recommended={'A'}
+            picked={new Set()}
+            onSelect={() => {}}
+            layout={layout}
+          />,
+        )
+        expect(container.querySelectorAll('.truncate')).toHaveLength(2)
+        expect(badges(container)).toHaveLength(1)
+      },
+    )
+
+    it.each(['scroll', 'multiline'] as const)(
+      'still badges the recommended label among distinct labels in the %s layout',
+      (layout) => {
+        const { container } = render(
+          <FollowUpBar
+            options={['A', 'B']}
+            recommended={'B'}
+            picked={new Set()}
+            onSelect={() => {}}
+            layout={layout}
+          />,
+        )
+        expect(badges(container)).toHaveLength(1)
+      },
+    )
+
+    it('renders the marker text for a recommended option', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now', 'Show me the diff']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(container.textContent).toContain('RECOMMENDED')
+    })
+
+    it('places the badge OUTSIDE the clamped span, so no label length can hide it', () => {
+      const long = 'Start the walk with the 4 badged items in board order, one per turn'
+      const { container } = render(
+        <FollowUpBar options={[long]} recommended={long} picked={new Set()} onSelect={() => {}} />,
+      )
+      const span = clamped(container)
+      expect(span).not.toBeNull()
+      // The clamped element carries ONLY the label...
+      expect(span!.textContent).toBe(long)
+      // ...and the badge is not inside it, so clamping cannot consume it.
+      expect(span!.textContent).not.toContain('RECOMMENDED')
+      expect(container.textContent).toContain('RECOMMENDED')
+    })
+
+    it('renders no badge for an unmarked option', () => {
+      const { container } = render(
+        <FollowUpBar options={['Show me the diff']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(container.textContent).toBe('Show me the diff')
+    })
+
+    it('renders no badge when the caller passes no map at all', () => {
+      const { container } = render(
+        <FollowUpBar options={['Alpha']} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(container.textContent).toBe('Alpha')
+      expect(clamped(container)!.textContent).toBe('Alpha')
+    })
+
+    it('still dispatches the clean option text, not the badge', () => {
+      const onSelect = vi.fn()
+      render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={onSelect} />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /Merge it now/ }))
+      expect(onSelect).toHaveBeenCalledWith('Merge it now', expect.any(Object))
+    })
+
+    it('badges the recommended chip in a split-button row too', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now', 'Hold']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} onSend={() => {}} />,
+      )
+      const spans = Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)
+      expect(spans).toEqual(['Merge it now', 'Hold'])
+      expect(container.textContent).toContain('RECOMMENDED')
+    })
+
+    it('never renders brighter than the instruction it annotates', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set(['Merge it now'])} onSelect={() => {}} />,
+      )
+      const textTokens = (el: Element) => el.className.split(/\s+/).filter(c => c.startsWith('text-') && !/\[/.test(c))
+      const chip = screen.getByRole('button', { name: /Merge it now/ })
+      const badge = Array.from(container.querySelectorAll('span')).find(s => s.textContent === 'RECOMMENDED')
+      expect(badge).toBeTruthy()
+      // The badge carries its own token: matching the resting label's `text-muted` left the
+      // one word the feature surfaces as the dimmest thing in the row on a dark theme.
+      expect(textTokens(chip)).toContain('text-accent')
+      expect(textTokens(badge!)).toEqual(['text-text'])
+      expect(textTokens(badge!)).not.toEqual(textTokens(chip))
+    })
+
+    // Uppercased `ru` is 13 characters and the `en-XA` pseudo-locale 24 against
+    // English's 11, and a clipped one-word badge reads as a defect, not an overflow.
+    it('sizes the badge to its content so no locale can clip the word', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const badge = container.querySelector('[data-testid="recommended-badge"]')
+      expect(badge).not.toBeNull()
+      const tokens = badge!.className.split(/\s+/)
+      expect(tokens.some(c => /^max-w-/.test(c))).toBe(false)
+      expect(tokens).not.toContain('text-ellipsis')
+      // The word stays on one line, and the LABEL keeps paying for a narrow chip.
+      expect(tokens).toContain('whitespace-nowrap')
+      expect(tokens).toContain('shrink-0')
+    })
+
+    it('keeps the accent token for SELECTION, so an unpicked recommendation is not accent-filled', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const badge = container.querySelector('[data-testid="recommended-badge"]')!
+      const tokens = badge.className.split(/\s+/)
+      // `bg-accent-subtle` / `text-accent` are what `chipColors` uses for a PICKED chip.
+      expect(tokens.filter(c => c.includes('accent'))).toEqual([])
+      // Not `text-muted`: that is the unpicked label's own token, which left the badge
+      // the dimmest thing in the row on a dark theme.
+      expect(tokens).toContain('text-text')
+    })
+
+    it('separates badge from label without relying on colour, which hover collapses', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const sep = container.querySelector('[data-testid="recommended-sep"]')
+      expect(sep).not.toBeNull()
+      // `chipColors` hovers an unpicked chip to `text-text`, the badge's own colour, so a
+      // colour-only boundary disappears exactly when the user is about to click.
+      expect(sep!.getAttribute('aria-hidden')).toBe('true')
+      // The visible separator being aria-hidden is what flattened the accessible name to
+      // "Merge it now recommended", so a readable delimiter rides beside it.
+      const a11ySep = container.querySelector('[data-testid="recommended-a11y-sep"]')!
+      expect(a11ySep.getAttribute('aria-hidden')).toBeNull()
+      expect(a11ySep.textContent).toBe(', ')
+      const row = container.querySelector('[data-testid="recommended-badge"]')!.parentElement!
+      const order = Array.from(row.children).map(n => n.getAttribute('data-testid') ?? 'label')
+      expect(order).toEqual(['label', 'recommended-a11y-sep', 'recommended-sep', 'recommended-badge'])
+    })
+
+    it('wears the product\'s uppercase micro-label voice, not a leading pill', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const badge = container.querySelector('[data-testid="recommended-badge"]')!
+      const tokens = badge.className.split(/\s+/)
+      // Mono now means ONE thing -- literal text a click dispatches -- so the badge, which
+      // marks text the click does NOT send, must not wear it.
+      expect(tokens).not.toContain('font-mono')
+      expect(tokens).toContain('uppercase')
+      for (const pill of ['rounded-full', 'border-border', 'bg-bg-elevated']) {
+        expect(tokens).not.toContain(pill)
+      }
+      // Placement is half the divergence, so order is asserted too: a form match that
+      // still led the label would leave the sibling comparison only half done.
+      const row = badge.parentElement!
+      expect(Array.from(row.children).indexOf(badge)).toBe(row.children.length - 1)
+    })
+
+    it('carries a second, non-colour axis, because the badge may not change colour', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const badge = container.querySelector('[data-testid="recommended-badge"]')!
+      // The second axis is LETTERSPACING, not slant: italic reads as absent/pending
+      // elsewhere, and it was the only thing separating this from the kept-marker prefix.
+      expect(badge.className.split(/\s+/)).toContain('tracking-[.06em]')
+      expect(badge.className.split(/\s+/)).not.toContain('italic')
+      expect(container.querySelector('.truncate')!.className.split(/\s+/)).not.toContain('tracking-[.06em]')
+    })
+
+    it('leaves `.truncate` meaning the LABEL, so the badge cannot answer for it', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const badge = container.querySelector('[data-testid="recommended-badge"]')!
+      // The badge clamps with the same CSS spelled out, so it must not wear the class.
+      expect(badge.className.split(/\s+/)).not.toContain('truncate')
+      const clampedSpans = Array.from(container.querySelectorAll('.truncate'))
+      expect(clampedSpans.map(n => n.textContent)).toEqual(['Merge it now'])
+    })
+
+    it('separates the badge by weight, not by dimming the word the chip exists to show', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const badge = container.querySelector('[data-testid="recommended-badge"]')!
+      const label = container.querySelector('.truncate')!
+      const badgeTokens = badge.className.split(/\s+/)
+      const labelTokens = label.className.split(/\s+/)
+      expect(badgeTokens).toContain('font-semibold')
+      expect(labelTokens).not.toContain('font-semibold')
+      // An unpicked chip is already `text-muted`, so dimming on top of that made the
+      // badge the hardest thing on the chip to read.
+      expect(badgeTokens.filter(t => t.startsWith('opacity-'))).toEqual([])
+      expect(badgeTokens.filter(t => t.includes('accent'))).toEqual([])
+    })
+
+    it('lets the badge read as its own text rather than as a named image', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const badge = container.querySelector('[data-testid="recommended-badge"]')
+      expect(badge).not.toBeNull()
+      // `role="img"` would hide the inner text and announce the span as an image, so a
+      // screen reader said "image, recommended". The visible word already reads correctly.
+      expect(badge!.getAttribute('role')).toBeNull()
+      expect(badge!.getAttribute('aria-label')).toBeNull()
+      expect(badge!.getAttribute('title')).toBeNull()
+      expect(badge!.textContent).toBe('RECOMMENDED')
+    })
+
+    // REGRESSION, kept after the field became a `Set`. When this was a plain
+    // object, `recommended['__proto__']` returned the INHERITED value —
+    // `Object.prototype`, handed to React as a child, which throws and takes the
+    // whole chat down. A `Set` has no inherited keys, so the hazard is gone by
+    // construction; this pins that a prototype-named option still renders.
+    it('renders a prototype-keyed option instead of crashing', () => {
+      const { container } = render(
+        <FollowUpBar options={['__proto__', 'Safe']} recommended={'Safe'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const spans = Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)
+      expect(spans).toEqual(['__proto__', 'Safe'])
+      // The prototype-keyed option carries no marker, so it must show no badge.
+      expect(container.textContent).toBe('__proto__Safe, ·RECOMMENDED')
+    })
+
+    it('renders every prototype-shaped key without crashing', () => {
+      const keys = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']
+      const { container } = render(
+        <FollowUpBar options={keys} recommended={null} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)).toEqual(keys)
+    })
+
+    // End-to-end: the map really produced by the parser, for the marker shape the
+    // finding names. Assigning to `__proto__` on a plain object hits the inherited
+    // SETTER and is silently dropped, so this covers the write side as well.
+    it('badges a prototype-keyed option parsed from a real marker', () => {
+      const { options, recommended } = parseOptions('[OPTIONS: (recommended) __proto__ | Safe]')
+      expect(options).toEqual(['__proto__', 'Safe'])
+      const { container } = render(
+        <FollowUpBar options={options} recommended={recommended} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)).toEqual(['__proto__', 'Safe'])
+      expect(container.textContent).toContain('RECOMMENDED')
     })
   })
 })

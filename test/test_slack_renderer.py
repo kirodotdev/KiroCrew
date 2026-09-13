@@ -910,7 +910,7 @@ class TestNoStreamOptionsFiltering:
         # Intermediate renders carry the cursor (▍). They must never surface
         # <thinking>…</thinking>, mirroring the streaming path's
         # _flush_stream_buffer strip. (The final on_done render is produced by
-        # extract_options — identical on both paths — and is out of scope here.)
+        # the shared parse — identical on both paths — and is out of scope here.)
         intermediate = [t for t in updates if "▍" in t]
         assert intermediate, updates
         assert all("<thinking>" not in t and "secret" not in t for t in intermediate), intermediate

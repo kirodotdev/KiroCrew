@@ -442,6 +442,8 @@ def user_text_span(
     return offset, offset + length
 
 
+# A cross-surface dependent: the option-marker splitter refuses to strip a `/`-leading
+# label, and a guard test asserts that for every word this function reports as dispatched.
 def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     """Whether *first_word* should be forwarded to the harness as a command.
 
