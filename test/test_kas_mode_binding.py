@@ -294,4 +294,4 @@ class TestKiroPathUntouched:
             agent="kirocrew",
             sandbox_mode="off",
         )
-        assert await runtime._kas_custom_agents("kirocrew") is None
+        assert (await runtime._kas_custom_agents("kirocrew")).custom_agents is None

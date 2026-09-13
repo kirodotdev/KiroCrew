@@ -51,6 +51,8 @@ _MODEL_MANAGED = "model_managed"
 _CC_MODEL = "cc_model"
 # Fork lineage: a private copy created so a crew's definition edits stop
 # landing on the shared template ("blueprint" semantics, copy-on-first-edit).
+_MIRRORED_FROM = "mirrored_from"
+_MIRRORED_STAT = "mirrored_stat"
 _FORKED_FROM = "forked_from"
 _PRIVATE_TO = "private_to"
 
@@ -126,10 +128,19 @@ def _entry(data: dict, name: str) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
-def get_model_managed(name: str) -> bool | None:
-    """Return the agent's managed flag, or ``None`` when unset (grandfathered)."""
+def get_model_managed(name: str, *, strict: bool = False) -> bool | None:
+    """Return the agent's managed flag, or ``None`` when unset (legacy status).
+
+    ``strict`` propagates the unreadable-sidecar error instead of degrading it to
+    ``None``, for the reason :func:`_read` gives about mutators: a caller whose
+    answer feeds a WRITE cannot treat "the file will not parse" as "no opinion
+    recorded". Both map to ``None`` here, and one of them means the spec may be
+    rewritten while the other means ownership is unknown. A display caller still
+    wants the lenient default -- a corrupt sidecar should grey out a roster badge,
+    not raise through a page render.
+    """
     with _lock:
-        value = _entry(_read(), name).get(_MODEL_MANAGED)
+        value = _entry(_read(strict=strict), name).get(_MODEL_MANAGED)
     return bool(value) if isinstance(value, bool) else None
 
 
@@ -162,6 +173,71 @@ def set_cc_model(name: str, value: str | None) -> None:
             entry[_CC_MODEL] = str(value)
         else:
             entry.pop(_CC_MODEL, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _write(data)
+
+
+def get_mirrored_from(name: str) -> str | None:
+    """Return the fingerprint of the default spec this agent was mirrored from.
+
+    A DERIVED agent (today only ``kirocrew-worker``) is a function of
+    ``kirocrew.json``, and this is the only durable record of WHICH generation of
+    that file it was derived from. It lives in the sidecar rather than in the spec
+    for the reason the whole sidecar exists: kiro-cli validates a spec with
+    ``deny_unknown_fields`` and DROPS one carrying a key it does not know, so a
+    bookkeeping field written into the spec would cost the agent its existence.
+    """
+    with _lock:
+        value = _entry(_read(), name).get(_MIRRORED_FROM)
+    return value if isinstance(value, str) and value else None
+
+
+def set_mirrored_from(name: str, value: str | None) -> None:
+    """Record (or clear) the default-spec fingerprint an agent was derived from."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        if value:
+            entry[_MIRRORED_FROM] = str(value)
+        else:
+            entry.pop(_MIRRORED_FROM, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _write(data)
+
+
+def get_mirrored_stat(name: str) -> str | None:
+    """Return the file IDENTITY of the default spec this agent was mirrored from.
+
+    Paired with :func:`get_mirrored_from`: the fingerprint says WHAT was mirrored, this
+    says which file instance it was read from. A caller compares it against the file's
+    current identity to decide whether hashing is needed at all -- an equality test on
+    one file, never an ordering test between two, because "newer" is not a property a
+    restored backup or a clock that steps backwards respects.
+    """
+    with _lock:
+        value = _entry(_read(), name).get(_MIRRORED_STAT)
+    return value if isinstance(value, str) and value else None
+
+
+def set_mirrored_stat(name: str, value: str | None) -> None:
+    """Record (or clear) the default-spec file identity an agent was derived from."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        if value:
+            entry[_MIRRORED_STAT] = str(value)
+        else:
+            entry.pop(_MIRRORED_STAT, None)
         if entry:
             data[name] = entry
         else:

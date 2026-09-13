@@ -287,11 +287,12 @@ class TestRuntimeMemberThreading:
         import kiro_crew.mcp_gateway.session_servers as session_servers_mod
 
         monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: Path("/agents"))
+        monkeypatch.setattr(kas_agents_mod, "load_agent_spec", lambda _dir, agent: {"name": agent})
         monkeypatch.setattr(
             session_servers_mod, "injection_server_names", lambda _o, _a: frozenset()
         )
 
-        def _capture(_dir, agent, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
             seen.append(member_dispatch)
             return [{"id": agent}]
 
@@ -353,12 +354,13 @@ class TestMemberServerJoinsSubtraction:
         import kiro_crew.mcp_gateway.session_servers as session_servers_mod
 
         monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: Path("/agents"))
+        monkeypatch.setattr(kas_agents_mod, "load_agent_spec", lambda _dir, agent: {"name": agent})
         monkeypatch.setattr(
             session_servers_mod, "injection_server_names", lambda _o, _a: frozenset()
         )
         seen: list[frozenset] = []
 
-        def _capture(_dir, agent, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
 
@@ -381,12 +383,13 @@ class TestMemberServerJoinsSubtraction:
         import kiro_crew.mcp_gateway.session_servers as session_servers_mod
 
         monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: Path("/agents"))
+        monkeypatch.setattr(kas_agents_mod, "load_agent_spec", lambda _dir, agent: {"name": agent})
         monkeypatch.setattr(
             session_servers_mod, "injection_server_names", lambda _o, _a: frozenset()
         )
         seen: list[frozenset] = []
 
-        def _capture(_dir, agent, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
 

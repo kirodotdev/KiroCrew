@@ -563,6 +563,7 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
 def build_kas_custom_agents(
     agents_dir: Path,
     agent_id: str,
+    spec: dict[str, Any],
     *,
     stub_server_names: frozenset[str] = frozenset(),
     member_dispatch: bool = False,
@@ -581,8 +582,17 @@ def build_kas_custom_agents(
     *stub_server_names* is forwarded to :func:`_project_mcp_servers`; the caller
     holds the gateway overlay this session will inject from, so it is the only
     layer that can answer which names are stubbed.
+
+    *spec* is REQUIRED and positional, and this function performs no read of its
+    own. Its answer becomes the session's whole tool surface, so it has to be
+    built from the spec the caller verified under the freshness gate -- reading the
+    file here would be a SECOND read, milliseconds later, and a revocation landing
+    in between would be projected as though it had been checked. A defaulted
+    parameter that fell back to :func:`load_agent_spec` would restore exactly that
+    hole for any caller that forgot to pass one, which is why there is no default.
+    *agents_dir* stays for :func:`resolve_prompt`, which anchors a ``file://``
+    prompt URI and reads a different artifact than the spec.
     """
-    spec = load_agent_spec(agents_dir, agent_id)
     prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
     return [
         to_client_custom_agent(

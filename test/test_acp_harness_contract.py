@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,11 @@ def kas_projection_stubbed(monkeypatch, tmp_path):
         session_servers_mod, "injection_server_names", lambda overlay, agent: frozenset()
     )
     monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: tmp_path)
+    # A real spec on disk: the harness reads it ITSELF now, under the gate, and hands the
+    # object to the projection -- so the read is part of what these tests exercise.
+    (tmp_path / "a.json").write_text(
+        json.dumps({"name": "a", "prompt": "p", "tools": []}), encoding="utf-8"
+    )
 
 
 # ── Registry ──
@@ -383,7 +389,7 @@ async def test_kas_projects_the_agent_spec(kas_projection_stubbed, monkeypatch, 
     monkeypatch.setattr(
         kas_agents_mod,
         "build_kas_custom_agents",
-        lambda d, a, *, stub_server_names, member_dispatch: projected,
+        lambda d, a, spec, *, stub_server_names, member_dispatch: projected,
     )
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
     assert extras.custom_agents == projected
@@ -422,7 +428,7 @@ async def test_kas_projection_refuses_an_untranslatable_spec(
     from kiro_crew.acp.kas_agents import KasAgentTranslationError
     from kiro_crew.acp.session_handle import AcpRuntimeError
 
-    def _boom(d, a, *, stub_server_names, member_dispatch):
+    def _boom(d, a, spec, *, stub_server_names, member_dispatch):
         raise KasAgentTranslationError("unreadable spec")
 
     monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", _boom)
@@ -444,7 +450,7 @@ async def test_kas_projection_survives_an_unreadable_overlay(
     def _boom(overlay, agent):
         raise OSError("overlay unreadable")
 
-    def _build(d, a, *, stub_server_names, member_dispatch):
+    def _build(d, a, spec, *, stub_server_names, member_dispatch):
         seen.append(frozenset(stub_server_names))
         return [{"name": a}]
 
@@ -468,7 +474,7 @@ async def test_kas_member_dispatch_subtracts_the_dashboard_server(
 
     seen: list[frozenset] = []
 
-    def _build(d, a, *, stub_server_names, member_dispatch):
+    def _build(d, a, spec, *, stub_server_names, member_dispatch):
         seen.append(frozenset(stub_server_names))
         return []
 

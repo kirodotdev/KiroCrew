@@ -201,7 +201,8 @@ async def test_kas_projection_preserves_direct_private_server(
         private_memory=private,
         mcp_gateway_overlay=broker_overlay,
     )
-    projected = await asyncio.wait_for(runtime._kas_custom_agents("kirocrew"), timeout=5)
+    extras = await asyncio.wait_for(runtime._kas_custom_agents("kirocrew"), timeout=5)
+    projected = extras.custom_agents
     assert projected
     server = projected[0].get("mcpServers", {}).get("builder")
     assert (server is not None) is private

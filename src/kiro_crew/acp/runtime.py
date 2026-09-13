@@ -56,6 +56,7 @@ from kiro_crew.acp.client import (
 from kiro_crew.acp.harness import (
     HarnessAdapter,
     NotificationAliases,
+    SessionExtras,
     SpawnContext,
     SpawnPlan,
     harness_for,
@@ -797,6 +798,10 @@ class AcpRuntime:
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
+        # What the pre-spawn freshness check verified, for the post-handshake half of
+        # the bracket. ``None`` until a spawn takes it, and ``None`` for every agent
+        # that mirrors no other spec.
+        self._derived_spec_snapshot: Any = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -1205,12 +1210,15 @@ class AcpRuntime:
     async def _resolve_spawn_plan(self) -> SpawnPlan:
         """Pre-sandbox argv for this runtime's backend, built by its harness.
 
-        Every flag, every pre-spawn gate and every side effect belongs to the
-        host, and the two hosts shipped today share none of them: one takes its
-        agent and model on the command line and needs its spec on disk first, the
-        other takes both over the wire and decides per spawn who owns the
-        credential. A host added later answers all of that in its own file, which
-        is the whole reason the argv is not assembled here.
+        Every flag and every HOST-SPECIFIC pre-spawn gate belongs to the host, and
+        the two hosts shipped today share none of them: one takes its agent and
+        model on the command line and needs its spec on disk first, the other
+        takes both over the wire and decides per spawn who owns the credential. A
+        host added later answers all of that in its own file, which is the whole
+        reason the argv is not assembled here. The derived-spec freshness gate is
+        the one exception, and the comment on it below says why: it is the same
+        check for every host, and it opens a bracket the runtime's own handshake
+        closes.
 
         ONE reading of the environment drives both the search and the message
         that reports it, so a "not found (searched ...)" line can never name
@@ -1238,6 +1246,34 @@ class AcpRuntime:
                 sandbox_mode=self._sandbox_mode,
             )
         )
+        # The ONE derived-spec gate on this path, and the one host-level gate that is
+        # the runtime's rather than the harness's: it is the same check for every host,
+        # and it returns the snapshot the POST-handshake check compares against, so both
+        # ends of that bracket must belong to the object that drives the handshake.
+        #
+        # AFTER ``resolve_spawn`` on purpose. It is the LAST verification before the
+        # process is created, so nothing between it and the exec can re-derive: a gate
+        # that ran before the host's own pre-spawn work would let a re-derive land in
+        # between, and the child would then load the NEWER spec while the
+        # post-handshake check compared against the older snapshot and killed a valid
+        # session. It also puts the host's materialization self-heal FIRST, so a missing
+        # default spec is repaired on the path that can repair it instead of refused.
+        #
+        # Not inside the harness either, and not once per harness: that shape leaves one
+        # hole per host nobody named, and the two shipped hosts already disagreed about
+        # it -- only one of them gated.
+        #
+        # Converted to the runtime's abort type, like every other refusal on this path.
+        # One extra stat (and at most one hash) on a path that is already spawning a
+        # process.
+        from kiro_crew.agent import DerivedSpecStale, require_fresh_derived_spec
+
+        try:
+            self._derived_spec_snapshot = await asyncio.to_thread(
+                require_fresh_derived_spec, self._agent, self._work_dir
+            )
+        except DerivedSpecStale as exc:
+            raise AcpRuntimeError(str(exc)) from exc
         self._kas_host_auth = plan.host_auth
         return plan
 
@@ -1258,7 +1294,7 @@ class AcpRuntime:
         started = time.monotonic()
         outcome = "error"
         try:
-            await self._spawn_admitted()
+            await self._spawn_admitted_rederiving_once()
             outcome = "ready"
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -1282,6 +1318,46 @@ class AcpRuntime:
                 process_state,
             )
             admission.release()
+
+    async def _spawn_admitted_rederiving_once(self) -> None:
+        """``_spawn_admitted``, retried ONCE when the post-handshake bracket fires.
+
+        The bracket around a derived spec's load fails CLOSED: a write to the default
+        spec landing between the pre-spawn gate and the ``initialize`` response kills
+        the child, because the spec it loaded may be a generation nobody verified. That
+        is the right answer for a revocation. It is the WRONG surface for a benign write
+        -- the dashboard's MCP sync, an app registration, the periodic rebuild -- whose
+        only effect on the worker is that its mirror needs re-deriving, and which
+        happens to land inside a spawn's few-hundred-millisecond window. Those are
+        ordinary events, and surfacing each as a failed dispatch would make the fleet
+        flaky exactly when an operator is changing things.
+
+        So: one retry, and only for THAT refusal. The second attempt runs the pre-spawn
+        gate again, which re-derives the mirror from the default as it now stands, and
+        spawns a fresh child on it. If the default is still moving the second bracket
+        fires too and the refusal propagates -- a file that will not hold still across
+        two spawns is not a benign write. Never a loop: the exit condition is another
+        process leaving the file alone.
+
+        Narrow on purpose. ``DerivedSpecStale`` from ``_initialize`` is the post-check;
+        the pre-spawn gate's own refusal (a mirror that CANNOT be re-derived) arrives as
+        ``AcpRuntimeError`` and is not retried, because a second attempt would fail the
+        same way for the same reason.
+        """
+        from kiro_crew.agent import DerivedSpecStale
+
+        try:
+            await self._spawn_admitted()
+        except DerivedSpecStale as first:
+            logger.info(
+                "acp_cold_start stage=rederive outcome=retry backend=%s reason=%s",
+                self._acp_backend or "kiro",
+                first,
+            )
+            try:
+                await self._spawn_admitted()
+            except DerivedSpecStale as second:
+                raise AcpRuntimeError(str(second)) from second
 
     async def _spawn_admitted(self) -> None:
         """Spawn and initialize after the caller has acquired cold-start admission."""
@@ -1668,6 +1744,17 @@ class AcpRuntime:
             _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
             self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
             self._agent_version = agent_version_from_init(init_resp)
+
+            # The subprocess has now read its agent spec, which closes the window the
+            # pre-spawn snapshot opened: a write landing before this point is caught
+            # here, and one landing after cannot change what kiro-cli already loaded.
+            # Deliberately INSIDE the guard below -- it kills the process, reaps the
+            # PID-file entries and the protected-PID shield, then re-raises -- because
+            # a session that may have loaded an unverified spec must not survive, and
+            # leaving the process behind would be a worse outcome than the stale spec.
+            from kiro_crew.agent import require_unchanged_derived_spec
+
+            await asyncio.to_thread(require_unchanged_derived_spec, self._derived_spec_snapshot)
             self._initialized = True
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
@@ -3202,11 +3289,96 @@ class AcpRuntime:
                 f"--agent-only` to rewrite the agent config."
             )
 
+    async def _activate_mode_bracketed(
+        self,
+        session_id: str,
+        mode_agent: str,
+        *,
+        budget: float,
+        payload_snapshot: Any,
+        wire_registered: bool,
+    ) -> None:
+        """Send ``session/set_mode`` for *mode_agent* inside the derived-spec bracket.
+
+        ONE body for both session-start paths (create and resume), because the bracket
+        is a protocol and a protocol written twice is two protocols the moment one copy
+        is edited. Any failure terminates *session_id* first: ``session/new`` or
+        ``session/load`` already succeeded, so the session exists in the host and a
+        plain local unregister would leak it in the shared process.
+
+        A ``set_mode`` naming an agent activates that agent's spec, and the spec it
+        activates needs the same bracket the spawn's does. Neither other gate reaches
+        here: the spawn gate is keyed to ``self._agent``, so a SHARED runtime spawned
+        as one agent and switched to another on this line passes no gate, and a host
+        that builds no in-process tool surface never runs ``session_mcp``'s gate.
+
+        WHERE the spec is consumed differs by host, and that decides which snapshot the
+        post-check may use -- exactly ONE per consumed load:
+
+        * ``wire_registered`` -- the spec was consumed at ``session/new``, in the wire
+          payload built under the projection's own gate; ``set_mode`` activates what is
+          already registered and re-reads nothing. A fresh read HERE would judge the
+          file while the host holds the payload, so a revocation landing between the
+          build and this line would pass that read while the registered definition
+          still carried the grants it removed. The post-check compares against the
+          payload's OWN snapshot. No gate call on this path: a second snapshot for one
+          consumed load is the defect, not a safeguard.
+        * otherwise -- the spec is consumed HERE: kiro-cli reads it from disk at
+          ``set_mode`` and boots that agent's MCP servers. Gated BEFORE the send,
+          because a stale mirror activated here mounts and auto-approves a server the
+          default agent does not have.
+
+        After the send returns the host has consumed the spec, which closes the window
+        the snapshot opened: a write landing before that point is caught, and one
+        landing after cannot change what was already consumed. Same answer as the
+        ``initialize`` bracket -- a session that may have activated an unverified spec
+        must not survive.
+        """
+        from kiro_crew.agent import (
+            DerivedSpecStale,
+            require_fresh_derived_spec,
+            require_unchanged_derived_spec,
+        )
+
+        if wire_registered:
+            mode_snapshot = payload_snapshot
+        else:
+            try:
+                mode_snapshot = await asyncio.to_thread(
+                    require_fresh_derived_spec, mode_agent, self._work_dir
+                )
+            except DerivedSpecStale as exc:
+                await self.terminate_session(session_id)
+                raise AcpRuntimeError(str(exc)) from exc
+        try:
+            # set_mode is a handshake request: switching to an agent boots THAT
+            # agent's MCP servers, the same server (re-)initialization that gives
+            # session/new and session/load their 90s budget. A switched-to server
+            # pending OAuth holds the response for its full 30s wait, so the generic
+            # _REQUEST_TIMEOUT would turn set_mode into the SAME race the
+            # session-start floor exists to prevent (see _SESSION_NEW_TIMEOUT).
+            await self._send_and_await(
+                METHOD_SET_MODE, set_mode_params(session_id, mode_agent), timeout=budget
+            )
+        except Exception:
+            await self.terminate_session(session_id)
+            raise
+        try:
+            await asyncio.to_thread(require_unchanged_derived_spec, mode_snapshot)
+        except DerivedSpecStale as exc:
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(str(exc)) from exc
+
     async def _kas_custom_agents(
         self, agent: str, *, member_dispatch: bool = False
-    ) -> list[dict[str, Any]] | None:
-        """Agent definitions to carry on session start, or None when the host took
-        its agent at spawn time.
+    ) -> SessionExtras:
+        """The per-session payload for a wire-registered host, and what built it.
+
+        ``custom_agents`` is None when the host took its agent at spawn time.
+        ``derived_spec_snapshot`` is the generation that payload was built from, and the
+        activation check compares against IT rather than re-reading the file: a
+        ``set_mode`` activates a definition that is already registered, so a fresh read
+        there would judge a different artifact than the one the host holds.
 
         A thin read of the harness's per-session extras, kept under this name
         because both session-start paths and the tests around them ask for it
@@ -3222,7 +3394,7 @@ class AcpRuntime:
             mcp_gateway_overlay=self._mcp_gateway_overlay,
             member_dispatch=member_dispatch,
         )
-        return extras.custom_agents
+        return extras
 
     async def _session_start_budget(self) -> float:
         """The session/new + session/load budget, resolved per session start.
@@ -3403,9 +3575,13 @@ class AcpRuntime:
         # Adapter-only seam: _kas_custom_agents returns None on the kiro backend,
         # so the kiro construction path gains no conditional, no new required
         # argument, and no new failure mode (harness-parity H13).
-        kas_agents = await self._kas_custom_agents(
+        kas_extras = await self._kas_custom_agents(
             active_agent, member_dispatch=bool(member_session_key)
         )
+        kas_agents = kas_extras.custom_agents
+        # The generation the wire payload was built from, or None when this host takes its
+        # agent at spawn time. Consumed by the activation bracket below.
+        payload_snapshot = kas_extras.derived_spec_snapshot
         session_work_dir = await self._session_work_dir(cwd)
         # The host's last word on its own tool surface. A host that reads an
         # agent spec passes the list straight back; one that has nothing else
@@ -3527,29 +3703,18 @@ class AcpRuntime:
             # Measured BEFORE the request goes out, which is the only moment the
             # answer is unambiguous: everything queued right now initialized
             # under the pre-switch mode. Reading it after set_mode returns would
-            # count the switched-to agent's own registrations — which kiro-cli
-            # can emit before it answers — as pre-switch, and those frames are
+            # count the switched-to agent's own registrations -- which kiro-cli
+            # can emit before it answers -- as pre-switch, and those frames are
             # then consumed without being recorded, leaving the panel at a false
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            try:
-                # set_mode is a handshake request: switching to an agent boots
-                # THAT agent's MCP servers (see the mode_switched comment below),
-                # the same server (re-)initialization that gives session/new and
-                # session/load their 90s budget. A switched-to server pending
-                # OAuth holds the response for its full 30s wait, so the generic
-                # _REQUEST_TIMEOUT turns set_mode into the SAME race the
-                # session-start floor exists to prevent (see
-                # _SESSION_NEW_TIMEOUT). `budget` is already resolved for the session/new
-                # above, so reuse it rather than re-reading config.
-                await self._send_and_await(
-                    METHOD_SET_MODE,
-                    set_mode_params(session_id, mode_agent),
-                    timeout=budget,
-                )
-            except Exception:
-                await self.terminate_session(session_id)
-                raise
+            await self._activate_mode_bracketed(
+                session_id,
+                mode_agent,
+                budget=budget,
+                payload_snapshot=payload_snapshot,
+                wire_registered=kas_agents is not None,
+            )
             # Whether set_mode actually SWITCHED modes: the servers that
             # initialized during session/new belong to the mode kiro-cli
             # started the session on. If the requested agent differs, those
@@ -3756,13 +3921,18 @@ class AcpRuntime:
         # meaning "this host needs its agent re-sent on resume" that could answer
         # it instead — the projection's own None is the only such signal, and
         # consuming it is what would cost the kiro path the awaited step.
+        # None on the kiro path, where the host took its agent at spawn time; on KAS it is
+        # the generation the wire payload was built from, and the activation bracket below
+        # compares against it rather than re-reading the file.
+        kas_agents = None
+        payload_snapshot = None
         if self._acp_backend == ACP_BACKEND_KAS:
-            attach_kas_custom_agents(
-                load_params,
-                await self._kas_custom_agents(
-                    active_agent, member_dispatch=bool(member_session_key)
-                ),
+            kas_extras = await self._kas_custom_agents(
+                active_agent, member_dispatch=bool(member_session_key)
             )
+            kas_agents = kas_extras.custom_agents
+            payload_snapshot = kas_extras.derived_spec_snapshot
+            attach_kas_custom_agents(load_params, kas_agents)
         budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
         loaded_session_id = ""
@@ -3853,23 +4023,21 @@ class AcpRuntime:
         # spec has no mode to resume onto either.
         mode_agent = agent if self._activates_agent_by_mode() else None
         if mode_agent and self._mode_available(mode_agent, resp):
-            # Same reason as create_session: measured before the request goes
-            # out, the only moment "queued" and "pre-switch" mean the same thing.
+            # Measured BEFORE the request goes out, which is the only moment the
+            # answer is unambiguous: everything queued right now initialized
+            # under the pre-switch mode. Reading it after set_mode returns would
+            # count the switched-to agent's own registrations -- which kiro-cli
+            # can emit before it answers -- as pre-switch, and those frames are
+            # then consumed without being recorded, leaving the panel at a false
+            # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            try:
-                # Same as create_session: set_mode on the resume path boots the
-                # switched-to agent's MCP servers, so it shares session/load's
-                # 90s budget rather than the generic _REQUEST_TIMEOUT that the
-                # backend's own 30s OAuth wait would race. `budget` is
-                # the session-start budget already resolved above.
-                await self._send_and_await(
-                    METHOD_SET_MODE,
-                    set_mode_params(resume_sid, mode_agent),
-                    timeout=budget,
-                )
-            except Exception:
-                await self.terminate_session(resume_sid)
-                raise
+            await self._activate_mode_bracketed(
+                resume_sid,
+                mode_agent,
+                budget=budget,
+                payload_snapshot=payload_snapshot,
+                wire_registered=kas_agents is not None,
+            )
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
             _ids, _current, _adv = parse_session_modes(resp)

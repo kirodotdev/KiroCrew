@@ -4420,7 +4420,9 @@ class TestAcpRuntimeLoadSession:
             return {}
 
         async def _fake_agents(agent, *, member_dispatch=False):
-            return [{"id": agent, "prompt": "p", "tools": []}]
+            from kiro_crew.acp.harness import SessionExtras
+
+            return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
         monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
@@ -4462,7 +4464,9 @@ class TestAcpRuntimeLoadSession:
             return {}
 
         async def _fake_agents(agent, *, member_dispatch=False):
-            return [{"id": agent, "prompt": "p", "tools": []}]
+            from kiro_crew.acp.harness import SessionExtras
+
+            return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
         monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
@@ -4495,8 +4499,10 @@ class TestAcpRuntimeLoadSession:
             return {}
 
         async def _fake_agents(agent, *, member_dispatch=False):
+            from kiro_crew.acp.harness import SessionExtras
+
             calls.append(agent)
-            return [{"id": agent, "prompt": "p", "tools": []}]
+            return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
         monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)

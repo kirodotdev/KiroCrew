@@ -85,6 +85,7 @@ from kiro_crew.agent import (
     agent_spec_path,
     ensure_agent_materialized,
     managed_mcp_spec_entry,
+    require_fresh_derived_spec,
 )
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
@@ -288,6 +289,25 @@ def _project_spec_path_for(agent: str, work_dir: str | Path | None) -> Path | No
 def _agent_spec_for(agent: str, work_dir: str | Path | None = None) -> dict[str, Any] | None:
     """The materialized kiro spec for *agent*, or ``None`` when unreadable.
 
+    The spec alone; :func:`_agent_spec_and_snapshot_for` is the same read returning
+    also the freshness snapshot a derived agent was verified against, for the caller
+    whose ``session/new`` array CONSUMES that spec and has to re-verify it afterwards.
+    """
+    return _agent_spec_and_snapshot_for(agent, work_dir)[0]
+
+
+def _agent_spec_and_snapshot_for(
+    agent: str, work_dir: str | Path | None = None
+) -> tuple[dict[str, Any] | None, Any]:
+    """The spec for *agent* AND the ``DerivedSpecSnapshot`` it was verified against.
+
+    The second element is ``None`` for every agent that mirrors nothing. For a derived
+    agent it is the snapshot whose bytes are returned as the first element, so the
+    caller can prove after the host has consumed them -- at the ``session/new`` or
+    ``session/load`` response -- that the default spec did not change in between. A
+    caller that dropped it would have the gate and the projection but no way to close
+    the window between them.
+
     **Project-nearest first.** kiro-cli resolves ``--agent`` against the project
     checkout as well as the user level, so a project-only agent must not read as
     "no spec": that dropped its ``tools`` allowlist and mounted the control plane
@@ -298,6 +318,10 @@ def _agent_spec_for(agent: str, work_dir: str | Path | None = None) -> dict[str,
     Materializes first: a source checkout that skipped setup has no spec on disk
     at all, and the claude spawn path -- unlike kiro-cli's ``--agent`` one -- has
     no other reason to write it. Best-effort and never raises.
+
+    A DERIVED agent (``kirocrew-worker``) is answered from the freshness gate's own
+    snapshot and reads nothing here -- see the comment at that branch for why a read
+    after the gate is a second observation rather than a tighter one.
 
     Reads through ``agent_discovery._read_agent_spec``, the module's documented
     ONE reader, rather than parsing the file here: the agents directory is
@@ -311,22 +335,42 @@ def _agent_spec_for(agent: str, work_dir: str | Path | None = None) -> dict[str,
     ``"unknown"`` because a session is started from every channel Crew has.
     """
     ensure_agent_materialized(agent)
+    # Refuse a derived spec that predates the default rather than PROJECT it: this
+    # function's answer becomes the session's MCP surface, so a stale mirror here is
+    # the revoked server reaching the session.
+    snapshot = require_fresh_derived_spec(agent, work_dir)
+    if snapshot is not None and snapshot.spec is not None:
+        # The snapshot travels WITH the bytes. This is the ONE consumption the array-
+        # backed hosts have -- they read no spec of their own, the array IS the load --
+        # so the post-consume check has to compare against this observation and not a
+        # fresh one taken later, which would judge the file rather than the array.
+        # ZERO reads below this line for a derived agent. The gate already read and
+        # verified those bytes, so re-reading the file here would be a SECOND
+        # observation of it -- and a revocation landing between the two would become the
+        # session's MCP surface as though it had been checked. No lock closes that gap:
+        # both halves are this process's own reads, so the second read is removed rather
+        # than re-verified. The project-spec branch below is unreachable for a derived
+        # agent anyway: the gate REFUSES a checkout that declares one.
+        return snapshot.spec, snapshot
     project = _project_spec_path_for(agent, work_dir)
     if project is not None:
-        return _read_agent_spec(project, operation="session_mcp_project_agent", source="unknown")
+        return (
+            _read_agent_spec(project, operation="session_mcp_project_agent", source="unknown"),
+            None,
+        )
     try:
         path = agent_spec_path(agent)
     except ValueError:
         # Two specs declare this name, so which one is live is undefined. No
         # answer is the honest one; the control plane still loads below.
         logger.warning("session MCP: ambiguous agent spec for %r", agent, exc_info=True)
-        return None
+        return None, None
     if path is None:
         logger.info(
             "session MCP: no spec on disk for agent %r; loading Crew's control plane only", agent
         )
-        return None
-    return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
+        return None, None
+    return _read_agent_spec(path, operation="session_mcp_servers", source="unknown"), None
 
 
 def agent_spec_snapshot(
@@ -536,6 +580,11 @@ class SessionMcpProjection(NamedTuple):
     #: The ``tools`` allowlist the translated half was filtered by, so a caller
     #: appending elements of its own (pooled stubs) can hold them to the same one.
     allowlist: ToolsAllowlist
+    #: The ``agent.DerivedSpecSnapshot`` the spec above was verified against, or
+    #: ``None`` for an agent that mirrors nothing. The array IS where an array-backed
+    #: host consumes the spec, so the caller re-verifies THIS after ``session/new`` /
+    #: ``session/load`` -- one snapshot per consumed load.
+    derived_spec_snapshot: Any = None
 
 
 def session_mcp_projection(
@@ -565,7 +614,7 @@ def session_mcp_projection(
     Blocking (parses the spec and the global settings file once each), so callers
     run it off the event loop.
     """
-    spec = _agent_spec_for(agent, work_dir) if agent else None
+    spec, snapshot = _agent_spec_and_snapshot_for(agent, work_dir) if agent else (None, None)
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings
@@ -577,6 +626,7 @@ def session_mcp_projection(
         restricted=session_mcp_restricted_servers(disabled_tools),
         disabled_tools=disabled_tools,
         allowlist=_tools_allowlist(spec),
+        derived_spec_snapshot=snapshot,
     )
 
 

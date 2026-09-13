@@ -21,6 +21,7 @@ from kiro_crew.acp.kas_agents import (
     KAS_MAX_CUSTOM_AGENTS,
     KasAgentTranslationError,
     build_kas_custom_agents,
+    load_agent_spec,
     resolve_prompt,
     to_client_custom_agent,
 )
@@ -413,7 +414,8 @@ class TestPromptResolution:
         (tmp_path / "kirocrew-lite.json").write_text(
             json.dumps({"name": "kirocrew-lite", "tools": [], "prompt": ""}), encoding="utf-8"
         )
-        agents = build_kas_custom_agents(tmp_path, "kirocrew-lite")
+        spec = load_agent_spec(tmp_path, "kirocrew-lite")
+        agents = build_kas_custom_agents(tmp_path, "kirocrew-lite", spec)
         assert agents[0]["prompt"] == _KAS_FALLBACK_PROMPT
         # Tool restriction is preserved — the fallback only supplies a prompt.
         assert agents[0]["tools"] == []
@@ -707,8 +709,13 @@ class TestRuntimeSuppliesTheStubbedSet:
 
         monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _a: None)
         monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: Path("/agents"))
+        # The projection is handed the spec the harness read under the gate, so the read
+        # is the harness's own and is stubbed here rather than inside the builder.
+        monkeypatch.setattr(
+            kas_agents_mod, "load_agent_spec", lambda _dir, agent: {"name": agent, "prompt": "p"}
+        )
 
-        def _capture(_dir, agent, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
             seen.append(stub_server_names)
             return [{"id": agent}]
 
@@ -764,4 +771,4 @@ class TestRuntimeSuppliesTheStubbedSet:
         out = await rt._kas_custom_agents("kirocrew")
 
         assert seen == [frozenset()]
-        assert out == [{"id": "kirocrew"}]
+        assert out.custom_agents == [{"id": "kirocrew"}]

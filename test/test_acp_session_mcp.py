@@ -436,13 +436,13 @@ class TestMounting:
             agents_dir, servers={"srv": {"command": "/s", "disabledTools": ["t"]}}, tools=["@srv"]
         )
         reads: list[str] = []
-        real = session_mcp._agent_spec_for
+        real = session_mcp._agent_spec_and_snapshot_for
 
         def counting(agent, work_dir=None):
             reads.append(agent)
             return real(agent, work_dir)
 
-        monkeypatch.setattr(session_mcp, "_agent_spec_for", counting)
+        monkeypatch.setattr(session_mcp, "_agent_spec_and_snapshot_for", counting)
         # Explicit None: no spec, nothing read, control plane only, nothing switched off.
         names = [e["name"] for e in session_mcp.session_mcp_servers("kirocrew", spec=None)]
         assert names == ["kirocrew-core", "kirocrew-cron"]
@@ -460,14 +460,14 @@ class TestMounting:
         helper may see it. Every part of the projection reflects the SAME read."""
         spec_path = agents_dir / "kirocrew.json"
         _write_spec(agents_dir, servers={"late": {"command": "/l"}}, tools=["@late"])
-        real = session_mcp._agent_spec_for
+        real = session_mcp._agent_spec_and_snapshot_for
         calls = {"n": 0}
 
         def flapping(agent, work_dir=None):
             calls["n"] += 1
-            return None if calls["n"] == 1 else real(agent, work_dir)
+            return (None, None) if calls["n"] == 1 else real(agent, work_dir)
 
-        monkeypatch.setattr(session_mcp, "_agent_spec_for", flapping)
+        monkeypatch.setattr(session_mcp, "_agent_spec_and_snapshot_for", flapping)
         projection = session_mcp.session_mcp_projection("kirocrew")
         assert calls["n"] == 1, "a helper read the spec behind the projection's back"
         assert "late" not in [e["name"] for e in projection.servers]

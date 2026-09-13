@@ -149,9 +149,13 @@ from kiro_crew.acp.types import (
     model_registry_namespace,
 )
 from kiro_crew.agent import (
+    DerivedSpecSnapshot,
+    DerivedSpecStale,
     ForkGovernanceUnresolved,
     ensure_agent_materialized,
     require_fork_governance,
+    require_fresh_derived_spec,
+    require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.atomic_write import atomic_write
@@ -3660,6 +3664,13 @@ class AcpClient:
         # (harness-parity H13). None = not resolved yet; cleared on reset so the
         # next spawn re-reads the spec. See _session_mcp_servers.
         self._session_mcp_cache: list[dict[str, Any]] | None = None
+        # The ``DerivedSpecSnapshot`` that array was built from, or None when this
+        # session's agent mirrors nothing. For an array-backed host the array IS the
+        # spec the host consumes -- it reads no spec of its own -- so the bracket the
+        # kiro-cli path closes at ``initialize`` closes HERE at the ``session/new`` /
+        # ``session/load`` response instead, against this snapshot. Resolved and
+        # cleared together with the array, for the same per-spawn freshness reason.
+        self._session_mcp_snapshot: DerivedSpecSnapshot | None = None
         # This session's agent spec, snapshotted once per spawn for the
         # unresolved-ref guard alone (see _guard_unresolved_mcp_refs). Held for
         # the same reason as the array above and read at the same kind of site:
@@ -3668,6 +3679,14 @@ class AcpClient:
         # unreadable), which makes the guard a no-op rather than a disk read on
         # the loop. Cleared on reset so the next spawn re-reads the spec.
         self._mcp_ref_spec: dict[str, Any] | None = None
+        # What the pre-spawn freshness gate verified for THIS child, captured in
+        # _spawn and re-verified in _initialize_session once the child has read its
+        # spec. _spawn is the only writer and it runs before any handshake, so the
+        # value the post-load half reads always belongs to the live process.
+        # Deliberately NOT cleared on reset: a retained snapshot can only ever be
+        # over-strict, while a None substituted there would short-circuit the
+        # re-check on any path that reached it. None = no spawn yet.
+        self._derived_spec_snapshot: DerivedSpecSnapshot | None = None
         # What THIS session's agent said it can carry MCP over, straight from
         # initialize's ``agentCapabilities.mcpCapabilities``. Held because the codex
         # projection must not send a transport the adapter did not claim -- one such
@@ -4079,6 +4098,9 @@ class AcpClient:
             channel_id=self._channel_id or "",
         )
         self._spec_denied_tools = projection.denied_tools
+        # Kept beside the array it describes, so the post-consume check judges the
+        # generation these elements were built from and not a later read of the file.
+        self._session_mcp_snapshot = projection.derived_spec_snapshot
         servers = projection.params.get("mcpServers") or []
         out = list(servers) if isinstance(servers, list) else []
         return self._append_member_dispatch_server(out)
@@ -6135,6 +6157,25 @@ class AcpClient:
                 await asyncio.to_thread(ensure_agent_materialized, self._agent)
             except Exception:
                 logger.warning("pre-spawn agent materialization failed", exc_info=True)
+            # ALSO not best-effort, and for the same reason as the fork gate below: a
+            # DERIVED spec (kirocrew-worker) that predates the default agent's still
+            # mounts and auto-approves a server the default does not have, so
+            # proceeding would run ungoverned grants. Repairs first and refuses only
+            # when it cannot -- a refused dispatch is recoverable and reportable,
+            # which a worker running on a revoked server is not.
+            try:
+                derived_snapshot = await asyncio.to_thread(
+                    require_fresh_derived_spec, self._agent, self._work_dir
+                )
+            except DerivedSpecStale as exc:
+                raise AcpError(str(exc)) from exc
+            # Captured for the post-load half of the bracket, which is NOT here: this
+            # method creates the child and returns after bookkeeping, so at this point
+            # the subprocess has not provably read its spec and closing the bracket
+            # would prove nothing. ``_initialize_session`` closes it against this
+            # object, at the ``initialize`` response -- the earliest signal that the
+            # read happened. Same pairing as the AcpRuntime path.
+            self._derived_spec_snapshot = derived_snapshot
             # NOT best-effort: a fork-backed agent may not spawn until fork
             # governance is re-projected, and a failed or timed-out refresh
             # ABORTS the spawn — its on-disk allowedTools/autoApprove bypass
@@ -6812,6 +6853,7 @@ class AcpClient:
         # lets installing or toggling a server take effect on the next session, so
         # a replacement process must not inherit this one's snapshot.
         self._session_mcp_cache = None
+        self._session_mcp_snapshot = None
         # Same per-spawn freshness rule as the array above: an edited spec must be
         # what the next session's guard judges, not this one's.
         self._mcp_ref_spec = None
@@ -7054,6 +7096,28 @@ class AcpClient:
         self._agent_mcp_capabilities = dict(advertised) if isinstance(advertised, dict) else {}
         self._agent_version = agent_version_from_init(init_resp)
 
+        # The subprocess has now read its agent spec, which closes the window the
+        # pre-spawn snapshot opened: a write landing before this point is caught here,
+        # and one landing after cannot change what kiro-cli already loaded. BEFORE
+        # session/load or session/new, so a session is never created on a spec nobody
+        # verified. Off-loop: one stat, and a hash only when the stat differs.
+        #
+        # Converted to ``AcpError`` for the SAME reason the pre-spawn gate above is:
+        # that is the type ``ensure_ready`` handles, and its handler is what ends the
+        # child and drops the half-registered session state --
+        # ``_cleanup_failed_live_spawn`` kills the process, releases the workspace
+        # binding and discards the settings seed, and ``_reset_state`` closes the
+        # pipes and clears the PIDs, the session id and the per-spawn spec caches.
+        # A raw ``DerivedSpecStale`` (a ``RuntimeError``) matches none of those
+        # handlers and would leave a live child running on an unverified spec. The one
+        # retry that handler allows is not a way past this: it respawns, so it goes
+        # back through the pre-spawn gate and either re-derives from the default as it
+        # now stands or refuses again. Nothing continues on this child.
+        try:
+            await asyncio.to_thread(require_unchanged_derived_spec, self._derived_spec_snapshot)
+        except DerivedSpecStale as exc:
+            raise AcpError(str(exc)) from exc
+
         # 2. Try session/load if we have a resume ID and kiro-cli supports it
         self._resumed = False
         resume_sid = self._resume_session_id
@@ -7200,6 +7264,23 @@ class AcpClient:
                 self._jsonl_pos = _jpath.stat().st_size if _jpath.exists() else 0
             except OSError:
                 self._jsonl_pos = 0
+
+        # The host has now consumed the ``mcpServers`` array, by whichever route created
+        # the session -- ``session/load``, ``session/new``, or the substitution retry --
+        # and every route sends the same cached array. For an array-backed host that
+        # array IS the derived spec: the child reads no spec of its own, so the
+        # ``initialize`` check above (which judges the kiro-cli ``--agent`` read) does
+        # not cover it. This is the other end of THAT bracket: a write landing between
+        # the array's build and this point is caught, and one landing after cannot
+        # change what the host already registered. ``None`` for every agent that
+        # mirrors nothing, and for the kiro-cli path, which sends no array. Converted
+        # to ``AcpError`` for the reason the two checks above are: that is the type
+        # ``ensure_ready`` handles, and its handler is what ends the child and drops
+        # the half-registered session state.
+        try:
+            await asyncio.to_thread(require_unchanged_derived_spec, self._session_mcp_snapshot)
+        except DerivedSpecStale as exc:
+            raise AcpError(str(exc)) from exc
 
         # 4. Activate agent via set_mode (claude-agent-acp does not support set_mode — skip).
         #    Guard (A): fire only when the backend advertised this agent, or
