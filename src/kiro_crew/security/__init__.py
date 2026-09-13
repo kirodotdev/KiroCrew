@@ -328,6 +328,7 @@ from .paths import (
     DENIED_ROOT_PARTS,
     MAX_SCANNABLE_COMMAND_CHARS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
+    UNVERIFIABLE_PATH_ANCHOR,
     PathResolutionStalled,
     _candidate_forms,
     _expanded_env_root,
@@ -345,6 +346,7 @@ from .paths import (
     _path_resolve_lock,
     _path_resolve_wedged,
     _realpath_or_none,
+    _realpaths_or_none,
     _rebuild_targets_bounded,
     _resolve_root_anchors,
     _resolved_env_root,
@@ -362,6 +364,7 @@ from .paths import (
     path_contains_sensitive,
     sandbox_credential_targets,
     sensitive_home_dirs,
+    sensitive_path_refusal,
     write_protected_home_paths,
 )
 from .redaction import (

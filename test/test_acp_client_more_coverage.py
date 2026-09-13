@@ -781,6 +781,37 @@ class TestEnsureReady:
             release.set()  # let the worker thread go; the test must not leak it
 
     @pytest.mark.asyncio
+    async def test_sandbox_preflight_expiry_aborts_the_resolver_helper(self, monkeypatch):
+        """The expired worker is most likely blocked in the resolver helper's request,
+        holding its process-wide request lock; without the abort every other path
+        check queues behind it until the mount recovers or the gateway restarts."""
+        import threading
+
+        monkeypatch.setattr(acp_client, "_SANDBOX_PREFLIGHT_TIMEOUT", 0.05)
+        asked: list[int | None] = []
+        monkeypatch.setattr(
+            acp_client.pathres_client.helper(),
+            "abort_if_inflight",
+            lambda tid: asked.append(tid) or True,
+        )
+        release = threading.Event()
+        worker: list[int] = []
+
+        def _stalled(backend, mode):
+            worker.append(threading.get_native_id())
+            release.wait(5.0)
+            return ()
+
+        try:
+            with pytest.raises(AcpError, match="did not finish within 0 s"):
+                await acp_client._run_preflight_bounded(_stalled, "codex", "standard")
+        finally:
+            release.set()
+        # Attributed to the worker that ran the preflight, so a worker queued behind
+        # another request's wedge does not fault a healthy helper.
+        assert asked == worker and len(worker) == 1
+
+    @pytest.mark.asyncio
     async def test_sandbox_preflight_within_budget_returns_the_mask(self):
         calls = []
 

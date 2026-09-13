@@ -30,9 +30,9 @@ What counts as "refused"
 The whole composite the tool gate applies to a shell command, in its order, not
 just the rule catalog -- see :data:`_TIERS`. Each of those checks returns a denial
 at ``hooks.on_tool_call``, so a gate that measured only the last would go green on
-a tightening of the first three and the green badge would then stand as evidence
+a tightening of the first two and the green badge would then stand as evidence
 the question was asked. The reported tier says which one decided, because "the
-path fence refused it" and "a catalog rule matched it" need different fixes.
+sensitive-command tier refused it" and "a catalog rule matched it" need different fixes.
 ``enabled_ids``/``denied_regexes`` are left at their defaults, which fails closed
 to every built-in rule enabled -- the strictest posture an operator can be
 running, and the only one that needs no config.
@@ -120,16 +120,15 @@ _PLATFORMS = frozenset({"any", "posix", "windows"})
 #: would otherwise reach this file, so the differential would keep passing while
 #: quietly covering less of the product than it says.
 _TIERS: tuple[tuple[str, str], ...] = (
-    ("sensitive-path", "is_sensitive_path"),
+    # No path tier: the gate reads a PATH there and a shell command is command text,
+    # which ``hooks.on_tool_call`` deliberately does not match paths in (the OS
+    # sandbox holds the credential stores away from the shell). Measuring it here
+    # would refuse a valid golden command whenever the resolver stalled.
     ("sensitive-bash", "is_sensitive_bash_command"),
     ("exfil", "audit_bash_exfiltration"),
     ("deny-rules", "is_denied"),
 )
 
-#: Reason reported for a tier whose check answers True/False rather than a string.
-#: The path fence is the one such check, and a bare ``True`` would otherwise render
-#: as an empty refusal in the report.
-_BOOL_TIER_REASON = "Blocked: access to sensitive path"
 
 #: Seconds a single classification child may take for the WHOLE corpus. One
 #: child classifies every row, so this bounds the gate at two spawns, not two
@@ -182,7 +181,8 @@ class Verdict:
     """What one ref's deny composite said about one command.
 
     ``tier`` names which of :data:`_TIERS` decided, so a reader knows whether to
-    look at the path fence or at the rule catalog. Empty when nothing refused.
+    look at the sensitive-command tier, the exfiltration auditor or the rule catalog.
+    Empty when nothing refused.
     """
 
     denied: bool
@@ -532,10 +532,7 @@ def _worker_main() -> int:
                 break
             if not outcome:
                 continue
-            # The path fence answers True/False; the other three answer a reason or
-            # None. Both shapes mean "refused", and a bare True must not render as
-            # an empty refusal.
-            reason = _BOOL_TIER_REASON if outcome is True else str(outcome)
+            reason = str(outcome)
             row = {"denied": True, "reason": reason[:_REASON_CHARS], "tier": name}
             break
         verdicts.append(row)
