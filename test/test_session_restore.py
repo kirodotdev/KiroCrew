@@ -1649,3 +1649,146 @@ class TestAsyncRestoreRecentSessionsOffLoop:
         assert not (
             tmp_path / "dashboard_vanished.jsonl"
         ).exists(), "the deleted transcript came back"
+
+
+@pytest.mark.parametrize(
+    "live",
+    ["whatsapp:+15551234567", "imessage:user@example.com", "discord:crew_agent:direct:user_1"],
+)
+def test_a_refused_persisted_binding_falls_back_to_the_session_map(tmp_path, monkeypatch, live):
+    """Hydration is where these three spellings go silent, and it had no fallback at all.
+
+    The gate refuses a persisted spelling it cannot prove names this transcript. That says nothing
+    against the session map's OWN answer, which is trusted -- so without this the tab answers from
+    its own dashboard session, every restart, until a human re-links it.
+    """
+    from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+    from kiro_crew.dashboard.chat_utils import transcript_stem
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    stem = transcript_stem(live)
+    _write_session(
+        tmp_path,
+        stem,
+        [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+        meta={
+            "linked_session_key": live,
+            # The gate is scoped to a hydration carrying queued context, so a fixture without it
+            # takes the verbatim arm and exercises nothing.
+            "pending_context": [{"ctxId": "c1", "content": "ctx", "ephemeral": True}],
+        },
+    )
+
+    state = _make_state(tmp_path)
+    assert state.sessions is not None, "precondition: the state needs a session map to consult"
+    monkeypatch.setattr(state.sessions, "channel_key_for_stem", lambda _stem: "")
+    unbound = _rehydrate_slot_from_history(state, stem)
+    assert unbound is not None, "precondition: the transcript must hydrate into a slot"
+    assert unbound.linked_session_key == "", (
+        "precondition: the gate must REFUSE this persisted spelling with no map answer, or the "
+        "binding below proves nothing about the fallback"
+    )
+
+    answering = _make_state(tmp_path)
+    monkeypatch.setattr(answering.sessions, "channel_key_for_stem", lambda _stem: live)
+    healed = _rehydrate_slot_from_history(answering, stem)
+    assert healed is not None
+    assert healed.linked_session_key == live, "the trusted map answer did not reach the slot"
+
+
+@pytest.mark.parametrize(
+    "live",
+    [
+        "whatsapp:+15551234567",
+        "teams:19:meeting_abc@thread.v2",
+        "imessage:user@example.com",
+        "discord:crew_agent:direct:user_1",
+    ],
+)
+def test_a_refused_binding_rebinds_through_the_live_session_map(tmp_path, monkeypatch, live):
+    """NO STUB on the resolution: the heal runs through the persisted ``session_map.json`` itself.
+
+    The refused classes are recovered by reading the map's unfolded keys, so a test that patches
+    ``channel_key_for_stem`` exercises the call site and not the resolution that has to answer. This
+    seeds a real map file and lets ``SessionMap`` read it, which is the authority the restart
+    hydration path consults. The precondition asserts the live map resolves the stem, so a pass
+    cannot come from anything else.
+    """
+    import json as _json
+
+    from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+    from kiro_crew.dashboard.chat_utils import transcript_stem
+    from kiro_crew.session_map import SessionMap
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+    # "sid" is what the loader requires -- an entry without it is skipped as corrupt, which would
+    # leave the map empty and make the precondition below fail rather than prove anything.
+    (tmp_path / "session_map.json").write_text(
+        _json.dumps({live: {"sid": "s-live-1"}}), encoding="utf-8"
+    )
+
+    stem = transcript_stem(live)
+    _write_session(
+        tmp_path,
+        stem,
+        [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+        meta={
+            "linked_session_key": live,
+            # The gate is scoped to a hydration carrying queued context, so a fixture without it
+            # takes the verbatim arm and exercises nothing.
+            "pending_context": [{"ctxId": "c1", "content": "ctx", "ephemeral": True}],
+        },
+    )
+
+    state = _make_state(tmp_path)
+    assert state.sessions is not None, "precondition: the state needs a session map to consult"
+    # The fixture's manager is a MagicMock, so its one-line delegate is the ONLY thing standing in
+    # here -- the resolution itself is the real SessionMap reading the file seeded above.
+    live_map = SessionMap()
+    state.sessions.channel_key_for_stem = live_map.channel_key_for_stem
+    resolved = state.sessions.channel_key_for_stem(stem)
+    assert resolved == live, (
+        f"precondition: the LIVE map must resolve {stem!r} from disk, or the binding below proves "
+        f"nothing about the resolution; got {resolved!r}"
+    )
+
+    slot = _rehydrate_slot_from_history(state, stem)
+    assert slot is not None, "precondition: the transcript must hydrate into a slot"
+    assert slot.linked_session_key == live, "the live map's answer did not reach the slot"
+
+
+@pytest.mark.parametrize(
+    "live",
+    ["whatsapp:+15551234567", "imessage:user@example.com", "discord:crew_agent:direct:user_1"],
+)
+def test_an_empty_queue_does_not_bypass_the_binding_audit(tmp_path, monkeypatch, live):
+    """Adoption decides where this slot ROUTES its later turns and saves, queue or no queue.
+
+    The metadata line is agent-writable, so a forged binding on a session carrying nothing queued
+    would retarget the slot at another conversation just as effectively. The session map answers
+    nothing here, so an adopted value could only come from the audit being skipped.
+    """
+    from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+    from kiro_crew.dashboard.chat_utils import transcript_stem
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    stem = transcript_stem("slack:CAAA:1111.0001")
+    _write_session(
+        tmp_path,
+        stem,
+        [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+        # FOREIGN: this key names another conversation, and no pending_context rides with it.
+        meta={"linked_session_key": live},
+    )
+
+    state = _make_state(tmp_path)
+    # No map answer, so no heal can supply a binding and mask a skipped audit.
+    state.sessions.channel_key_for_stem = lambda _stem: ""
+
+    slot = _rehydrate_slot_from_history(state, stem)
+    assert slot is not None, "precondition: the transcript must hydrate into a slot"
+    assert slot.linked_session_key == "", (
+        f"a forged binding was adopted on a context-free hydration: {slot.linked_session_key!r} "
+        f"would route this slot's turns and saves at another conversation"
+    )

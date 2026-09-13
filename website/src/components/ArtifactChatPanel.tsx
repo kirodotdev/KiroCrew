@@ -67,10 +67,11 @@ export function ArtifactChatPanel({
   // 480px cannot fit a phone viewport, and this row has no horizontal scroll,
   // so the overhang was clipped rather than reachable. While narrow the panel
   // takes the width and the artifact body steps aside.
+  // FLEX-DRIVEN HEIGHT: the column bounds the viewport, so the panel takes what the notice beside
+  // it leaves -- a fixed calc() here lands the composer past the fold whenever both mount.
   return (
     <aside
-      className={`${isMobile ? 'w-full' : 'w-[480px] shrink-0'} flex flex-col rounded-xl border border-border bg-card overflow-hidden`}
-      style={{ height: 'calc(100vh - 240px)', minHeight: 480 }}
+      className={`${isMobile ? 'w-full' : 'w-[480px] shrink-0'} flex flex-col flex-1 min-h-0 rounded-xl border border-border bg-card overflow-hidden`}
       aria-label={i18nT('components.artifactChatPanel.artifact_companion_chat')}
     >
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0">

@@ -62,8 +62,15 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
 from kiro_crew.dashboard.chat_title import _persist_title
-from kiro_crew.dashboard.chat_utils import effective_session_key
-from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count, row_mid
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    slot_history_key,
+)
+from kiro_crew.dashboard.state import (
+    _normalize_slot_key,
+    durable_row_count,
+    row_mid,
+)
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
@@ -401,6 +408,21 @@ def surface_channel_session(
     # it for free because the key is the slot's identity.
     slot_name = channel_slot_name(stem)
     if slot_name in state._slots:
+        # HEAL AN UNBOUND SURVIVOR: hydration refuses a persisted binding it cannot PROVE names this
+        # transcript, and this map answer is the trusted one, so otherwise the thread stays silent.
+        existing = state._slots[slot_name]
+        if (
+            # PROVENANCE, not the NAME: any caller can create a slot named for a live channel stem,
+            # and binding on the name alone routes that tab's later turns into the conversation.
+            existing.channel_origin
+            and not existing.linked_session_key
+            and session_key
+            and is_channel_session_key(session_key)
+        ):
+            existing.linked_session_key = session_key
+            # Flagged, or the periodic flush skips it and the next restart refuses all over again.
+            existing._dirty = True
+            logger.info("channel surface: rebound previously unbound slot %s", slot_name)
         return None
     if session_key and not is_channel_session_key(session_key):
         logger.warning(
@@ -437,6 +459,7 @@ def surface_channel_session(
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
     slot._memory_assignment_from_history = True
+    slot._disk_meta_key = slot_history_key(slot)
     if meta.get("model"):
         slot.model = meta["model"]
     if meta.get("autocompact_pct") is not None:
@@ -475,6 +498,32 @@ def surface_channel_session(
         if tid not in slot.tags:
             slot.tags.append(tid)
             tags_changed = True
+    # Re-seat undrained background context. The Slack thread backfill shares this
+    # queue, and a reconciler-surfaced slot hydrated with an empty one would have
+    # its stored copy DELETED by the next forced save, since the key is
+    # slot-owned and absence clears.
+    #
+    # Independent of the tag restore above — one recovers organizational tags, the
+    # other recovers undelivered context — so both run. Ordered after it only
+    # because the tag restore is the incumbent; neither reads the other's state.
+    if meta.get("pending_context"):
+        slot.restore_pending_context(meta["pending_context"])
+        # Record the transcript this queue was hydrated FROM, so a later rebind can tell
+        # whose entries these are and WITHHOLD another origin's instead of copying them.
+        #
+        # Resolved through ``slot_history_key`` -- the SAME function the save uses to
+        # pick its target -- rather than the ``stem`` this metadata was read out of.
+        # The two are different SPELLINGS of one file (the stem is folded; the bound
+        # key keeps its colons), so a stem-stamped marker reads as "rebound" on the
+        # very first save and withholds entries from the file just written.
+        # Deriving both sides from one function makes them agree by construction
+        # instead of by a claim about which variable happens to match.
+        #
+        # Not the bound ``session_key`` alone: a channel slot the dashboard could not
+        # bind is surfaced UNBOUND, so that is empty while the save still resolves a
+        # real transcript.
+        slot._ctx_persisted_key = slot_history_key(slot)
+        slot.adopt_ctx_owner(slot_history_key(slot))
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
     elif folder_id and needs_default_filing(meta):
@@ -832,7 +881,7 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             if not key or key in out:
                 continue
             try:
-                out[key] = log.get_metadata(key)
+                out[key] = log.get_metadata_with_overflow(key)
             except Exception:
                 out[key] = {}
             if mtime_of is not None:

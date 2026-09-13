@@ -100,7 +100,40 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
   restored in another process after any catalog scan; stale sidecars are
   reversible, while deleting a successor's state is not. The teardown contract
   is specified in [session.md](session.md) under **Permanent history deletion
-  keeps ownership exact**.
+  keeps ownership exact**. It also owns that session's pending-context spill (below): the
+  sidecar is quarantined off the hydration stem BEFORE the transcript is unlinked, and
+  restored only when the transcript is still present afterwards — a pinned skip owes the
+  spill back, whereas an ABSENT transcript can never own it again, so restoring there would
+  leave an orphan that any session later created at the same key re-injects as cross-session
+  context.
+- `get_metadata_with_overflow(key)` / `get_metadata_status_with_overflow(key)` — the
+  metadata line folded together with its spill sidecar, under one `_locked(key)` hold so
+  the pair is ONE snapshot: read separately, a concurrent shrinking save between the two
+  reads drops an entry that exists in neither result. Every caller that hydrates queued
+  context reads through these; the plain `get_metadata` accessors stay unfolded for callers
+  that only test readability, emptiness or `created_at`.
+
+### Pending-context spill sidecar (`{safe_key}` + `_ctx_overflow.jsonl`)
+
+Durable queued context normally rides inside the metadata line. A line has a byte budget,
+so entries that do not fit spill to ONE sidecar file beside the transcript, published by a
+single atomic rename. It is bounded on BOTH axes — `_MAX_CTX_OVERFLOW_BYTES` (8 MiB) and
+`_MAX_CTX_OVERFLOW_ENTRIES` (5000) — and REFUSES rather than truncating, because silently
+dropping the tail would discard entries the API already acknowledged.
+
+- `write_ctx_overflow` / `sync_ctx_overflow` — publish the spill. A failure BEFORE the
+  transcript line commits raises `CtxSpillFailed`, since those entries would otherwise
+  exist nowhere.
+- `read_ctx_overflow` — parses the spill, skipping a line that is unparseable or not an
+  object; the count of skipped lines is logged at error level rather than dropped silently.
+  A file over either ceiling raises `CtxOverflowTooLarge` (a subclass of
+  `CtxOverflowUnreadable`) and is quarantined off the hydration stem instead of read.
+- `reconcile_ctx_overflow` — the shrink half, run AFTER the line commits: the union wrote a
+  superset, and this narrows the sidecar to what the line does not already carry. Its
+  failure is logged, never raised into the save, because both copies exist at that point
+  and the fold dedups by `ctxId` until the next save retries.
+- Quarantine happens only once the file handle is closed, because Windows refuses to rename
+  an open file.
 
 ### MCP chat-history tools (`mcp_core.py`)
 

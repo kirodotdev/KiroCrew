@@ -23,6 +23,8 @@
  *     and pop-out branches can be exercised without their own dependency graphs.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { Routes, Route } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
@@ -819,22 +821,19 @@ describe('ArtifactDetailPage — mutation paths', () => {
     expect(await screen.findByText('chat page')).toBeInTheDocument()
   })
 
-  it('re-opening a stale session injects a fresh context entry', async () => {
+  it('re-opening a stale session nudges instead of silently taking a baseline', async () => {
     vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([
       { key: 'slot-bound', title: 'Artifact: CR Queue', messages: 3, running: false,
         artifact: SLUG, last_activity_ts: '2026-05-21T22:00:00.000000+00:00' },
     ])
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
-    // updated_at is AFTER the session's last activity, so the agent would
-    // otherwise act on a stale version.
+    // The marker is persisted now, so an empty one means "never injected" rather than
+    // "reloaded"; suppressing here left a resumed agent on a stale version for good.
+    sessionStorage.clear()
     await mount(mkArtifact({ updated_at: '2026-05-22T09:00:00.000000+00:00' }))
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
-    await waitFor(() =>
-      expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledWith(
-        'slot-bound', expect.stringContaining(SLUG),
-        { source: 'artifact-companion', ephemeral: true },
-      ),
-    )
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
     expect(vi.mocked(api).createChatSlot).not.toHaveBeenCalled()
   })
 
@@ -1118,5 +1117,41 @@ describe('ArtifactDetailPage — upstream sync banner', () => {
     expect(link).toHaveAttribute('href', forkMetadata.upstream_url)
     expect(within(screen.getByText(/Forked from/).closest('span') as HTMLElement)
       .getByText('someone')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The STALE context notice needs its own body.
+ *
+ * Both notice titles shared one body promising the agent would "see it". In the refresh case the
+ * agent already holds an older version, so that body names the wrong outcome — a reader who
+ * follows it expects a first share rather than an update. The stale case therefore has to select
+ * a different key, and the two values have to differ in the promise they make.
+ *
+ * Pinned on the KEYS the component selects between, not on any comment: a docstring claiming the
+ * branch exists cannot satisfy this, because the second key must be present in the module and the
+ * two catalog values must differ.
+ */
+describe('stale context notice body', () => {
+  const catalog = JSON.parse(
+    readFileSync(resolve(__dirname, '../i18n/locales/en.manual.json'), 'utf8'),
+  )
+  const page = catalog.pages.artifactDetailPage
+
+  it('promises the LATEST version rather than a first share', () => {
+    const fresh = page.chat_context_not_attached as string
+    const stale = page.chat_context_stale_not_attached as string
+    expect(stale).toBeTruthy()
+    expect(stale).not.toBe(fresh)
+    // The stale body must name the version, or it repeats the claim that is wrong for this case.
+    expect(stale.toLowerCase()).toContain('latest version')
+    expect(fresh.toLowerCase()).not.toContain('latest version')
+  })
+
+  it('selects the stale key in the component, not only the shared one', () => {
+    const src = readFileSync(resolve(__dirname, '../pages/ArtifactDetailPage.tsx'), 'utf8')
+    expect(src).toContain('chat_context_stale_not_attached')
+    // CONTROL: the fresh key must survive too, or the non-refresh case now names the wrong body.
+    expect(src).toContain('chat_context_not_attached')
   })
 })

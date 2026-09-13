@@ -1269,7 +1269,9 @@
     "papyrus": {
       "workspace": {
         "co_author_conflict_discard_button": "Discard changes",
-        "co_author_conflict_discard_title": "Discard unsaved changes?"
+        "co_author_conflict_discard_title": "Discard unsaved changes?",
+        "context_not_attached": "Mention the paper in your next message so the co-author can see it. You can dismiss this once you've mentioned it.",
+        "context_notice_title": "Couldn't share this paper with the co-author"
       }
     }
   },
@@ -3323,6 +3325,10 @@
       "artifact_slug": "Artifact: {{slug}}",
       "back_to_editor": "Back to editor",
       "change_how_this_document_is_rendered": "Change how this document is rendered",
+      "chat_context_not_attached": "Mention the artifact in your next message so the agent can see it. You can dismiss this once you've mentioned it.",
+      "chat_context_stale_not_attached": "Mention the artifact in your next message so the agent sees the latest version. You can dismiss this once you've mentioned it.",
+      "chat_context_notice_title": "Couldn't share this artifact with the agent",
+      "chat_context_stale_notice_title": "Couldn't share the latest version with the agent",
       "chat_with_the_agent_about_this_artifact": "Chat with the agent about this artifact",
       "comment": "Comment",
       "comment_marked_for_review": "Comment marked for review",

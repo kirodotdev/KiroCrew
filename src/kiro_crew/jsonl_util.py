@@ -65,12 +65,15 @@ used.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
 import os
 import re
+import stat
 from collections.abc import Iterator
 from pathlib import Path
-from typing import IO
+from typing import IO, Any, cast
 
 from kiro_crew import platform_compat
 
@@ -473,3 +476,122 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
             os.close(lock_fd)
     except (OSError, ValueError):
         pass
+
+
+class _CappedReader:
+    """Charges every byte handed to the caller against *max_bytes*.
+
+    ``fstat`` describes the file at OPEN time, and a writer holding the same path may APPEND while
+    it is being consumed, so the size check bounds the file as it was rather than what the caller
+    receives. This bounds the delivery: reads are clamped to one byte past what remains, so a file
+    that grew to gigabytes cannot be materialised before the refusal fires.
+    """
+
+    __slots__ = ("_handle", "_max_bytes", "_path", "_remaining")
+
+    def __init__(self, handle: IO[bytes], path: Path, max_bytes: int) -> None:
+        self._handle = handle
+        self._path = path
+        self._max_bytes = max_bytes
+        self._remaining = max_bytes
+
+    def _charge(self, count: int) -> None:
+        self._remaining -= count
+        if self._remaining < 0:
+            raise OSError(
+                errno.EFBIG,
+                f"grew past the {self._max_bytes}-byte ceiling while being read",
+                str(self._path),
+            )
+
+    def _budget(self, size: int | None) -> int:
+        # One PAST the remainder, so the read that proves the file overran still lands and charges,
+        # while a file of exactly max_bytes reads to EOF and is never refused.
+        return self._remaining + 1 if size is None or size < 0 else min(size, self._remaining + 1)
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._handle.read(self._budget(size))
+        self._charge(len(chunk))
+        return chunk
+
+    def readline(self, size: int = -1) -> bytes:
+        chunk = self._handle.readline(self._budget(size))
+        self._charge(len(chunk))
+        return chunk
+
+    def readinto(self, buffer: Any) -> int:
+        read = getattr(self._handle, "readinto", None)
+        if read is None:
+            chunk = self.read(len(buffer))
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+        count = read(memoryview(buffer)[: self._budget(len(buffer))]) or 0
+        self._charge(count)
+        return count
+
+    def __iter__(self) -> Iterator[bytes]:
+        return self
+
+    def __next__(self) -> bytes:
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._handle, name)
+
+
+@contextlib.contextmanager
+def open_regular_nofollow(
+    path: Path, *, max_bytes: int, dir_fd: int | None = None
+) -> Iterator[IO[bytes]]:
+    """Open *path* for reading, refusing anything that is not a regular file.
+
+    These trees are agent-writable and a name under one derives from a session key, so the node is
+    attacker-chosen, and two hostile types each need their own defence:
+
+    * FIFO -- the OPEN ITSELF blocks until a writer arrives, so ``O_NONBLOCK`` belongs on the open;
+      a check made afterwards is never reached.
+    * reparse point -- refused by the open itself via
+      :func:`kiro_crew.platform_compat.open_file_no_reparse`, which carries the per-platform branch:
+      Windows has no ``O_NOFOLLOW``, so a bare ``os.open`` there follows a link to its target.
+
+    Refusing in the SAME operation that opens matters: an ``lstat`` before an ``os.open`` is a
+    check-to-open window, and whoever can plant the link chooses when to swap it.
+
+    ``max_bytes`` is checked against the OPEN HANDLE's ``fstat``, because a FIFO reports
+    ``st_size == 0``, so a pre-open size check cannot substitute for the type check.
+
+    Yields a binary handle, not bytes, so a caller keeps its per-record cap. Raises
+    :class:`OSError` on every refusal.
+
+    ``dir_fd`` resolves *path*'s FINAL COMPONENT against a directory the caller ALREADY pinned.
+    This function only ever settles that component, so a caller whose parent directory is itself
+    agent-writable must pin that parent and pass it here, or a link planted at the parent is still
+    traversed while resolving the path to the leaf.
+    """
+    # RELATIVE ONLY WHERE THE PLATFORM RESOLVES AGAINST IT: os.open ignores dir_fd for an absolute
+    # path, and open_file_no_reparse ignores it entirely on Windows, resolving a basename at the CWD.
+    target = Path(path).name if dir_fd is not None and os.open in os.supports_dir_fd else path
+    fd = platform_compat.open_file_no_reparse(target, nonblocking=True, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(errno.EINVAL, "refusing a non-regular file", str(path))
+        if st.st_size > max_bytes:
+            raise OSError(
+                errno.EFBIG, f"{st.st_size} bytes past the {max_bytes}-byte ceiling", str(path)
+            )
+        if getattr(os, "O_NONBLOCK", 0):
+            # Cleared once the node is known regular: O_NONBLOCK earned its place on the open, and
+            # a regular-file read does not block, but a short read on a signal would be visible.
+            os.set_blocking(fd, True)
+        handle = os.fdopen(fd, "rb", closefd=True)
+    except BaseException:
+        os.close(fd)
+        raise
+    try:
+        yield cast("IO[bytes]", _CappedReader(handle, Path(path), max_bytes))
+    finally:
+        handle.close()

@@ -2608,7 +2608,12 @@ class TestUntaggedOriginIsNotUser:
         import kiro_crew.dashboard.chat_handlers as _ch
 
         src = Path(_ch.__file__).read_text(encoding="utf-8")
-        meta_read = src.index("meta = state.conversation_log.get_metadata(history_key)")
+        # The read now goes through the folding accessor off the event loop; the ORDERING this
+        # pins is unchanged, only the call it anchors on.
+        meta_read = src.index(
+            "meta = await asyncio.to_thread("
+            "state.conversation_log.get_metadata_with_overflow, history_key)"
+        )
         resume_create = src.index('origin=str(meta.get("origin", ""))')
         assert meta_read < resume_create, (
             "the resume path must read the persisted metadata before it creates "
