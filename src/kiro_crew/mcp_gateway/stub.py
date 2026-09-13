@@ -81,9 +81,36 @@ _BRIDGE_KEEPALIVE_TYPE = "keepalive"
 # ordinary restart -- but the budget must be finite, because a gateway that is
 # gone for good has to reach the terminal exit that tells kiro-cli this server
 # is done rather than leave the session hanging on a socket nobody will bind.
+#
+# It must also cover the supervisor's own recovery, and 60s did not. The owned
+# liveness path takes three 30s cycles, three probe pairs and a 20s SIGTERM wait
+# before it even spawns a replacement -- 91s at its fastest and about 191s at
+# worst -- so a 60s budget guaranteed that an ORDINARY slow recovery cost every
+# attached session its MCP tools for good, which the user sees as
+# ``Transport to MCP server ... is closed`` and cannot fix without a new session.
+# 300s clears that worst case with about 110s to spare. It is deliberately not
+# larger, because the budget also bounds an exposure in the other direction: while
+# the reconnect runs the bridge is down, so a call kiro-cli issues DURING the
+# window waits unanswered until the reattach or the budget ends -- unlike a call
+# already in flight when the connection dropped, which is failed fast with
+# ``-32603`` before any retry begins. Every second of budget is a second such a
+# call can wait, so the number is sized to cover the recovery and no more.
+#
+# It is not a cover for every conceivable recovery: a respawn that keeps failing
+# backs off to 60s per retry with no attempt cap, so a pathological gateway can
+# still outlast this. The trade is deliberate -- past five minutes the honest
+# signal to a waiting session is that its tools are gone, not more silence.
+#
+# The deadline bounds when new ATTEMPTS stop, not the exit itself: an attempt
+# already under way when it passes runs to its own end, so the exit can trail the
+# budget by up to the handshake (``_HANDSHAKE_TIMEOUT_SECS``) plus the replay
+# (``_REPLAY_INIT_TIMEOUT_SECS``) plus one backoff step
+# (``_RECONNECT_BACKOFF_MAX_SECS``) -- about 37s today. That is deliberate:
+# abandoning a handshake that is mid-replay would throw away the most likely
+# successful attempt in exchange for meeting a number exactly.
 _RECONNECT_BACKOFF_START_SECS = 0.5
 _RECONNECT_BACKOFF_MAX_SECS = 4.0
-_RECONNECT_TOTAL_BUDGET_SECS = 60.0
+_RECONNECT_TOTAL_BUDGET_SECS = 300.0
 # Bounds the replayed ``initialize`` on a fresh connection. The daemon answers
 # it either from its init cache or by driving a real upstream handshake, so this
 # has to cover a cold backend spawn; on timeout the reconnect is abandoned and
