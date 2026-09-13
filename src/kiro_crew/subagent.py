@@ -66,7 +66,6 @@ from kiro_crew.hooks import (
     TOOL_DENY,
     fire_tool_hooks,
     identity_grant_covers_child,
-    safe_read_file,
 )
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
@@ -778,20 +777,30 @@ def _timeout_context(
     return " | ".join(parts)
 
 
-def check_memory_available(min_gb: float = 4.0, path: str = "/proc/meminfo") -> tuple[bool, float]:
+def check_memory_available(
+    min_gb: float = 4.0, *, path: str = "/proc/meminfo"
+) -> tuple[bool, float]:
     """Check if enough memory is available to spawn a subagent.
 
-    Reads /proc/meminfo MemAvailable via ``safe_read_file`` (hooks.py)
-    and compares against *min_gb*.
+    Reads /proc/meminfo MemAvailable with a plain ``open`` and compares
+    against *min_gb*. The read deliberately does NOT go through
+    ``hooks.safe_read_file``: that gate polices agent-supplied paths, and
+    this path is a fixed module constant that no caller overrides in
+    production, so the gate adds no protection here — while a gate refusal
+    under load would silently disable spawn back-pressure exactly when it
+    matters (the gate's refusal modes correlate with CPU contention).
+    ``platform_compat._linux_available_mib`` reads the same file the same
+    way. The ``path`` keyword is keyword-only and exists for tests only;
+    production callers always take the constant.
     Returns (ok, available_gb).  On read failure returns (True, -1.0)
     to avoid blocking spawns on non-Linux systems.
     """
     try:
-        text = safe_read_file(path)
-    except PermissionError:
-        logger.warning("Memory check blocked: sensitive path %s", path)
-        return (True, -1.0)
-    except OSError:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError is a ValueError, not an OSError: without it a
+        # mangled read would escape a function whose contract is fail-open.
         return (True, -1.0)
     try:
         for line in text.splitlines():

@@ -299,6 +299,46 @@ class TestSpawnAdmissionGate:
         call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
         assert call_kwargs["outcome"] == "rejected_invalid_cwd"
 
+    def test_unmeasurable_memory_proceeds_but_is_logged(self) -> None:
+        """(True, -1.0) means the guard did not run: spawn proceeds, SEL logs it."""
+        mgr = self._mgr()
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, -1.0)
+        ), patch("kiro_crew.platform_compat.IS_LINUX", True), patch(
+            "kiro_crew.subagent.KiroCrewConfig"
+        ) as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
+        ), patch(
+            "kiro_crew.subagent.validate_cwd", return_value=("", "not allowed")
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cwd_allowed_roots = []
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1", cwd="/x")
+
+        # The spawn proceeded past the memory guard (it reached the cwd gate),
+        # so the fail-open contract held...
+        assert info is not None
+        assert info.done is True
+        outcomes = [
+            c[1]["outcome"]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        assert outcomes[-1] == "rejected_invalid_cwd"
+        # ...and the guard-did-not-run case was made observable.
+        assert "memory_check_unavailable" in outcomes
+        unavailable = next(
+            c[1]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            if c[1]["outcome"] == "memory_check_unavailable"
+        )
+        assert unavailable["tool_name"] == "spawn_run"
+        assert unavailable["metadata"]["min_gb"] == 4.0
+        assert unavailable["metadata"]["task"] == "test task"
+
 
 # ── config key ───────────────────────────────────────────────────────────────
 
