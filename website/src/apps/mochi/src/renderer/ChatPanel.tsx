@@ -1708,8 +1708,9 @@ const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
 
 /** Ensure blank line before fences glued to text, and close any unclosed fence. */
 function fixStreamingFences(s: string): string {
-  // Ensure blank line before opening fences glued to preceding text
-  s = s.replace(/([^\n])(\n?)(```\w*\n)/g, (_, pre, nl, fence) =>
+  // The info string is the whole backtick-free line, including attributes and
+  // a leading space, matching the dashboard's FENCE_OPEN.
+  s = s.replace(/([^\n])(\n?)(```[^`\n]*\n)/g, (_, pre, nl, fence) =>
     nl ? pre + nl + fence : pre + '\n\n' + fence
   )
   // If there's an odd number of ``` fences, the last one is unclosed — close it
@@ -1756,7 +1757,9 @@ const mdComponents: Components = {
   th: (p) => <th style={{ border: '1px solid var(--border)', padding: '3px 6px', textAlign: 'left', fontWeight: 600 }} {...p} />,
   td: (p) => <td style={{ border: '1px solid var(--border)', padding: '3px 6px' }} {...p} />,
   code: (p) => {
-    const match = /language-(\w+)/.exec(p.className || '')
+    // Whole class token, not its leading `\w+` run: `language-error-report`
+    // labels as `error-report`, not `error` (same rule as MarkdownRenderer).
+    const match = /language-(\S+)/.exec(p.className || '')
     if (match) {
       return <MochiCodeBlock lang={match[1]} code={String(p.children).replace(/\n$/, '')} />
     }

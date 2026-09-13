@@ -22,8 +22,11 @@ const TALL_CODE_BLOCK_PX = 480
  *  one long source line, so rendering it under `white-space: pre` turns every
  *  paragraph into a horizontal scrub — these tags soft-wrap instead. The set
  *  stays small and explicit: an unknown or missing tag is code and KEEPS the
- *  horizontal scroll (that is the reported requirement, not an oversight). */
-const PROSE_LANGS = new Set(['markdown', 'md', 'text', 'txt', 'plaintext', 'plain'])
+ *  horizontal scroll (that is the reported requirement, not an oversight).
+ *  `error-report` is the dashboard's own tag (utils/errorReport.prompt.ts):
+ *  a `- Message: …` line is one long sentence, and clipping it at the bubble
+ *  edge hid the very text the user asked the agent to diagnose. */
+const PROSE_LANGS = new Set(['markdown', 'md', 'text', 'txt', 'plaintext', 'plain', 'error-report'])
 const isProseLang = (lang?: string) => !!lang && PROSE_LANGS.has(lang.toLowerCase())
 
 /** Module constant so the options reference is stable across renders — Pierre

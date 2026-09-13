@@ -102,4 +102,21 @@ describe('CodeBlock: prose fences wrap, code fences keep horizontal scroll', () 
       expect(pierreCalls.at(-1)?.options).toBeUndefined()
     })
   })
+
+  describe('error-report (the dashboard error->agent prompt tag)', () => {
+    // utils/errorReport.prompt.ts fences the diagnostic block as
+    // ```error-report. Its `- Message: …` line is one long sentence; under
+    // scroll it was clipped at the bubble edge, hiding the very text the user
+    // asked the agent to diagnose.
+    it('soft-wraps in the fallback branch', () => {
+      const pre = renderFallbackPre('error-report')
+      expect(pre.className).toContain('whitespace-pre-wrap')
+      expect(pre.className).not.toContain('overflow-x-auto')
+    })
+
+    it('passes overflow wrap to Pierre in the highlighted branch', () => {
+      render(<CodeBlock code={LONG_LINE} lang="error-report" complete />)
+      expect(pierreCalls.at(-1)?.options).toEqual({ overflow: 'wrap' })
+    })
+  })
 })

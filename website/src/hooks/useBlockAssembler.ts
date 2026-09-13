@@ -1,7 +1,18 @@
 import { useMemo, useState, useRef, useEffect } from 'react'
 import type { ContentBlock } from '../types'
 
-const FENCE_OPEN = /^(`{3,})(\w*)\s*$/
+// The info string is whatever follows the backtick run. CommonMark's only
+// rule for a backtick fence is that it may not contain a backtick; the
+// language tag is its first word. `\w*` REJECTED a hyphenated tag
+// (`error-report`, `objective-c`), the punctuated ones (`c++`, `f#`), dotted
+// ones (`asp.net`) and any attributed line (```js {1,3}), so such an opening
+// line fell through as prose and the bare closing fence was then read as a NEW
+// opening fence: the fenced body rendered through remark as an unclosed block
+// whose label was truncated to the first `\w+` run, followed by a phantom empty
+// "code" block that ran to the end of the message. Group 2 is the tag; the
+// rest of the info string is accepted and ignored, including leading whitespace
+// before the tag. Same rule fixCodeFences and the code-block label regex apply.
+const FENCE_OPEN = /^(`{3,})\s*([^`\s]*)[^`]*$/
 // Escape ALL regex metacharacters before interpolating a captured fence run
 // into a dynamic RegExp. The capture is currently backtick-only, but a
 // complete escape (not a single-char `\`` replace) keeps the sanitization

@@ -1804,7 +1804,12 @@ const MD_COMPONENTS: Components = {
     const { 'data-fenced': fenced, ...rest } = props as Record<string, unknown>
     if (fenced === undefined) return <InlineCode {...rest}>{children}</InlineCode>
 
-    const match = /language-(\w+)/.exec(className || '')
+    // remark-rehype stamps `language-<first word of the info string>`; keep the
+    // whole tag (`error-report`, `c++`, `asp.net`), not just its leading `\w+`
+    // run, so the header label and highlighter hint match what the author
+    // wrote. A class token has no whitespace, so `\S+` is the whole tag. Same
+    // rule as FENCE_OPEN (useBlockAssembler) / fixCodeFences.
+    const match = /language-(\S+)/.exec(className || '')
     const lang = match?.[1]
     const codeStr = String(children).replace(/\n$/, '')
 
@@ -3830,13 +3835,18 @@ export function fixCodeFences(s: string): string {
     if (inFence || num === undefined) return match
     return num + '\\.' + trail
   })
-  // Ensure blank line before opening fences that are glued to preceding text
-  s = s.replace(/([^\n])(\n?)(```\w*\n)/g, (_, pre, nl, fence) =>
+  // Ensure blank line before opening fences that are glued to preceding text.
+  // The info string is the whole backtick-free line, including attributes and
+  // a leading space, matching FENCE_OPEN in useBlockAssembler.
+  s = s.replace(/([^\n])(\n?)(```[^`\n]*\n)/g, (_, pre, nl, fence) =>
     nl ? pre + nl + fence : pre + '\n\n' + fence
   )
   // Split closing fences glued to trailing text: ```358KB → ```\n358KB
-  // Preserves valid opening fences (```diff, ```json5, ```c++) via negative lookahead
-  s = s.replace(/^(```)(?![a-zA-Z][\w+#-]*\s*$)(.+)$/gm, '$1\n$2')
+  // Preserves valid opening fences (```diff, ``` python, ```c++, ```asp.net)
+  // via negative lookahead: optional info-string whitespace may precede a tag
+  // that starts with a letter and continues as a backtick-free info string,
+  // while a size like ```358KB still splits.
+  s = s.replace(/^(```)(?!\s*[a-zA-Z][^`]*$)(.+)$/gm, '$1\n$2')
   // Split opening fences glued to uppercase text
   s = s.replace(/```([A-Z])/g, '```\n$1')
   return s
@@ -4101,7 +4111,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean }) {
   switch (block.type) {
     case 'diff': {
       const pathHint = prevBlock?.type === 'markdown'
@@ -4163,7 +4173,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
     }
     case 'widget':
       return block.complete
-        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} widgetIndex={widgetIndex} slotKey={slotKey} />
+        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
         : <WidgetPlaceholder title={block.language} />
     case 'markdown':
       // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
@@ -4213,26 +4223,6 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     () => ({ onSessionOpen, sessions, activeSession }),
     [onSessionOpen, sessions, activeSession],
   )
-
-  // Pre-compute the widget index for each widget block (0-based ordinal of
-  // widgets within this message). WidgetFrame uses (messageTs, widgetIndex)
-  // to derive a stable slug when the agent didn't emit an explicit one, so
-  // bookmark state survives refreshes and prevents save→refresh duplicates.
-  // Memoized so each BlockRenderer gets a stable widgetIndex reference
-  // between renders, so it doesn't defeat memo() if anyone later wraps
-  // BlockRenderer.
-  //
-  // Must run before any conditional return — Rules of Hooks. (rawMode flips
-  // via a settings toggle which usually re-mounts this component anyway,
-  // but we keep hook order strict for safety.)
-  const widgetIndices = useMemo(() => {
-    const out: number[] = new Array(blocks.length).fill(-1)
-    let n = 0
-    for (let i = 0; i < blocks.length; i++) {
-      if (blocks[i].type === 'widget') { out[i] = n; n++ }
-    }
-    return out
-  }, [blocks])
 
   // Index of the last markdown block — the streaming tail that gets the glow
   // (only when `glow` is set). -1 if the message ends in a non-markdown block.
@@ -4321,7 +4311,6 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             key={block.startLine != null ? `line-${block.startLine}` : `idx-${i}`}
             block={block} prevBlock={blocks[i - 1]} onFileOpen={onFileOpen} sourcePos={sourcePos}
             messageTs={messageTs}
-            widgetIndex={widgetIndices[i] >= 0 ? widgetIndices[i] : undefined}
             slotKey={slotKey}
             glow={glow && i === lastMarkdownIdx}
             // Same gate `glow` uses — the last markdown block of a streaming

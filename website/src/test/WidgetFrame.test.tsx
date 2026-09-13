@@ -561,7 +561,7 @@ describe('WidgetFrame unmount safety on bookmark actions', () => {
     )
 
     const { container, unmount } = wrap(
-      <WidgetFrame html="<p>test</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>test</p>" title="T" messageTs="1779995123.456789" />,
     )
 
     // Wait for probe to settle so bookmark becomes clickable.
@@ -611,7 +611,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     )
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" />,
     )
 
     await waitFor(() => {
@@ -625,16 +625,16 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     expect(removeBtn).toBeNull()
   })
 
-  it('two impressions of same slug share cache — only one API call', async () => {
+  it('two impressions of the same body share cache — only one API call', async () => {
     const artifactSpy = vi.spyOn(api, 'artifact').mockRejectedValue(
       Object.assign(new ApiError('Not found', 404), { status: 404 }),
     )
 
     wrap(
-      <WidgetFrame html="<p>a</p>" title="A" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>a</p>" title="A" messageTs="1779995123.456789" />,
     )
     wrap(
-      <WidgetFrame html="<p>b</p>" title="B" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>a</p>" title="B" messageTs="1779995123.456789" />,
     )
 
     await waitFor(() => {
@@ -650,7 +650,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     )
 
     wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" />,
     )
 
     await waitFor(() => {
@@ -674,7 +674,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" />,
     )
 
     // Wait for probe to resolve
@@ -704,7 +704,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
 
     const { container, unmount } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" />,
     )
 
     // Wait for probe to resolve (404 -> unsaved)
@@ -723,7 +723,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     await act(async () => { resolveCreate({ slug: 'msg-1779995123-456789-0', name: 'T' }) })
 
     // Cache should still be updated (global QueryClient, not gated by mountedRef)
-    const slug = effectiveWidgetSlug({ messageTs: '1779995123.456789', widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: '1779995123.456789', body: '<p>hi</p>' })
     expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: true, pinned: true })
   })
 
@@ -735,14 +735,14 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     )
 
     wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" />,
     )
 
     await waitFor(() => {
       expect(artifactSpy).toHaveBeenCalledTimes(1)
     })
 
-    const slug = effectiveWidgetSlug({ messageTs: '1779995123.456789', widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: '1779995123.456789', body: '<p>hi</p>' })
     await waitFor(() => {
       expect(queryClient.getQueryState(['artifact-saved', slug])?.status).toBe('error')
     })
@@ -760,7 +760,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
       )
 
       wrap(
-        <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
+        <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" />,
       )
 
       await waitFor(() => {
@@ -799,7 +799,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: false } as never)
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} />,
     )
 
     await waitFor(() => {
@@ -813,10 +813,10 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: false } as never)
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} />,
     )
 
-    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: TS, body: '<p>hi</p>' })
     await waitFor(() => {
       const link = container.querySelector(`a[href="/artifacts/${slug}"]`)
       expect(link).not.toBeNull()
@@ -827,7 +827,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: true } as never)
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} />,
     )
 
     await waitFor(() => {
@@ -842,7 +842,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     )
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} />,
     )
 
     await waitFor(() => {
@@ -862,9 +862,9 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     const createSpy = vi.spyOn(api, 'createArtifact').mockResolvedValue({} as never)
     const pinSpy = vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
 
-    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: TS, body: '<p>hi</p>' })
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} />,
     )
     // The probe must have RESOLVED before clicking: a click while it is still in
     // flight legitimately falls back to create (the 409-tolerant path), which is
@@ -889,9 +889,9 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     const createSpy = vi.spyOn(api, 'createArtifact').mockResolvedValue({} as never)
     const pinSpy = vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
 
-    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: TS, body: '<p>hi</p>' })
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} slotKey="chat-1" />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} slotKey="chat-1" />,
     )
     await waitFor(() => {
       expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: false, pinned: false })
@@ -900,7 +900,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     await act(async () => { btn.click() })
 
     expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
-      slug: effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 }),
+      slug: effectiveWidgetSlug({ messageTs: TS, body: '<p>hi</p>' }),
       kind: 'widget',
       // Attributed to the session so the in-session tab's ?session= query finds it.
       origin_session_key: 'chat-1',
@@ -918,9 +918,9 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
-    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: TS, body: '<p>hi</p>' })
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} slotKey="chat-1" />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} slotKey="chat-1" />,
     )
     await waitFor(() => {
       expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: true, pinned: false })
@@ -940,7 +940,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} />,
     )
     await waitFor(() => {
       expect(container.querySelector('[aria-label^="Remove artifact"]')).not.toBeNull()
@@ -948,7 +948,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     const btn = container.querySelector('[aria-label^="Remove artifact"]') as HTMLButtonElement
     await act(async () => { btn.click() })
 
-    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: TS, body: '<p>hi</p>' })
     expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: true, pinned: false })
   })
 
@@ -961,7 +961,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     )
 
     const { container } = wrap(
-      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} />,
     )
     await waitFor(() => {
       expect(container.querySelector('[aria-label^="Remove artifact"]')).not.toBeNull()
@@ -969,7 +969,7 @@ describe('WidgetFrame exists-vs-pinned states', () => {
     const btn = container.querySelector('[aria-label^="Remove artifact"]') as HTMLButtonElement
     await act(async () => { btn.click() })
 
-    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const slug = effectiveWidgetSlug({ messageTs: TS, body: '<p>hi</p>' })
     expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: false, pinned: false })
   })
 })

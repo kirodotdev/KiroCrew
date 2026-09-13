@@ -128,24 +128,21 @@ interface WidgetFrameProps {
   /** Explicit slug attribute on `<mcwidget slug="...">`. When the agent
    * re-emits a previously-saved artifact it MUST include this attribute so
    * the impression binds to the same artifact. For brand-new emissions the
-   * agent may omit it and we derive a stable slug from `messageTs +
-   * widgetIndex` instead. */
+   * agent may omit it and we derive a stable slug from `messageTs + html`
+   * instead. */
   slug?: string
   /** Parent message timestamp. Threaded through from AssistantMessage so
    * widgets without an explicit slug get a stable, location-anchored
    * identity that survives refreshes and prevents save-then-refresh
    * duplicate creation. */
   messageTs?: string
-  /** 0-based ordinal of this widget within the parent message. Two
-   * `<mcwidget>` tags in the same message disambiguate by this index. */
-  widgetIndex?: number
   /** Chat slot this widget was rendered in. Used to attribute a
    * fallback-created artifact to its session and to refresh the in-session
    * Artifacts tab after a star/unstar. Absent for embedded/detached renders. */
   slotKey?: string
 }
 
-export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, widgetIndex, slotKey }: WidgetFrameProps) {
+export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, slotKey }: WidgetFrameProps) {
   // Re-read theme CSS vars whenever the resolved theme, active color theme,
   // or themeVersion counter changes. themeVersion is the trigger for
   // in-place custom-theme edits via the theme editor: the slug stays the
@@ -366,17 +363,17 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
   // Determine the effective slug for this impression. Priority:
   //  1. Explicit `slug` attribute from the agent (used when re-emitting a
   //     known saved artifact — see artifacts skill).
-  //  2. Derived from `messageTs + widgetIndex` — stable across refreshes,
-  //     so saving once and refreshing doesn't create a duplicate.
+  //  2. Derived from `messageTs + html`, so a slug hit proves the stored body
+  //     equals this impression. Identical bodies in one message share a slug.
   // Returns null only when neither is available (streaming/detached
   // widgets, or test fixtures); in that case bookmark is disabled.
   const effectiveSlug = useMemo(
     () => effectiveWidgetSlug({
       explicitSlug: slug,
       messageTs,
-      widgetIndex,
+      body: html,
     }),
-    [slug, messageTs, widgetIndex],
+    [slug, messageTs, html],
   )
   // Probe this widget's artifact. Cached via React Query with a 5-min
   // staleTime so repeated impressions / tab refocuses don't each fire a

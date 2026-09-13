@@ -1,18 +1,17 @@
 /**
- * Stable widget-slug derivation.
+ * Stable body-keyed widget-slug derivation.
  *
- * Every `<mcwidget>` impression in chat is bound to an artifact identity
- * via a slug. The agent normally emits an explicit `slug=` attribute when
- * re-rendering a saved artifact; for brand-new emissions the slug is
- * derived deterministically from the message location so that:
+ * Every `<mcwidget>` impression in chat is bound to an artifact identity via a
+ * slug. The agent normally emits an explicit `slug=` attribute when rendering a
+ * saved artifact; otherwise the slug is derived deterministically from the
+ * message timestamp and body so that:
  *
- *   - Same message + same widget position → same slug → same binding.
+ *   - A slug hit implies that the stored body equals the rendered body.
  *   - Save once, refresh, click again → no duplicate created (the second
  *     POST goes to the same slug, server returns 409, frontend reconciles
  *     the bookmark icon to "filled").
- *   - Legacy widgets (rendered before this scheme existed) still get a
- *     stable identity from their message_ts so bookmark state survives
- *     refreshes.
+ *   - Identical bodies in one message deliberately share a slug because they
+ *     represent the same artifact content.
  *
  * The hash function is FNV-1a-like — fast, deterministic, no crypto
  * properties needed (we just want unique-enough opaque IDs). Output is
@@ -32,26 +31,7 @@ function hexFromUint32(n: number): string {
   return out
 }
 
-/**
- * Compute a 16-hex-char deterministic slug from a message timestamp and
- * a widget's 0-based index within that message. Two FNV-1a passes with
- * the standard 32-bit prime but different starting offset bases give us
- * 64 bits of namespace at zero crypto cost.
- *
- * Note: we use the 32-bit FNV prime (0x01000193) for BOTH passes, not
- * the 64-bit prime (0x100000001b3). Math.imul truncates its operands to
- * 32-bit signed integers before multiplying, so the 64-bit prime would
- * silently get truncated to 0x1b3 (435 decimal) — collapsing the second
- * pass to a weak `multiply-by-435` hash with poor avalanche behavior.
- * The two different offset bases (0x811c9dc5 and 0x62b82175) are enough
- * to guarantee independence of the two passes given the same input.
- *
- * @param messageTs Slack-style timestamp (e.g. "1779995123.456789") or any
- *                  string identifier for the parent message.
- * @param widgetIndex 0-based ordinal of the widget within the message.
- */
-export function deriveWidgetSlug(messageTs: string, widgetIndex: number): string {
-  const seed = `${messageTs}#${widgetIndex}`
+function fnvPair(seed: string): [number, number] {
   // Two independent FNV-1a passes — 32-bit prime, different offset bases.
   let h1 = 0x811c9dc5 >>> 0
   let h2 = 0x62b82175 >>> 0
@@ -60,23 +40,29 @@ export function deriveWidgetSlug(messageTs: string, widgetIndex: number): string
     h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0
     h2 = Math.imul(h2 ^ c, 0x01000193) >>> 0
   }
+  return [h1, h2]
+}
+
+/** Derive a widget artifact slug from its parent message and exact body. */
+export function deriveWidgetBodySlug(messageTs: string, body: string): string {
+  const [h1, h2] = fnvPair(`${messageTs}#w:${body}`)
   return hexFromUint32(h1) + hexFromUint32(h2)
 }
 
 /**
- * Pick the effective slug for a widget impression — explicit attribute
- * wins; otherwise derived from message location. Returns null only when
- * neither input is available (e.g. a streaming or detached widget that
- * has no parent message context yet).
+ * Pick the effective slug for a widget impression — explicit attribute wins;
+ * otherwise derive from message timestamp and body. A derived-slug hit implies
+ * content equality. Identical bodies in one message deliberately share a slug.
+ * Returns null when either derivation input is unavailable.
  */
 export function effectiveWidgetSlug(opts: {
   explicitSlug?: string | null
   messageTs?: string | null
-  widgetIndex?: number | null
+  body?: string | null
 }): string | null {
   if (opts.explicitSlug) return opts.explicitSlug
-  if (opts.messageTs && typeof opts.widgetIndex === 'number') {
-    return deriveWidgetSlug(opts.messageTs, opts.widgetIndex)
+  if (opts.messageTs && typeof opts.body === 'string') {
+    return deriveWidgetBodySlug(opts.messageTs, opts.body)
   }
   return null
 }
