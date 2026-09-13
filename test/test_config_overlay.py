@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _deep_merge,
@@ -505,3 +507,108 @@ class TestCliConfigSetLocal:
 
         saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
         assert saved["agent"]["model"] == "auto"
+
+
+class TestCliConfigSetDeclaredDictKeys:
+    """`config set` reaches a declared sub-key of a dict field before it is stored.
+
+    `dashboard.terminal` is the case: it is a plain dict whose default_factory
+    carries only `enabled`, so every other declared sub-key is absent from the
+    emitted document until somebody writes it. `_dict_set` alone would refuse
+    them; `_declared_entry` is what makes the schema's promise reachable, and it
+    returns the entry so that first write can be type-checked against it.
+    """
+
+    @staticmethod
+    def _run(config_dir: Path, key: str, value: str) -> None:
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        args = argparse.Namespace(config_action="set", key=key, value=value, file=None, local=False)
+        with (
+            patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
+            patch(
+                "kiro_crew.cli_config.config_local_path",
+                return_value=config_dir / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+            patch("kiro_crew.cli_config.sel"),
+        ):
+            _config_cmd(args)
+
+    @staticmethod
+    def _stock_terminal(tmp_path: Path) -> Path:
+        """A config whose `dashboard.terminal` holds only the default `enabled`."""
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(
+            json.dumps({"dashboard": {"terminal": {"enabled": True}}})
+        )
+        return config_dir
+
+    def test_declared_leaf_writes_when_absent(self, tmp_path: Path) -> None:
+        config_dir = self._stock_terminal(tmp_path)
+
+        self._run(config_dir, "dashboard.terminal.completion.enabled", "false")
+
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert saved["dashboard"]["terminal"]["completion"]["enabled"] is False
+        # The sibling that WAS stored survives the intermediate creation.
+        assert saved["dashboard"]["terminal"]["enabled"] is True
+
+    def test_declared_scalar_leaf_writes_when_absent(self, tmp_path: Path) -> None:
+        config_dir = self._stock_terminal(tmp_path)
+
+        self._run(config_dir, "dashboard.terminal.max_sessions", "20")
+
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert saved["dashboard"]["terminal"]["max_sessions"] == 20
+
+    def test_undeclared_key_under_open_dict_is_refused(self, tmp_path: Path, capsys) -> None:
+        """`completion` sets additionalProperties, so only the registry can gate this."""
+        config_dir = self._stock_terminal(tmp_path)
+
+        with pytest.raises(SystemExit) as exc:
+            self._run(config_dir, "dashboard.terminal.completion.bogus", "1")
+
+        assert exc.value.code == 1
+        assert "Unknown key" in capsys.readouterr().err
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert "completion" not in saved["dashboard"]["terminal"]
+
+    def test_typo_of_declared_leaf_is_refused(self, tmp_path: Path, capsys) -> None:
+        config_dir = self._stock_terminal(tmp_path)
+
+        with pytest.raises(SystemExit) as exc:
+            self._run(config_dir, "dashboard.terminal.completion.enable", "false")
+
+        assert exc.value.code == 1
+        assert "Unknown key" in capsys.readouterr().err
+
+    def test_declared_leaf_refuses_a_value_of_the_wrong_type(self, tmp_path: Path, capsys) -> None:
+        """A first write is the only chance to catch it: nothing stored to compare against.
+
+        `_parse_value` cannot fail, so an unparsable word arrives as a string. Left
+        unchecked, `max_sessions = "nope"` reaches `len(registry) >= max_sessions`
+        in the terminal handler and raises TypeError on every terminal open.
+        """
+        config_dir = self._stock_terminal(tmp_path)
+
+        with pytest.raises(SystemExit) as exc:
+            self._run(config_dir, "dashboard.terminal.max_sessions", "nope")
+
+        assert exc.value.code == 1
+        assert "expected integer, got str" in capsys.readouterr().err
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert "max_sessions" not in saved["dashboard"]["terminal"]
+
+    def test_declared_integer_leaf_refuses_a_boolean(self, tmp_path: Path, capsys) -> None:
+        """`bool` is an int subclass, so `true` would otherwise satisfy an integer leaf."""
+        config_dir = self._stock_terminal(tmp_path)
+
+        with pytest.raises(SystemExit) as exc:
+            self._run(config_dir, "dashboard.terminal.max_sessions", "true")
+
+        assert exc.value.code == 1
+        assert "expected integer, got boolean" in capsys.readouterr().err

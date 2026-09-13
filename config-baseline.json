@@ -6618,6 +6618,34 @@
       "defaultValue": ""
     },
     {
+      "path": "dashboard.terminal.max_sessions",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max terminal sessions",
+      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. Each chat's activity bar caps its own terminals below this; a session beyond the ceiling is refused.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 12
+    },
+    {
+      "path": "dashboard.terminal.cwd",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default working directory",
+      "help": "Directory a terminal opens in when the chat passes no project directory of its own. Empty = $HOME.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "dashboard.terminal.completion",
       "kind": "core",
       "type": "object",
@@ -6644,6 +6672,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.terminal.completion.commands",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Completion protocol overrides",
+      "help": "Re-point an already-allowlisted command at a different completion protocol, e.g. {\"docker\": \"cobra\"}. It can only change the protocol of a command the release already knows - it cannot add one, because the allowlist is the set of tools whose probe argv is known to be inert.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
     },
     {
       "path": "dashboard.default_project",
