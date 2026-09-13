@@ -87,10 +87,10 @@ from kiro_crew.config.loader import (
     CRED_WECOM_BOT_ID,
     CRED_WECOM_SECRET,
     CRED_WEIXIN_TOKEN,
-    _session_work_dir,
     build_provider_factory,
     config_dir,
     data_home,
+    session_default_cwd,
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY, strip_control_comments
@@ -9203,7 +9203,7 @@ class GatewayOrchestrator:
             sessions=self.sessions,
             context_builder=self.ctx_builder,
             on_notify=_task_notify,
-            work_dir=_session_work_dir("taskrunner:main"),
+            work_dir=session_default_cwd("taskrunner:main"),
             conversation_log=self.conv_log,
             consolidator=self.consolidator,
             lesson_store=LessonStore(),
@@ -9758,7 +9758,7 @@ class GatewayOrchestrator:
         overlay_dir = resolve_overlay_dir(cfg_gw.overlay_dir)
         socket_path = Path(cfg_gw.socket_path) if cfg_gw.socket_path else default_socket_path()
         agents_source_dir = kiro_agents_dir()
-        workspace_default = _session_work_dir(None)
+        workspace_default = session_default_cwd(None)
 
         try:
             # rewrite_agents() walks ~/.kiro/agents, parses every JSON spec and

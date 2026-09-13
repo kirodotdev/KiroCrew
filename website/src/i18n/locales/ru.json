@@ -9447,6 +9447,13 @@
       "clear_all_context": "Очистить весь контекст",
       "clear_context": "Очистить контекст",
       "clear_context_2": "Очистить контекст",
+      "clear_context_busy_error": "Контекст сохранён для {{roles}} — ещё выполняются. Повторите, когда они закончат, или скройте агента, чтобы удалить его из канала.",
+      "clear_context_cleared_roles": "Очищено для {{roles}}.",
+      "clear_context_done": "Контекст очищен.",
+      "clear_context_messages_kept": "Сообщения канала сохранены.",
+      "clear_context_messages_deleted": "Сообщения канала также удалены.",
+      "clear_context_not_cleared_yet": "Контекст не очищен",
+      "clear_context_partially_cleared": "Контекст частично очищен",
       "click_new_to_create_one": "Нажмите «+ Новый», чтобы создать канал.",
       "close": "Закрыть",
       "close_agents_panel": "Закрыть панель агентов",
@@ -9457,7 +9464,15 @@
       "dismiss": "Отключить",
       "e_g_investigate_gamma_deployment_failure": "напр. Разобраться со сбоем развёртывания в Gamma",
       "failed_to_add_agent": "Не удалось добавить агента",
+      "failed_to_clear_context": "Не удалось очистить контекст",
+      "failed_to_close_channel": "Не удалось закрыть канал",
       "failed_to_create_channel": "Не удалось создать канал",
+      "failed_to_dismiss_agent": "Не удалось убрать агента",
+      "failed_to_load_channel": "Не удалось загрузить канал",
+      "failed_to_load_channels": "Не удалось загрузить каналы",
+      "failed_to_load_presets": "Не удалось загрузить шаблоны команд",
+      "failed_to_send_message": "Не удалось отправить сообщение",
+      "failed_to_update_agent": "Не удалось обновить агента",
       "is_working": "работает…",
       "listen_all": "все",
       "listen_mention": "упоминания",
@@ -9479,7 +9494,8 @@
       "reply_2_many": "{{count}} ответов",
       "reply_2_one": "{{count}} ответ",
       "reply_2_other": "{{count}} ответа",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "Сбросить LLM-сессию {{role}}. Общая история сообщений канала сохраняется.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "Очищает контекст {{role}}. Общие сообщения канала сохранятся. Их контекст сохраняется, если они ещё работают.",
+      "retry": "Повторить",
       "role": "Роль",
       "role_e_g_logs_agent": "Роль (напр. агент по логам)",
       "running_tool": "выполняет инструмент…",
@@ -9494,17 +9510,9 @@
       "task": "Задача",
       "task_e_g_search_cloudwatch_logs": "Задача (напр. Найти в логах CloudWatch)",
       "team_preset": "Шаблон команды",
-      "this_will_reset_conversation_history_for_all_age": "История переписки будет сброшена для всех агентов. Настройки сохранятся.",
+      "this_will_reset_conversation_history_for_all_age": "Это очистит контекст всех агентов и удалит сообщения канала. Конфигурации сохранятся. Если агент ещё работает, то вместо этого сохранятся его контекст и сообщения канала.",
       "thread": "Ветка",
-      "topic": "Тема",
-      "failed_to_load_channels": "Не удалось загрузить каналы",
-      "failed_to_load_presets": "Не удалось загрузить шаблоны команд",
-      "failed_to_load_channel": "Не удалось загрузить канал",
-      "failed_to_send_message": "Не удалось отправить сообщение",
-      "failed_to_dismiss_agent": "Не удалось убрать агента",
-      "failed_to_update_agent": "Не удалось обновить агента",
-      "failed_to_close_channel": "Не удалось закрыть канал",
-      "failed_to_clear_context": "Не удалось очистить контекст"
+      "topic": "Тема"
     },
     "chat": {
       "activityViewer": {
@@ -15243,7 +15251,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Сейчас выполняется ход — повторите попытку, когда он завершится."
+      "turn_in_flight": "Сейчас выполняется ход — повторите попытку, когда он завершится.",
+      "workspace_unavailable": "Настроенная папка проекта недоступна — проверьте, существует ли она, и повторите попытку."
     },
     "channelOrigin": {
       "direct_message": "Личное сообщение"

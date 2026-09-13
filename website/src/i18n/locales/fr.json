@@ -9317,6 +9317,13 @@
       "clear_all_context": "Effacer tout le contexte",
       "clear_context": "Effacer le contexte",
       "clear_context_2": "Effacer le contexte",
+      "clear_context_busy_error": "Contexte conservé pour {{roles}} — toujours en cours. Réessayez quand ils auront terminé, ou ignorez un agent pour le retirer du canal.",
+      "clear_context_cleared_roles": "Effacé pour {{roles}}.",
+      "clear_context_done": "Contexte effacé.",
+      "clear_context_messages_kept": "Les messages du canal ont été conservés.",
+      "clear_context_messages_deleted": "Les messages du canal ont également été supprimés.",
+      "clear_context_not_cleared_yet": "Contexte non effacé",
+      "clear_context_partially_cleared": "Contexte partiellement effacé",
       "click_new_to_create_one": "Cliquez sur + Nouveau pour en créer un.",
       "close": "Fermer",
       "close_agents_panel": "Fermer le panneau des agents",
@@ -9327,7 +9334,15 @@
       "dismiss": "Retirer",
       "e_g_investigate_gamma_deployment_failure": "ex. Enquêter sur l'échec de déploiement Gamma",
       "failed_to_add_agent": "Échec de l’ajout de l’agent",
+      "failed_to_clear_context": "Échec de l'effacement du contexte",
+      "failed_to_close_channel": "Échec de la fermeture du canal",
       "failed_to_create_channel": "Échec de la création du canal",
+      "failed_to_dismiss_agent": "Échec du retrait de l'agent",
+      "failed_to_load_channel": "Échec du chargement du canal",
+      "failed_to_load_channels": "Échec du chargement des canaux",
+      "failed_to_load_presets": "Échec du chargement des préréglages d'équipe",
+      "failed_to_send_message": "Échec de l'envoi du message",
+      "failed_to_update_agent": "Échec de la mise à jour de l'agent",
       "is_working": "travaille…",
       "listen_all": "tout",
       "listen_mention": "mentions",
@@ -9348,7 +9363,8 @@
       "reply_2_many": "{{count}} réponses",
       "reply_2_one": "{{count}} réponse",
       "reply_2_other": "{{count}} réponses",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "Réinitialiser la session LLM de {{role}}. L’historique des messages partagé du canal est conservé.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "Efface le contexte de {{role}}. Les messages partagés du canal sont conservés. Leur contexte est conservé s'ils travaillent encore.",
+      "retry": "Réessayer",
       "role": "Rôle",
       "role_e_g_logs_agent": "Rôle (ex. Agent de logs)",
       "running_tool": "exécution d’un outil…",
@@ -9363,17 +9379,9 @@
       "task": "Tâche",
       "task_e_g_search_cloudwatch_logs": "Tâche (ex. Rechercher dans les logs CloudWatch)",
       "team_preset": "Préréglage d'équipe",
-      "this_will_reset_conversation_history_for_all_age": "Cela réinitialisera l'historique de conversation de tous les agents. Les configurations sont conservées.",
+      "this_will_reset_conversation_history_for_all_age": "Ceci efface le contexte de tous les agents et supprime les messages du canal. Les configurations sont conservées. Si un agent est encore actif, son contexte et les messages du canal sont conservés à la place.",
       "thread": "Fil",
-      "topic": "Sujet",
-      "failed_to_load_channels": "Échec du chargement des canaux",
-      "failed_to_load_presets": "Échec du chargement des préréglages d'équipe",
-      "failed_to_load_channel": "Échec du chargement du canal",
-      "failed_to_send_message": "Échec de l'envoi du message",
-      "failed_to_dismiss_agent": "Échec du retrait de l'agent",
-      "failed_to_update_agent": "Échec de la mise à jour de l'agent",
-      "failed_to_close_channel": "Échec de la fermeture du canal",
-      "failed_to_clear_context": "Échec de l'effacement du contexte"
+      "topic": "Sujet"
     },
     "chat": {
       "activityViewer": {
@@ -15051,7 +15059,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Un tour est en cours — réessayez quand il sera terminé."
+      "turn_in_flight": "Un tour est en cours — réessayez quand il sera terminé.",
+      "workspace_unavailable": "Le dossier de projet configuré n'est pas disponible — vérifiez qu'il existe, puis réessayez."
     },
     "channelOrigin": {
       "direct_message": "Message privé"

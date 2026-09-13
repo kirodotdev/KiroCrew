@@ -414,13 +414,435 @@ send time.
   semaphore may be held for a full turn, so it is ALWAYS acquired with the
   global `self._lock` RELEASED (pinning the lock across that wait would freeze
   session creation for every key and reintroduce a lock-ordering deadlock).
-  Because a session can be recycled/removed or its backing process can die
-  while a caller waits on the semaphore, every reuse path re-checks identity +
-  liveness AFTER acquiring it, through the single shared helper
-  `_reacquire_and_validate(key, sess)`. Its contract: it returns `True` with
+  Because a session can be recycled/removed, its backing process can die, or its
+  project directory can change while a caller waits on the semaphore, every reuse
+  path re-checks identity + liveness + BOUND CWD AFTER acquiring it, through the
+  single shared helper
+  `_reacquire_and_validate(key, sess, *, cwd=None)`. Its contract: it returns `True` with
   the semaphore **still held** (caller MUST `release`), or `False` having
   **already released** it (session went stale — caller evicts via
-  `_evict_stale_session` and cold-starts). Cancellation while parked on
+  `_evict_stale_session` and cold-starts). The cwd dimension is validated HERE and
+  not at the reuse decision, because that decision runs before the semaphore is
+  claimed and evicting there could tear down a turn still streaming. Both sides of
+  that comparison are normalized through `str(Path(...))` — the request AND the
+  provider's reported binding — so the result cannot depend on which side happened to
+  be canonicalised already, and a caller naming a stable directory (trailing slash,
+  doubled separator, or a platform whose `Path` rewrites the separators) cannot churn
+  a warm session every turn. A caller
+  passing no `cwd` states no requirement, so it cannot trigger a mismatch — which is
+  why a teardown that has to be REFUSED additionally ARMS THE KEY via
+  `mark_retire_on_next_claim`: a cleared project cannot be expressed as a cwd
+  requirement, so the arm, not the directory, is what stops the next claim being handed
+  the stale binding. The arm is keyed by STRING rather than by session object because a
+  cold start holds no registry entry until it finishes, so "nothing registered" can mean
+  a provider bound to the pre-change directory is already on its way; the key is
+  consumed as it is read, costing one cold start rather than refusing that key forever.
+
+  Alongside the arm, each key carries a MONOTONIC GENERATION (`RetireArm.generation`),
+  bumped by every project change — whether it arms (`mark_retire_on_next_claim`) or
+  not (`note_project_change`, which the agent- and workspace-switch handlers call
+  because they commit a new project and tear the session down directly, recording the
+  directory they committed so an evicted start's RETRY binds that rather than the one its
+  own frame carried). A cold start
+  snapshots the generation before its first `await` and is refused at registration if
+  the key has moved past it. This exists because the DIRECTORY a claim states cannot
+  order two claims: a start begun before the change and a slot recreated under the same
+  name after it both name something other than the armed target, so only the generation
+  separates them. Supersession of the arm ITSELF is a different and simpler mechanism: both
+  producers write the arm and bump the generation in one statement block, so a later change
+  to the same key OVERWRITES the earlier arm in the map and there is no stale entry for a
+  stamp comparison to find. An earlier version carried a per-arm generation stamp and a
+  `_live_arm` reader that dropped superseded entries; that branch was unreachable by
+  construction and has been removed, so nothing here reads a stamp.
+
+  Why not fold staleness into the KEY instead. The obvious alternative removes this whole
+  mechanism by construction: put a binding epoch in the folded session key, so a stale start
+  registers under a dead identity and needs no arm, no transfer and no settle loop. It loses
+  on the key's ownership, not on elegance. The folded key is a PERSISTED, externally owned
+  identity: a channel member's `agent.session_key` and a cron job's `session_key` are written
+  to disk and re-read by a later process, and a Slack-born key is a thread timestamp its own
+  surface maps back to. Appending an epoch changes the key every time a project moves, so
+  every record already persisted under the old spelling stops resolving — and the failure is
+  silent, because a key that no longer folds onto a live session reads exactly like a session
+  that has ended. `_fold_key` also already carries a compatibility burden for that reason:
+  it resolves exact, then `canonical_key`, then `legacy_key` onto one live entry. An epoch
+  adds a second unbounded dimension to that same lookup, and every alias spelling would need
+  its epoch to agree.
+
+  It also cannot cover the case the arm exists for. A cold start caches its resume SID BEFORE
+  it registers, so at spawn time there is no entry to name — an epoch would have to be decided
+  by the spawner and could be superseded during the start it was meant to fence, which is the
+  race itself rather than a fix for it. The per-key arm is consulted at REGISTRATION, after the
+  change has landed, which is why it catches that start. So the arm map is the compatible
+  shape, not the preferred one: it keeps the key a stable identity that persisted records and
+  external surfaces can still resolve, and pays for that with a fencing protocol whose
+  producers must self-classify. `_ARM_KEY_SETTLE_PASSES` and the park flag are the cost of
+  that choice and are named here so a later reader can price the alternative honestly.
+
+  This counter is NOT the existing `ownership_generations`, and the two cannot be unified,
+  for two reasons visible in their keys. `advance_ownership_generation` buckets by
+  `_generation_key`, i.e. `canonical_key(key)`, a bucket deliberately SHARED by a key's
+  canonical and legacy Slack aliases; the arm's counter is per FOLDED key. Sharing one
+  counter would therefore let a project change on one alias refuse an in-flight start on a
+  sibling alias whose project never moved. They also advance on unrelated events: ownership
+  advances when a logical key CHANGES HANDS, while this one advances when a key's PROJECT
+  changes, and it must survive `spend()` — the arm's directory and agent drop while the
+  counter stays, because a start compares against it at registration. Folding them together
+  would make an ownership transfer read as staleness to starts that were never stale, and a
+  project change read as a change of owner to every claim that consults ownership.
+
+  The spend/keep matrix is asymmetric and deliberate, and it follows from what each
+  teardown does to the SESSION MAP rather than from a per-path preference. The arm names
+  a directory a SUCCESSOR must bind, so it may only be dropped where no successor of that
+  slot can arrive. A refused reset never spends the arm (the reason for the teardown has
+  not gone away); a landed reset does not either (the arm is keyed on the target
+  directory, so the eager respawn is reused rather than torn down). `destroy` DELETES the
+  session-map entry and `close_all` ends the process, so both spend it — the only claim
+  left for it to apply to would be a different slot recreated under the same name, which
+  would silently inherit the previous project. `remove` and `remove_if_unclaimed` PRESERVE
+  that entry, so they spend nothing: the arm is still owed to a real claim, and it doubles
+  as the retry target for a start the cleanup evicts, whose own frame carries only the
+  pre-change directory. That keeps the arm alive past the SLOT, though — the close and sweep
+  paths both run `remove` — and a recreated slot only overwrites it if the user happens to
+  change its project, which a fresh tab accepting the default never does. So the arm cannot
+  be left for the next occupant to supersede; slot CREATION drops it.
+
+  Two allocation-layer primitives drop it. `spend_retire_arm(key)` is called only from
+  `destroy`, whose contract is a teardown that ends the slot generation.
+  `supersede_arm_for_new_slot(key)` is called only from slot creation's mint path, on the
+  grounds that a freshly minted slot has never been armed, so any arm on its key belongs to
+  a previous occupant; slot REUSE returns earlier and so keeps the retry target `remove`
+  preserves the arm for. It bumps the GENERATION rather than dropping it, because clearing
+  would let a start still in flight from the previous occupant compare equal to a fresh
+  key's zero and bind here. The keep-side paths deliberately call nothing: keeping the arm
+  IS the absence of a call, so a no-op primitive existing to be countable by a census would
+  be dead weight. What ratchets a NEW teardown path onto one side is
+  `test_only_slot_ending_teardowns_spend_the_retirement_arm`, which asserts the keep-side
+  as an absence. The key's GENERATION survives every teardown here, which is what still
+  refuses a start already in flight.
+
+  **The `linked_session_key` writers are serialized against the settle.** The settle was
+  probe-then-act: it re-read `linked_session_key` a bounded number of times
+  (`_ARM_KEY_SETTLE_PASSES`), which damped the race without closing it, because a rebind
+  landing after the last pass stranded the arm on the abandoned key. That is the shape this
+  repo's own rule rejects — a probe followed by a separate act cannot protect a resource whose
+  state changes between the two — so it is closed here rather than recorded as owed.
+  `settling_key` excludes the whole settle-and-arm region; `bind_linked_session_key` is the
+  single writer and PARKS a rebind arriving inside it; `key_rebind_deferred` reports that one
+  is pending, and an unsettled settle publishes no arm and RETRACTS the source arm rather than
+  leaving it owed to a binding nobody is on. All eight assignment sites across five modules —
+  `dashboard/handlers/cron.py`, `dashboard/chat_persistence.py` (three), `dashboard/state.py`
+  (two), `dashboard/workflow_inject.py` and `dashboard/cron_inject.py` — route through that
+  single writer.
+
+  Deliberately NOT the slot lock, for two independently disqualifying reasons: it is not
+  reentrant and one transfer already runs inside it, so a second acquisition would never
+  return; and seven of the eight writers are synchronous functions, which cannot acquire an
+  asyncio lock at all. Deferring rather than blocking also cannot deadlock, which a lock
+  taken by a writer that already holds it could.
+
+  WHAT REMAINS, and what does not. Writer-versus-writer ordering is deliberately not imposed
+  and is not owed: a binding is a latest-value fact, so writers racing outside a region
+  resolve last-write-wins and only the newest key parked inside one survives the unwind, which
+  is the intended semantic in both cases. A NINTH surface sets the field without naming the
+  attribute — `get_or_create_slot`'s `linked_session_key` argument, which every channel and
+  cron surfacing passes. It needs no guard because the factory returns an existing slot before
+  reaching the bind, so it can only bind a slot it just minted, where no arm can yet be
+  settling. TRIGGER: any new writer must route through `bind_linked_session_key`. The writer
+  census in the settling tests fails a module that reaches the field by a dotted assignment
+  without it, and is structurally blind to the keyword form, so that surface carries its own
+  control rather than relying on the census.
+
+  WEIGHED ALTERNATIVE — every claim states its own requirement. Instead of a store the
+  producer writes and the claim reads, each claim could carry the cwd and agent it requires and
+  be refused when the live session does not match; `CWD_CLEARED` already makes "cleared" an
+  expressible requirement, so the vocabulary exists. That shape is genuinely smaller in state:
+  it removes both pending maps and leaves only the generation counter.
+
+  It is NOT taken here, for one reason that is structural rather than a matter of taste. The arm
+  covers a session that is NOT YET REGISTERED: a cold start holds no registry entry until it
+  finishes, so a claim-time comparison has nothing to compare against while a provider bound to
+  the pre-change directory is already on its way. The requirement would be stated by the very
+  claim that is in flight, which is the window the arm exists to close. A claim-stated
+  requirement therefore cannot replace the arm; it can only replace the part of it that a
+  registered session already covers.
+
+  Two costs beside that. Every claim site becomes a writer of the requirement, and the channel
+  dispatch in `messaging/dispatch.py` calls `get_or_create` with no cwd at all today, so the
+  blast radius is every caller rather than one subsystem. And a requirement stated per claim is
+  re-derived by each caller, where the store derives it once at the moment of change.
+
+  What would make the alternative win: a registry that records a cold start BEFORE its provider
+  binds, so a claim has something to compare against for the whole window. With that in place the
+  arm store's remaining job is only the generation counter, and this section should be revisited.
+
+  **OWED FOLLOW-UP — record a cold start in the registry BEFORE its provider binds.** This is
+  now the ONLY open root cause the arm store compensates for rather than removes; the other —
+  the unserialized `linked_session_key` writers — is closed above. Closing this one at cause
+  means recording the key when the start is REQUESTED, not when its provider binds, so a claim
+  has an entry to compare against for the whole window. Until it lands, a claim arriving inside
+  that window has nothing to compare against, so correctness rests on the producer having armed
+  before the start was requested. TRIGGER: this is owed before any new caller can start a
+  session outside the arming producers named here. Landing it would shrink the arm store's
+  remaining job to the generation counter alone, which is why no further producer should be
+  added to the arm store before it: each one that is makes this replacement more expensive,
+  not less.
+
+  Two properties of the arm's LIFECYCLE are load-bearing and neither is local to the
+  allocation layer, so both are recorded here rather than as comments at their sites.
+  It is raised by the PRODUCER, synchronously. A project change defers the RESET — the
+  endpoint is reachable over loopback HTTP from inside the kiro-cli process group, so an
+  inline teardown would `killpg` the caller — but deferring the ARM as well would leave a
+  window: the consumer runs behind the eager task's 1.5s debounce, and a channel turn
+  arriving inside it states no directory, so the claim-time cwd check cannot fire and the
+  arm is the only thing that would refuse the pre-change session. Arming is in-memory
+  bookkeeping and carries none of the `killpg` risk that forced the reset to be deferred,
+  so the two are deferred separately: the reset waits, the arm does not.
+
+  It is satisfied by a BINDING, not only by a stated directory. A claim that names no cwd
+  cannot state agreement with the armed target, and channel turns are exactly that shape —
+  the messaging dispatch builds its `get_or_create` kwargs with `model` and nothing else.
+  Gating satisfaction on a stated cwd therefore left the arm permanently unsatisfiable for
+  that consumer: every channel turn read as retire-applies, evicted, and cold-started, so
+  the change cost a cold start on EVERY turn instead of the single one it is supposed to
+  cost. A registered session already bound to exactly the armed directory is the successor
+  the arm was waiting for, whether or not the claimant restated that directory.
+
+  Which makes the two producers NOT interchangeable, and this is the sharp edge. Both
+  record the committed directory and bump the generation; `mark_retire_on_next_claim` also
+  flags the REGISTERED session via `retire_on_identity_change`. Because satisfaction is a
+  directory test, a change that moves the DIRECTORY is fully expressed by the arm alone —
+  that is `note_project_change`. A change of IDENTITY is not: an agent switch on a
+  project-scope agent keeps `slot.project`, so the arm names the directory the live session
+  is already bound to, a cwd-less channel claim reads it as satisfied, and the
+  switched-away agent serves the next turn. The identity flag is the only part of that a
+  matching directory cannot express, and it survives the busy-deferred reset that leaves
+  the old session alive. So: directory moved → `note_project_change`; session must be
+  replaced whatever its directory → `mark_retire_on_next_claim`.
+
+  Two arms, two questions -- but ONE spend. `cwd_satisfied` and `agent_satisfied` are
+  independent predicates, and each is the only thing that can answer its own half. They are
+  not independent SPENDS: an arm is dropped exactly when the claim is ACCEPTED, never one
+  half at a time. Spending each on its own answer loses the directory requirement on a
+  claim the same frame is about to REFUSE, and the case is ordinary rather than exotic. A
+  project-scope agent switch keeps `slot.project`, so it arms the directory the session is
+  already bound to plus the agent a successor must run; a cwd-less claim then satisfies the
+  directory half by its binding while the identity half cannot be satisfied at all. That
+  claim is refused -- and if the directory arm went with it, the SUCCESSOR is unguarded: it
+  can bind any directory, nothing refuses it, and its relative writes land outside the
+  selected project with no recovery path.
+
+  What an empty cwd resolves to is per-SESSION, not shared. The provider factory resolves a
+  falsy `cwd` to `workspace_root()/<key>`, which is a different root from
+  `config_dir()/"workspace"`, so `resolved_cwd` has to be told the key or it answers a
+  directory no provider ever binds. Two harms follow from the divergence, and they are the
+  two `default_workspace_dir` exists to prevent: a cleared-project claim never matches its
+  own binding, so the slot cold-starts every turn or exhausts its retry budget and wedges;
+  and anything that BINDS that answer puts sessions meant to be isolated in one directory,
+  where their relative writes overwrite each other. `session_default_cwd` is the one symbol
+  both the factory and the resolver go through, so the agreement is an invariant rather than
+  a convention -- keyless callers keep the shared answer, for the paths that genuinely share
+  one workspace.
+
+  A REBIND is the third producer shape, and it needs a MOVE rather than a write. The
+  deferred reset arms the key the producer could see; if the slot rebinds before the
+  consume, its turns run under another key and both facts are true at once. Arming the
+  live key alone leaves the abandoned key's arm in the map, and nothing drops it — an arm
+  is cleared by the claim that satisfies it, and no claim arrives under a key the slot
+  left. That residue is not inert, because the map is keyed by STRING: a later session
+  registered under the same string, a channel re-link reusing the id or a recreated slot
+  of the same name, reads an arm naming a directory chosen for a binding that no longer
+  exists. So `_consume_pending_reset` calls `transfer_retire_arm`, which arms the live key
+  and clears the abandoned one in one synchronous step, carrying the agent requirement
+  across because only the arm states which agent a successor must run. It is distinct from
+  `spend_retire_arm`, whose contract is a teardown that ENDS the slot generation and so
+  drops an arm no successor is owed; here the arm is still owed and only its ADDRESS was
+  wrong. The abandoned key's GENERATION stays, for the reason `spend_retire_arm` keeps its
+  own: that counter refuses a start still in flight under the old key, which a rebind makes
+  more likely rather than less.
+
+  WIRE CONTRACT CHANGE — a project set during a rebind now SUCCEEDS. `api_chat_slot_project`
+  previously refused with `409` when the slot rebound between the request's gate and its commit,
+  on the ground that arming the new key would arm one the app gate never authorized. It now
+  answers `200` and transfers the arm, because that ground is addressed rather than assumed: the
+  live key is re-authorized through `_app_cancel_denied` before any arm moves, and a denial
+  retracts the source arm so no arm survives on either key. A caller that treated the `409` as
+  "retry the set" therefore sees a success where it previously retried; the retry was always
+  going to succeed on the next attempt, so the observable difference is one fewer round trip, not
+  a different final state. An unauthorized rebind still refuses.
+
+  An EQUIVALENT same-key re-arm keeps the generation. `_consume_pending_reset` is re-entered
+  by the deferred-reset retry every few seconds for as long as sub-agents stay attached, and
+  each pass transfers the arm onto the SAME key with the SAME target. Bumping the generation
+  there refuses a cold start that has not finished resolving its own model, so a slow start is
+  rejected on every attempt until the path gives up — the counter meant to refuse a STALE
+  start starves a current one instead. Equivalence is deliberately narrow: same folded key AND
+  the already-armed target equal to the requested one. A different target on the same key is a
+  genuine change and must supersede, and the agent needs no comparison because the carried
+  value is read from that same key. The registered session is still flagged on the preserved
+  path — a session that registers between the first arm and a retry pass must honour the arm,
+  which is the arm's whole purpose.
+
+  A ROLLBACK is a producer too, and it is the one that gets the identity wrong. The agent
+  switch arms BEFORE its awaits, so an abandoned switch leaves an arm naming a binding the
+  slot no longer holds; leaving it there makes the arm permanently unsatisfiable, so the
+  rollback re-points it. The subtlety is WHICH binding to name. The rollback unwinds each
+  field on its commit token's IDENTITY, never on value, so an unlocked writer — the in-turn
+  `/agent` directive, `members`, `openai_compat` — that wrote during the awaits keeps its
+  value and the rollback stands down for that field. The arm must then name the PRESERVED
+  agent, resolved, because the registration matches on `kiro_agent or slot.agent`: arming
+  the prior agent's target refuses the next cwd-less claim for an identity the slot never
+  names, and the retry re-points the session to an agent nobody selected. This is not a
+  remote combination — the rollback path is reached precisely BECAUSE a turn is in flight,
+  which is exactly when an in-turn directive lands. The same rule already governs the
+  metadata restore beside it, which writes post-rollback `slot.agent` rather than
+  `prior_agent` for this reason. Only when the rollback actually RESTORED the field is the
+  prior agent's resolution the right answer.
+
+  What the arm falls back to when the project is EMPTY. Both arm sites name
+  `slot.project or <fallback>`, and the post-switch project is legitimately empty:
+  `default_project_dir(workspace)` answers `""` for a workspace directory that is missing or
+  sensitive (its own `is_sensitive_path` guard in `config/loader.py`). The fallback must
+  therefore be the CLEARED
+  per-session default, resolved through `resolve_arm_cwd(key, CWD_CLEARED)` — never a
+  project, and in particular never the PRE-switch project. Resolving it from the pre-switch
+  project made an agent switch into such a workspace arm the directory it was abandoning, so
+  the next cwd-less claim bound the old repository and relative writes landed there with
+  nothing to signal it. The resolution is UNCONDITIONAL: `slot.project` has writers that take no lock, so a clear
+  landing during the handler.s awaits empties both candidate projects after any gate on them
+  has already decided, and the synchronous arm would then resolve `""` on the event loop -- the
+  one thing `mark_retire_on_next_claim` documents its callers must prevent. A rollback is a
+  producer too, so its own arm must follow the revert rather than precede it.
+
+  The resolution runs once both candidate projects are final and
+  before either is committed, and it is not gated on either being empty — see UNCONDITIONAL
+  above. It therefore costs one off-thread resolve per switch, and a failure answers
+  `503 workspace_unavailable` after unwinding the agent commit that precedes it.
+
+  What this writes to DISK, declared because it is a persistence change and not only an
+  in-memory one. `project` and `project_cleared` are now written unconditionally rather than
+  only when a project is set, because the ABSENCE of a key cannot distinguish "never scoped"
+  from "explicitly cleared" — and that distinction is the whole of `claim_cwd`. A record
+  written by an older build therefore carries neither key, and is read as never-scoped, which
+  is the safe direction: it states no directory, keeps the warm pool, and cannot resurrect a
+  clear that build never recorded. The merge is an upsert that cannot delete a key, so a slot
+  cleared after `/old` was persisted still carries `/old` on disk; `claim_cwd` reads the
+  cleared marker FIRST for exactly that reason. `resolved_cwd` (`config/paths.py`) is the one
+  place a falsy directory becomes the concrete per-session default, so no caller has to know
+  whether a provider was handed `""` or a path.
+
+  What a CLEARED project costs at claim time. `CWD_CLEARED` names the per-session default,
+  which no pooled child can be sitting in, so `cwd_blocks_pool` routes such a turn to
+  `pool_decision = "bypass_cwd"` and it cold-starts through the factory. That cost is
+  intended, not incidental: a warm hit would bind the shared pool directory and so serve
+  precisely the stale binding this module exists to refuse. The decision is named in the
+  claim's own telemetry, so the bypass rate is observable rather than silent.
+
+  What bounds a refused clear. A member turn holding the session is not unbounded, which is
+  why the refusal's "retry when idle" is advice that arrives: every ACP prompt resolves its
+  wait from `agent.chat_turn_timeout_secs`, clamped to
+  `[CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX]` = 300s..86400s — applied at
+  `acp/session_handle.py`'s `_effective_prompt_timeout_async` and enforced by the transport
+  wait on `_turn_done`. So the ceiling is the transport's, not the dashboard's: channel
+  members are dispatched by `handlers_channel.py`'s `_spawn_agent_task`, a bare
+  `create_task` that adds no ceiling of its own, so a member turn is bounded by that prompt
+  timeout alone and by nothing shorter. That is the bound a wedged turn is released by, and
+  the reason the endpoint refuses rather than forcing: an unconditional clear can only make
+  the refusal disappear by discarding the state of a turn that is still running.
+
+  What that bound COSTS, recorded because the refusal is a deliberate trade rather than a free
+  one. The unconditional clear was also the only in-band recovery for a wedged member turn, and
+  refusing it removes that: the channel route table carries `wake`, `approve`, `update` and
+  `dismiss` for a member and no stop or interrupt, so the remaining remedies are dismissing the
+  member — which discards the member, not merely its turn — or waiting out the prompt timeout,
+  whose default is 14400s. A `force` parameter is deliberately NOT added, because it could only
+  clear by discarding the state of a live turn, which is the harm the refusal exists to
+  prevent. OWED FOLLOW-UP — a member-level stop that ends the TURN and leaves the member in
+  place is the lever this trade is missing; until it exists the prompt timeout is the sole
+  bound, and that is a choice a maintainer should make knowingly rather than inherit. TRIGGER:
+  owed before any further surface is given a refusing clear, since each one widens a window the
+  user has no in-product answer for.
+
+  The queued reset's consume then reads `reset`'s return with that split in mind. `reset`
+  answers `session is not None`, so a False is AMBIGUOUS: refused-because-busy, or nothing
+  live to tear down. Only the first is a deferral. The second has already achieved what the
+  flag asks for, and leaving the flag armed there would have a later consume tear down the
+  session the eager spawn just created — paying the cold start that path exists to hide — so
+  `has_session` disambiguates and the flag is cleared. Safety does not rest on that
+  bookkeeping: the arm is raised BEFORE any branch and keyed on the CURRENT effective key,
+  so it still covers an in-flight cold start, which is invisible to both probes precisely
+  because it holds no registry entry yet. Where the session IS registered the flag stays
+  armed and the bounded retry task owns the follow-up, because a channel-linked slot's turns
+  cross no dashboard turn boundary and would otherwise never retry the decline.
+
+  Flagging the registered session is not sufficient on its own, because a COLD START has no
+  registered object to flag. Consider a channel turn that resolves its agent, then the
+  switch lands, and only then does the turn reach `get_or_create`: its generation snapshot
+  is taken AFTER the bump so the ordering test reads clean, and a project-scope switch left
+  the directory alone so the arm's directory test reads clean too — yet the session about to
+  register runs the agent the switch replaced. Nothing self-corrects, because the next
+  satisfied claim spends the arm. So an identity arm also records the DESIRED AGENT
+  (`RetireArm.agent`), and registration is refused when the registering session's agent
+  is not it.
+
+  Refusing is only half of it: a refusal has to leave the retry able to SATISFY it. The
+  retry already re-points `cwd` at the arm for exactly this reason, and the agent is
+  re-pointed the same way — a turn carrying the switched-away agent replayed unchanged is
+  refused identically every time, so without the re-point the won-race budget runs out and
+  the slot wedges. That failure is not hypothetical: it is what the first version of this
+  guard did, caught by `test_a_post_switch_cold_start_cannot_register_the_old_agent`.
+
+  Two constraints on the identity arm follow from that, and both were defects first.
+
+  It must be COMPARABLE to the namespace the REGISTRATION reads, without freezing the
+  mapping. A claim's agent is `kiro_agent or slot.agent` — an alias's resolved TARGET,
+  preferred over the alias name — so arming the name the user picked cannot be compared
+  directly for any alias whose target differs. The consequence is not a missed refusal but an
+  inverted one: the correctly-resolved cold start is refused, and the retry re-points to the
+  armed value, running the wrong identity. Arming the RESOLVED target instead fixes the
+  comparison and introduces the mirror defect: the snapshot outlives the config, so an alias
+  re-pointed during the arm window leaves the retry re-pointing at the OLD target. So the arm
+  records the stable ALIAS and `resolve_runtime_agent` maps it to the CURRENT target at every
+  consume site — the reuse comparison, the cold-start stale check, and the retry rebind. All
+  THREE must accept both spellings: the retry re-points through the resolver, so a site still
+  comparing the raw alias can never agree with it, and because the stale branch sets
+  `retire_on_identity_change` the eviction KEEPS the arm — the retry then re-reads the same
+  alias until the won-race budget runs out and the claim raises instead of starting.
+  It resolves only a name the
+  config DEFINES, because the binding resolver substitutes the default agent for an unknown
+  one, which would answer a different identity rather than resolve this one; anything else
+  degrades to the alias, exactly where the claim also degrades to `slot.agent`. The resolve
+  is OFF-THREAD at every site, and not because it is expensive on average: the config load is
+  cheap on a cache HIT, but any config edit makes the next one read, parse and schema-validate,
+  and on the loop that stalls every other session's turn and the heartbeat with it. Each site
+  resolves BEFORE its critical section — the claim's decision window takes no await, and the
+  cold-start check runs under the registry lock, where a synchronous read wedges every session
+  — then uses the pre-resolved value only while the arm still names the alias it resolved.
+
+  And it must be satisfied SEPARATELY from the directory. `cwd_satisfied` is a directory
+  test, and a project-scope switch keeps the directory, so letting a cwd match spend the
+  identity arm defeats the mechanism on its own intended consumer path — the claim reuses a
+  session still running the switched-away agent and the arm is gone. Each arm is answered by
+  its own predicate, the session is retired unless BOTH are satisfied, and each is spent only
+  by its own answer.
+  TWO of the three arm maps are released together; the generation counter is not one of them.
+  `remove` and
+  `remove_if_unclaimed` — the session-level eviction paths — PRESERVE the arm deliberately,
+  because it is still owed to a retry. What reclaims it is the FINAL slot teardown: the close
+  handler and the archive sweep both call `supersede_arm_for_new_slot` once
+  `_slot_still_ours` confirms the slot is theirs to end, so a transient key — a channel link,
+  or a cron, workflow or subagent slot — stops leaving `RetireArm.cwd` and
+  `RetireArm.agent` entries resident until process exit. It releases nothing a recreate
+  would have kept, because the mint path is the same verb. `RetireArm.generation` is deliberately
+  RETAINED and bumped rather than cleared, so a start still in flight from the previous
+  occupant cannot compare equal to a fresh key's zero: one integer per key the process has
+  ever armed stays resident by design, which is the price of that guard.
+  The remaining releases are `spend_retire_arm` (inside `destroy`), `transfer_retire_arm` for a
+  rebind, and the bulk `discard_all_retire_arms` that `close_all` runs.
+  On
+  `False` the helper evicts BEFORE releasing the permit: releasing first would
+  leave the session registered with a free permit, letting another acquirer win a
+  provider that the eviction then shuts down mid-command. Cancellation while parked on
   `self._lock` after the acquire releases the semaphore before propagating, so
   the key never stays permanently locked. Liveness uses
   `_provider_effectively_alive` (a dead Claude-Code `per_session` process

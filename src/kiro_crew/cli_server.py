@@ -26,11 +26,11 @@ from kiro_crew import __version__, dep_sync, platform_compat
 from kiro_crew.beacon import distribution, is_default_home
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
-    _session_work_dir,
     build_provider_factory,
     config_dir,
     config_path,
     read_local_secret,
+    session_default_cwd,
 )
 from kiro_crew.constants import DATA_WARNING
 from kiro_crew.context import ContextBuilder
@@ -2327,7 +2327,7 @@ async def _run_task(args: argparse.Namespace) -> None:
         context_builder=ctx,
         auto_test=auto_test,
         on_notify=_cli_notify,
-        work_dir=_session_work_dir("taskrunner:main"),
+        work_dir=session_default_cwd("taskrunner:main"),
         conversation_log=conv_log,
         consolidator=consolidator,
         lesson_store=lessons,

@@ -94,7 +94,9 @@ Closing a channel cancels live agent tasks, broadcasts the close, and removes it
 
 `api_channel_clear_context` resets either one agent session or every channel-agent session. An agent-scope reset preserves shared messages and exchange counts; an all-scope reset also clears both, persists the channel, and broadcasts `channel_context_cleared` so other browser clients discard stale messages.
 
-The handler does not take a per-channel lock. A post concurrent with an all-scope reset can be cleared by the reset, and an in-flight approval future is not cancelled by the handler; it resolves through the agent task after the session reset. This is the current concurrency gap, not a guarantee of serialized channel mutation.
+The clear runs under the channel's log lock, which `post` also takes, so a post cannot reach the inbox mid-clear and one already queued refuses its member rather than being wiped unacknowledged. An in-flight approval future is still not cancelled by the handler; it resolves through the agent task after the session reset.
+
+Thread pointers resolve under that same lock, and a message carries `thread_id` and `reply_to` as a PAIR: both set, or neither. `reply_to` is knowable only from the parent, so a reply whose parent is gone by the time the append runs -- an all-scope clear empties the index under this lock -- posts TOP-LEVEL with both fields cleared. Retaining the id there would store a pointer no reader can resolve beside an empty `reply_to`, and dropping the message would lose content its sender was told had been accepted. Pinned by `test_channel_orphan_thread.py`, whose third case asserts the pair is never half-set.
 
 ## Security
 

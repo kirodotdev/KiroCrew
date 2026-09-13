@@ -28,6 +28,22 @@ export function isTurnInFlightError(error: unknown): boolean {
 }
 
 /**
+ * True for the 503 a switch answers when the configured workspace root cannot be
+ * resolved. Detected here rather than left to the generic path because that path
+ * prefers the API layer's message, which for this one is the backend's own English
+ * prose -- unlocalized, on a localized page.
+ */
+export function isWorkspaceUnavailableError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { status, body } = error as { status?: unknown; body?: unknown }
+  return (
+    status === 503
+    && typeof body === 'string'
+    && parseErrorCode(body) === 'workspace_unavailable'
+  )
+}
+
+/**
  * Convert an agent-switch failure into copy the chat surface can show.
  *
  * A `turn_in_flight` 409 gets its own copy first: the dropdown picker is
@@ -47,6 +63,9 @@ export function isTurnInFlightError(error: unknown): boolean {
 export function agentSwitchFailureMessage(error: unknown): string {
   if (isTurnInFlightError(error)) {
     return i18nT('utils.agentSwitchFeedback.turn_in_flight')
+  }
+  if (isWorkspaceUnavailableError(error)) {
+    return i18nT('utils.agentSwitchFeedback.workspace_unavailable')
   }
   // `errMessage` owns reading a message off a rejection object, including the
   // plain serialized form a Redux Toolkit thunk boundary produces, so this stops

@@ -10,6 +10,7 @@ import asyncio
 import math
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_utils import bind_linked_session_key
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
 from kiro_crew.history import append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -399,7 +400,7 @@ def _bind_cron_slot(
     if job.memory_store:
         slot.memory_store = job.memory_store
     if not slot.linked_session_key:
-        slot.linked_session_key = f"cron:{job.id}"
+        bind_linked_session_key(slot, f"cron:{job.id}")
         hydrate_slot_from_history(slot, history or [])
     # Publish the (possibly just-created) tab to the dashboard-surface registry
     # BEFORE anything routes against it. Every gate that asks "does this session

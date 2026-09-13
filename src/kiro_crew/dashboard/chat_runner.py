@@ -54,6 +54,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
     resolve_effective_model,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.connections import get_visible_providers
 from kiro_crew.constants import strip_control_comments
 from kiro_crew.context import prepare_store_vectors
@@ -111,9 +112,11 @@ from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
     is_harness_slash_command,
     is_system_injection_item,
+    key_rebind_deferred,
     mirror_is_paused,
     parse_workflow_command,
     remember_slack_options,
+    settling_key,
     slack_mirror_is_paused,
     slot_history_key,
     user_text_span,
@@ -738,6 +741,102 @@ async def _credential_tool_hint_for(reason: str, cause: str, subject: str = "") 
 #: skipping both. Sized to a pipe write with margin, far below the 60s approval
 #: reporting margin, and applied inside the helper so every caller inherits it.
 _STEER_NOTICE_BOUND_SECS = 5.0
+
+
+def _retract_own_arm(state: Any, from_key: str, only_generation: int | None) -> None:
+    """Retract *from_key*'s arm only where this caller is the producer that armed it.
+
+    An unscoped retract spends whichever arm is resident, so a caller that armed nothing
+    erased a project arm another producer owned -- and the next claim stating no directory,
+    which is every channel turn, was then served the superseded project's session with
+    nothing left to retire it. A caller holding no generation therefore leaves the arm
+    where it is: it stays owed to a claim on this key, which is the outcome the arm exists
+    to force, and slot mint or final teardown reclaims it.
+    """
+    if only_generation is None:
+        return
+    state.sessions.supersede_arm_for_new_slot(from_key, only_generation=only_generation)
+
+
+async def _settle_arm_target(
+    state: Any,
+    slot: Any,
+    from_key: str,
+    project: str,
+    authorize: Callable[[str], Any] | None = None,
+    *,
+    only_generation: int | None = None,
+) -> Any:
+    """Resolve WHICH key an arm should land on, publishing nothing.
+
+    The awaits live here so a caller that must publish its arm and finalize its binding can
+    do both with no suspension between: a claim landing inside this resolve would otherwise
+    follow an arm naming a project a later compare-and-set may not keep.
+
+    The effective key can move while a cleared cwd resolves off-thread, and a cwd resolved
+    for the losing key names a directory no winner's provider binds -- arming there evicts
+    the live session, whose won-race retry then lands in a scratch dir. Each pass therefore
+    re-resolves for whichever key wins, and EVERY resolve is verified, including the last,
+    so a rebind landing after the final pass is detected rather than armed onto the key the
+    slot just left. The bound is the pass count, and exhausting it is reported: an unsettled
+    key publishes no arm here either.
+
+    `authorize` gates the key an arm would land on, because the caller's own gate cleared
+    `from_key` alone and a rebind can move the slot onto a session it has no claim on. On
+    denial the source arm is retracted, scoped to the caller's own generation, and the caller
+    must publish nothing. A caller with no external principal -- the turn loop, whose reset
+    was authorized when armed -- passes none.
+
+    Returns the denial (or ``None``), the key that won, the cwd resolved for it, and
+    whether the key SETTLED -- a caller must publish nothing when it did not.
+    """
+    with settling_key(slot):
+        current_key = effective_session_key(slot)
+        armed_cwd = project or await state.sessions.resolve_arm_cwd(current_key, CWD_CLEARED)
+        # ONE resolve: every writer of the linked key routes through `bind_linked_session_key`,
+        # which PARKS while this region is open, so the key cannot move under the await.
+        settled = effective_session_key(slot) == current_key
+        if settled and key_rebind_deferred(slot):
+            # A rebind reached the slot inside the region and lands as it unwinds, so the
+            # key just settled on is already spent.
+            settled = False
+        if not settled:
+            _retract_own_arm(state, from_key, only_generation)
+            return None, current_key, armed_cwd, False
+        if authorize is not None and current_key != from_key:
+            denied = authorize(current_key)
+            if denied is not None:
+                _retract_own_arm(state, from_key, only_generation)
+                return denied, current_key, armed_cwd, True
+        return None, current_key, armed_cwd, True
+
+
+async def _settle_and_transfer_arm(
+    state: Any,
+    slot: Any,
+    from_key: str,
+    project: str,
+    authorize: Callable[[str], Any] | None = None,
+) -> Any:
+    """Re-point *from_key*'s arm onto the key the slot runs on now.
+
+    For a caller whose binding is already final, so the transfer can follow the resolve
+    directly. One that still has to commit calls :func:`_settle_arm_target` and transfers
+    itself, keeping its publish and its commit in one no-suspension window.
+
+    Returns the denial (or ``None``), the key the slot runs on, and whether the transfer
+    SETTLED. An unsettled resolve reports the key it last observed, which can be the one it
+    started from, so key equality alone does not tell a caller its arm landed.
+    """
+    with settling_key(slot):
+        denied, current_key, armed_cwd, settled = await _settle_arm_target(
+            state, slot, from_key, project, authorize
+        )
+        if denied is not None:
+            return denied, current_key, settled
+        if settled:
+            state.sessions.transfer_retire_arm(from_key, current_key, armed_cwd)
+        return None, current_key, settled
 
 
 async def _steer_policy_notice(
@@ -4094,6 +4193,44 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
     _pending_reset_retries[slot.key] = (slot, asyncio.create_task(_retry()))
 
 
+# Whether a turn ends with the queue HELD rather than drained, stored on
+# ``slot._queue_held``. Deliberately a BOOLEAN and not a reason string: every
+# cause means the same thing to every drain gate -- this turn proved every queued
+# prompt would fail identically -- and no gate, log line or test ever asked WHICH.
+# The causes today are a signed-out CLI, a queued project change refused before the
+# turn, and one left deferred after it; a further cause composes by setting this
+# flag, and a further drain site by asking this one question.
+
+
+def _app_owned_rebind_denied(slot: Any) -> Callable[[str], Any] | None:
+    """The authorize gate for a DEFERRED reset, which carries no request to re-check.
+
+    Every other caller of the settle helpers passes `_app_cancel_denied`, re-running the app
+    check against the key the transfer lands on. This path armed its flag inside a turn and
+    consumes it later, so it has no request -- and the assumption that "the reset was
+    authorized when armed" does not survive a rebind: a cron/workflow link, or a channel
+    link, moves the arm onto a session the app has no claim on, and the transfer would then
+    retire and re-root it unauthenticated.
+
+    The same rule `_app_cancel_denied` applies, read off the slot instead of a request: an
+    app-owned slot may only act on its OWN dashboard session. A dashboard-owned slot has no
+    app scope, so it returns None and the settle behaves exactly as before.
+    """
+    owning_app = getattr(slot, "_app", "")
+    if not owning_app:
+        return None
+    from kiro_crew.dashboard.chat_handlers import _history_key_for
+
+    own_session = _history_key_for(slot.key)
+
+    def _denied(target_key: str) -> Any:
+        if target_key == own_session:
+            return None
+        return f"app {owning_app} does not own this slot's linked session: {target_key}"
+
+    return _denied
+
+
 async def _consume_pending_reset(
     state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False
 ) -> bool:
@@ -4152,8 +4289,18 @@ async def _consume_pending_reset(
     torn_down = False
     if slot._pending_reset_history_key:
         pending_key = slot._pending_reset_history_key
-        current_key = effective_session_key(slot)
-        if pending_key != current_key:
+        # Armed regardless of outcome on the key the reset will actually land on, and
+        # TRANSFERRED so a rebind leaves no arm on the key the slot abandoned.
+        denied, current_key, arm_settled = await _settle_and_transfer_arm(
+            state, slot, pending_key, slot.project, _app_owned_rebind_denied(slot)
+        )
+        if denied is not None:
+            # A re-pointed flag names this same settled key, and the gate runs only where the
+            # settled key DIFFERS from the armed one, so no retry could re-check it.
+            logger.warning("Dropping deferred reset for slot %s: %s", slot.key, denied)
+            slot._pending_reset_history_key = None
+            return torn_down
+        if pending_key != current_key or not arm_settled:
             # The slot REBOUND after the flag was armed (a cron/workflow slot
             # gets linked when its first result is injected; a channel link can
             # land between arming and this consume). Resetting the stale key and
@@ -4164,7 +4311,9 @@ async def _consume_pending_reset(
             # producer already validated the project change belongs to this
             # slot, and re-pointing the key needs no re-authorization (it names
             # the slot's own live session, not a new authority).
-            slot._pending_reset_history_key = current_key
+            # An UNSETTLED transfer takes this branch even when the key it reports is the one
+            # armed: it never landed, and the rebind that stopped it settling moves the slot.
+            slot._pending_reset_history_key = effective_session_key(slot)
             _arm_pending_reset_retry(state, slot)
             return torn_down
         if subagents_attached(state, slot, pending_key, "consume_pending_reset"):
@@ -4186,16 +4335,12 @@ async def _consume_pending_reset(
                 # channel reply. The check and the teardown must be one atomic
                 # step under the session lock.
                 #
-                # The flag is spent ONLY on a real teardown (reset returned
-                # True). A False return cannot distinguish "nothing registered
+                # A False return cannot distinguish "nothing registered
                 # under the key" from a busy decline or a session that is
                 # COLD-STARTING and not yet registered — clearing on a probe
                 # that answered None would let a concurrent cold start carrying
                 # the old CWD register afterwards and serve the stale project
-                # with the flag already gone. Leaving it armed is always safe:
-                # the next consume lands it, at worst costing one redundant
-                # cold start after the reset tears down an already-correct
-                # idle session.
+                # with the flag already gone.
                 reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
             except Exception:
                 # A teardown that raised leaves the session in a state this
@@ -4225,18 +4370,25 @@ async def _consume_pending_reset(
                     # _broadcast_expired_oauth_banners).
                     _broadcast_expired_oauth_banners(state, slot)
                 else:
-                    logger.debug(
-                        "Deferring queued project-change reset for slot %s: "
-                        "no teardown landed (busy, cold-starting, or no session)",
-                        slot.key,
-                    )
-                    # A channel-linked slot's turns never pass a dashboard
-                    # turn boundary, so a decline here would otherwise never
-                    # be retried and the live channel session would keep the
-                    # old CWD indefinitely. The bounded retry task owns the
-                    # follow-up (deduped; a decline observed by the task
-                    # itself does not stack a second one).
-                    _arm_pending_reset_retry(state, slot)
+                    if not state.sessions.has_session(pending_key):
+                        # Nothing registered: the flag's purpose is already met, and
+                        # leaving it armed would reset the eager spawn's own session.
+                        if slot._pending_reset_history_key == pending_key:
+                            slot._pending_reset_history_key = None
+                        logger.debug(
+                            "Cleared queued project-change reset for slot %s: "
+                            "no session was registered, so nothing was owed",
+                            slot.key,
+                        )
+                    else:
+                        logger.debug(
+                            "Deferring queued project-change reset for slot %s: "
+                            "session busy, pinned for retirement at next claim",
+                            slot.key,
+                        )
+                        # A channel-linked slot crosses no dashboard turn boundary, so
+                        # the bounded retry task owns the follow-up.
+                        _arm_pending_reset_retry(state, slot)
     if allow_discard and slot._pending_discard_conversation_key:
         discard_key = slot._pending_discard_conversation_key
         if subagents_attached(state, slot, discard_key, "consume_pending_discard"):
@@ -4958,7 +5110,7 @@ async def _spawn_admitted_prefetch(
             # alias applied, so no override applies.
             crew_agent=crew_alias,
             model=slot.model or agent_model or default_model or None,
-            cwd=slot.project or None,
+            cwd=slot.claim_cwd,
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
@@ -6232,10 +6384,36 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 def _finish_queue_cycle(
     state: DashboardState, slot: _ChatSlot, *, allow_automatic_successor: bool = True
 ) -> None:
-    """Start synthesis when eligible, otherwise mark a queue cycle idle."""
+    """Start synthesis when eligible, otherwise mark a queue cycle idle.
+
+    ``slot._queue_held`` withholds the synthesis dispatch for the same reason the
+    caller withheld the queue drain, and is read off the slot rather than taken as
+    a parameter: the only caller that ever set it published it to the slot a few
+    lines earlier in the same scope, so a parameter was a second spelling of one
+    fact. Synthesis is not a dead end for the
+    queue: ``_run_pending_synthesis`` drains it too, calling
+    ``_start_next_queued_turn`` when ``slot._queue`` is non-empty. So a caller that
+    held the queue back and then let synthesis start would have the prompts
+    dequeued behind it, reach the same failure, and lose them — defeating the hold
+    entirely. Withheld rather than cancelled: ``_pending_synthesis`` is cleared
+    inside ``_run_pending_synthesis``, so not dispatching leaves the note ARMED for
+    the next cycle, and this function still finalizes the turn below.
+
+    This CHANGES a pre-existing default, deliberately. Before, only the tail drain
+    consulted the auth hold and this dispatch did not, so a signed-out CLI held the
+    queue here and then lost the same prompts through synthesis -- the loss path
+    above, reached by the older of the two causes. Generalising the gate closes that
+    rather than introducing a new restriction, so the auth cause is not carved out:
+    a carve-out would knowingly keep the leak for the cause that predates this
+    change. Pinned by ``test_a_signed_out_cli_also_holds_the_queue_against_synthesis``,
+    which drives the real ``AcpAuthRequired`` path, against
+    ``test_synthesis_still_dispatches_when_nothing_is_held`` as the positive control
+    that an unheld cycle still synthesises.
+    """
 
     will_synthesize = (
         allow_automatic_successor
+        and not slot._queue_held
         and slot._pending_synthesis
         and not slot._synthesis_inflight
         # A slot gone from the registry is being torn down, so it has no next
@@ -6873,7 +7051,12 @@ async def _run_chat(
     # by the consecutive pre-stream-exhaustion branch in the AcpError handler
     # below.
     needs_conversation_discard = False
-    _auth_required = False
+    # Whether this turn holds the queue instead of draining it; False drains.
+    # Several causes can set it, and they are NOT mutually exclusive: the auth wall
+    # is found in the streaming section, while a deferred reset is found later, in
+    # the end-of-turn consume. Where both occur the flag stays set -- the
+    # end-of-turn inference only ever ADDS a hold, it never clears one.
+    _queue_held = False
     saw_compaction = False
     # True once a compaction STARTED notice landed this turn, so the terminal
     # branch can tell "the backend compacted in the middle of this turn" from
@@ -7510,7 +7693,7 @@ async def _run_chat(
             # carry different watchdog windows.
             crew_agent=crew_alias,
             model=slot.model or agent_model or default_model or None,
-            cwd=slot.project or None,
+            cwd=slot.claim_cwd,
             reasoning_effort_override=slot.reasoning_effort or None,
         )
         _acquired = True
@@ -12502,7 +12685,7 @@ async def _run_chat(
         # Every queued prompt would hit the same wall. Popping them one by one
         # would drain the whole queue into identical failures, leaving nothing to
         # resume after the user signs in — so hold the queue intact instead.
-        _auth_required = True
+        _queue_held = True
         needs_session_reset = True
         if assistant_text:
             slot.purge_chunks()
@@ -13419,6 +13602,9 @@ async def _run_chat(
                 schedule_eager_spawn(state, slot)
         except Exception:
             logger.debug("_consume_pending_reset failed", exc_info=True)
+        # OUTSIDE the guard above: a RAISING consume leaves the flag ARMED, and computing
+        # this inside let that raise drain a queue whose reset had never been applied.
+        _queue_held = _queue_held or slot._pending_reset_history_key is not None
         # ── Requeue unconsumed steers ──
         # A steer handed to kiro-cli that never echoed steering_consumed dies
         # with the turn (stall-cancel, soft STOP, error, or a steer that raced
@@ -13449,26 +13635,44 @@ async def _run_chat(
             slot._wait_state = None
             slot._end_wait_request = None
             slot._wait_contested = False
-        # Record this turn's auth outcome so the orchestrator _stage_loop, which
-        # runs stages as separate _run_chat calls, can mirror this same
-        # "hold the queue for post-login resume" guard on its end-of-plan handoff.
-        slot._last_turn_auth_required = _auth_required
+        # Publish this turn's hold outcome so every drain gate OUTSIDE this frame
+        # reads the same answer: the orchestrator's _exit_cancelled_plan and
+        # _stage_loop finally, which run stages as separate _run_chat calls and
+        # drain the queue themselves. Set in the `finally` so it is published on
+        # every exit path, including one that leaves the frame by raising: those
+        # gates run their own `finally` and drain through
+        # `_start_next_queued_turn`, so the prompts held just below would be popped
+        # there instead and burned into repeat failures. Assigned unconditionally so
+        # it self-clears on the next turn rather than latching.
+        slot._queue_held = _queue_held
         next_turn_started = False
-        if slot._queue and not _auth_required and _memory_preparation_admitted:
+        if slot._queue and not _queue_held and _memory_preparation_admitted:
             # After startup admission, the successor's own ACP attempt remains
             # the authority for a later sign-out. A turn cancelled while waiting
             # on shared preparation retains the queue instead of walking every
             # item through the same unfinished or cancelled gateway task.
             #
-            # `_auth_required` is the ONE exception: this turn just proved the CLI
-            # is signed out, so every queued prompt would fail identically. The
-            # queue is left intact (cards stay visible and individually
-            # cancellable) and resumes on the user's next send after they log in
-            # — the no-loss rule, without a readiness waiter to strand it.
+            # The exception is a HOLD REASON, of which there are currently three --
+            # the CLI is signed out, a queued project change was refused before the
+            # turn, or one was left deferred after it. All three say the same
+            # thing, which is why this asks only whether a reason is set: this
+            # turn proved every queued prompt would fail identically, so draining
+            # would burn the queue into error cards with nothing run. Held, the
+            # queue stays intact (cards visible and individually cancellable) and
+            # resumes on the user's next send — after they log in, or once the
+            # holding turn releases — the no-loss rule, without a readiness waiter
+            # to strand it.
             state.push_slots_update()
             next_turn_started = await _start_next_queued_turn(state, slot)
 
         if not next_turn_started:
+            # Same holds, second drain site. The guard above stops the tail drain,
+            # but synthesis drains the queue as well (``_run_pending_synthesis``
+            # calls ``_start_next_queued_turn`` whenever the queue is non-empty),
+            # so a hold must suppress it too or the prompts are dequeued there
+            # instead and burned. The reason is passed straight through rather than
+            # re-derived here, so this site cannot drift out of agreement with the
+            # gate above.
             _finish_queue_cycle(
                 state,
                 slot,

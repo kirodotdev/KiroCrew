@@ -9317,6 +9317,13 @@
       "clear_all_context": "Borrar todo el contexto",
       "clear_context": "Borrar contexto",
       "clear_context_2": "Borrar contexto",
+      "clear_context_busy_error": "Contexto conservado para {{roles}}: siguen trabajando. Vuelve a intentarlo cuando terminen, o descarta un agente para eliminarlo del canal.",
+      "clear_context_cleared_roles": "Borrado para {{roles}}.",
+      "clear_context_done": "Contexto borrado.",
+      "clear_context_messages_kept": "Los mensajes del canal se conservaron.",
+      "clear_context_messages_deleted": "Los mensajes del canal también se eliminaron.",
+      "clear_context_not_cleared_yet": "Contexto no borrado",
+      "clear_context_partially_cleared": "Contexto parcialmente borrado",
       "click_new_to_create_one": "Haz clic en + Nuevo para crear uno.",
       "close": "Cerrar",
       "close_agents_panel": "Cerrar el panel de agentes",
@@ -9327,7 +9334,15 @@
       "dismiss": "Descartar",
       "e_g_investigate_gamma_deployment_failure": "p. ej. Investigar el fallo de despliegue en Gamma",
       "failed_to_add_agent": "No se pudo añadir el agente",
+      "failed_to_clear_context": "No se pudo borrar el contexto",
+      "failed_to_close_channel": "No se pudo cerrar el canal",
       "failed_to_create_channel": "No se pudo crear el canal",
+      "failed_to_dismiss_agent": "No se pudo retirar al agente",
+      "failed_to_load_channel": "No se pudo cargar el canal",
+      "failed_to_load_channels": "No se pudieron cargar los canales",
+      "failed_to_load_presets": "No se pudieron cargar los ajustes preestablecidos del equipo",
+      "failed_to_send_message": "No se pudo enviar el mensaje",
+      "failed_to_update_agent": "No se pudo actualizar el agente",
       "is_working": "está trabajando…",
       "listen_all": "todos",
       "listen_mention": "menciones",
@@ -9348,7 +9363,8 @@
       "reply_2_many": "{{count}} respuestas",
       "reply_2_one": "{{count}} respuesta",
       "reply_2_other": "{{count}} respuestas",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "Restablece la sesión de LLM de {{role}}. Se conserva el historial de mensajes compartido del canal.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "Borra el contexto de {{role}}. Los mensajes compartidos del canal se conservan. Su contexto se conserva si siguen trabajando.",
+      "retry": "Reintentar",
       "role": "Rol",
       "role_e_g_logs_agent": "Rol (p. ej. Agente de registros)",
       "running_tool": "ejecutando herramienta…",
@@ -9363,17 +9379,9 @@
       "task": "Tarea",
       "task_e_g_search_cloudwatch_logs": "Tarea (p. ej. Buscar en los registros de CloudWatch)",
       "team_preset": "Preajuste de equipo",
-      "this_will_reset_conversation_history_for_all_age": "Esto restablecerá el historial de conversación de todos los agentes. Las configuraciones se conservan.",
+      "this_will_reset_conversation_history_for_all_age": "Esto borra el contexto de todos los agentes y elimina los mensajes del canal. Las configuraciones se conservan. Si algún agente sigue trabajando, en su lugar se conservan su contexto y los mensajes del canal.",
       "thread": "Hilo",
-      "topic": "Tema",
-      "failed_to_load_channels": "No se pudieron cargar los canales",
-      "failed_to_load_presets": "No se pudieron cargar los ajustes preestablecidos del equipo",
-      "failed_to_load_channel": "No se pudo cargar el canal",
-      "failed_to_send_message": "No se pudo enviar el mensaje",
-      "failed_to_dismiss_agent": "No se pudo retirar al agente",
-      "failed_to_update_agent": "No se pudo actualizar el agente",
-      "failed_to_close_channel": "No se pudo cerrar el canal",
-      "failed_to_clear_context": "No se pudo borrar el contexto"
+      "topic": "Tema"
     },
     "chat": {
       "activityViewer": {
@@ -15051,7 +15059,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Hay un turno en curso — inténtalo de nuevo cuando termine."
+      "turn_in_flight": "Hay un turno en curso — inténtalo de nuevo cuando termine.",
+      "workspace_unavailable": "La carpeta del proyecto configurada no está disponible: comprueba que existe y vuelve a intentarlo."
     },
     "channelOrigin": {
       "direct_message": "Mensaje directo"

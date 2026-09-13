@@ -28,13 +28,14 @@ import os
 import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew import name_grant
+from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -78,6 +79,11 @@ def _state(tmp_path, **kwargs) -> DashboardState:
     # truthy, so every busy-probe would read "turn in flight" on an idle state.
     sessions.get_provider = MagicMock(return_value=None)
     sessions.resumable_sid = MagicMock(return_value=None)
+    # Disambiguates reset()'s overloaded False (busy-refused vs nothing live).
+    # True is the realistic default for these slots: a session exists.
+    sessions.has_session = MagicMock(return_value=True)
+    # Resolve-only helper: async, and must return a real path string for the arm sites.
+    sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
     sessions.remove = AsyncMock()
     sessions.record_failure = AsyncMock()
     sessions.remove_if_unclaimed = AsyncMock(return_value=False)
@@ -193,6 +199,11 @@ async def _drive(state, slot, message: str = "hello") -> None:
     with _quiet_sel():
         await chat_runner._run_chat(state, slot, message)
     await _settle(slot)
+
+
+async def _noop_coro() -> None:
+    """An awaitable for a patched dispatch, so create_task gets a real coroutine."""
+    return None
 
 
 async def _settle(slot) -> None:
@@ -1889,6 +1900,104 @@ class TestConsumePendingReset:
         await self._drain_retry(slot.key)
 
     @pytest.mark.asyncio
+    async def test_every_persisted_project_cleared_read_demands_an_exact_true(
+        self, tmp_path, monkeypatch
+    ):
+        """`project_cleared` arrives from JSON, so truthiness is the wrong test for it.
+
+        Every non-empty string is truthy, so a metadata line carrying the STRING "false" --
+        which a hand-edited or foreign-writer file can hold -- binds the slot to the cleared
+        default instead of its own directory. The value has ONE legal true form.
+
+        A census rather than one call: the finding is about the whole set of hydration sites,
+        and each one lives behind a loader signature that would have to be reconstructed to
+        reach. This fails on any site that reads the key without demanding exactly True, which
+        is the property the fix claims.
+        """
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        unguarded: dict[str, int] = {}
+        for path in root.rglob("*.py"):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if 'get("project_cleared")' in line and "is True" not in line:
+                    unguarded[f"{path.name}:{n}"] = n
+        assert not unguarded, (
+            "these reads of the persisted project_cleared flag test truthiness, so the string "
+            f'"false" reads as cleared and the slot binds the wrong directory: {unguarded}'
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_denied_rebind_ends_the_episode_instead_of_retrying_it(
+        self, tmp_path, monkeypatch
+    ):
+        """A denial must not be re-pointed at the session it refused and retried.
+
+        The rebind branch rewrites the pending flag to the key the slot settled on. Doing that
+        after a denial would aim the reset AT the non-owned session, and no retry could catch
+        it: `_settle_arm_target` runs the authorize gate only where the settled key DIFFERS
+        from the armed one, which a re-pointed flag does not. So the denial has to end
+        the episode. The arm itself stays owed on the originally-armed key -- this caller
+        holds no generation, so `_retract_own_arm` returns early and retracts nothing.
+        """
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._app = "some-installed-app"
+        armed = f"dashboard:{slot.key}"
+        slot._pending_reset_history_key = armed
+        slot.linked_session_key = "cron:job-42"
+        state.sessions.reset = AsyncMock(return_value=True)
+
+        await chat_runner._consume_pending_reset(state, slot)
+
+        assert slot._pending_reset_history_key is None, (
+            "the denied episode was left armed, so a retry re-runs it against the session the "
+            f"app does not own: {slot._pending_reset_history_key}"
+        )
+        assert state.sessions.reset.call_args is None, (
+            "a session the app does not own was reset after the rebind was DENIED: "
+            f"{state.sessions.reset.call_args}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_app_owned_slot_cannot_transfer_its_arm_onto_a_linked_session(
+        self, tmp_path, monkeypatch
+    ):
+        """The deferred reset carries no request, so it must re-check ownership itself.
+
+        Every other caller of the settle helpers passes `_app_cancel_denied`, re-running the
+        app check against the key the transfer lands on. This path arms inside a turn and
+        consumes later, resting on "authorized when armed" -- an assumption a rebind breaks:
+        a cron/workflow or channel link moves the arm onto a session the app has no claim on,
+        and the transfer then retires and re-roots it with nobody authorizing that.
+        """
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._app = "some-installed-app"
+        slot._pending_reset_history_key = f"dashboard:{slot.key}"
+        # The rebind the surrounding comment calls routine: a cron link landing after arming.
+        slot.linked_session_key = "cron:job-42"
+        state.sessions.reset = AsyncMock(return_value=True)
+
+        await chat_runner._consume_pending_reset(state, slot)
+
+        moved = state.sessions.transfer_retire_arm.call_args
+        assert moved is None, (
+            "an app-owned slot transferred its retirement arm onto a session it does not own, "
+            f"so the linked conversation is retired and re-rooted unauthenticated: {moved}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_gate_lets_a_dashboard_owned_slot_settle_as_before(self, tmp_path):
+        """The positive control: an unscoped slot has no app scope, so nothing is refused."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        assert not getattr(slot, "_app", ""), "the fixture is app-owned; this proves nothing"
+        assert chat_runner._app_owned_rebind_denied(slot) is None
+
+    @pytest.mark.asyncio
     async def test_busy_decline_arms_a_retry_that_lands_the_reset(self, tmp_path, monkeypatch):
         # A channel-linked slot's turns never pass a dashboard turn boundary,
         # so a busy decline arms a bounded retry task; once the channel turn
@@ -1989,6 +2098,12 @@ class TestConsumePendingReset:
         # A was never reset; the flag re-points at the slot's current session.
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key == "slack:B.new"
+        # The arm MOVES rather than being duplicated, and records the RESOLVED default
+        # rather than the sentinel -- resolving at the arm site would block the gateway.
+        state.sessions.transfer_retire_arm.assert_called_once_with(
+            "slack:A.old", "slack:B.new", "/w/_default"
+        )
+        state.sessions.mark_retire_on_next_claim.assert_not_called()
         await self._drain_retry(slot.key)
 
     @pytest.mark.asyncio
@@ -2007,6 +2122,37 @@ class TestConsumePendingReset:
         assert torn_down is False
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
+        await self._drain_retry(slot.key)
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_inside_the_resolve_parks_and_refuses_the_transfer(self, tmp_path):
+        """A rebind arriving inside the settle region PARKS, so nothing is armed on a spent key.
+
+        Every writer of the linked key routes through `bind_linked_session_key`, which parks
+        while the region is open, so the key cannot move under the resolve. The parked rebind is
+        reported by `key_rebind_deferred`, and the settle refuses rather than transferring onto
+        a key the rebind is about to replace -- a refusal the retry then re-arms.
+        """
+        from kiro_crew.dashboard.chat_utils import bind_linked_session_key
+
+        state, slot = _state(tmp_path), _slot()
+        slot.linked_session_key = None
+        slot.project = ""
+        slot._pending_reset_history_key = slot.key
+
+        async def _rebind_then_resolve(key, cwd):
+            # The ROUTED writer, which is the only kind production has.
+            bind_linked_session_key(slot, "slack:C9:555")
+            return f"/resolved/for/{key}"
+
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=_rebind_then_resolve)
+
+        await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+
+        assert state.sessions.transfer_retire_arm.call_args is None, (
+            "a rebind that parked inside the region still produced a transfer, so the arm "
+            f"lands on a key the rebind replaces: {state.sessions.transfer_retire_arm.call_args}"
+        )
         await self._drain_retry(slot.key)
 
     @pytest.mark.asyncio
@@ -2035,6 +2181,903 @@ class TestConsumePendingReset:
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
         assert slot._pending_reset_history_key == "old-key"
+
+    @pytest.mark.asyncio
+    async def test_the_project_reset_goes_through_the_atomic_skip_if_busy_path(self, tmp_path):
+        """Same invariant the discard already has: the busy check and the
+        teardown must be ONE step under the session lock. Probing here and
+        resetting afterwards leaves a window in which a channel turn acquires the
+        session's semaphore and begins streaming, and the teardown then removes
+        its provider. So the consumer must delegate the check rather than skip
+        it on the strength of where it is called from."""
+        state, slot = _state(tmp_path), _slot()
+        slot.linked_session_key = "slack:C1:123"
+        slot._pending_reset_history_key = "slack:C1:123"
+
+        await chat_runner._consume_pending_reset(state, slot)
+
+        state.sessions.reset.assert_awaited_once_with("slack:C1:123", skip_if_busy=True)
+
+    @pytest.mark.asyncio
+    async def test_a_landed_project_reset_still_arms_the_key(self, tmp_path):
+        """A successful teardown removes ONE session, not every pre-change generation.
+
+        More than one cold start can be in flight when the project changes: the reset in
+        front of them removes the registered one and reports success. Arming only on a
+        refusal therefore leaves the second free to register unguarded and serve the turn
+        from the superseded directory, so the arm is raised whatever the reset returns.
+        """
+        state, slot = _state(tmp_path), _slot()
+        state.sessions.reset = AsyncMock(return_value=True)
+        slot.project = "/projects/beta"
+        slot.linked_session_key = "slack:C1:123"
+        slot._pending_reset_history_key = "slack:C1:123"
+
+        torn_down = await chat_runner._consume_pending_reset(state, slot)
+
+        assert torn_down is True, "precondition: the teardown has to actually land"
+        state.sessions.transfer_retire_arm.assert_called_once_with(
+            "slack:C1:123", "slack:C1:123", "/projects/beta"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_manager_refusal_leaves_the_project_reset_armed(self, tmp_path, monkeypatch):
+        """False with the session still live means it refused under the lock — a
+        turn was in flight. Held for the whole (bounded) wait, nothing was torn
+        down, so the flag must stay armed and land at a later consume rather
+        than let the next turn run against the pre-change session."""
+        state, slot = _state(tmp_path), _slot()
+        state.sessions.reset = AsyncMock(return_value=False)
+        slot.linked_session_key = "slack:C1:123"
+        slot._pending_reset_history_key = "slack:C1:123"
+
+        torn_down = await chat_runner._consume_pending_reset(state, slot)
+
+        assert slot._pending_reset_history_key == "slack:C1:123"
+        assert torn_down is False
+
+    @pytest.mark.asyncio
+    async def test_a_refused_project_reset_lands_at_a_later_boundary(self, tmp_path, monkeypatch):
+        """The refusal is a wait, not a cancellation."""
+        state, slot = _state(tmp_path), _slot()
+        state.sessions.reset = AsyncMock(return_value=False)
+        slot.linked_session_key = "slack:A"
+        slot._pending_reset_history_key = "slack:A"
+
+        await chat_runner._consume_pending_reset(state, slot)
+        assert slot._pending_reset_history_key == "slack:A"
+
+        state.sessions.reset = AsyncMock(return_value=True)
+        torn_down = await chat_runner._consume_pending_reset(state, slot)
+
+        assert slot._pending_reset_history_key is None
+        assert torn_down is True
+
+    def test_no_claim_path_site_collapses_a_cleared_project_by_truthiness(self):
+        """`CWD_CLEARED` is `""`, so any `or` on the claim path can erase the requirement.
+
+        The sibling census above pins the spellings that exist today. This one pins the
+        PATTERN, because the defect is a site nobody has written yet: `cwd=slot.project or
+        None` reads as ordinary defensiveness and silently turns "bind the default workspace"
+        back into "no requirement", which is the stale resume this module refuses.
+
+        Scoped to the claim path deliberately. At the provider boundary the collapse is
+        CORRECT -- `session_allocation`'s `create_session(cwd=cwd or None)` hands a falsy
+        directory to a runtime that resolves its own default, so a tree-wide ban would
+        forbid the one site that must do it.
+
+        One site is recorded rather than tolerated silently: routing it through
+        `_arm_cwd_for_claim` yields `str | None` where the transfer below it still declares
+        `cwd: str`, and widening that needs a write-protected module. A SECOND site fails.
+        """
+        import re
+        from pathlib import Path
+
+        from kiro_crew.dashboard import chat_handlers, chat_runner, chat_utils
+        from kiro_crew.dashboard.handlers import side
+
+        # Any cwd taken from the slot must ask `claim_cwd` (or `_arm_cwd_for_claim`, which is
+        # its one wrapper), never re-derive it from `project` with a fallback.
+        derived = re.compile(r"cwd\s*=\s*slot\.project")
+        collapsed = re.compile(r"claim_cwd\s+or\b")
+
+        # The one site still re-deriving it; see the docstring for why it cannot route yet.
+        known = {"chat_handlers": ["armed_cwd = slot.project or settled_cleared_cwd"]}
+
+        for module in (chat_runner, chat_handlers, chat_utils, side):
+            src = Path(module.__file__).read_text(encoding="utf-8")
+            short = module.__name__.rsplit(".", 1)[-1]
+            found = [
+                src[line_start:line_end].strip()
+                for line_start, line_end in (
+                    (src.rfind("\n", 0, m.start()) + 1, src.find("\n", m.end()))
+                    for m in derived.finditer(src)
+                )
+            ]
+            assert found == known.get(short, []), (
+                f"{short} re-derives a claim cwd from slot.project instead of asking claim_cwd, "
+                f"so an unset project and a cleared one become the same value: {found}"
+            )
+            hit = collapsed.search(src)
+            assert hit is None, (
+                f"{short} collapses claim_cwd with `or`, which turns the cleared "
+                "sentinel back into 'no requirement' -- the stale resume this PR removes"
+            )
+
+        # Positive control: both patterns must be able to SEE the defect they forbid, or this
+        # census is a pair of regexes that can never match anything.
+        assert derived.search("    cwd=slot.project or None,\n") is not None
+        assert collapsed.search("    cwd=slot.claim_cwd or None,\n") is not None
+
+    def test_a_cleared_project_is_stated_by_name_not_as_a_bare_sentinel(self):
+        """Pins the spelling where a cleared project is a REQUIREMENT, and only there.
+
+        `cwd` carries two answers: `None` is "no requirement", and a cleared project is a
+        REQUIREMENT to bind the default workspace instead of the directory the session
+        already had. A bare `""` reads as the absence of a value -- the one thing it does
+        not mean -- so a reader deleting it as redundant, or an `or`-chain collapsing it,
+        silently restores the old project.
+
+        Scoped to the sites that STATE a cwd. A blanket sweep for `slot.project or ""`
+        also catches labels -- `record_activity`'s `project=` is one -- and renaming those
+        imports allocation semantics they do not have.
+        """
+        from pathlib import Path
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.handlers import side
+
+        for module in (chat_runner, side):
+            src = Path(module.__file__).read_text(encoding="utf-8")
+            assert "CWD_CLEARED" in src or "claim_cwd" in src, (
+                f"{module.__name__} states a cleared project but not by name; census is "
+                "vacuous or the constant was inlined back to a bare sentinel"
+            )
+            assert 'cwd=slot.project or ""' not in src, (
+                f"{module.__name__} states a cwd of cleared as a bare '' -- unreadable "
+                "as a requirement, and indistinguishable from an unset value"
+            )
+        # A delegating site is only as pinned as the accessor it delegates to, so the accessor
+        # must name the constant too -- else the requirement is inlined away one level down.
+        from kiro_crew.dashboard import state as state_mod
+
+        state_src = Path(state_mod.__file__).read_text(encoding="utf-8")
+        accessor = state_src.split("def claim_cwd", 1)
+        assert len(accessor) == 2, "claim_cwd is gone; the delegating sites are unpinned"
+        assert "CWD_CLEARED" in accessor[1].split("@property", 1)[0], (
+            "claim_cwd no longer names the cleared project, so every site delegating to it "
+            "states a cleared cwd as a bare sentinel"
+        )
+        # The retirement arm takes the cwd positionally, so it needs its own assertion.
+        runner_src = Path(chat_runner.__file__).read_text(encoding="utf-8")
+        for spelling in (
+            'mark_retire_on_next_claim(pending_key, slot.project or "")',
+            'mark_retire_on_next_claim(current_key, slot.project or "")',
+            'transfer_retire_arm(pending_key, current_key, slot.project or "")',
+        ):
+            assert spelling not in runner_src, (
+                "the arm records the directory a successor must BIND, so a cleared "
+                f"project there is a requirement and must be spelled CWD_CLEARED: {spelling}"
+            )
+        # Positive control: the guard is only worth anything if it can see the real call.
+        assert "transfer_retire_arm(" in runner_src, (
+            "the consume site's arm call was renamed or removed, so the spellings above "
+            "name nothing and this guard has gone vacuous"
+        )
+
+    def test_no_provider_invents_its_own_no_cwd_fallback(self):
+        """The allocation gate resolves a stated-nothing claim to ONE directory.
+
+        `resolved_cwd("")` answers with `default_workspace_dir()`, so a provider that
+        binds somewhere else when handed no directory disagrees with the gate on every
+        project-less claim and is evicted as moved once per turn. The gate cannot detect
+        that -- the binding it reads looks like a real directory -- so what keeps the two
+        sides honest is that there is exactly one fallback expression.
+
+        Scoped to the PROVIDER surface plus the gate -- `acp/` and `session_allocation` --
+        not to the whole package. An earlier revision swept every module and required the
+        cli, inventory_gauges, deploy/handlers and spec_builder/repository sites to convert
+        too; those resolve the same directory for their own reasons and take no part in the
+        comparison, so requiring them made this a package-wide style rule riding on a
+        correctness fix. The definition in `config/paths.py` is the one sanctioned site
+        WITHIN that surface. Do not re-widen it without a gate that actually reads them.
+        """
+        from pathlib import Path
+
+        from kiro_crew import session_allocation
+        from kiro_crew.acp import client, runtime
+
+        for module in (runtime, client, session_allocation):
+            src = Path(module.__file__).read_text(encoding="utf-8")
+            # Either names the shared default or delegates to the shared resolver
+            # that does; only an inline rebuild is drift.
+            fallbacks = src.count("default_workspace_dir()") + src.count("resolved_cwd(")
+            assert fallbacks >= 1, (
+                f"{module.__name__} resolves a no-cwd binding but names no shared "
+                "default; census is vacuous or a second fallback was introduced"
+            )
+
+        root = Path(session_allocation.__file__).parent
+        definition = root / "config" / "paths.py"
+
+        def _rebuilds_inline(text: str) -> bool:
+            """Only CODE counts. Prose naming the expression rebuilds nothing, and a
+            module documenting what the default work_dir IS is not drift."""
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#") or stripped.startswith("*"):
+                    continue
+                if 'config_dir() / "workspace"' in line:
+                    return True
+            return False
+
+        # The surface the gate's agreement depends on: the two providers that can start
+        # with no cwd, and the allocation module that compares their binding.
+        surface = sorted(root.glob("acp/*.py")) + [Path(session_allocation.__file__)]
+        offenders = [
+            str(p.relative_to(root))
+            for p in surface
+            if p != definition and _rebuilds_inline(p.read_text(encoding="utf-8"))
+        ]
+        # Vacuity guard: the definition itself must contain the expression, or the
+        # sweep is matching nothing and would pass however far the package drifted.
+        assert _rebuilds_inline(definition.read_text(encoding="utf-8")), (
+            "census cannot find the expression even at its definition; the sweep is "
+            "vacuous rather than clean"
+        )
+        # And the comment-skip must not have blinded it: a planted inline rebuild is seen.
+        assert _rebuilds_inline(
+            '    x = config_dir() / "workspace"\n'
+        ), "the comment-skip swallowed a real inline rebuild, so the census is blind"
+        assert not _rebuilds_inline(
+            '# a comment naming config_dir() / "workspace"\n'
+        ), "the census still reads prose as a rebuild"
+        assert not offenders, (
+            "these rebuild the default workspace inline instead of calling "
+            f"default_workspace_dir(), so they drift apart from the gate: {offenders}"
+        )
+
+    def test_live_slot_project_producers_bump_the_generation(self):
+        """Pins the PRODUCER set, the half the consume-side census cannot see.
+
+        The retry site lets a live arm outrank the caller's `cwd`, which is sound only while
+        every path that MOVES a live slot's project also records the directory it committed.
+        A new producer without one leaves an unsatisfied arm naming the old directory and
+        the retry lands there -- the stale-directory harm delivered by the guard itself.
+
+        Scoped to `slot.project` deliberately, not `slot.workspace`: the session cwd is
+        `slot.claim_cwd` at both spawn sites -- the project when set, `CWD_CLEARED` for an
+        EXPLICITLY CLEARED project only, and nothing at all for a project never set -- so a
+        workspace-only change moves no directory and owes no arm. If a cwd ever derives from
+        the workspace instead, that assignment becomes a producer and belongs here.
+
+        Pairing, not raw counts: an earlier version asserted the number of `slot.project =`
+        sites, so any unrelated assignment broke it and the fix was to bump a number --
+        which pins nothing. This asserts that each PRODUCER (a project assignment reachable
+        with a live session) sits in a body that records, and that the exempt shapes stay
+        recognisable as exempt.
+
+        Bounded deliberately: a body may record either directly (`note_project_change`) or
+        by deferring (`_pending_reset_history_key`, whose consumer arms with the committed
+        project -- chat_runner's `mark_retire_on_next_claim`). Source text cannot tell a
+        CONDITIONAL deferral from an unconditional one, so this does NOT detect losing one
+        of two mechanisms in a body that holds both -- the agent switch is exactly that
+        shape. What it does detect, and what it exists for, is a NEW producer recording
+        nothing at all. The runtime guards for the existing ones are
+        `test_a_recreated_slot_keeps_its_own_project` and the busy-channel switch test.
+        """
+        from pathlib import Path
+
+        from kiro_crew.dashboard import chat_handlers, session_directive_apply
+
+        for module in (chat_handlers, session_directive_apply):
+            src = Path(module.__file__).read_text(encoding="utf-8")
+            lines = src.splitlines()
+            assigns = [i for i, ln in enumerate(lines) if "slot.project = " in ln]
+            assert assigns, f"{module.__name__}: census found no project assignments"
+
+            def _exempt(i: int) -> bool:
+                """Is the assignment at *i* a FILL, or slot CONSTRUCTION/hydration?
+
+                Two shapes cannot move a live slot's project, so neither owes an arm:
+
+                * a FILL -- enclosed by a `not slot.project` guard, so the slot had no
+                  project to move off. Found by walking OUT to the enclosing `def` and
+                  testing each strictly-shallower line, because the guard can sit any
+                  distance above the assignment.
+                * CONSTRUCTION or hydration -- the enclosing handler CREATES the slot
+                  rather than looking one up, so no session of it can exist yet. That is
+                  what separates the two classes mechanically: every producer starts from
+                  `state._slots.get(...)`, every constructor from `get_or_create_slot(...)`.
+                """
+                body = _enclosing_body(i)
+                if "get_or_create_slot(" in body or "_ChatSlot(" in body:
+                    return True
+                indent = len(lines[i]) - len(lines[i].lstrip())
+                for j in range(i - 1, -1, -1):
+                    ln = lines[j]
+                    if not ln.strip():
+                        continue
+                    outer = len(ln) - len(ln.lstrip())
+                    if outer >= indent:
+                        continue
+                    if "not slot.project" in ln and ln.lstrip().startswith(("if ", "elif ")):
+                        return True
+                    if ln.lstrip().startswith(("def ", "async def ")):
+                        return False
+                    indent = outer
+                return False
+
+            def _enclosing_body(i: int) -> str:
+                """The whole function containing line *i*.
+
+                The recording call can sit any distance from the assignment -- the project
+                endpoint commits at its top and arms 26 lines later, past any window worth
+                hard-coding -- so the unit is the function, not a span of lines.
+                """
+                start = 0
+                for j in range(i, -1, -1):
+                    if lines[j].startswith(("def ", "async def ")) or lines[j].lstrip().startswith(
+                        ("def ", "async def ")
+                    ):
+                        start = j
+                        break
+                indent = len(lines[start]) - len(lines[start].lstrip())
+                end = len(lines)
+                for j in range(i + 1, len(lines)):
+                    ln = lines[j]
+                    if not ln.strip():
+                        continue
+                    here = len(ln) - len(ln.lstrip())
+                    if here <= indent and ln.lstrip().startswith(("def ", "async def ", "class ")):
+                        end = j
+                        break
+                return "\n".join(lines[start:end])
+
+            for i in assigns:
+                if _exempt(i) or "slot._app = " in "\n".join(lines[max(0, i - 4) : i + 4]):
+                    continue
+                body = _enclosing_body(i)
+                records = (
+                    "note_project_change(" in body
+                    or "_pending_reset_history_key = " in body
+                    or "mark_retire_on_next_claim(" in body
+                )
+                assert records, (
+                    f"{module.__name__}:{i + 1} moves a live slot's project without "
+                    "recording the directory it committed, so an arm naming the OLD one "
+                    "decides the next claim's retry. Record it, or -- if this cannot run "
+                    "with a live session -- make it recognisably a FILL or construction"
+                )
+
+            # The both-mechanisms-one-lost case the OR above cannot see: a commit-path record
+            # satisfies it while a ROLLBACK inside the same body records nothing.
+            reverts = [
+                i
+                for i, ln in enumerate(lines)
+                if "slot.project = " in ln
+                and ln.split("slot.project = ", 1)[1].strip()
+                in ("pre_await_project", "old_project", "prior_project")
+            ]
+            for i in reverts:
+                indent = len(lines[i]) - len(lines[i].lstrip())
+                recorded = False
+                for j in range(i + 1, len(lines)):
+                    ln = lines[j]
+                    if not ln.strip():
+                        continue
+                    here = len(ln) - len(ln.lstrip())
+                    if here < indent and ln.lstrip().startswith(("def ", "async def ", "class ")):
+                        break
+                    if any(
+                        m in ln
+                        for m in (
+                            "note_project_change(",
+                            "mark_retire_on_next_claim(",
+                            "_pending_reset_history_key = ",
+                        )
+                    ):
+                        recorded = True
+                        break
+                assert recorded, (
+                    f"{module.__name__}:{i + 1} REVERTS a live slot's project and records "
+                    "nothing after it, so the arm keeps naming the directory this request "
+                    "abandoned. A rollback is a producer too: re-point the arm at the "
+                    "post-rollback binding"
+                )
+
+    def test_an_identity_change_uses_the_identity_producer(self):
+        """Pins the producer CHOICE, which prose alone was guarding.
+
+        The two producers are not interchangeable and the difference is silent: both record
+        the committed directory, but only `mark_retire_on_next_claim` states the agent a
+        successor must run. Pick `note_project_change` at a site that changes IDENTITY and
+        nothing fails — the arm is raised, the directory matches, and the switched-away
+        agent serves the next turn. The spend/keep side already has a ratchet
+        (`test_only_slot_ending_teardowns_spend_the_retirement_arm`); this is its producer-side
+        equivalent.
+
+        The rule: a handler that changes which AGENT a slot runs must use the identity
+        producer and must pass `agent=`. A handler that only moves the DIRECTORY may use
+        either, because the directory is fully expressed by the arm.
+        """
+        from pathlib import Path
+
+        from kiro_crew.dashboard import chat_handlers
+
+        src = Path(chat_handlers.__file__).read_text(encoding="utf-8")
+        lines = src.splitlines()
+
+        def _enclosing_def(i: int) -> str:
+            for j in range(i, -1, -1):
+                if lines[j].startswith(("def ", "async def ")):
+                    return lines[j].split("(")[0].split()[-1]
+            return "<module>"
+
+        identity_handlers = {
+            i for i, ln in enumerate(lines) if "slot.agent = " in ln and "==" not in ln
+        }
+        assert identity_handlers, "census found no agent assignment; it is now vacuous"
+
+        for i in sorted(identity_handlers):
+            name = _enclosing_def(i)
+            start = next(j for j in range(i, -1, -1) if lines[j].startswith(("def ", "async def ")))
+            end = next(
+                (
+                    j
+                    for j in range(i + 1, len(lines))
+                    if lines[j].startswith(("def ", "async def "))
+                ),
+                len(lines),
+            )
+            body = "\n".join(lines[start:end])
+            # Construction and hydration are exempt by shape (same discriminator the
+            # project census uses): a handler that CREATES the slot has none to mis-serve.
+            if "get_or_create_slot(" in body or "_ChatSlot(" in body:
+                continue
+            assert "mark_retire_on_next_claim(" in body, (
+                f"{name} changes the slot's AGENT but does not raise an identity arm, so a "
+                "cold start or a directory-matching claim can serve the replaced agent"
+            )
+            assert "agent=" in body.split("mark_retire_on_next_claim(", 1)[1][:400], (
+                f"{name} raises the arm without stating `agent=`, so the registration guard "
+                "has nothing to check the new session's identity against"
+            )
+
+    def test_only_slot_ending_teardowns_spend_the_retirement_arm(self):
+        """Every session-ending path must DECLARE a side; an unclassified one fails here.
+
+        The rule follows from the map, not from a per-path preference: the arm names a
+        directory a SUCCESSOR must bind, so it may only be dropped where no successor can
+        arrive. `destroy` deletes the session-map entry and `close_all` ends the process,
+        so both spend it. The keep-side paths preserve or re-create that entry, so the arm
+        is still owed -- and it doubles as the retry target for a start the cleanup evicts,
+        whose own frame carries only the pre-change directory.
+
+        The census is DERIVED from the module rather than written out here, because a
+        hand-written list is satisfied by a new teardown path simply not being in it: the
+        earlier version of this test asserted only that four named keep-side paths call
+        nothing, so `reset`, `discard_conversation`, `reload_provider_factory` and
+        `drain_all_providers` -- all of which evict a session-map entry -- were never
+        classified at all (Design review). Now any method that evicts an entry or spends an
+        arm must appear in `sides` below, so adding a teardown without choosing a side
+        FAILS instead of passing silently.
+        """
+        import re
+        from pathlib import Path
+
+        from kiro_crew import session_lifecycle
+
+        # The declared classification. A census member absent from this map fails below.
+        sides = {
+            "destroy": "spend",
+            "close_all": "spend",
+            "remove": "keep",
+            "remove_if_unclaimed": "keep",
+            "reset": "keep",
+            "discard_conversation": "keep",
+            "reload_provider_factory": "keep",
+            "drain_all_providers": "keep",
+        }
+
+        lines = Path(session_lifecycle.__file__).read_text(encoding="utf-8").splitlines()
+        starts = [
+            (i, m.group(1))
+            for i, ln in enumerate(lines)
+            if (m := re.match(r"    (?:async )?def (\w+)\(", ln))
+        ]
+        evicts = re.compile(r"_sessions\.pop\(|_sessions\.clear\(")
+        spends = re.compile(r"spend_retire_arm\(|discard_all_retire_arms\(")
+
+        bodies = {}
+        for idx, (i, name) in enumerate(starts):
+            end = starts[idx + 1][0] if idx + 1 < len(starts) else len(lines)
+            bodies[name] = "\n".join(lines[i:end])
+
+        census = {n: b for n, b in bodies.items() if evicts.search(b) or spends.search(b)}
+        # Vacuity guard: a rename that empties the census must fail loudly rather than
+        # turn this into a check that cannot detect anything.
+        assert len(census) >= 5, f"census collapsed to {sorted(census)}; it is now vacuous"
+
+        unclassified = sorted(set(census) - set(sides))
+        assert not unclassified, (
+            f"these paths end a session but declare no side: {unclassified} -- add each to "
+            "`sides` as 'spend' (no successor can arrive) or 'keep' (a successor is still "
+            "owed the arm), because an unclassified path leaks or wrongly spends an arm and "
+            "a recreated slot on the same key then inherits the prior project"
+        )
+
+        for name, side in sides.items():
+            body = bodies.get(name)
+            assert body is not None, f"`{name}` is classified but is absent"
+            if side == "spend":
+                assert spends.search(body), (
+                    f"`{name}` is declared spend-side but drops no arm; the session-map "
+                    "entry it removes can never be cleared"
+                )
+            else:
+                assert not spends.search(body), (
+                    f"`{name}` is declared keep-side but spends the arm; a successor is "
+                    "still coming and spending here also destroys the retry target for a "
+                    "start this cleanup evicts"
+                )
+
+    def test_chat_runner_pending_reset_sites_declare_their_hold_decision(self):
+        """Pins the consume/acquire pairing IN `chat_runner` -- and only there.
+
+        Scope, stated plainly because the obvious wider name would be a lie: session
+        acquisition happens all over the product -- measured at this commit, 32 calls
+        through the session facade across 21 modules (slack, telegram, discord,
+        taskrunner, subagent_manager, workflows, apps) -- and this census covers the
+        TWO in `chat_runner`. The covered figure is the one stated exactly; the total
+        moves every time main lands or deletes a caller, so a precise total here
+        would rot. It is scoped to `chat_runner` because the pending-reset flag is a
+        `chat_runner` concept -- `_consume_pending_reset` is defined and called
+        nowhere else -- so those two are the only sites that HAVE a decision to
+        declare. Every other acquisition proceeds without consulting the flag.
+
+        That gap is now closed elsewhere rather than here: the cwd match validated in
+        `session_allocation._reacquire_and_validate` covers every acquisition, since
+        they all pass through that claim. This census keeps the narrower `chat_runner`
+        line -- a new path that acquires without stating what happens to a held reset
+        breaks the build instead of silently deferring a project change forever.
+
+        Deliberately a census and not a behavioural test: the defect is the OMISSION,
+        so the thing to detect is a site that does not exist yet. Same reason the
+        repo pins its teardown/verdict rule and this file pins its cron producers.
+
+        THREE bare sites, not two: the third is `_arm_pending_reset_retry`'s own loop.
+        A channel-linked slot's turns never cross a dashboard turn boundary, so a
+        decline there would never be retried and the live channel session would keep
+        the old CWD indefinitely; that task re-consumes on a timer until the flag
+        clears. Its decision is the same as the other bare sites -- defer and leave the
+        flag armed -- so it belongs to the bare shape rather than being a third shape.
+        """
+        from collections import Counter
+        from pathlib import Path
+
+        lines = Path(chat_runner.__file__).read_text(encoding="utf-8").splitlines()
+        consume_lines = [
+            i
+            for i, line in enumerate(lines)
+            if "_consume_pending_reset(" in line and "async def" not in line
+        ]
+        acquisitions = [i for i, line in enumerate(lines) if "get_or_create(" in line]
+        # Vacuity guard: a rename that empties either list must fail loudly here
+        # rather than turn the whole census into a check that cannot detect anything.
+        assert len(consume_lines) >= 3, "census found no consume sites; it is now vacuous"
+        assert len(acquisitions) >= 2, "census found no acquisitions; it is now vacuous"
+
+        # The two shapes, each a DECISION about a queued reset: bare = defer and
+        # leave the flag armed for a later boundary, allow_discard = tear the
+        # conversation down as well. A third shape, or a different count, means a
+        # new site was added without stating which decision it makes.
+        declared = Counter(
+            {
+                "await _consume_pending_reset(state, slot)": 3,
+                "torn_down = await _consume_pending_reset(state, slot, allow_discard=True)": 1,
+            }
+        )
+        found = Counter(lines[i].strip() for i in consume_lines)
+        assert found == declared, (
+            "the pending-reset consume census changed. Deferring is safe at every "
+            "site because a refused reset PINS the busy session for retirement at "
+            "its next claim, so a site needs only to say whether it also discards "
+            "the conversation. Add the new site here together with its "
+            f"decision.\n  declared: {dict(declared)}\n  found:    {dict(found)}"
+        )
+
+        for site in acquisitions:
+            above = [c for c in consume_lines if c < site]
+            assert above, (
+                f"get_or_create at {Path(chat_runner.__file__).name}:{site + 1} has no "
+                "pending-reset consume above it, so it can reuse a live session still "
+                "bound to the pre-change project cwd"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_plain_deferral_does_not_warn_about_waiting(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A deferral is not an incident, so it must not log at WARNING.
+
+        Nothing is LOST when a queued reset defers: the flag stays armed for a
+        later boundary, and the busy session is pinned invalid for the next claim,
+        so nothing can be handed it in the meantime. WARNING severity would page a
+        reader for ordinary contention, so this path is observable at DEBUG."""
+        state, slot = _state(tmp_path), _slot()
+        state.sessions.reset = AsyncMock(return_value=False)
+        slot.linked_session_key = "slack:C1:123"
+        slot._pending_reset_history_key = "slack:C1:123"
+
+        with caplog.at_level("DEBUG", logger="kiro_crew.dashboard.chat_runner"):
+            await chat_runner._consume_pending_reset(state, slot)
+
+        # Scoped to the logger under test: caplog's handler is root-level, so an unrelated
+        # warning from elsewhere in the process lands here and fails this on someone else.
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and r.name == "kiro_crew.dashboard.chat_runner"
+        ]
+        assert not warnings, f"plain deferral must not WARN, got: {[r.message for r in warnings]}"
+        assert any(
+            "pinned for retirement at next claim" in r.getMessage() for r in caplog.records
+        ), "the plain deferral should still be observable at DEBUG"
+        # Still deferred, not consumed.
+        assert slot._pending_reset_history_key == "slack:C1:123"
+
+    @pytest.mark.asyncio
+    async def test_an_inflight_cold_start_is_not_mistaken_for_no_session(self, tmp_path):
+        """An unregistered cold start is not "nothing to protect against".
+
+        A cold start holds no registry entry until it finishes, so during that window
+        BOTH probes miss it: `reset` finds nothing to tear down and `has_session` reads
+        False. The flag is then cleared as satisfied while a provider bound to the
+        PRE-change directory is still on its way, and every later turn writes its
+        relative paths into the old project.
+
+        The key must therefore be armed on this shape too -- pinning a registered
+        object cannot cover it, there being no object yet to pin. Asserts the arm
+        happens on the SAME key, since arming another protects nothing.
+        """
+        state, slot = _state(tmp_path), _slot()
+        # Both probes blind: the cold start has not registered yet.
+        state.sessions.reset = AsyncMock(return_value=False)
+        state.sessions.has_session = Mock(return_value=False)
+        pin = Mock(return_value=False)
+        state.sessions.transfer_retire_arm = pin
+        slot.project = ""
+        slot.linked_session_key = "slack:C1:123"
+        slot._pending_reset_history_key = "slack:C1:123"
+
+        await chat_runner._consume_pending_reset(state, slot)
+
+        assert pin.call_count == 1, (
+            "a refused reset with nothing registered must STILL arm the key -- an "
+            "in-flight cold start is invisible to both probes, so clearing the flag "
+            "here leaves a provider bound to the old project reusable"
+        )
+        assert (
+            pin.call_args.args[1] == "slack:C1:123"
+        ), "the arm must name the key whose reset was refused"
+        # The flag is still cleared, because an armed flag holds the queue and there
+        # is no live session left to release it.
+        assert slot._pending_reset_history_key is None, (
+            "with nothing registered the flag must still clear -- leaving it armed "
+            "parks queued prompts with nothing to release them"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_reset_pins_the_session_against_the_next_claim(self, tmp_path):
+        """The refusal must not leave the stale session reusable.
+
+        Refusing the teardown keeps a streaming reply alive, but the reason for it
+        does not expire with the refusal. Without a pin, the requested directory is
+        the only thing between a later turn and the pre-change session -- and it
+        cannot carry a CLEARED project, because `cwd=slot.project or None` collapses
+        "no project" into `None`, which states no requirement and matches any
+        binding. A turn after the clear would then be handed the session still bound
+        to the OLD directory and write its relative paths there.
+
+        Asserts the pin is taken for the SAME key the reset was refused for, since
+        pinning a different key would read as fixed while protecting nothing.
+        """
+        state, slot = _state(tmp_path), _slot()
+        state.sessions.reset = AsyncMock(return_value=False)
+        pin = Mock(return_value=True)
+        state.sessions.transfer_retire_arm = pin
+        # The CLEARED case specifically: no project left to state as a requirement.
+        slot.project = ""
+        slot.linked_session_key = "slack:C1:123"
+        slot._pending_reset_history_key = "slack:C1:123"
+
+        await chat_runner._consume_pending_reset(state, slot)
+
+        assert pin.call_count == 1, (
+            "a deferred reset must pin the busy session for retirement -- without it "
+            "a cleared project cannot be expressed as a cwd requirement and the next "
+            "claim reuses the session bound to the old directory"
+        )
+        assert pin.call_args.args[1] == "slack:C1:123", (
+            "the pin must name the key whose reset was refused; pinning another key "
+            "protects nothing while reading as fixed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_held_reset_also_holds_the_queue_against_pending_synthesis(
+        self, tmp_path, monkeypatch
+    ):
+        """Synthesis is a SECOND drain site, and the hold must cover it too.
+
+        Gating the end-of-turn drain is not enough: ``_finish_queue_cycle`` starts
+        ``_run_pending_synthesis`` when a note is armed, and that in turn calls
+        ``_start_next_queued_turn`` whenever the queue is non-empty. So with a held
+        reset plus armed synthesis, the prompt is dequeued THERE instead, reaches
+        the same refusal, and is lost — the hold defeated by the path it did not
+        cover. The note must also stay armed, since suppressing synthesis is a
+        deferral, not a cancellation.
+
+        Probes BEHAVIOUR rather than the new parameter, so it fails on the pre-fix
+        source for the intended reason instead of a TypeError about a keyword that
+        could not exist yet."""
+        state, slot = _state(tmp_path), _slot()
+        # Every `will_synthesize` condition satisfied, or the dispatch never
+        # happens and the queue survives for the WRONG reason — a control that
+        # cannot fail. The slot must be REGISTERED and subagents must be idle.
+        slot._pending_synthesis = True
+        slot._synthesis_inflight = False
+        slot._subagent_deliveries_inflight = 0
+        state._slots[slot.key] = slot
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        slot.queue_append("queued prompt")
+
+        # The hold is published on the SLOT, not passed as an argument -- its only
+        # caller set `slot._queue_held` a few lines before calling, so the parameter
+        # was a second spelling of one fact and has been removed.
+        slot._queue_held = True
+        with patch.object(
+            chat_runner, "_run_pending_synthesis", new=MagicMock(return_value=_noop_coro())
+        ) as spy:
+            chat_runner._finish_queue_cycle(state, slot)
+            await _settle(slot)
+
+        assert spy.call_count == 0, (
+            "a held reset must suppress synthesis; it drains the queue via "
+            "_start_next_queued_turn, so the queued prompt would be dequeued "
+            "behind the hold and lost"
+        )
+        assert len(slot._queue) == 1, "the queued prompt must survive"
+        assert slot._pending_synthesis is True, "the note is deferred, not cancelled"
+
+    @pytest.mark.asyncio
+    async def test_a_signed_out_cli_also_holds_the_queue_against_synthesis(self, tmp_path):
+        """The auth hold is the SIBLING of the reset hold at this drain site.
+
+        The tail-drain guard treats both as one case — each means this turn proved
+        every queued prompt would fail identically — so synthesis, which drains the
+        queue through `_start_next_queued_turn` too, cannot honour one and not the
+        other. Without `or _auth_required` a signed-out CLI holds the tail drain and
+        then loses the same prompts through synthesis instead.
+
+        Drives the REAL auth path and asserts on what `_run_chat` PASSES, since the
+        change under test is the call-site expression, not `_finish_queue_cycle`'s
+        already-tested suppression. Asserting `queue_held` true directly here
+        would pass on both sides of the fix and prove nothing."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+
+        async def _signed_out(*a, **kw):
+            raise AcpAuthRequired("kiro-cli is not logged in")
+            yield  # pragma: no cover - generator shape only
+
+        client.stream = _signed_out
+        slot.queue_append("queued prompt")
+
+        seen = {}
+
+        # Captures the flag AS SEEN BY the callee, off the slot rather than off a
+        # kwarg: the hold is published to `slot._queue_held` before this call, and
+        # reading it there is what `_finish_queue_cycle` now does.
+        def _capture(st, sl, **kw):
+            seen["queue_held"] = sl._queue_held
+
+        with patch.object(chat_runner, "_finish_queue_cycle", side_effect=_capture):
+            await _drive(state, slot, "first prompt")
+
+        assert seen.get("queue_held") is True, (
+            "a signed-out CLI must suppress synthesis for the same reason it holds "
+            "the tail drain; otherwise the queued prompt is dequeued there and lost"
+        )
+        assert len(slot._queue) == 1, "the queued prompt must survive"
+
+    @pytest.mark.asyncio
+    async def test_a_raising_reset_consume_still_holds_the_queue(self, tmp_path):
+        """A reset that FAILED to apply must hold the queue, not drain it.
+
+        The end-of-turn consume resolves a cleared project's arm through the workspace
+        root's `mkdir`, which raises on a read-only or unreachable root. That raise is
+        swallowed so it cannot strand the steer requeue below -- but the hold was computed
+        INSIDE the same guard, so the raise skipped it and the queue drained with the reset
+        still armed: the queued prompt runs against exactly the state the user asked to
+        discard, and the arm that would have refused the stale session is still pending.
+
+        Asserts on the DRAIN CALL, not on the published flag: the flag reads true for other
+        hold reasons (a signed-out CLI latches it earlier), so a turn that failed for any
+        unrelated reason would satisfy a flag assertion on both sides of the fix. Only the
+        `allow_discard=True` caller raises, which is uniquely the end-of-turn one.
+        """
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        slot.project = ""
+        slot._pending_reset_history_key = "dashboard:chat-cov-1"
+        slot.queue_append("queued prompt")
+
+        async def _root_unavailable(st, sl, *, allow_discard: bool = False):
+            if allow_discard:
+                raise OSError("workspace root unavailable")
+            return False
+
+        drained: list[str] = []
+
+        async def _drain(st, sl):
+            drained.append(sl.key)
+            return False
+
+        with (
+            patch.object(chat_runner, "_consume_pending_reset", side_effect=_root_unavailable),
+            patch.object(chat_runner, "_start_next_queued_turn", side_effect=_drain),
+        ):
+            await _drive(state, slot, "first prompt")
+
+        assert (
+            slot._pending_reset_history_key is not None
+        ), "precondition: a failed consume must leave the reset ARMED"
+        assert drained == [], (
+            "the reset did not apply, so the tail drain must not run -- draining it starts "
+            f"the queued prompt against the state the user asked to discard; drained {drained}"
+        )
+        assert len(slot._queue) == 1, "the queued prompt must survive the failed reset"
+
+    @pytest.mark.asyncio
+    async def test_synthesis_still_dispatches_when_nothing_is_held(self, tmp_path):
+        """Positive control for the suppression: with no hold the synthesis
+        dispatch must still happen, so the fix narrows one branch rather than
+        disabling the feature. Passes on BOTH sides of the fix by construction —
+        that is the point."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        slot._synthesis_inflight = False
+        slot._subagent_deliveries_inflight = 0
+        state._slots[slot.key] = slot
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        slot.queue_append("queued prompt")
+
+        with patch.object(
+            chat_runner, "_run_pending_synthesis", new=MagicMock(return_value=_noop_coro())
+        ) as spy:
+            chat_runner._finish_queue_cycle(state, slot)
+            await _settle(slot)
+
+        assert spy.call_count == 1, "synthesis must still dispatch when nothing is held"
+
+    @pytest.mark.asyncio
+    async def test_no_live_session_clears_the_flag_instead_of_deferring(self, tmp_path):
+        """``reset`` returns ``session is not None``, so False also means there
+        was nothing to tear down — the state the flag asks for. Treating that as
+        a deferral would leave it armed and reset the session the eager spawn
+        just created, paying the cold start that path exists to hide. The
+        await-count pins that this benign case does NOT enter the busy wait."""
+        state, slot = _state(tmp_path), _slot()
+        state.sessions.reset = AsyncMock(return_value=False)
+        state.sessions.has_session = MagicMock(return_value=False)
+        slot._pending_reset_history_key = "dashboard:chat-cov-1"
+
+        await chat_runner._consume_pending_reset(state, slot)
+
+        assert state.sessions.reset.await_count == 1
+        assert slot._pending_reset_history_key is None
 
     @pytest.mark.asyncio
     async def test_no_pending_discard_is_a_noop(self, tmp_path):

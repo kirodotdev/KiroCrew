@@ -51,6 +51,7 @@ import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCir
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
+import AgentSwitchNotice from './components/AgentSwitchNotice'
 import AgentImportFlow from './components/AgentImportFlow'
 import ErrorNotice from './components/ErrorNotice'
 import PrivacyChapter from './components/PrivacyChapter'
@@ -3784,10 +3785,10 @@ export default function App() {
       </header>
 
       {agentSwitchNotice && (
-        <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-          <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
-          <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
-        </div>
+        <AgentSwitchNotice
+          message={agentSwitchNotice.message}
+          onDismiss={() => dispatch(setAgentSwitchNotice(null))}
+        />
       )}
 
       {/* Report a Problem — mounted by the nav rail's "Report issue" link. */}
