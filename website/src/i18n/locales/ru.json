@@ -11951,6 +11951,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Режим подтверждения",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' включает песочницу для недоверенных инструментов. Переключение на 'wsl2' или с него вступает в силу после перезапуска шлюза.",
         "auto_size_max": "Макс. авторазмер",
         "auto_update": "Автообновление",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Предел автоматически подобранного числа одновременных субагентов (действует только при «Макс. одновременных субагентов» = 0). Формула по памяти и CPU хоста никогда его не превышает. Диапазон 1–64. По умолчанию: 16.",
@@ -11965,7 +11966,6 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Включить динамическое обнаружение инструментов MCP через kiro-cli. Применится в следующей сессии.",
         "immediate_auto_approves_all_tools_interactive_as": "Применяется сразу. 'auto' — подтверждает все инструменты; 'interactive' — спрашивает перед каждым.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Применяется сразу. 'auto' — включает песочницу для недоверенных инструментов.",
-        "immediate_which_wsl2_distribution_to_sandbox_in": "Применяется сразу. Какой дистрибутив WSL2 использовать для песочницы — собственные служебные экземпляры Docker Desktop здесь не предлагаются.",
         "inherited_provider": "наследуется ({{provider}})",
         "kirocrew_agents": "Агенты {{productName}}",
         "max_channel_agents": "Макс. агентов канала",
@@ -11987,6 +11987,7 @@
         "pool_size": "Размер пула",
         "pool_ttl": "TTL пула",
         "provider": "Провайдер",
+        "restart_required_which_wsl2_distribution_to_sand": "Требуется перезапуск. Какой дистрибутив WSL2 использовать для песочницы — служебные экземпляры Docker Desktop здесь не предлагаются.",
         "sandbox": "Песочница",
         "save": "Сохранить",
         "saved": "Сохранено",

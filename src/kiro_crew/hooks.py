@@ -4477,6 +4477,7 @@ async def run_script_hook(
             create_subprocess_limited,
             sandboxed_spawn_argv,
             sandboxed_spawn_argv_async,
+            wsl2_env_passthrough,
             wsl2_selected,
         )
 
@@ -4485,6 +4486,11 @@ async def run_script_hook(
         # copy of the whole gateway environment, which would expose the gateway's
         # AWS/model/OAuth/connection-string credentials to every hook command.
         env = _hook_subprocess_env(hook, context)
+        # No-op except under the wsl2 backend: WSL forwards a Windows env var
+        # into the guest shell only when WSLENV names it, so without this the
+        # hook's own $KIROCREW_HOOK_EVENT/$KIROCREW_HOOK_CONTEXT would read
+        # empty despite reaching every other platform's shell correctly.
+        env = wsl2_env_passthrough(env, ("KIROCREW_HOOK_EVENT", "KIROCREW_HOOK_CONTEXT"))
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there)
         # -- UNLESS the operator selected the wsl2 sandbox backend, which offers
         # a real POSIX /bin/sh inside its distribution. That case builds the
@@ -4506,8 +4512,13 @@ async def run_script_hook(
         # Calling wrap_argv + cgroup_scope_argv directly would give the wrapper
         # the child-safe allowlist and make it fail before a PreToolUse policy
         # hook could run.
+        # posix_shell_argv=True is safe unconditionally here even though argv
+        # is cmd.exe-shaped on non-wsl2 Windows: it only takes effect when
+        # detect_backend() would return "wsl2", which requires wsl2_selected()
+        # -- and that is exactly the condition under which the branch above
+        # already built argv as POSIX /bin/sh -c form, never the cmd.exe one.
         wrapped_argv, env, cleanup_path = await sandboxed_spawn_argv_async(
-            argv, env=env, _prepare=sandboxed_spawn_argv
+            argv, env=env, posix_shell_argv=True, _prepare=sandboxed_spawn_argv
         )
         # Process-group isolation for clean tree-kill on timeout. Pass both flags
         # explicitly (NOT **dict unpack — breaks mypy's Popen overload resolution

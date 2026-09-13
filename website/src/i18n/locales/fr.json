@@ -11785,6 +11785,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Mode d'approbation",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' active le bac à sable pour les outils non fiables. Le passage vers ou depuis 'wsl2' prend effet après un redémarrage de la passerelle.",
         "auto_size_max": "Taille auto max",
         "auto_update": "Mise à jour auto",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Plafond du nombre de sous-agents simultanés calculé automatiquement (s’applique uniquement quand Sous-agents simultanés max = 0). La formule mémoire/CPU de l’hôte ne le dépasse jamais. Plage 1–64. Par défaut : 16.",
@@ -11799,7 +11800,6 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Activer la découverte dynamique des outils MCP via kiro-cli. Prend effet à la prochaine session.",
         "immediate_auto_approves_all_tools_interactive_as": "Immédiat. 'auto' approuve tous les outils ; 'interactive' demande à chaque fois.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Immédiat. 'auto' active le sandbox pour les outils non fiables.",
-        "immediate_which_wsl2_distribution_to_sandbox_in": "Immédiat. Quelle distribution WSL2 utiliser pour l'isolement — les instances internes de Docker Desktop ne sont pas proposées ici.",
         "inherited_provider": "hérité ({{provider}})",
         "kirocrew_agents": "Agents {{productName}}",
         "max_channel_agents": "Agents de canal max",
@@ -11821,6 +11821,7 @@
         "pool_size": "Taille du pool",
         "pool_ttl": "TTL du pool",
         "provider": "Fournisseur",
+        "restart_required_which_wsl2_distribution_to_sand": "Redémarrage requis. Distribution WSL2 utilisée pour le bac à sable — les instances utilitaires internes de Docker Desktop ne sont pas proposées ici.",
         "sandbox": "Sandbox",
         "save": "Enregistrer",
         "saved": "Enregistré",

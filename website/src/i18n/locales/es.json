@@ -11785,6 +11785,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Modo de aprobación",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' activa el sandbox para herramientas no confiables. Cambiar a o desde 'wsl2' surte efecto tras reiniciar el gateway.",
         "auto_size_max": "Máx. de tamaño automático",
         "auto_update": "Actualización automática",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Límite máximo del número de subagentes simultáneos ajustado automáticamente (solo aplica cuando Máx. de subagentes simultáneos = 0). La fórmula de memoria/CPU del host nunca lo supera. Rango 1–64. Predeterminado: 16.",
@@ -11799,7 +11800,6 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Activa el descubrimiento dinámico de herramientas MCP mediante kiro-cli. Se aplica en la próxima sesión.",
         "immediate_auto_approves_all_tools_interactive_as": "Inmediato. 'auto' aprueba todas las herramientas; 'interactive' pregunta antes de cada una.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Inmediato. 'auto' activa el sandbox para las herramientas no confiables.",
-        "immediate_which_wsl2_distribution_to_sandbox_in": "Inmediato. Qué distribución de WSL2 usar como entorno aislado — las instancias internas de Docker Desktop no se ofrecen aquí.",
         "inherited_provider": "heredado ({{provider}})",
         "kirocrew_agents": "Agentes de {{productName}}",
         "max_channel_agents": "Máx. de agentes por canal",
@@ -11821,6 +11821,7 @@
         "pool_size": "Tamaño del pool",
         "pool_ttl": "TTL del pool",
         "provider": "Proveedor",
+        "restart_required_which_wsl2_distribution_to_sand": "Requiere reinicio. Qué distribución de WSL2 usar para el sandbox — las instancias internas de Docker Desktop no se ofrecen aquí.",
         "sandbox": "Sandbox",
         "save": "Guardar",
         "saved": "Guardado",

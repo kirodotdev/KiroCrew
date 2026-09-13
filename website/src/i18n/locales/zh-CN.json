@@ -11453,6 +11453,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "审批模式",
         "auto": "自动",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' 会为不受信任的工具启用沙箱。切换到或离开 'wsl2' 需在网关重启后生效。",
         "auto_size_max": "自动调整上限",
         "auto_update": "自动更新",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "自动调整的并发子代理数上限（仅当“最大并发子代理数”为 0 时生效）。主机内存/CPU 计算公式绝不会超过此值。范围 1–64。默认值：16。",
@@ -11467,7 +11468,6 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "通过 kiro-cli 启用动态 MCP 工具发现。下次会话生效。",
         "immediate_auto_approves_all_tools_interactive_as": "立即生效。“auto”批准所有工具；“interactive”每次询问。",
         "immediate_auto_enables_sandbox_for_untrusted_too": "立即生效。“auto”为不受信任的工具启用沙箱。",
-        "immediate_which_wsl2_distribution_to_sandbox_in": "立即生效。选择用于沙盒的 WSL2 发行版——此处不提供 Docker Desktop 自身的实用工具实例。",
         "inherited_provider": "继承 ({{provider}})",
         "kirocrew_agents": "{{productName}} 代理",
         "max_channel_agents": "最大频道代理数",
@@ -11489,6 +11489,7 @@
         "pool_size": "池大小",
         "pool_ttl": "池 TTL",
         "provider": "提供方",
+        "restart_required_which_wsl2_distribution_to_sand": "需要重启。用于沙箱的 WSL2 发行版 — 此处不提供 Docker Desktop 自身的工具实例。",
         "sandbox": "沙箱",
         "save": "保存",
         "saved": "已保存",

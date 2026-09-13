@@ -7190,6 +7190,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Approval Mode",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' enables sandbox for untrusted tools. Switching to or from 'wsl2' takes effect after a gateway restart.",
         "auto_size_max": "Auto-Size Max",
         "auto_update": "Auto Update",
         "config_summary": "Config Summary",
@@ -7201,7 +7202,6 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Enable dynamic MCP tool discovery via kiro-cli. Takes effect on next session.",
         "immediate_auto_approves_all_tools_interactive_as": "Immediate. 'auto' approves all tools; 'interactive' asks before each.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Immediate. 'auto' enables sandbox for untrusted tools.",
-        "immediate_which_wsl2_distribution_to_sandbox_in": "Immediate. Which WSL2 distribution to sandbox in — Docker Desktop's own utility instances are not offered here.",
         "kirocrew_agents": "{{productName}} Agents",
         "max_channel_agents": "Max Channel Agents",
         "max_channels": "Max Channels",
@@ -7218,6 +7218,7 @@
         "pool_size": "Pool Size",
         "pool_ttl": "Pool TTL",
         "provider": "Provider",
+        "restart_required_which_wsl2_distribution_to_sand": "Restart required. Which WSL2 distribution to sandbox in — Docker Desktop's own utility instances are not offered here.",
         "sandbox": "Sandbox",
         "saved": "Saved",
         "session_timeout": "Session Timeout",

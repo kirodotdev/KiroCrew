@@ -11619,6 +11619,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Genehmigungsmodus",
         "auto": "automatisch",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' aktiviert die Sandbox für nicht vertrauenswürdige Tools. Ein Wechsel zu oder von 'wsl2' wird nach einem Neustart des Gateways wirksam.",
         "auto_size_max": "Maximale automatische Größe",
         "auto_update": "Automatische Aktualisierung",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Obergrenze für die automatisch ermittelte Anzahl gleichzeitiger Subagenten (gilt nur, wenn Max. gleichzeitige Subagenten = 0). Die Speicher-/CPU-Formel des Hosts überschreitet sie nie. Bereich 1–64. Standard: 16.",
@@ -11633,7 +11634,6 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Dynamische MCP-Werkzeugerkennung über kiro-cli aktivieren. Wird in der nächsten Sitzung wirksam.",
         "immediate_auto_approves_all_tools_interactive_as": "Sofort. „auto“ genehmigt alle Werkzeuge; „interactive“ fragt vor jedem nach.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Sofort. „auto“ aktiviert die Sandbox für nicht vertrauenswürdige Werkzeuge.",
-        "immediate_which_wsl2_distribution_to_sandbox_in": "Sofort wirksam. Welche WSL2-Distribution zum Sandboxing verwendet wird — die internen Docker-Desktop-Instanzen werden hier nicht angeboten.",
         "inherited_provider": "übernommen ({{provider}})",
         "kirocrew_agents": "{{productName}}-Agenten",
         "max_channel_agents": "Max. Kanal-Agenten",
@@ -11655,6 +11655,7 @@
         "pool_size": "Poolgröße",
         "pool_ttl": "Pool-TTL",
         "provider": "Anbieter",
+        "restart_required_which_wsl2_distribution_to_sand": "Neustart erforderlich. Welche WSL2-Distribution zum Sandboxing verwendet wird — die internen Docker-Desktop-Instanzen werden hier nicht angeboten.",
         "sandbox": "Sandbox",
         "save": "Speichern",
         "saved": "Gespeichert",

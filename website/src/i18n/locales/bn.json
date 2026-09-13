@@ -11619,6 +11619,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "অনুমোদন মোড",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' অবিশ্বস্ত টুলের জন্য স্যান্ডবক্স সক্রিয় করে। 'wsl2'-এ বা 'wsl2' থেকে পরিবর্তন গেটওয়ে পুনরায় চালু করার পরে কার্যকর হয়।",
         "auto_size_max": "অটো-সাইজ সর্বোচ্চ",
         "auto_update": "স্বয়ংক্রিয় আপডেট",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "স্বয়ংক্রিয়ভাবে ঠিক করা সমসাময়িক সাবএজেন্ট সংখ্যার সর্বোচ্চ সীমা (শুধু Max Concurrent Subagents = 0 হলে প্রযোজ্য)। হোস্টের মেমরি/CPU সূত্র কখনো এটি ছাড়ায় না। পরিসর 1–64। ডিফল্ট: 16।",
@@ -11633,7 +11634,6 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli-এর মাধ্যমে ডাইনামিক MCP টুল ডিসকভারি সক্রিয় করুন। পরের সেশনে কার্যকর হবে।",
         "immediate_auto_approves_all_tools_interactive_as": "তাৎক্ষণিক। 'auto' সব টুল অনুমোদন করে; 'interactive' প্রতিটির আগে জিজ্ঞাসা করে।",
         "immediate_auto_enables_sandbox_for_untrusted_too": "তাৎক্ষণিক। 'auto' অবিশ্বস্ত টুলের জন্য স্যান্ডবক্স সক্রিয় করে।",
-        "immediate_which_wsl2_distribution_to_sandbox_in": "তাৎক্ষণিক। স্যান্ডবক্সের জন্য কোন WSL2 ডিস্ট্রিবিউশন ব্যবহার করতে হবে — Docker Desktop-এর নিজস্ব ইউটিলিটি ইনস্ট্যান্স এখানে দেখানো হয় না।",
         "inherited_provider": "উত্তরাধিকৃত ({{provider}})",
         "kirocrew_agents": "{{productName}} এজেন্ট",
         "max_channel_agents": "সর্বোচ্চ চ্যানেল এজেন্ট",
@@ -11655,6 +11655,7 @@
         "pool_size": "পুল সাইজ",
         "pool_ttl": "পুল TTL",
         "provider": "প্রোভাইডার",
+        "restart_required_which_wsl2_distribution_to_sand": "পুনরায় চালু করা প্রয়োজন। স্যান্ডবক্সের জন্য কোন WSL2 ডিস্ট্রিবিউশন ব্যবহার হবে — Docker Desktop-এর নিজস্ব ইউটিলিটি ইনস্ট্যান্স এখানে দেখানো হয় না।",
         "sandbox": "স্যান্ডবক্স",
         "save": "সেভ করো",
         "saved": "সংরক্ষিত",

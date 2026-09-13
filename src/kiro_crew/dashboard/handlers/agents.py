@@ -1398,15 +1398,24 @@ _LIVE_ENUM_SUPPLIERS: dict[str, Callable[[], list[str]]] = {
 }
 
 
-def _supply_live_enum(entry: dict) -> None:
+async def _supply_live_enum(entry: dict) -> None:
     """In place: give a host/build-dependent field its live selectable values.
 
     Resolved from the same owner as the PATCH allowlist and the config load
-    path, so the three cannot disagree.
+    path, so the three cannot disagree. Dispatched off the event loop
+    unconditionally: ``_live_enum_wsl2_distro_values`` shells out to
+    ``wsl.exe`` via a synchronous ``subprocess.run`` (up to
+    ``_WSL2_PROBE_TIMEOUT_SECS``), and every supplier routes through the
+    same executor rather than special-casing the one that happens to block
+    today — a future supplier that grows its own blocking call inherits the
+    same safety for free, and this handler is on the hot path every
+    Settings page load.
     """
     supplier = _LIVE_ENUM_SUPPLIERS.get(entry.get("path", ""))
     if supplier is not None:
-        entry["enumValues"] = supplier()
+        entry["enumValues"] = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), supplier
+        )
 
 
 async def api_config_schema(request: web.Request) -> web.Response:
@@ -1431,7 +1440,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         d = config_entry_to_dict(entry)
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
-        _supply_live_enum(d)
+        await _supply_live_enum(d)
         result.append(d)
 
     return web.json_response({"entries": result})

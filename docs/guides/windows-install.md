@@ -350,8 +350,15 @@ distribution. **Never auto-selected**: the operator has to choose it
 explicitly, the same posture as the Kiro CLI delegation above (an explicit,
 positive choice, never inferred).
 
-Only the app-install / cron / hook call sites below actually change. Native
-Windows tools invoked directly — `git`, the AWS CLI, Papyrus's `tectonic`,
+**Restart the gateway after changing `agent.sandbox` to or from `"wsl2"`.**
+The backend is probed once and cached for the gateway's lifetime, so the new
+value is read at the next start, not at the next spawn. The distribution needs
+a `python3` on its PATH (the sandbox launcher runs under it); the probe checks
+for one and names it in the failure message when it is missing.
+
+Only the app-install / command-cron / hook call sites below actually change.
+Script cron jobs are a native-Windows Python invocation and stay on the
+`sandbox_allow_unsandboxed_exec` path. Native Windows tools invoked directly — `git`, the AWS CLI, Papyrus's `tectonic`,
 Piper — are unaffected either way: they are single portable-binary calls with
 no shell involved, so routing them through a Linux VM would buy no isolation
 and would need Windows↔WSL path translation for every argument, which is a
@@ -395,11 +402,16 @@ immediately, matching the existing Linux probe's own never-block-on-loop
 discipline; the next spawn after the thread finishes succeeds.
 
 If `wsl2` is selected but unavailable — WSL2 not installed, the named
-distribution doesn't exist, or its kernel refuses `unshare(CLONE_NEWUSER)` —
-the affected paths fail closed with a message naming the specific remedy
-(`wsl --install`, `wsl --install -d <name>`, or the same AppArmor-class
-guidance the native Linux path gives, since it is the same kernel mechanism
-one layer down), never silently falling through to unsandboxed execution.
+distribution doesn't exist, it has no `python3`, or its kernel refuses
+`unshare(CLONE_NEWUSER)` — the affected paths fail closed with a message naming
+the specific remedy (`wsl --install`, `wsl --install -d <name>`, install
+`python3` inside the distro, or lift the guest's AppArmor user-namespace
+restriction — `kernel.apparmor_restrict_unprivileged_userns` governs only the
+WSL2 VM, and the profile `kirocrew service install` ships on native Linux works
+inside the distro too), never silently falling through to unsandboxed
+execution. Launchers staged inside the distro remove themselves once loaded,
+and anything a crashed spawn left under `~/.kirocrew-sandbox-run/` is swept on
+the next spawn.
 
 ## Per-feature status on Windows
 
@@ -412,6 +424,10 @@ one layer down), never silently falling through to unsandboxed execution.
 | Script cron jobs | run unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse them) — they run through `wrap_argv`, which permits them on Windows because no backend is installable. With that opt-out declared the job fails with a message naming the setting (it no longer raises an uncaught error) `agent.sandbox: "wsl2"` does **not** cover this kind: a script cron is a native-Windows Python invocation rather than a POSIX shell command, so the wsl2 backend reports itself unavailable for it |
 | Command cron jobs (`sh -c "…"`) | not supported on Windows — the stored command is vetted under POSIX-sh semantics, and Windows ships no shell whose language matches: cmd.exe is not POSIX at all, and Git-for-Windows's `sh.exe` is bash and performs brace expansion that hides `cat ~/.a{w,w}s/credentials` from the vet. The job fails-closed with an explanation. Use a **script cron** or an LLM `message` cron on this platform **`agent.sandbox: "wsl2"` is the one setting that unlocks this kind on Windows** — WSL2's `/bin/sh` is a real POSIX shell, so the vet gate's assumptions hold |
 | Script hooks (Settings → Hooks) | run unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse them) (like script crons — the hook command routes through `wrap_argv`, which permits them on Windows because no backend is installable; with that opt-out declared the hook returns that message as its `error`). They run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten **With `agent.sandbox: "wsl2"`**, hooks instead run through the same `/bin/sh -c` form macOS and Linux use — `$KIROCREW_HOOK_EVENT` / `$KIROCREW_HOOK_CONTEXT`, inside a real Linux user namespace — so a POSIX-shell hook needs no rewrite |
+
+| Script cron jobs | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above — they run through `wrap_argv`, which fail-closes where no OS sandbox backend exists. **`agent.sandbox: "wsl2"` does not cover them**: a script cron is a native-Windows Python invocation, not a POSIX shell command, so the wsl2 backend reports itself unavailable for it and the job stays unsandboxed exactly as it was before wsl2 existed. Without the opt-in, the job fails with a message naming the remedy (it no longer raises an uncaught error) |
+| Command cron jobs (`sh -c "…"`) | not supported on Windows by default — the stored command is vetted under POSIX-sh semantics, and Windows ships no shell whose language matches: cmd.exe is not POSIX at all, and Git-for-Windows's `sh.exe` is bash and performs brace expansion that hides `cat ~/.a{w,w}s/credentials` from the vet. **`agent.sandbox: "wsl2"` is the one setting that unlocks this kind on Windows** — WSL2's `/bin/sh` is a real POSIX shell, so the vet gate's assumptions hold. Without it the job fails-closed with an explanation; use a **script cron** or an LLM `message` cron instead |
+| Script hooks (Settings → Hooks) | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above (like script crons — the hook command routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists; without it the hook returns that message as its `error`). With the opt-in they run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten this way. **With `agent.sandbox: "wsl2"` instead**, hooks run through the same `/bin/sh -c` form macOS/Linux use — `$KIROCREW_HOOK_EVENT` / `$KIROCREW_HOOK_CONTEXT`, real isolation — so a POSIX-shell hook needs no rewrite |
 | Pull-request source drawer provider fetch/check/resolve | not yet — and for a different reason than it used to be. The provider-CLI **trust** check now works here (see Issue Radar below), but the drawer does not share Issue Radar's spawn: it keeps its own async, sandbox-routed one (`source_providers._run_json`), which refuses on Windows because no OS sandbox backend exists. So the blocker is the sandbox, not the binary check |
 | Issue Radar | works — its `gh` spawn is not sandbox-routed, so the trust check is the only gate, and that is answered by reading the binary's Windows ACL (`kiro_crew.windows_acl`) in place of the POSIX `st_uid` + write-bit walk, which reports nothing on this platform. Refused when any principal outside `{you, SYSTEM, Administrators, TrustedInstaller}` can replace the binary or a parent directory, or when the security descriptor is unreadable. An **elevated** gateway (the built-in `Administrator` account, or a "Run as administrator" launch) is not refused for being elevated: Windows has no OS sandbox in this codebase, so the agent's shell already holds the gateway's full token and a refusal would remove the feature without removing any exposure — the same ACL walk applies, keyed on the gateway user's SID. GitHub only on this platform unless `glab` is installed. **If a `gh` you trust is refused**, the override variables (`KIROCREW_ISSUE_RADAR_GH`, `KIROCREW_GH_BIN`) re-enter the same check rather than bypassing it, so the recourse is to install `gh` somewhere only you and the system can write — a per-user `%LOCALAPPDATA%` install is accepted — or to file an issue quoting the refusal, which names the offending principal or the ACE type it could not evaluate |
 | Spec Builder | works, except **Duplicate** — crash-safe copy publication pins a staging directory and uses the platform's atomic no-replace rename (`renameat2(RENAME_NOREPLACE)` on Linux, `renameatx_np(RENAME_EXCL)` on macOS). Windows provides neither that native contract nor CPython's directory-descriptor operations, so the backend reports the capability as unavailable and the dashboard omits Duplicate instead of falling back to a check-then-rename race or a junction-prone path write. Approval, per-task runs, labels, archive/restore, chat, and whole-plan execution work normally |
