@@ -56,12 +56,12 @@ function newClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function mount(props: { onFileOpen?: (p: string, d: boolean) => void; selectedPath?: string | null } = {}) {
+function mount(props: { onFileOpen?: (p: string, d: boolean) => void; selectedPath?: string | null; projectDir?: string } = {}) {
   const qc = newClient()
   const onFileOpen = props.onFileOpen ?? vi.fn()
   const utils = render(
     <QueryClientProvider client={qc}>
-      <FileBrowserRail projectDir={DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} />
+      <FileBrowserRail projectDir={props.projectDir ?? DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} />
     </QueryClientProvider>,
   )
   return { qc, onFileOpen, ...utils }
@@ -79,6 +79,10 @@ beforeEach(() => {
   // test's toggle survives into this one. Drive it back to All explicitly.
   mount()
   fireEvent.click(screen.getByLabelText('All files'))
+  // The filter lives in a module-level map keyed by projectDir (it must
+  // survive the rail's remount), so a prior test's typed filter survives into
+  // this one — drive it back to empty the same way the mode is driven to All.
+  fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: '' } })
   cleanup()
   H.api.projectTree.mockClear()
   H.api.projectGitStatus.mockClear()
@@ -157,16 +161,67 @@ describe('FileBrowserRail search field', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(input).toHaveValue('rail')
   })
+
+  it('keeps the typed query across a remount of the same project directory', () => {
+    // In-place tab navigation (opening a file focuses its tab) remounts the
+    // rail; the filter survives through the module-level session map, the
+    // same way the All/Changed mode does.
+    mount()
+    fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: 'rail' } })
+    cleanup()
+    mount()
+    expect(screen.getByLabelText('Filter files…')).toHaveValue('rail')
+    expect(tree()).toHaveAttribute('data-query', 'rail')
+  })
+
+  it('rehydrates the query when the mounted rail switches project directory', () => {
+    // An in-place projectDir change (switching chat slots) must not carry the
+    // previous project's filter into the new one — the seed read happens only
+    // on first mount, so the rail rehydrates from the session map on change.
+    const qc = newClient()
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <FileBrowserRail projectDir={DIR} onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: 'rail' } })
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <FileBrowserRail projectDir="/elsewhere-switched" onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByLabelText('Filter files…')).toHaveValue('')
+    expect(tree()).toHaveAttribute('data-query', '')
+
+    // And switching back restores the first project's filter from the map.
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <FileBrowserRail projectDir={DIR} onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByLabelText('Filter files…')).toHaveValue('rail')
+  })
+
+  it('starts a different project directory with an empty query', () => {
+    mount()
+    fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: 'rail' } })
+    cleanup()
+    mount({ projectDir: '/elsewhere' })
+    expect(screen.getByLabelText('Filter files…')).toHaveValue('')
+    expect(tree()).toHaveAttribute('data-query', '')
+  })
 })
 
 describe('FileBrowserRail file opens', () => {
-  it('opens a plain file in All mode and drops the query', () => {
+  it('opens a plain file in All mode and keeps the query', () => {
+    // Deliberate contract: opening a file keeps the filter, so a second file
+    // can be opened from the same filtered result without re-typing it.
     const onFileOpen = vi.fn()
     mount({ onFileOpen })
     fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: 'a.ts' } })
     fireEvent.click(tree())
     expect(onFileOpen).toHaveBeenCalledWith(H.OPENED, false)
-    expect(tree()).toHaveAttribute('data-query', '')
+    expect(tree()).toHaveAttribute('data-query', 'a.ts')
   })
 
   it('opens in diff mode from Changed mode', () => {
