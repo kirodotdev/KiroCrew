@@ -2865,6 +2865,8 @@ def safe_read_file_bytes_nolink(
     *,
     max_bytes: int | None = None,
     allow_truncate: bool = False,
+    dir_fd: int | None = None,
+    dir_fd_rel: str | None = None,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -2911,7 +2913,18 @@ def safe_read_file_bytes_nolink(
         return None
 
     try:
-        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+        if dir_fd is not None and dir_fd_rel is not None:
+            # Opened THROUGH the caller's pinned directory, so the bytes come from the
+            # inode it verified rather than from what the name resolves to now.
+            # O_NONBLOCK as the sibling below sets it: O_NOFOLLOW does not reject a FIFO,
+            # so without it the open waits for a writer and never reaches the S_ISREG guard.
+            fd = os.open(
+                dir_fd_rel,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=dir_fd,
+            )
+        else:
+            fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except OSError:
         return None
     try:

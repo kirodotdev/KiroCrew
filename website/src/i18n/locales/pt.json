@@ -5530,9 +5530,19 @@
       "no_skills_mapped_this_agent_uses_the_default_beh": "Nenhuma habilidade mapeada — este agente usa o comportamento padrão.",
       "remove": "Remover {{name}}",
       "remove_skill": "Remover a habilidade {{name}}",
+      "could_not_load_the_skill_catalog": "Não foi possível carregar o catálogo de skills.",
       "skills": "Habilidades",
       "skills_this_agent_template_loads_written_as_skil": "Habilidades que este modelo de agente carrega. São escritas como recursos skill:// na configuração do agente, para que o kiro-cli as carregue nativamente quando o agente iniciar. Um agente sem habilidades mapeadas volta ao comportamento padrão: o agente kirocrew vê o catálogo inteiro, os outros agentes não veem nenhuma.",
-      "type_to_filter": "Digite para filtrar…"
+      "type_to_filter": "Digite para filtrar…",
+      "key_changed_repick": "{{name}} mudou: selecione-o novamente na lista atualizada.",
+      "copy_identifier_hint": "Indica qual cópia instalada desta habilidade está mapeada",
+      "mapping_unresolved": "Já não corresponde a uma cópia instalada",
+      "key_changed_remove_blocked": "Não foi possível salvar: remova {{name}} (marcada com um aviso) primeiro; já não corresponde a uma cópia instalada.",
+      "key_changed_remove_blocked_generic": "Não foi possível salvar: uma habilidade associada já não corresponde a uma cópia instalada. Remova a que está marcada com um aviso e selecione-a novamente na lista atualizada.",
+      "mapping_unresolved_count_one": "{{count}} habilidade associada já não corresponde a uma cópia instalada: remova-a e escolha uma substituta na lista, se houver alguma instalada.",
+      "mapping_unresolved_count_other": "{{count}} habilidades associadas já não correspondem a uma cópia instalada: remova-as e escolha substitutas na lista, se houver alguma instalada.",
+      "mapping_unresolved_count_many": "{{count}} habilidades associadas já não correspondem a uma cópia instalada: remova-as e escolha substitutas na lista, se houver alguma instalada.",
+      "copy_identifier_label": "Localizada em {{where}}"
     },
     "appHost": {
       "agent_only_app": "App apenas para agentes",

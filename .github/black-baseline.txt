@@ -353,7 +353,6 @@ test/test_agent_default_model.py
 test/test_agent_discovery.py
 test/test_agent_import_hoist.py
 test/test_agent_source_ownership_durability.py
-test/test_agent_template_skills.py
 test/test_ai_agent_runner_coverage.py
 test/test_ai_backend_routes_coverage.py
 test/test_ai_pr_watchers_coverage.py
@@ -878,7 +877,6 @@ test/test_release_promotion.py
 test/test_release_promotion_contract.py
 test/test_remote_artifacts.py
 test/test_resolve_session_key.py
-test/test_resolve_skill_root_package.py
 test/test_resource_health_endpoint.py
 test/test_resource_pressure_notify.py
 test/test_resource_status.py

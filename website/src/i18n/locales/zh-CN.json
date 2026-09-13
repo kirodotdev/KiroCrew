@@ -5352,9 +5352,17 @@
       "no_skills_mapped_this_agent_uses_the_default_beh": "未映射任何技能 — 此代理使用默认行为。",
       "remove": "移除 {{name}}",
       "remove_skill": "移除技能 {{name}}",
+      "could_not_load_the_skill_catalog": "无法加载技能目录。",
       "skills": "技能",
       "skills_this_agent_template_loads_written_as_skil": "此代理模板加载的技能。在代理配置中写为 skill:// 资源，因此代理启动时由 kiro-cli 原生加载。未映射任何技能的代理会回退到默认行为：kirocrew 代理可看到完整技能清单，其他代理看不到任何技能。",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "key_changed_repick": "{{name}} 已更改，请在刷新后的列表中重新选择。",
+      "copy_identifier_hint": "标识此技能的哪个已安装副本被映射",
+      "mapping_unresolved": "已不再与已安装的副本匹配",
+      "key_changed_remove_blocked": "无法保存 — 请先移除 {{name}}（带有警告标记），它已不再与已安装的副本匹配。",
+      "key_changed_remove_blocked_generic": "无法保存 — 某个映射的技能已不再与已安装的副本匹配。请移除带有警告标记的技能，然后在刷新后的列表中重新选择。",
+      "mapping_unresolved_count_other": "{{count}} 个映射的技能已不再与已安装的副本匹配 — 请移除，若已安装替代项则从列表中选择。",
+      "copy_identifier_label": "位于 {{where}}"
     },
     "appHost": {
       "agent_only_app": "仅代理应用",

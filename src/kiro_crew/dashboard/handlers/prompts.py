@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from aiohttp import web
@@ -42,16 +42,132 @@ from kiro_crew.skill_trust import (
 )
 
 from ._shared import (
+    _SKILL_KEY_QUALIFIER_SEP,
+    PACKAGE_KEY_PREFIX,
+    SKILL_FILE_MAX_BYTES,
     _capability_manager,
+    _edition_package_roots,
     _get_skills,
+    _identity_token_from_stat,
+    _pinned_skill_tree,
     _read_session_key,
     _resolve_skill_root,
     active_project_dir,
     collect_skills_blocking,
     list_skill_tree,
+    qualify_package_rows,
     read_skill_file,
     requesting_slot_project,
 )
+
+
+def _descend_pinned(root_fd: int, parts: tuple[str, ...]) -> int | None:
+    """:func:`pinned_fs.descend_nofollow`, plus containment, as a refusal not an exception.
+
+    The descent itself is NOT respelled here -- that mechanism lives in ``pinned_fs``,
+    which owns it precisely because per-site copies diverged before. What this adds is the
+    part specific to serving a skill: containment is re-established on the DESCRIPTOR that
+    was opened, not on the path that named it, because the two can disagree by the time
+    the open returns and it is the descriptor the read will use.
+    """
+    try:
+        fd = pinned_fs.descend_nofollow(root_fd, parts)
+    except OSError:
+        return None
+    inside = pinned_fs.fd_real_path(fd)
+    basis_real = pinned_fs.fd_real_path(root_fd)
+    if inside is None or basis_real is None:
+        os.close(fd)
+        return None
+    try:
+        Path(inside).relative_to(Path(basis_real))
+    except ValueError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _open_pinned_root(basis: Path | str) -> int | None:
+    """Open *basis* with its ancestor chain pinned, as a refusal rather than an exception.
+
+    The parent is handed over as ALREADY resolved, which is the whole point: resolving it
+    here would re-follow whatever an ancestor points at by now, and that is the swap this
+    refuses. Reaching the root by name instead lets the kernel follow a component that
+    became a link after resolution, so ``O_NOFOLLOW`` on the root's own final name never
+    fires -- what it finds at the end of the redirected walk is an ordinary directory.
+
+    One implementation for all three package-root opens -- the read, the file-endpoint
+    tree and the detail tree -- so their flag sets cannot drift apart.
+    """
+    try:
+        as_path = Path(basis)
+        return pinned_fs.open_in_pinned_parent(
+            str(as_path.parent),
+            as_path.name,
+            flags=pinned_fs.dir_flags(),
+            mode=0o700,
+            what="package skill root",
+        )
+    except (OSError, ValueError, AttributeError, NotImplementedError, pinned_fs.PinnedPathRefusal):
+        # A refusal, not an exception: every caller reaches this only behind
+        # ``supports_pinned_walk()``, so there is no second way to open the root.
+        return None
+
+
+def _inside_edition_package_root(real: str) -> bool:
+    """Whether *real* -- a path read off an OPEN descriptor -- is still package territory.
+
+    An unqualified key mints no qualifier, so there is no token to compare; what can be
+    checked is that the inode now held open still lives under one of the edition's package
+    roots. A root repointed at ``~/.ssh`` after resolution fails this and is refused.
+    """
+    try:
+        as_path = Path(real)
+    except (OSError, ValueError):
+        return False
+    for root in _edition_package_roots():
+        try:
+            as_path.relative_to(Path(root).resolve(strict=True))
+            return True
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError is what ``resolve`` raises on a symlink LOOP, and one looping
+            # root advertised ahead of a valid one would otherwise abort the whole request.
+            continue
+    return False
+
+
+def _audit_package_read_refusal(path: Path) -> None:
+    """Record a link-count refusal under its own reason, so an operator can tell them apart.
+
+    A deduplicating install (``cp -al``, a content-addressed store) has a legitimate
+    ``st_nlink > 1`` on every file, and a refused read is otherwise indistinguishable from a
+    traversal probe -- both answer a bare 404 under one generic outcome. The stat here decides
+    nothing; the read was already refused by the gate on the descriptor it opened.
+    """
+    try:
+        links = os.lstat(path).st_nlink
+    except OSError:
+        return
+    if links <= 1:
+        return
+    try:
+        # circular import: sel imports config
+        from kiro_crew.sel import sel as _sel
+
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_file",
+            outcome="blocked",
+            metadata={
+                "reason": "package_read_hardlink_refused",
+                "links": links,
+                "remedy": "reinstall the bundle without link-sharing (cp -a --reflink=never)",
+            },
+        )
+    except Exception:  # pragma: no cover - auditing must never break a read
+        logger.debug("could not audit a hardlink read refusal", exc_info=True)
 
 
 def _list_aim_prompts(project_dir=None):
@@ -315,8 +431,8 @@ def _description_from_text(text: str) -> str:
     return ""
 
 
-def _audit_unread(tool_name: str, tool_kind: str, outcome: str, metadata: dict) -> None:
-    """SEL-record content a read gate would not hand back.
+def _audit_tool(tool_name: str, tool_kind: str, outcome: str, metadata: dict) -> None:
+    """SEL-record a read a gate would not hand back, or a refused mutation.
 
     A silent fallback is what makes a planted alias invisible: the surface keeps
     answering — an entry with no description, a 404 — so nothing above it can see
@@ -347,7 +463,7 @@ def _audit_unread(tool_name: str, tool_kind: str, outcome: str, metadata: dict) 
             metadata=metadata,
         )
     except Exception:  # noqa: BLE001 — an audit write must not break the response
-        logger.debug("Could not audit an unread %s", tool_kind, exc_info=True)
+        logger.debug("Could not audit a %s %s", outcome, tool_kind, exc_info=True)
 
 
 def _extract_sop_description(path: Path) -> str:
@@ -411,13 +527,13 @@ def _extract_sop_description(path: Path) -> str:
     try:
         canonical = validate_file_path(str(path))
         if canonical is None:
-            _audit_unread("api_prompts", "prompt", "blocked", {"path": str(path)})
+            _audit_tool("api_prompts", "prompt", "blocked", {"path": str(path)})
             return ""
         raw = safe_read_file_bytes_nolink(
             canonical, within_root=os.path.dirname(canonical), allow_truncate=True
         )
         if raw is None:
-            _audit_unread("api_prompts", "prompt", "error", {"path": str(path)})
+            _audit_tool("api_prompts", "prompt", "error", {"path": str(path)})
             return ""
         return _description_from_text(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError):
@@ -562,7 +678,7 @@ def _gated_sop_description(path: Path, root_real: Path) -> str:
     """
     raw = safe_read_file_bytes_nolink(str(path), within_root=str(root_real), allow_truncate=True)
     if raw is None:
-        _audit_unread("api_prompts", "prompt", "error", {"path": str(path)})
+        _audit_tool("api_prompts", "prompt", "error", {"path": str(path)})
         return ""
     try:
         return _description_from_text(raw.decode("utf-8"))
@@ -2018,10 +2134,16 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
 # reader was shown. These prefixes are documented read-only in
 # api_skills, so the write path refuses them rather than silently writing the
 # core-root copy. The literals must match the prefixes _resolve_skill_root and
-# _skill_key_roots use so read and write agree on territory. The ``package/``
-# prefix is intentionally NOT listed here — that territory is handled separately;
-# this guard covers the untracked kiro-user/ and kiro-workspace/ siblings.
-READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/")
+# _skill_key_roots use so read and write agree on territory.
+# ``package/`` joins them for that same shape: its reader resolves the edition
+# package roots, so a write joining a core root leaves a file no reader can see.
+READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/", PACKAGE_KEY_PREFIX)
+
+# The gate deliberately cannot say WHICH rule refused — separating a hardlink from a
+# sensitive path would make the endpoint an oracle for a link's target.
+
+# A SEPARATE outcome from the gate's: a missing OS capability is not a verdict on this
+# file, and pointing at an audit log that records no rule for it names no remedy.
 
 
 # Concurrent readers of the catalog share ONE scan. Nothing is stored and nothing
@@ -2205,6 +2327,11 @@ async def api_skills(request: web.Request) -> web.Response:
     # catalog advertises a skill whose $token expands to nothing.
     project_dir: Path | None = requesting_slot_project(state, session_key)
     result = await _assemble_skills_catalog(skills, project_dir)
+    # Offloaded because it enumerates the skill roots synchronously, and this handler is
+    # browser-triggerable -- on the event loop a large catalog stalls the heartbeat.
+    result = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), qualify_package_rows, result, state, session_key
+    )
     agent = request.query.get("agent") or None
     if agent:
         # Resolved from the parsed-specs snapshot in agent_discovery (the
@@ -2409,8 +2536,53 @@ async def api_skill_tree(request: web.Request) -> web.Response:
         # Resolve (stat/realpath) and the tree walk are one filesystem
         # transaction; both run on the discovery pool so a network-backed
         # project cannot stall the event loop.
-        r = _resolve_skill_root(name, state, session_key)
-        return (r, list_skill_tree(r) if r is not None else [])
+        checked: list[tuple[Path, str]] = []
+        r = _resolve_skill_root(name, state, session_key, identity_out=checked)
+        if r is None:
+            return (None, [])
+        if checked:
+            if not pinned_fs.supports_pinned_walk():
+                return (None, [])
+            basis, token = checked[0]
+            fd = _open_pinned_root(basis)
+            if fd is None:
+                return (None, [])
+            try:
+                if _identity_token_from_stat(str(basis), os.fstat(fd)) != token:
+                    # A root swapped for an out-of-root link after resolution would
+                    # otherwise have its metadata enumerated by pathname.
+                    return (None, [])
+                try:
+                    parts = r.relative_to(basis).parts
+                except ValueError:
+                    return (None, [])
+                skill_fd = _descend_pinned(fd, parts) if parts else os.dup(fd)
+                if skill_fd is None:
+                    return (None, [])
+                try:
+                    # The descriptor is held OPEN across the traversal: os.walk follows its
+                    # own top argument even with followlinks=False, so a swapped root leaks.
+                    return (r, _pinned_skill_tree(r, skill_fd))
+                finally:
+                    os.close(skill_fd)
+            finally:
+                os.close(fd)
+        if name.startswith(PACKAGE_KEY_PREFIX) and pinned_fs.supports_pinned_walk():
+            # No qualifier to revalidate, but the root is just as swappable, so the walk
+            # goes through a descriptor and the opened inode must still be in territory.
+            fd = _open_pinned_root(r)
+            if fd is None:
+                return (None, [])
+            try:
+                real = pinned_fs.fd_real_path(fd)
+                if real is None or not _inside_edition_package_root(real):
+                    return (None, [])
+                return (r, _pinned_skill_tree(r, fd))
+            finally:
+                os.close(fd)
+        # Without descriptor semantics there is nothing to pin, so this keeps the walk it
+        # has always had, minus the files the reader refuses.
+        return (r, list_skill_tree(r, omit_aliased=name.startswith(PACKAGE_KEY_PREFIX)))
 
     root, entries = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(), _resolve_and_list
@@ -2473,17 +2645,128 @@ async def api_skill_file(request: web.Request) -> web.Response:
             metadata={"name": name, "path": rel_path},
         )
 
+    if "\x00" in rel_path:
+        # Tested rather than left to whatever raises downstream: POSIX raises on an embedded
+        # NUL and Windows TRUNCATES at it, so the exception is not a guard on both platforms.
+        _audit("blocked")
+        return web.json_response({"error": "invalid path", "code": "invalid_path"}, status=400)
     if not rel_path:
         _audit("bad_request")
         return web.json_response({"error": "path query param required"}, status=400)
 
     def _resolve_and_read() -> tuple["Path | None", str | None, str | None]:
         # One filesystem transaction on the discovery pool (see api_skill_tree).
-        r = _resolve_skill_root(name, state, session_key)
+        checked: list[tuple[Path, str]] = []
+        r = _resolve_skill_root(name, state, session_key, identity_out=checked)
         if r is None:
             return None, None, None
-        c, e = read_skill_file(r, rel_path)
-        return r, c, e
+        if not name.startswith(PACKAGE_KEY_PREFIX):
+            c, e = read_skill_file(r, rel_path)
+            return r, c, e
+        if checked:
+            # Gate BEFORE the pinned APIs: a qualified key is minted from a stat digest
+            # without consulting either capability, so an unpinnable platform reaches here.
+            if not pinned_fs.supports_pinned_walk():
+                return r, None, "unsupported"
+            # Re-derive the digest from an fstat of the PINNED descriptor and compare it with
+            # the one resolution recorded: a root replaced between the two answers nothing.
+            basis, token = checked[0]
+            fd = _open_pinned_root(basis)
+            if fd is None:
+                return r, None, "read failed"
+            try:
+                if _identity_token_from_stat(str(basis), os.fstat(fd)) != token:
+                    return r, None, "read failed"
+                if (
+                    ".." in PurePosixPath(rel_path).parts
+                    or ".." in PureWindowsPath(rel_path).parts
+                    or os.path.isabs(rel_path)
+                    or os.path.splitdrive(rel_path)[0]
+                ):
+                    # Both flavours, because a backslash form is ONE opaque segment to POSIX,
+                    # and the drive test catches a Windows absolute path isabs() misses here.
+                    return r, None, "invalid path"
+                try:
+                    rel_parts = PurePosixPath(rel_path).parts
+                    parents = r.relative_to(basis).parts + rel_parts[:-1]
+                except ValueError:
+                    return r, None, "read failed"
+                if not rel_parts:
+                    return r, None, "invalid path"
+                # Parents descended with O_NOFOLLOW, final name opened alone: resolving the
+                # whole remainder at once follows a parent swapped for a link mid-read.
+                holder = _descend_pinned(fd, parents) if parents else os.dup(fd)
+                if holder is None:
+                    return r, None, "read failed"
+                try:
+                    raw = safe_read_file_bytes_nolink(
+                        str(r / rel_path),
+                        within_root=str(r),
+                        max_bytes=SKILL_FILE_MAX_BYTES,
+                        dir_fd=holder,
+                        dir_fd_rel=rel_parts[-1],
+                    )
+                finally:
+                    os.close(holder)
+            except FileTooLargeError:
+                return r, None, "file too large"
+            except (OSError, ValueError):
+                return r, None, "read failed"
+            finally:
+                os.close(fd)
+        elif name.startswith(PACKAGE_KEY_PREFIX) and pinned_fs.supports_pinned_walk():
+            # The read twin of the pinned tree walk. ``within_root`` is ``r`` itself, so a
+            # root swapped after resolution satisfies containment by construction.
+            rel_parts = PurePosixPath(rel_path).parts
+            if (
+                not rel_parts
+                or ".." in rel_parts
+                or ".." in PureWindowsPath(rel_path).parts
+                or os.path.isabs(rel_path)
+                or os.path.splitdrive(rel_path)[0]
+            ):
+                return r, None, "invalid path"
+            fd = _open_pinned_root(r)
+            if fd is None:
+                return r, None, "read failed"
+            try:
+                real = pinned_fs.fd_real_path(fd)
+                if real is None or not _inside_edition_package_root(real):
+                    return r, None, "read failed"
+                holder = _descend_pinned(fd, rel_parts[:-1]) if rel_parts[:-1] else os.dup(fd)
+                if holder is None:
+                    return r, None, "read failed"
+                try:
+                    raw = safe_read_file_bytes_nolink(
+                        str(r / rel_path),
+                        within_root=str(r),
+                        max_bytes=SKILL_FILE_MAX_BYTES,
+                        dir_fd=holder,
+                        dir_fd_rel=rel_parts[-1],
+                    )
+                finally:
+                    os.close(holder)
+            except FileTooLargeError:
+                return r, None, "file too large"
+            except (OSError, ValueError):
+                return r, None, "read failed"
+            finally:
+                os.close(fd)
+        else:
+            try:
+                raw = safe_read_file_bytes_nolink(
+                    str(r / rel_path), within_root=str(r), max_bytes=SKILL_FILE_MAX_BYTES
+                )
+            except FileTooLargeError:
+                return r, None, "file too large"
+            except (OSError, ValueError):
+                return r, None, "read failed"
+        if raw is None:
+            # A refusal is RETURNED, not raised: a hardlink, a non-regular inode, or a
+            # realpath that landed outside the root.
+            _audit_package_read_refusal(r / rel_path)
+            return r, None, "read failed"
+        return r, raw.decode("utf-8", errors="replace"), None
 
     root, content, err = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(), _resolve_and_read
@@ -2970,10 +3253,23 @@ def _match_package_row(
     So the leaf fallback is used only when it is UNAMBIGUOUS. An ambiguous leaf
     returns ``None`` (the caller 404s) and logs, because a reader who opened one
     skill and silently got another has no way to notice.
+
+    The KEY leg is gated the same way, and for the same reason: two rows can be listed
+    under ONE key, which is the collision this grammar exists to disambiguate, and
+    returning the first match served an arbitrary one of them under a 200.
     """
-    for row in rows:
-        if row.get("key") == name:
-            return row
+    key_matches = [row for row in rows if row.get("key") == name]
+    if len(key_matches) == 1:
+        return key_matches[0]
+    if key_matches:
+        logger.warning(
+            "skill key %r matches %d rows by key (paths: %s); "
+            "refusing to guess which SKILL.md was meant",
+            name,
+            len(key_matches),
+            ", ".join(sorted(str(r.get("path")) for r in key_matches)),
+        )
+        return None
     leaf_matches = [row for row in rows if row.get("name") == pkg_name]
     if len(leaf_matches) == 1:
         return leaf_matches[0]
@@ -2995,19 +3291,18 @@ async def api_skill_detail(request: web.Request) -> web.Response:
     skills = _get_skills(state)
 
     # Refuse mutating verbs on the open-standard read-only territories. Their
-    # READ path resolves per-session / per-machine (project or ~/.kiro/skills),
-    # but update_skill/delete_skill would join the key onto a core root — so the
-    # write lands in a different file than the reader was shown.
-    # Guarding here, before the PUT/DELETE branches and any session-key work,
-    # ensures the mutating verb never reaches skills.*; GET is untouched and keeps
-    # resolving via _resolve_skill_root. The package/ territory has the same shape.
+    # The read resolves per-session or through the package roots, but update_skill and
+    # delete_skill join the key onto a core root: a write lands in a file never shown.
     if request.method in ("PUT", "DELETE") and name.startswith(READONLY_SKILL_KEY_PREFIXES):
+        _audit_tool(
+            "api_skill_detail", "skill", "refused", {"name": name, "method": request.method}
+        )
         return web.json_response(
             {
                 "error": (
                     f"skill '{name}' is in a read-only territory "
-                    "(kiro-user/ and kiro-workspace/ skills are managed on disk, "
-                    "not through this endpoint)"
+                    "(kiro-user/, kiro-workspace/ and package/ skills are managed on "
+                    "disk, not through this endpoint)"
                 ),
                 "code": "readonly_skill_prefix",
             },
@@ -3046,81 +3341,222 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
     content = skills.load_skill(name)
-    if content is None and name.startswith("package/"):
-        pkg_name = name[len("package/") :]  # strip "package/" prefix
-        # The capability manager owns skill listing + path resolution; it
-        # returns structured rows (no core text parsing / event-loop globbing).
-        mgr = _capability_manager()
-        try:
-            package_skills = await mgr.list_skills() if mgr.available() else []
-        except Exception:
-            package_skills = []
-        row = _match_package_row(package_skills, name, pkg_name)
-        if row is not None and row.get("path"):
-            resolved = validate_file_path(str(row["path"]))
-            if resolved is None:
-                return web.json_response({"error": "access denied"}, status=403)
-            # Same descriptor gate as the prompt reads above, for the same reason:
-            # canonicalizing a path and then opening that name is two resolutions,
-            # and a hardlink needs neither a race nor a link to defeat the first
-            # one — it shares its target's inode, so ``realpath`` yields the
-            # alias's own name and ``is_sensitive_path`` judges that instead of the
-            # file whose bytes come back. The gate opens once with ``O_NOFOLLOW``
-            # and refuses ``st_nlink > 1``, a non-regular inode, or an opened
-            # descriptor whose real path left the canonical parent (the last of
-            # which is what still holds on Windows, where ``O_NOFOLLOW`` does not
-            # exist). ``row["path"]`` comes from the capability seam rather than a
-            # cloned checkout, so the actor here needs write access to a package
-            # skill root — a weaker requirement than the prompt sites, but the same
-            # defect and the same fix.
-            #
-            # A refusal leaves ``content`` unset, which is the 404 an unreadable
-            # skill already produced, so nothing is distinguishable from I/O
-            # trouble — but it is SEL-recorded, because a 404 is also what a name
-            # nobody installed produces and a refusal would otherwise be silent.
-            # ``FileTooLargeError`` is not an ``OSError`` and would otherwise
-            # escape as an unaudited 500; it is the one refusal whose cause IS
-            # knowable, so it is recorded as itself.
-            #
-            # Off the loop, like the delete and update verbs above: no
-            # caller-supplied cap applies here, so the gate reads up to its own
-            # 50 MB default from storage that can be network-backed, and this
-            # handler shares one event loop with every other session's turn.
-            skill_bytes: bytes | None
-            try:
-                skill_bytes = await asyncio.to_thread(
-                    safe_read_file_bytes_nolink, resolved, within_root=os.path.dirname(resolved)
-                )
-                refusal = "error"
-            except FileTooLargeError:
-                skill_bytes = None
-                refusal = "too_large"
-            if skill_bytes is not None:
-                content = skill_bytes.decode("utf-8", errors="replace")
-            else:
-                _audit_unread(
-                    "api_skill_detail", "skill", refusal, {"name": name, "path": str(row["path"])}
-                )
-    if content is None and (name.startswith("kiro-user/") or name.startswith("kiro-workspace/")):
+    if name.startswith(PACKAGE_KEY_PREFIX):
+        # ``load_skill`` joins the key onto a core root (``<dir>/<name>/SKILL.md``),
+        # so a core skill whose own relative path is literally ``package/<rel>``
+        # answers here and every ``package/`` branch below is skipped. Detail would
+        # then serve that file while ``/tree`` resolves the packaged copy — one key
+        # naming two skills, and a spec written from the modal loads something the
+        # tree never showed. A ``package/`` key is the package territory's to answer,
+        # so the generic hit is discarded rather than ranked against it.
+        #
+        # Discarding it here is safe only because PUT/DELETE REFUSE a ``package/`` key
+        # above: were a mutation honoured it would write the core copy this line
+        # discards, so the read and the write would name different files.
+        content = None
+    if content is None and (
+        name.startswith("kiro-user/")
+        or name.startswith("kiro-workspace/")
+        or name.startswith(PACKAGE_KEY_PREFIX)
+    ):
         # Open-standard kiro-cli skills are read-only here — load via the
         # same path-resolution logic used by the tree/file endpoints so the
         # detail modal can fetch SKILL.md regardless of which root the
         # skill lives in.
+        #
+        # ``package/`` keys come here too, and FIRST, so detail and tree answer the
+        # same key the same way whenever this resolver can answer at all. The
+        # exact-row lookup below is the fallback for a row whose key is not its
+        # root-relative path; without it such a row would list in the catalog and
+        # 404 on open — a skill that looks present and unreadable, rather than
+        # cleanly absent.
         session_key = _read_session_key(request)
+        # Fetched BEFORE the resolve: the resolver answers first, so its hit has to be
+        # checked against any row claiming the same key rather than after it is served.
+        pkg_row = None
+        row_path = ""
+        row_lookup_failed = False
+        pkg_name = name[len(PACKAGE_KEY_PREFIX) :]
+        if name.startswith(PACKAGE_KEY_PREFIX) and _SKILL_KEY_QUALIFIER_SEP not in pkg_name:
+            mgr = _capability_manager()
+            try:
+                package_skills = await mgr.list_skills() if mgr.available() else []
+            except Exception:
+                package_skills = []
+                row_lookup_failed = True
+            pkg_row = _match_package_row(package_skills, name, pkg_name)
+            if pkg_row is not None and pkg_row.get("path"):
+                row_path = str(pkg_row["path"])
 
-        def _resolve_and_read_md() -> str | None:
-            # One filesystem transaction on the discovery pool (see api_skill_tree).
-            r = _resolve_skill_root(name, state, session_key)
+        def _resolve_and_read_md() -> tuple[str | None, str]:
+            # The descriptor gate below is scoped to ``package/`` and to nothing else.
+            if row_lookup_failed:
+                # Without the row list the shadow cross-check cannot run, so answering from
+                # the resolver alone would serve a key with NO identity comparison at all.
+                return None, "unreadable"
+            checked: list[tuple[Path, str]] = []
+            r = _resolve_skill_root(name, state, session_key, identity_out=checked)
             if r is None:
-                return None
-            c, e = read_skill_file(r, "SKILL.md")
-            return c if e is None else None
+                # A row that can still answer owns the audit; with none, the shared 404
+                # below is an access decision that would otherwise leave no record.
+                return None, "" if row_path else "not_found"
+            if row_path:
+                # The row path comes from the edition seam, so it is VALIDATED before it is
+                # resolved: resolving first would follow a link the validator would refuse.
+                try:
+                    checked_row = validate_file_path(row_path)
+                    row_dir = Path(checked_row).parent.resolve() if checked_row else None
+                except (OSError, RuntimeError, ValueError):
+                    # An embedded NUL RAISES rather than answering None, and ValueError is
+                    # no OSError, so an unguarded call here escaped as a 500.
+                    return None, "shadowed"
+                if row_dir is None:
+                    return None, "shadowed"
+                if row_dir != r:
+                    return None, "shadowed"
+            if not name.startswith(PACKAGE_KEY_PREFIX):
+                c, e = read_skill_file(r, "SKILL.md")
+                return (c, "") if e is None else (None, "")
+            if checked:
+                if not pinned_fs.supports_pinned_walk():
+                    return None, "unsupported"
+                basis, token = checked[0]
+                fd = _open_pinned_root(basis)
+                if fd is None:
+                    return None, "unreadable"
+                try:
+                    if _identity_token_from_stat(str(basis), os.fstat(fd)) != token:
+                        return None, "unreadable"
+                    try:
+                        parents = r.relative_to(basis).parts
+                    except ValueError:
+                        return None, "unreadable"
+                    # Parents descended with O_NOFOLLOW; only the final name is opened.
+                    holder = _descend_pinned(fd, parents) if parents else os.dup(fd)
+                    if holder is None:
+                        return None, "unreadable"
+                    try:
+                        raw = safe_read_file_bytes_nolink(
+                            str(r / "SKILL.md"),
+                            within_root=str(r),
+                            max_bytes=SKILL_FILE_MAX_BYTES,
+                            dir_fd=holder,
+                            dir_fd_rel="SKILL.md",
+                        )
+                    finally:
+                        os.close(holder)
+                except FileTooLargeError:
+                    return None, "too_large"
+                except (OSError, ValueError):
+                    return None, "unreadable"
+                finally:
+                    os.close(fd)
+            else:
+                try:
+                    raw = safe_read_file_bytes_nolink(
+                        str(r / "SKILL.md"),
+                        within_root=str(r),
+                        max_bytes=SKILL_FILE_MAX_BYTES,
+                    )
+                except FileTooLargeError:
+                    return None, "too_large"
+                except (OSError, ValueError):
+                    return None, "unreadable"
+            if raw is None:
+                # The guard signals a refusal by RETURNING None -- a hardlink, a
+                # non-regular inode or an out-of-root realpath -- rather than raising.
+                return None, "unreadable"
+            return raw.decode("utf-8", errors="replace"), ""
 
-        content_value = await asyncio.get_running_loop().run_in_executor(
+        content_value, gate_refusal = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), _resolve_and_read_md
         )
+        if gate_refusal:
+            # The refusal is carried out of the executor rather than collapsed into the
+            # shared 404, so a withheld read is recorded the way the row path records it.
+            _audit_tool("api_skill_detail", "skill", gate_refusal, {"name": name})
+        if gate_refusal == "shadowed":
+            return web.json_response({"error": "not found", "code": "file_not_found"}, status=404)
         if content_value is not None:
+            # The key carries the qualifier, so this is the only record naming WHICH
+            # copy of a colliding skill was served, as api_skill_file already does.
+            _audit_tool("api_skill_detail", "skill", "ok", {"name": name})
             content = content_value
+    if (
+        content is None
+        and name.startswith(PACKAGE_KEY_PREFIX)
+        and _SKILL_KEY_QUALIFIER_SEP not in name[len(PACKAGE_KEY_PREFIX) :]
+    ):
+        # The resolver above globs a key's remainder against the installed roots,
+        # so it can only find a skill whose ROOT-RELATIVE PATH is its key. A row is
+        # listed under whatever key its edition chose, and that key need not be the
+        # rel path — for any row keyed otherwise the resolver returns ``None`` and
+        # this exact-row lookup is the only thing that opens it. Without it such a
+        # skill lists in the catalog and 404s when opened.
+        #
+        # It runs AFTER the resolver, not before: whenever the resolver can answer,
+        # detail agrees with ``/tree`` (which resolves the same way), so preferring
+        # a row there could serve one key as two different skills. Ordering it last
+        # cures the 404 without reintroducing that divergence.
+        #
+        # Validation AND the read both run on ``discovery_executor()``: validation
+        # canonicalizes, which is a filesystem call. Only the matching stays here.
+        #
+        # The fallback is entered only for an UNQUALIFIED remainder (see the branch
+        # condition above). The separator is reserved, so the enumerator omits any rel
+        # carrying it and the resolver refuses such a key — but a row is matched on the
+        # key an edition chose, so a colon-named row would still be served here,
+        # answering 200 for a key ``/tree`` does not list. That is the
+        # detail-versus-tree divergence this ordering was meant to avoid,
+        # reintroduced through the row path. A qualified remainder is the resolver's
+        # business exclusively: if the resolver could not answer it, no row may, and
+        # the shared 404 below is what replies.
+        row = pkg_row
+        if row is not None and row.get("path"):
+            raw_row_path = str(row["path"])
+
+            def _validate_and_read_row_md() -> tuple[str | None, bool, str]:
+                # One filesystem transaction on the pool, through the same descriptor gate
+                # the prompt reads use: a hardlink defeats canonicalize-then-open.
+                try:
+                    checked = validate_file_path(raw_row_path)
+                except ValueError:
+                    # As in the shadow check above: a NUL raises out of the validator.
+                    return None, True, "error"
+                if checked is None:
+                    return None, True, "error"
+                try:
+                    data = safe_read_file_bytes_nolink(
+                        checked, within_root=os.path.dirname(checked)
+                    )
+                except FileTooLargeError:
+                    return None, False, "too_large"
+                except OSError:
+                    return None, False, "error"
+                if data is None:
+                    return None, False, "error"
+                return data.decode("utf-8", errors="replace"), False, "error"
+
+            content, refused, refusal = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(), _validate_and_read_row_md
+            )
+            if refused:
+                _audit_tool(
+                    "api_skill_detail", "skill", "blocked", {"name": name, "path": raw_row_path}
+                )
+                return web.json_response(
+                    {"error": "access denied", "code": "access_denied"}, status=403
+                )
+            if content is None:
+                # A gate refusal is indistinguishable from I/O trouble to the caller, so
+                # it is SEL-recorded rather than left silent behind the shared 404.
+                _audit_tool(
+                    "api_skill_detail", "skill", refusal, {"name": name, "path": raw_row_path}
+                )
+            else:
+                # Same event as the resolver's success above, so a served read is one
+                # record regardless of which of the two paths produced it.
+                _audit_tool("api_skill_detail", "skill", "ok", {"name": name})
     if content is None:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response({"name": name, "content": content})
@@ -3148,18 +3584,15 @@ async def api_skills_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "invalid skill name", "code": "invalid_name"}, status=400
         )
-    # Refuse creating into the open-standard read-only territories. Checked on
-    # the SANITISED name because that is what create_skill would write (e.g.
-    # 'Kiro-Workspace/Foo' sanitises to 'kiro-workspace/foo'). create_skill joins
-    # the key onto a core root, but the reader is served kiro-user/ and
-    # kiro-workspace/ skills from a session/machine-scoped location — so a create
-    # here would write to a different file than the reader is shown.
+    # Checked on the SANITISED name because that is what create_skill would write, and it
+    # joins the key onto a core root the reader of these territories is never shown.
     if safe_name.startswith(READONLY_SKILL_KEY_PREFIXES):
+        _audit_tool("api_skills_create", "skill", "refused", {"name": safe_name})
         return web.json_response(
             {
                 "error": (
                     f"skill name '{safe_name}' is in a reserved read-only territory "
-                    "(kiro-user/ and kiro-workspace/ skills are managed on disk)"
+                    "(kiro-user/, kiro-workspace/ and package/ skills are managed on disk)"
                 ),
                 "code": "reserved_skill_prefix",
             },

@@ -103,7 +103,6 @@ from kiro_crew.dashboard.handlers._shared import (
     _capability_manager,
     _read_session_key,
     active_project_dir,
-    agent_skill_keys,
     agent_skill_views,
     apply_skill_mapping,
     read_bounded_json,
@@ -142,6 +141,21 @@ from kiro_crew.validation import _AGENT_NAME_RE
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
 logger = logging.getLogger(__name__)
+
+
+#: Sentinel for a malformed list field, kept distinct from absent so a bad request is
+#: refused rather than read as an empty list and silently accepted.
+_LIST_ARG_INVALID = object()
+
+
+def _string_list_arg(patch_body: dict[str, Any], field: str) -> Any:
+    """A list-of-strings request field, or the sentinel when it is malformed."""
+    if field not in patch_body:
+        return None
+    raw = patch_body[field]
+    if not isinstance(raw, list) or any(not isinstance(u, str) for u in raw):
+        return _LIST_ARG_INVALID
+    return list(raw)
 
 
 def _namespaced_agent_file_exists(agent_name: str) -> bool:
@@ -3253,6 +3267,45 @@ async def api_agent_publish(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _merge_resources_delta(
+    fresh: dict[str, Any], before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    """Apply this patch's ``resources`` delta to the freshly-read spec, element-wise.
+
+    ``after`` was built from a snapshot taken before the spec lock, so assigning it whole
+    would drop a URI a concurrent writer added into *fresh* since. Only what this patch
+    NAMED -- the URIs it removed and the ones it added -- may move.
+    """
+
+    def _uris(doc: dict[str, Any]) -> list[str]:
+        """URI strings, with a malformed ``resources`` normalised to empty.
+
+        Iterating a STRING yields characters and every one of them is a ``str``, so the
+        unguarded comprehension rewrote the value as a per-character list.
+        """
+        resources = doc.get("resources")
+        if not isinstance(resources, list):
+            return []
+        return [r for r in resources if isinstance(r, str)]
+
+    before_uris = _uris(before)
+    after_uris = _uris(after)
+    if before_uris == after_uris:
+        # This patch named no resource change, so it may not rewrite the key at all: a
+        # malformed value it never looked at must survive untouched rather than normalised.
+        return
+    removed = [r for r in before_uris if r not in after_uris]
+    added = [r for r in after_uris if r not in before_uris]
+    kept = [r for r in _uris(fresh) if r not in removed]
+    merged = kept + [r for r in added if r not in kept]
+    if merged:
+        fresh["resources"] = merged
+    else:
+        # Same reason the mapping writer drops the key rather than writing []: an empty
+        # list suppresses the shipped steering defaults.
+        fresh.pop("resources", None)
+
+
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/PATCH /api/agents/detail/{name} — view or update agent config."""
     name = request.match_info["name"]
@@ -3306,7 +3359,6 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 {"error": f"at most {MAX_AGENT_SKILLS} skills per agent"},
                                 status=400,
                             )
-                    mapped: list[str] = []
                     loop = asyncio.get_running_loop()
                     async with _get_config_lock():
                         # Re-read under the lock: the copy above was read before
@@ -3361,30 +3413,51 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         # large or network-backed catalog is enough filesystem work
                         # to stall the event loop — the same reason /api/skills and
                         # /api/agents/installed run off the loop.
-                        if "skills" in patch_body:
-                            mapped, unknown = await loop.run_in_executor(
+                        if "skills" in patch_body or "removed_unmanaged_skills" in patch_body:
+                            removed_unmanaged = _string_list_arg(
+                                patch_body, "removed_unmanaged_skills"
+                            )
+                            known_unmanaged = _string_list_arg(patch_body, "unmanaged_skills")
+                            if known_unmanaged is _LIST_ARG_INVALID:
+                                return web.json_response(
+                                    {
+                                        "error": "unmanaged_skills must be a list of strings",
+                                        "code": "unmanaged_skills_invalid",
+                                    },
+                                    status=400,
+                                )
+                            if removed_unmanaged is _LIST_ARG_INVALID:
+                                return web.json_response(
+                                    {
+                                        "error": (
+                                            "removed_unmanaged_skills must be a list of strings"
+                                        ),
+                                        "code": "removed_unmanaged_skills_invalid",
+                                    },
+                                    status=400,
+                                )
+                            _, unknown = await loop.run_in_executor(
                                 discovery_executor(),
                                 apply_skill_mapping,
                                 data,
                                 f,
                                 state,
-                                list(patch_body["skills"]),
+                                (list(patch_body["skills"]) if "skills" in patch_body else None),
                                 _read_session_key(request),
+                                removed_unmanaged,
+                                known_unmanaged,
                             )
                             if unknown:
+                                # A qualified key is a CURSOR, re-spelled by any change to
+                                # the root's stat; the code is what the caller branches on.
                                 return web.json_response(
-                                    {"error": "unknown skills", "skills": unknown[:20]},
+                                    {
+                                        "error": "unknown skills",
+                                        "skills": unknown[:20],
+                                        "code": "skills_unknown",
+                                    },
                                     status=400,
                                 )
-                        else:
-                            mapped = await loop.run_in_executor(
-                                discovery_executor(),
-                                agent_skill_keys,
-                                data,
-                                f,
-                                state,
-                                _read_session_key(request),
-                            )
                         if "model" in patch_body:
                             # Stored verbatim (canonical key); translated to a
                             # provider id at the config.loader factory boundary.
@@ -3434,17 +3507,26 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 if fresh is None:
                                     raise FileNotFoundError(f)
                                 for key, value in data.items():
+                                    if key == "resources":
+                                        # Merged element-wise below: assigning this list
+                                        # whole would drop a concurrent writer's addition.
+                                        continue
                                     if key not in before_patch or before_patch[key] != value:
                                         fresh[key] = value
                                 for key in before_patch:
-                                    if key not in data:
+                                    if key not in data and key != "resources":
                                         fresh.pop(key, None)
+                                _merge_resources_delta(fresh, before_patch, data)
                                 sanitize_agent_config_governance(fresh)
                                 # Atomic replace: a direct write truncates first,
                                 # so ENOSPC mid-write would destroy the existing
                                 # template. Same tmp+rename helper as the fork
                                 # refresh and install paths.
                                 _atomic_json_write(f, fresh)
+                                # The response is computed from this document, so it must be
+                                # what LANDED, not the snapshot a co-owner's write predates.
+                                data.clear()
+                                data.update(fresh)
 
                         try:
                             await asyncio.to_thread(_locked_overwrite)
@@ -3461,8 +3543,23 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     # would otherwise serve a stale skill list.
                     clear_list_agents_cache()
                     state.push_refresh("agents")
+                    # Recomputed from the spec just written: a URI the apply KEPT but could
+                    # not key is absent from ``mapped``, so ``mapped`` alone reports a lie.
+                    keys, unmanaged_uris = await asyncio.get_running_loop().run_in_executor(
+                        discovery_executor(),
+                        agent_skill_views,
+                        data,
+                        f,
+                        state,
+                        _read_session_key(request),
+                    )
                     return web.json_response(
-                        {"ok": True, "model": data.get("model", ""), "skills": mapped}
+                        {
+                            "ok": True,
+                            "model": data.get("model", ""),
+                            "skills": keys,
+                            "unmanaged_skills": unmanaged_uris,
+                        }
                     )
                 # ``skills`` / ``unmanaged_skills`` are computed, response-only
                 # views of ``resources`` — never written back into the spec

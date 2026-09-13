@@ -39,7 +39,7 @@ import os
 import shutil
 import stat
 import stat as _stat
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -188,6 +188,32 @@ def dir_flags() -> int:
     return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
+def descend_nofollow(dir_fd: int, parts: Sequence[str]) -> int:
+    """Open the directory named by *parts* under *dir_fd*, raising ``OSError`` if refused.
+
+    THE relative descent: one ``openat`` per component, each relative to the previous
+    component's descriptor and each carrying ``O_NOFOLLOW``. A joined remainder would
+    guard only its FINAL component, so an intermediate link is followed by the kernel and
+    the walk lands outside the descriptor whose identity the caller just verified.
+
+    *dir_fd* is left open and unchanged; the returned descriptor is new even when *parts*
+    is empty, so a caller closes what it receives either way. Intermediates are closed on
+    the way. Callers that want a refusal rather than an exception, or a containment
+    re-check on the descriptor that was opened, layer that on top -- see
+    :func:`pin_parent`, which adds an explanatory refusal for a swapped ancestor.
+    """
+    fd = os.dup(dir_fd)
+    try:
+        for part in parts:
+            nxt = os.open(part, dir_flags(), dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def pin_parent(
     resolved_parent: str,
     *,
@@ -234,7 +260,7 @@ def pin_parent(
     try:
         for component in rest:
             try:
-                nxt = os.open(component, dir_flags(), dir_fd=dir_fd)
+                nxt = descend_nofollow(dir_fd, (component,))
             except OSError as exc:
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise refusal(
