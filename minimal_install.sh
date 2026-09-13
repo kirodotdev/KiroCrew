@@ -140,9 +140,10 @@ echo "✓ Python package installed"
 umask "$_KC_PREV_UMASK"
 echo ""
 
-# ── 3. Agent backend (claude-agent-acp) ──
-# The default agent backend is the public ACP adapter. kiro-cli is optional.
-echo "→ Checking agent backend (claude-agent-acp)…"
+# ── 3. Optional alternate agent backend (claude-agent-acp) ──
+# A fresh configuration defaults to Kiro CLI. This adapter is available only
+# after the user selects it with agent.acp_backend.
+echo "→ Checking optional agent backend (claude-agent-acp)…"
 if has claude-agent-acp; then
     echo "✓ claude-agent-acp already on PATH"
 elif has npm; then
@@ -154,6 +155,8 @@ else
     echo "⚠ npm not found — install the agent backend later:"
     echo "    npm i -g @agentclientprotocol/claude-agent-acp"
 fi
+echo "⚠ The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
+echo "  Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"
 echo ""
 
 # ── 4. Symlink CLI (no shell rc modification) ──
@@ -166,8 +169,11 @@ echo ""
 echo "👻 KiroCrew installed!"
 echo ""
 echo "  Next steps:"
-echo "    1. Run setup:    $HOME/.local/bin/kirocrew setup"
-echo "    2. Start it:     $HOME/.local/bin/kirocrew gateway"
+echo "    1. Default agent: install Kiro CLI from https://kiro.dev/cli/"
+echo "                      then run: kiro-cli login"
+echo "       (skip this if you selected another ACP backend)"
+echo "    2. Run setup:    $HOME/.local/bin/kirocrew setup"
+echo "    3. Start it:     $HOME/.local/bin/kirocrew gateway"
 echo "       (or add ~/.local/bin to PATH and just run: kirocrew gateway)"
 echo ""
 echo "  Optional — local vector memory (embeddings):"

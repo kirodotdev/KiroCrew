@@ -48,9 +48,9 @@
 
 You choose how to run Kiro Crew: the desktop app with automatic updates, a
 one-line install on your machine or a remote host, the Docker image for
-always-on servers, or a build from source. Every path runs on `kiro-cli`
-underneath, so the first launch installs it if needed and guides Kiro
-device-code sign-in.
+always-on servers, or a build from source. The default agent runs on
+`kiro-cli`, which you install and sign in to separately. First launch checks
+that prerequisite and links to the official setup guide when it is missing.
 
 ### App downloads
 
@@ -219,10 +219,12 @@ the container security model.
 ### Build from source
 
 macOS and Linux require Python 3.12+, Node.js 22+ (24 LTS recommended), npm, and
-[`kiro-cli`](https://kiro.dev/docs/cli/). The first desktop or dashboard launch
-can install Kiro CLI on the Gateway host and guide device-code sign-in before
-chat opens. Windows is supported through a native source install; follow the
-[Windows guide](docs/guides/windows-install.md) instead of the shell steps below.
+[`kiro-cli`](https://kiro.dev/docs/cli/). Install Kiro CLI on the Gateway host
+and run `kiro-cli login` separately before using chat. The first desktop or
+dashboard launch checks this prerequisite and links to the official setup
+guide when it is missing. Windows is supported through a native source install;
+follow the [Windows guide](docs/guides/windows-install.md) instead of the shell
+steps below.
 
 ```bash
 # 1. Clone and build Kiro Crew

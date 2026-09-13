@@ -72,6 +72,63 @@ LangString KiroUpdateProgress 1055 "Bu işlem birkaç dakika sürebilir. ${PRODU
 LangString KiroUpdateProgress 1054 "อาจใช้เวลาหลายนาที ${PRODUCT_NAME} จะเปิดขึ้นอีกครั้งโดยอัตโนมัติ"
 LangString KiroUpdateProgress 1066 "Quá trình này có thể mất vài phút. ${PRODUCT_NAME} sẽ tự động mở lại."
 
+; A fresh install can finish before the default agent is usable. Keep this
+; handoff on the native Finish page: the shell must never download Kiro CLI or
+; start its login flow, but users should learn about both before first launch.
+LangString KiroCliPrerequisiteText 1033 "${PRODUCT_NAME} is installed. The default Kiro agent requires Kiro CLI, installed separately, and the command kiro-cli login. Use the official setup guide below."
+LangString KiroCliPrerequisiteText 1031 "${PRODUCT_NAME} ist installiert. Der standardmäßige Kiro-Agent benötigt die separat installierte Kiro CLI und den Befehl kiro-cli login. Verwenden Sie die offizielle Anleitung unten."
+LangString KiroCliPrerequisiteText 1036 "${PRODUCT_NAME} est installé. L'agent Kiro par défaut nécessite Kiro CLI, installé séparément, puis la commande kiro-cli login. Consultez le guide officiel ci-dessous."
+LangString KiroCliPrerequisiteText 3082 "${PRODUCT_NAME} está instalado. El agente Kiro predeterminado requiere instalar Kiro CLI por separado y ejecutar kiro-cli login. Consulta la guía oficial de abajo."
+LangString KiroCliPrerequisiteText 2052 "${PRODUCT_NAME} 已安装。默认 Kiro 代理需要单独安装 Kiro CLI，并运行 kiro-cli login。请使用下方的官方设置指南。"
+LangString KiroCliPrerequisiteText 1028 "${PRODUCT_NAME} 已安裝。預設 Kiro 代理需要另外安裝 Kiro CLI，並執行 kiro-cli login。請使用下方的官方設定指南。"
+LangString KiroCliPrerequisiteText 1041 "${PRODUCT_NAME} がインストールされました。既定の Kiro エージェントには、Kiro CLI の別途インストールと kiro-cli login の実行が必要です。以下の公式ガイドをご覧ください。"
+LangString KiroCliPrerequisiteText 1042 "${PRODUCT_NAME}이(가) 설치되었습니다. 기본 Kiro 에이전트를 사용하려면 Kiro CLI를 별도로 설치하고 kiro-cli login을 실행해야 합니다. 아래 공식 설정 가이드를 이용하세요."
+LangString KiroCliPrerequisiteText 1040 "${PRODUCT_NAME} è installato. L'agente Kiro predefinito richiede Kiro CLI, installato separatamente, e il comando kiro-cli login. Consulta la guida ufficiale qui sotto."
+LangString KiroCliPrerequisiteText 1043 "${PRODUCT_NAME} is geïnstalleerd. De standaard Kiro-agent vereist een apart geïnstalleerde Kiro CLI en de opdracht kiro-cli login. Gebruik de officiële handleiding hieronder."
+LangString KiroCliPrerequisiteText 1030 "${PRODUCT_NAME} er installeret. Standardagenten Kiro kræver, at Kiro CLI installeres separat, og at kiro-cli login køres. Brug den officielle vejledning nedenfor."
+LangString KiroCliPrerequisiteText 1053 "${PRODUCT_NAME} är installerat. Kiro-standardagenten kräver att Kiro CLI installeras separat och att kiro-cli login körs. Använd den officiella guiden nedan."
+LangString KiroCliPrerequisiteText 1044 "${PRODUCT_NAME} er installert. Standardagenten Kiro krever at Kiro CLI installeres separat, og at kiro-cli login kjøres. Bruk den offisielle veiledningen nedenfor."
+LangString KiroCliPrerequisiteText 1035 "${PRODUCT_NAME} on asennettu. Kiro-oletusagentti edellyttää, että Kiro CLI asennetaan erikseen ja komento kiro-cli login suoritetaan. Käytä alla olevaa virallista opasta."
+LangString KiroCliPrerequisiteText 1049 "${PRODUCT_NAME} установлено. Для агента Kiro по умолчанию нужно отдельно установить Kiro CLI и выполнить kiro-cli login. Используйте официальное руководство ниже."
+LangString KiroCliPrerequisiteText 2070 "O ${PRODUCT_NAME} está instalado. O agente Kiro padrão requer a instalação separada do Kiro CLI e o comando kiro-cli login. Use o guia oficial abaixo."
+LangString KiroCliPrerequisiteText 1046 "O ${PRODUCT_NAME} está instalado. O agente Kiro predefinido requer a instalação separada do Kiro CLI e o comando kiro-cli login. Use o guia oficial abaixo."
+LangString KiroCliPrerequisiteText 1045 "${PRODUCT_NAME} jest zainstalowany. Domyślny agent Kiro wymaga osobnej instalacji Kiro CLI i uruchomienia kiro-cli login. Skorzystaj z oficjalnego przewodnika poniżej."
+LangString KiroCliPrerequisiteText 1058 "${PRODUCT_NAME} установлено. Для стандартного агента Kiro потрібно окремо встановити Kiro CLI та виконати kiro-cli login. Скористайтеся офіційним посібником нижче."
+LangString KiroCliPrerequisiteText 1029 "${PRODUCT_NAME} je nainstalován. Výchozí agent Kiro vyžaduje samostatnou instalaci Kiro CLI a spuštění kiro-cli login. Použijte oficiální návod níže."
+LangString KiroCliPrerequisiteText 1051 "${PRODUCT_NAME} je nainštalovaný. Predvolený agent Kiro vyžaduje samostatnú inštaláciu Kiro CLI a spustenie kiro-cli login. Použite oficiálny návod nižšie."
+LangString KiroCliPrerequisiteText 1038 "A(z) ${PRODUCT_NAME} telepítve van. Az alapértelmezett Kiro-ügynökhöz külön kell telepíteni a Kiro CLI-t, majd futtatni a kiro-cli login parancsot. Használja az alábbi hivatalos útmutatót."
+LangString KiroCliPrerequisiteText 1025 "تم تثبيت ${PRODUCT_NAME}. يتطلب وكيل Kiro الافتراضي تثبيت Kiro CLI بشكل منفصل وتشغيل الأمر kiro-cli login. استخدم دليل الإعداد الرسمي أدناه."
+LangString KiroCliPrerequisiteText 1055 "${PRODUCT_NAME} yüklendi. Varsayılan Kiro aracısı için Kiro CLI'ın ayrıca yüklenmesi ve kiro-cli login komutunun çalıştırılması gerekir. Aşağıdaki resmi kılavuzu kullanın."
+LangString KiroCliPrerequisiteText 1054 "ติดตั้ง ${PRODUCT_NAME} แล้ว เอเจนต์ Kiro เริ่มต้นต้องติดตั้ง Kiro CLI แยกต่างหากและเรียกใช้ kiro-cli login โปรดใช้คู่มืออย่างเป็นทางการด้านล่าง"
+LangString KiroCliPrerequisiteText 1066 "Đã cài đặt ${PRODUCT_NAME}. Tác nhân Kiro mặc định yêu cầu cài riêng Kiro CLI và chạy kiro-cli login. Hãy dùng hướng dẫn chính thức bên dưới."
+
+LangString KiroCliPrerequisiteLink 1033 "Open the Kiro CLI setup guide"
+LangString KiroCliPrerequisiteLink 1031 "Kiro CLI-Einrichtungsanleitung öffnen"
+LangString KiroCliPrerequisiteLink 1036 "Ouvrir le guide de configuration de Kiro CLI"
+LangString KiroCliPrerequisiteLink 3082 "Abrir la guía de configuración de Kiro CLI"
+LangString KiroCliPrerequisiteLink 2052 "打开 Kiro CLI 设置指南"
+LangString KiroCliPrerequisiteLink 1028 "開啟 Kiro CLI 設定指南"
+LangString KiroCliPrerequisiteLink 1041 "Kiro CLI セットアップガイドを開く"
+LangString KiroCliPrerequisiteLink 1042 "Kiro CLI 설정 가이드 열기"
+LangString KiroCliPrerequisiteLink 1040 "Apri la guida di configurazione di Kiro CLI"
+LangString KiroCliPrerequisiteLink 1043 "Installatiehandleiding voor Kiro CLI openen"
+LangString KiroCliPrerequisiteLink 1030 "Åbn opsætningsvejledningen til Kiro CLI"
+LangString KiroCliPrerequisiteLink 1053 "Öppna installationsguiden för Kiro CLI"
+LangString KiroCliPrerequisiteLink 1044 "Åpne oppsettsveiledningen for Kiro CLI"
+LangString KiroCliPrerequisiteLink 1035 "Avaa Kiro CLI:n määritysopas"
+LangString KiroCliPrerequisiteLink 1049 "Открыть руководство по настройке Kiro CLI"
+LangString KiroCliPrerequisiteLink 2070 "Abrir o guia de configuração do Kiro CLI"
+LangString KiroCliPrerequisiteLink 1046 "Abrir o guia de configuração do Kiro CLI"
+LangString KiroCliPrerequisiteLink 1045 "Otwórz przewodnik konfiguracji Kiro CLI"
+LangString KiroCliPrerequisiteLink 1058 "Відкрити посібник із налаштування Kiro CLI"
+LangString KiroCliPrerequisiteLink 1029 "Otevřít návod k nastavení Kiro CLI"
+LangString KiroCliPrerequisiteLink 1051 "Otvoriť návod na nastavenie Kiro CLI"
+LangString KiroCliPrerequisiteLink 1038 "A Kiro CLI beállítási útmutatójának megnyitása"
+LangString KiroCliPrerequisiteLink 1025 "فتح دليل إعداد Kiro CLI"
+LangString KiroCliPrerequisiteLink 1055 "Kiro CLI kurulum kılavuzunu aç"
+LangString KiroCliPrerequisiteLink 1054 "เปิดคู่มือการตั้งค่า Kiro CLI"
+LangString KiroCliPrerequisiteLink 1066 "Mở hướng dẫn thiết lập Kiro CLI"
+
 !ifndef BUILD_UNINSTALLER
 
 Var KiroInstallDir
@@ -427,6 +484,9 @@ FunctionEnd
 
     !define MUI_FINISHPAGE_RUN
     !define MUI_FINISHPAGE_RUN_FUNCTION "StartApp"
+    !define MUI_FINISHPAGE_TEXT "$(KiroCliPrerequisiteText)"
+    !define MUI_FINISHPAGE_LINK "$(KiroCliPrerequisiteLink)"
+    !define MUI_FINISHPAGE_LINK_LOCATION "https://kiro.dev/cli/"
 
     ; The extraction page is the entire update UI. Once it reaches 100%, start
     ; the updated app through electron-builder's locked launch contract and
