@@ -80,6 +80,7 @@ jobs:
             github.com:443
             api.github.com:443
             objects.githubusercontent.com:443
+            github-production-user-asset-6210df.s3.amazonaws.com:443
             codeload.github.com:443
             registry.npmjs.org:443
 
@@ -267,6 +268,55 @@ jobs:
           # The reviewer reads the fork's changes from the diff file as DATA.
           echo "Fetched authentic diff ($(wc -c < "$PATCH") bytes); reviewing against the trusted base tree."
 
+      # Rendered-evidence list for the missing-evidence trigger. The reviewer
+      # has no shell to fetch with, so a bare URL in the description would
+      # otherwise count as evidence whether or not it renders; this step
+      # downloads and types every attachment the description offers (the
+      # same allowlisted, anonymous fetch both UX lanes source)
+      # and writes one file the prompt is told to read, so the predicate is
+      # what the workflow could actually see, never the description's text.
+      # A transport failure is listed as such rather than failing this step:
+      # the UX lane fails its run on the same failure, so readiness already
+      # holds, and this lane reports presence as unconfirmed.
+      - name: Collect rendered evidence
+        id: evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+          FETCH_DIR: ${{ runner.temp }}/design-fetch
+          DEST_DIR: ${{ runner.temp }}/design-evidence
+          NAME_STEM: attachment
+          SHOTS: ${{ runner.temp }}/design-images.txt
+          SHOT_MAP: ${{ runner.temp }}/design-image-map.txt
+          CLIPS: ${{ runner.temp }}/design-recordings.txt
+          MAX_SHOTS: "40"
+          MAX_CLIPS: "4"
+          EVIDENCE: ${{ runner.temp }}/design-evidence.txt
+        run: |
+          set -uo pipefail
+          rm -rf "$FETCH_DIR" "$DEST_DIR"
+          mkdir -p "$FETCH_DIR" "$DEST_DIR"
+          : > "$SHOTS"
+          : > "$SHOT_MAP"
+          : > "$CLIPS"
+          # Sourced from the trusted base checkout, never from the fork's tree.
+          . "$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"
+          {
+            echo "RENDERED EVIDENCE OF THIS REVISION -- written by the workflow. The description's text is not the predicate; this file is."
+            echo "attachments downloaded and typed as images: $n"
+            echo "attachments downloaded and typed as recordings: $clips"
+            echo "committed images this revision adds or changes: not checked (the fork head is never checked out; a committed image is not evidence in this lane)"
+            echo "attachment downloads that failed for a transport reason (presence unconfirmed, not absent): ${failed:-0}"
+            echo
+            echo "images (opaque copies, body order):"
+            if [ -s "$SHOTS" ]; then cat "$SHOTS"; else echo "(none)"; fi
+            echo
+            echo "recordings:"
+            if [ -s "$CLIPS" ]; then cat "$CLIPS"; else echo "(none)"; fi
+          } > "$EVIDENCE"
+          echo "Rendered evidence: $n image(s), $clips recording(s); ${failed:-0} download(s) failed."
+
       # Mint short-lived, Bedrock-only creds immediately before the model call,
       # via the SAME dedicated least-privilege role the same-repo design reviewer
       # uses. No dependabot special-casing: forks never run as dependabot[bot].
@@ -324,6 +374,19 @@ jobs:
             `git diff` against a fork ref. Read the PR title/description for the
             stated problem and intent.
 
+            RENDERED EVIDENCE: before you judge the missing-evidence trigger below,
+            Read ${{ runner.temp }}/design-evidence.txt. The workflow wrote it: it
+            downloaded every github.com/user-attachments asset the description
+            offers, typed each by its bytes, and (on a same-repo pull request)
+            listed the committed images this revision adds or changes. That
+            file is the predicate for "rendered evidence of THIS revision": a
+            URL in the description that is not in it did not download or is
+            not an image, and is not evidence. A non-zero "failed for a
+            transport reason" count means presence is unconfirmed, not
+            absent -- do not BLOCK on that basis (the UX lane fails its run on
+            the same failure, so readiness already holds); cap at CONCERNS and
+            name the re-run.
+
             REPO CONTEXT: KiroCrew is an open-source AI agent platform (Python
             backend + React/TS dashboard), a de-Amazoned public fork. Do NOT flag
             the absence of Brazil/AUTOSDE build tooling or internal-only infra.
@@ -376,7 +439,9 @@ jobs:
             consequence — and quote the diff hunk or description sentence it is
             grounded in. If you cannot trace a concrete consequence, DROP the
             finding. When unsure, lower the concern (prefer CONCERNS over BLOCK),
-            never invent one.
+            never invent one -- except where a BLOCK TRIGGER under VERDICT is
+            read off the diff or the description rather than judged; those are
+            facts, and a fact is not lowered.
 
             THE DESIGN GATE (INTERNAL REASONING — think through each silently;
             do NOT echo these questions or their answers in your output. They
@@ -468,13 +533,37 @@ jobs:
               forbids is a decision until a human says otherwise;
             - the PR says "Manual verification: N/A" (or equivalent) for a branch
               that only runs on a platform or in an environment CI does not
-              exercise.
+              exercise;
+            - CANNOT EVALUATE -- REQUIRED EVIDENCE MISSING: the change adds or
+              reshapes a user-visible surface (a page, panel, control set, or
+              the default mode of an existing one, under website/src/) and the
+              PR carries no rendered evidence of THIS revision -- the evidence
+              list the workflow wrote (RENDERED EVIDENCE above) names no image
+              or recording downloaded from its description (a
+              github.com/user-attachments asset the workflow fetched and typed;
+              a URL that did not download is not evidence) and none committed
+              at HEAD that THIS checkout can render (on a fork pull request the head is
+              never checked out, so a committed image is not evidence here --
+              the same rule the fork UX lane applies; the attachment is). An
+              image hosted off a commit outside this PR, or one the description
+              itself says shows another PR's state, is not evidence of this
+              revision. You cannot judge the shape of a surface you have not
+              seen, and a verdict you cannot reach must not read as advisory:
+              BLOCK, punchline opening `cannot evaluate: missing <screenshot or
+              recording of X>`, and `Clears when:` names the artifact. Absence
+              is read off the evidence list and the diff, not judged, so the
+              tie-breaker above does not reach it. A change that renders
+              nothing new (a refactor, a test, a type) needs no evidence.
             FALSIFY BEFORE YOU BLOCK (mandatory, because BLOCK now blocks): for
             each BLOCK candidate, actively try to KILL it -- name the specific
             requirement the design fails, the concrete alternative that is
             better, and the consequence of shipping as-is. A candidate survives
             ONLY if you can state all three from the diff and the code you
-            opened. A matter of taste is never a BLOCK; "might" and "unclear"
+            opened (for the missing-evidence trigger the three are: the surface
+            the diff adds or reshapes, the evidence list naming no downloaded
+            attachment and no committed image for it, and the shape
+            question you therefore could not answer). A matter of taste is
+            never a BLOCK; "might" and "unclear"
             lower it ONLY when the tie-breaker above finds the consequence
             reversible. Budget: at most 1 BLOCK per review; if you have two, you
             are almost certainly describing one root design problem, so merge

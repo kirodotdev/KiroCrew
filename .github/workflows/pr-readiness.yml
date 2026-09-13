@@ -769,8 +769,12 @@ jobs:
                 # judged unjustified. Safe to treat a failure as a blocker
                 # because each fork-*-review.yml fails the check ONLY on BLOCK
                 # -- an errored, throttled or verdict-less run resolves NEUTRAL
-                # and exits 0 -- so `failure` here can only mean a judged-wrong
-                # verdict, never infrastructure noise. NOTE: `/ai-review
+                # and exits 0 -- so `failure` here means a judged-wrong
+                # verdict, never infrastructure noise, with one deliberate
+                # exception: the fork UX lane completes as `failure` when an
+                # attachment download from the description failed for a
+                # transport reason, a `cannot evaluate` that a re-run of that
+                # lane clears. NOTE: `/ai-review
                 # override` records the judgment and re-runs the Stage-2 fork
                 # lane (located via the run URL its check-run carries), but the
                 # fork lanes consume no override marker, so the re-run is a
@@ -925,8 +929,10 @@ jobs:
                 # not read as green), identical to the Design / Opus / GPT
                 # lanes, and cleared by a one-comment `/ai-review override`
                 # (current-SHA scoped) -- so treating a `failure` as a blocker
-                # is safe. (The fork reader below never sees this: fork
-                # *-review.yml maps a hard error to a NEUTRAL check-run.)
+                # is safe. (The fork reader above sees one counterpart: the
+                # fork UX lane completes its check-run as `failure` when an
+                # attachment download failed for a transport reason; every
+                # other fork hard error maps to NEUTRAL.)
                 case "$conclusion" in
                   success|neutral|skipped) passed+=("$label") ;;
                   *) failed+=("$label (BLOCK)") ;;

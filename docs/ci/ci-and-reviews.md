@@ -664,10 +664,41 @@ fix**, which is where the root-cause lens earns the most. Only a change that shi
 no capability at all (docs, tests, screenshots, generated files) skips, so the
 2x-rate-card Fable 5 spend goes to diffs that can actually produce a finding.
 
-It is advisory in `pr-readiness.yml` (UX-style, not Design-style): a `BLOCK` here is
-a judgment about whether a feature should exist, and a model does not get to wedge a
-merge on that until the lane's calibration is proven. Promoting it to a readiness
-blocker later is a one-line change in the aggregator.
+A `BLOCK` here fails the lane's own check and `pr-readiness.yml` scores that failure as
+a readiness blocker, exactly as it does for Design Review and UX Review. Every other
+outcome -- `PASS`, `CONCERNS`, an errored or verdict-less run -- exits 0.
+
+Two of its `BLOCK` triggers are read off the evidence rather than judged, so the
+"prefer `CONCERNS`" tie-breaker does not reach them:
+
+- **Product shape needs a recorded decision (lens 9).** An item that changes a
+  default, changes what a first-class loop, monitor, agent, skill or command does by
+  default, or removes or replaces an existing user-facing capability, must trace to a
+  decision the repository already recorded: an RFC under `docs/request-for-change/`
+  that the **base** commit carries with one of exactly four statuses -- `accepted`,
+  `in-progress`, `partial`, `implemented`, the directory README's vocabulary for
+  "design agreed"; `draft`, `superseded` and any undefined value are not a decision,
+  so the set is closed and nothing fails open -- and a `partial` RFC main deliberately
+  diverged from does not cover the diverged shape; or a maintainer's
+  `/ai-review override first-principles <head>`
+  on that head. The override is consumed by the same-repo lane only: the fork lane
+  re-rolls instead, which cannot clear a trigger read off the base RFC list, so on a
+  fork PR the remedies are merging the RFC first or a maintainer pushing the branch to
+  this repository. The workflow writes the RFC status list from the base sha in the same
+  step that extracts the contract, so a PR cannot record its own decision by flipping
+  `status:` or shipping the RFC beside the change -- both read as `draft`. That base sha
+  is the one the triggering event recorded, and a bare re-run reuses it: once the RFC has
+  merged, the author pushes a commit (or rebases) to have the lane read a base that
+  carries it -- a re-run alone cannot clear (c). Missing
+  both: `BLOCK`, punchline `product-shape change without accepted RFC`. This is not
+  the lane asking for a document (which it may not do); it reports that a required
+  record is absent and names the two ways it gets made. This is also the First
+  Principles lane's *cannot evaluate*: the recorded decision is the one piece of
+  evidence this lane requires and cannot produce itself (consumer counts it greps for
+  under lens 5; a decision it may not make), so its absence on a product-shape item is
+  the verdict the lane cannot reach, and it is never `CONCERNS`. A shape an accepted
+  RFC already licenses is not relitigated by asking for its grounds. An ordinary fix
+  with thin provenance stays where it was: an `inherited` item, `CONCERNS`.
 
 **Where it overlaps Design Review, this lane owns the question.** Design Review's own
 rubric asks whether a change fixes a root cause and whether a simpler alternative
@@ -878,14 +909,36 @@ Two lanes stay outside that function, and both exclusions are deliberate:
 
 ### Advisory means advisory, with one exception
 
-Design Review and UX Review are non-blocking as a rule: their suggestions must be
+Design Review and UX Review are advisory except on `BLOCK`: their suggestions must be
 proportionate ("never recommend extra layers, abstractions or future-proofing the
 problem does not require"), and their tie-breaker is to choose `CONCERNS` over
-`BLOCK` when torn, reaching for `BLOCK` only when the **design** is wrong and never
-merely because the change is large. The one exception: a genuine `BLOCK` verdict
-does fail that workflow's own check, so it is visible; every other outcome exits 0.
-Because `pr-readiness.yml` scores both as advisory, a red Design or UX check never
-independently blocks readiness.
+`BLOCK` when torn, reaching for `BLOCK` only when the **design** or the **experience**
+is wrong and never merely because the change is large. A genuine `BLOCK` verdict
+fails that workflow's own check and `pr-readiness.yml` scores that failure as a
+readiness blocker; every other outcome exits 0.
+
+One class is exempt from the tie-breaker in both lanes and in First Principles:
+**a verdict the lane cannot reach because required evidence is missing is a
+`BLOCK`, never a `CONCERNS`.** A UI diff with no screenshot of the controls it adds
+(UX lens 12), a persistent-element state change with no recording (UX lens 13), a
+reshaped user-visible surface the Design reviewer has never seen rendered -- each is
+`cannot evaluate: missing <X>`. Filed as `CONCERNS`, an unevaluated change reads as
+"looked and found little" and passes readiness green; PR #5185 shipped 44
+`website/src/` files that way, with the UX lane itself recording that the blind read
+never ran. Absence of evidence is read off the screenshot list, the recording list
+and the description, not judged, so it is a fact and the lanes report it as one.
+The Design trigger accepts the same evidence the UX lane admits: a
+`github.com/user-attachments` asset in the description or an image committed at
+HEAD -- and it reads presence the same way. Both Design lanes run a "Collect
+rendered evidence" step that sources the shared allowlisted fetch script, downloads
+and types every attachment the description offers, lists the committed images the
+revision adds or changes (same-repo only; the fork head is never checked out), and
+writes one evidence file the prompt is told to read; the description's text is not
+the predicate, so a fabricated or dead URL does not count as evidence. A transport
+failure is listed as "presence unconfirmed" and caps the Design verdict at `CONCERNS`
+rather than failing the lane, because the UX lane fails its run on the same failure
+and readiness already holds. An image hosted off a commit outside the PR, or one the
+description says shows another PR, is not evidence of this revision.
 
 **Design Review owns the long-term / one-way-door lens** as its gate 8, "LONG-TERM
 REVERSIBILITY", in both the same-repo and fork variants. An unsafe one-way door is
@@ -947,8 +1000,30 @@ Three rules follow from the split, all read off evidence rather than judged:
 - **Coverage.** Every user-visible control the diff adds or changes must appear in a
   screenshot the PR carries -- an attachment linked from its body, or a committed
   image. One that does not is an *evidence gap*, listed under
-  `### Evidence gaps`, and the verdict cannot be `PASS`. A diff that adds or changes
-  no user-visible control has no gaps and needs no screenshot.
+  `### Evidence gaps`, and the verdict is `BLOCK` -- `cannot evaluate: missing <the
+  control>` -- because a lane that has not seen a control cannot judge it and a
+  verdict it cannot reach must not read as advisory. The same holds for a lens-13
+  state change with no recording, and for a blind read not performed because the PR
+  supplied no admissible image. A blind read that was *unavailable* -- images admitted
+  and pass 1 itself failed -- is the lane's own failure, not the author's gap: it caps
+  at `CONCERNS` and a re-run of the workflow is the remedy. When *any* attachment
+  download from the description fails for a transport reason (5xx, 403/408/429, no
+  answer; a definite 404 is the author's URL), the same-repo evidence step **fails the
+  run** instead of asking the prompt to cap the verdict or to exempt the controls that
+  attachment would have shown: a lane that could not see everything the author
+  supplied must not read as advisory, so the check is red, readiness holds, and a
+  re-run is the remedy -- exactly as a hard model-step error is handled. A download
+  that fails the same way on the re-run is the attachment URL itself, which the
+  author fixes. The fork
+  lane holds the same way: its evidence step fails on the same condition and its
+  Finalize step completes the check-run as `failure` (an errored fork run would
+  otherwise resolve `neutral`, which readiness scores as pass), so a fork UI change
+  the lane could not evaluate does not merge on the strength of a throttled asset
+  host either; a maintainer re-runs the lane. An image
+  the evidence step did not admit (not a `user-attachments` asset, not committed at
+  HEAD -- e.g. a raw URL pinned to a commit outside the PR) does not close a gap. A
+  diff that adds or changes no user-visible control has no gaps and needs no
+  screenshot.
 - **Primary controls.** A control on the change's main path that the blind reader
   misread (named a different thing or outcome than the diff implements), could not
   identify, or would not dare to click is a `BLOCK`, quoting the reader's words. A
@@ -977,7 +1052,10 @@ the runner (the job's egress allowlist names the two hosts a download touches,
 its 302 points at), so the reviewer
 opens the same images a same-repo review would. An image a fork PR *commits* is not
 on disk -- the fork head is never checked out -- so a control shown only there is an
-evidence gap, which caps that PR at `CONCERNS` (advisory). A maintainer who wants
+evidence gap, which is a `BLOCK` (`cannot evaluate`) the author closes by attaching
+the image to the description. A control the attachments *do* show but no blind
+reader has read caps the fork PR at `CONCERNS`: that is the lane's limitation, not
+the author's gap, so it does not block. A maintainer who wants
 the blind read pushes the branch to this repository. A fork contributor without push
 access cannot run `gh --attach`; dragging the file into the PR description in the web
 UI yields the same `user-attachments` URL.
@@ -1174,15 +1252,27 @@ commit status plus one `readiness:` label**.
 - **Additionally required on a same-repo PR:** CodeQL, Opus 4.8 Review, GPT 5.6
   Review, Security Scope Review, and completion of Design Review, UX Review and
   First Principles Review.
-- **UX Review and First Principles Review are completion-required but advisory:**
-  once complete they score as `"(advisory)"` whatever their conclusion, so neither
-  their opinion nor an infrastructure failure becomes an independent blocker.
-  Completion is still required so the verdict is not premature.
-- **Design Review is completion-required AND blocks on a genuine `BLOCK`:** the
-  aggregator scores its `failure` conclusion as a readiness blocker. That is safe
-  because the lane fails its own check *only* on a `BLOCK` verdict — an errored,
-  throttled or verdict-less run exits 0 — so a `failure` here can only mean a
-  design judged wrong, never infrastructure noise.
+- **Design Review, UX Review and First Principles Review are completion-required
+  AND block on a genuine `BLOCK`:** the aggregator scores each lane's `failure`
+  conclusion as a readiness blocker. Each lane's status step fails the check on a
+  `BLOCK` verdict and exits 0 on `PASS`, `CONCERNS` or a verdict-less run; the
+  same-repo lanes additionally go red when the model step itself errors (no
+  `continue-on-error`, so a review that did not run is an honest red that a re-run
+  clears, never a verdict), while the fork lanes resolve such a run to `neutral` --
+  with one deliberate exception: the fork UX lane completes as `failure` when an
+  attachment download failed for a transport reason, because a change the lane could
+  not evaluate must not read as advisory.
+  So a `failure` means a design judged wrong, an experience judged broken, a surface
+  judged unjustified, a change the lane could not evaluate on the evidence supplied,
+  or -- same-repo only -- a review that errored before producing a verdict.
+  Where this was decided: the aggregator has scored these three lanes' `failure` as a
+  readiness blocker since it began reading them (`pr-readiness.yml`, the Design / UX /
+  First Principles branch of the check-run reader), which is what turned them from
+  advisory into gates; the evidence-gap and product-shape rules in the prompts are
+  the verdict-side counterpart of that promotion (issue #10476), so that a lane which
+  could not evaluate a change reaches the verdict the aggregator already enforces.
+  The rollback for those rules is one revert of that change; the aggregator's scoring
+  is unaffected by it.
 - **Security Scope Review is required and fails closed:** the aggregator scores
   its `failure` as a plain blocker, because that conclusion covers both a
   script-confirmed newly-refused operation and a run that measured nothing — an

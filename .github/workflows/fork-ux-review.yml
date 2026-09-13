@@ -26,9 +26,12 @@ name: Fork UX Review
 # deliberate difference: ux-review.yml runs a BLIND-READ first pass over the
 # screenshots the PR commits, and this lane does not, because those files are
 # never on disk here (the fork head is not checked out). The prompt therefore
-# treats every user-visible control the diff adds or changes as an evidence
-# gap, which caps the verdict at CONCERNS -- a fork UI change is never PASSed
-# on pixels no first-time reader has seen. ux-review.yml owns same-repo PRs.
+# keeps two things apart: a control no ATTACHED screenshot shows is an
+# evidence gap, which is a BLOCK ("cannot evaluate" -- the author closes it
+# by attaching the image to the description); a control the attachments DO
+# show is capped at CONCERNS, never PASS, because no first-time reader has
+# read it -- that is this lane's limitation, not the author's gap, so it does
+# not block. ux-review.yml owns same-repo PRs.
 # The fork check-run is named exactly "UX Review" so either path satisfies
 # the same status name.
 
@@ -366,6 +369,32 @@ jobs:
           DEST_DIR="$ATTACH_DIR"
           NAME_STEM=attachment
           . "$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"
+          # A fetch FAILURE is recorded apart from what was read, as in
+          # ux-review.yml: when at least one attachment download the
+          # description offered failed for a transport reason (`$failed`,
+          # left set by the script), something the author supplied could not
+          # be judged, for a reason a re-run can change. That is the lane's own failure, so
+          # the STEP FAILS and no model call is made. An errored fork run
+          # would otherwise resolve NEUTRAL, which readiness scores as pass,
+          # so the `unfetched` output is written before the exit: the
+          # Finalize step reads it and completes the check-run as `failure`
+          # -- the conclusion readiness already scores as a blocker -- with a
+          # title that names the re-run as the remedy, and the posting step
+          # names the cause in the PR comment. A download that fails the same
+          # way on the re-run is the attachment URL itself, which the author
+          # fixes by re-attaching. An attachment that downloaded but typed as
+          # a video or a non-image is the author's choice and leaves the list
+          # honestly empty (the prompt blocks on it as missing stills). One
+          # failed download among several that succeeded fails the step too:
+          # a partial fetch would hand the reviewer a rule about which
+          # controls to exempt, and a rule the prompt applies is one it can
+          # misapply. A definite 404 is not transport and stays the author's.
+          if [ "${failed:-0}" -gt 0 ]; then
+            echo "unfetched=true" >> "$GITHUB_OUTPUT"
+            echo "::error::$failed of $fetched attachment download(s) from the PR description failed for a transport reason, so the reviewer cannot see everything the author supplied; this lane cannot evaluate the change on partial evidence and fails rather than read as advisory. Re-run this workflow; if the same downloads fail again, the attachment URLs themselves are the problem -- re-attach the images to the description."
+            exit 1
+          fi
+          echo "unfetched=false" >> "$GITHUB_OUTPUT"
 
       # Mint short-lived, Bedrock-only creds immediately before the model call,
       # via the SAME dedicated least-privilege role the same-repo UX reviewer
@@ -449,9 +478,21 @@ jobs:
                it. Reading a label in the diff is not evidence that a user
                understands it. Every user-visible control this PR adds or
                changes that no screenshot shows is an evidence gap (lens 12):
-               name each under ### Evidence gaps, and the verdict cannot be
-               PASS while there is one. A maintainer who wants the blind read
-               can push the branch to this repository.
+               name each under ### Evidence gaps, and the verdict is BLOCK
+               while there is one (`cannot evaluate: missing <X>`) — the
+               author closes it by attaching the image to the description.
+               An empty image list is the author's gap, never the lane's: a
+               description whose attachment download failed never
+               reaches you (the workflow fails the run on it), so an empty
+               list with recordings listed is a UI change with a video and
+               no still — missing its stills, and that blocks. The
+               author closes a gap by attaching the image to the description;
+               a committed-only image cannot close it here, because it is
+               not on disk. A control the attachments DO show, that no
+               blind reader has read, is NOT a gap: it caps the verdict at
+               CONCERNS (this lane's limitation, not the author's). A
+               maintainer who wants the blind read can push the branch to
+               this repository.
             1. The diff — frontend code under website/, user-facing strings,
                component structure, handlers.
             2. Screenshots — the normal evidence is an image or video attached
@@ -460,7 +501,11 @@ jobs:
                in your system prompt holds every image copy
                (attachment-01.png ...), the map file pairs each copy with its
                attachment URL, and the recording list names every video and
-               GIF (listed, not opened). Read each image (they are images; you
+               GIF (listed, not opened). Every attachment the description
+               offered is in one of those lists or the run failed before you
+               were called (a download that fails for a transport reason
+               fails the evidence step), so you never review a partial
+               fetch. Read each image (they are images; you
                can see them). They show the RENDERED UI — ground visual
                findings in them. A committed image still counts: if the patch
                adds or changes image files under temp-screenshots/ or
@@ -719,10 +764,20 @@ jobs:
                  state the diff introduces (collapsed/expanded, before/after,
                  empty/filled) must be shown. One that appears in no screenshot
                  is an EVIDENCE GAP: name it under ### Evidence gaps, and the
-                 verdict cannot be PASS. A missing or unavailable blind read
-                 makes every such control a gap. A diff that adds or changes
-                 no user-visible control (a refactor, a test, a type) has no
-                 gaps and needs no screenshot.
+                 verdict is BLOCK — a lane that has not seen the control
+                 cannot evaluate it, and "cannot evaluate" is never
+                 advisory. The punchline opens `cannot evaluate: missing
+                 <the control or state>`. In THIS lane the absent blind
+                 read is not a gap (see evidence source 0); a control no
+                 attached screenshot shows is. An image the description
+                 links that the evidence step did not admit (not a
+                 github.com/user-attachments asset — e.g. a raw URL pinned
+                 to a commit outside this PR, or one the description itself
+                 says shows another PR's state) is not evidence for this
+                 revision; name it as the artifact that failed to close
+                 the gap. A diff that adds or changes no user-visible
+                 control (a refactor, a test, a type) has no gaps and
+                 needs no screenshot.
                - Primary controls: for each control on the change's main path
                  (the thing the PR exists to add, or that the user must use to
                  get the PR's value), the blind reader must have identified
@@ -788,17 +843,21 @@ jobs:
                  .gif/.webm/.mp4/.mov (visible in the patch as an added binary
                  file). The repository ships a browser-recording skill for
                  exactly this.
-                 No recording → EVIDENCE GAP (verdict cannot be PASS), named
-                 under ### Evidence gaps with the state change it should show.
+                 No recording → EVIDENCE GAP, a BLOCK like every gap
+                 (`cannot evaluate: missing <recording of the state
+                 change>`), named under ### Evidence gaps with the state
+                 change it should show.
                - Verdict: a hard swap in the diff with no stated reason (a
                  reason is an argument in the PR description, e.g. a
                  reduced-motion-only surface or a change too small to animate,
                  not an assertion that it "feels fine") is a BLOCK whether or
                  not a recording exists — the recording would only show the
                  swap. A transition that exists in the code but is not shown
-                 in a recording is a gap, not a block. You cannot play a
-                 recording; you verify the mechanism in the diff and the
-                 recording's existence, and a human watches it.
+                 in a recording is a gap: it blocks as `cannot evaluate`,
+                 and the finding names the missing recording, not the
+                 transition. You cannot play a recording; you verify the
+                 mechanism in the diff and the recording's existence, and a
+                 human watches it.
 
             CONSEQUENCE-CHAIN REQUIREMENT (anti-noise, anti-hallucination):
             state every finding as a chain — cause → mechanism → what the user
@@ -821,21 +880,39 @@ jobs:
               first-time reader has seen every user-visible control the diff
               adds or changes (never true in this lane while the diff adds or
               changes one — see evidence source 0) and that any lens-13 state
-              change has a recording — otherwise the verdict is CONCERNS at
-              most, with the missing evidence named under ### Evidence gaps.
-              You cannot pass what nobody has looked at.
+              change has a recording. Two different things stop a PASS here:
+              a control no attached screenshot shows, or a lens-13 change
+              with no recording, is an evidence gap and the verdict is BLOCK
+              (the evidence-gap exit below); a control the attachments show
+              but no blind reader has read caps the verdict at CONCERNS —
+              this lane's limitation, not the author's gap. You cannot pass
+              what nobody has looked at, and you cannot evaluate what nobody
+              has shown.
             - CONCERNS: usable, but a notable UX risk humans should see before
-              merging — or the evidence is incomplete.
+              merging — or every control is shown but no blind reader has
+              read it (this lane).
             - BLOCK: the shipped experience is broken or misleading on its
               face — a label that lies about its action, a destructive path
               with no exit or undo, a feature a first-time user cannot
-              comprehend or discover at all, or an unrecoverable error path.
+              comprehend or discover at all, or an unrecoverable error path —
+              OR this lane CANNOT EVALUATE the change because evidence this
+              contract requires is missing (an evidence gap under lens 12 or
+              13); then the punchline opens `cannot evaluate: missing <X>`.
               (A BLOCK fails this check and blocks PR readiness, so it holds
-              the merge until the experience is fixed or a human overrides it.)
+              the merge until the experience is fixed, the evidence is
+              supplied, or a human overrides it.)
             Tie-breaker: when torn between BLOCK and CONCERNS, choose CONCERNS.
-            The tie-breaker does NOT apply to the four below. Each is read off
+            The tie-breaker does NOT apply to the five below. Each is read off
             the evidence rather than judged, so hedging toward CONCERNS on one
             is not caution — it is declining to report a fact:
+            - An evidence gap (lens 12 or 13) on a diff that adds or changes a
+              user-visible control: a control or state no attached screenshot
+              shows, or a lens-13 change with no recording. The image list and
+              the recording list are the predicate; a gap is the ABSENCE of an
+              entry in them, which is read, not judged. (The absent blind read
+              is not this exit — see evidence source 0.) A verdict you cannot
+              reach is a BLOCK, never a CONCERNS: filed as CONCERNS it reads
+              as "looked and found little", and nobody looked.
             - A primary control (lens 12) the blind reader misread, could not
               identify, or would not dare to click. The reader's own words are
               the predicate; the fix is the author's. ("A guess" alone is not
@@ -856,9 +933,11 @@ jobs:
             blind-read report or the diff that makes the predicate true — the
             reader's words on that control, the two-component conditional plus
             the persistent element and the action that transforms it, the
-            state already held at the render site, or each of the three absent
-            halves. If establishing it takes judgement rather than reading, the
-            exception does not apply and the tie-breaker does.
+            state already held at the render site, each of the three absent
+            halves, or — for a gap — the control or state change and the list
+            (images, recordings) that carries no entry for it. If establishing
+            it takes judgement rather than reading, the exception does not
+            apply and the tie-breaker does.
 
             FINAL OUTPUT (authoritative — this is your LAST message; the
             workflow captures it verbatim from the run transcript, so do NOT
@@ -898,9 +977,11 @@ jobs:
 
             ### Evidence gaps
             <ONLY when something the verdict depends on was not shown: a
-            user-visible control in no screenshot, a state change with no
-            recording, or a blind read that did not run. One line each, naming
-            the control or state change and the artifact that would close the
+            user-visible control in no attached screenshot, or a state change
+            with no recording. Each gap is a BLOCK (the verdict is `cannot
+            evaluate`); this section is where those blockers live, so
+            ### Blockers need not repeat them. One line each, naming the
+            control or state change and the artifact that would close the
             gap (which screenshot, which recording). Skip if none.>
 
             ### Suggestions
@@ -933,6 +1014,7 @@ jobs:
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
           UI_SCOPE: ${{ steps.scope.outputs.ui }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          UNFETCHED: ${{ steps.attachments.outputs.unfetched }}
         run: |
           set -uo pipefail
           MARKER="<!-- ux-review -->"
@@ -975,13 +1057,27 @@ jobs:
               summary="$(jq -rs '[ .[] | (if type=="array" then .[] else . end) | select(.result != null) ] | (last.result // "")' "$EXEC_FILE" 2>/dev/null || true)"
             fi
           fi
-          if [ -z "$summary" ]; then
+          # An evidence step that failed because an attachment download
+          # failed leaves no transcript either (the model never ran), but that
+          # outcome IS this run's result for the head and has a remedy, so it
+          # does not take the "nothing to post" exit: it falls through to the
+          # UNFETCHED comment below, which the upsert then publishes.
+          if [ -z "$summary" ] && [ "${UNFETCHED:-}" != "true" ]; then
             echo "no review text in execution_file ($EXEC_FILE); nothing to post"
             echo "verdict=UNKNOWN" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Machine-parse the verdict header the prompt requires (case-insensitive).
-          verdict="$(printf '%s\n' "$summary" | grep -iE '^UX-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
+          # Only when there is a transcript: on the UNFETCHED path `summary` is
+          # empty by design, and a grep that matches nothing exits 1 -- under
+          # `pipefail` plus the runner's default `-e` that would abort the step
+          # before the notice below is posted. The `|| true` keeps an unmatched
+          # header from deciding the pipeline status on any transcript, since
+          # "no header" is a case this step handles (UNKNOWN), not an error.
+          verdict=""
+          if [ -n "$summary" ]; then
+            verdict="$(printf '%s\n' "$summary" | { grep -iE '^UX-Verdict:' || true; } | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
+          fi
           [ -z "$verdict" ] && verdict="UNKNOWN"
           # Require the CURRENT-HEAD proof marker before honouring that verdict.
           # The prompt emits `[UX-REVIEWED] <sha>`, but parsing the
@@ -992,7 +1088,7 @@ jobs:
           # existing non-blocking "could not complete" path rather than
           # inventing a verdict. Here-string, not `printf | grep`, so a long
           # summary cannot manufacture a SIGPIPE status under `pipefail`.
-          if ! grep -qF "[UX-REVIEWED] $HEAD" <<< "$summary"; then
+          if [ -n "$summary" ] && ! grep -qF "[UX-REVIEWED] $HEAD" <<< "$summary"; then
             echo "verdict header present but no [UX-REVIEWED] $HEAD marker; treating as UNKNOWN"
             verdict="UNKNOWN"
           fi
@@ -1023,7 +1119,25 @@ jobs:
             # asserting one: this branch is reached both when the model ran and
             # returned nothing usable and when the model was never called at all,
             # and "the model call errored" sent contributors to debug a call that
-            # had not happened.
+            # had not happened. One cause is named precisely, because it is
+            # deliberate and has a remedy: the evidence step failed the run
+            # because an attachment download failed for a transport reason
+            # (its `unfetched` output is written before it
+            # exits), and the Finalize step completes the check-run as a
+            # failure for it, so the comment says what to do, not "see logs".
+            if [ "${UNFETCHED:-}" = "true" ]; then
+              {
+                echo "$MARKER"
+                echo "## UX Review (Fable 5, fork) — 🔴 could not evaluate"
+                echo
+                echo "_The review could not run for \`$HEAD\`: one or more attachment downloads from the PR description failed for a transport reason (a throttle, a 5xx, no answer), so the reviewer could not see everything the author supplied. The check-run is completed as a failure, so PR readiness holds rather than reading this as advisory. A maintainer re-runs this workflow; if the same downloads fail again, the attachment URLs themselves are the problem — re-attach the images to the description._"
+                echo
+                # The completion stamp: this IS the lane's final outcome for the
+                # head (deterministic, no model verdict), so the upsert replaces a
+                # stale comment instead of withholding as it does for an errored run.
+                echo "[UX-REVIEWED] $HEAD"
+              } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"
+            else
             case "${REVIEW_OUTCOME:-}" in
               skipped) why="the review step never ran, because an earlier step in this job failed — no model call was made" ;;
               failure) why="the review step failed" ;;
@@ -1037,6 +1151,7 @@ jobs:
               echo
               echo "_The UX review did not produce a verdict for \`$HEAD\` ($why). See the Fork UX Review job logs. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"
+            fi
           fi
           # Defense-in-depth: scrub credential shapes AND AWS account ids / ARNs
           # from whatever we post. Combined with the "no raw text unless a
@@ -1171,8 +1286,19 @@ jobs:
           WR_RUN_ID: ${{ github.event.workflow_run.id }}
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           VERDICT: ${{ steps.post.outputs.verdict }}
+          UNFETCHED: ${{ steps.attachments.outputs.unfetched }}
         run: |
           set -uo pipefail
+          # The evidence step failing because an attachment download
+          # failed is the one errored run that must NOT resolve neutral: a
+          # lane that could not evaluate the change is not advisory. It
+          # completes as `failure` -- the conclusion pr-readiness already
+          # scores as a blocker for this lane -- and the title names the
+          # re-run as the remedy, mirroring what ux-review.yml's red run
+          # means on a same-repo PR.
+          if [ "${UNFETCHED:-}" = "true" ]; then
+            conclusion="failure"; title="cannot evaluate — attachment download(s) failed; re-run this workflow"
+          else
           case "$VERDICT" in
             SKIPPED)
               conclusion="success"; title="skipped — no UI surface" ;;
@@ -1185,7 +1311,11 @@ jobs:
             *)
               conclusion="neutral"; title="review incomplete (advisory)" ;;
           esac
+          fi
           summary="Advisory fork UX review for $HEAD. See the PR comment for details."
+          if [ "${UNFETCHED:-}" = "true" ]; then
+            summary="One or more attachment downloads from the PR description failed for a transport reason, so the reviewer could not see everything the author supplied; this lane could not evaluate $HEAD and holds PR readiness. Re-run this workflow; if the same downloads fail again, re-attach the images to the description."
+          fi
           # CONCERNS is where a design/premise/UX risk actually lives, and today
           # it is invisible: the check reports green and 31 of 57 CONCERNS drew
           # no human reply at all. Distil the punchline and the Watch section so

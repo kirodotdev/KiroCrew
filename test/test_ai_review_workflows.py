@@ -2265,9 +2265,16 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         assert "13. STATE-TRANSITION CONTINUITY" in prompt
         assert "YOU JUDGE THE SURFACE, NOT THE CODE" in prompt
         assert "### Evidence gaps" in prompt
-        # Evidence gaps cap the verdict; a hard swap and a misread primary
-        # control are decidable BLOCKs.
-        assert "the verdict cannot be PASS" in prompt
+        # An evidence gap is a BLOCK the lane reports as "cannot evaluate":
+        # a UI diff with no admissible screenshot, filed as CONCERNS, reads
+        # as green in readiness although nobody looked. A hard swap and a
+        # misread primary control are the other decidable BLOCKs. A
+        # cap-below-PASS wording lets an unevaluated change read green, so
+        # it is asserted absent.
+        assert "the verdict cannot be PASS" not in prompt
+        assert "cannot evaluate: missing" in prompt
+        assert "An evidence gap (lens 12 or 13)" in prompt
+        assert "or the evidence is incomplete" not in prompt
         assert "flag ? <Chip/> : <Card/>" in prompt
         # Scoped to a persistent, already-identified element: the mechanical
         # predicate must not fire on loading/empty/error conditionals.
@@ -2405,6 +2412,7 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             '  case "$fixture" in\n'
             '    "") echo "curl: (6) Could not resolve host" >&2; return 6 ;;\n'
             '    FAIL:*) echo "curl: (22) The requested URL returned error" >&2; return "${fixture#FAIL:}" ;;\n'
+            '    HTTP:*) printf \'%s\' "${fixture#HTTP:}"; echo "curl: (22) The requested URL returned error" >&2; return 22 ;;\n'
             '    *) cp "$fixture" "$out" ;;\n'
             "  esac\n"
             "}\n"
@@ -2613,6 +2621,385 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         blind = _step("ux-review.yml", UX_BLIND_STEP)
         assert "steps.evidence.outputs.screens == 'true'" in str(blind["if"])
 
+    def test_every_download_failing_fails_the_same_repo_evidence_step(self, tmp_path: Path) -> None:
+        """Execute the ACTUAL evidence step against a description whose one
+        attachment fails to download for a transport reason. No image reached
+        the blind reader and nothing the author supplied could be judged, for
+        a reason a re-run can change: that is the lane's own failure, and a
+        lane that could not evaluate the change must not read as advisory --
+        so the step FAILS the run (red check, readiness holds, re-run is the
+        remedy), the way a hard model-step error already does, instead of
+        asking pass 2 to cap the verdict at CONCERNS, which readiness would
+        score green. The `unfetched` output is written before the exit so the
+        posting step can name the cause. Anything the author chose -- no
+        attachment at all, or attachments that downloaded but are recordings
+        or non-images -- reaches the capture step as NOT PERFORMED and pass 2
+        blocks on it, because a re-run cannot conjure a still from a video."""
+        repo, base = self._code_only_ui_repo(tmp_path)
+        gone = "https://github.com/user-attachments/assets/0f3b2c1a-5555-4bcd-9e8f-0123456789ab"
+        shot_list, _shot_map, _clips, output, blind_dir = self._run_evidence_gate(
+            repo,
+            base,
+            tmp_path,
+            body=f"![after]({gone})\n",
+            fixtures={gone: "FAIL:22"},
+            expect_failure=True,
+        )
+        assert shot_list == "" and list(blind_dir.iterdir()) == []
+        assert "screens=false" in output
+        assert "unfetched=true" in output
+        assert f"SKIPPED (download failed): {gone}" in self._evidence_stdout
+        assert (
+            "::error::1 of 1 attachment download(s) from the PR description failed for a "
+            "transport reason, so the blind reader cannot see everything the author supplied; "
+            "this lane cannot evaluate the change on partial evidence and fails rather than read "
+            "as advisory. Re-run this workflow"
+        ) in self._evidence_stdout, self._evidence_stdout
+        # The capture step never sees this case, so it has no fetch-failure
+        # branch: with no image it writes NOT PERFORMED, and only a pass 1 that
+        # ran on admitted images and failed is UNAVAILABLE.
+        capture = _step("ux-review.yml", UX_CAPTURE_STEP)
+        assert "UNFETCHED" not in capture["env"]
+        script = _step_script(_workflow("ux-review.yml"), UX_CAPTURE_STEP)
+        assert 'elif [ "$SCREENS" != "true" ]; then' in script
+        assert "$UNFETCHED" not in script
+        assert "could not download" not in script
+        # The posting step names the cause and the remedy in the PR comment.
+        post = _step("ux-review.yml", "Post UX review summary")
+        assert post["env"]["UNFETCHED"] == "${{ steps.evidence.outputs.unfetched }}"
+        post_script = _step_script(_workflow("ux-review.yml"), "Post UX review summary")
+        assert 'if [ "${UNFETCHED:-}" = "true" ]; then' in post_script
+        assert "could not evaluate" in post_script
+        assert "The evidence step failed the run, so PR readiness holds" in post_script
+        self._assert_unfetched_comment_is_reachable_and_published(post_script)
+        # The gate step reddens for the stated reason instead of printing the
+        # verdict-less "NOT blocking" warning under a job that is already red.
+        gate = _step("ux-review.yml", "UX review status (gates on BLOCK)")
+        assert gate["env"]["UNFETCHED"] == "${{ steps.evidence.outputs.unfetched }}"
+        assert 'if [ "${UNFETCHED:-}" = "true" ]; then' in gate["run"]
+        assert "::error::UX review for $HEAD could not evaluate the change" in gate["run"]
+        assert gate["run"].index('if [ "${UNFETCHED:-}" = "true" ]; then') < gate["run"].index(
+            'case "$VERDICT" in'
+        )
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the capture step runs only under Bash")
+
+        def capture_report(screens: str, blind_outcome: str) -> str:
+            report = tmp_path / f"blind-{screens}-{blind_outcome}.md"
+            run = subprocess.run(
+                [bash, "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env={
+                    **os.environ,
+                    "EXEC_FILE": "",
+                    "BLIND_OUTCOME": blind_outcome,
+                    "SCREENS": screens,
+                    "REPORT": str(report),
+                },
+            )
+            assert run.returncode == 0, run.stderr
+            return report.read_text(encoding="utf-8")
+
+        not_performed = capture_report("false", "skipped")
+        assert not_performed.startswith("BLIND READ NOT PERFORMED:")
+        assert "UNAVAILABLE" not in not_performed
+        unavailable = capture_report("true", "failure")
+        assert unavailable.startswith("BLIND READ UNAVAILABLE:")
+        assert "outcome 'failure'" in unavailable
+        assert "NOT PERFORMED" not in unavailable
+        # Pass 2 is told what each header means for the verdict, and the
+        # fetch-failure case is not among them: it never reaches pass 2.
+        prompt = _flat(_step("ux-review.yml", UX_REVIEW_STEP)["with"]["prompt"])
+        assert "BLIND READ NOT PERFORMED means the PR supplied no admissible image" in prompt
+        assert (
+            "BLIND READ UNAVAILABLE means the lane itself failed on evidence the PR supplied"
+            in (prompt)
+        )
+        assert "images admitted and pass 1 itself failed" in prompt
+        assert "an attachment download did not complete" not in prompt
+        assert "a UI change with a video and no still is missing its stills" in prompt
+
+    def test_the_evidence_step_reports_unfetched_false_when_nothing_was_offered(
+        self, tmp_path: Path
+    ) -> None:
+        repo, base = self._code_only_ui_repo(tmp_path)
+        _shots, _shot_map, _clips, output, _blind_dir = self._run_evidence_gate(
+            repo, base, tmp_path, body="No screenshots here.\n", fixtures={}
+        )
+        assert "screens=false" in output
+        assert "unfetched=false" in output
+
+    @pytest.mark.parametrize("lane", UX_LANES)
+    def test_a_recording_only_description_is_missing_evidence_not_a_fetch_failure(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """A UI PR whose only attachments downloaded fine but are a video and a
+        text file has no still for the blind reader. That is the author's
+        choice of evidence, so it must NOT read as a transport failure: the
+        same-repo step reports unfetched=false (capture then writes NOT
+        PERFORMED, which pass 2 blocks on) and the fork step leaves the image
+        list empty with no UNAVAILABLE sentinel. Routing this to UNAVAILABLE
+        would let a screenshot-less UI change pass readiness unevaluated."""
+        repo, base = self._code_only_ui_repo(tmp_path)
+        webm = "https://github.com/user-attachments/assets/0f3b2c1a-3333-4bcd-9e8f-0123456789ab"
+        text = "https://github.com/user-attachments/assets/0f3b2c1a-4444-4bcd-9e8f-0123456789ab"
+        shot_list, _shot_map, clip_list, output, blind_dir = self._run_evidence_gate(
+            repo,
+            base,
+            tmp_path,
+            body=f"{webm}\n\n![notes]({text})\n",
+            fixtures={webm: self.WEBM, text: self.TEXT},
+            lane=lane,
+        )
+        assert shot_list == "" and list(blind_dir.iterdir()) == []
+        assert clip_list.splitlines() == [webm]
+        assert "UNAVAILABLE" not in shot_list
+        if lane == "ux-review.yml":
+            assert "screens=false" in output
+            assert "unfetched=false" in output
+        assert "SKIPPED (download failed)" not in self._evidence_stdout
+
+    @pytest.mark.parametrize("lane", UX_LANES)
+    def test_a_404_attachment_is_the_authors_url_not_a_fetch_failure(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """A stale, deleted or fabricated attachment URL answers 404. That is
+        the author's evidence problem -- no re-run changes what the asset
+        host says -- so it must not count as a transport failure: the
+        step exits 0 with unfetched=false in both lanes (NOT PERFORMED, and
+        the reviewer blocks). A 5xx or a throttle (403/429) stays a transport
+        failure, since a re-run can clear it: both lanes fail the run on it,
+        and the fork lane's Finalize step turns that into a failed check-run."""
+        repo, base = self._code_only_ui_repo(tmp_path)
+        missing = "https://github.com/user-attachments/assets/0f3b2c1a-9999-4bcd-9e8f-0123456789ab"
+        shot_list, _shot_map, _clips, output, blind_dir = self._run_evidence_gate(
+            repo,
+            base,
+            tmp_path,
+            body=f"![after]({missing})\n",
+            fixtures={missing: "HTTP:404"},
+            lane=lane,
+        )
+        assert shot_list == "" and list(blind_dir.iterdir()) == []
+        assert (
+            f"SKIPPED (HTTP 404, the attachment URL does not resolve to an asset): {missing}"
+            in (self._evidence_stdout)
+        )
+        assert "SKIPPED (download failed)" not in self._evidence_stdout
+        assert "unfetched=false" in output
+        if lane == "ux-review.yml":
+            assert "screens=false" in output
+        # ...whereas a 503 is transport, and a re-run is the remedy.
+        throttled = (
+            "https://github.com/user-attachments/assets/0f3b2c1a-aaaa-4bcd-9e8f-0123456789ab"
+        )
+        shot_list, _shot_map, _clips, output, _blind_dir = self._run_evidence_gate(
+            repo,
+            base,
+            tmp_path,
+            body=f"![after]({throttled})\n",
+            fixtures={throttled: "HTTP:503"},
+            lane=lane,
+            expect_failure=True,
+        )
+        assert f"SKIPPED (download failed): {throttled}" in self._evidence_stdout
+        assert shot_list == ""
+        assert "unfetched=true" in output
+        assert "::error::1 of 1 attachment download(s) from the PR description failed" in (
+            self._evidence_stdout
+        )
+
+    @pytest.mark.parametrize("lane", UX_LANES)
+    def test_a_partial_fetch_fails_the_step_like_a_total_one(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """Two attachments, one kept and one 503. The reviewer would see one
+        image the author attached and not the other, so a control shown only
+        in the failed one would read as an author-closable gap -- unless the
+        prompt were handed a rule about which controls to exempt, and a rule
+        the prompt applies is one it can misapply. So ANY transport failure
+        fails the evidence step, exactly like the all-failed case: red check,
+        readiness holds, re-run is the remedy. Neither prompt carries a
+        partial-fetch exemption, and the map carries no failure row -- the
+        reviewer never sees a partial fetch."""
+        repo, base = self._code_only_ui_repo(tmp_path)
+        ok = "https://github.com/user-attachments/assets/0f3b2c1a-1111-4bcd-9e8f-0123456789ab"
+        down = "https://github.com/user-attachments/assets/0f3b2c1a-bbbb-4bcd-9e8f-0123456789ab"
+        shot_list, shot_map, _clips, output, blind_dir = self._run_evidence_gate(
+            repo,
+            base,
+            tmp_path,
+            body=f"![before]({ok})\n![after]({down})\n",
+            fixtures={ok: self.PNG, down: "HTTP:503"},
+            lane=lane,
+            expect_failure=True,
+        )
+        stem = "shot" if lane == "ux-review.yml" else "attachment"
+        assert shot_list.splitlines() == [f"{blind_dir.as_posix()}/{stem}-01.png"]
+        assert shot_map.splitlines() == [f"{stem}-01.png\t{ok}"]
+        assert "DOWNLOAD-FAILED" not in shot_map
+        assert "unfetched=true" in output
+        if lane == "ux-review.yml":
+            assert "screens=true" in output
+        assert "::error::1 of 2 attachment download(s) from the PR description failed" in (
+            self._evidence_stdout
+        )
+        prompt = _flat(_step(lane, UX_REVIEW_STEP)["with"]["prompt"])
+        assert "DOWNLOAD-FAILED" not in prompt
+        assert "partial fetch" in prompt
+        assert "fails the evidence step" in prompt
+
+    def test_all_four_evidence_lanes_admit_the_same_two_evidence_classes(self) -> None:
+        """The admissibility predicate is spelled in four prompts. This pins
+        the two classes every one of them admits -- a github.com
+        user-attachments asset in the description, or an image committed at
+        HEAD -- and that none admits a third, so a lane cannot drift into
+        accepting a raw URL pinned to a commit outside the PR, which is the
+        shape that let a screenshot-less UI change through."""
+        for lane in (*UX_LANES, "design-review.yml", "fork-design-review.yml"):
+            prompt = (
+                _flat(_step(lane, UX_REVIEW_STEP)["with"]["prompt"])
+                if lane in UX_LANES
+                else _flat(
+                    next(
+                        s
+                        for s in yaml.safe_load(_workflow(lane))["jobs"][lane[: -len(".yml")]][
+                            "steps"
+                        ]
+                        if (s.get("with") or {}).get("prompt")
+                    )["with"]["prompt"]
+                )
+            )
+            assert "github.com/user-attachments" in prompt, lane
+            assert "committed" in prompt and "HEAD" in prompt, lane
+            assert (
+                "hosted off a commit outside this PR" in prompt or "pinned to a commit" in prompt
+            ), lane
+            assert "raw.githubusercontent" not in prompt, lane
+
+    @pytest.mark.parametrize("lane", UX_LANES)
+    def test_a_recording_that_downloaded_beside_a_failed_still_fails_the_step(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """A video downloaded fine and the one still 403'd. The recording is
+        listed, the still is a transport failure, and the step fails on it:
+        the reviewer is not asked to judge the stills on the strength of a
+        recording. A 403 counts as transport, since GitHub throttles with it;
+        the count in the annotation is downloads, so the recording is one of
+        the two."""
+        repo, base = self._code_only_ui_repo(tmp_path)
+        webm = "https://github.com/user-attachments/assets/0f3b2c1a-3333-4bcd-9e8f-0123456789ab"
+        still = "https://github.com/user-attachments/assets/0f3b2c1a-cccc-4bcd-9e8f-0123456789ab"
+        shot_list, shot_map, clip_list, output, _blind_dir = self._run_evidence_gate(
+            repo,
+            base,
+            tmp_path,
+            body=f"{webm}\n\n![after]({still})\n",
+            fixtures={webm: self.WEBM, still: "HTTP:403"},
+            lane=lane,
+            expect_failure=True,
+        )
+        assert shot_list == ""
+        assert clip_list.splitlines() == [webm]
+        assert shot_map == ""
+        assert f"SKIPPED (download failed): {still}" in self._evidence_stdout
+        assert "unfetched=true" in output
+        assert "::error::1 of 2 attachment download(s) from the PR description failed" in (
+            self._evidence_stdout
+        )
+        if lane == "ux-review.yml":
+            assert "screens=false" in output
+
+    def test_the_fork_lane_fails_an_all_failed_fetch_and_reddens_its_check_run(
+        self, tmp_path: Path
+    ) -> None:
+        """An errored fork run resolves NEUTRAL, which pr-readiness scores as a
+        pass -- so for the fork lane, failing the evidence step alone would hold
+        nothing. The step still fails (no model call on nothing), and writes
+        `unfetched=true` first; the Finalize step reads that output and
+        completes the check-run as `failure` -- the conclusion readiness already
+        scores as a blocker for this lane -- with a title that names the re-run
+        as the remedy. The fork reviewer therefore never sees an all-failed
+        fetch, and its prompt has no sentinel exception to misapply: an empty
+        image list is always the author's gap."""
+        repo, base = self._code_only_ui_repo(tmp_path)
+        gone = "https://github.com/user-attachments/assets/0f3b2c1a-5555-4bcd-9e8f-0123456789ab"
+        shot_list, _shot_map, _clips, output, blind_dir = self._run_evidence_gate(
+            repo,
+            base,
+            tmp_path,
+            body=f"![after]({gone})\n",
+            fixtures={gone: "FAIL:22"},
+            lane="fork-ux-review.yml",
+            expect_failure=True,
+        )
+        assert shot_list == ""
+        assert "UNAVAILABLE" not in shot_list
+        assert list(blind_dir.iterdir()) == []
+        assert "unfetched=true" in output
+        assert (
+            "::error::1 of 1 attachment download(s) from the PR description failed for a "
+            "transport reason, so the reviewer cannot see everything the author supplied"
+        ) in self._evidence_stdout, self._evidence_stdout
+        workflow = _workflow("fork-ux-review.yml")
+        finalize = _step("fork-ux-review.yml", "Finalize check-run (advisory)")
+        assert finalize["env"]["UNFETCHED"] == "${{ steps.attachments.outputs.unfetched }}"
+        script = finalize["run"]
+        assert 'if [ "${UNFETCHED:-}" = "true" ]; then' in script
+        assert (
+            'conclusion="failure"; title="cannot evaluate — attachment download(s) failed; '
+            're-run this workflow"'
+        ) in script
+        # The verdict-driven mapping is untouched underneath: CONCERNS stays
+        # neutral and an incomplete run stays neutral.
+        assert 'conclusion="neutral"; title="CONCERNS — read the Watch items"' in script
+        assert 'conclusion="neutral"; title="review incomplete (advisory)"' in script
+        post = _step("fork-ux-review.yml", "Post UX review summary")
+        assert post["env"]["UNFETCHED"] == "${{ steps.attachments.outputs.unfetched }}"
+        assert "could not evaluate" in post["run"]
+        assert "The check-run is completed as a failure, so PR readiness holds" in post["run"]
+        self._assert_unfetched_comment_is_reachable_and_published(post["run"])
+        # pr-readiness scores a fork UX `failure` as a blocker already; the
+        # lane only has to reach that conclusion.
+        readiness = _workflow("pr-readiness.yml")
+        assert 'failed+=("$label (BLOCK)")' in readiness
+        prompt = _flat(_step("fork-ux-review.yml", UX_REVIEW_STEP)["with"]["prompt"])
+        assert "UNAVAILABLE:" not in prompt
+        assert "An empty image list is the author's gap, never the lane's" in prompt
+        assert "the workflow fails the run on it" in prompt
+        assert "missing its stills, and that blocks" in prompt
+        assert "the shape TRUNCATED already uses" not in workflow
+
+    @staticmethod
+    def _assert_unfetched_comment_is_reachable_and_published(post_script: str) -> None:
+        """A failed evidence step leaves no transcript, so the post step's
+        "nothing to post" exit would return before the UNFETCHED comment is
+        built and leave a stale comment in place. The exit is guarded on the
+        output, the comment is built after it, and it carries the head stamp
+        guarded_comment_upsert requires -- without the stamp the upsert
+        withholds the notice whenever a comment already exists, which is
+        exactly the stale-comment case the notice is for."""
+        early = 'if [ -z "$summary" ] && [ "${UNFETCHED:-}" != "true" ]; then'
+        branch = 'if [ "${UNFETCHED:-}" = "true" ]; then'
+        assert early in post_script
+        assert post_script.index(early) < post_script.index(branch)
+        stamp = post_script.index('echo "[UX-REVIEWED] $HEAD"')
+        assert post_script.index(branch) < stamp < post_script.index("guarded_comment_upsert ")
+        # An empty transcript does not trip the stale-marker log line, and the
+        # verdict header is parsed only when there is a transcript: a grep that
+        # matches nothing exits 1, and under pipefail plus the runner's default
+        # -e a failed command substitution would abort the step before the
+        # notice is posted. The parse itself tolerates a header-less transcript
+        # for the same reason.
+        assert 'if [ -n "$summary" ] && ! grep -qF "[UX-REVIEWED] $HEAD"' in post_script
+        parse = post_script.index("{ grep -iE '^UX-Verdict:' || true; }")
+        assert post_script.index('if [ -n "$summary" ]; then') < parse < post_script.index(branch)
+        assert post_script.index('if [ -n "$summary" ]; then') > post_script.index(early)
+
     def _code_only_ui_repo(self, tmp_path: Path) -> tuple[Path, str]:
         """A repository whose head touches website/ and commits no image, so
         every screenshot the step finds has to come from the PR description."""
@@ -2643,8 +3030,8 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         path, a shape gh does not emit, are never contacted), the same URL is
         fetched once, the download
         carries no credential, and the type comes from the bytes: a text
-        payload and a failed download are each logged and skipped, never
-        fatal."""
+        payload and a URL that does not resolve to an asset (404) are each
+        logged and skipped, never fatal -- only a transport failure is."""
         repo, base = self._code_only_ui_repo(tmp_path)
         shots = repo / "temp-screenshots" / "f"
         shots.mkdir(parents=True)
@@ -2682,7 +3069,7 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
                 jpeg: self.JPEG,
                 webm: self.WEBM,
                 text: self.TEXT,
-                gone: "FAIL:22",
+                gone: "HTTP:404",
                 gif: self.GIF,
                 other_repo: self.PNG,
                 look_alike: self.PNG,
@@ -2706,16 +3093,19 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         assert sorted(p.name for p in blind_dir.iterdir()) == names
         assert (blind_dir / names[0]).read_bytes() == self.PNG
         # Pass 2 gets each copy's origin: the URL for an attachment, the
-        # repository path for a committed file.
-        assert shot_map.splitlines() == [
-            f"{name}\t{origin}" for name, origin in zip(names, origins)
-        ]
+        # repository path for a committed file. Neither skip leaves a row: the
+        # text payload downloaded and just is not an image, and the 404 is the
+        # author's URL, not evidence.
+        expected_map = [f"{name}\t{origin}" for name, origin in zip(names, origins)]
+        assert shot_map.splitlines() == expected_map
         assert clip_list.splitlines() == [webm, gif]
         if lane == "ux-review.yml":
             assert "screens=true" in output
         # Skips are logged, per URL, and the step still succeeded.
         assert f"SKIPPED (mime text/plain): {text}" in self._evidence_stdout
-        assert f"SKIPPED (download failed): {gone}" in self._evidence_stdout
+        assert f"SKIPPED (HTTP 404, the attachment URL does not resolve to an asset): {gone}" in (
+            self._evidence_stdout
+        )
         # Both skips are annotations the author sees on the run, not bare log
         # lines, and the summary reconciles: 6 attempted = kept + 2 skipped.
         assert "::warning::SKIPPED (mime text/plain)" in self._evidence_stdout
@@ -2816,16 +3206,31 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             body="".join(f"![shot]({url})\n" for url in urls),
             fixtures={urls[0]: "FAIL:22", urls[1]: "FAIL:6"},
             lane=lane,
+            expect_failure=True,
         )
-        assert shot_list == "" and shot_map == "" and clip_list == ""
+        assert shot_map == ""
+        assert clip_list == ""
         assert list(blind_dir.iterdir()) == []
+        # No image reached the reviewer, and it is the transport that failed:
+        # both lanes record that as unfetched and FAIL the run -- a lane that
+        # could not evaluate must not read as advisory; readiness holds and a
+        # re-run is the remedy. The same-repo job's red is the signal; the
+        # fork lane's Finalize step turns the output into a failed check-run,
+        # because its errored run would otherwise resolve neutral.
+        assert shot_list == ""
+        assert "unfetched=true" in output
         if lane == "ux-review.yml":
             assert "screens=false" in output
         assert (
             "::error::Every one of the 2 attachment download(s) was skipped; no evidence "
             "from the PR description reached the reviewer."
         ) in self._evidence_stdout, self._evidence_stdout
-        assert self._evidence_stdout.count("::error::") == 1
+        # The shared script's annotation plus the step's own failure annotation
+        # that names the remedy.
+        assert "::error::2 of 2 attachment download(s) from the PR description failed" in (
+            self._evidence_stdout
+        )
+        assert self._evidence_stdout.count("::error::") == 2
         assert "2 attachment URL(s) matched the allowlist, 2 download(s) attempted, 2 skipped" in (
             self._evidence_stdout
         )
@@ -3020,11 +3425,18 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             "--max-redirs 5",
             "--max-time 60",
             "--max-filesize 104857600",
+            "-w '%{http_code}'",
             '-o "$tmp" "$url"',
         ):
             assert flag in curl[0], curl[0]
         # Failure is logged and skipped, never fatal; the type is the bytes'.
+        # A definite 4xx is the author's URL, not transport, so it never
+        # counts as a fetch failure.
         assert "SKIPPED (download failed)" in script
+        assert "SKIPPED (HTTP $code, the attachment URL does not resolve to an asset)" in script
+        assert "4[0-9][0-9]) transient=0 ;;" in script
+        # GitHub answers a secondary rate limit with 403 as well as 429.
+        assert "403|408|429) transient=1 ;;" in script
         assert 'mime="$(file --mime-type -b -- "$tmp")"' in script
         assert "SKIPPED (mime $mime)" in script
 
@@ -7760,10 +8172,13 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert 'Here "unclear" is the BLOCK case, not the CONCERNS case' in contract
         assert "the author can" in contract
         assert "Do not soften this to a Watch item" in contract
-        # The carve-outs stay a closed set of two; an open-ended third would
-        # put the tie-breaker back in charge of everything.
-        assert "there is no third" in contract
-        assert "The two exceptions are named at the" in contract
+        # The carve-outs stay a CLOSED set -- now three: (a) availability
+        # premise, (b) rider, (c) product shape without a recorded decision,
+        # which is also this lane's only "cannot evaluate". An open-ended
+        # fourth would put the tie-breaker back in charge of everything.
+        assert "there is no fourth" in contract
+        assert "The three exceptions are named at the" in contract
+        assert "there is no third" not in contract
         assert "The single exception is the combination" not in contract
 
     def test_undeclared_and_rides_along_are_inventory_tags_not_verdicts(self) -> None:

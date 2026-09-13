@@ -744,10 +744,15 @@ class TestDecidableFindingsExitTheTieBreaker:
     def test_ux_tie_breaker_carries_a_closed_exception_list(self, name):
         wf = _flat(_read(name))
         assert "Tie-breaker: when torn between BLOCK and CONCERNS" in wf
-        # Four decidable exits: the two notice rules, plus a primary
-        # control the blind reader could not use and a hard element swap. Each
-        # is read off the blind-read report or the diff, not judged.
-        assert "The tie-breaker does NOT apply to the four below" in wf
+        # Five decidable exits: an evidence gap (a control no supplied
+        # screenshot shows -- the lane cannot evaluate it, so CONCERNS would
+        # misreport an unreached verdict as a mild one), the two notice rules,
+        # a primary control the blind reader could not use and a hard element
+        # swap. Each is read off the screenshot list, the blind-read report or
+        # the diff, not judged.
+        assert "The tie-breaker does NOT apply to the five below" in wf
+        assert "An evidence gap (lens 12 or 13)" in wf
+        assert "cannot evaluate: missing" in wf
         assert "hedges about state the code already holds" in wf
         assert "assert what happened" in wf
         assert "A primary control (lens 12) the blind reader misread" in wf
@@ -768,9 +773,17 @@ class TestDecidableFindingsExitTheTieBreaker:
     def test_first_principles_tie_breaker_exempts_the_rider_combination(self):
         contract = _flat(_read_prompt(FP_CONTRACT))
         assert "Tie-breaker: when torn between BLOCK and CONCERNS" in contract
-        # Two combinations are settled by reading, not by degree: (a) an
-        # unverified premise on a core availability path, (b) the rider.
-        assert "Two combinations are settled by reading the diff" in contract
+        # Three combinations are settled by reading, not by degree: (a) an
+        # unverified premise on a core availability path, (b) the rider, (c) a
+        # product-shape change with no non-draft RFC on the base and no
+        # maintainer override -- which is also the lane's only "cannot
+        # evaluate": the recorded decision is the one piece of evidence it
+        # requires and cannot produce.
+        assert "Three combinations are settled by reading the diff" in contract
+        assert "PRODUCT-SHAPE CHANGE WITHOUT A RECORDED DECISION" in contract
+        assert "This is the one `cannot evaluate` this lane has" in contract
+        assert "CANNOT EVALUATE -- REQUIRED EVIDENCE ABSENT" not in contract
+        assert "product-shape change without accepted RFC" in contract
         assert "UNVERIFIED PREMISE ON A CORE AVAILABILITY PATH" in contract
         assert "an item is riding along" in contract
         assert "When all four hold the defect is already" in contract
@@ -780,5 +793,127 @@ class TestDecidableFindingsExitTheTieBreaker:
         # would otherwise re-impose the ratchet the exception just lifted.
         contract = _flat(_read_prompt(FP_CONTRACT))
         assert "When unsure, LOWER the concern" in contract
-        assert "The two exceptions are named at the" in contract
-        assert "there is no third" in contract
+        assert "The three exceptions are named at the" in contract
+        assert "there is no fourth" in contract
+
+
+FP_LANES = ["first-principles-review.yml", "fork-first-principles-review.yml"]
+
+
+class TestMissingEvidenceIsABlockNotAConcern:
+    """A lane that cannot evaluate must say so with the verdict that has teeth.
+
+    A UI change with no admissible screenshot leaves the UX blind read
+    unperformed; a CONCERNS on it scores green in pr-readiness. A verdict the
+    lane could not reach must not read as "looked and found little".
+    """
+
+    @pytest.mark.parametrize("name", UX_LANES)
+    def test_ux_lane_blocks_on_an_evidence_gap(self, name):
+        wf = _flat(_read(name))
+        assert "cannot evaluate: missing" in wf
+        assert "the verdict cannot be PASS" not in wf
+        assert "or the evidence is incomplete" not in wf
+        # A recording gap is a gap like any other, and a description image
+        # the evidence step did not admit does not close one.
+        assert "a BLOCK like every gap" in wf
+        assert "the evidence step did not admit" in wf
+
+    def test_fork_ux_lane_keeps_its_own_limitation_out_of_the_block(self):
+        # The fork lane has no blind reader. That is the LANE's limitation, not
+        # an evidence gap the author can close, so it must cap at CONCERNS
+        # rather than block a fork contributor for something they cannot fix.
+        wf = _flat(_read("fork-ux-review.yml"))
+        assert "this lane's limitation, not the author's gap" in wf
+        assert "The absent blind read is not this exit" in wf
+
+    @pytest.mark.parametrize("name", DESIGN_LANES)
+    def test_design_lane_blocks_when_it_has_not_seen_the_surface(self, name):
+        wf = _flat(_read(name))
+        assert "CANNOT EVALUATE -- REQUIRED EVIDENCE MISSING" in wf
+        assert "cannot evaluate: missing <screenshot or recording of X>" in wf
+        # Evidence must be of THIS revision: an image hosted off a commit
+        # outside the PR, or one that depicts another PR, is not evidence.
+        assert "hosted off a commit outside this PR" in wf
+
+    @pytest.mark.parametrize("name", DESIGN_LANES)
+    def test_design_lane_reads_evidence_presence_off_a_fetched_list_not_the_description(self, name):
+        """The Design reviewer has no shell to fetch with, so a bare URL in the
+        description would count as evidence whether or not it renders -- a
+        fabricated or dead user-attachments URL would bypass the trigger. Both
+        lanes therefore run the same allowlisted fetch the UX lanes source and
+        hand the reviewer one evidence file; the prompt names that file, not
+        the description, as the predicate."""
+        raw = _read(name)
+        wf = _flat(raw)
+        assert "- name: Collect rendered evidence" in raw
+        assert "pr-attachment-evidence.sh" in raw
+        assert "EVIDENCE: ${{ runner.temp }}/design-evidence.txt" in raw
+        assert "Read ${{ runner.temp }}/design-evidence.txt" in wf
+        assert "the evidence list the workflow wrote (RENDERED EVIDENCE above)" in wf
+        assert "a URL that did not download is not evidence" in wf
+        assert "is read off the evidence list and the diff, not judged" in wf
+        assert "the evidence list naming no downloaded attachment" in wf
+        # The old predicate -- presence read off the description's text -- is gone.
+        assert "no screenshot or recording attached to its description" not in wf
+        assert "is read off the description and the diff" not in wf
+        # A transport failure is presence unconfirmed, capped at CONCERNS, never
+        # a BLOCK: the UX lane fails its run on the same failure.
+        assert "presence is unconfirmed, not absent" in wf
+        # The sourced script is PR-controlled on a same-repo pull request, so
+        # the step runs before any Bedrock credential exists in the job.
+        steps = yaml.safe_load(raw)["jobs"][name[: -len(".yml")]]["steps"]
+        evidence_at = next(
+            i for i, s in enumerate(steps) if s.get("name") == "Collect rendered evidence"
+        )
+        creds_at = next(
+            i for i, s in enumerate(steps) if "configure-aws-credentials" in s.get("uses", "")
+        )
+        review_at = next(
+            i for i, s in enumerate(steps) if s.get("name") == "Design review (Fable 5)"
+        )
+        assert evidence_at < creds_at < review_at
+        if name == "fork-design-review.yml":
+            # The fork lane fetches from the trusted base checkout and must be
+            # allowed to reach the asset host user-attachments redirects to.
+            assert '"$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"' in raw
+            # Whole allowlist tokens, so a host that merely contains the name
+            # as a substring cannot satisfy the check.
+            harden = next(
+                s
+                for s in yaml.safe_load(raw)["jobs"]["fork-design-review"]["steps"]
+                if s.get("name") == "Harden runner (egress allowlist)"
+            )
+            endpoints = set(harden["with"]["allowed-endpoints"].split())
+            assert {
+                "github.com:443",
+                "github-production-user-asset-6210df.s3.amazonaws.com:443",
+            } <= endpoints, sorted(endpoints)
+        else:
+            # The same-repo lane also lists committed images present at HEAD.
+            assert 'git cat-file -e "HEAD:$path"' in raw
+            assert "committed images this revision adds or changes: $k" in raw
+
+    def test_first_principles_reads_rfc_status_from_the_base_commit(self):
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "PRODUCT SHAPE NEEDS A RECORDED DECISION" in contract
+        # A PR that flips `status:` or ships the RFC beside the change has
+        # proposed a decision, not recorded one.
+        assert "never from the checkout or the diff" in contract
+        assert "/ai-review override first-principles <head sha>" in contract
+        for name in FP_LANES:
+            wf = _read(name)
+            # The list is produced by the same step, from the same base sha, as
+            # the contract -- the PR cannot edit either.
+            assert "RFC_STATUS: ${{ runner.temp }}/rfc-status.txt" in wf
+            assert "git grep -E '^status:[[:space:]]*[A-Za-z-]+' \"$BASE_SHA\"" in wf
+            assert "':(exclude)docs/request-for-change/README.md'" in wf
+            assert "rfc-status.txt" in _flat(wf)
+
+    def test_first_principles_product_shape_gate_is_not_a_request_for_a_document(self):
+        # The lane may not ask for an RFC to be written; lens 9 reports that a
+        # record is absent and names the two ways it gets made. Both sentences
+        # must coexist or the gate contradicts the anti-noise bar.
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "Do NOT ask for a written artifact" in contract
+        assert "Lens 9 is not a way around this" in contract
