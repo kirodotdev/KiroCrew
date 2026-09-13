@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
+import signal
 import stat
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from kiro_crew.apps.manager import (
     AppResult,
     InstalledApp,
     _read_installed,
+    _remove_installed_tree_except_data,
     _validate_source_path,
     _write_installed,
     app_enabled_state,
@@ -3536,3 +3539,280 @@ class TestRegisterExternalPreservesServerProvenance:
         assert meta.source == "C:/local/second"
         assert meta.sourceUrl == ""
         assert meta.origin == "external"
+
+
+# ---------------------------------------------------------------------------
+# Local-directory install: setup.onInstall
+# ---------------------------------------------------------------------------
+
+
+class TestLocalInstallScript:
+    """``setup.onInstall`` must run on the local-directory install path.
+
+    A Node app installed from a folder needs the hook to produce
+    ``node_modules``; without it the backend cannot start.
+    """
+
+    @pytest.fixture(autouse=True)
+    def unsandboxed_spawn(self, monkeypatch):
+        """Decouple the scripted-install tests from the host's sandbox capability.
+
+        These tests run REAL bash children (markers, exit codes, timeouts), so
+        on a CI runner where unprivileged user namespaces are restricted
+        ``wrap_argv`` fail-closes by design and every test would fail with
+        "sandbox unavailable". Allowing unsandboxed exec here is the same
+        autouse convention ``test_apps_registry.py`` uses; sandbox construction
+        itself is covered by ``test_sandbox_*.py``.
+        """
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+
+    def _make_scripted_app_source(self, tmp_path, name="oninstall-app", on_install=""):
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        manifest = {
+            "name": name,
+            "version": "1.0.0",
+            "displayName": "OnInstall Test App",
+            "description": "App for onInstall testing",
+            "author": "tester",
+        }
+        if on_install:
+            manifest["setup"] = {"onInstall": on_install}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        return src
+
+    # The scripted-install tests assert REAL bash semantics (markers, exit
+    # codes, sleep timeouts). App lifecycle scripts are bash by contract and
+    # Windows runners do not ship one, so they are POSIX-gated the same way the
+    # registry install-script tests in test_apps_registry.py are.
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_runs_on_install(self, tmp_path, app_home):
+        src = self._make_scripted_app_source(
+            tmp_path, on_install="printf ran > install-marker"
+        )
+        result = install_app(src)
+        assert result.ok, result.error
+        marker = app_home / "apps" / "oninstall-app" / "install-marker"
+        assert marker.is_file(), "onInstall must run in the copied app dir"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_cannot_mutate_the_source_tree(self, tmp_path, app_home):
+        src = self._make_scripted_app_source(
+            tmp_path, on_install="printf ran > source-mutation-marker"
+        )
+        result = install_app(src)
+        assert result.ok, result.error
+        assert not (src / "source-mutation-marker").exists(), (
+            "onInstall runs in the COPIED app dir, never in the source tree"
+        )
+
+    def test_install_script_denied_by_execution_policy(self, tmp_path, monkeypatch):
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        # No apps_allow_third_party grant: the script must not execute.
+        (home / "config.json").write_text("{}", encoding="utf-8")
+        src = self._make_scripted_app_source(
+            tmp_path, on_install="printf ran > install-marker"
+        )
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "app_execution_denied"
+        assert "install-marker" not in [p.name for p in home.rglob("*")]
+        assert _read_installed("oninstall-app") is None
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_fails_install_and_preserves_data(
+        self, tmp_path, app_home
+    ):
+        """A FRESH install whose hook fails leaves NOTHING behind.
+
+        The data/ tree a failed fresh install leaves must not be preserved: it
+        was written by the source package or by the failed hook itself, and a
+        retry would silently restore that partial, unverified state as if it
+        were established user data. A fresh failure is a clean failure.
+        """
+        src = self._make_scripted_app_source(tmp_path, on_install="exit 3")
+        (src / "data").mkdir()
+        (src / "data" / "state.json").write_text('{"saved": true}')
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        assert "exit code 3" in result.error
+        # No metadata written — the app is NOT installed.
+        assert _read_installed("oninstall-app") is None
+        # Nothing lingers inside dest — not even the hook's partial data/ —
+        # so the next attempt starts from a clean dest.
+        dest = app_home / "apps" / "oninstall-app"
+        assert not dest.exists() or list(dest.iterdir()) == [], (
+            "a failed FRESH install must not leave any tree (incl. data/) behind"
+        )
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_preserves_pre_existing_user_data(
+        self, tmp_path, app_home
+    ):
+        """Data that existed BEFORE the install attempt still survives a failure."""
+        # Simulate a prior uninstall's leave-behind: dest carries only data/.
+        prior = app_home / "apps" / "oninstall-app" / "data"
+        prior.mkdir(parents=True)
+        (prior / "state.json").write_text('{"user": true}')
+        src = self._make_scripted_app_source(tmp_path, on_install="exit 3")
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        # The user's own data survives for the next attempt; the copied tree
+        # does not linger.
+        assert (prior / "state.json").is_file()
+        leftovers = [
+            p.name
+            for p in (app_home / "apps" / "oninstall-app").iterdir()
+            if p.name != "data"
+        ]
+        assert leftovers == []
+
+    @pytest.mark.skipif(
+        not hasattr(os, "symlink"),
+        reason="a symlink is a POSIX-only path shape",
+    )
+    def test_cleanup_unlinks_a_symlinked_dest_instead_of_traversing_it(
+        self, tmp_path
+    ):
+        """A dest replaced by a symlink must be UNLINKED, never followed.
+
+        The failed script ran with write access to dest, so dest itself could
+        be a symlink to a sibling app (or any host path); iterating it would
+        delete whatever it points at.
+        """
+        target = tmp_path / "sibling-app"
+        target.mkdir()
+        (target / "precious.txt").write_text("keep me")
+        link = tmp_path / "oninstall-app"
+        link.symlink_to(target)
+        _remove_installed_tree_except_data(link, preserve_data=True)
+        assert link.is_symlink() is False, "the link itself is removed"
+        assert (target / "precious.txt").is_file(), "the target must be untouched"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_preserves_sole_survivor_tmp_data(
+        self, tmp_path, app_home
+    ):
+        """The sole-survivor ``.{name}-data-tmp`` copy is pre-existing data too.
+
+        A crashed sibling operation can leave ONLY the tmp copy behind (no live
+        ``data/`` dir). A failed install attempt must still not destroy it.
+        """
+        tmp_copy = app_home / "apps" / ".oninstall-app-data-tmp"
+        tmp_copy.mkdir(parents=True)
+        (tmp_copy / "state.json").write_text('{"crash survivor": true}')
+        src = self._make_scripted_app_source(tmp_path, on_install="exit 3")
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        # The restored user data survives inside dest; nothing else lingers.
+        restored = app_home / "apps" / "oninstall-app" / "data" / "state.json"
+        assert restored.is_file()
+        leftovers = [
+            p.name
+            for p in (app_home / "apps" / "oninstall-app").iterdir()
+            if p.name != "data"
+        ]
+        assert leftovers == []
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_timeout(self, tmp_path, app_home, monkeypatch):
+        import kiro_crew.apps.manager as manager_mod
+
+        monkeypatch.setattr(manager_mod, "_INSTALL_SCRIPT_TIMEOUT", 1)
+        src = self._make_scripted_app_source(tmp_path, on_install="sleep 10")
+        result = install_app(src)
+        assert result.ok is False
+        assert "timed out" in result.error
+        assert _read_installed("oninstall-app") is None
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_background_descendant_is_reaped(self, tmp_path, app_home):
+        """A backgrounded descendant must not survive its reaped leader.
+
+        The bash wrapper exits immediately; its backgrounded child keeps the
+        process group alive and, if the straggler kill resolves the group
+        through the already-reaped leader's PID, it would write into the
+        copied tree AFTER this install succeeds — rewriting app.json behind
+        the post-script re-admission check. The kill must go through the
+        process-group id captured before the wait.
+        """
+        src = self._make_scripted_app_source(
+            tmp_path,
+            on_install=(
+                "( sleep 30 && printf done > late-marker ) &"
+                " printf $! > bg.pid"
+            ),
+        )
+        result = install_app(src)
+        assert result.ok, result.error
+        bg_pid_file = app_home / "apps" / "oninstall-app" / "bg.pid"
+        bg_pid = int(bg_pid_file.read_text().strip())
+        try:
+            os.kill(bg_pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            # Cleanup so a failing assertion does not leak a sleeper.
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(bg_pid, signal.SIGKILL)
+            pytest.fail(
+                "a backgrounded descendant outlived the install script — "
+                "the straggler kill did not reach the process group"
+            )
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_registry_path_does_not_run_on_install_twice(self, tmp_path, app_home):
+        """The registry path executes the hook in its checkout BEFORE the copy.
+
+        ``install_app`` runs inside the ``registry_source_repository`` scope on
+        that path, so it must skip the hook: re-running it in the copied dest
+        would double every non-idempotent side effect (repeated package
+        installs, migrations, generated files).
+        """
+        src = self._make_scripted_app_source(
+            tmp_path, on_install="printf ran >> install-count"
+        )
+        from kiro_crew.apps.manager import registry_source_repository
+
+        with registry_source_repository("https://registry.example/app.git"):
+            result = install_app(src)
+        assert result.ok, result.error
+        # No marker in the COPIED dir proves install_app skipped the hook; the
+        # checkout-side execution (which the registry owns) is covered by the
+        # registry tests.
+        copied = app_home / "apps" / "oninstall-app"
+        assert copied.is_dir()
+        assert not (copied / "install-count").exists(), (
+            "install_app must not re-run setup.onInstall on the registry path"
+        )

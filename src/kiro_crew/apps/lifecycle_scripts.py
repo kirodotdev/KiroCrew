@@ -25,7 +25,10 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.execution import app_execution_denied
-from kiro_crew.apps.manager import apps_dir
+
+# sanitize_script_output lives in manager (the lower layer — importing the
+# reverse here would cycle) and is re-exported for the CLI's enable surface.
+from kiro_crew.apps.manager import apps_dir, sanitize_script_output
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -41,6 +44,8 @@ logger = logging.getLogger(__name__)
 #: without the timeout path being able to hang on a trap that never exits.
 #: Mirrors the app-build grace in ``registry._KILL_GRACE_PERIOD``.
 _TERM_GRACE_SECS = 5
+
+__all__ = ["run_lifecycle_script", "sanitize_script_output"]
 
 
 async def run_lifecycle_script(
@@ -71,7 +76,20 @@ async def run_lifecycle_script(
 
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]
-    sandboxed_cmd, cleanup = await wrap_argv_async(base_cmd, mode="standard", _prepare=wrap_argv)
+    # wrap_argv_async fail-closes (RuntimeError) on a host with no sandbox
+    # backend and unsandboxed exec not allowed, and the spawn itself can raise
+    # OSError (e.g. no bash on Windows). Both are SCRIPT failures, not gateway
+    # errors: callers gate rollbacks on the ``failed`` flag, so a raise here
+    # would either crash the CLI after ``enable_app`` already flipped the flag
+    # or surface as a 500 from the enable route instead of its 400 rollback.
+    cleanup: str | None = None
+    try:
+        sandboxed_cmd, cleanup = await wrap_argv_async(
+            base_cmd, mode="standard", _prepare=wrap_argv
+        )
+    except RuntimeError as exc:
+        logger.warning("Sandbox unavailable for app %s lifecycle script: %s", app_name, exc)
+        return {"output": f"sandbox unavailable: {exc}", "failed": True}
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     env = minimal_env(NONINTERACTIVE="1")
     if extra_env:
@@ -82,15 +100,21 @@ async def run_lifecycle_script(
         # fleet): start_new_session=True is a no-op on Windows, creationflags is 0
         # (no-op) on POSIX. (App lifecycle scripts are bash; on Windows without bash
         # they fail gracefully rather than crash here.)
-        proc = await create_subprocess_limited(
-            *sandboxed_cmd,
-            cwd=str(app_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-        )
+        try:
+            proc = await create_subprocess_limited(
+                *sandboxed_cmd,
+                cwd=str(app_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            )
+        except OSError as exc:
+            # No interpreter for the script on this host (e.g. Windows without
+            # bash). Same script-failure contract as the sandbox refusal above.
+            logger.warning("Could not launch app %s lifecycle script: %s", app_name, exc)
+            return {"output": f"failed to launch lifecycle script: {exc}", "failed": True}
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             output = (stdout or b"").decode(errors="replace").strip()
