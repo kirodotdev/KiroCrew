@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowUpFromLine, Check, ChevronDown, Target } from 'lucide-react'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
+import { useAnchorRemeasure } from '../hooks/useAnchorRemeasure'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { platformShortcut } from '../utils/platform'
 
@@ -183,31 +184,9 @@ export default function BusySendButton({
     if (splitRef.current) setMenuRect(splitRef.current.getBoundingClientRect())
   }, [])
 
-  useEffect(() => {
-    if (!menuOpen) return
-    let frame: number | null = null
-    const scheduleMeasure = () => {
-      if (frame !== null) return
-      frame = window.requestAnimationFrame(() => {
-        frame = null
-        measureMenu()
-      })
-    }
-    const viewport = window.visualViewport
-
-    scheduleMeasure()
-    window.addEventListener('resize', scheduleMeasure)
-    window.addEventListener('scroll', scheduleMeasure, true)
-    viewport?.addEventListener('resize', scheduleMeasure)
-    viewport?.addEventListener('scroll', scheduleMeasure)
-    return () => {
-      if (frame !== null) window.cancelAnimationFrame(frame)
-      window.removeEventListener('resize', scheduleMeasure)
-      window.removeEventListener('scroll', scheduleMeasure, true)
-      viewport?.removeEventListener('resize', scheduleMeasure)
-      viewport?.removeEventListener('scroll', scheduleMeasure)
-    }
-  }, [menuOpen, measureMenu])
+  // Keeps the portaled picker anchored while the trigger moves under it --
+  // notably when the mobile keyboard closes (visualViewport-only signal).
+  useAnchorRemeasure(menuOpen, measureMenu)
 
   const toggleMenu = () => {
     if (!menuOpen) measureMenu()
