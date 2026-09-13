@@ -37,6 +37,11 @@ StopOutcome = Literal["soft", "hard", "idle"]
 ProviderFactory = Callable[..., Any]
 _ANY_SESSION = object()
 
+# Shutdown acknowledgement may precede the final child exit. This is only
+# an observation budget; it never authorizes another kill of a reused PID.
+_EXIT_VERIFY_TIMEOUT_SECS = 2.0
+_EXIT_VERIFY_INTERVAL_SECS = 0.05
+
 
 class _RecycleCallback(Protocol):
     async def __call__(self, key: str, *, reason: str) -> None: ...
@@ -148,6 +153,7 @@ class SessionLifecycleOwner(Protocol):
         expect_session: _SessionEntry | None = None,
         skip_if_busy: bool = False,
         clear_conversation: bool = False,
+        verify_exit: bool = False,
     ) -> bool: ...
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None: ...
@@ -425,8 +431,14 @@ class SessionLifecycleService:
         expect_session: _SessionEntry | None = None,
         skip_if_busy: bool = False,
         clear_conversation: bool = False,
+        verify_exit: bool = False,
     ) -> bool:
-        """Kill a live session while preserving the exact reset semantics."""
+        """Kill a session; optionally check the captured process tree is gone.
+
+        The opt-in result covers the parent and captured descendants, not an
+        OS sandbox guarantee. It performs no additional kills. Legacy callers
+        retain the existing session-existed return value.
+        """
         owner = self._owner
         logger = self._deps.logger
         key = owner._fold_key(key)
@@ -464,6 +476,19 @@ class SessionLifecycleService:
             await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
             # Capture PID and child tree before shutdown clears them.
             client = getattr(session.provider, "_client", None)
+            # The native path owns a dedicated runtime even after the provider
+            # swaps its placeholder for a session facade. Snapshot its actual
+            # process identities instead of relying on facade private aliases.
+            # Type-strict like every other native seam: only a real
+            # NativeTextProfile redirects the snapshot, so providers whose
+            # attribute lookup fabricates values (test doubles) keep the
+            # legacy path.
+            _native = getattr(session.provider, 'native_text_profile', None)
+            if _native is not None:
+                from kiro_crew.acp.native_text_profile import NativeTextProfile
+
+                if type(_native) is NativeTextProfile:
+                    client = getattr(session.provider, 'native_text_runtime', None)
             raw_pid = getattr(client, "_pid", None) if client else None
             if raw_pid is None:
                 cc_proc = getattr(session.provider, "_proc", None)
@@ -478,6 +503,9 @@ class SessionLifecycleService:
             child_pids: dict[Any, Any] = (
                 dict(raw_children) if isinstance(raw_children, dict) else {}
             )
+            # Liveness observation does not require a safe-to-kill start-time
+            # record. Keep every observed PID even if record capture omits it.
+            observed_child_pids = list(child_pids)
             capture_child_records, get_child_pids, kill_escaped_children = (
                 self._deps.get_child_process_helpers()
             )
@@ -491,6 +519,8 @@ class SessionLifecycleService:
                     get_child_pids,
                     pid,
                 )
+                fresh = list(fresh)
+                observed_child_pids.extend(fresh)
                 new_pids = [candidate for candidate in fresh if candidate not in child_pids]
                 if new_pids:
                     child_pids.update(
@@ -525,16 +555,44 @@ class SessionLifecycleService:
                         )
                     except Exception:
                         logger.exception("Reset %s: child sweep failed", key)
+            runtime_cleanup_ok = True
             if key in owner._subagent_runtimes:
                 try:
                     await owner.release_subagent_runtime(key)
                 except Exception:
+                    runtime_cleanup_ok = False
                     logger.debug(
                         "Reset %s: subagent runtime cleanup failed",
                         key,
                         exc_info=True,
                     )
             logger.debug("Reset session: %s (pid=%s)", key, pid)
+            if verify_exit:
+                # An acknowledged shutdown/kill is not evidence of exit. Keep
+                # the original PID identities captured before shutdown and
+                # observe them off-loop. A recycled PID causes a conservative
+                # refusal, never an extra kill of that unrelated process.
+                if not runtime_cleanup_ok or type(pid) is not int or pid <= 0:
+                    return False
+                observed = [pid, *observed_child_pids]
+                if any(type(value) is not int or value <= 0 for value in observed):
+                    return False
+                try:
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + _EXIT_VERIFY_TIMEOUT_SECS
+                    while True:
+                        exited = await asyncio.to_thread(
+                            lambda: all(not platform_compat.pid_exists(value) for value in observed)
+                        )
+                        if exited:
+                            return True
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            return False
+                        await asyncio.sleep(min(_EXIT_VERIFY_INTERVAL_SECS, remaining))
+                except Exception:
+                    logger.warning("Reset %s: exit verification unavailable", key)
+                    return False
         return session is not None
 
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:

@@ -1340,6 +1340,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # human-bound or third-party output, so neither is an egress boundary.
         "asset_downloader.py",
         "feature_videos_manifest.py",
+        # App-owned scoped jobs: the raw model text an app captures for its own
+        # job result is scrubbed (credentials, exfiltration URLs) before it is
+        # stored for the app. That is defense in depth on a stored payload, not
+        # a human-bound or third-party output; the dashboard sinks that could
+        # later show it run their own registered redaction.
+        "apps/scoped_spawn_sdk.py",
         # Gate-side log hygiene: the update provider redacts an update command's
         # stderr before writing it to the gateway log. It is a boot-time
         # operational log line, not an output boundary bound for a human or a

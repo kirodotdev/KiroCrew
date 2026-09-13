@@ -2197,13 +2197,20 @@ class SessionManager:
         expect_session: _Session | None = None,
         skip_if_busy: bool = False,
         clear_conversation: bool = False,
+        verify_exit: bool = False,
     ) -> bool:
-        """Reset a live session while preserving its persistence entry."""
+        """Reset a live session, optionally verifying its observed process tree.
+
+        The default retains the historical "session existed" result. A caller
+        consuming model output may request an exit check; unavailable process
+        identity or surviving processes then return False, never success.
+        """
         return await self._lifecycle_boundary().reset(
             key,
             expect_session=cast(Any, expect_session),
             skip_if_busy=skip_if_busy,
             clear_conversation=clear_conversation,
+            **({"verify_exit": True} if verify_exit else {}),
         )
 
     def check_context_usage(self, key: str, provider: LLMProvider) -> float:

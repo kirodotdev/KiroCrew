@@ -1464,6 +1464,19 @@ class SubagentInfo:
     # next start — from one cancelled AFTER it, which must not be re-delivered.
     _reported_to_parent: bool = False
 
+    # Appended for positional-constructor compatibility with existing callers.
+    # Scoped receipt only; armed synchronously by the host SpawnSDK. Captured
+    # text is bounded and still subject to the host's credential/egress checks.
+    app_result_limit: int = 0
+    app_result_text: str | None = None
+    app_result_error: str = ""
+    # Controls host injection/session reuse, not provider-native containment.
+    app_exact_context: bool = False
+    # None while teardown is pending; True only after opt-in exit verification.
+    app_cleanup_confirmed: bool | None = None
+    # Host-owned profile object; never serialized into app state or tombstones.
+    app_native_text_profile: object | None = None
+
     @property
     def outcome(self) -> str:
         """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.

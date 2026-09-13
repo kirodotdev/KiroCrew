@@ -725,6 +725,7 @@ class AcpRuntime:
         acp_backend: str = ACP_BACKEND_KIRO,
         crew_agent: str = "",
         private_memory: bool = False,
+        native_text_profile: object | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -734,6 +735,15 @@ class AcpRuntime:
             from kiro_crew.config.paths import config_dir
 
             self._work_dir = config_dir() / "workspace"
+        self._native_text_profile = native_text_profile
+        if native_text_profile is not None:
+            from kiro_crew.acp.native_text_profile import NativeTextProfile
+            if type(native_text_profile) is not NativeTextProfile:
+                raise RuntimeError('native text profile type is unsupported')
+            native_text_profile.validate_factory(native_text_profile.session_key, work_dir, acp_backend)
+            if agent != native_text_profile.agent or extra_env or mcp_gateway_overlay or mcp_gateway_socket:
+                raise RuntimeError('native runtime inputs are not isolated')
+            expect_mcp_reports = False
         self._agent = agent
         # Canonical Kiro Crew agent identity (a cfg.agents key) resolved by the
         # surface that created this runtime — a DIFFERENT namespace from
@@ -983,6 +993,12 @@ class AcpRuntime:
         harness = getattr(self, "_harness_resolved", None)
         if harness is None:
             harness = harness_for(self._acp_backend)
+            if getattr(self, "_native_text_profile", None) is not None:
+                # Native text isolation: same host answers, empty handshake
+                # capabilities (see NativeTextHarness).
+                from kiro_crew.acp.native_text_profile import NativeTextHarness
+
+                harness = NativeTextHarness(harness)
             self._harness_resolved = harness
         return harness
 
@@ -1224,6 +1240,33 @@ class AcpRuntime:
         thread hop for the same filesystem work or -- worse -- silently resolve a
         different mask than the one the argv was built for.
         """
+        if self._native_text_profile is not None:
+            # Native text isolation: the profile owns the agent spec, settings
+            # and HOME, so the harness's materialization/governance gates (which
+            # walk the SHARED agents tree) do not apply here. Resolve the same
+            # trusted binary the kiro harness would, then let the profile build
+            # the argv against its private profile directories.
+            # Imported at call time for the same reason the harness does it:
+            # kiro_crew.acp.client owns the trusted-binary search, and importing
+            # it at module scope would join its import cycle.
+            from kiro_crew.acp.client import (
+                _resolve_kiro_bin_for_spawn,
+                kiro_cli_not_found_message,
+            )
+
+            spawn_environ = dict(os.environ)
+            spawn_home = Path.home()
+            kiro_bin = await _resolve_kiro_bin_for_spawn(environ=spawn_environ, home=spawn_home)
+            if not kiro_bin:
+                raise AcpRuntimeError(
+                    await asyncio.to_thread(
+                        kiro_cli_not_found_message, environ=spawn_environ, home=spawn_home
+                    )
+                )
+            argv = await asyncio.to_thread(self._native_text_profile.prepare_argv, kiro_bin)
+            if self._model and self._model != 'auto':
+                argv += ['--model', self._model]
+            return SpawnPlan(argv=argv)
         plan = await self._harness.resolve_spawn(
             SpawnContext(
                 agent=self._agent,
@@ -1372,7 +1415,11 @@ class AcpRuntime:
         # the config dir (mkdir + file read) — blocking syscalls that must not
         # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
         # file, so a cancellation here must not orphan it.
-        argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
+        if self._native_text_profile is not None:
+            argv = await self._to_thread_guarding_sandbox(
+                self._native_text_profile.launcher_argv, argv, cgroup_scope_argv)
+        else:
+            argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
 
         env = {**os.environ}
         if self._extra_env:
@@ -1473,12 +1520,19 @@ class AcpRuntime:
         # file is live, so a cancellation here must not orphan it.
         await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
 
+        # Last environment operation: later host injectors cannot reintroduce
+        # browser, repository, MCP or unrelated credential variables.
+        if self._native_text_profile is not None:
+            env = await self._to_thread_guarding_sandbox(self._native_text_profile.launcher_environment, env)
+
         await self._discard_bound_workspace()
         if self._harness.internal_sandbox:
             self._spawn_work_dir, self._bound_workspace_fd = (
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
+            if self._native_text_profile is not None:
+                self._native_text_profile.mark_process_launch()
             self._process = await create_subprocess_limited(
                 *argv,
                 stdin=asyncio.subprocess.PIPE,
@@ -1651,6 +1705,9 @@ class AcpRuntime:
                     # accepts, which would silently downgrade what a kiro session
                     # declares.
                     "protocolVersion": self._harness.protocol_version,
+                    # Native text isolation advertises NO client capabilities:
+                    # the host must never be asked to serve fs/terminal
+                    # callbacks for an app-owned scoped job.
                     "clientCapabilities": self._harness.client_capabilities,
                 },
             )
@@ -1664,6 +1721,8 @@ class AcpRuntime:
             _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
             self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
             self._agent_version = agent_version_from_init(init_resp)
+            if self._native_text_profile is not None:
+                self._native_text_profile.initialized(self._agent_version, self._process_instance)
             self._initialized = True
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
@@ -2346,6 +2405,19 @@ class AcpRuntime:
 
                 # Route notifications by sessionId
                 session_id = (msg.params or {}).get("sessionId")
+                native = self._native_text_profile
+                if native is not None:
+                    forbidden = native.observe_inbound(msg.method, msg.params or {})
+                    if msg.id is not None and msg.method is not None:
+                        native.failed, native.ready = True, False
+                        if msg.is_method(METHOD_REQUEST_PERMISSION):
+                            await self._spawn_answer_task(msg, session_id or '', reason='native_text_denied')
+                        else:
+                            await asyncio.wait_for(self._answer_ownerless_request(msg.id, msg.method), timeout=1.0)
+                        forbidden = True
+                    if forbidden:
+                        self._mark_dead('native text capability violation')
+                        continue
                 if not session_id and _subagent_list_update and msg.method == _subagent_list_update:
                     # Snapshot backend-internal subagent session ids before the
                     # broadcast below delivers the frame to the UI consumers.
@@ -2779,6 +2851,8 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        if self._native_text_profile is not None:
+            self._native_text_profile.outbound(method, params)
         req_id = self._next_id
         self._next_id += 1
 
@@ -2813,6 +2887,8 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        if self._native_text_profile is not None:
+            self._native_text_profile.outbound(method, params)
         msg = {"jsonrpc": "2.0", "method": method, "params": params}
         data = json.dumps(msg) + "\n"
 
@@ -2832,6 +2908,10 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        if self._native_text_profile is not None:
+            # Native jobs have no host tools. Even an out-of-band consumer may
+            # not send an approval or arbitrary successful server-call result.
+            result = {"outcome": {"outcome": "cancelled"}}
         msg = {"jsonrpc": "2.0", "id": request_id, "result": result}
         data = json.dumps(msg) + "\n"
 
@@ -3307,6 +3387,12 @@ class AcpRuntime:
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
 
+        if self._native_text_profile is not None:
+            native = self._native_text_profile
+            if (Path(cwd or '') != native.cwd or agent != native.agent
+                    or mcp_servers != [] or member_session_key):
+                raise AcpRuntimeError('native text session inputs are not isolated')
+
         # Inject the shared gateway's broker stubs unless the caller supplied an
         # explicit list. A session-injected server outranks the same-named entry
         # in the agent spec, so this is what actually pools the servers — no file
@@ -3376,6 +3462,9 @@ class AcpRuntime:
             raise self._session_start_stalled(exc, METHOD_SESSION_NEW, mcp_servers) from exc
         finally:
             buffered_init = self._finish_session_init(session_id)
+
+        if self._native_text_profile is not None:
+            self._native_text_profile.confirm_session(session_id, *parse_session_modes(resp))
 
         # Register session queue
         queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
@@ -3616,6 +3705,8 @@ class AcpRuntime:
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
+        if self._native_text_profile is not None:
+            raise AcpRuntimeError('native text cannot resume a session')
         if not self._can_load_session:
             raise AcpRuntimeError("Backend does not advertise session/load support")
 
@@ -3853,6 +3944,8 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        if self._native_text_profile is not None:
+            self._native_text_profile.outbound(method, params)
         req_id = self._next_id
         self._next_id += 1
 

@@ -349,9 +349,16 @@ class RunEventCoordinator(ManagerComponent):
             logger.warning("Subagent %s: release failed", info.id, exc_info=True)
         if not info._session_sharing:
             try:
-                await asyncio.wait_for(
-                    self._manager._sessions.reset(session_key), timeout=_RESET_TIMEOUT
-                )
+                if getattr(info, 'app_exact_context', False):
+                    verified = await asyncio.wait_for(
+                        self._manager._sessions.reset(session_key, verify_exit=True),
+                        timeout=_RESET_TIMEOUT,
+                    )
+                    info.app_cleanup_confirmed = verified is True
+                else:
+                    await asyncio.wait_for(
+                        self._manager._sessions.reset(session_key), timeout=_RESET_TIMEOUT
+                    )
             except asyncio.TimeoutError:
                 logger.warning("Subagent %s: reset timed out, force-killing", info.id)
                 await self._manager._sigkill_session(session_key)
@@ -367,6 +374,20 @@ class RunEventCoordinator(ManagerComponent):
                     logger.exception("Subagent %s: SEL audit failed", info.id)
             except Exception:
                 logger.exception("Subagent %s: reset failed", info.id)
+            finally:
+                # Cancellation, timeout, or a swallowed reset error must never
+                # promote output or turn "done" into a cleanup claim.
+                if (getattr(info, 'app_exact_context', False)
+                        and getattr(info, 'app_cleanup_confirmed', None) is None):
+                    info.app_cleanup_confirmed = False
+                profile = getattr(info, 'app_native_text_profile', None)
+                if profile is not None and (getattr(info, 'app_cleanup_confirmed', None) is True
+                                            or profile.prelaunch_cleanup_safe()):
+                    try:
+                        profile.close(processes_exited=True)
+                    except Exception:
+                        info.app_cleanup_confirmed = False
+                        logger.exception('Native text profile cleanup failed')
 
     async def _run_impl(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
@@ -768,6 +789,12 @@ class RunEventCoordinator(ManagerComponent):
         if info.cwd:
             extra_kwargs["cwd"] = info.cwd
 
+        native_profile = getattr(info, 'app_native_text_profile', None)
+        if native_profile is not None:
+            native_profile.bind(session_key)
+            extra_kwargs['native_text_profile'] = native_profile
+            extra_kwargs['cwd'] = str(native_profile.cwd)
+
         # ── Session sharing: reuse parent's shared AcpRuntime ──
         # When enabled and eligible, subagents get a session on the parent's
         # companion AcpRuntime (~200ms startup, ~0 memory) instead of spawning
@@ -785,6 +812,8 @@ class RunEventCoordinator(ManagerComponent):
             self._manager._sessions.mark_continuable(session_key)
             self._manager._conversations[session_key] = time.time()
         use_session_sharing = (not info.keep) and self._manager._should_use_session_sharing(info)
+        if getattr(info, 'app_exact_context', False):
+            use_session_sharing = False
         # A per-spawn or per-role model / reasoning-effort override cannot be
         # applied to the parent's already-started shared runtime (it was spawned
         # with the parent's model and cannot switch model per session). Force the
@@ -826,6 +855,12 @@ class RunEventCoordinator(ManagerComponent):
                 **extra_kwargs,
             )
             is_cc = self._manager._is_cc_provider(client)
+
+        if native_profile is not None:
+            if (not is_new or _resumed
+                    or getattr(client, 'native_text_profile', None) is not native_profile
+                    or not native_profile.ready):
+                raise RuntimeError('native text provider did not confirm isolation')
 
         # Capture cleanup identity immediately after successful session
         # acquisition. Every later step can fail and tombstone the run, so
@@ -898,29 +933,37 @@ class RunEventCoordinator(ManagerComponent):
         # workspace directory, not a checkout, so it can only ever mean "this
         # run named no project", which is exactly the fail-closed case. Keeping
         # one meaning for that makes the rule the same on every surface.
-        # The child's own memory silo. Without it every subagent reads the
-        # operator's global store however the parent crew is bound, which makes
-        # a crew's isolation end at the moment it delegates.
-        #
-        # Prepare before the offloaded build because vector initialization is
-        # blocking file IO. A private store that cannot be prepared refuses the
-        # turn; it cannot continue with Global memory.
-        from kiro_crew.context import prepare_store_vectors
+        if getattr(info, 'app_exact_context', False):
+            # The trusted app handler has already assembled this scope's input.
+            # Even "conduct-only" host context can contain unrelated guidance.
+            # This controls host injection, not provider-native hooks/resources.
+            # No memory-silo preparation either: the vector store only feeds
+            # build_message, which this path never calls.
+            full_message = message
+        else:
+            # The child's own memory silo. Without it every subagent reads the
+            # operator's global store however the parent crew is bound, which makes
+            # a crew's isolation end at the moment it delegates.
+            #
+            # Prepare before the offloaded build because vector initialization is
+            # blocking file IO. A private store that cannot be prepared refuses the
+            # turn; it cannot continue with Global memory.
+            from kiro_crew.context import prepare_store_vectors
 
-        await prepare_store_vectors(
-            self._manager._ctx_builder, info.memory_store, session_key=session_key
-        )
-        full_message, _ = await run_in_embed_pool(
-            self._manager._ctx_builder.build_message,
-            message,
-            is_new,
-            session_key,
-            project=info.cwd or None,
-            memory_store=info.memory_store or None,
-            provider_type=self._manager._provider_label_of(client),
-            model_window=_sub_window,
-            context_groups=_groups,
-        )
+            await prepare_store_vectors(
+                self._manager._ctx_builder, info.memory_store, session_key=session_key
+            )
+            full_message, _ = await run_in_embed_pool(
+                self._manager._ctx_builder.build_message,
+                message,
+                is_new,
+                session_key,
+                project=info.cwd or None,
+                memory_store=info.memory_store or None,
+                provider_type=self._manager._provider_label_of(client),
+                model_window=_sub_window,
+                context_groups=_groups,
+            )
         # The one place the resolved scope and its cost are both known — without
         # this, "the sub-agent didn't know X" is undebuggable after the fact.
         logger.info(
@@ -1714,6 +1757,10 @@ class RunEventCoordinator(ManagerComponent):
         # shared spelling (llm_helpers.annotate_model_fallback) redacts the
         # config-sourced model ids the same way as the result body.
         cleaned = annotate_model_fallback(cleaned, client)
+        # Preserve exact bounded text for scoped apps before dashboard retention
+        # changes it. Completion/cleanup remain distinct in the SDK receipt.
+        from kiro_crew.apps.scoped_spawn_sdk import capture_app_result
+        capture_app_result(info, result_text)
         info.result = cleaned or "_No response._"
         # Cap disk file and trim memory — gateway decides how much to show based on mode.
         if info.result_path:

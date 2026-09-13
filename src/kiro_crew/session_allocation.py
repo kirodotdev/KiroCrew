@@ -1194,6 +1194,7 @@ class SessionAllocationService:
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
         _won_race_retries: int = 0,
+        native_text_profile: object | None = None,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
         """Reserve logical ownership for the complete claim/allocation call."""
@@ -1220,6 +1221,7 @@ class SessionAllocationService:
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
                 _won_race_retries=_won_race_retries,
+                native_text_profile=native_text_profile,
                 **extra_factory_kwargs,
             )
         except BaseException:
@@ -1241,6 +1243,7 @@ class SessionAllocationService:
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
         _won_race_retries: int = 0,
+        native_text_profile: object | None = None,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
         """Claim a live session or cold-start one, returning its held lease.
@@ -1256,6 +1259,14 @@ class SessionAllocationService:
         # A binding can belong to any session kind (cron, delegated run, or
         # consolidation), and must be checked before even reusing a live client.
         private_memory = bool(await asyncio.to_thread(private_memory_store_for_session, key))
+        if native_text_profile is not None:
+            from kiro_crew.acp.native_text_profile import NativeTextProfile
+            if type(native_text_profile) is not NativeTextProfile:
+                raise RuntimeError('native text profile type is unsupported')
+            native_text_profile.validate_factory(key, cwd, 'kiro')
+            if speculative or speculative_resume or extra_env:
+                raise RuntimeError('native text cannot inherit environment or speculative sessions')
+            extra_factory_kwargs['native_text_profile'] = native_text_profile
         stale_provider: LLMProvider | None = None
         stale_session: Any | None = None
         claimed: Any | None = None
@@ -1269,6 +1280,8 @@ class SessionAllocationService:
                     )
 
                 existing = self._sessions.get(key)
+                if native_text_profile is not None and existing is not None:
+                    raise RuntimeError('native text cannot reuse an existing session')
                 recycling = existing is not None and owner._recycling.get(key) is existing
                 if existing is not None and not recycling:
                     session = existing
@@ -1367,6 +1380,8 @@ class SessionAllocationService:
             key in (constants.background_key, constants.heartbeat_key)
             or any(key.startswith(prefix) for prefix in constants.stateless_prefixes)
         ) and not owner._is_continuable_key(key)
+        if native_text_profile is not None:
+            is_stateless = True
         if not is_stateless:
             resume_sid = owner._session_map.get(key)
         if speculative and resume_sid and not speculative_resume:
@@ -1558,6 +1573,9 @@ class SessionAllocationService:
                 extra_env=extra_env,
                 **extra_factory_kwargs,
             )
+            if (native_text_profile is not None
+                    and getattr(provider, 'native_text_profile', None) is not native_text_profile):
+                raise RuntimeError('selected provider factory does not support native text isolation')
             if self._deps.is_acp_provider(provider):
                 await cast(Any, provider).prepare_private_memory()
             if (getattr(provider, "_private_memory", False) is True) != private_memory:
@@ -1625,6 +1643,8 @@ class SessionAllocationService:
                     )
 
                 existing = self._sessions.get(key)
+                if native_text_profile is not None and existing is not None:
+                    raise RuntimeError('native text cannot reuse an existing session')
                 recycling = existing is not None and owner._recycling.get(key) is existing
                 if existing is not None and not recycling:
                     session = existing

@@ -89,6 +89,18 @@ class SpawnSDK:
         except Exception:  # noqa: BLE001 — a probe failure must not break the caller
             return False
 
+    def scoped(self, *, owner: str, provider: str, repository: str):
+        """Bind receipts to the authenticated handler's owner and repository.
+
+        This adds result/cancellation access, not text-only execution authority.
+        The app must separately establish native context/tool isolation before
+        it sends repository material. Never bind owner from untrusted task JSON.
+        """
+        backend = getattr(self._impl, 'scoped_backend', None)
+        if backend is None:
+            raise SpawnError('scoped job receipts unavailable on this host')
+        return backend.bind(self._app_name, owner, provider, repository)
+
     async def run(
         self, task: str, agent: str = "", *, silent: bool = False, model: str = ""
     ) -> str:
@@ -150,7 +162,8 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
     raises here, because an id alone does not mean it is running.
     """
 
-    async def _impl(task: str, agent: str, silent: bool, model: str, app: str) -> str:
+    async def _impl(task: str, agent: str, silent: bool, model: str, app: str,
+                    *, _scope_key: str = '', _capture_bytes: int = 0, _native_text: bool = False) -> str:
         if subagents is None:
             raise SpawnError("no subagent manager on this gateway")
         # The named agent must EXIST. SubagentManager validation silently replaces
@@ -187,27 +200,60 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
         # app's per-app governance profile — a profile that denies
         # ``capabilities.spawn`` for this app must win even when the policy
         # ceiling alone would permit. Omitting it was a Level-2 (PROFILE) bypass.
-        info = subagents.spawn(  # type: ignore[attr-defined]
-            task,
-            agent=agent,
-            silent=silent,
-            approval_mode="auto",
-            model=model or None,
-            app=app,
-            # Already confirmed to exist via the off-loop list_agents() above;
-            # skip the manager's synchronous re-scan on the event loop.
-            _agent_prevalidated=True,
-        )
-        if info is None:
-            return ""
-        if getattr(info, "error", ""):
+        native_profile = None
+        if _native_text:
+            from kiro_crew.acp.native_text_profile import NativeTextProfile
+            if not _scope_key or not _capture_bytes or model:
+                raise SpawnError('native text requires a scoped, unpinned request')
+            native_profile = NativeTextProfile(_scope_key, task)
+        try:
+            info = subagents.spawn(  # type: ignore[attr-defined]
+                task,
+                parent_session_key=_scope_key,
+                agent=agent,
+                silent=silent,
+                approval_mode="auto",
+                model=model or None,
+                app=app,
+                include_memory=not bool(_scope_key),
+                include_lessons=not bool(_scope_key),
+                include_project=not bool(_scope_key),
+                # Already confirmed to exist via off-loop list_agents().
+                _agent_prevalidated=True,
+            )
+        except BaseException:
+            if native_profile is not None:
+                native_profile.close(processes_exited=True)
+            raise
+        if info is None or getattr(info, "error", ""):
+            if native_profile is not None:
+                native_profile.close(processes_exited=True)
+            if info is None:
+                return ""
             raise SpawnError(str(info.error))
+        if native_profile is not None:
+            info.app_native_text_profile = native_profile
+            info.cwd = str(native_profile.cwd)
+        # spawn schedules execution on this same event loop. Capture is armed
+        # synchronously before yielding so even a fast completion retains text.
+        if _capture_bytes:
+            info.app_result_limit = _capture_bytes
+            info.app_exact_context = True
+            # App callers reconcile their own durable attempts. Do not silently
+            # respawn a cancelled attempt on a fresh session behind their back.
+            info._cancel_retry_used = True
         return str(getattr(info, "id", "") or "")
 
     # Ride the probe on the impl callable rather than adding a second parameter
     # to every layer that threads spawn_impl (gateway -> lifecycle -> context).
     # build_app_context reads it back via getattr.
     _impl.done_probe = build_done_probe(subagents)  # type: ignore[attr-defined]
+    from kiro_crew.apps.scoped_spawn_sdk import ScopedSpawnBackend
+    _impl.scoped_backend = ScopedSpawnBackend(  # type: ignore[attr-defined]
+        _impl,
+        lambda job: subagents.get(job) if subagents is not None else None,
+        lambda job: subagents.cancel(job),
+    )
     return _impl
 
 

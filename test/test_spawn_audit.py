@@ -224,6 +224,11 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
+        # Native text profile version probe: a fixed ``[<cli binary>, "--version"]``
+        # argv where the binary is the host-configured kiro-cli path, cwd is the
+        # profile's own empty private directory and env is the profile's scrubbed
+        # environment. No agent-influenced command, argument, cwd or env reaches it.
+        "acp/native_text_profile.py::_prepare_argv",
         # Eight pre-existing spawns in one app's own test module, invisible to this
         # audit until receivers were derived from each file's imports: they are
         # reached through a function-local ``import subprocess as sp``. Every one is

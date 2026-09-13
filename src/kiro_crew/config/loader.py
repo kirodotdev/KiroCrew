@@ -5133,6 +5133,7 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            native_text_profile: object | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -5227,7 +5228,17 @@ class KiroCrewConfig:
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
             )
+            if native_text_profile is not None:
+                from kiro_crew.acp.native_text_profile import NativeTextProfile
+                if type(native_text_profile) is not NativeTextProfile:
+                    raise RuntimeError('native text profile type is unsupported')
+                # Do not silently convert a configured foreign backend to Kiro.
+                native_text_profile.validate_factory(
+                    session_key, cwd, self.agent.acp_backend)
+                native_text_profile.validate_factory(session_key, cwd, _backend)
+                agent = native_text_profile.agent
             return AcpProvider(
+                native_text_profile=native_text_profile,
                 work_dir=wdir,
                 model=m,
                 agent=agent,
@@ -5241,8 +5252,8 @@ class KiroCrewConfig:
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
-                mcp_gateway_overlay=_gw_overlay,
-                mcp_gateway_socket=_gw_socket,
+                mcp_gateway_overlay=None if native_text_profile is not None else _gw_overlay,
+                mcp_gateway_socket=None if native_text_profile is not None else _gw_socket,
             )
 
         return _acp
