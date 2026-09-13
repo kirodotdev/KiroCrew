@@ -415,6 +415,35 @@ def strip_provider_id_prefix(provider_id: str) -> str:
     return s
 
 
+_EFFORT_SUFFIX_RE = re.compile(r"^(?P<base>[^\[\]]+?)\[(?P<suffix>[^\[\]]+)\]$")
+# A bracket suffix naming a CONTEXT WINDOW (``[1m]``, ``[200k]``), not an effort.
+_WINDOW_SUFFIX_RE = re.compile(r"^\d+[mk]?$", re.IGNORECASE)
+
+
+def split_effort_suffix(model_id: str) -> tuple[str, str]:
+    """Split a ``<model>[<effort>]`` id into ``(model, effort)``.
+
+    codex-acp advertises its ``models.availableModels`` as one entry per
+    model x reasoning effort, spelled ``gpt-6-astra[max]`` -- the shape its
+    legacy ``session/set_model`` accepts. Its ``model`` config option, the
+    channel Crew switches models on, accepts only the bare ``gpt-6-astra`` and
+    takes the effort through a separate ``reasoning_effort`` option. This is the
+    seam between the two spellings.
+
+    Returns ``(model_id, "")`` when there is nothing to split: no bracket
+    suffix, or a suffix that names a context WINDOW (``[1m]``) rather than an
+    effort -- that one is part of the model id claude-agent-acp serves and must
+    reach the wire intact.
+    """
+    m = _EFFORT_SUFFIX_RE.match(model_id.strip())
+    if not m:
+        return model_id, ""
+    suffix = m.group("suffix").strip()
+    if not suffix or _WINDOW_SUFFIX_RE.match(suffix):
+        return model_id, ""
+    return m.group("base"), suffix
+
+
 def _is_1m_id(model_id: str) -> bool:
     """True if ``model_id`` names a 1M-window variant (``[1m]`` suffix or a
     standalone ``1m`` token)."""

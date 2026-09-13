@@ -46,7 +46,6 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client import (
     _COMPACTION_FAILED_TURN_BUDGET,
-    _JSONRPC_INVALID_PARAMS,
     DEFAULT_MODEL,
     AcpClient,
     AcpError,
@@ -55,9 +54,11 @@ from kiro_crew.acp.client import (
     AcpTimeoutError,
     AcpToolGateUnroutable,
     _effective_prompt_timeout_async,
+    _is_config_value_rejection,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
     _jsonrpc_error_code,
+    _push_model_via_effort_split,
     _raise_acp_error,
     compaction_failure_detail,
     compaction_failure_is_transient,
@@ -1529,11 +1530,7 @@ class AcpSessionHandle:
                         MODEL_CONFIG_ID,
                     )
                     return ""
-                value_rejected = (
-                    f"config option {MODEL_CONFIG_ID}" in lowered
-                    or getattr(exc, "code", None) == _JSONRPC_INVALID_PARAMS
-                )
-                if not value_rejected:
+                if not _is_config_value_rejection(exc, MODEL_CONFIG_ID):
                     raise
                 last_exc = exc
                 continue
@@ -1544,6 +1541,14 @@ class AcpSessionHandle:
                     cand,
                 )
             return cand
+        # Every spelling refused as one value. A ``<model>[<effort>]`` pair --
+        # the shape codex-acp advertises but its ``model`` option does not take --
+        # is applied as its two halves instead (shared seam with AcpClient).
+        split_applied = await _push_model_via_effort_split(
+            self, self._runtime.acp_backend, model_id
+        )
+        if split_applied:
+            return split_applied
         # Redacted through the platform context before the id reaches a log or an
         # exception message: it is caller-supplied text on a path that ends up in
         # front of a user, and this process can compose a companion redactor -- so

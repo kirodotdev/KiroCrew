@@ -31,6 +31,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MEMBER_DISPATCH,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -112,6 +113,11 @@ METHOD_SET_CONFIG_OPTION = "session/set_config_option"
 #: ``configId`` under which KAS exposes the session model. KAS implements no
 #: ``session/set_model``, so this is the only way to switch a model on it.
 MODEL_CONFIG_ID = "model"
+#: ``configId`` under which codex-acp exposes the reasoning effort. codex-acp
+#: advertises its ``models.availableModels`` as ``<model>[<effort>]`` pairs but
+#: its ``model`` select only accepts the bare ``<model>``; the effort half of a
+#: pair travels down this option instead.
+REASONING_EFFORT_CONFIG_ID = "reasoning_effort"
 
 #: JSON-RPC 2.0 reserved error code for an unrecognized method.
 JSONRPC_METHOD_NOT_FOUND = -32601
