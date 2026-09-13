@@ -2918,8 +2918,13 @@ class ContextBuilder:
                 "order; any required format ([OPTIONS:], diffs, PR links); one "
                 "undo line for anything destructive; one risk line for anything "
                 "touching security, data or spend.\n\n"
-                "Asked why? Same three checks, plus the reason as one line per "
-                'point. Not asked? Offer it in three words: "say why".\n'
+                "Asked why? Teach it, do not state it. One picture from daily "
+                "life: a dog, a door. Keep it to the end. An objection is a "
+                "character in it. The reasons, numbered, one short line each, "
+                "in the picture's words. End: what it is, one line. Word check "
+                "still runs. Cut check spares the picture and the reasons. This "
+                "reply may run long.\n"
+                'Not asked? Offer it in three words: "say why".\n'
                 'Asked for depth (a doc, a walkthrough, "in detail")? This '
                 "mode is off for that reply.\n\n"
                 "Reply in the user's language."
