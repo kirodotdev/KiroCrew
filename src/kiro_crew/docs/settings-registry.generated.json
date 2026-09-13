@@ -1007,6 +1007,13 @@
       "description": "When the agent proactively messages you outside a chat"
     },
     {
+      "id": "notifications.send-notifications-to-this-device",
+      "label": "Send notifications to this device",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.send-notifications-to-this-device",
+      "description": "Receive OS notifications even when the app is closed, via Web Push."
+    },
+    {
       "id": "notifications.sound-category-skills",
       "label": "Skills",
       "tab": "notifications",

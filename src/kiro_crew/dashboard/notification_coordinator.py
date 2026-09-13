@@ -24,6 +24,7 @@ class NotificationCoordinator:
         rewrite_all: Callable[[list[dict[str, Any]]], None],
         executor_provider: Callable[[], Executor],
         max_persisted: int,
+        web_push_fanout: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._logger_provider = logger_provider
         self._payload_from_legacy = payload_from_legacy
@@ -34,6 +35,12 @@ class NotificationCoordinator:
         self._rewrite_all = rewrite_all
         self._executor_provider = executor_provider
         self._max_persisted = max_persisted
+        # Optional secondary sink: fan the delivered note out to browser Web
+        # Push subscriptions. Placed after local delivery so it inherits the
+        # redaction and channel-settings (mute/priority) already applied to the
+        # note. None keeps the coordinator usable without a push subsystem
+        # (e.g. bare test states), so delivery never depends on it.
+        self._web_push_fanout = web_push_fanout
 
     def notify(
         self,
@@ -77,6 +84,20 @@ class NotificationCoordinator:
         if note.get("priority") != "passive":
             state._unread_count += 1
         state._broadcast(note)
+
+        # Secondary sink: fan out to browser Web Push. A silenced (muted) note
+        # or one forced to passive priority is history-only — the same gate the
+        # unread badge uses above — so it must not raise an OS banner on a
+        # closed device either. Best-effort: the fan-out schedules its own
+        # async delivery and never blocks or fails local delivery.
+        if self._web_push_fanout is not None and not note.get("silenced"):
+            if note.get("priority") != "passive":
+                try:
+                    self._web_push_fanout(dict(note))
+                except Exception:
+                    self._logger_provider().warning(
+                        "Web push fan-out failed to schedule", exc_info=True
+                    )
 
         # One FIFO executor owns append and rewrite jobs.  Snapshot the row
         # because acknowledgement may mutate the in-memory object afterward.
