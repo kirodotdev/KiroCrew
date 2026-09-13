@@ -8175,7 +8175,7 @@
       "restart_monitor": "重启监控",
       "review_ready": "可供评审",
       "save_changes": "保存更改",
-      "set_up_bounded_monitor": "设置有界监控",
+      "set_up_bounded_monitor": "改为监控拉取请求",
       "sidebar_status": "监控 · {{status}}",
       "start_monitor": "启动监控",
       "statuses": {
@@ -8194,8 +8194,7 @@
       "title": "有界拉取请求监控",
       "tokens": "令牌数：{{count}}",
       "unknown": "未知",
-      "back_to_bounded_monitor": "返回有界监控",
-      "legacy_notice": "此旧版循环会在每个周期调用代理，并且可能无限期运行。",
+      "legacy_notice": "此目标循环会在每个周期调用代理，并且可能无限期运行。",
       "use_legacy_costly": "使用旧版目标循环（成本高）",
       "wake_instructions": "代理唤醒时的指令",
       "wake_instructions_too_long": "请输入不超过 {{max}} 个字符。",

@@ -8175,7 +8175,7 @@
       "restart_monitor": "모니터 다시 시작",
       "review_ready": "검토 준비 완료",
       "save_changes": "변경 사항 저장",
-      "set_up_bounded_monitor": "제한형 모니터 설정",
+      "set_up_bounded_monitor": "대신 풀 리퀘스트 모니터링",
       "sidebar_status": "모니터 · {{status}}",
       "start_monitor": "모니터 시작",
       "statuses": {
@@ -8194,8 +8194,7 @@
       "title": "제한형 풀 리퀘스트 모니터",
       "tokens": "토큰: {{count}}",
       "unknown": "알 수 없음",
-      "back_to_bounded_monitor": "제한된 모니터로 돌아가기",
-      "legacy_notice": "이 기존 루프는 매 주기마다 에이전트를 호출하며 제한 없이 실행될 수 있습니다.",
+      "legacy_notice": "이 목표 루프는 매 주기마다 에이전트를 호출하며 제한 없이 실행될 수 있습니다.",
       "use_legacy_costly": "기존 목표 루프 사용(비용 높음)",
       "wake_instructions": "에이전트가 깨어날 때의 지침",
       "wake_instructions_too_long": "{{max}}자 이하로 입력하세요.",

@@ -8175,7 +8175,7 @@
       "restart_monitor": "モニターを再起動",
       "review_ready": "レビュー準備完了",
       "save_changes": "変更を保存",
-      "set_up_bounded_monitor": "上限付きモニターを設定",
+      "set_up_bounded_monitor": "代わりにプルリクエストを監視",
       "sidebar_status": "モニター · {{status}}",
       "start_monitor": "モニターを開始",
       "statuses": {
@@ -8194,8 +8194,7 @@
       "title": "上限付きプルリクエストモニター",
       "tokens": "トークン：{{count}}",
       "unknown": "不明",
-      "back_to_bounded_monitor": "制限付きモニターに戻る",
-      "legacy_notice": "この従来のループはサイクルごとにエージェントを呼び出し、制限なく実行される場合があります。",
+      "legacy_notice": "この目標ループはサイクルごとにエージェントを呼び出し、制限なく実行される場合があります。",
       "use_legacy_costly": "従来の目標ループを使用（高コスト）",
       "wake_instructions": "起動時のエージェントへの指示",
       "wake_instructions_too_long": "{{max}} 文字以内で入力してください。",

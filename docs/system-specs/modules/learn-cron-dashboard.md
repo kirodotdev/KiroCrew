@@ -2931,7 +2931,19 @@ must have their exact version-1 key sets; an extra key makes the record inert ra
 than letting an unbounded provider field ride a future wire frame.
 
 The chat composer exposes structured monitor creation and mutation only through
-the dedicated `/api/monitors` routes. It explains that crew and member sessions
+the dedicated `/api/monitors` routes. **The popover opens on the goal loop, not
+on the bounded monitor.** A bounded monitor accepts exactly one subject — a pull
+request URL validated against the four supported code hosts — so opening on it
+put every session that is not about a pull request in front of a form it cannot
+fill, with the surface accepting an arbitrary objective behind an unlabelled
+click. An armed record outranks that default in either direction: a slot holding
+a structured monitor opens on the monitor, and a slot running a legacy loop
+opens on the loop and is offered no monitor at all, because the alternative
+hides a running automation behind the form for the other one. From the goal loop
+the bounded form is one press away, under a note stating that a goal loop
+invokes the agent every cycle and may be unbounded; that note is worded as
+information rather than a warning, since on the default view a warn-coloured
+banner is what every reader sees on every open. It explains that crew and member sessions
 cannot host a direct monitor turn and disables create, edit, restart, and
 legacy-loop controls for those modes. Stop remains available for an existing
 monitor so an operator can always disarm stale state. A new pull-request monitor

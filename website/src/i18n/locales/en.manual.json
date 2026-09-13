@@ -2977,7 +2977,7 @@
       "restart_monitor": "Restart monitor",
       "review_ready": "Review ready",
       "save_changes": "Save changes",
-      "set_up_bounded_monitor": "Set up a bounded monitor",
+      "set_up_bounded_monitor": "Watch a pull request instead",
       "sidebar_status": "Monitor · {{status}}",
       "start_monitor": "Start monitor",
       "statuses": {
@@ -2996,8 +2996,7 @@
       "title": "Bounded pull request monitor",
       "tokens": "Tokens: {{count}}",
       "unknown": "Unknown",
-      "back_to_bounded_monitor": "Back to bounded monitor",
-      "legacy_notice": "This legacy loop invokes the agent every cycle and can run without a limit.",
+      "legacy_notice": "This goal loop invokes the agent every cycle and can run without a limit.",
       "use_legacy_costly": "Use legacy goal loop (costly)",
       "wake_instructions": "Instructions for the agent when it wakes",
       "wake_instructions_too_long": "Enter no more than {{max}} characters.",
