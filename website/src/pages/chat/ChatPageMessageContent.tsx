@@ -235,6 +235,10 @@ export type UserContentRenderOpts = {
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
+  /** When this row was written, ISO. Only the session chip's SHORT-name form uses
+   *  it, to refuse a slot minted after the text naming it; absent, no short name
+   *  resolves here (the full key still does). */
+  messageTs?: string
 }
 
 /** renderFileSegment's own two knobs live on a private extension, not on the
@@ -520,7 +524,7 @@ function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string;
  *  Files referenced inline stay inline chips; the rest become block cards.
  *  Images keep their inline `![image](path)` markdown and are excluded here. */
 function renderFileSegment(opts: FileSegmentOpts) {
-  const { content, meta, onFileOpen, keyBase = 'seg', dirMap, onFolderOpen, linkPreviews, onSessionOpen, sessions, activeSession } = opts
+  const { content, meta, onFileOpen, keyBase = 'seg', dirMap, onFolderOpen, linkPreviews, onSessionOpen, sessions, activeSession, messageTs } = opts
   const parsedFiles = parseFiles(content, meta)
   const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
 
@@ -540,7 +544,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // inline-widget seam; a folder-referencing prompt with block markdown is
   // the uncommon combination.
   if (!parsedFiles.length && !dirKeys.length) {
-    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} />
+    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
   }
 
   // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
@@ -573,7 +577,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // then the cards.
   if (!mentionMap.size && !dirKeys.length) {
     const caption = display.trim()
-    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} /> : null}{cards}</>
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
   }
 
   // Inline-mention path: the caption keeps files inline, so render it as a

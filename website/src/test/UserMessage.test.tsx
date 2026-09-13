@@ -12,6 +12,45 @@ import { copySessionLink } from '../utils/shareUrl'
 
 const renderContent = (content: string) => <span data-testid="content">{content}</span>
 
+describe('the write time handed to renderContent', () => {
+  // This value is compared against server-clock slot mint epochs by the session
+  // chip's short-name form, so the AUTHORITATIVE server ts has to win. `clientTs`
+  // is the optimistic bubble's own clock, retained through reconcile; preferring
+  // it let an ahead-skewed client clock pass the mint check and open the wrong
+  // conversation, silently.
+  const seen: (string | undefined)[] = []
+  const capture = (c: string, _m: Record<string, unknown> | undefined, ts?: string) => {
+    seen.push(ts)
+    return <span data-testid="content">{c}</span>
+  }
+
+  beforeEach(() => { seen.length = 0 })
+
+  it('prefers the server messageTs over a client clientTs', () => {
+    render(
+      <UserMessage
+        content="hi"
+        renderContent={capture}
+        messageTs="2026-09-12T09:00:00Z"
+        meta={{ clientTs: '2027-01-01T00:00:00Z' }}
+      />,
+    )
+    expect(seen).toEqual(['2026-09-12T09:00:00Z'])
+  })
+
+  it('falls back to clientTs only when there is no server ts yet', () => {
+    render(
+      <UserMessage content="hi" renderContent={capture} meta={{ clientTs: '2026-09-12T09:00:00Z' }} />,
+    )
+    expect(seen).toEqual(['2026-09-12T09:00:00Z'])
+  })
+
+  it('hands over undefined when neither exists, which fails the chip closed', () => {
+    render(<UserMessage content="hi" renderContent={capture} />)
+    expect(seen).toEqual([undefined])
+  })
+})
+
 describe('UserMessage', () => {
   it('renders message content', () => {
     render(<UserMessage content="hello" renderContent={renderContent} />)

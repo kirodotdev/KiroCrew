@@ -4,7 +4,7 @@ import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
 import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, FileCode, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
 import { copyCode, copyToClipboard } from '../utils/clipboard'
-import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../utils/sessionKeys'
+import { canonicalChatHref, chatHrefSid, namesASession, sessionKeyFrom, sessionKeyFromShort } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -865,10 +865,20 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       sessionCandidate = decodeURIComponent(href)
     } catch { /* keep it a normal link */ }
   }
-  // Whether this href NAMES a same-origin chat session at all, independent of
-  // whether that session is currently reachable (open). A closed/unknown key is
-  // still a chat-session href — it just does not resolve in the open-tabs roster.
-  const sessionHrefKey = sessionCandidate ? sessionKeyFromChatHref(sessionCandidate) : null
+  // The session parameter this href carries, verbatim. Handed to
+  // `resolveSessionChip` below rather than a pre-resolved key, because that
+  // helper owns which spellings name a session — so a short `?sid=chat-1380`
+  // resolves here exactly as the same short name does in a backtick chip.
+  const sessionHrefSid = sessionCandidate ? chatHrefSid(sessionCandidate) : null
+  // Whether this href NAMES a same-origin chat session at all, by SHAPE, and
+  // independent of whether that session is currently reachable (open). A
+  // closed/unknown one is still a chat-session href — it just does not resolve in
+  // the open-tabs roster. Both spellings count, and the union is `namesASession`'s
+  // rather than re-spelled here: declining only the full key left an authored
+  // `?sid=chat-9999` to navigate to exactly the dead session view this interception
+  // exists to prevent (#9914), and a spelling added to the resolver alone would
+  // re-open that hole if this gate kept its own copy of the grammar.
+  const sessionHrefNamesSession = !!sessionHrefSid && namesASession(sessionHrefSid)
   // Whether this renderer is wired to route sessions at all — the SAME predicate
   // `resolveSessionChip` guards on (`onSessionOpen` AND `sessions`), so the link
   // affordance and the click handler can never disagree. Both must be present:
@@ -880,7 +890,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   const sessionRouting = !!(sessionActions.onSessionOpen && sessionActions.sessions)
   // Same gate as the inline chip, so a link and a bare key naming one session
   // cannot disagree about whether it is reachable.
-  const sessionLink = sessionHrefKey ? resolveSessionChip(sessionHrefKey, sessionActions) : null
+  const sessionLink = sessionHrefSid ? resolveSessionChip(sessionHrefSid, sessionActions) : null
   // The attribute carries the canonical key: a modified click goes to the browser,
   // and an authored `dashboard_…` sid would open a session `?sid=` cannot resolve.
   const sessionHref = sessionLink && sessionCandidate ? canonicalChatHref(sessionCandidate, sessionLink.key) : null
@@ -907,7 +917,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     if (sessionLink) {
       e.preventDefault()
       sessionActions.onSessionOpen!(sessionLink.key)
-    } else if (sessionHrefKey && sessionRouting) {
+    } else if (sessionHrefNamesSession && sessionRouting) {
       e.preventDefault()
     }
   }
@@ -1005,16 +1015,28 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       {...sp(node)}
       href={sessionHref ?? href}
       // A `/chat?sid=` href is never a path, so the session branch wins outright.
-      // `sessionHrefKey` (not `sessionLink`) gates the handler so a session link
-      // that does not resolve — a closed/unknown key, or the active session's own
-      // key — is still intercepted and declined rather than left to navigate the
-      // browser to a dead `?sid=` view (#9914) or a duplicate tab.
-      onClick={sessionHrefKey ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
+      // One predicate gates the handler, because a link that RESOLVES necessarily
+      // names a session by shape too — so the two branches inside the handler
+      // split the same population rather than needing different gates: resolvable
+      // switches in place, and one that names a session but does not resolve (a
+      // closed or unknown key, a short name no open session answers to, or the
+      // active session's own key) is intercepted and declined rather than left to
+      // navigate the browser to a dead `?sid=` view (#9914) or a duplicate tab.
+      onClick={sessionHrefNamesSession ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
       title={sessionLink
         ? `${sessionLink.title}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}`
         : undefined}
       {...(ext ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
-      className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent"
+      // A session link that names a session but cannot open one drops the live-link
+      // affordance rather than keeping it and doing nothing. The click is swallowed
+      // deliberately (#9914: navigating a dead `?sid=` is worse than not moving), so
+      // the accent underline was promising an action that never came — every time,
+      // for every old transcript naming a session that has since closed. Muted and
+      // unadorned is the same answer the backtick chip gives an unresolved key: no
+      // affordance, and the href stays intact so a modified click still works.
+      className={sessionHrefNamesSession && !sessionLink && sessionRouting
+        ? 'text-muted'
+        : 'text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent'}
     >
       <InsideLinkCtx.Provider value={true}>{children}</InsideLinkCtx.Provider>
     </a>
@@ -1064,6 +1086,11 @@ type SessionActions = {
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
+  /** Epoch seconds this message was written at, when the host knows it. Only the
+   *  SHORT-name lookup uses it, to refuse a slot minted after the text naming it
+   *  (see `sessionKeyFromShort`). Absent on surfaces that render markdown with no
+   *  message identity, and there NO short name resolves — the full key still does. */
+  writtenAtEpoch?: number
 }
 const SessionActionCtx = createContext<SessionActions>({})
 
@@ -1081,10 +1108,16 @@ const SessionActionCtx = createContext<SessionActions>({})
  *     not honour a chip here;
  *   - the key names the session the reader is ALREADY in, where a click would be
  *     a visible no-op.
+ *
+ * A SHORT name (`chat-1380`, no timestamp) resolves through the same roster. The
+ * roster was already the authority for whether a chip may exist, so letting it
+ * also say which session a nickname means adds no new trust: a name it does not
+ * answer for is refused by the second rule above, like any other unknown key.
  */
 function resolveSessionChip(raw: string, actions: SessionActions): { key: string; title: string } | null {
   if (!actions.onSessionOpen || !actions.sessions) return null
   const key = sessionKeyFrom(raw)
+    ?? sessionKeyFromShort(raw, actions.sessions.keys(), actions.writtenAtEpoch)
   if (!key || key === actions.activeSession) return null
   const title = actions.sessions.get(key)
   if (title === undefined) return null
@@ -3886,7 +3919,7 @@ import WidgetFrame from './WidgetFrame'
 import WidgetPlaceholder from './WidgetPlaceholder'
 
 import { i18nT } from '../i18n/t'
-import { fmtNumber } from '../i18n/format'
+import { fmtNumber, toDate } from '../i18n/format'
 /** Try to extract a file path from chat text immediately preceding a diff
  * block. Tools sometimes emit "Created /path/to/file:" or "Modified ..."
  * before a bare diff with no +++/--- headers; this hint lets DiffBlock's
@@ -4025,8 +4058,36 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
    *  this component does. */
   const pathActions = useMemo<PathActions>(() => ({ onFileOpen, onFolderOpen }), [onFileOpen, onFolderOpen])
   const sessionActions = useMemo<SessionActions>(
-    () => ({ onSessionOpen, sessions, activeSession }),
-    [onSessionOpen, sessions, activeSession],
+    // The write time the SHORT-name chip needs. Absent, non-absolute, or
+    // unparseable yields undefined, and a short name then resolves to NOTHING —
+    // fail closed, because this is compared against server-clock slot mint epochs
+    // and a wrong comparison opens the wrong conversation silently.
+    //
+    // Validated, not trusted: `messageTs` is DECLARED `string` but crosses an API
+    // boundary that does not enforce it, and the transcript endpoint really does
+    // send epoch NUMBERS (see the fixture in `playwright/voice-recovery.spec.ts`).
+    // Calling a string method on that value threw and blanked the transcript, so
+    // the shape is checked here rather than assumed.
+    //
+    // A number is an epoch and already absolute; `toDate` owns the
+    // seconds-vs-milliseconds rule for the whole app, so it is not re-guessed here.
+    // A STRING has to carry `Z` or an explicit `±HH:MM`: `Date.parse('2026-09-11T23:39:00')`
+    // reads a bare local time, so the same row would mean a different instant per
+    // viewer timezone, and a viewer behind UTC shifts it forward far enough to let a
+    // slot minted after the row pass the check.
+    () => {
+      const raw: unknown = messageTs
+      const absolute = typeof raw === 'number'
+        || (typeof raw === 'string' && /(?:Z|[+-]\d{2}:?\d{2})$/.test(raw.trim()))
+      const when = absolute ? toDate(raw as string | number) : null
+      return {
+        onSessionOpen,
+        sessions,
+        activeSession,
+        writtenAtEpoch: when ? Math.floor(when.getTime() / 1000) : undefined,
+      }
+    },
+    [onSessionOpen, sessions, activeSession, messageTs],
   )
 
   // Pre-compute the widget index for each widget block (0-based ordinal of
