@@ -5751,6 +5751,28 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         )
 
 
+def _merged_send_ids(consumed: list[dict]) -> list[str]:
+    """Every client send id the consumed entries stand for, in drain order.
+
+    Reads both the scalar `sendId` an enqueue writes and the plural `sendIds` an
+    already-merged entry carries, so folding twice does not lose the first fold's.
+    """
+    out: list[str] = []
+    for item in consumed:
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            continue
+        one = meta.get("sendId")
+        if isinstance(one, str) and one and one not in out:
+            out.append(one)
+        many = meta.get("sendIds")
+        if isinstance(many, list):
+            for x in many:
+                if isinstance(x, str) and x and x not in out:
+                    out.append(x)
+    return out
+
+
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
@@ -6003,7 +6025,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # was not the last writer. The single-entry case (the overwhelmingly common
     # one) keeps the plain-send shape -- `sendId` alone -- so a client reading
     # only that key sees exactly what a dispatched send's row carries.
-    _drained_send_ids: list[str] = []
+    _drained_send_ids: list[str] = _merged_send_ids(consumed)
     # circular import: session_control imports this package's modules at module level.
     from kiro_crew.dashboard.session_control import (
         QUEUED_CONTAINMENT_META_KEY,
@@ -6032,9 +6054,6 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             _many = _item_meta.get("steer_delivery_ids")
             if isinstance(_many, list):
                 _drained_ids.extend(x for x in _many if isinstance(x, str) and x)
-            _sid = _item_meta.get("sendId")
-            if isinstance(_sid, str) and _sid and _sid not in _drained_send_ids:
-                _drained_send_ids.append(_sid)
             # The admission-time containment snapshot is queue plumbing,
             # consumed by _drop_stale_admissions above; it says nothing about the
             # ROW, so it must not ride into the persisted transcript meta.

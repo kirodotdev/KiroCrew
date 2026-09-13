@@ -7367,7 +7367,8 @@
       "sub_agent_result_few": "{{count}} результата субагентов",
       "sub_agent_result_many": "{{count}} результатов субагентов",
       "sub_agent_result_one": "{{count}} результат субагента",
-      "sub_agent_result_other": "{{count}} результата субагентов"
+      "sub_agent_result_other": "{{count}} результата субагентов",
+      "edit_failed": "Не удалось сохранить правку: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "П",
@@ -10251,7 +10252,6 @@
       "return_to_split_view": "Вернуться к разделённому виду",
       "scroll_to_bottom": "Прокрутить вниз",
       "send_failed": "Не удалось отправить",
-      "send_failed_connection": "Не удалось отправить — проверьте подключение и попробуйте снова.",
       "session_not_found": "Сессия «{{name}}» не найдена",
       "session_options": "Параметры сессии",
       "show_sessions": "Показать сессии",
@@ -10293,7 +10293,15 @@
       "could_not_generate_title": "Не удалось создать заголовок",
       "could_not_open_side_chat": "Не удалось открыть боковой чат",
       "side_command_not_run": "Команда /side не была выполнена. Ваше сообщение осталось в поле ввода.",
-      "could_not_send_to_side_chat": "Не удалось отправить в боковой чат"
+      "could_not_send_to_side_chat": "Не удалось отправить в боковой чат",
+      "delivery_delivered": "Сообщение доставлено — повторная отправка отправит его дважды.",
+      "delivery_discard": "Отклонить сообщение и очистить поле ввода",
+      "delivery_remove": "Удалить сообщение, текст сохранится",
+      "delivery_unconfirmed_short": "Доставка не подтверждена",
+      "send_no_response": "Подтверждение для этого сообщения не вернулось.",
+      "delivery_unconfirmed_resend": "Доставка не подтверждена — ваш текст снова в поле ввода; повторная отправка может отправить его дважды.",
+      "delivery_unconfirmed_dismiss_note": "Если это сообщение так и не дошло до сервера, его удаление убирает его из этой переписки; текст возвращается в поле ввода.",
+      "delivery_clear": "Очистить поле ввода"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

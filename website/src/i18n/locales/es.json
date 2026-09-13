@@ -7257,7 +7257,8 @@
       "send_now": "Enviar ahora",
       "sub_agent_result_many": "{{count}} resultados de subagentes",
       "sub_agent_result_one": "{{count}} resultado del subagente",
-      "sub_agent_result_other": "{{count}} resultados de subagentes"
+      "sub_agent_result_other": "{{count}} resultados de subagentes",
+      "edit_failed": "Error al guardar la edición: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "C",
@@ -10108,7 +10109,6 @@
       "return_to_split_view": "Volver a la vista dividida",
       "scroll_to_bottom": "Ir al final",
       "send_failed": "Error al enviar",
-      "send_failed_connection": "No se pudo enviar: comprueba tu conexión y vuelve a intentarlo.",
       "session_not_found": "No se encontró la sesión \"{{name}}\"",
       "session_options": "Opciones de la sesión",
       "show_sessions": "Mostrar las sesiones",
@@ -10141,8 +10141,8 @@
       "worktree_creation_returned_no_path": "La creación del worktree no devolvió ninguna ruta",
       "loading_earlier_messages": "Cargando mensajes anteriores…",
       "send_failed_with_error": "Error al enviar: {{error}}",
-      "send_failed_with_error_restored": "No se pudo enviar este mensaje: {{error}}. Tu texto ha vuelto al cuadro de redacción.",
-      "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
+      "send_failed_with_error_restored": "No se pudo enviar este mensaje: {{error}}. Tu texto ha vuelto al redactor.",
+      "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al redactor; revisa la conversación antes de enviarlo de nuevo.",
       "could_not_read_file_reason": "No se pudo leer {{path}} ({{reason}})",
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -10150,7 +10150,15 @@
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
-      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral"
+      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
+      "delivery_delivered": "Mensaje entregado: reenviarlo lo enviará dos veces.",
+      "delivery_discard": "Descartar mensaje y vaciar el redactor",
+      "delivery_remove": "Eliminar mensaje, conservar el texto",
+      "delivery_unconfirmed_short": "Entrega sin confirmar",
+      "send_no_response": "No llegó ninguna confirmación para este mensaje.",
+      "delivery_unconfirmed_resend": "Entrega sin confirmar: tu texto ha vuelto al redactor; reenviarlo podría enviarlo dos veces.",
+      "delivery_unconfirmed_dismiss_note": "Si este mensaje nunca llegó al servidor, eliminarlo lo saca de esta conversación; su texto vuelve al redactor.",
+      "delivery_clear": "Vaciar el redactor"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",

@@ -63,7 +63,13 @@ class TestQueueEditHelper:
         id2 = slot.queue_append("same")
         slot.queue_edit_by_id(id2, "changed")
         assert slot._queue[0] == {"id": id1, "content": "same", "kind": ""}
-        assert slot._queue[1] == {"id": id2, "content": "changed", "kind": ""}
+        assert slot._queue[1] == {
+            "id": id2,
+            "content": "changed",
+            "kind": "",
+            "edited": True,
+            "edit_rev": 1,
+        }
 
     @pytest.mark.parametrize(
         "callback_name",
@@ -251,7 +257,7 @@ class TestQueueEditEndpoint:
 
         state.broadcast_ws.assert_any_call(
             "queue_edit",
-            {"slot": "chat-1", "queue_id": qid, "content": "new"},
+            {"slot": "chat-1", "queue_id": qid, "content": "new", "editRev": 1},
         )
 
     @pytest.mark.asyncio
@@ -278,4 +284,6 @@ class TestQueueEditEndpoint:
             "content": "edited",
             "kind": "",
             "_directive_user_origin": True,
+            "edited": True,
+            "edit_rev": 1,
         }

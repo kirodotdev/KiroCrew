@@ -7147,7 +7147,8 @@
       "save_edit": "संपादन सहेजें",
       "send_now": "अभी भेजें",
       "sub_agent_result_one": "{{count}} सब-एजेंट परिणाम",
-      "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम"
+      "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम",
+      "edit_failed": "संपादन सहेजना विफल: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "प",
@@ -9965,7 +9966,6 @@
       "return_to_split_view": "स्प्लिट व्यू में वापस जाएँ",
       "scroll_to_bottom": "नीचे तक स्क्रॉल करें",
       "send_failed": "भेजना विफल",
-      "send_failed_connection": "भेजा नहीं जा सका — अपना कनेक्शन जांचो और फिर से कोशिश करो।",
       "session_not_found": "सत्र \"{{name}}\" नहीं मिला",
       "session_options": "सत्र विकल्प",
       "show_sessions": "सेशन दिखाएँ",
@@ -9999,15 +9999,23 @@
       "loading_earlier_messages": "पुराने संदेश लोड हो रहे हैं…",
       "send_failed_with_error": "भेजना विफल: {{error}}",
       "send_failed_with_error_restored": "यह संदेश नहीं भेजा जा सका: {{error}}. तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है।",
-      "delivery_unconfirmed": "डिलीवरी की पुष्टि नहीं हुई — तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है; दोबारा भेजने से पहले बातचीत देखो।",
+      "delivery_unconfirmed": "डिलिवरी अपुष्ट — तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है; दोबारा भेजने से पहले बातचीत देखो।",
       "could_not_read_file_reason": "{{path}} पढ़ा नहीं जा सका ({{reason}})",
       "screenshot_failed_reason": "स्क्रीनशॉट विफल: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "सत्र का नाम नहीं बदल सके",
       "could_not_generate_title": "शीर्षक नहीं बना सके",
       "could_not_open_side_chat": "साइड चैट नहीं खुल सकी",
-      "side_command_not_run": "/side कमांड नहीं चला। तुम्हारा संदेश अभी भी कंपोज़र में है।",
-      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके"
+      "side_command_not_run": "/side कमांड नहीं चला। तुम्हारा संदेश अभी भी इनपुट बॉक्स में है।",
+      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके",
+      "delivery_delivered": "संदेश वितरित — पुनः भेजने पर यह दो बार जाएगा।",
+      "delivery_discard": "संदेश और लिखने का बॉक्स छोड़ें",
+      "delivery_remove": "संदेश हटाना, टेक्स्ट रहेगा",
+      "delivery_unconfirmed_short": "डिलीवरी अपुष्ट",
+      "send_no_response": "इस संदेश के लिए कोई पुष्टि वापस नहीं आई।",
+      "delivery_unconfirmed_resend": "डिलिवरी अपुष्ट — टेक्स्ट पुनः इनपुट बॉक्स में है; पुनः भेजने पर यह दो बार जा सकता है।",
+      "delivery_unconfirmed_dismiss_note": "यदि यह संदेश सर्वर तक नहीं पहुंचा, तो इसे हटाने पर यह इस बातचीत से हट जाता है; इसका टेक्स्ट इनपुट बॉक्स में वापस आ जाता है।",
+      "delivery_clear": "लिखने का बॉक्स खाली करें"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",

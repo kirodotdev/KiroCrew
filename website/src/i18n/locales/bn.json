@@ -7147,7 +7147,8 @@
       "save_edit": "সম্পাদনা সংরক্ষণ করুন",
       "send_now": "এখনই পাঠান",
       "sub_agent_result_one": "{{count}}টি সাবএজেন্ট ফলাফল",
-      "sub_agent_result_other": "{{count}}টি সাবএজেন্ট ফলাফল"
+      "sub_agent_result_other": "{{count}}টি সাবএজেন্ট ফলাফল",
+      "edit_failed": "সম্পাদনা সংরক্ষণ করা যায়নি: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "প",
@@ -9965,7 +9966,6 @@
       "return_to_split_view": "স্প্লিট ভিউতে ফিরে যান",
       "scroll_to_bottom": "একদম নিচে যান",
       "send_failed": "পাঠানো যায়নি",
-      "send_failed_connection": "পাঠানো যায়নি — আপনার সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।",
       "session_not_found": "\"{{name}}\" সেশন পাওয়া যায়নি",
       "session_options": "সেশন অপশন",
       "show_sessions": "সেশন দেখাও",
@@ -9999,15 +9999,23 @@
       "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…",
       "send_failed_with_error": "পাঠানো যায়নি: {{error}}",
       "send_failed_with_error_restored": "এই বার্তাটি পাঠানো যায়নি: {{error}}। আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে।",
-      "delivery_unconfirmed": "ডেলিভারি নিশ্চিত হয়নি — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।",
+      "delivery_unconfirmed": "ডেলিভারি অনিশ্চিত — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।",
       "could_not_read_file_reason": "{{path}} পড়া যায়নি ({{reason}})",
       "screenshot_failed_reason": "স্ক্রিনশট ব্যর্থ হয়েছে: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "সেশনের নাম পরিবর্তন করা যায়নি",
       "could_not_generate_title": "শিরোনাম তৈরি করা যায়নি",
       "could_not_open_side_chat": "সাইড চ্যাট খোলা যায়নি",
-      "side_command_not_run": "/side কমান্ড চলেনি। আপনার বার্তা এখনও কম্পোজারে আছে।",
-      "could_not_send_to_side_chat": "সাইড চ্যাটে পাঠানো যায়নি"
+      "side_command_not_run": "/side কমান্ড চলেনি। আপনার বার্তা এখনও ইনপুট বাক্সে আছে।",
+      "could_not_send_to_side_chat": "সাইড চ্যাটে পাঠানো যায়নি",
+      "delivery_delivered": "বার্তা পৌঁছে দেওয়া হয়েছে — আবার পাঠালে দুবার যাবে।",
+      "delivery_discard": "বার্তা ও ইনপুট বাক্স বাতিল করুন",
+      "delivery_remove": "বার্তা সরান, লেখা থাকবে",
+      "delivery_unconfirmed_short": "ডেলিভারি অনিশ্চিত",
+      "send_no_response": "এই বার্তার জন্য কোনো নিশ্চিতকরণ ফিরে আসেনি।",
+      "delivery_unconfirmed_resend": "ডেলিভারি অনিশ্চিত — আপনার লেখা আবার ইনপুট বাক্সে আছে; আবার পাঠালে দুবার যেতে পারে।",
+      "delivery_unconfirmed_dismiss_note": "বার্তাটি সার্ভারে না পৌঁছালে, এটি সরালে এটি এই কথোপকথন থেকে চলে যায়; এর লেখা ইনপুট বাক্সে ফিরে আসে।",
+      "delivery_clear": "ইনপুট বাক্স খালি করুন"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",
