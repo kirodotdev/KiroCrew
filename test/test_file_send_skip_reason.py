@@ -198,19 +198,25 @@ class TestSlackLegSurfacesItsSkipToo:
     def _isolated_workspace(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_WORKSPACE", str(tmp_path / "ws"))
 
-    def _call(self, tmp_path, slack_response):
+    def _call(self, tmp_path, slack_response, *, channel_response=None, identity=("owner", None)):
         src = tmp_path / "chart.txt"
         src.write_text("hello world", encoding="utf-8")
 
         def _fake_post(path, *a, **kw):
             if "slack/upload-file" in path:
                 return slack_response
+            if "channel/upload-file" in path:
+                return channel_response
             return {"ok": True}
 
         with (
             patch.object(mcp_core, "_post", side_effect=_fake_post),
-            patch.object(mcp_core, "require_strict_session_key", return_value=(None, None)),
-            patch.object(mcp_core, "_classify_slack_identity", return_value=("owner", None)),
+            patch.object(
+                mcp_core,
+                "require_strict_session_key",
+                return_value=("slack:123.456", None) if channel_response else (None, None),
+            ),
+            patch.object(mcp_core, "_classify_slack_identity", return_value=identity),
         ):
             return file_send("file_send", {"path": str(src)})
 
@@ -230,6 +236,29 @@ class TestSlackLegSurfacesItsSkipToo:
         assert "Slack upload skipped" not in out
         assert "Slack upload failed" not in out
 
+    def test_slack_thread_reports_its_success_without_guaranteed_channel_skip(
+        self, tmp_path
+    ) -> None:
+        out = self._call(
+            tmp_path,
+            {"ok": True},
+            channel_response={"ok": True, "delivered": False, "skipped": "no_channel_destination"},
+            identity=("thread", "123.456"),
+        )
+        assert "delivered to Slack" in out
+        assert "native channel delivery skipped" not in out
+
+    def test_slack_thread_skip_never_claims_delivery(self, tmp_path) -> None:
+        out = self._call(
+            tmp_path,
+            {"ok": True, "skipped": "no_slack"},
+            channel_response={"ok": True, "delivered": False, "skipped": "no_channel_destination"},
+            identity=("thread", "123.456"),
+        )
+        assert "Slack upload skipped: no_slack" in out
+        assert "delivered to Slack" not in out
+        assert "native channel delivery skipped" not in out
+
 
 class TestToolDescriptionMatchesBehaviour:
     def test_the_description_does_not_promise_unconditional_native_delivery(self) -> None:
@@ -242,3 +271,9 @@ class TestToolDescriptionMatchesBehaviour:
         desc = spec["description"]
         assert "not guaranteed" in desc
         assert _REMEDY_MARKER in desc
+
+    def test_the_description_does_not_claim_slack_delivery_is_dashboard_only(self) -> None:
+        from kiro_crew.mcp_tools.messaging import schemas
+
+        desc = next(s for s in schemas() if s["name"] == "file_send")["description"]
+        assert "only from the dashboard" not in desc
