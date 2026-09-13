@@ -21,7 +21,6 @@ from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND, is_synthetic
 from kiro_crew.dashboard.state import (
     HOOK_CONTINUATION_RECOVERY_PREFIX,
     HOOK_HALTED_RECOVERY_PREFIX,
-    STOP_REASON_CANCELLED,
     _ChatSlot,
     parse_hook_continuations,
     should_queue_hook_continuation,
@@ -82,17 +81,29 @@ class TestParseHookContinuations:
 
 class TestShouldQueueHookContinuation:
     def test_normal_turn_end_allows_a_continuation(self) -> None:
-        assert should_queue_hook_continuation(False, False, "end_turn") is True
+        assert should_queue_hook_continuation(False, False, user_stopped=False) is True
 
     def test_user_stop_suppresses_it(self) -> None:
         """A hook must never be able to override the Stop button."""
-        assert should_queue_hook_continuation(True, False, "end_turn") is False
+        assert should_queue_hook_continuation(True, False, user_stopped=False) is False
 
     def test_pending_session_reset_suppresses_it(self) -> None:
-        assert should_queue_hook_continuation(False, True, "end_turn") is False
+        assert should_queue_hook_continuation(False, True, user_stopped=False) is False
 
-    def test_cancelled_turn_suppresses_it(self) -> None:
-        assert should_queue_hook_continuation(False, False, STOP_REASON_CANCELLED) is False
+    def test_a_stop_pressed_during_the_turn_suppresses_it(self) -> None:
+        # The Stop may already have resolved (stopping=False again); the
+        # generation-derived signal is what still says it happened.
+        assert should_queue_hook_continuation(False, False, user_stopped=True) is False
+
+    def test_a_backend_abort_alone_does_not_suppress_it(self) -> None:
+        # No wire stop reason is consulted: a backend that aborts a policy-denied
+        # turn (codex) reports "cancelled" with no Stop pressed, and the hook's
+        # continuation is still owed. The gate has no parameter for the stop
+        # reason at all, so this cannot regress by omission.
+        import inspect
+
+        assert "stop_reason" not in inspect.signature(should_queue_hook_continuation).parameters
+        assert should_queue_hook_continuation(False, False, user_stopped=False) is True
 
 
 class TestQueuedContinuationProvenance:

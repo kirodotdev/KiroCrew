@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
 from aiohttp import web
 
-from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
@@ -2756,8 +2755,8 @@ def should_queue_refusal_recovery(
     refusal_reasons: list,
     stopping: bool,
     needs_reset: bool,
-    stop_reason: str,
     *,
+    user_stopped: bool,
     notices_sent: int = 0,
     notices_pending: int = 0,
 ) -> bool:
@@ -2767,41 +2766,61 @@ def should_queue_refusal_recovery(
     - No refusals occurred
     - A stop is still in progress
     - A session reset is already re-queuing
-    - The turn was cancelled by the user (not a policy block)
+    - The user pressed Stop during the turn (``user_stopped``)
     - Every refusal was already explained IN-BAND and the backend confirmed it
+
+    ``user_stopped`` is the host's own Stop signal, read LIVE at the call: a stop
+    in flight, or ``slot._stop_generation`` moved since the turn began. It is the
+    only user-cancel input this gate takes; the backend's wire ``stopReason`` is
+    deliberately not one. The two are not the same thing: codex-acp's command
+    approval advertises ``cancel`` as its ONLY reject option (measured on
+    codex-acp 1.11.0 / codex 0.153.4 -- there is no ``decline``), and codex
+    answers that reject by aborting the whole turn with ``stopReason:
+    "cancelled"`` before the model is called again. A gate that read that stop
+    reason as a Stop press skipped this continuation on every policy block, and
+    on codex this continuation is the only channel that reaches the model (the
+    turn itself is gone, so no in-band notice can). A backend abort with
+    refusals recorded and no Stop pressed is the refusal's own consequence, and
+    the continuation is exactly what is owed.
+
+    The parameter is keyword-only and REQUIRED so no caller can reintroduce a
+    stop-reason rule by omission. Callers must read it at the gate, not from a
+    snapshot taken before an await: a Stop that presses and resolves during an
+    awaited Stop hook leaves ``stopping`` False again, and only the generation
+    counter still says it happened.
 
     ``notices_sent`` is how many :func:`build_refusal_steer_notice` bodies were
     steered into the turn, and ``notices_pending`` how many of those the
     ``steering_consumed`` echo did NOT account for. The extra turn is skipped only
-    when every refusal got a notice AND none is still pending — an unconfirmed
+    when every refusal got a notice AND none is still pending -- an unconfirmed
     steer is treated as undelivered, so the fallback continuation still runs. The
     check is deliberately coarse (counts, not a per-refusal pairing): its two
     failure directions are not symmetric. Skipping wrongly leaves the model with
     kiro-cli's "User denied tool execution" and no correction, while queueing
-    wrongly costs one turn the model would otherwise have been told twice — which
-    is exactly what this path already cost before in-band delivery existed.
-
-    Both are keyword-only with defaults so a caller on a harness without mid-turn
-    steer keeps the original three-condition behaviour unchanged.
+    wrongly costs one turn the model would otherwise have been told twice --
+    which is exactly what this path already cost before in-band delivery
+    existed. Both keep defaults so a caller on a harness without mid-turn steer
+    behaves as if nothing was steered.
     """
     if refusal_reasons and notices_sent >= len(refusal_reasons) and notices_pending == 0:
         return False
-    return bool(
-        refusal_reasons
-        and not stopping
-        and not needs_reset
-        and stop_reason != STOP_REASON_CANCELLED
-    )
+    return bool(refusal_reasons and not stopping and not needs_reset and not user_stopped)
 
 
-def should_queue_hook_continuation(stopping: bool, needs_reset: bool, stop_reason: str) -> bool:
+def should_queue_hook_continuation(
+    stopping: bool, needs_reset: bool, *, user_stopped: bool
+) -> bool:
     """Decide whether a Stop hook's block decision may inject a continuation.
 
     Mirrors :func:`should_queue_refusal_recovery`'s suppression set so a hook can
     never override the Stop button: a stop in progress, a pending session reset,
-    or a user-cancelled turn all win over the hook.
+    or a Stop pressed during the turn all win over the hook. Like that gate it
+    takes the host's live Stop signal and not the backend's wire ``stopReason``:
+    a backend that aborts a policy-denied turn (codex) reports ``cancelled``
+    with no Stop pressed, and a hook continuation is owed there just as the
+    refusal continuation is.
     """
-    return bool(not stopping and not needs_reset and stop_reason != STOP_REASON_CANCELLED)
+    return bool(not stopping and not needs_reset and not user_stopped)
 
 
 def parse_hook_continuations(stdouts: list[str]) -> list[str]:
@@ -2832,7 +2851,11 @@ def parse_hook_continuations(stdouts: list[str]) -> list[str]:
 
 
 def build_refusal_recovery_prompt(
-    refusals: list[tuple[str, str]], *, credential_tool_hint: str = "", answered: bool = False
+    refusals: list[tuple[str, str]],
+    *,
+    credential_tool_hint: str = "",
+    answered: bool = False,
+    turn_aborted: bool = False,
 ) -> str:
     """Build the body of an automatic continuation after a recoverable tool refusal.
 
@@ -2876,6 +2899,15 @@ def build_refusal_recovery_prompt(
     model's last word on the subject is kiro-cli's "User denied tool execution",
     and it will keep attributing the block to the user in later turns.
 
+    ``turn_aborted`` says the backend ended the blocked turn as CANCELLED rather
+    than letting it run on -- codex, whose only reject option aborts the turn.
+    Codex then tells the model, in its own words, that the turn was interrupted
+    ("aborted by user" on the tool result, a ``<turn_aborted>`` note saying the
+    user interrupted on purpose). Those words are wrong here and they arrive
+    right next to this continuation, so the body has to name and overrule them
+    explicitly; the generic "not a user action" sentence alone loses to two
+    harness-authored messages saying the opposite.
+
     Lives here (a leaf module that owns the prefix) rather than in context.py so
     chat_runner can import it at module top without a circular import. There is
     deliberately no retry cap: the model decides when to stop, and the user's
@@ -2896,9 +2928,16 @@ def build_refusal_recovery_prompt(
             "user action — do not treat it as a cancellation or interruption by "
             "the user."
         ),
-        "",
-        "Blocked:",
     ]
+    if turn_aborted:
+        lines.append(
+            "The backend then reported that turn as aborted or interrupted (a tool "
+            "result reading 'aborted by user', or a note that the user interrupted "
+            "the previous turn on purpose). That abort was the consequence of the "
+            "blocked call, not an interruption by the user -- disregard those "
+            "messages."
+        )
+    lines += ["", "Blocked:"]
     for title, reason in refusals:
         lines.append(f"  - {title}: {reason}" if reason else f"  - {title}")
     lines += [

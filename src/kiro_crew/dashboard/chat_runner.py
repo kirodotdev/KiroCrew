@@ -6422,6 +6422,24 @@ async def _run_chat(
     # The monotonic generation preserves that user intent across the whole call.
     _stop_gen_at_entry = slot._stop_generation
 
+    def _stop_pressed() -> bool:
+        """The user's Stop signal for this turn, read LIVE at the call site.
+
+        True when a stop is in flight OR the monotonic stop generation moved since
+        entry -- a Stop that pressed and already resolved back to idle is invisible
+        to ``_stopping`` but not to the counter. The two end-of-turn continuation
+        gates (Stop-hook and refusal recovery) read THIS, never the backend's wire
+        stop reason: a backend that aborts a policy-denied turn (codex answers its
+        only reject option, ``cancel``, that way) reports ``cancelled`` with no
+        Stop pressed, and the continuation is owed there. A function rather than a
+        value so no gate can consume a snapshot taken before an await -- the Stop
+        hook and the credential-hint lookup both suspend between the turn's end
+        and the queue write.
+        """
+        return bool(getattr(slot, "_stopping", False)) or (
+            getattr(slot, "_stop_generation", _stop_gen_at_entry) != _stop_gen_at_entry
+        )
+
     session_key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
 
@@ -12183,7 +12201,17 @@ async def _run_chat(
             # Resetting it on the recovery turn's completion would let a repeated
             # post-token 5xx during recovery re-queue forever.
 
-        if _stop_reason == STOP_REASON_CANCELLED:
+        if _stop_reason == STOP_REASON_CANCELLED and _refusal_reasons and not _stop_pressed():
+            # Not a user stop: the backend aborted the turn on the rejected tool
+            # (codex answers its only reject option, `cancel`, this way). Logged
+            # apart from the user case so an operator reading "cancelled by user"
+            # is not sent looking for a Stop press that never happened.
+            logger.info(
+                "Turn for slot %s aborted by the backend after a policy-blocked tool "
+                "call (stopReason=cancelled, no Stop pressed) -- refusal recovery follows",
+                slot.key,
+            )
+        elif _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for slot %s", slot.key)
         elif (
             not _retrying_empty
@@ -12264,14 +12292,12 @@ async def _run_chat(
         # override the Stop button. A configurable consecutive-turn backstop
         # bounds faulty always-block hooks; 0 explicitly disables that backstop.
         # The finally block's dequeue loop dispatches accepted continuations.
-        if should_queue_hook_continuation(slot._stopping, needs_session_reset, _stop_reason) and (
-            # Suppress if any user stop was initiated during this turn (streaming,
-            # completion persistence, or the hook _fire above): stop_turn()
-            # reporting "idle" resets _stop_state before this guard reads
-            # _stopping, but _stop_generation counts stop INITIATIONS and never
-            # rewinds, so an entry-vs-now delta is the durable signal.
-            slot._stop_generation
-            == _stop_gen_at_entry
+        # `user_stopped` is read live: a Stop initiated during this turn
+        # (streaming, completion persistence, or the hook _fire above) may have
+        # resolved already -- stop_turn() reporting "idle" resets _stop_state --
+        # and only the generation counter still says it happened.
+        if should_queue_hook_continuation(
+            slot._stopping, needs_session_reset, user_stopped=_stop_pressed()
         ):
             _hook_reasons = parse_hook_continuations(_stop_hook_out)
             # No block decision -> nothing to queue; skip the cap load and
@@ -12284,11 +12310,8 @@ async def _run_chat(
                 # Config loading yields to the event loop. Recheck the Stop
                 # boundary before mutating the queue so a Stop that lands during
                 # that await cannot be bypassed by the stale outer guard.
-                if (
-                    not should_queue_hook_continuation(
-                        slot._stopping, needs_session_reset, _stop_reason
-                    )
-                    or slot._stop_generation != _stop_gen_at_entry
+                if not should_queue_hook_continuation(
+                    slot._stopping, needs_session_reset, user_stopped=_stop_pressed()
                 ):
                     _hook_reasons = []
             else:
@@ -12371,11 +12394,17 @@ async def _run_chat(
         # third case, so the ordering answer-then-block gets the same awareness
         # body as block-then-answer instead of being told to continue and
         # re-deriving what is already on screen.
+        #
+        # The user-cancel input is the host's live Stop signal, not the wire
+        # stop reason: on codex the ONLY reject option a command approval
+        # advertises is `cancel`, which aborts the turn with stopReason
+        # "cancelled" -- the refusal's own consequence, not a Stop press, and
+        # this continuation is the only channel that still reaches its model.
         if should_queue_refusal_recovery(
             _refusal_reasons,
             slot._stopping,
             needs_session_reset,
-            _stop_reason,
+            user_stopped=_stop_pressed(),
             notices_sent=len(_refusal_notices) + _refusal_notices_settled,
             notices_pending=len(_refusal_notices),
         ):
@@ -12386,14 +12415,26 @@ async def _run_chat(
                 )
                 if _recovery_hint:
                     break
-            _recovery_body = build_refusal_recovery_prompt(
-                _refusal_reasons,
-                credential_tool_hint=_recovery_hint,
-                answered=(
-                    bool(_answer_text.strip())
-                    or _produced_visible_output
-                    or _turn_flushed_visible_text
-                ),
+            # The hint lookup above yields to the event loop. Re-read the Stop
+            # signal before the queue write, exactly as the hook-continuation
+            # gate does after its config load: a Stop that lands during that
+            # await must not be bypassed by the outer gate's earlier read.
+            _recovery_body = (
+                ""
+                if _stop_pressed()
+                else build_refusal_recovery_prompt(
+                    _refusal_reasons,
+                    credential_tool_hint=_recovery_hint,
+                    answered=(
+                        bool(_answer_text.strip())
+                        or _produced_visible_output
+                        or _turn_flushed_visible_text
+                    ),
+                    # The backend ended the blocked turn as cancelled: it will
+                    # tell the model the user interrupted, so the body must say
+                    # otherwise.
+                    turn_aborted=(_stop_reason == STOP_REASON_CANCELLED),
+                )
             )
             if _recovery_body:
                 _queue_recovery(

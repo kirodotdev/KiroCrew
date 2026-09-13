@@ -499,9 +499,23 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 # a member dispatch to ride on.
 ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
 
-# Backends implementing the ``_session/steer`` extension (mid-turn steer). Neither
-# claude-agent-acp nor codex-acp implements it, so a steer sent to either would be
-# answered with method-not-found rather than reaching the turn.
+# Backends implementing the ``_session/steer`` extension (mid-turn steer).
+# claude-agent-acp does not implement it, so a steer sent there is answered with
+# method-not-found rather than reaching the turn.
+# codex-acp (1.11.0) has a steering channel, but not this one and not usable for
+# what membership buys. Measured against a real adapter: it is a different method
+# (``_session/steering``, ``{sessionId, prompt: [ContentBlock]}``, answered with
+# ``{outcome: injected|startedNewTurn|failed}``, advertised as
+# ``initialize._meta.steering.supported``) with no ``steering_consumed`` echo --
+# and the one thing membership is for, handing a deny reason to the model INSIDE
+# the turn that was denied, cannot happen on codex at all: its command approval
+# advertises ``cancel`` as the ONLY reject option (no ``decline``), and answering
+# it aborts the turn with ``stopReason: "cancelled"`` before the model is called
+# again. A steer injected while the permission request is pending returns
+# ``injected`` and is then discarded with the turn. So codex stays a non-member
+# and takes the refusal-recovery continuation (see
+# ``dashboard.state.should_queue_refusal_recovery``), which is the only channel
+# that reaches its model.
 # opencode is not a member either: its ``initialize`` result advertises
 # ``sessionCapabilities`` of close, fork, list and resume, and nothing else.
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
