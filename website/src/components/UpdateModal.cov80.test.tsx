@@ -1,4 +1,5 @@
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { notifyManager } from '@tanstack/react-query'
 import { renderWithProviders } from '../test/helpers'
 import UpdateModal from './UpdateModal'
 import { i18nT } from '../i18n/t'
@@ -14,14 +15,17 @@ type UpdateState = {
 const install = vi.fn<() => Promise<unknown>>()
 
 /**
- * React Query flushes cache notifications on a microtask, so seeding
- * ['update-state'] only reaches the component after an async act() tick --
- * a synchronous assertion right after setQueryData always sees no dialog.
+ * React Query schedules cache notifications. Queue a marker after setQueryData
+ * and await it inside act so both visible and absent-state assertions observe
+ * the completed notification batch, regardless of the test's event-loop phase.
  */
 async function mount(initial?: UpdateState) {
   const rendered = renderWithProviders(<UpdateModal />)
   const push = async (next: UpdateState) => {
-    await act(async () => { rendered.queryClient.setQueryData(['update-state'], next) })
+    await act(async () => {
+      rendered.queryClient.setQueryData(['update-state'], next)
+      await new Promise<void>(resolve => notifyManager.schedule(resolve))
+    })
   }
   if (initial) await push(initial)
   return { ...rendered, push }

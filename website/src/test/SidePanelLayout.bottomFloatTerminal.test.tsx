@@ -11,7 +11,7 @@
  * yield to nothing).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import SidePanelLayout, { type SidePanelTab } from '../components/SidePanelLayout'
 import {
@@ -52,15 +52,15 @@ function renderRootList() {
 }
 
 describe('bottom-float capsule vs bottom-docked terminal (#9251)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     sessionStorage.clear()
-    __resetBottomTerminal()
+    await __resetBottomTerminal()
     setTerminalEnabledFlag(true)
     popoutState.out = false
   })
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
-    __resetBottomTerminal()
+    await __resetBottomTerminal()
     setTerminalEnabledFlag(false)
     vi.restoreAllMocks()
   })
@@ -70,42 +70,42 @@ describe('bottom-float capsule vs bottom-docked terminal (#9251)', () => {
     expect(screen.getByTestId('capsule-content')).toBeTruthy()
   })
 
-  it('suppresses the capsule while the terminal is open and docked at the bottom', () => {
+  it('suppresses the capsule while the terminal is open and docked at the bottom', async () => {
     renderRootList()
-    act(() => {
+    await act(async () => {
       setTerminalPosition('bottom')
-      openBottomTerminal()
+      await openBottomTerminal()
     })
-    expect(screen.queryByTestId('capsule-content')).toBeNull()
+    await waitFor(() => expect(screen.queryByTestId('capsule-content')).toBeNull())
   })
 
-  it('keeps the capsule while the terminal is open but docked on the right', () => {
+  it('keeps the capsule while the terminal is open but docked on the right', async () => {
     renderRootList()
-    act(() => {
+    await act(async () => {
       setTerminalPosition('right')
-      openBottomTerminal()
+      await openBottomTerminal()
     })
     expect(screen.getByTestId('capsule-content')).toBeTruthy()
   })
 
-  it('restores the capsule when the bottom-docked terminal moves to the right dock', () => {
+  it('restores the capsule when the bottom-docked terminal moves to the right dock', async () => {
     renderRootList()
-    act(() => {
+    await act(async () => {
       setTerminalPosition('bottom')
-      openBottomTerminal()
+      await openBottomTerminal()
     })
-    expect(screen.queryByTestId('capsule-content')).toBeNull()
+    await waitFor(() => expect(screen.queryByTestId('capsule-content')).toBeNull())
     act(() => {
       setTerminalPosition('right')
     })
     expect(screen.getByTestId('capsule-content')).toBeTruthy()
   })
 
-  it('keeps the capsule when the store reads open+bottom but the terminal feature is disabled', () => {
+  it('keeps the capsule when the store reads open+bottom but the terminal feature is disabled', async () => {
     renderRootList()
-    act(() => {
+    await act(async () => {
       setTerminalPosition('bottom')
-      openBottomTerminal()
+      await openBottomTerminal()
       // Persisted-open trap: `open` survives in localStorage while
       // dashboard.terminal.enabled=false renders no panel at all.
       setTerminalEnabledFlag(false)
@@ -113,13 +113,13 @@ describe('bottom-float capsule vs bottom-docked terminal (#9251)', () => {
     expect(screen.getByTestId('capsule-content')).toBeTruthy()
   })
 
-  it('suppresses the capsule while the terminal is popped out, even right-docked', () => {
+  it('suppresses the capsule while the terminal is popped out, even right-docked', async () => {
     // TerminalDetachedBar renders as a full-width bottom strip whenever the
     // terminal is enabled and popped out, regardless of the stored dock
     // position — so popout alone owns the bottom edge.
     popoutState.out = true
     setTerminalPosition('right')
-    openBottomTerminal()
+    await openBottomTerminal()
     renderRootList()
     expect(screen.queryByTestId('capsule-content')).toBeNull()
   })

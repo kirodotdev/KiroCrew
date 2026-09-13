@@ -22,8 +22,12 @@ import { i18nT } from '../i18n/t'
  *  previews the click's outcome on hover. */
 export default function PanelToggles({ showWorkspace, workspaceOpen, exitFullscreen }: { showWorkspace: boolean; workspaceOpen?: boolean; exitFullscreen?: () => void }) {
   const terminalEnabled = useTerminalEnabled()
-  const terminalOpen = useBottomTerminalOpen()
-  const terminalPoppedOut = useTerminalPoppedOut()
+  // Terminal state is scoped to the active chat session (see
+  // useBottomTerminal); the toggle must read and drive the same scope the
+  // bottom panel renders, not the global one.
+  const terminalSessionScope = useAppSelector(s => s.chat.activeSlot)
+  const terminalOpen = useBottomTerminalOpen(terminalSessionScope)
+  const terminalPoppedOut = useTerminalPoppedOut(terminalSessionScope)
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
   const workspaceActive = workspaceOpen ?? activityOpen
   const cwd = useAppSelector(selectActiveSlotProject)
@@ -36,7 +40,7 @@ export default function PanelToggles({ showWorkspace, workspaceOpen, exitFullscr
   const workspaceLabel = workspaceActive ? i18nT('pages.chat.sidePanel.close_panel') : i18nT('pages.chatPage.open_activity_panel')
   const toggleTerminal = () => {
     exitFullscreen?.()
-    if (terminalPoppedOut) focusPopout(); else toggleBottomTerminal(cwd)
+    if (terminalPoppedOut) focusPopout(terminalSessionScope); else toggleBottomTerminal(cwd, terminalSessionScope)
   }
   const toggleWorkspace = () => window.dispatchEvent(new Event('toggle-activity-panel'))
   return (

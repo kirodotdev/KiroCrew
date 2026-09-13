@@ -152,6 +152,7 @@
     "eslint-plugin-i18next": "^6.1.5",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "7.0.1",
+    "fake-indexeddb": "^6.2.5",
     "fast-check": "4.6.0",
     "happy-dom": "^20.11.6",
     "jscpd": "3.5.10",

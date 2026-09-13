@@ -582,7 +582,7 @@ export default function SidePanel({
   // A rejected delete lands in the shared close-failed flag (set by the hook),
   // rendered by the always-mounted BottomTerminalPanel root — this tab is
   // already gone by then.
-  const deleteTerminalSession = useDeleteTerminalSession()
+  const deleteTerminalSession = useDeleteTerminalSession(slot || null)
   const handleCloseTab = useCallback((id: string) => {
     const t = tabs.find(x => x.id === id)
     if (t?.kind === 'terminal' && t.sessionId) {

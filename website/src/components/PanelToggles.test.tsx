@@ -3,7 +3,13 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import PanelToggles from './PanelToggles'
 
 const terminal = vi.hoisted(() => ({ poppedOut: false, enabled: true, toggle: vi.fn(), focus: vi.fn() }))
-vi.mock('../store', () => ({ useAppSelector: () => undefined }))
+// Minimal store: the active chat slot is the terminal session scope, and its
+// dashboard slot carries the cwd the toggle opens a terminal in.
+const state = vi.hoisted(() => ({
+  chat: { activeSlot: 'chat-1', activityOpen: false },
+  dashboard: { slots: [{ key: 'chat-1', project: '/repo' }] },
+}))
+vi.mock('../store', () => ({ useAppSelector: (select: (s: typeof state) => unknown) => select(state) }))
 vi.mock('../hooks/useBottomTerminal', () => ({
   useBottomTerminalOpen: () => false,
   toggleBottomTerminal: terminal.toggle,
@@ -33,10 +39,21 @@ describe('fixed panel toggles', () => {
     expect(poppedOut ? terminal.toggle : terminal.focus).not.toHaveBeenCalled()
   })
 
-  it('toggles the terminal directly when the workspace is not fullscreen', () => {
+  // Terminal state is per chat session: the toggle must read and drive the
+  // active slot's scope, or it opens the global terminal while the bottom
+  // panel shows the session's.
+  it('toggles the terminal directly, in the active session scope, when the workspace is not fullscreen', () => {
     render(<PanelToggles showWorkspace />)
     clickTerminalControl()
-    expect(terminal.toggle).toHaveBeenCalledOnce()
+    expect(terminal.toggle).toHaveBeenCalledExactlyOnceWith('/repo', 'chat-1')
+  })
+
+  it('focuses the popped-out terminal of the active session', () => {
+    terminal.poppedOut = true
+    render(<PanelToggles showWorkspace />)
+    clickTerminalControl()
+    expect(terminal.focus).toHaveBeenCalledExactlyOnceWith('chat-1')
+    expect(terminal.toggle).not.toHaveBeenCalled()
   })
 
   // Fullscreen is the workspace panel's own action and renders in that panel's

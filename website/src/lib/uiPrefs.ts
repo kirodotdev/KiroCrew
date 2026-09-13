@@ -83,7 +83,8 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-ui',
   'mc-app-nav-order',
   'mc-apps-expanded',
-  'mc-bottom-terminal',
+  // Terminal PTY membership and migration ownership are session data.
+  'mc-bottom-terminal-layout',
   'mc-files-rail-open',
   'mc-crews-view',
   'mc-crew-switcher-pinned',

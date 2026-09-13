@@ -18,7 +18,7 @@ import {
   closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
   toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
   setTerminalCloseFailed, useTerminalCloseFailed,
-  type TermTab,
+  captureTerminalSessionLease, type TermTab, type TerminalSessionScope, useTerminalStateFailed, clearTerminalStateFailure, useTerminalCapacityExceeded, clearTerminalCapacityFailure,
 } from '../hooks/useBottomTerminal'
 
 import { i18nT } from '../i18n/t'
@@ -108,58 +108,70 @@ function DraggableTermTab({ tab, active, closing, separator, onSelect, onClose }
  *  rejected DELETE still must not vanish: the tab is already gone locally, so a
  *  silent failure would leave the user unaware a shell is still running.
  *  Nothing here is a draft, so the hand-off is on. */
-function TerminalCloseErrorNotice() {
-  const closeFailed = useTerminalCloseFailed()
+function TerminalCloseErrorNotice({ sessionScope }: { sessionScope: TerminalSessionScope }) {
+  const closeFailed = useTerminalCloseFailed(sessionScope)
+  const stateFailed = useTerminalStateFailed(sessionScope)
+  const capacityExceeded = useTerminalCapacityExceeded(sessionScope)
   return (
+    <>
     <ErrorNotice
       variant="inline"
       askAgent
       testId="terminal-close-error"
       className="mx-2 my-1"
       message={closeFailed ? i18nT('components.bottomTerminalPanel.close_failed') : ''}
-      onDismiss={() => setTerminalCloseFailed(false)}
+      onDismiss={() => setTerminalCloseFailed(false, sessionScope)}
     />
+    <ErrorNotice variant="inline" askAgent testId="terminal-state-error" className="mx-2 my-1"
+      message={stateFailed ? i18nT('components.errorBoundary.something_went_wrong') : ''}
+      onDismiss={() => clearTerminalStateFailure(sessionScope)} />
+    <ErrorNotice variant="inline" askAgent testId="terminal-capacity-error" className="mx-2 my-1"
+      message={capacityExceeded && !stateFailed ? i18nT('components.bottomTerminalPanel.maximum_terminals', { n: MAX_TERMINALS }) : ''}
+      onDismiss={() => clearTerminalCapacityFailure(sessionScope)} />
+    </>
   )
 }
 
-export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
-  const { tabs, activeId, position } = useBottomTerminal()
+export function TerminalTabsView({ variant, sessionScope = null }: { variant: 'dock' | 'popout'; sessionScope?: TerminalSessionScope }) {
+  const { tabs, activeId, position, totalTabs, preparing } = useBottomTerminal(sessionScope)
   // A rejected PTY delete lands in the close-failed flag (set by the hook), which
   // the always-mounted panel root renders (see BottomTerminalPanel below) —
   // closing the LAST tab unmounts this strip before a delayed rejection arrives.
-  const del = useDeleteTerminalSession()
+  const lease = captureTerminalSessionLease(sessionScope)
+  const del = useDeleteTerminalSession(sessionScope)
   // The popout's last tab, while its DELETE is in flight (see closeTab).
   const [closingId, setClosingId] = useState<string | null>(null)
 
   // New tabs spawn in the selected session's project directory when one is
   // set; otherwise the backend's default cwd applies.
-  const activeSlotProject = useAppSelector(selectActiveSlotProject)
+  const activeSlotProject = useAppSelector(s => sessionScope === null ? selectActiveSlotProject(s) : s.dashboard.slots.find(slot => slot.key === sessionScope)?.project)
+  const terminalCwd = activeSlotProject || tabs.find(tab => tab.id === activeId)?.cwd || tabs[0]?.cwd
 
-  /** Close a tab: kill its backend PTY (best-effort), tear down local WS +
-   *  xterm, then drop it from the store (which hides the panel if it was last).
+  /** Close a tab: commit the tab removal first, then kill its backend PTY
+   *  (best-effort) and tear down local WS + xterm. A failed durable commit must
+   *  leave the still-live terminal tab retryable rather than a dead tab behind.
    *
    *  In the POPOUT the last tab is special: emptying `tabs` makes the frame
-   *  return itself to the main window, which tears this JS context down — so a
-   *  rejection that arrives after that point has no callback left to record it.
-   *  Let the DELETE settle first (the request itself is `keepalive`, so a hung
-   *  one is bounded by the browser and cannot leak the shell), showing the chip
-   *  as closing so the wait never reads as a dead click; the rejection then lands
-   *  in the cross-window close-failed flag while this window still exists, and
-   *  the main window's panel root renders it after the return. */
+   *  return itself to the main window, which tears this JS context down. Hold the
+   *  chip in a closing state while the IndexedDB commit settles; once it lands,
+   *  the DELETE uses `keepalive`, so the request can outlive this window. */
   const closeTab = useCallback((id: string) => {
-    if (variant === 'popout' && tabs.length === 1) {
+    const lastPopoutTab = variant === 'popout' && tabs.length === 1
+    if (lastPopoutTab) {
       if (closingId) return // already on its way out
       setClosingId(id)
-      void del.mutateAsync(id).catch(() => { /* recorded by the hook's onError */ }).finally(() => {
-        disposeTerminalSession(id)
-        removeTab(id)
-      })
-      return
     }
-    del.mutate(id)
-    disposeTerminalSession(id)
-    removeTab(id)
-  }, [del, variant, tabs.length, closingId])
+    void (async () => {
+      const removed = await removeTab(id, sessionScope)
+      if (!removed) {
+        if (lastPopoutTab) setClosingId(null)
+        return
+      }
+      del.mutate(id)
+      disposeTerminalSession(id)
+      if (lastPopoutTab) setClosingId(null)
+    })()
+  }, [del, variant, tabs.length, closingId, sessionScope])
 
   /** Detach the WHOLE panel into its own browser window. Order matters, twice
    *  over: `openPopout` must run synchronously in the click (window.open needs
@@ -170,12 +182,12 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
    *  boots and reconnects (PTYs stay alive server-side; the backend replays
    *  each session's scrollback to the new window). */
   const popOut = useCallback(() => {
-    openTerminalPopout()
-    if (!isTerminalPopoutOpen()) return // window.open vetoed — keep the dock live
+    openTerminalPopout(sessionScope)
+    if (!isTerminalPopoutOpen(sessionScope)) return // window.open vetoed — keep the dock live
     for (const t of tabs) disposeTerminalConnection(t.id)
-  }, [tabs])
+  }, [tabs, sessionScope])
 
-  const atCap = tabs.length >= MAX_TERMINALS
+  const atCap = totalTabs >= MAX_TERMINALS
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -183,14 +195,14 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
           the notice there for a non-last tab; the last tab's rejection is
           settled before teardown (closeTab) and crosses to the main window
           through the persisted store. In the dock the root renders it. */}
-      {variant === 'popout' && <TerminalCloseErrorNotice />}
+      {variant === 'popout' && <TerminalCloseErrorNotice sessionScope={sessionScope} />}
       {/* Tab strip — same aesthetics as the activity-bar strip; drag chips
           horizontally to reorder (framer Reorder). */}
       <div className="panel-toolbar flex items-center gap-1.5 shrink-0 px-2">
         <Reorder.Group
           axis="x"
           values={tabs}
-          onReorder={setTabsOrder}
+          onReorder={next => setTabsOrder(next, sessionScope)}
           role="tablist"
           className={PANEL_TAB_LIST_CLASS}
         >
@@ -203,7 +215,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
               // Hairline between adjacent chips, suppressed on both edges of
               // the active tab (its pill already delineates it).
               separator={i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId}
-              onSelect={() => setActiveTab(t.id)}
+              onSelect={() => setActiveTab(t.id, sessionScope)}
               onClose={() => closeTab(t.id)}
             />
           ))}
@@ -211,8 +223,8 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
         {/* + opens a new terminal tab instantly (no menu). */}
         <button
           className="panel-toolbar-action flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-          onClick={() => addTab(activeSlotProject)}
-          disabled={atCap}
+          onClick={() => addTab(terminalCwd, sessionScope, lease)}
+          disabled={atCap || preparing}
           title={atCap ? i18nT('components.bottomTerminalPanel.maximum_terminals', { n: MAX_TERMINALS }) : i18nT('components.bottomTerminalPanel.new_terminal')}
           aria-label={i18nT('components.bottomTerminalPanel.new_terminal')}
         >
@@ -243,7 +255,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
             </DropdownMenu>
             <button data-panel-controls-local-close="terminal"
               className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-              onClick={() => closeBottomTerminal()}
+              onClick={() => closeBottomTerminal(sessionScope)}
               title={i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
               aria-label={i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
             >
@@ -253,7 +265,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
         ) : (
           <button
             className="flex items-center gap-1.5 h-7 px-2.5 ml-auto rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-            onClick={returnSelfToMain}
+            onClick={() => returnSelfToMain(sessionScope)}
             title={i18nT('pages.terminalPopoutFrame.return_to_main_window_and_close_this_popout')}
             aria-label={i18nT('pages.terminalPopoutFrame.return_to_main_window_and_close_this_popout')}
           >
@@ -286,43 +298,46 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
  * popped-out panel would otherwise leave its old socket held here) — release
  * is idempotent, and the PTYs themselves stay alive server-side.
  */
-export function TerminalDetachedBar() {
-  const { tabs } = useBottomTerminal()
+export function TerminalDetachedBar({ sessionScope = null }: { sessionScope?: TerminalSessionScope }) {
+  const { tabs } = useBottomTerminal(sessionScope)
   useEffect(() => {
     for (const t of tabs) disposeTerminalConnection(t.id)
-  }, [tabs])
+  }, [tabs, sessionScope])
   return (
+    <>
+    <TerminalCloseErrorNotice sessionScope={sessionScope} />
     <div className="shrink-0 flex items-center gap-2 h-9 px-3 border-t border-border bg-bg text-[12.5px] text-muted">
       <TerminalSquare size={13} className="shrink-0 opacity-80" />
       <span className="min-w-0 truncate">{i18nT('components.bottomTerminalPanel.terminal_is_in_its_own_window')}</span>
       <div className="flex items-center gap-1.5 ml-auto shrink-0">
         <button
           className="h-6 px-2 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer"
-          onClick={() => focusTerminalPopout()}
+          onClick={() => focusTerminalPopout(sessionScope)}
         >
           {i18nT('components.bottomTerminalPanel.focus_popout')}
         </button>
         <button
           className="h-6 px-2 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer"
-          onClick={() => bringBackTerminalPopout()}
+          onClick={() => bringBackTerminalPopout(sessionScope)}
         >
           {i18nT('pages.terminalPopoutFrame.return')}
         </button>
       </div>
     </div>
+    </>
   )
 }
 
 /**
- * App-wide docked terminal panel. Toggled from the sidebar Terminal icon
+ * Session-owned docked terminal panel. Toggled from the sidebar Terminal icon
  * (App.tsx), it spans the whole app (below or beside the routed <main>)
  * depending on `position`. A terminals-only tab view: each tab is a
  * single-session CliPanel bound to a PTY in terminalRegistry — so
  * hiding/reopening the panel, switching tabs, or navigating routes keeps every
  * shell warm. Only closing an individual tab kills its PTY.
  */
-export default function BottomTerminalPanel() {
-  const { open, height, width, position } = useBottomTerminal()
+export default function BottomTerminalPanel({ sessionScope = null }: { sessionScope?: TerminalSessionScope }) {
+  const { open, height, width, position } = useBottomTerminal(sessionScope)
   const [dragging, setDragging] = useState(false)
 
   const isRight = position === 'right'
@@ -387,8 +402,8 @@ export default function BottomTerminalPanel() {
       {/* Outside the `open` guard on purpose: this root stays mounted while the
           panel is hidden, so a delete rejected AFTER the last tab closed still
           has a surface to land on. */}
-      <TerminalCloseErrorNotice />
-      <AnimatePresence initial={false}>
+      <TerminalCloseErrorNotice sessionScope={sessionScope} />
+      <AnimatePresence key={sessionScope === null ? 'unassigned' : `session:${sessionScope}`} initial={false}>
       {open && (
         <motion.div
           key={motionKey}
@@ -415,7 +430,7 @@ export default function BottomTerminalPanel() {
               }`} />
             </div>
             <div className={isRight ? 'flex-1 min-w-0 min-h-0' : 'flex-1 min-h-0'}>
-              <TerminalTabsView variant="dock" />
+              <TerminalTabsView variant="dock" sessionScope={sessionScope} />
             </div>
           </div>
         </motion.div>

@@ -36,9 +36,9 @@ vi.mock('../utils/terminalPopout', async importOriginal => {
   return {
     ...actual,
     // Delegates to the real hook so hook order and behaviour are untouched.
-    useTerminalPoppedOut: () => {
+    useTerminalPoppedOut: (scope: string | null) => {
       appRenders.n++
-      return actual.useTerminalPoppedOut()
+      return actual.useTerminalPoppedOut(scope)
     },
   }
 })

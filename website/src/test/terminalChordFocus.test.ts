@@ -16,6 +16,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { toggleTerminalByChord, __resetTerminalChordFocus } from '../lib/terminalChordFocus'
 import { isBottomTerminalOpen, __resetBottomTerminal } from '../hooks/useBottomTerminal'
 
+
+
 /** A stand-in for the docked panel: an `.xterm` subtree with a focusable node,
  *  removed on close the way React's `{open && …}` removes the real one. */
 function mountFakeTerminal(): { shellInput: HTMLTextAreaElement; unmount: () => void } {
@@ -36,9 +38,9 @@ function mountMainContent(): HTMLElement {
 }
 
 describe('toggleTerminalByChord: focus after a close-from-shell', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear()
-    __resetBottomTerminal()
+    await __resetBottomTerminal()
     __resetTerminalChordFocus()
     // `replaceChildren()` rather than an HTML-string assignment: the repo's
     // Automated Rule Check blocks that property outright, tests included.
@@ -46,60 +48,60 @@ describe('toggleTerminalByChord: focus after a close-from-shell', () => {
     // Run the restore synchronously so the assertions do not need to await a frame.
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0 })
   })
-  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren() })
+  afterEach(async () => { vi.unstubAllGlobals(); document.body.replaceChildren() })
 
-  it('puts focus back where the chord was pressed from', () => {
+  it('puts focus back where the chord was pressed from', async () => {
     const composer = document.createElement('textarea')
     document.body.appendChild(composer)
     composer.focus()
     expect(document.activeElement).toBe(composer)
 
-    toggleTerminalByChord()                       // open, from the composer
+    await toggleTerminalByChord()                       // open, from the composer
     expect(isBottomTerminalOpen()).toBe(true)
     const term = mountFakeTerminal()
     term.shellInput.focus()                       // the panel takes focus, as it does live
 
-    toggleTerminalByChord()                       // close, from inside the shell
+    await toggleTerminalByChord()                       // close, from inside the shell
     term.unmount()
     expect(isBottomTerminalOpen()).toBe(false)
     expect(document.activeElement).toBe(composer)
   })
 
-  it('falls back to #main-content when the remembered element is gone', () => {
+  it('falls back to #main-content when the remembered element is gone', async () => {
     const main = mountMainContent()
     const gone = document.createElement('button')
     document.body.appendChild(gone)
     gone.focus()
 
-    toggleTerminalByChord()
+    await toggleTerminalByChord()
     const term = mountFakeTerminal()
     term.shellInput.focus()
     gone.remove()                                 // navigated away while the panel was open
 
-    toggleTerminalByChord()
+    await toggleTerminalByChord()
     term.unmount()
     expect(document.activeElement).toBe(main)
   })
 
-  it('leaves focus alone when the close came from outside the terminal', () => {
+  it('leaves focus alone when the close came from outside the terminal', async () => {
     const composer = document.createElement('textarea')
     const elsewhere = document.createElement('input')
     document.body.append(composer, elsewhere)
     composer.focus()
 
-    toggleTerminalByChord()
+    await toggleTerminalByChord()
     mountFakeTerminal()
     elsewhere.focus()                             // user clicked back out of the shell
 
-    toggleTerminalByChord()
+    await toggleTerminalByChord()
     // Their own choice of focus wins over anything this module remembered.
     expect(document.activeElement).toBe(elsewhere)
   })
 
-  it('still toggles the panel, which is the part the chord actually promises', () => {
-    toggleTerminalByChord()
+  it('still toggles the panel, which is the part the chord actually promises', async () => {
+    await toggleTerminalByChord()
     expect(isBottomTerminalOpen()).toBe(true)
-    toggleTerminalByChord()
+    await toggleTerminalByChord()
     expect(isBottomTerminalOpen()).toBe(false)
   })
 })

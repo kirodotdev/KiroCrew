@@ -1,5 +1,7 @@
 import { WorkspacePanelContext, WorkspaceFullscreenContext } from './components/WorkspacePanelContext'
 import PanelToggles from './components/PanelToggles'
+import { reviveRetiredTerminals } from './lib/historyTerminalCleanup'
+import HistoryTerminalCleanupNotice from './components/HistoryTerminalCleanupNotice'
 import { useEffect, useState, useCallback, useRef, useMemo, useSyncExternalStore, createContext, lazy, Suspense, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -126,9 +128,9 @@ import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
-import { toggleBottomTerminal, useBottomTerminalOpen, useTerminalPosition } from './hooks/useBottomTerminal'
+import { openBottomTerminal, toggleBottomTerminal, useBottomTerminalOpen, useTerminalRevivalNeeded, useTerminalPosition } from './hooks/useBottomTerminal'
 import { toggleTerminalByChord } from './lib/terminalChordFocus'
-import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
+import { useTerminalPoppedOut, focusPopout as focusTerminalPopout, bringBack as bringBackTerminalPopout, setNavIntentHandler as setTerminalNavIntentHandler } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppPage from './pages/AppPage'
 import AppDetailPage from './pages/AppDetailPage'
@@ -1341,11 +1343,20 @@ export default function App() {
   // True while the terminal panel lives in its own popped-out window: the
   // docked panel is suppressed here and the sidebar toggle focuses that
   // window instead of opening an (empty-handed) panel.
-  const terminalPoppedOut = useTerminalPoppedOut()
+  const terminalSessionScope = useAppSelector(s => s.chat.activeSlot)
+  const retiredTerminalScope = useTerminalRevivalNeeded(terminalSessionScope)
+  useEffect(() => {
+    if (!terminalEnabled || isPopout || isEmbed || !terminalSessionScope || !retiredTerminalScope) return
+    // Only a retired active scope needs a fresh existence check before its
+    // terminals revive. A deleted slot's 404 keeps them hidden by design; a
+    // failed check is surfaced by HistoryTerminalCleanupNotice with a retry.
+    void reviveRetiredTerminals(terminalSessionScope)
+  }, [terminalEnabled, isPopout, isEmbed, terminalSessionScope, retiredTerminalScope])
+  const terminalPoppedOut = useTerminalPoppedOut(terminalSessionScope)
   // Only the `open` flag, not the whole store — the panel's height changes on
   // every mousemove during a grip-drag, and a primitive snapshot lets
   // useSyncExternalStore's Object.is check skip those re-renders of App.
-  const bottomTerminalOpen = useBottomTerminalOpen()
+  const bottomTerminalOpen = useBottomTerminalOpen(terminalSessionScope)
   const workspacePanelOpen = useAppSelector(s => s.chat.activityOpen)
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false)
   const reducePanelMotion = useReducedMotion()
@@ -1406,6 +1417,20 @@ export default function App() {
         switchSlot: (slotKey) => { dispatch(switchSlot({ key: slotKey, announceOnMissing: true })) },
       }),
     )
+  }, [isPopout, isEmbed, navigate, dispatch])
+
+  // Explicit Return selects the origin chat; close follows a successful reopen.
+  // Native popup close never changes the main window's selected session.
+  useEffect(() => {
+    if (isPopout || isEmbed) return
+    return setTerminalNavIntentHandler(async intent => {
+      if (!intent.slotKey) return
+      // Announced: Return is a user gesture on the popout's origin session, so a
+      // 404 (deleted meanwhile) surfaces the notice instead of a silent bounce.
+      applyNavIntentInMain(intent, { navigate, switchSlot: key => { dispatch(switchSlot({ key, announceOnMissing: true })) } })
+      if (!await openBottomTerminal(undefined, intent.slotKey)) return
+      bringBackTerminalPopout(intent.slotKey)
+    })
   }, [isPopout, isEmbed, navigate, dispatch])
 
   // Publish the router navigator for the error → agent hand-off. AskAgentButton
@@ -2453,13 +2478,13 @@ export default function App() {
     // swallowed on behalf of a panel the rest of the UI hides.
     //
     // Also unbound in a popout or embedded pane, which render no docked terminal
-    // of their own. `useBottomTerminal`'s state is localStorage-backed AND
-    // cross-window synced (it listens for `storage` on `mc-bottom-terminal`), so
+    // of their own. `useBottomTerminal` shares committed IndexedDB state
+    // across windows, so
     // a chord fired in a popout would not be a local no-op — it would open or
     // close the terminal in the MAIN window, out of sight of the person pressing
     // the key.
     onToggleTerminal: terminalEnabled && !isPopout && !isEmbed
-      ? () => { exitWorkspaceFullscreen(); if (terminalPoppedOut) focusTerminalPopout(); else toggleTerminalByChord(activeSlotProject) }
+      ? () => { exitWorkspaceFullscreen(); if (terminalPoppedOut) focusTerminalPopout(terminalSessionScope); else toggleTerminalByChord(activeSlotProject, terminalSessionScope) }
       : undefined,
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,
@@ -4296,7 +4321,7 @@ export default function App() {
                   /* While popped out: focus only (a refused programmatic
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
-                  onClickOverride={() => { exitWorkspaceFullscreen(); if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+                  onClickOverride={() => { exitWorkspaceFullscreen(); if (terminalPoppedOut) focusTerminalPopout(terminalSessionScope); else toggleBottomTerminal(activeSlotProject, terminalSessionScope) }}
                 />
               )}
               {hasRenderableMobileConnect && (
@@ -4497,6 +4522,7 @@ export default function App() {
               the app, not of the page, and the launch after a crash rarely lands
               on the page the user was on when it happened. */}
           <CrashReportNotice />
+          <HistoryTerminalCleanupNotice />
           <Routes>
             <Route path="/chat/:slug?" element={<WorkspacePanelContext.Provider value={setWorkspaceSearchOpen}><WorkspaceFullscreenContext.Provider value={workspaceFullscreenControls}><ErrorBoundary><ChatPage /></ErrorBoundary></WorkspaceFullscreenContext.Provider></WorkspacePanelContext.Provider>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
@@ -4554,12 +4580,12 @@ export default function App() {
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
         </main>
-        {/* App-wide docked terminal panel — renders beside <main> (right) or
+        {/* The selected chat's terminal panel renders beside <main> (right) or
             below it (bottom). The detached bar (popped-out state) always renders
             below the flex wrapper as a full-width strip regardless of position. */}
-        {terminalEnabled && !terminalPoppedOut && <BottomTerminalPanel />}
+        {terminalEnabled && !terminalPoppedOut && <BottomTerminalPanel sessionScope={terminalSessionScope} />}
         </div>{/* /flex-row or flex-col wrapper */}
-        {terminalEnabled && terminalPoppedOut && <TerminalDetachedBar />}
+        {terminalEnabled && terminalPoppedOut && <TerminalDetachedBar sessionScope={terminalSessionScope} />}
 
         {/* Self-managed floating panels: lifecycle-driven (hidden → small → chip),
             not motion.* children, so they live outside AnimatePresence. The browse

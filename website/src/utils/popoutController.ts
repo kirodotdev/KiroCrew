@@ -117,6 +117,14 @@ export interface PopoutControllerOptions {
    * script opener, so close is a spec-level no-op there).
    */
   mainViewUrl: (id: string | null) => string
+  /** Override the new-tab fallback when no dashboard claims a navigation.
+   * Return flows can instead close or navigate their own window. */
+  navFallback?: (intent: NavIntent) => void
+  /** Resource-owning popouts retain presence until their close announcement,
+   * rather than letting the main window optimistically resume ownership. */
+  waitForClose?: boolean
+  /** Synchronous resource release before a returning popout announces close. */
+  beforeReturn?: () => void
 }
 
 /** The main-window + popout-window API for one feature's popouts. */
@@ -261,6 +269,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
         return
       }
     }
+    if (opts.waitForClose && msg.t === 'close') handles.delete(msg.id)
     const now = Date.now()
     const next = pruneStale(applyMessage(map, msg, now), now)
     if (next !== map) { map = next; recomputeSnapshot() }
@@ -371,6 +380,10 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   }
 
   function bringBack(id: string): void {
+    if (opts.waitForClose) {
+      post({ t: 'bring-back', id })
+      return
+    }
     const win = handles.get(id)
     if (win && !win.closed) {
       try { win.close() } catch (e) { logDebug(`direct close of ${id} vetoed — falling back to channel`, e) }
@@ -410,6 +423,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
    */
   function returnSelfToMain(): void {
     const id = selfId
+    opts.beforeReturn?.()
     try { window.opener?.focus() } catch (e) { logDebug('opener focus vetoed', e) }
     try { window.close() } catch (e) { logDebug('self close vetoed', e) }
     // If we're still alive, the close was refused (no script opener). Fall back
@@ -472,7 +486,8 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
       // gone. Open the destination as a full browser tab instead; the popout
       // stays pinned to its entity either way.
       pendingNav = null
-      windowOpen(navFallbackUrl(intent), '_blank')
+      if (opts.navFallback) opts.navFallback(intent)
+      else windowOpen(navFallbackUrl(intent), '_blank')
     }, NAV_CLAIM_MS)
     pendingNav = { nonce, intent, timer }
     post({ t: 'nav-request', nonce, intent })

@@ -15,21 +15,29 @@
  *    tab list.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, act } from '@testing-library/react'
+import { screen, act, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { TerminalTabsView, TerminalDetachedBar } from '../components/BottomTerminalPanel'
 import {
-  __resetBottomTerminal, openBottomTerminal, addTab, useBottomTerminal,
+  __resetBottomTerminal, openBottomTerminal, addTab, useBottomTerminal, terminalSessionStorageKey,
 } from '../hooks/useBottomTerminal'
 import { disposeTerminalConnection } from '../utils/terminalRegistry'
 import { openPopout, isPopoutOpen, focusPopout, bringBack, returnSelfToMain } from '../utils/terminalPopout'
+import { withTerminalStateLock } from '../utils/terminalStateLock'
 import { renderHook } from '@testing-library/react'
+
+
+
+const cliPanelMocks = vi.hoisted(() => ({
+  disposeTerminalSession: vi.fn(),
+  deleteTerminalSession: vi.fn(),
+}))
 
 vi.mock('../components/CliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
-  disposeTerminalSession: vi.fn(),
-  useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
+  disposeTerminalSession: cliPanelMocks.disposeTerminalSession,
+  useDeleteTerminalSession: () => ({ mutate: cliPanelMocks.deleteTerminalSession }),
 }))
 vi.mock('../utils/terminalRegistry', () => ({
   useTerminalTitle: () => '',
@@ -46,18 +54,18 @@ vi.mock('../hooks/usePanelTabs', () => ({
   usePanelTabs: () => ({}),
 }))
 
-beforeEach(() => {
-  __resetBottomTerminal()
+beforeEach(async () => {
+  await __resetBottomTerminal()
   vi.clearAllMocks()
 })
-afterEach(() => {
-  __resetBottomTerminal()
+afterEach(async () => {
+  await __resetBottomTerminal()
 })
 
 describe('TerminalTabsView dock variant — pop out', () => {
   it('opens the popout window, then releases every tab WebSocket', async () => {
-    openBottomTerminal()
-    const second = addTab()
+    await openBottomTerminal()
+    const second = await addTab()
     renderWithProviders(<TerminalTabsView variant="dock" />)
 
     // Pop-out now lives inside the overflow dropdown menu
@@ -77,8 +85,8 @@ describe('TerminalTabsView dock variant — pop out', () => {
     // Regression: sockets used to be disposed BEFORE window.open — a vetoed
     // popup left the dock rendered but permanently disconnected.
     vi.mocked(isPopoutOpen).mockReturnValueOnce(false)
-    openBottomTerminal()
-    addTab()
+    await openBottomTerminal()
+    await addTab()
     renderWithProviders(<TerminalTabsView variant="dock" />)
 
     // Pop-out now lives inside the overflow dropdown menu
@@ -89,17 +97,29 @@ describe('TerminalTabsView dock variant — pop out', () => {
     expect(disposeTerminalConnection).not.toHaveBeenCalled()
   })
 
-  it('shows dock chrome: hide button present, no Return control', () => {
-    openBottomTerminal()
+  it('shows dock chrome: hide button present, no Return control', async () => {
+    await openBottomTerminal()
     renderWithProviders(<TerminalTabsView variant="dock" />)
     expect(screen.getByRole('button', { name: 'Hide terminal panel' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Return to main window/ })).not.toBeInTheDocument()
+  })
+
+  it('waits for committed tab removal before deleting the PTY', async () => {
+    await openBottomTerminal()
+    renderWithProviders(<TerminalTabsView variant="dock" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close terminal' }))
+
+    expect(cliPanelMocks.deleteTerminalSession).not.toHaveBeenCalled()
+    expect(cliPanelMocks.disposeTerminalSession).not.toHaveBeenCalled()
+    await waitFor(() => expect(cliPanelMocks.deleteTerminalSession).toHaveBeenCalledTimes(1))
+    expect(cliPanelMocks.disposeTerminalSession).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('TerminalTabsView popout variant', () => {
   it('shows a Return control and hides the dock-only chrome', async () => {
-    openBottomTerminal()
+    await openBottomTerminal()
     renderWithProviders(<TerminalTabsView variant="popout" />)
 
     // No pop-out / hide / move-to-chat controls in the popout window.
@@ -111,8 +131,8 @@ describe('TerminalTabsView popout variant', () => {
     expect(returnSelfToMain).toHaveBeenCalledTimes(1)
   })
 
-  it('still offers the + new-terminal button', () => {
-    openBottomTerminal()
+  it('still offers the + new-terminal button', async () => {
+    await openBottomTerminal()
     renderWithProviders(<TerminalTabsView variant="popout" />)
     expect(screen.getByRole('button', { name: 'New terminal' })).toBeInTheDocument()
   })
@@ -120,8 +140,8 @@ describe('TerminalTabsView popout variant', () => {
 
 describe('TerminalDetachedBar (main window while popped out)', () => {
   it('releases the tabs\' local sockets and offers explicit Focus / Return actions', async () => {
-    openBottomTerminal()
-    addTab()
+    await openBottomTerminal()
+    await addTab()
     renderWithProviders(<TerminalDetachedBar />)
 
     // Popout owns the sockets -- this window releases its copies.
@@ -138,8 +158,8 @@ describe('TerminalDetachedBar (main window while popped out)', () => {
 })
 
 describe('useBottomTerminal cross-window storage sync', () => {
-  it('adopts tab-list changes written by another window', () => {
-    openBottomTerminal()
+  it('adopts tab-list changes written by another window', async () => {
+    await openBottomTerminal()
     const { result } = renderHook(() => useBottomTerminal())
     expect(result.current.tabs).toHaveLength(1)
 
@@ -150,20 +170,22 @@ describe('useBottomTerminal cross-window storage sync', () => {
       tabs: [...result.current.tabs, { id: 'from-popout' }],
       activeId: 'from-popout',
     }
-    act(() => {
-      localStorage.setItem('mc-bottom-terminal', JSON.stringify(foreign))
+    await act(async () => {
+      const commit = await withTerminalStateLock(values => {
+        values.set(terminalSessionStorageKey(null), JSON.stringify(foreign))
+      })
       window.dispatchEvent(new StorageEvent('storage', {
-        key: 'mc-bottom-terminal',
-        newValue: JSON.stringify(foreign),
+        key: 'mc-bottom-terminal-updated',
+        newValue: String(commit.snapshot.revision),
       }))
     })
 
-    expect(result.current.tabs.map(t => t.id)).toContain('from-popout')
+    await waitFor(() => expect(result.current.tabs.map(t => t.id)).toContain('from-popout'))
     expect(result.current.activeId).toBe('from-popout')
   })
 
-  it('ignores storage events for other keys', () => {
-    openBottomTerminal()
+  it('ignores storage events for other keys', async () => {
+    await openBottomTerminal()
     const { result } = renderHook(() => useBottomTerminal())
     const before = result.current
     act(() => {
