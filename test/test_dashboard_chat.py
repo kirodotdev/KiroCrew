@@ -13344,6 +13344,55 @@ class TestFolderCRUD:
             assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_expected_created_matching_the_live_slot_files_it(self, tmp_path, monkeypatch):
+        """The generation token is optional; when it matches the slot's own
+        ``created_at`` the write lands exactly as an untokened one does."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("myslot")
+        state._folders = [{"id": "f1", "name": "Test", "order": 0, "collapsed": False}]
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(
+                "/api/chat/slots/myslot/folder",
+                json={"folder_id": "f1", "expected_created": slot.created_at},
+            )
+            assert resp.status == 200
+            assert slot.folder_id == "f1"
+
+    @pytest.mark.asyncio
+    async def test_expected_created_from_a_replaced_slot_is_refused_409(
+        self, tmp_path, monkeypatch
+    ):
+        """A caller that resolved a slot in an earlier request, then saw its
+        tab close and the same key recreated for another conversation, carries
+        the OLD slot's ``created_at``. The recreated slot has the same key and
+        the same ``dashboard:<key>`` transcript key, so only the token can tell
+        them apart — and it must, or the stale write files someone else's
+        session."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        first = state.get_or_create_slot("myslot")
+        stale_token = first.created_at
+        # Close the tab and recreate the key: a different slot object, a
+        # different birth stamp, the same key.
+        del state._slots["myslot"]
+        replacement = state.get_or_create_slot("myslot")
+        replacement.created_at = stale_token + "-later"
+        state._folders = [{"id": "f1", "name": "Test", "order": 0, "collapsed": False}]
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(
+                "/api/chat/slots/myslot/folder",
+                json={"folder_id": "f1", "expected_created": stale_token},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "session_gone"
+            # The replacement conversation was not filed.
+            assert replacement.folder_id == ""
+            assert replacement._folder_changed is False
+
+    @pytest.mark.asyncio
     async def test_assign_nonexistent_folder_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

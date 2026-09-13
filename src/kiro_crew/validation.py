@@ -2014,6 +2014,16 @@ CHAT_FOLDER_MOVE_SESSION_SCHEMA = ToolSchema(
     ],
 )
 
+CHAT_FOLDER_FILE_SELF_SCHEMA = ToolSchema(
+    tool_name="chat_folder_file_self",
+    fields=[
+        # No ``session`` field on purpose: the target is the caller's own slot,
+        # resolved server-side from the verified identity. The folder reference
+        # takes the same id-or-path shape as ``chat_folder_move_session.folder``.
+        FieldSpec("folder", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
 ARTIFACT_MOVE_SCHEMA = ToolSchema(
     tool_name="artifact_move",
     fields=[
@@ -3167,6 +3177,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
+    "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
 }
 
 # ── Tool Schemas (MCP Work ledger — server ``kirocrew-work``) ──

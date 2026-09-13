@@ -335,6 +335,7 @@ class TestWhatThisSetGrants:
         "chat_folder_create",
         "chat_folder_move",
         "chat_folder_move_session",
+        "chat_folder_file_self",
     }
     #: The session-control half. Granted by the SAME assignment as the folder
     #: half — see ``test_session_driving_tools_ship_with_the_folder_tools`` for

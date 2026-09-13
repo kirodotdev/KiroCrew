@@ -5710,9 +5710,9 @@ Per item, and the order is not a preference:
 
 1. `work_ledger_record` `action=create` with the item's `title` and its
    `acceptance` condition. It returns the `item_id`.
-2. `session_create` with a title saying what the item is FOR, `folder` set to the
-   goal's folder, and **`agent` set explicitly**. It returns the worker's session
-   key.
+2. `session_create` with a title saying what the item is FOR, `folder` set to
+   `<goal folder>/<agent>` (one subfolder per agent kind, created on the way),
+   and **`agent` set explicitly**. It returns the worker's session key.
 3. `work_ledger_record` `action=bind` with that `item_id` and
    `worker_session_key`.
 4. `session_send` the seed prompt.
@@ -5809,7 +5809,9 @@ Your tools:
 - Child sessions — `session_create`, `session_send`, `session_read_message`,
   `session_stop`, `session_close` (close a child once its item is terminal),
   `list_sessions`.
-- Keeping the goal's sessions together — `chat_folder_tree`,
+- Keeping the goal's sessions together — `chat_folder_file_self` (file YOUR
+  session in the goal's folder before the first dispatch, so the person finds
+  you beside your workers, not floating at the top level), `chat_folder_tree`,
   `chat_folder_create`.
 - Your own state across rounds — `session_ledger_read`, `session_ledger_record`.
 - Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`, `wait`.
@@ -5880,6 +5882,17 @@ handle immediately.
 #:   ``_refuse_tree_shaping_if_unverifiable`` refuses an unverifiable caller and
 #:   keeps an app agent out of the person's own folders. Touches nothing that
 #:   already existed, and bounded by ``MAX_CHAT_FOLDERS``. GRANTED.
+#: * ``chat_folder_file_self`` — writes the CALLER'S OWN ``folder_id``, and only
+#:   that: the target slot is the ``dashboard:<slot>`` the verified caller key
+#:   names (``mcp_dashboard._own_chat_slot``; a linked channel/cron slot is
+#:   refused because its binding can be rebound between read and write),
+#:   there is no ``session`` argument, so ingested content cannot aim it at a
+#:   peer. The one placement it can change
+#:   is the conductor's own — the ``not the conductor's own`` clause of the
+#:   invariant is exactly what admits it. This is what lets a conductor sit
+#:   INSIDE the goal's folder beside its workers' subfolders instead of
+#:   floating at the top level; the destination path is created on the way
+#:   (mkdir -p, bounded by ``MAX_CHAT_FOLDERS`` like any create). GRANTED.
 #: * ``session_create`` — creates a NEW session in the caller's workspace, bounded
 #:   both globally (``MAX_LIVE_SLOTS``, 429 on breach) and per caller
 #:   (``MAX_SLOTS_PER_CREATOR``), and visible in the sidebar. GRANTED.
@@ -5925,6 +5938,7 @@ handle immediately.
 _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/chat_folder_tree",
     "@kirocrew-dashboard/chat_folder_create",
+    "@kirocrew-dashboard/chat_folder_file_self",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
 )
@@ -6924,6 +6938,17 @@ _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/session_read_message",
 )
 
+#: The security conductor's dashboard grants: the pipeline conductor's plus
+#: ``chat_folder_file_self``, for the same reason the goal conductor holds it
+#: (see ``_CONDUCTOR_DASHBOARD_GRANTS``): the verb writes only the caller's own
+#: placement, and this agent's procedure files itself in the audit's folder
+#: before its auditors go under ``<audit>/<agent>``. The pipeline conductor's
+#: procedure does not file itself yet, so its tuple stays as it is rather
+#: than carrying a grant nothing in its skill exercises.
+_SECURITY_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS + (
+    "@kirocrew-dashboard/chat_folder_file_self",
+)
+
 
 _WORKER_SYSTEM_PROMPT = """# Kiro Crew Worker
 
@@ -7769,7 +7794,9 @@ Your tools:
 - Child sessions — `session_create`, `session_send`, `session_read_message`,
   `session_stop`, `session_close` (close a child once its item is terminal),
   `list_sessions`.
-- Keeping the audit's sessions together — `chat_folder_tree`,
+- Keeping the audit's sessions together — `chat_folder_file_self` (file YOUR
+  session in the audit's folder before the first dispatch; auditors and
+  verifiers then go under `<audit>/<agent>`), `chat_folder_tree`,
   `chat_folder_create`.
 - State that outlives a round — `session_ledger_read`, `session_ledger_record`.
 - Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`, `wait`.
@@ -7861,7 +7888,7 @@ def _install_security_conductor_agent() -> None:
             "report",
             "tool_search",
             *_PIPELINE_CONDUCTOR_CORE_GRANTS,
-            *_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
+            *_SECURITY_CONDUCTOR_DASHBOARD_GRANTS,
         ),
         source="_install_security_conductor_agent",
     )

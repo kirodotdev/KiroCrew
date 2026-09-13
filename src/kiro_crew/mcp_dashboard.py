@@ -86,6 +86,7 @@ from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     CHAT_FOLDER_CREATE_SCHEMA,
+    CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
@@ -248,6 +249,36 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["session"],
+            },
+        },
+        {
+            "name": "chat_folder_file_self",
+            "description": (
+                "File THIS session — the one making the call — into a sidebar "
+                "folder, or unfile it to the top level (omit ``folder`` / pass "
+                "'root'). ``folder`` is a folder id or '/'-separated human path; "
+                "missing path segments are created (mkdir -p), the same way "
+                "session_create's ``folder`` resolves. Use it when you stand up a "
+                "workstream that gets its own folder — a conductor files itself in "
+                "the goal's folder first, then creates its workers with "
+                '``folder="<goal>/<agent>"``, so the person finds the '
+                "conductor and every worker under one heading instead of the "
+                "conductor floating at the top level. Writes ONLY the caller's own "
+                "placement: to file a different session use "
+                "chat_folder_move_session. Metadata only — transcript, model and "
+                "any running turn are untouched; already filed there is a no-op."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": (
+                            "Destination folder id or human path (created if missing). "
+                            "Omit / 'root' to unfile."
+                        ),
+                    },
+                },
             },
         },
         {
@@ -1067,6 +1098,63 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
     return ""
 
 
+def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]:
+    """The caller's OWN sidebar slot row, or why it has none to file.
+
+    Resolved from the VERIFIED caller key only, never from an argument: this is
+    what lets ``chat_folder_file_self`` be granted to an unattended conductor
+    where ``chat_folder_move_session`` is withheld — the one placement it can
+    write is its own.
+
+    Only a ``dashboard:<slot>`` key qualifies, and it must name a row that is
+    present. That key IS the slot: the slot key never changes for the life of
+    the tab, so the row this resolves and the row the PATCH lands on are the
+    same object (the endpoint re-checks identity under its lock). A slot bound
+    to a channel or a schedule presents its ``linked_session_key`` instead, and
+    that binding is REBOUND on live slots with no running gate — so a key that
+    matched one slot at this read could name a different conversation by the
+    time the write arrives. Filing on that match would file someone else's
+    session; those callers are refused rather than raced.
+
+    Two more refusals, both for what the placement would mean. A private
+    (incognito / temporary) session is kept out of the sidebar record by the
+    person's choice, and a folder placement is durable sidebar metadata. A crew
+    member's pinned DM thread (``mode == "member"``) is one thread that spans
+    every goal the member ever runs and lives on the Crew page, not in the
+    sidebar tree — so a conductor running AS a member does not file itself; its
+    workers still go under ``<goal>/<agent>`` via ``session_create``.
+    """
+    if not caller_key.startswith("dashboard:"):
+        return {}, (
+            "Error: this session has no sidebar slot to file — only a dashboard "
+            "chat session can be placed in a folder."
+        )
+    slot_key = caller_key.split(":", 1)[1]
+    row: dict | None = None
+    for r in rows:
+        if str(r.get("key") or "") == slot_key:
+            row = r
+            break
+    if row is None:
+        return {}, (
+            "Error: this session has no sidebar slot to file — only a dashboard "
+            "chat session can be placed in a folder."
+        )
+    if str(row.get("mode") or "") == "member":
+        return {}, (
+            "Error: a crew member's pinned DM thread lives on the Crew page and is "
+            "not filed in a sidebar folder — it spans every goal the member runs. "
+            "Skip filing yourself; create your workers with "
+            "session_create's `folder` set to `<goal>/<agent>` instead."
+        )
+    if str(row.get("memory_mode") or "persistent") != "persistent":
+        return {}, (
+            "Error: a private (incognito or temporary) session is kept out of the "
+            "sidebar record and cannot be filed."
+        )
+    return row, None
+
+
 def _visible_chat_slots() -> tuple[list[dict], str | None]:
     """The live sessions these tools may see, private and foreign ones removed.
 
@@ -1734,6 +1822,68 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return redact(f"Unfiled session `{slot_key}` to the top level.")
         folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
         return redact(f"Moved session `{slot_key}` into `{folder_label}` (id={fld_id}).")
+    if name == "chat_folder_file_self":
+        args = validate_tool_args(args, CHAT_FOLDER_FILE_SELF_SCHEMA)
+        # The destination may not exist yet (mkdir -p, like session_create's
+        # ``folder``), and creating folders is tree shaping — so the same gate,
+        # not a second authorization path. Its verified key is what every write
+        # below carries, per the gate's own contract.
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("filing this session")
+        if gate:
+            return gate
+        rows, rows_err = _get_rows("/api/chat/slots")
+        if rows_err:
+            return redact(f"Error: {rows_err}")
+        own_slot, own_err = _own_chat_slot(caller_key, rows)
+        if own_err:
+            return own_err
+        own_key = str(own_slot.get("key") or "")
+        # The row's ``created`` is the slot's birth stamp, minted once per slot
+        # object. It rides along on the PATCH as a generation token so the
+        # endpoint refuses (409 ``session_gone``) if this tab closed and its key
+        # was recreated for another conversation between this read and the
+        # write — the recreated slot shares the ``dashboard:<key>`` transcript
+        # key, so the history pin alone would let that write through.
+        own_created = str(own_slot.get("created") or "")
+        chat_folders, folders_err = _get_rows("/api/chat/folders")
+        if folders_err:
+            return redact(f"Error: {folders_err}")
+        folder_ref = str(args.get("folder") or "")
+        made_note = ""
+        fld_id = ""
+        if folder_ref and folder_ref != "root":
+            fld_id, created_segments, fld_err = _ensure_chat_folder_path(
+                folder_ref, chat_folders, session_key=caller_key
+            )
+            if created_segments:
+                made_note = f" (created folder path: {'/'.join(created_segments)})"
+            if fld_err:
+                # Segments the walk already created persist and are reported —
+                # the same partial-report posture chat_folder_create and
+                # session_create take, since folder deletion is deliberately not
+                # a capability this server has.
+                return redact(f"Error: {fld_err}{made_note}")
+        # The target is the CALLER's own slot, resolved above from the verified
+        # key — never from an argument — which is what makes this verb safe to
+        # grant where chat_folder_move_session is withheld: it can write no
+        # placement but its own. ``expected_created`` pins the write to the
+        # slot generation resolved above; the endpoint checks it under its lock.
+        patch_body: dict[str, str] = {"folder_id": fld_id}
+        if own_created:
+            patch_body["expected_created"] = own_created
+        d = _patch(
+            f"/api/chat/slots/{quote(own_key, safe='')}/folder",
+            patch_body,
+            session_key=caller_key,
+        )
+        if d.get("error"):
+            return redact(f"Error: {d['error']}{made_note}")
+        if not fld_id:
+            return redact(f"Unfiled this session (`{own_key}`) to the top level.{made_note}")
+        folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
+        return redact(
+            f"Filed this session (`{own_key}`) in `{folder_label}` (id={fld_id}).{made_note}"
+        )
     return f"Error: unknown tool '{name}'"
 
 

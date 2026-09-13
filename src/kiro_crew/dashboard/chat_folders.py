@@ -1285,6 +1285,16 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     folder_id = str(body.get("folder_id") or "")
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
+    # Optional generation token. The identity re-check below covers THIS
+    # request's own awaits, but a caller that resolved the slot in an earlier
+    # request (``chat_folder_file_self`` reads ``/api/chat/slots`` first) has a
+    # gap this handler cannot see: its tab can close and the same slot key be
+    # recreated for a different conversation before its PATCH arrives, and the
+    # recreated slot carries the same ``dashboard:<key>`` transcript key, so the
+    # history pin alone cannot tell them apart. ``created_at`` is minted once
+    # per slot object and persisted, so echoing it back is the caller's proof
+    # that the slot it is filing is the one it resolved.
+    expected_created = str(body.get("expected_created") or "")
     # Serialize the whole re-check/mutate/persist/rollback span under the
     # state-wide metadata txn lock (rebind-stable; see _slot_meta_txn_lock):
     # with awaits inside the span, a second concurrent request would capture
@@ -1298,8 +1308,14 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         # same slot OBJECT still registered under the name, routing still on
         # the transcript captured before the first await. No await between
         # this check and the mutation below; the _unhide_folder and persist
-        # awaits after it are covered by the save's pin.
-        if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
+        # awaits after it are covered by the save's pin. The generation token
+        # is checked in the same breath: a mismatch means the caller resolved a
+        # slot that has since been replaced under its key.
+        if (
+            state._slots.get(name) is not slot
+            or slot_history_key(slot) != authorized_history_key
+            or (expected_created and slot.created_at != expected_created)
+        ):
             source, caller = _audit_origin(request)
             sel().log_api_access(
                 caller=caller,

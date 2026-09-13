@@ -697,7 +697,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
 
 `kirocrew-dashboard` is one transport carrying **two** authorization models, which is
 what makes its assignment decision larger than its name suggests. The
@@ -710,7 +710,7 @@ is their spec and carries that reasoning.
 The consequence to know before granting: an agent handed the whole server for folder
 organization has the session verbs too. Whether they prompt depends on how the grant
 is spelled — `_mcp_pattern` maps a bare `@kirocrew-dashboard` entry to a one-level
-glob, so it auto-approves all nine, while naming tools individually leaves the rest
+glob, so it auto-approves all ten, while naming tools individually leaves the rest
 to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
 `_MEMBER_DASHBOARD_GRANTS` (`agent.py`) are the shipped examples of the individual
 form, and they differ from each other on exactly this axis: the member's list
@@ -1016,6 +1016,33 @@ the store lock and sees the authoritative tree, so a second copy of the rule in
 the tool layer could only drift or race. What the tool layer still decides is the
 one question the endpoint cannot: whether the caller can be placed at all, since
 an unverifiable or delegated caller has no scope to bound a write to.
+
+**Filing your own session is a separate verb, `chat_folder_file_self`, because
+the grant is name-scoped.** `chat_folder_move_session` takes its target from an
+argument, so it is the one dashboard tool that writes a session OTHER than the
+caller's, and the conductor agents keep it behind an approval: they ingest
+untrusted content on unattended cycles, and `allowedTools` can name a tool but
+not an argument. That left the conductor unable to file ITSELF without a prompt,
+so it floated at the top level while its workers sat in the goal's folder.
+`chat_folder_file_self` has no `session` argument — the target is resolved from
+the verified caller key (`_own_chat_slot`: only a `dashboard:<slot>` key
+qualifies, because the slot key is stable for the tab's life while a
+channel- or cron-bound slot's `linked_session_key` can be rebound between the
+read and the write, so matching on it could file a different conversation;
+a private session and a crew member's pinned DM thread are refused too) — so the one
+placement it can write is the caller's own, which is exactly the placement the
+conductor grant invariant (create or read, never mutate what is not your own)
+admits. It resolves `folder` with `mkdir -p` semantics behind the same
+tree-shaping gate as `session_create`'s `folder`, and PATCHes the same
+`/api/chat/slots/<slot>/folder` route under the gate's verified key, carrying
+the slot's `created` stamp as `expected_created`: the endpoint's own identity
+re-check covers its own awaits, but the tool resolves the slot in an EARLIER
+request, and a tab that closes and is recreated under the same key in that gap
+would share the `dashboard:<key>` transcript key — so the endpoint refuses (409
+`session_gone`) when the token does not match the live slot's `created_at`. The
+conductors call it once in their first turn, then create every worker with
+`folder="<goal>/<agent>"`, giving one heading per goal with the conductor
+directly under it and one subfolder per agent kind.
 
 **Position is the one folder write the tool layer has to compose.** A folder's
 place among its siblings is an `order` int the endpoint stores verbatim and never
