@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_ledger_emit
 from kiro_crew.metrics.events import CONTEXT_COMPACTIONS, emit_counter
 from kiro_crew.metrics.sessions import END_REASON_RECYCLED, record_session_ended
 
@@ -270,6 +271,22 @@ class CompactionCoordinator:
         baseline = self.state.pending_verdict.get(key)
         if baseline is not None and not self._deps.context_pct_is_unknown(provider):
             del self.state.pending_verdict[key]
+            # Append-only session ledger (flag-gated, fail-soft). The OTHER half
+            # of the emit in ``_settle_compact_cooldown``: a compaction whose
+            # effect was not measurable at the time deferred its verdict to here,
+            # and without this line that compaction would never appear in the
+            # ledger at all. ``pct`` is the first CONFIRMED reading after it, so
+            # it is the honest ``pct_after`` even when it is higher than
+            # ``baseline`` -- a deferred reading includes a later turn's growth,
+            # which makes ``freed_pct`` negative rather than absent. Recording
+            # that beats recording nothing: the entry says a compaction happened
+            # and what was measured, and a reader can see the measurement is not
+            # a clean before/after because the numbers say so.
+            session_ledger_emit.on_compaction_applied(
+                session_ledger_emit.session_id_of(provider),
+                pct_before=baseline,
+                pct_after=pct,
+            )
             # Ignore the escalation result here: a deferred reading includes a
             # later turn's growth and is only safe for cooldown damping.
             self._owner._judge_compact_effect(key, baseline, pct)
@@ -535,6 +552,15 @@ class CompactionCoordinator:
             )
             return False
         self.state.pending_verdict.pop(key, None)
+        # Append-only session ledger (flag-gated, fail-soft). This is the
+        # immediately-confirmed half; a deferred verdict is recorded by
+        # ``_compaction_gate_decision`` when its reading settles, so every
+        # compaction reaches the ledger on exactly one of the two paths.
+        session_ledger_emit.on_compaction_applied(
+            session_ledger_emit.session_id_of(provider),
+            pct_before=pct_before,
+            pct_after=pct_after,
+        )
         return self._owner._judge_compact_effect(key, pct_before, pct_after)
 
     def _judge_compact_effect(self, key: str, pct_before: float, pct_after: float) -> bool:

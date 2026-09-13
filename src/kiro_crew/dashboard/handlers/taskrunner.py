@@ -626,7 +626,11 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
         slot.append("user", summary, "msg msg-u")
         from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
 
-        task = asyncio.create_task(_run_chat(state, slot, summary, _directive_user_origin=False))
+        # The summary is composed by the task runner, not typed by anyone, so the
+        # session ledger records the gateway as the actor rather than the user.
+        task = asyncio.create_task(
+            _run_chat(state, slot, summary, _directive_user_origin=False, _turn_actor="gateway")
+        )
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
@@ -697,7 +701,10 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     # Auto-trigger LLM response so user doesn't have to send a message
     from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
 
-    task = asyncio.create_task(_run_chat(state, slot, summary, _directive_user_origin=False))
+    # Runner-composed text, so the ledger records the gateway rather than a user.
+    task = asyncio.create_task(
+        _run_chat(state, slot, summary, _directive_user_origin=False, _turn_actor="gateway")
+    )
     slot.task = task
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)

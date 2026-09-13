@@ -823,7 +823,9 @@ async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
     try:
         await state.run_background_turn(
             slot,
-            _run_chat(state, slot, prompt, _directive_user_origin=False),
+            # The prompt is composed by the crew runtime, so the ledger records
+            # the crew as the actor rather than a user.
+            _run_chat(state, slot, prompt, _directive_user_origin=False, _turn_actor="crew"),
         )
     except (asyncio.TimeoutError, TimeoutError):
         logger.warning(

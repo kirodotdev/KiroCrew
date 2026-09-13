@@ -5523,6 +5523,37 @@ class TestIneffectiveCompactionCooldown:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_a_deferred_verdict_records_the_compaction_when_it_settles(
+        self, cfg, monkeypatch
+    ):
+        """A compaction whose effect was not measurable at the time still reaches
+        the session ledger.
+
+        ``_settle_compact_cooldown`` records only the immediately-confirmed case.
+        Without this emit the deferred half -- the reading kiro-cli reset to
+        unknown mid-turn -- would settle here and be recorded nowhere, so the
+        ledger would be missing exactly the compactions that were hardest to
+        measure."""
+        from kiro_crew import session_ledger_emit
+
+        seen: list[tuple[float, float]] = []
+        monkeypatch.setattr(
+            session_ledger_emit,
+            "on_compaction_applied",
+            lambda sid, *, pct_before, pct_after: seen.append((pct_before, pct_after)),
+        )
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        mgr._compact_pending_verdict["dashboard:chat-1"] = 92.0
+        provider.context_usage_pct = lambda: 40.0
+
+        mgr.check_context_usage("dashboard:chat-1", provider)
+
+        assert seen == [(92.0, 40.0)]
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_deferred_verdict_ineffective_arms_cooldown_and_suppresses_trigger(
         self, cfg, caplog
     ):
