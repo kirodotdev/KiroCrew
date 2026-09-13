@@ -98,13 +98,31 @@ DESIGN_LANE_TEMPLATES = {
 }
 
 
+# The heading each lane files its CONCERNS-level items under. Design and UX
+# use `### Watch`; First Principles folds its items into `### Not justified as
+# shipped` (one entry per item, carrying its own `Clears when:` /
+# `Subtraction:` lines) and emits no Watch or Subtractions section, so that a
+# finding is stated once. Both headings are on the extractor's allowlist.
+DESIGN_LANE_ITEM_HEADINGS = {
+    "DESIGN": "### Watch",
+    "UX": "### Watch",
+    "FIRST-PRINCIPLES": "### Not justified as shipped",
+}
+
+
 def test_each_whole_design_lane_still_emits_the_anchors_the_extractor_reads():
     for lane, (path, verdict_key) in DESIGN_LANE_TEMPLATES.items():
         text = path.read_text(encoding="utf-8")
         assert verdict_key in text, f"{lane}: the machine-parsed verdict line moved"
-        assert "### Watch" in text, f"{lane}: the Watch section heading moved"
+        heading = DESIGN_LANE_ITEM_HEADINGS[lane]
+        assert heading in text, f"{lane}: the {heading} section heading moved"
         assert "### Blockers" in text, f"{lane}: the Blockers section heading moved"
         assert f"[{lane}-REVIEWED]" in text, f"{lane}: the freshness stamp moved"
+    # First Principles must not grow the restating sections back: they are
+    # what buried its findings under three copies of the same item.
+    fp = DESIGN_LANE_TEMPLATES["FIRST-PRINCIPLES"][0].read_text(encoding="utf-8")
+    assert "### Watch" not in fp
+    assert "### Subtractions" not in fp
 
 
 def test_the_extractor_allowlist_covers_the_shared_item_sections():

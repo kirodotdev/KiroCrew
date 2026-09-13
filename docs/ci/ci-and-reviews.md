@@ -846,6 +846,45 @@ Two of its `BLOCK` triggers are read off the evidence rather than judged, so the
   RFC already licenses is not relitigated by asking for its grounds. An ordinary fix
   with thin provenance stays where it was: an `inherited` item, `CONCERNS`.
 
+A third trigger is read off the diff too: **a deleted pin is a prior decision, and
+silence about it is the same case as mislabelling it.** When the diff deletes or
+rewrites a test, an assertion or a comment that pinned the *opposite* behaviour and
+stated why, and the PR shows no evidence the pin was wrong -- no git history, no pin
+message, no linked issue -- its framing is contradicted by the diff whether the
+description calls the pin "a gap" or never mentions it at all. Symmetry or
+consistency with a sibling is not that evidence. Before this clause, only the
+mislabelled form reached `BLOCK`; a pin deleted without a word slipped to the
+advisory tier as `undeclared` (#10119 deleted a comment reading "This deliberately
+supersedes the earlier ... pill spec" plus its pin tests, said nothing, and drew
+`CONCERNS`).
+
+**Each finding is stated once.** The lane's output is the verdict header, one bold
+punchline that opens with the problem, a `### Not justified as shipped` list, the
+collapsed inventory, and -- on `BLOCK` only -- `### Blockers`. Every item that is not
+`justified` gets exactly one entry in that list, carrying a `Subtraction:` line where
+one exists and its own `Clears when:` line last (the prepare-pr extractor reads from
+`Clears when:` to the end of the item as the clearance); there is no `### Watch` and
+no `### Subtractions`. Those two sections used to restate the same items a second and
+third time (on #10119: three items, three sections, ~600 words against a 180-word
+cap), which is what buried the finding under the text around it. The prepare-pr
+extractor already reads `Not justified as shipped` as an item-bearing section, so
+the local loop's per-item dispositions are unchanged; the check-run summary and the
+`::warning` annotation publish that section in place of `Watch`.
+
+Two mechanical guards back the contract in all six whole-design lanes (both First
+Principles, Design and UX workflows). The captured model text is **trimmed to its
+verdict header** before it is posted, so process narration a model writes above the
+header ("All facts verified against the base. Composing the final review.") never
+reaches the PR; a body with no header is left whole so the existing
+"returned no verdict header" path still sees it. And the prose **outside the collapsed
+`<details>` inventory is counted**: past twice the lane's cap (180 words for First
+Principles, 150 for Design and UX) the job emits a `::warning` naming the count. It
+is a warning, not a gate -- the verdict and the comment do not move -- because the
+cap is a readability contract, not a correctness one. The Design and UX punchlines
+follow the same problem-first rule as First Principles: for `CONCERNS`/`BLOCK` the
+sentence opens with the problem, never `<what is sound>, but <problem>`; for `PASS`
+it names the one thing a human should still verify, or `Nothing to check.`
+
 **Where it overlaps Design Review, this lane owns the question.** Design Review's own
 rubric asks whether a change fixes a root cause and whether a simpler alternative
 exists; those questions are asked here from the premise side and per item. The split

@@ -1037,9 +1037,13 @@ jobs:
             The FIRST line is machine-parsed — emit it verbatim, value only:
             UX-Verdict: <PASS | CONCERNS | BLOCK>
 
-            Then a blank line and ONE bold punchline (≤25 words): the single
-            most important takeaway — for PASS, why the experience holds; for
-            CONCERNS/BLOCK, the core UX problem in one breath.
+            Then a blank line and ONE bold punchline (≤25 words). It OPENS with
+            the problem: for CONCERNS/BLOCK, the core UX problem in one breath,
+            problem first — never `<what works>, but <problem>`, because the
+            reader stops at the comma and the finding is what came after it.
+            For PASS, the ONE thing a human should still verify before merge,
+            or exactly `Nothing to check.` — never why the experience holds; a
+            reviewer that argues the author's case is not reviewing.
 
             Then include a section ONLY if it has real content (omit the
             heading entirely when empty — never write "None" sections):
@@ -1166,6 +1170,16 @@ jobs:
               summary="$(jq -rs '[ .[] | (if type=="array" then .[] else . end) | select(.result != null) ] | (last.result // "")' "$EXEC_FILE" 2>/dev/null || true)"
             fi
           fi
+          # Publish only the review. The contract makes the verdict header the
+          # FIRST line, but a model that narrates before it ("All facts verified.
+          # Composing the final review.") ships that narration into a public
+          # comment above the punchline. Trim to the header when one is present;
+          # without one the text is left whole so the no-verdict path below still
+          # sees what the model wrote. Here-strings, not pipes: a long summary
+          # cannot manufacture a SIGPIPE status under `pipefail`.
+          if grep -qiE '^UX-Verdict:' <<< "$summary"; then
+            summary="$(awk 'f || tolower($0) ~ /^ux-verdict:/ { f = 1; print }' <<< "$summary")"
+          fi
           # An evidence step that failed because an attachment download
           # failed leaves no transcript either (the model never ran), but that
           # outcome IS this run's result for the head and has a remedy, so it
@@ -1200,6 +1214,16 @@ jobs:
           if [ -n "$summary" ] && ! grep -qF "[UX-REVIEWED] $HEAD" <<< "$summary"; then
             echo "verdict header present but no [UX-REVIEWED] $HEAD marker; treating as UNKNOWN"
             verdict="UNKNOWN"
+          fi
+          # The contract caps the prose at ~150 words outside the collapsed
+          # inventory: a review twice that long is one whose findings sit under
+          # text nobody reads. Count it and say so in the job log and annotations;
+          # the verdict and the comment are unaffected.
+          if [ "$verdict" != "UNKNOWN" ]; then
+            words="$(awk '/<details>/ { skip = 1 } !skip { print } /<\/details>/ { skip = 0 }' <<< "$summary" | wc -w | tr -d ' ')"
+            if [ "${words:-0}" -gt 300 ]; then
+              echo "::warning title=UX Review over length::$words words outside the inventory; the contract caps the review at ~150. Findings past the cap are the ones nobody reads."
+            fi
           fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           case "$verdict" in
@@ -1283,7 +1307,7 @@ jobs:
               !seen && $0 ~ header { seen = 1; next }
               !seen { next }
               seen == 1 && NF { print; seen = 2; next }
-              /^### / { watch = ($0 ~ /^### Watch[[:space:]]*$/) }
+              /^### / { watch = ($0 ~ /^### (Watch|Not justified as shipped)[[:space:]]*$/) }
               watch { print }
             ' "$file")"
             printf '%s' "${digest:0:2000}"

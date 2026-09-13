@@ -1108,7 +1108,12 @@ class TestFirstPrinciplesReview:
         # surface this lane exists to remove -- including "add a doc/RFC".
         contract = _fp_contract()
         assert "EVERY suggestion you emit must be a SUBTRACTION" in contract
-        assert "### Subtractions" in contract
+        # The subtraction rides on the item it shrinks -- a `Subtraction:` line
+        # under `### Not justified as shipped` -- so it is never a second
+        # section that says the finding again (see
+        # TestFirstPrinciplesOneStatementPerProblem).
+        assert "`Subtraction: <the exact symbol/field/file to DELETE, SHRINK, DEFER or" in contract
+        assert "### Subtractions" not in contract
         assert "### Suggestions" not in contract
         assert 'no "add an RFC"' in contract
 
@@ -8160,6 +8165,18 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert 'calls\n   it "a gap"' in contract
         assert "framing contradicted by the diff" in contract
         assert 'a deleted pin recast as "a gap" with no' in contract
+        # A diff that deletes a comment reading "This deliberately supersedes
+        # the earlier ... pill spec" plus its pin tests, with a description that
+        # says nothing about it, is the same BLOCK case as one that mislabels
+        # the deletion: a trigger naming only the MISLABELLED form lets the
+        # UNMENTIONED form fall to the advisory tier. The only support that
+        # counts is evidence the pin was wrong -- not consistency with the
+        # other panel.
+        assert "SILENCE IS THE SAME CASE, NOT A LESSER ONE" in contract
+        assert "never mentions it" in contract
+        assert "does not even learn a decision was reversed" in contract
+        assert "and so is a deleted pin the description never\n  mentions" in contract
+        assert '"consistency", "symmetry" or "matches the other panel" is not it' in contract
 
     def test_an_unverified_premise_on_an_availability_path_is_the_block_case(self) -> None:
         # "When torn, choose CONCERNS" made BLOCK unreachable exactly where the
@@ -8171,7 +8188,7 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "ONLY where being wrong is REVERSIBLE" in contract
         assert 'Here "unclear" is the BLOCK case, not the CONCERNS case' in contract
         assert "the author can" in contract
-        assert "Do not soften this to a Watch item" in contract
+        assert "Do not soften this to a CONCERNS item" in contract
         # The carve-outs stay a CLOSED set -- now three: (a) availability
         # premise, (b) rider, (c) product shape without a recorded decision,
         # which is also this lane's only "cannot evaluate". An open-ended
@@ -8234,9 +8251,13 @@ class TestFirstPrinciplesProblemsFirstContract:
         # A finding with no statable resolution is what produced 31 of 57
         # unanswered CONCERNS: nothing told the author when they were done.
         contract = _fp_contract()
-        assert "Every Watch item AND every Blocker ends with one line" in contract
-        assert "`Clears when: <the concrete evidence or change that resolves it>`" in contract
-        assert "is not a finding; drop it" in contract
+        # Once on the item entry, once on the Blocker -- the two places a
+        # finding can appear -- and nowhere else, because there is nowhere else.
+        assert (
+            contract.count("`Clears when: <the concrete evidence or change that resolves it>`") == 2
+        )
+        assert "REQUIRED on every\nitem whose tag reaches CONCERNS" in contract
+        assert "is not a finding -- retag it or drop it" in contract
 
     def test_the_output_diet_tightened_and_kept_its_machine_read_lines(self) -> None:
         contract = _fp_contract()
@@ -8256,6 +8277,294 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "REPO CONTEXT: Kiro Crew is an open-source AI agent platform" in contract
         assert "DO NOT REASON FROM AN ASSUMED USER COUNT, in either direction" in contract
         assert "the AGENT is untrusted with respect to its own governance" in contract
+
+
+class TestFirstPrinciplesOneStatementPerProblem:
+    """A review that says the same three items three times -- under
+    `### Not justified as shipped`, again under `### Watch`, again under
+    `### Subtractions` -- runs to ~600 words against a 180-word cap and buries
+    the finding under the sections that restate it; a line of the model's own
+    narration above the verdict header adds noise at the top. Collapsing the
+    inventory does not fix that: the restating sections are what the template
+    asks for. So the item entry is the finding, its `Clears when:` and its
+    `Subtraction:` together, there is no later section, and the workflow
+    trims anything before the header and counts the words that remain."""
+
+    def test_the_item_entry_is_the_only_place_a_problem_appears(self) -> None:
+        contract = _fp_contract()
+        shape = contract.split("Output EXACTLY this shape")[1]
+        assert "that entry is the item's ONLY\nappearance outside the inventory" in contract
+        assert "there is no later section that\nsays it again" in contract
+        assert "Never write a Watch, Subtractions or Suggestions heading" in contract
+        assert "a second section that restates them\nis what buried the finding" in contract
+        # The two restating sections are gone from the emitted shape.
+        assert "### Watch" not in shape
+        assert "### Subtractions" not in shape
+        # What survives: the problems, the collapsed audit trail, the blockers.
+        assert (
+            shape.index("### Not justified as shipped")
+            < shape.index("### What this change ships")
+            < shape.index("### Blockers")
+        )
+        # Both per-item lines are named as lines ON the entry, not sections.
+        assert "`Clears when: <the concrete evidence or change that resolves it>` --" in shape
+        assert "`Subtraction: <the exact symbol/field/file" in shape
+        # A Blocker is evidence for an item already listed once, not a copy.
+        assert (
+            "the Blockers entry carries the evidence, not a\nsecond copy of the reason" in contract
+        )
+
+    def test_the_style_bans_narration_and_says_each_problem_once(self) -> None:
+        contract = _fp_contract()
+        assert "NO narration of your own process" in contract
+        assert "the verdict header is the FIRST byte of your last\nmessage" in contract
+        assert "Each problem is\nstated ONCE" in contract
+        assert "the\nworkflow counts them and flags an overrun" in contract
+
+    def test_the_rule_the_local_loop_parses_still_holds(self) -> None:
+        # The prepare-pr loop reads items out of `### Not justified as shipped`
+        # by bullet + continuation lines, so an entry shaped as the contract
+        # now asks (bullet, then indented `Clears when:` / `Subtraction:`)
+        # must yield ONE item carrying both lines, not three.
+        mod = _review_contract_module()
+        body = (
+            "First-Principles-Verdict: CONCERNS\n\n"
+            "**punchline**\n\n"
+            "### Not justified as shipped\n"
+            "- Item 4 — unjustified move: reinstates pills against SidePanel.tsx:1459.\n"
+            "  Subtraction: defer `panelTabStyles.ts`; keep `.side-tab-active`.\n"
+            "  Clears when: a linked report names who misread the fused tabs.\n"
+            "- Item 5 — undeclared: hide controls relabelled to X, description silent.\n\n"
+            "### What this change ships\n"
+            "<details><summary>Inventory (2 items) — 0 justified</summary>\n"
+            "1. pills — unjustified move\n2. X icon — undeclared\n</details>\n\n"
+            "[FIRST-PRINCIPLES-REVIEWED] abc\n"
+        )
+        items = mod.design_section_items(body)
+        assert [section for section, _ in items] == [
+            "Not justified as shipped",
+            "Not justified as shipped",
+        ]
+        first = items[0][1]
+        assert "Clears when: a linked report" in first
+        assert "Subtraction: defer `panelTabStyles.ts`" in first
+        assert "Item 5" not in first
+        # `Clears when:` is the entry's LAST line for a reason: CLEARS_WHEN_RE
+        # runs on the collapsed item and reads to its end, so a line after it
+        # would be swallowed into the clearance. The contract orders
+        # `Subtraction:` first, and the extracted clearance stays clean.
+        clears = mod.CLEARS_WHEN_RE.search(first)
+        assert clears is not None
+        assert clears.group(1).strip() == "a linked report names who misread the fused tabs."
+        assert "Subtraction" not in clears.group(1)
+        contract = _fp_contract()
+        shape = contract.split("Output EXACTLY this shape")[1]
+        assert shape.index("`Subtraction: <") < shape.index("`Clears when: <")
+        assert "It is the\nLAST line of the entry" in contract
+
+
+ALL_CONCERNS_LANES = tuple(name for name, *_ in CONCERNS_FORK_LANES) + tuple(
+    name for name, *_ in CONCERNS_SAME_LANES
+)
+LANE_HEADERS = {
+    "design": "Design-Verdict:",
+    "first-principles": "First-Principles-Verdict:",
+    "ux": "UX-Verdict:",
+}
+
+
+def _lane_header(name: str) -> str:
+    for key, header in LANE_HEADERS.items():
+        if key in name:
+            return header
+    raise AssertionError(name)
+
+
+class TestReviewLanesPublishOnlyTheReview:
+    """The six whole-design lanes capture the model's last message verbatim.
+    A model that narrates before the header ("All facts verified against the
+    base. Composing the final review.") ships that line to the PR above the
+    punchline. Each lane trims to its own header, and
+    each counts the prose outside the collapsed inventory so an overrun is a
+    visible annotation rather than a longer comment."""
+
+    def _capture_step(self, name: str) -> str:
+        workflow = _workflow(name)
+        # Whatever the step is called, the trim sits right after the
+        # execution_file capture and before the header is parsed.
+        start = workflow.index("select(.result != null) ] | (last.result")
+        end = workflow.index(f"grep -iE '^{_lane_header(name)}'", start)
+        return workflow[start:end]
+
+    def test_every_lane_trims_to_its_own_header(self) -> None:
+        for name in ALL_CONCERNS_LANES:
+            header = _lane_header(name)
+            block = self._capture_step(name)
+            assert f"if grep -qiE '^{header}' <<< \"$summary\"; then" in block, name
+            assert (
+                f"awk 'f || tolower($0) ~ /^{header.lower()}/ {{ f = 1; print }}' <<< \"$summary\""
+                in block
+            ), name
+            # Trim only when a header exists: an unparseable body must still
+            # reach the "returned no verdict header" path with its text intact.
+            assert "without one the text is left whole" in block, name
+            # No pipe upstream of a possibly-early exit, same as the digest.
+            assert "printf '%s\\n' \"$summary\" | awk" not in block, name
+
+    def test_every_lane_counts_the_prose_outside_the_inventory(self) -> None:
+        caps = {"first-principles": 180, "design": 150, "ux": 150}
+        for name in ALL_CONCERNS_LANES:
+            workflow = _workflow(name)
+            cap = next(v for k, v in caps.items() if k in name)
+            assert 'if [ "$verdict" != "UNKNOWN" ]; then' in workflow, name
+            assert (
+                "awk '/<details>/ { skip = 1 } !skip { print } /<\\/details>/ { skip = 0 }' <<< \"$summary\" | wc -w"
+                in workflow
+            ), name
+            assert f'if [ "${{words:-0}}" -gt {cap * 2} ]; then' in workflow, name
+            assert "over length::$words words outside the inventory" in workflow, name
+            assert f"the contract caps the review at ~{cap}." in workflow, name
+            # It is a warning: the verdict and the comment do not move.
+            block = workflow[workflow.index("over length::") :]
+            assert "exit 1" not in block[:400], name
+
+    def test_the_trim_and_count_execute_as_written(self, tmp_path: Path) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the lanes are Bash")
+        # Run the FP lane's trim and count over a body with a narration line
+        # above the header and a long collapsed inventory below the finding.
+        capture = self._capture_step("first-principles-review.yml")
+        trim = capture[
+            capture.index("if grep -qiE") : capture.index("fi\n", capture.index("if grep -qiE")) + 3
+        ]
+        indent = len(trim) - len(trim.lstrip())
+        trim = "\n".join(line[indent:] if line.strip() else "" for line in trim.splitlines())
+        body = (
+            "All facts verified against the base. Composing the final review.\n\n"
+            "First-Principles-Verdict: CONCERNS\n\n**punchline**\n\n"
+            "### Not justified as shipped\n- Item 1 — unjustified move: one two three.\n\n"
+            "### What this change ships\n<details><summary>Inventory (9 items) — 5 justified</summary>\n"
+            + ("1. inventory words that must not count toward the cap\n" * 40)
+            + "</details>\n\n[FIRST-PRINCIPLES-REVIEWED] abc\n"
+        )
+        (tmp_path / "body.md").write_text(body, encoding="utf-8")
+        script = (
+            'summary="$(cat body.md)"\n'
+            + trim
+            + "\nprintf '%s\\n' \"$summary\" | head -n1\n"
+            + "awk '/<details>/ { skip = 1 } !skip { print } /<\\/details>/ { skip = 0 }' <<< \"$summary\" | wc -w | tr -d ' '\n"
+        )
+        result = subprocess.run(
+            [bash, "-euo", "pipefail", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        first_line, words = result.stdout.strip().splitlines()
+        assert first_line == "First-Principles-Verdict: CONCERNS"
+        # 40 inventory lines x 9 words would be 360 on their own; the count
+        # excludes them and lands on the ~20 words of prose.
+        assert int(words) < 40, words
+
+    def test_the_digest_publishes_the_not_justified_items(self, tmp_path: Path) -> None:
+        # The check-run summary / warning annotation reads `### Watch`, which
+        # First Principles does not emit; its items live under
+        # `### Not justified as shipped`, so the digest carries that section
+        # too -- in every lane, since the helper is pinned byte-identical.
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the digest helper is Bash")
+        body = tmp_path / "comment.md"
+        body.write_text(
+            "First-Principles-Verdict: CONCERNS\n\n"
+            "**pills reverse SidePanel.tsx:1459 on symmetry alone.**\n\n"
+            "### Not justified as shipped\n"
+            "- Item 4 — unjustified move: reinstates pills.\n"
+            "  Clears when: a report names who misread the fused tabs.\n\n"
+            "### What this change ships\n<details><summary>Inventory (1 items) — 0 justified</summary>\n"
+            "1. pills — unjustified move\n</details>\n\n"
+            "[FIRST-PRINCIPLES-REVIEWED] abc\n",
+            encoding="utf-8",
+        )
+        digest_fn = _shell_function(
+            _step_script(
+                _workflow("first-principles-review.yml"), "Post first-principles review summary"
+            ),
+            "concerns_digest",
+        )
+        script = (
+            digest_fn
+            + f'\nconcerns_digest "{body}" "First-Principles-Verdict:" "[FIRST-PRINCIPLES-REVIEWED]"\n'
+        )
+        result = subprocess.run(
+            [bash, "-euo", "pipefail", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        out = result.stdout
+        assert out.startswith("**pills reverse SidePanel.tsx:1459 on symmetry alone.**")
+        assert "### Not justified as shipped" in out
+        assert "Clears when: a report names who misread the fused tabs." in out
+        assert "### What this change ships" not in out
+        assert "<details>" not in out
+        assert "[FIRST-PRINCIPLES-REVIEWED]" not in out
+
+
+class TestDesignAndUxPunchlinesOpenWithTheProblem:
+    """Design and UX already report only problems by section, but their
+    punchline template asking for "the single most important takeaway" and,
+    on PASS, "why it's sound" yields CONCERNS punchlines of the shape `<what
+    is sound>, but <problem>` ("Sound overlay-plus-reservation design ...,
+    but"; "Fixed toggles and fullscreen are coherent and evidenced, but").
+    The reader stops at the comma. The First Principles form -- open
+    with the problem, PASS names the one thing to verify -- now applies to
+    all four copies."""
+
+    LANES = ("design-review.yml", "fork-design-review.yml", "ux-review.yml", "fork-ux-review.yml")
+
+    def _punchline_rule(self, name: str) -> str:
+        workflow = _workflow(name)
+        start = workflow.index("Then a blank line and ONE bold punchline")
+        return workflow[start : workflow.index("###", start)]
+
+    def test_the_punchline_opens_with_the_problem(self) -> None:
+        for name in self.LANES:
+            rule = _flat(self._punchline_rule(name))
+            assert "It OPENS with the problem" in rule, name
+            assert "problem first" in rule, name
+            assert "because the reader stops at the comma" in rule, name
+            if "ux" in name:
+                assert "never `<what works>, but <problem>`" in rule, name
+                assert "never why the experience holds" in rule, name
+            else:
+                assert "never `<what is sound>, but <problem>`" in rule, name
+                assert "never why the design is sound" in rule, name
+            # PASS is the one thing to verify, or nothing -- not praise.
+            assert "the ONE thing a human should still verify before merge" in rule, name
+            assert "`Nothing to check.`" in rule, name
+            assert "a reviewer that argues the author's case is not reviewing" in rule, name
+            # The old wording is gone in both lanes.
+            assert "the single most important takeaway" not in rule, name
+            assert "for PASS, why it's sound" not in rule, name
+            assert "for PASS, why the experience holds" not in rule, name
+
+    def test_same_repo_and_fork_copies_match(self) -> None:
+        for same, fork in (
+            ("design-review.yml", "fork-design-review.yml"),
+            ("ux-review.yml", "fork-ux-review.yml"),
+        ):
+            assert _flat(self._punchline_rule(same)) == _flat(self._punchline_rule(fork)), (
+                same,
+                fork,
+            )
 
 
 def _review_contract_module():

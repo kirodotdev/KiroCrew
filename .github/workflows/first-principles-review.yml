@@ -505,6 +505,16 @@ jobs:
               summary="$(jq -rs '[ .[] | (if type=="array" then .[] else . end) | select(.result != null) ] | (last.result // "")' "$EXEC_FILE" 2>/dev/null || true)"
             fi
           fi
+          # Publish only the review. The contract makes the verdict header the
+          # FIRST line, but a model that narrates before it ("All facts verified.
+          # Composing the final review.") ships that narration into a public
+          # comment above the punchline. Trim to the header when one is present;
+          # without one the text is left whole so the no-verdict path below still
+          # sees what the model wrote. Here-strings, not pipes: a long summary
+          # cannot manufacture a SIGPIPE status under `pipefail`.
+          if grep -qiE '^First-Principles-Verdict:' <<< "$summary"; then
+            summary="$(awk 'f || tolower($0) ~ /^first-principles-verdict:/ { f = 1; print }' <<< "$summary")"
+          fi
           if [ -z "$summary" ]; then
             echo "no review text in execution_file ($EXEC_FILE); nothing to post"
             echo "verdict=UNKNOWN" >> "$GITHUB_OUTPUT"
@@ -519,6 +529,16 @@ jobs:
             verdict=""
           fi
           [ -z "$verdict" ] && verdict="UNKNOWN"
+          # The contract caps the prose at ~180 words outside the collapsed
+          # inventory: a review twice that long is one whose findings sit under
+          # text nobody reads. Count it and say so in the job log and annotations;
+          # the verdict and the comment are unaffected.
+          if [ "$verdict" != "UNKNOWN" ]; then
+            words="$(awk '/<details>/ { skip = 1 } !skip { print } /<\/details>/ { skip = 0 }' <<< "$summary" | wc -w | tr -d ' ')"
+            if [ "${words:-0}" -gt 360 ]; then
+              echo "::warning title=First Principles Review over length::$words words outside the inventory; the contract caps the review at ~180. Findings past the cap are the ones nobody reads."
+            fi
+          fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           case "$verdict" in
             PASS) badge="✅ PASS" ;;
@@ -602,7 +622,7 @@ jobs:
               !seen && $0 ~ header { seen = 1; next }
               !seen { next }
               seen == 1 && NF { print; seen = 2; next }
-              /^### / { watch = ($0 ~ /^### Watch[[:space:]]*$/) }
+              /^### / { watch = ($0 ~ /^### (Watch|Not justified as shipped)[[:space:]]*$/) }
               watch { print }
             ' "$file")"
             printf '%s' "${digest:0:2000}"
