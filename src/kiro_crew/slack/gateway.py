@@ -10041,6 +10041,7 @@ class GatewayOrchestrator:
             assume_kiro_ready=self._test_mode,
             defer_channel_agent_resume=True,
             schedule_memory_preparation=self._schedule_memory_preparation,
+            supervised=self._supervised,
         )
         # When --port auto was requested, read the OS-assigned ephemeral port
         # back from the runner so subsequent URL building and the READY line

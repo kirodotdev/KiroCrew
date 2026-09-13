@@ -870,6 +870,29 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
     }
 )
 
+# Routes a SUPERVISED sidecar additionally admits to internal-secret callers.
+# In supervised mode (``kirocrew gateway --supervised``, a loopback-only child
+# of the Kiro CLI) the parent process is the approval surface by contract: it
+# polls ``GET /api/approvals`` and resolves them via
+# ``POST /api/approvals/{id}/{approve|reject|reject_once}``, authenticating
+# with the ``X-Internal-Secret`` it read from ``run/gateway-<port>.secret`` —
+# the same credential that already admits it to ``/api/spawn``. Without this
+# the parent's poll is denied "Token required", no approval ever surfaces, and
+# a spawn parks in ``running`` forever (Phase-2 D2 finding). Agents cannot
+# forge this: the secret is stripped from every agent environment
+# (``sandbox._AGENT_DENIED_ENV_KEYS``) and the run file is on the
+# ``security.py`` sensitive-path denylist. Deliberately NOT in the base set:
+# an unsupervised gateway has a browser, and its approval decisions stay
+# cookie-authenticated.
+_SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS = frozenset({"/api/approvals"})
+
+
+def supervised_mixed_internal_paths(supervised: bool) -> frozenset[str]:
+    """Mixed-internal path set for this launch; widened only when ``supervised``."""
+    if not supervised:
+        return _MIXED_INTERNAL_API_PATHS
+    return _MIXED_INTERNAL_API_PATHS | _SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS
+
 
 # Base Content-Security-Policy applied to all dashboard responses.
 # See ``_apply_security_headers`` for the full rationale and the
@@ -3731,8 +3754,16 @@ async def start_dashboard(
     assume_kiro_ready: bool = False,
     defer_channel_agent_resume: bool = False,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
+    supervised: bool = False,
 ) -> tuple[web.AppRunner, DashboardState]:
-    """Start the dashboard web server.  Returns ``(runner, state)``."""
+    """Start the dashboard web server.  Returns ``(runner, state)``.
+
+    ``supervised`` marks a loopback-only sidecar whose parent process (the
+    Kiro CLI) is the approval surface: ``/api/approvals`` then also accepts the
+    ``X-Internal-Secret`` the parent read from ``run/gateway-<port>.secret``
+    (see :func:`supervised_mixed_internal_paths`). Unsupervised gateways keep
+    the approval routes browser-cookie-only.
+    """
     # Channels retain this same runner on the gateway, independently of state.
     # Close shared admission before the first startup await, not just the UI pointer.
     if task_runner is not None:
@@ -4434,7 +4465,7 @@ async def start_dashboard(
         csrf_middleware,
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
-            mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+            mixed_internal_paths=supervised_mixed_internal_paths(supervised),
             internal_secret=_internal_secret,
             port=port,
             local_only=local_only,
