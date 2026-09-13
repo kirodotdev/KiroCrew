@@ -46,7 +46,6 @@ _TO_DICT_KEYS = (
     "last_activity_ts",
     "waiting_for_input",
     "needs_input",
-    "pending_decision",
     "interrupted",
     "stop_state",
     "wait_state",

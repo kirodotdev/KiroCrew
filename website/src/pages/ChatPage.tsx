@@ -281,7 +281,6 @@ import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
-import PendingDecisionCard from '../components/PendingDecisionCard'
 import SessionPulseSurveyCard from '../components/SessionPulseSurveyCard'
 import type { FollowupItem } from '../store/chatSlice'
 
@@ -7135,34 +7134,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                         return
                       }
                       void send(text, activeSlot || undefined)
-                    }}
-                  />
-                </div>
-              )}
-              {/* Buried [OPTIONS:] decision — pinned until answered or
-                  dismissed. A pending question card owns the above-composer
-                  band outright (same precedence the sidebar uses: needs_input
-                  outranks pending_decision). needs_input travels in the SAME
-                  slot payload as pending_decision, so it cannot lose a
-                  hydration race; !pendingQuestion alone can — the questions
-                  map fills over an async fetch, and a decision answered in
-                  that window would append a user row that retires the
-                  still-unhydrated stateless question unanswered. */}
-              {!pendingQuestion && !currentSlot?.needs_input && currentSlot?.pending_decision && activeSlot && (
-                <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-                  <PendingDecisionCard
-                    slotKey={activeSlot}
-                    decision={currentSlot.pending_decision}
-                    onPick={(o) => setInput((prev) => (prev.trim() ? `${prev.trimEnd()}, ${o}` : o))}
-                    onSendDirect={(o) => {
-                      // Offline, a direct send would silently drop the answer —
-                      // fall back to the composer, the same recovery the
-                      // question card's direct send uses.
-                      if (!connected) {
-                        setInput((prev) => (prev.trim() ? `${prev.trimEnd()}, ${o}` : o))
-                        return
-                      }
-                      void send(o, activeSlot || undefined)
                     }}
                   />
                 </div>
