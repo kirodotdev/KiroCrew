@@ -71,6 +71,25 @@ export interface UseListKeyboardNavOptions {
    * query) keep the default.
    */
   releaseKeysWhenEmpty?: boolean
+  /**
+   * Consulted for `Tab` on the EMPTY-list path, before either mode acts. Return `true` to keep
+   * the surface open and consume the key; `false` falls through to the release or the swallow.
+   *
+   * An empty list with a control in it (a failure notice's Retry) is not the "nothing to choose"
+   * case both modes assume: focus sits outside the list, so without this the control is
+   * pointer-only whether the keys are released or swallowed.
+   */
+  onTabToControl?: () => boolean
+  /**
+   * Consulted for `Enter` on the EMPTY-list path, before either mode acts. Return `true` to
+   * consume the key; `false` falls through so a released Enter still reaches the host.
+   *
+   * `Tab` moving focus onto a control in the surface makes `Enter` that control's activation key
+   * rather than the host's send key, so a caller that took Tab must be able to claim Enter back
+   * while its control holds focus. Deciding that needs to know where focus sits, which is the
+   * caller's question, not this hook's.
+   */
+  onEnterToControl?: () => boolean
 }
 
 export interface ListKeyboardNav {
@@ -98,7 +117,7 @@ export interface ListKeyboardNav {
 }
 
 export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboardNav {
-  const { open, count, onChoose, onClose, onAltEnter, wrap = false, releaseKeysWhenEmpty = false } = opts
+  const { open, count, onChoose, onClose, onAltEnter, wrap = false, releaseKeysWhenEmpty = false, onTabToControl, onEnterToControl } = opts
 
   const [selected, setSelected] = useState(0)
   const selectedRef = useRef(0)
@@ -114,6 +133,10 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
   onCloseRef.current = onClose
   const onAltEnterRef = useRef(onAltEnter)
   onAltEnterRef.current = onAltEnter
+  const onTabToControlRef = useRef(onTabToControl)
+  onTabToControlRef.current = onTabToControl
+  const onEnterToControlRef = useRef(onEnterToControl)
+  onEnterToControlRef.current = onEnterToControl
 
   // IME guard for the hook's keyboard actions. This listener receives NATIVE
   // KeyboardEvents (document capture), which `useImeGuard`'s synthetic-only
@@ -168,6 +191,24 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     }
     if (n === 0) {
       if (e.key === 'Enter' || e.key === 'Tab') {
+        // An empty list can still hold a control, and both modes below would spend the only
+        // keys that reach it -- the release on closing, the swallow on nothing at all.
+        // The hand-offs CONSUME the key, so an IME-owned one is declined first -- gated on a
+        // hand-off existing, which leaves the release path below untouched.
+        if ((onTabToControlRef.current || onEnterToControlRef.current)
+          && !imeLatchRef.current!.claimKey(e)) {
+          return
+        }
+        if (e.key === 'Tab' && onTabToControlRef.current?.()) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+        if (e.key === 'Enter' && onEnterToControlRef.current?.()) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
         if (releaseKeysWhenEmpty) {
           // Nothing to choose: the surface has no claim on the keystroke, so
           // close and let it reach the host (e.g. the composer's
@@ -190,6 +231,20 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     // whose release path must stay untouched (the host composer carries its
     // own IME guard).
     if ((e.key === 'Enter' || e.key === 'Tab') && !imeLatchRef.current!.claimKey(e)) {
+      return
+    }
+    // A failure notice can sit ABOVE surviving rows, where the nonempty Tab path below would
+    // select a stale row and leave the notice's Retry keyboard-unreachable (WCAG 2.1.1).
+    if (e.key === 'Tab' && onTabToControlRef.current?.()) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+    // Enter still defers to a focused control: the row dispatch below would otherwise insert a
+    // stale row instead of activating whatever the user has already focused.
+    if (e.key === 'Enter' && onEnterToControlRef.current?.()) {
+      e.preventDefault()
+      e.stopPropagation()
       return
     }
     if (e.key === 'ArrowDown') {

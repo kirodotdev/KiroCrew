@@ -6092,7 +6092,20 @@
       "searching_enter_held": "検索中… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
       "type_2_chars_to_search_files_ctrl_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Ctrl+Enter ではまだ送信されません。Esc を押して閉じると、Ctrl+Enter でメッセージを送信できます",
       "type_2_chars_to_search_files_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
-      "search_failed": "ファイルを検索できませんでした。もう一度お試しください。"
+      "search_failed_ctrl_enter_sends": "ファイル検索に失敗しました — Ctrl+Enter でメッセージを送信します",
+      "search_timed_out_ctrl_enter_sends": "ファイル検索がタイムアウトしました — Ctrl+Enter でメッセージを送信します",
+      "search_failed_enter_sends": "ファイル検索に失敗しました — Enter でメッセージを送信します",
+      "search_timed_out_enter_sends": "ファイル検索がタイムアウトしました — Enter でメッセージを送信します",
+      "stale_rows_notice": "{{cause}} — 最後に読み取った値を表示しています。",
+      "search_denied_enter_sends": "プロジェクトフォルダーへのアクセスが拒否されました — Enter でメッセージを送信します",
+      "search_denied_ctrl_enter_sends": "プロジェクトフォルダーへのアクセスが拒否されました — Ctrl+Enter でメッセージを送信します",
+      "search_root_missing_enter_sends": "プロジェクトフォルダーが見つかりません — Enter でメッセージを送信します",
+      "search_root_missing_ctrl_enter_sends": "プロジェクトフォルダーが見つかりません — Ctrl+Enter でメッセージを送信します",
+      "search_timed_out": "ファイル検索がタイムアウトしました",
+      "search_failed": "ファイル検索に失敗しました",
+      "search_denied": "プロジェクトフォルダーへのアクセスが拒否されました",
+      "search_root_missing": "プロジェクトフォルダーが見つかりません",
+      "retry": "再試行"
     },
     "fileRenderers": {
       "download": "ダウンロード",
@@ -6892,7 +6905,10 @@
       "search_recent_projects": "最近のプロジェクトを検索",
       "search_recent_projects_2": "最近のプロジェクトを検索…",
       "select": "選択",
-      "subdirectories": "サブディレクトリ"
+      "subdirectories": "サブディレクトリ",
+      "recent_unavailable": "最近のプロジェクトを取得できません",
+      "retry": "再試行",
+      "loading_recent": "読み込み中…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "理解しました。公開します",
@@ -7881,7 +7897,8 @@
       "project_directory_path": "プロジェクトディレクトリパス",
       "select": "選択",
       "workspace_name": "ワークスペース名",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "再試行"
     },
     "settingRef": {
       "envVarAriaLabel": "環境変数 {{key}}",
@@ -9298,7 +9315,11 @@
         "search_files": "ファイルを検索",
         "searching": "検索中…",
         "showing_first_matches": "最初の {{shown}} 件の一致を表示しています",
-        "unable_to_list_folder": "フォルダーを一覧表示できません"
+        "unable_to_list_folder": "フォルダーを一覧表示できません",
+        "search_timed_out": "検索がタイムアウトしました",
+        "listing_timed_out": "フォルダーの一覧表示がタイムアウトしました",
+        "search_denied": "このフォルダーへのアクセスが拒否されました",
+        "search_root_missing": "フォルダーが見つかりません"
       },
       "knowledgePicker": {
         "cancel": "キャンセル",

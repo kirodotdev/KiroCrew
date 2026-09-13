@@ -9,11 +9,11 @@
  * query, and that the truncation note appears only on a full page.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import FolderPanel from '../pages/chat/FolderPanel'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const ROOT = '/proj'
 
@@ -88,6 +88,23 @@ describe('FolderPanel search', () => {
     expect(search).not.toHaveBeenCalled()
     // The listing stays put rather than being replaced by an empty result set.
     expect(screen.getByText('README.md')).toBeInTheDocument()
+  })
+
+  it('keeps the last rows under the notice when a refetch of the SAME query fails', async () => {
+    // Error and data coexist: a query that succeeded keeps its rows when a later refetch of
+    // the same key fails. They are still clickable answers, so the notice annotates them.
+    const search = vi.spyOn(api, 'fileSearch')
+      .mockResolvedValueOnce({ results: [hit('src/App.tsx')], root: ROOT } as never)
+      .mockRejectedValue(new Error('gateway wedged'))
+    renderPanel()
+    await type('App')
+    expect(await screen.findByText('App.tsx')).toBeInTheDocument()
+
+    const calls = search.mock.calls.length
+    fireEvent.click(screen.getByLabelText('Refresh'))           // same key, now failing
+    await waitFor(() => expect(search.mock.calls.length).toBeGreaterThan(calls))
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.getByText('App.tsx')).toBeInTheDocument()
   })
 
   it('hides a directory hit from a gateway that ignores kinds=files', async () => {
@@ -277,12 +294,47 @@ describe('FolderPanel search', () => {
   })
 
   it('surfaces a refused search instead of showing an empty list', async () => {
-    vi.spyOn(api, 'fileSearch').mockRejectedValue(new Error('Access denied'))
+    // A refusal is actionable in a way a timeout is not, so it gets its own
+    // copy — keyed on the handler's `code`, never on the human error string.
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ error: 'Access denied', code: 'access_denied' })),
+    )
 
     renderPanel()
     await screen.findByText('README.md')
     await type('app')
 
-    expect(await screen.findByText('Access denied')).toBeInTheDocument()
+    expect(await screen.findByText('No access to this folder')).toBeInTheDocument()
+    expect(screen.queryByText('Search failed')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the generic copy for a cause it has no string for', async () => {
+    // An unrecognised code must not leak the raw reason, and must not claim a
+    // permission problem it has no evidence of.
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(500, 'boom', JSON.stringify({ error: 'boom', code: 'something_new' })),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument()
+  })
+
+  it('does not blame the folder when a 403 is really a session expiry', async () => {
+    // `authRequired` marks a dashboard-auth 403, which says nothing about this
+    // path — claiming "access denied to this folder" there would be a new lie.
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ error: 'Access denied' }), true),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.queryByText('No access to this folder')).not.toBeInTheDocument()
   })
 })

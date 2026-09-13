@@ -23,7 +23,7 @@
  * requires it to be stopped.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { useState, useRef } from 'react'
 import { renderWithProviders } from './helpers'
 import Modal from '../components/Modal'
@@ -243,6 +243,52 @@ describe('ProjectPicker above a Modal — keyboard isolation (#6833)', () => {
     } finally {
       window.removeEventListener('keydown', onWindowKey)
     }
+  })
+
+  it('hands Tab to the listing Retry instead of closing, when the Browse read failed', async () => {
+    // The Browse field consumed Tab to dismiss, so the failure notice's Retry could only be
+    // reached with a pointer -- unusable on a picker driven from the keyboard.
+    vi.mocked(api.browseDirs).mockRejectedValue(new Error('boom'))
+    const { onPickerClosed } = await renderHarness()
+    const path = await openBrowseTab()
+    const retry = await screen.findByRole('button', { name: /^Retry: / })
+
+    path.focus()
+    fireEvent.keyDown(path, { key: 'Tab' })
+    expect(retry).toHaveFocus()
+    expect(onPickerClosed).not.toHaveBeenCalled()
+  })
+
+  it('still dismisses on Tab from the Browse field when no Retry is mounted', async () => {
+    // The hand-off is scoped to a mounted Retry; a healthy listing keeps the prior behaviour.
+    const { onPickerClosed } = await renderHarness()
+    const path = await openBrowseTab()
+    expect(screen.queryByRole('button', { name: /^Retry: / })).toBeNull()
+
+    path.focus()
+    fireEvent.keyDown(path, { key: 'Tab' })
+    expect(onPickerClosed).toHaveBeenCalled()
+  })
+
+  it('hands Tab to the recents Retry, and Enter then activates it', async () => {
+    // A failed recents read empties the list, so the nav hook swallowed Tab on nothing at all.
+    vi.mocked(api.recentProjects).mockRejectedValue(new Error('boom'))
+    // Not renderHarness(): a failed recents read replaces the search field with the notice,
+    // so waiting on that field would fail before the Retry this test is about exists.
+    renderWithProviders(<Harness onClose={vi.fn()} />)
+    const retry = await screen.findByRole('button', { name: /^Retry: / })
+    // A failed recents read lands the picker on Browse, so reach the Recent tab explicitly --
+    // that is where the nav hook owns Tab and would otherwise swallow it on an empty list.
+    fireEvent.mouseDown(screen.getByText('Recent'))
+
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(retry).toHaveFocus()
+
+    vi.mocked(api.recentProjects).mockResolvedValue({ dirs: ['/home/u/projB'] })
+    const before = vi.mocked(api.recentProjects).mock.calls.length
+    fireEvent.keyDown(document, { key: 'Enter' })
+    await waitFor(() =>
+      expect(vi.mocked(api.recentProjects).mock.calls.length).toBeGreaterThan(before))
   })
 
   it('does not strand focus outside the dialog when Tab is pressed in the picker', async () => {

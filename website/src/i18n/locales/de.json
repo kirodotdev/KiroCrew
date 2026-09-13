@@ -6191,7 +6191,20 @@
       "searching_enter_held": "Wird gesucht… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
       "type_2_chars_to_search_files_ctrl_enter_held": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
       "type_2_chars_to_search_files_enter_held": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
-      "search_failed": "Dateien konnten nicht durchsucht werden. Bitte erneut versuchen."
+      "search_failed_ctrl_enter_sends": "Dateisuche fehlgeschlagen — Ctrl+Enter sendet die Nachricht",
+      "search_timed_out_ctrl_enter_sends": "Zeitüberschreitung bei der Dateisuche — Ctrl+Enter sendet die Nachricht",
+      "search_failed_enter_sends": "Dateisuche fehlgeschlagen — Enter sendet die Nachricht",
+      "search_timed_out_enter_sends": "Zeitüberschreitung bei der Dateisuche — Enter sendet die Nachricht",
+      "stale_rows_notice": "{{cause}} — gezeigt werden die zuletzt gelesenen Werte.",
+      "search_denied_enter_sends": "Kein Zugriff auf den Projektordner — Enter sendet die Nachricht",
+      "search_denied_ctrl_enter_sends": "Kein Zugriff auf den Projektordner — Ctrl+Enter sendet die Nachricht",
+      "search_root_missing_enter_sends": "Projektordner nicht gefunden — Enter sendet die Nachricht",
+      "search_root_missing_ctrl_enter_sends": "Projektordner nicht gefunden — Ctrl+Enter sendet die Nachricht",
+      "search_timed_out": "Zeitüberschreitung bei der Dateisuche",
+      "search_failed": "Dateisuche fehlgeschlagen",
+      "search_denied": "Kein Zugriff auf den Projektordner",
+      "search_root_missing": "Projektordner nicht gefunden",
+      "retry": "Wiederholen"
     },
     "fileRenderers": {
       "download": "Herunterladen",
@@ -6996,7 +7009,10 @@
       "search_recent_projects": "Kürzliche Projekte suchen",
       "search_recent_projects_2": "Kürzliche Projekte suchen…",
       "select": "Auswählen",
-      "subdirectories": "Unterverzeichnisse"
+      "subdirectories": "Unterverzeichnisse",
+      "recent_unavailable": "Zuletzt verwendete Projekte nicht verfügbar",
+      "retry": "Wiederholen",
+      "loading_recent": "Wird geladen…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Ich habe verstanden, öffentlich veröffentlichen",
@@ -7994,7 +8010,8 @@
       "project_directory_path": "Pfad des Projektverzeichnisses",
       "select": "Auswählen",
       "workspace_name": "Workspace-Name",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "Wiederholen"
     },
     "settingRef": {
       "envVarAriaLabel": "Umgebungsvariable {{key}}",
@@ -9431,7 +9448,11 @@
         "search_files": "Dateien suchen",
         "searching": "Suche…",
         "showing_first_matches": "Die ersten {{shown}} Treffer werden angezeigt",
-        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
+        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden",
+        "search_timed_out": "Zeitüberschreitung bei der Suche",
+        "listing_timed_out": "Zeitüberschreitung beim Auflisten des Ordners",
+        "search_denied": "Kein Zugriff auf diesen Ordner",
+        "search_root_missing": "Ordner nicht gefunden"
       },
       "knowledgePicker": {
         "cancel": "Abbrechen",

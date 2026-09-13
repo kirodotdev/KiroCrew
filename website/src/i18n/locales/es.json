@@ -6290,7 +6290,20 @@
       "searching_enter_held": "Buscando…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
       "type_2_chars_to_search_files_ctrl_enter_held": "Escribe 2+ caracteres para buscar archivos y carpetas…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
       "type_2_chars_to_search_files_enter_held": "Escribe 2+ caracteres para buscar archivos y carpetas…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
-      "search_failed": "No se pudieron buscar archivos. Inténtalo de nuevo."
+      "search_failed_ctrl_enter_sends": "La búsqueda de archivos falló: Ctrl+Enter envía el mensaje",
+      "search_timed_out_ctrl_enter_sends": "La búsqueda de archivos expiró: Ctrl+Enter envía el mensaje",
+      "search_failed_enter_sends": "La búsqueda de archivos falló: Enter envía el mensaje",
+      "search_timed_out_enter_sends": "La búsqueda de archivos expiró: Enter envía el mensaje",
+      "stale_rows_notice": "{{cause}} — se muestran los últimos valores leídos.",
+      "search_denied_enter_sends": "Sin acceso a la carpeta del proyecto: Enter envía el mensaje",
+      "search_denied_ctrl_enter_sends": "Sin acceso a la carpeta del proyecto: Ctrl+Enter envía el mensaje",
+      "search_root_missing_enter_sends": "Carpeta del proyecto no encontrada: Enter envía el mensaje",
+      "search_root_missing_ctrl_enter_sends": "Carpeta del proyecto no encontrada: Ctrl+Enter envía el mensaje",
+      "search_timed_out": "La búsqueda de archivos expiró",
+      "search_failed": "La búsqueda de archivos falló",
+      "search_denied": "Sin acceso a la carpeta del proyecto",
+      "search_root_missing": "Carpeta del proyecto no encontrada",
+      "retry": "Reintentar"
     },
     "fileRenderers": {
       "download": "Descargar",
@@ -7100,7 +7113,10 @@
       "search_recent_projects": "Buscar proyectos recientes",
       "search_recent_projects_2": "Buscar proyectos recientes…",
       "select": "Seleccionar",
-      "subdirectories": "Subdirectorios"
+      "subdirectories": "Subdirectorios",
+      "recent_unavailable": "Proyectos recientes no disponibles",
+      "retry": "Reintentar",
+      "loading_recent": "Cargando…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Lo entiendo, publicar públicamente",
@@ -8107,7 +8123,8 @@
       "project_directory_path": "Ruta del directorio del proyecto",
       "select": "Seleccionar",
       "workspace_name": "Nombre del espacio de trabajo",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "Reintentar"
     },
     "settingRef": {
       "envVarAriaLabel": "Variable de entorno {{key}}",
@@ -9564,7 +9581,11 @@
         "search_files": "Buscar archivos",
         "searching": "Buscando…",
         "showing_first_matches": "Mostrando las primeras {{shown}} coincidencias",
-        "unable_to_list_folder": "No se puede listar la carpeta"
+        "unable_to_list_folder": "No se puede listar la carpeta",
+        "search_timed_out": "La búsqueda expiró",
+        "listing_timed_out": "La lista de la carpeta expiró",
+        "search_denied": "Sin acceso a esta carpeta",
+        "search_root_missing": "Carpeta no encontrada"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",

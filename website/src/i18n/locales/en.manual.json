@@ -1452,7 +1452,20 @@
       "searching_ctrl_enter_held": "Searching… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
       "no_matches_enter_sends": "No matching files — Enter sends the message",
-      "search_failed": "Couldn’t search files. Try again."
+      "search_denied_ctrl_enter_sends": "No access to the project folder — Ctrl+Enter sends the message",
+      "search_denied_enter_sends": "No access to the project folder — Enter sends the message",
+      "search_failed_ctrl_enter_sends": "File search failed — Ctrl+Enter sends the message",
+      "search_failed_enter_sends": "File search failed — Enter sends the message",
+      "search_root_missing_ctrl_enter_sends": "Project folder not found — Ctrl+Enter sends the message",
+      "search_root_missing_enter_sends": "Project folder not found — Enter sends the message",
+      "search_timed_out_ctrl_enter_sends": "File search timed out — Ctrl+Enter sends the message",
+      "search_timed_out_enter_sends": "File search timed out — Enter sends the message",
+      "stale_rows_notice": "{{cause}} — showing the last values we read.",
+      "search_timed_out": "File search timed out",
+      "search_failed": "File search failed",
+      "search_denied": "No access to the project folder",
+      "search_root_missing": "Project folder not found",
+      "retry": "Retry"
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
@@ -2674,7 +2687,8 @@
       "create": "Create",
       "creating": "Creating…",
       "failed_to_create_workspace": "Failed to create workspace",
-      "name_required": "Name required"
+      "name_required": "Name required",
+      "retry": "Retry"
     },
     "agentDropdownList": {
       "active_in_this_session": "Active in this session",
@@ -3052,6 +3066,11 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "projectPicker": {
+      "recent_unavailable": "Recent projects unavailable",
+      "retry": "Retry",
+      "loading_recent": "Loading…"
     }
   },
   "hooks": {
@@ -3570,7 +3589,11 @@
         "search_files": "Search files",
         "searching": "Searching…",
         "showing_first_matches": "Showing the first {{shown}} matches",
-        "unable_to_list_folder": "Unable to list folder"
+        "unable_to_list_folder": "Unable to list folder",
+        "listing_timed_out": "Folder listing timed out",
+        "search_denied": "No access to this folder",
+        "search_root_missing": "Folder not found",
+        "search_timed_out": "Search timed out"
       },
       "knowledgePicker": {
         "knowledge_results_for_query": "Knowledge results for “{{query}}”",

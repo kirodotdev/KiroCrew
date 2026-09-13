@@ -180,6 +180,8 @@ class TestFileSearch:
                 assert resp.status == 403
                 data = await resp.json()
                 assert data["error"] == "Access denied"
+                # The UI keys per-cause copy on `code`, never on the human string.
+                assert data["code"] == "access_denied"
 
     @pytest.mark.asyncio
     async def test_path_match_ranked_below_name_match(self, tmp_path, mock_sel):
@@ -207,6 +209,7 @@ class TestFileSearch:
             assert resp.status == 404
             data = await resp.json()
             assert data["error"] == "Project directory not found"
+            assert data["code"] == "project_not_found"
             assert data["results"] == []
 
     @pytest.mark.asyncio
