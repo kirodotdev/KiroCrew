@@ -754,7 +754,8 @@ Writers: `apps/dependency_ledger.py`, `apps/dependencies.py`;
 
 Separately from capability resolution, `apps/backend.py::provision_app_deps`
 serializes each app's Python dependency install with `data/.kirocrew-deps.lock`.
-It first creates that lock with `O_CREAT | O_EXCL`. Only `FileExistsError`
+The installer and the data-preserving uninstall path in `apps/manager.py` both
+first create that lock with `O_CREAT | O_EXCL`. Only `FileExistsError`
 permits reopening the existing file, without creation or truncation flags.
 Both opens retain `O_RDWR`, `O_NOFOLLOW` where supported, and the same pinned
 parent directory descriptor. This avoids concurrent first-create `openat`

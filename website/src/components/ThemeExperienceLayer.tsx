@@ -36,6 +36,7 @@ import { grantConsent, getStoredConsent, revokeConsent } from '../utils/themeCon
 import { MC_THEME_SOUND_EVENT, type ThemeSoundDetail } from '../hooks/themeSound'
 import { MC_NOTIFICATION_EVENT } from '../hooks/notificationEvent'
 import { useIsNarrowViewport } from '../hooks/useIsMobile'
+import { useReducedMotion } from '../hooks/useReducedMotion'
 import { OVERLAY_Z_MAX, useThemeDecorSlot } from '../lib/themeDecorLayer'
 import { useAppSelector } from '../store'
 
@@ -82,14 +83,6 @@ const topbarUrl = (slug: string, mode: string) =>
 const isSafeId = (s: string) => /^[a-z0-9-]{1,64}$/.test(s)
 /** A theme:sound name must be a bare audio filename (no path, allowed ext). */
 const isSafeAudioFile = (s: string) => /^[a-z0-9-]{1,64}\.(mp3|ogg|wav)$/.test(s)
-
-function readReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches === true
-  )
-}
 
 /**
  * Normalize one raw `assets.overlays` entry into a `ThemeOverlayDecl`, tolerating
@@ -273,7 +266,7 @@ export default function ThemeExperienceLayer() {
   }, [slug, consentToken])
   const featuresOn = anyExperience && (!needsConsent || consented)
 
-  const [reduced, setReduced] = useState(readReducedMotion)
+  const reduced = useReducedMotion()
   const [muted, setMuted] = useState(() => localStorage.getItem(MUTE_KEY) === '1')
   // NOT useIsMobile: this layer mounts above the router on every route, embed included,
   // so the hook's `/embed/` always-false carve-out would un-hide a hideOnMobile topbar.
@@ -518,15 +511,6 @@ export default function ThemeExperienceLayer() {
       window.removeEventListener(MC_NOTIFICATION_EVENT, onNotification)
     }
   }, [featuresOn, playTrigger])
-
-  // React to reduced-motion preference changes at runtime.
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const mql = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const handler = () => setReduced(mql.matches)
-    mql.addEventListener('change', handler)
-    return () => mql.removeEventListener('change', handler)
-  }, [])
 
   // `activate`+`once` overlays: mount on activation, then auto-unmount after the
   // one-shot window. Re-keys on overlayDecls (a theme switch), so a fresh

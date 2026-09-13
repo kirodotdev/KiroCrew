@@ -1117,11 +1117,20 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                 # in preserved data and executes on a same-name reinstall.
                 # The lock file is opened through the pin (dir_fd), same as
                 # the provisioner's own open.
-                _lflags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-                if _data_pin.fd is not None:
-                    _lfd = os.open(".kirocrew-deps.lock", _lflags, 0o644, dir_fd=_data_pin.fd)
-                else:
-                    _lfd = os.open(str(data / ".kirocrew-deps.lock"), _lflags, 0o644)
+                _lflags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+                _lock_name = (
+                    ".kirocrew-deps.lock" if _data_pin.fd is not None
+                    else str(data / ".kirocrew-deps.lock")
+                )
+                # Match the provisioner's creator election: uninstall can race
+                # its first open before either caller holds the dependency lock.
+                try:
+                    _lfd = os.open(
+                        _lock_name, _lflags | os.O_CREAT | os.O_EXCL, 0o644,
+                        dir_fd=_data_pin.fd,
+                    )
+                except FileExistsError:
+                    _lfd = os.open(_lock_name, _lflags, dir_fd=_data_pin.fd)
                 _deps_lock = contextlib.ExitStack()
                 _lf = _deps_lock.enter_context(os.fdopen(_lfd, "r+"))
                 _deps_lock.enter_context(platform_compat.file_lock(_lf.fileno(), exclusive=True))
@@ -1162,8 +1171,8 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                         quarantined.append((doomed, gen_path))
                 _deps_lock.close()
                 # The lock ARTIFACT rides in preserved data only when it is
-                # a regular file (harmless: the next provisioning re-opens
-                # it O_CREAT). Any OTHER shape - a directory or link an app
+                # a regular file (harmless: the next provisioning reopens
+                # it without creation flags). Any OTHER shape - a directory or link an app
                 # planted at the name - would poison the next transaction's
                 # lock open, so purge those now that nothing holds the name.
                 _lock_artifact = data / ".kirocrew-deps.lock"

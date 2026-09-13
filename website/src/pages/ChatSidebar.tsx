@@ -48,6 +48,7 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import useMoveUndo from '../hooks/useMoveUndo'
 import { useSelectInstance } from '../hooks/useSelectInstance'
+import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
@@ -4113,19 +4114,10 @@ function ChatSidebar({
   // frequent streaming-driven sidebar renders. Above the cap the rows render
   // as plain (non-layout) motion divs: reorder/entrance animation is a
   // deliberate casualty at a scale where each animated commit costs frames.
-  // matchMedia rather than framer's useReducedMotion: the sidebar test files
-  // mock framer-motion per-file, and the PipelineView precedent reads the
-  // media query directly.
-  const [reduceMotion, setReduceMotion] = useState(
-    () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches,
-  )
-  useEffect(() => {
-    if (typeof matchMedia !== 'function') return
-    const mq = matchMedia('(prefers-reduced-motion: reduce)')
-    const onChange = () => setReduceMotion(mq.matches)
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [])
+  // The shared live reader (not framer's useReducedMotion): the sidebar test
+  // files mock framer-motion per-file, and the hook reads the media query
+  // directly and re-renders on change.
+  const reduceMotion = useReducedMotion()
 
   const filteredSlots = useMemo(() => {
     if (dragFrozen) return frozenSlotsRef.current

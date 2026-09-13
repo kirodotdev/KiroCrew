@@ -270,6 +270,72 @@ class TestInstall:
 
 
 class TestUninstall:
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_uninstall_uses_exclusive_dependency_lock_creation(
+        self, tmp_path, app_home, monkeypatch, existing
+    ):
+        install_app(_make_app_source(tmp_path))
+        data = app_home / "apps" / "test-app" / "data"
+        marker = data / "user.txt"
+        marker.write_text("keep me", encoding="utf-8")
+        lock = data / ".kirocrew-deps.lock"
+        if existing:
+            lock.write_text("existing lock", encoding="utf-8")
+        calls = []
+        real_open = os.open
+
+        def record_open(path, flags, mode=0o777, *, dir_fd=None):
+            if str(path).endswith(".kirocrew-deps.lock"):
+                calls.append((flags, dir_fd))
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        if real_open in os.supports_dir_fd:
+            monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {record_open})
+        monkeypatch.setattr(os, "open", record_open)
+        result = uninstall_app("test-app", keep_data=True)
+        assert result.ok, result.error
+        assert len(calls) == (2 if existing else 1)
+        assert calls[0][0] & os.O_EXCL
+        assert calls[0][0] & os.O_CREAT
+        for flags, _fd in calls:
+            assert flags & os.O_RDWR
+            assert not flags & os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                assert flags & os.O_NOFOLLOW
+        if existing:
+            assert not calls[1][0] & (os.O_CREAT | os.O_EXCL)
+            assert calls[1][1] == calls[0][1]
+        assert marker.read_text(encoding="utf-8") == "keep me"
+        assert lock.is_file()
+
+    def test_uninstall_refuses_a_dependency_lock_that_vanishes_before_reopen(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        install_app(_make_app_source(tmp_path))
+        root = app_home / "apps" / "test-app"
+        marker = root / "data" / "user.txt"
+        marker.write_text("keep me", encoding="utf-8")
+        calls = []
+        real_open = os.open
+
+        def race_open(path, flags, mode=0o777, *, dir_fd=None):
+            if str(path).endswith(".kirocrew-deps.lock"):
+                calls.append(flags)
+                if len(calls) == 1:
+                    raise FileExistsError("a contender created the lock")
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        if real_open in os.supports_dir_fd:
+            monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {race_open})
+        monkeypatch.setattr(os, "open", race_open)
+        result = uninstall_app("test-app", keep_data=True)
+        assert not result.ok
+        assert len(calls) == 2
+        assert not calls[1] & (os.O_CREAT | os.O_EXCL)
+        assert (root / APP_MANIFEST_FILENAME).is_file()
+        assert marker.read_text(encoding="utf-8") == "keep me"
+        assert not (root / "data" / ".kirocrew-deps.lock").exists()
+
     def test_uninstall_preserves_data_by_default(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
         install_app(src)

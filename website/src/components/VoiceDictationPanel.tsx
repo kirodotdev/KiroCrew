@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import Strands, { strandsSupported } from './Strands'
+import { useReducedMotion } from '../hooks/useReducedMotion'
 import type { AudioSample } from '../hooks/mic'
 import MicSourceMenu from './MicSourceMenu'
 import { downloadLabel } from '../lib/sttProviders'
@@ -134,21 +135,8 @@ function restOpacity(stability: number): number {
  * level, which is the entire job of this surface.
  */
 export function useDictationPanelUsable(enabled: boolean): boolean {
-  const [reduced, setReduced] = useState(
-    () =>
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches === true,
-  )
+  const reduced = useReducedMotion()
   const [supported] = useState(strandsSupported)
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const mql = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const handler = () => setReduced(mql.matches)
-    mql.addEventListener('change', handler)
-    return () => mql.removeEventListener('change', handler)
-  }, [])
 
   return enabled && supported && !reduced
 }
