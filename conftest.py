@@ -116,8 +116,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import warnings
 
+import _pytest.outcomes
+import _pytest.runner
 import pytest
 
 # ── ACP frame recorder switch (rootdir floor) ───────────────────────────────
@@ -1583,6 +1586,94 @@ def _join_test_loop_executor(item) -> None:
                     setattr(loop, name, reset)
     except Exception:  # pragma: no cover - a wedged loop must not turn teardown red
         return
+
+
+# Durations of the reports pytest_runtest_logreport has already seen for the item
+# whose runtest protocol is in flight, keyed by node id. Read by the escape guard
+# below so the report it synthesizes covers only the time no logged report does.
+_escape_logged_durations: dict[str, float] = {}
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_logreport(report):
+    """Credit a logged report's duration to the item in flight (escape guard input)."""
+    if report.nodeid in _escape_logged_durations:
+        _escape_logged_durations[report.nodeid] += max(report.duration, 0.0)
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Turn a ``Failed`` that escapes the runtest protocol into that test's failure.
+
+    Every ``pytest.fail`` raised inside setup, call or teardown is caught by
+    ``CallInfo.from_call`` and becomes a report. The one that is NOT is
+    pytest-timeout's: with ``timeout_func_only`` off, its SIGALRM handler can fire
+    anywhere in the protocol -- while pytest is rendering a failure report, between
+    phases -- and ``pytest.fail("Timeout >120.0s")`` then propagates out of
+    ``pytest_runtest_protocol`` with no report logged. Under xdist that is fatal
+    to the whole session, not the test: ``xdist.remote`` sends
+    ``runtest_protocol_complete`` only when this hook RETURNS, so the controller
+    either takes the worker's traceback as an INTERNALERROR or, when the worker
+    goes on to finish, trips ``dsession.worker_workerfinished``'s
+    ``assert not crashitem`` for the still-assigned item. Either way one slow
+    test on an overloaded runner erases the shard's results.
+
+    Outermost wrapper (``tryfirst``), so it sees what every inner wrapper --
+    pytest-timeout's own included, which has already cancelled its timer by the
+    time the outcome reaches here -- let through. The escaped ``Failed`` becomes
+    a synthesized ``call`` report for the item that owned the timer, the item's
+    teardown phase runs, and the hook returns normally so xdist marks the item
+    complete. Only ``Failed``: an ``Exit`` escaping here is ``pytest.exit``
+    doing its job.
+
+    The synthesized report carries the time the protocol spent that no logged
+    report already accounts for. ``pytest-split`` sums every report's duration
+    per node id, so timing only the instant re-raise would store a 120 s escape
+    as nearly zero seconds, and charging the whole protocol would count the
+    setup phase (and a call report that was logged before the alarm landed)
+    twice; either corrupts the next shard split. ``_escape_logged_durations``
+    accumulates the durations that reached ``pytest_runtest_logreport`` for the
+    item in flight, and the synthesized report gets the remainder. The tracker
+    is ``tryfirst`` so a report is subtracted as soon as it enters the log hook:
+    an alarm landing inside the log chain itself can then at worst under-count
+    by that one report, a window measured in the microseconds xdist needs to
+    serialize it, rather than double-count every escape that follows a logged
+    call report.
+
+    The teardown is not optional. An escape from the setup or call phase leaves
+    the item's fixtures live on ``SetupState``, and the next item on that worker
+    then errors at setup with ``previous item was not torn down properly`` --
+    every following test in the worker inherits the wreck. ``call_and_report``
+    runs the teardown hook inside its own ``CallInfo`` and logs its report, so a
+    finalizer that fails is that item's teardown error, not another escape.
+    After an escape from the teardown phase itself the stack is already
+    unwound and the extra teardown is a no-op.
+    """
+    protocol_start_perf = time.perf_counter()
+    _escape_logged_durations[item.nodeid] = 0.0
+    try:
+        outcome = yield
+    finally:
+        already_logged = _escape_logged_durations.pop(item.nodeid, 0.0)
+    protocol_stop = time.time()
+    protocol_duration = time.perf_counter() - protocol_start_perf
+    excinfo = outcome.excinfo
+    if excinfo is None or not isinstance(excinfo[1], _pytest.outcomes.Failed):
+        return
+    escaped = excinfo[1]
+
+    def _reraise():
+        raise escaped
+
+    call = _pytest.runner.CallInfo.from_call(_reraise, "call")
+    call.duration = max(protocol_duration - already_logged, 0.0)
+    call.stop = protocol_stop
+    call.start = protocol_stop - call.duration
+    report = item.ihook.pytest_runtest_makereport(item=item, call=call)
+    item.ihook.pytest_runtest_logreport(report=report)
+    _pytest.runner.call_and_report(item, "teardown", log=True, nextitem=nextitem)
+    item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    outcome.force_result(True)
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
