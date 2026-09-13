@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -48,6 +49,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     PROVIDER_LABEL_OPENCODE,
+    PROVIDER_LABEL_PI,
 )
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
@@ -430,6 +432,7 @@ def test_every_known_backend_has_a_label() -> None:
         ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
         ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
         ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
+        ACP_BACKEND_PI: PROVIDER_LABEL_PI,
     }
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "

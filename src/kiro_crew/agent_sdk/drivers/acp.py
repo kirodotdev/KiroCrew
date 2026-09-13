@@ -44,6 +44,9 @@ __all__ = [
     "derived_agent_permissions",
     "finish_suspended_spawn",
     "kiro_cli_resolves",
+    "pi_adapter_cached_negative",
+    "pi_adapter_install_command",
+    "pi_adapter_resolves",
     "resolve_pin_spelling",
     "run_kiro_native_commands",
 ]
@@ -306,6 +309,53 @@ def codex_adapter_install_command() -> str:
     from kiro_crew.acp.client import CODEX_ACP_NPM_PKG
 
     return f"npm i -g {CODEX_ACP_NPM_PKG}"
+
+
+def pi_adapter_resolves() -> bool:
+    """Whether the pi-acp adapter resolves to a runnable argv.
+
+    ONE component, like codex: the entry script Crew spawns. pi reads its own
+    stored auth itself, so there is no second executable Crew hands it.
+    """
+    from kiro_crew.acp.client import _resolve_pi_acp_bin
+
+    adapter_argv, _searched_path = _resolve_pi_acp_bin()
+    return bool(adapter_argv)
+
+
+def pi_adapter_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved the pi adapter as absent?
+
+    Same hazard and same resolution as :func:`codex_adapter_cached_negative`:
+    the argv is resolved once per process behind an ``_UNRESOLVED`` sentinel and
+    never invalidated, so a fresh probe reporting "installed" after the
+    operator points the override at a checkout would disagree with every spawn
+    until a restart. Consulted, never invalidated -- a dashboard GET must not
+    mutate a global on the spawn path.
+    """
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_pi_acp_argv_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        argv, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not argv
+
+
+def pi_adapter_install_command() -> str:
+    """No command: the adapter has no published package yet.
+
+    An install command names the action that satisfies the resolution ladder,
+    and no such action exists for pi-acp -- the ladder resolves an override, a
+    project-local copy, mise, or PATH, none of which an ``npm i -g`` can
+    produce. Reporting ``""`` (like the ``claude`` CLI half) rather than an
+    invented command, so the dashboard never tells an operator to install what
+    cannot be installed. The spawn error names the override instead.
+    """
+    return ""
 
 
 def opencode_resolves() -> bool:

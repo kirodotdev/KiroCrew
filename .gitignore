@@ -54,6 +54,9 @@ pyrightconfig.json
 # worktree node_modules is often a SYMLINK to a sibling checkout's, and a slash
 # matches a directory only.
 node_modules
+# Nested reference checkout (deepseek harness) used for parity work — its own git
+# repo lives inside the folder, so it must never be absorbed into this one.
+deepseek-harness/
 frontend/package-lock.json
 frontend/dist/
 tui/dist/

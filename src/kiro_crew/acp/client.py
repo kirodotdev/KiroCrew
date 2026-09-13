@@ -84,6 +84,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -224,6 +225,12 @@ PROTOCOL_VERSION_CODEX = 1
 # H10): a divergence should be a one-line edit here, not a silent downgrade of
 # whichever harness moved first.
 PROTOCOL_VERSION_OPENCODE = 1
+# pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1, so it
+# speaks the SPEC dialect rather than kiro-cli's date-stamped one. Verified off
+# its own wire (slice 1: ``buildInitializeResult``), and its own literal for
+# the same reason codex has one (harness-parity H10): a divergence should be a
+# one-line edit here, not a silent downgrade of whichever harness moved first.
+PROTOCOL_VERSION_PI = 1
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
@@ -232,6 +239,7 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     ACP_BACKEND_CLAUDE: PROTOCOL_VERSION_CLAUDE,
     ACP_BACKEND_CODEX: PROTOCOL_VERSION_CODEX,
     ACP_BACKEND_OPENCODE: PROTOCOL_VERSION_OPENCODE,
+    ACP_BACKEND_PI: PROTOCOL_VERSION_PI,
 }
 DEFAULT_MODEL = "auto"
 
@@ -319,6 +327,26 @@ _OPENCODE_CONFIG_READBACK_ARGS = ("debug", "config")
 # Bounded so a wedged harness cannot hold the spawn open: the read-back is a
 # short-lived child, measured at ~2.3s on a loaded dev desktop.
 _OPENCODE_READBACK_TIMEOUT_S = 30.0
+
+# ── pi-acp (ACP_BACKEND_PI) ──
+# A Node stdio server that drives pi's own agent runtime and translates ACP onto
+# its sessions (one pi AgentSession per ACP sessionId). Takes no argv beyond its
+# own path: any invocation enters stdio-server mode and blocks on stdin.
+PI_ACP_BIN = "pi-acp"
+# The adapter's own package, as named by its package.json ("bin":
+# {"pi-acp": "dist/index.js"}). There is NO published tarball yet -- the
+# package lives in a checkout beside this repo -- so the install probe names the
+# component with an empty install command rather than an invented one, and this
+# ladder's PATH/mise rungs only fire once it is installed or linked.
+PI_ACP_NPM_PKG = "@kirocrew/pi-acp"
+_PI_ACP_PKG_ENTRY = Path(PI_ACP_NPM_PKG) / "dist" / "index.js"
+# Same hoisted-dependency completeness check as the claude/codex adapters: pi-acp
+# imports @earendil-works/pi-coding-agent, so a root carrying the entry script
+# without it dies at ESM import time -- after the child is spawned.
+_PI_ACP_DEP_MARKER = Path("@earendil-works") / "pi-coding-agent"
+# Explicit override, spelled PI_ACP_BIN: the adapter's own binary name, matching
+# the CODEX_ACP_BIN convention.
+_ENV_PI_ACP_BIN = "PI_ACP_BIN"
 
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
@@ -856,6 +884,61 @@ def _resolve_codex_acp_bin() -> tuple[list[str] | None, str]:
 
     search_path = augmented_path(os.environ.get("PATH", ""))
     on_path = shutil.which(CODEX_ACP_BIN, path=search_path)
+    if on_path:
+        candidates.append(on_path)
+
+    for script in candidates:
+        resolved = str(Path(script).resolve())
+        node = _resolve_node_for_script(resolved)
+        if node:
+            return [node, resolved], search_path
+        if platform_compat.is_executable_file(script):
+            return [_normalize_exe_casing(script) or script], search_path
+        node_on_path = shutil.which("node", path=search_path)
+        if node_on_path:
+            return [node_on_path, resolved], search_path
+
+    return None, search_path
+
+
+_pi_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
+
+
+def _resolve_pi_acp_bin() -> tuple[list[str] | None, str]:
+    """Find the pi-acp Node entry script and the PATH searched for it.
+
+    Same contract, order and node-resolution rules as
+    :func:`_resolve_codex_acp_bin` -- deliberately, so an operator debugging one
+    adapter is debugging both: explicit override, then a project-local
+    ``node_modules`` copy (accepted only with the dependency marker beside it),
+    then mise, then the augmented PATH; and node is resolved explicitly rather
+    than left to a shebang that daemon contexts cannot follow.
+    """
+    candidates: list[str] = []
+
+    override = os.environ.get(_ENV_PI_ACP_BIN)
+    if override and Path(override).is_file():
+        candidates.append(override)
+
+    for root in _vendored_acp_roots():
+        entry = root / _PI_ACP_PKG_ENTRY
+        if entry.is_file() and (root / _PI_ACP_DEP_MARKER).is_dir():
+            candidates.append(str(entry))
+            break
+
+    mise_resolved = _mise_which(PI_ACP_BIN)
+    if mise_resolved:
+        candidates.append(mise_resolved)
+
+    mise_installs = _mise_node_installs_dir()
+    if mise_installs.is_dir():
+        for bin_path in sorted(mise_installs.glob("*/bin/" + PI_ACP_BIN), reverse=True):
+            if bin_path.is_file():
+                candidates.append(str(bin_path))
+                break
+
+    search_path = augmented_path(os.environ.get("PATH", ""))
+    on_path = shutil.which(PI_ACP_BIN, path=search_path)
     if on_path:
         candidates.append(on_path)
 
@@ -3904,6 +3987,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_OPENCODE
 
     @property
+    def _is_pi(self) -> bool:
+        return self.backend == ACP_BACKEND_PI
+
+    @property
     def _model_registry_namespace(self) -> str:
         """The model_registry namespace key for this backend (``claude_code`` /
         ``acp``). A registry index selector, NOT a provider-identity check — see
@@ -4272,6 +4359,32 @@ class AcpClient:
         return drop_unadvertised_transports(
             self._session_mcp_servers(), self._agent_mcp_capabilities
         )
+
+    def _pi_session_mcp_servers(self) -> list:
+        """MCP server array passed to a pi ``session/new`` / ``session/load``.
+
+        The pi twin of :meth:`_codex_session_mcp_servers`, minus the transport
+        narrowing: pi-acp accepts ``stdio``, ``http`` and ``sse`` and SKIPS an
+        unknown element shape with a log while ``session/new`` succeeds, so
+        there is no fatal shape to filter for and the translated array is
+        forwarded whole. An empty array here would be a REAL GAP, not a neutral
+        default: pi-acp reads no agent file, so nothing Crew declares reaches
+        the session and -- pi being mirrored, the shared gateway append below
+        stays inert for it -- the session would come up with no MCP tools
+        whatsoever while the harness otherwise works.
+
+        The translation lives in the mirror
+        (:mod:`kiro_crew.providers.mirrors.pi`), not here, for the same reason
+        claude's and codex's do. The seam is deliberately KEPT rather than
+        replaced by a capability-set call: an edition may override this method,
+        and swapping the call site for a set membership test would silently stop
+        calling that override.
+
+        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop,
+        so this accessor adds no scheduling or failure point to a call site shared
+        with kiro-cli (harness-parity H13).
+        """
+        return self._session_mcp_servers()
 
     def _claude_local_settings_path(self) -> Path:
         return self._work_dir / ".claude" / "settings.local.json"
@@ -5887,6 +6000,57 @@ class AcpClient:
             # (a stalled home mount, a Windows directory open) back on the event
             # loop the preflight above exists to keep it off.
             adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
+        elif self._is_pi:
+            # pi-acp takes no argv of its own: the adapter is spawned bare and
+            # driven entirely over the pipe, so unlike the kiro branch there is
+            # nothing to append. No second binary is handed to it -- pi reads its
+            # own stored auth itself.
+            global _pi_acp_argv_cache  # noqa: PLW0603
+            if _pi_acp_argv_cache is _UNRESOLVED:
+                _pi_acp_argv_cache = await asyncio.to_thread(_resolve_pi_acp_bin)
+            cached_pi_resolution = _pi_acp_argv_cache
+            pi_argv, pi_search_path = (
+                cached_pi_resolution
+                if isinstance(cached_pi_resolution, tuple)
+                else (None, "")
+            )
+            if not isinstance(pi_argv, list) or not pi_argv:
+                raise AcpError(
+                    f"{PI_ACP_BIN} not found "
+                    f"({describe_search_path(pi_search_path)}). There is no "
+                    f"published package yet: run it from a checkout (set "
+                    f"{_ENV_PI_ACP_BIN} to its entry script, e.g. "
+                    f"<checkout>/pi-acp/dist/index.js) or link {PI_ACP_NPM_PKG} "
+                    f"into a project node_modules."
+                )
+            argv = pi_argv
+            # Translate the agent spec into this session's MCP array HERE, on pi's
+            # own arm: same H13 reason as codex's arm above -- the translation
+            # reads disk and must not put an executor hop on every backend's
+            # construction path. No ordering constraint applies -- pi has no
+            # settings file to author first, because its permission routing is
+            # asserted per session over session/set_config_option rather than
+            # seeded to a file. Correctness does not depend on this warm:
+            # _session_mcp_servers resolves a cold cache itself; the warm is what
+            # keeps the read off the loop.
+            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
+            # Fail closed BEFORE the spawn when the mask below would be dropped:
+            # same hazard codex's arm documents -- several wrap_argv paths return
+            # without applying extra_hidden_dirs, which would start an enforced
+            # adapter with no compensating control at all. Keyed on the ROUTING,
+            # not on pi's identity: _sandbox_preflight re-checks
+            # acp_tool_gate.is_enforced(self.backend) itself, so this site cannot
+            # mask a harness this core does not enforce. OFF-LOOP: both halves
+            # touch the filesystem, so they run in ONE worker thread with a
+            # bounded wait (see _run_preflight_bounded).
+            adapter_hidden_dirs = await _run_preflight_bounded(
+                _sandbox_preflight, self.backend, self._sandbox_mode
+            )
+            # No re-exposure: pi has no Bedrock-style config read to accommodate,
+            # so unlike codex there is no file to carve out of the mask. Pure path
+            # projection, no disk access, so no thread hop -- the mask resolved
+            # above is HANDED IN.
+            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
         elif self._is_opencode:
             # This harness serves ACP from its own binary, so the argv is that binary
             # plus its ``acp`` subcommand: no adapter entry script, no node, and no
@@ -6848,6 +7012,7 @@ class AcpClient:
             "mcpServers": [
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._codex_session_mcp_servers() if self._is_codex else []),
+                *(self._pi_session_mcp_servers() if self._is_pi else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -6985,6 +7150,7 @@ class AcpClient:
                         "mcpServers": [
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
                             *(self._codex_session_mcp_servers() if self._is_codex else []),
+                            *(self._pi_session_mcp_servers() if self._is_pi else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }
@@ -9099,13 +9265,14 @@ class AcpClient:
             logger.debug("session MCP: audit of a spec-restriction decision failed", exc_info=True)
 
     async def _deny_spec_disabled_tool(self, event: AcpEvent) -> bool:
-        """Refuse a codex permission request for a tool the agent spec switched off.
+        """Refuse a permission request for a tool the agent spec switched off.
 
-        The deny channel codex does not have on the wire, supplied at the one point
-        this transport does offer: codex asks ``session/request_permission`` for an
-        MCP tool call, and this answers it with the adapter's own reject option
-        before anything runs. Returns True when the request was answered here, so
-        the caller neither yields it to a consumer nor approves it.
+        The deny channel codex and pi do not have on the wire, supplied at the one
+        point this transport does offer: the adapter asks
+        ``session/request_permission`` for an MCP tool call, and this answers it
+        with the adapter's own reject option before anything runs. Returns True
+        when the request was answered here, so the caller neither yields it to a
+        consumer nor approves it.
 
         Identity comes from the PRECEDING ``tool_call`` frame, never from the
         permission payload: codex-acp emits the MCP call as ``rawInput = {server,
@@ -9137,13 +9304,25 @@ class AcpClient:
         if not self._spec_denied_tools:
             return False
         identity = _identified_mcp_call(event)
+        if identity is None:
+            # pi-acp reports a bridged call under its registered title
+            # (``mcp__<server>__<tool>``, both halves sanitized) with the MCP
+            # arguments as rawInput -- no ``server``/``tool`` keys for the generic
+            # identity above to resolve. Match the title EXACTLY against the denied
+            # set's registered spellings instead of parsing it: underscores survive
+            # the adapter's sanitize, so splitting on ``__`` is ambiguous where an
+            # equality is not. Deny-only direction: a miss falls through to the
+            # ordinary gate, never to approval.
+            identity = self._denied_pi_title_identity(event)
         if identity is None or identity not in self._spec_denied_tools:
             return False
         server, tool = identity
+        label = self.backend or "kiro"
         logger.warning(
-            "codex session MCP: refusing %r on %r -- the agent spec's disabledTools "
+            "%s session MCP: refusing %r on %r -- the agent spec's disabledTools "
             "switches it off, and this transport has no wire channel for that "
             "restriction, so it is honoured at the permission request [session=%s]",
+            label,
             tool,
             server,
             self._session_id,
@@ -9153,6 +9332,28 @@ class AcpClient:
         )
         await self.reject_tool(event.request_id)
         return True
+
+    def _denied_pi_title_identity(self, event: AcpEvent) -> tuple[str, str] | None:
+        """The denied ``(server, tool)`` a pi permission event names, or None.
+
+        pi-acp reports a bridged call under its registered title with the MCP
+        arguments as ``rawInput``, so the generic ``(server, tool)`` params
+        identity cannot resolve it. The title is the adapter's own registration
+        name for the tool it is about to run -- the model chooses a tool, it
+        does not get to mis-report which one -- and a match here can only DENY,
+        so no further provenance is needed. Compared by EXACT equality against
+        the denied set's registered spellings (see
+        :func:`kiro_crew.providers.mirrors.pi.pi_tool_title`); never parsed.
+        """
+        if self.backend == ACP_BACKEND_PI:
+            title = event.title or ""
+            if title.startswith("mcp__"):
+                from kiro_crew.providers.mirrors.pi import pi_tool_title
+
+                for server, tool in self._spec_denied_tools:
+                    if title == pi_tool_title(server, tool):
+                        return server, tool
+        return None
 
     async def _reject_unknown_server_request(self, msg: JsonRpcMessage) -> None:
         """Answer an unrecognized server→client request with -32601.

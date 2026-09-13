@@ -1,0 +1,169 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": false,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true,
+        "stdio": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.1.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "muse-spark-1.3-contributor",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "muse-spark-1.3-contributor",
+            "value": "muse-spark-1.3-contributor"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "read-only",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Every tool call asks KiroCrew for permission.",
+            "name": "read-only",
+            "value": "read-only"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "ses_pi_1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "text": "slice4-mcp-ok"
+        },
+        "title": "mcp__toy__echo_text",
+        "tool_call_id": "call_01a0989e627c7e91acaf0512d1f7d327|fc_01a0989e627c7e91acaf0512d1f7d327",
+        "tool_input": "{\n  \"text\": \"slice4-mcp-ok\"\n}",
+        "tool_kind": "other",
+        "wire_title": "mcp__toy__echo_text"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "text": "slice4-mcp-ok"
+        },
+        "title": "mcp__toy__echo_text",
+        "tool_call_id": "call_01a0989e627c7e91acaf0512d1f7d327|fc_01a0989e627c7e91acaf0512d1f7d327",
+        "tool_input": "{\n  \"text\": \"slice4-mcp-ok\"\n}",
+        "tool_kind": "other",
+        "wire_title": "mcp__toy__echo_text"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "text": "slice4-mcp-ok"
+        },
+        "request_id": "out-1",
+        "shell_classified": true,
+        "title": "mcp__toy__echo_text",
+        "tool_call_id": "call_01a0989e627c7e91acaf0512d1f7d327|fc_01a0989e627c7e91acaf0512d1f7d327",
+        "tool_input": "{\n  \"text\": \"slice4-mcp-ok\"\n}",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_01a0989e627c7e91acaf0512d1f7d327|fc_01a0989e627c7e91acaf0512d1f7d327",
+        "tool_final": true,
+        "tool_output": "toy-echo:slice4-mcp-ok:secret=slice4-env-ok"
+      },
+      {
+        "kind": "tool_call_update",
+        "title": "mcp__toy__echo_text",
+        "tool_call_id": "call_01a0989e627c7e91acaf0512d1f7d327|fc_01a0989e627c7e91acaf0512d1f7d327",
+        "tool_kind": "other",
+        "wire_title": "mcp__toy__echo_text"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "MDONE\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "MDONE\n",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

@@ -35,10 +35,12 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
 )
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
+from kiro_crew.providers.mirrors.pi import PiMirror
 
 
 class ProjectionKind(str, Enum):
@@ -122,6 +124,7 @@ class McpProjection:
 MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_CLAUDE: ClaudeCodeMirror,
     ACP_BACKEND_CODEX: CodexMirror,
+    ACP_BACKEND_PI: PiMirror,
 }
 
 #: Every backend this build can spell, and how its MCP surface is reached.
@@ -189,6 +192,11 @@ PROJECTIONS: dict[str, McpProjection] = {
             "that is not the operator's checkout"
         ),
         tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+    ),
+    ACP_BACKEND_PI: McpProjection(
+        kind=ProjectionKind.MIRROR,
+        reason="pi.py \u2014 the wire face alone. Crew writes no pi file, so the "
+        "session/new array is this backend's whole MCP channel",
     ),
 }
 

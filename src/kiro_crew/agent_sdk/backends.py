@@ -153,6 +153,11 @@ ACP_BACKEND_CODEX = "codex"
 # executable -- which is why its install probe names one component and its
 # ``install_command`` is the harness's own installer rather than an ``npm i -g``.
 ACP_BACKEND_OPENCODE = "opencode"
+# The pi ACP adapter: a Node stdio server that drives pi's own agent runtime and
+# translates ACP onto its sessions (one pi AgentSession per ACP sessionId).
+# Dormant in 5a: spellable but not selectable until the spawn path, install
+# probe and mirror land (slice 5b).
+ACP_BACKEND_PI = "pi"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -167,6 +172,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
     }
 )
 
@@ -201,7 +207,12 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 # instead, which is a channel this array does not reach. An opencode session is
 # therefore a plain chat with none of Crew's tools; ``providers/mirrors`` records
 # why no projection exists for it.
-ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+#
+# pi-acp IS a member on slice-4 evidence: Crew's ``mcpServers[]`` arrive on
+# ``session/new`` and the adapter mounts each as a pi custom tool
+# (``mcp__<server>__<tool>``), proven by the toy-stdio-server round trip. It
+# reads no Crew agent file, so this array is its only Crew-tool channel.
+ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI})
 
 # Private member tools must execute inside the owned sandbox. A backend joins
 # only after its direct MCP launch path is verified; selectability grants none
@@ -259,6 +270,18 @@ ACP_BACKENDS_PRIVATE_MEMORY_MCP: FrozenSet[str] = frozenset(
 #:   repository -- then READS THE HARNESS'S OWN RESOLVED CONFIGURATION BACK and
 #:   refuses the session when the required value is not in force. See
 #:   :data:`Routing.VERIFIED_SEEDED_SETTINGS`.
+#:
+#: ``ACP_BACKEND_PI`` is included on the codex conditions, met the codex way:
+#:
+#: * ``backend_install`` probes for the ``pi-acp`` adapter entry point, so the
+#:   install row names the component rather than reading ``unknown``. There is
+#:   no published package yet, so the row carries no install command -- the
+#:   honest answer, not an invented one.
+#: * its tool calls are ROUTED. pi-acp is ``Routing.SESSION_CONFIG``: every tool
+#:   call blocks on ``session/request_permission`` while ``mode=read-only`` is
+#:   in force, and the client verifies the option is advertised and applies it
+#:   before the first prompt, refusing the session otherwise. The residual
+#:   passive-read gap takes the same OS-boundary mask as codex's.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -266,6 +289,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
     }
 )
 
@@ -288,6 +312,7 @@ POLICY_ID_BY_BACKEND: dict = {
     # nameable in a rule at all.
     ACP_BACKEND_CODEX: ACP_BACKEND_CODEX,
     ACP_BACKEND_OPENCODE: ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI: ACP_BACKEND_PI,
 }
 
 #: The backend a deployment policy may never deny.
@@ -638,8 +663,12 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # ``ACP_BACKEND_OPENCODE`` is a member on captured evidence: its ``session/new``
 # result advertises a ``model`` select whose ``currentValue`` is the configured
 # ``provider/model`` id, and that select is the channel a switch travels down.
+#
+# ``ACP_BACKEND_PI`` is a member on adapter evidence: its ``session/new`` result
+# advertises a ``model`` select and ``session/set_config_option("model", ...)``
+# drives a live ``session.setModel`` on the running pi session (slice 2).
 ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
 
 # Backends that take a reasoning-effort change through
@@ -681,8 +710,14 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKE
 # for a local model, ``opencode/…`` for its hosted ones -- so the advertised select
 # is the only vocabulary its ``session/set_config_option`` accepts, and the static
 # registry names none of them.
+#
+# ``ACP_BACKEND_PI`` is a member for the capture half: its ids are ``provider/id``
+# pairs pi resolves from its own auth, so the advertised ``model`` select is the
+# only vocabulary its ``session/set_config_option`` accepts. The fold is a no-op
+# (pi serves its ids verbatim), which is fine: the cache it feeds is what the
+# picker reads back.
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
 
 # Backends that seed a per-session settings file — claude-agent-acp's
@@ -733,6 +768,10 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # sharing the ``acp`` bucket would let one harness overwrite what the picker
     # offers for another.
     ACP_BACKEND_OPENCODE: "opencode",
+    # pi gets its own key for the same reason: its ids are ``provider/id`` pairs
+    # from pi's own model runtime, so sharing the ``acp`` bucket would let one
+    # harness overwrite what the picker offers for another.
+    ACP_BACKEND_PI: "pi",
 }
 
 
@@ -845,7 +884,7 @@ ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
 # H13 keeps it free of conditionals added in service of an adapter -- a harness
 # added later is one member here, not one more ``elif`` there.
 ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
 
 # Backends whose SUCCESSFUL ``session/load`` result carries no ``modes`` block.
@@ -933,6 +972,10 @@ ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_CLAUDE: Routing.SEEDED_SETTINGS,
     ACP_BACKEND_CODEX: Routing.SESSION_CONFIG,
     ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,
+    # pi-acp: the `mode` select (`read-only`) is the enforceable boundary, same
+    # mechanism as codex. The adapter advertises exactly one mode, so the apply
+    # is also the whole vocabulary -- there is nothing looser to inherit.
+    ACP_BACKEND_PI: Routing.SESSION_CONFIG,
 }
 
 
@@ -950,6 +993,7 @@ ACP_BACKEND_ROUTING: dict = {
 #: token store.
 ACP_BACKEND_PERMISSION_CONFIG: dict = {
     ACP_BACKEND_CODEX: ("mode", "read-only"),
+    ACP_BACKEND_PI: ("mode", "read-only"),
 }
 
 

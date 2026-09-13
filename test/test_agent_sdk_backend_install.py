@@ -61,8 +61,9 @@ def _stub_resolvers(
     adapter=(["node", "/n/acp.js"], "/usr/bin"),
     claude_cli="/usr/local/bin/claude",
     opencode=("/usr/local/bin/opencode", "/usr/bin"),
+    pi=(None, "/usr/bin"),
 ):
-    """Patch the four spawn resolvers on the module the driver imports from.
+    """Patch the five spawn resolvers on the module the driver imports from.
 
     Patched on ``kiro_crew.acp.client`` -- the DEFINING module -- because the
     driver imports them function-locally at call time, so that is the namespace
@@ -78,6 +79,11 @@ def _stub_resolvers(
     # installed on the recording host, so a payload assertion that reached the real
     # resolver would read ``installed`` here and ``missing`` in CI.
     monkeypatch.setattr(client, "_resolve_opencode_bin", lambda: opencode)
+    # Absent by default: the adapter has no published package, so no test host
+    # provides one unless the test says so. A payload assertion that reached the
+    # real resolver would read ``installed`` on a host with a checkout linked
+    # and ``missing`` everywhere else.
+    monkeypatch.setattr(client, "_resolve_pi_acp_bin", lambda: pi)
 
 
 # ── The opencode driver seams ──
@@ -692,6 +698,7 @@ class TestEndpointPayloadShape:
             "kas",
             "kiro",
             "opencode",
+            "pi",
         ]
         for row in rows:
             assert set(row) == {
@@ -753,6 +760,13 @@ class TestEndpointPayloadShape:
         assert by_policy["opencode"]["installed"] == "installed"
         assert by_policy["opencode"]["missing_components"] == []
         assert by_policy["opencode"]["install_command"] == ""
+        # pi's row is the one-component shape with no installer, stubbed absent
+        # above: ``missing`` naming the component, and no command, because there
+        # is no published package to install.
+        assert by_policy["pi"]["installed"] == "missing"
+        assert by_policy["pi"]["missing_components"] == [probe.COMPONENT_PI_ACP_ADAPTER]
+        assert by_policy["pi"]["install_command"] == ""
+        assert by_policy["pi"]["selectable"] is False
 
     def test_an_unknown_row_names_no_components(self, monkeypatch):
         """The three-state rule, enforced at the payload boundary too.

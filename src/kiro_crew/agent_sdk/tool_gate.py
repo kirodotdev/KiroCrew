@@ -61,6 +61,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     Routing,
     permission_config_for,
     permission_setting_for,
@@ -90,6 +91,7 @@ UNENFORCED_CONTROLS = (
 _LABELS: dict = {
     ACP_BACKEND_CODEX: "OpenAI Codex",
     ACP_BACKEND_OPENCODE: "OpenCode",
+    ACP_BACKEND_PI: "pi-acp",
 }
 
 #: The credential store each enforced harness must still be able to read.

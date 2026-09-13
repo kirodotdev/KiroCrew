@@ -67,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_KNOWN,
 )
 
@@ -474,6 +475,38 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # Excluded deliberately: it signs in through its own credential file, so a
         # ``kiro-cli logout`` says nothing about whether a running opencode session
         # is still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_PI,
+        # Observed from the adapter rather than read off documentation: pi resolves
+        # its agent dir as ``PI_AGENT_DIR`` or ``~/.pi/agent`` and keeps its stored
+        # auth there. Crew never reads or copies it.
+        credential_leaves=(".pi/agent/auth.json",),
+        # ``PI_AGENT_DIR`` stands in for the token's parent, so the relocated file
+        # keeps only its final segment -- the default anchoring, no override
+        # re-spelling declared.
+        home_override_env_vars=("PI_AGENT_DIR",),
+        # The one leaf the mask must spare: this harness is enforced once spawned,
+        # so the mask denies it the whole credential floor, and its adapter
+        # authenticates ITSELF from this file. The read gate still refuses the same
+        # leaf to the AGENT's file tools, so the two controls cover different readers.
+        adapter_own_leaves=(".pi/agent/auth.json",),
+        sign_in_remedy=(
+            "Pi is a separate tool that signs in on its own \u2014 complete its "
+            "sign-in, or name a model provider in its configuration "
+            "(PI_AGENT_DIR moves that folder). Neither is checked here: the adapter "
+            "reads them."
+        ),
+        signed_out_message=(
+            "Pi is not signed in. Complete pi's own sign-in, or name a model "
+            "provider in its configuration (PI_AGENT_DIR moves that folder), then "
+            "start a new chat."
+        ),
+        # Excluded deliberately: it signs in through its own credential file, so a
+        # ``kiro-cli logout`` says nothing about whether a running pi session is
+        # still authenticated.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),

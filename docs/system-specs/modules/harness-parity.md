@@ -20,14 +20,14 @@ exception — pinned by
 `test_agent_backend_editable.py::test_baseline_ships_every_known_backend`, which
 guards against an undocumented NARROWING rather than a widening.
 There is no exception today: `NOT_SHIPPED_SELECTABLE` is empty, which is the
-healthy state. `ACP_BACKEND_CODEX` was the last member and left it once both
-halves landed — `backend_install.py` gained its probe, so the install row names
-the missing component and its command instead of reading `unknown`, and
-`acp_tool_gate` established that its tool calls reach the PreToolUse gate.
+healthy state. `ACP_BACKEND_PI` was the last member and left it in slice 5b once
+all four halves landed — vocabulary, host-auth declaration, host-contract column
+and frame corpus (5a), then spawn path, install probe, mirror and enforced
+SESSION_CONFIG routing (5b).
 
-Read the invariants below against that tree: four harnesses can serve a real
+Read the invariants below against that tree: five harnesses can serve a real
 session today, so a site that spells "kiro" by exclusion is already wrong on
-three of them.
+four of them.
 
 *Parity* here does not mean equal treatment. It means the opposite, stated
 precisely: **an added harness may only adapt itself to the seams the Kiro
@@ -81,7 +81,7 @@ and Kiro stops being the guaranteed path.
 The whole group is one rule with several faces: **no call site may express
 "this is the Kiro harness" as the absence of another harness.** A negative test
 is correct only while one harness can start, and it fails *open* — the other
-harness is treated as Kiro. Four are selectable today, so `not
+harness is treated as Kiro. Five are selectable today, so `not
 is_claude_backend` is not a rule waiting on a future harness to break it: it
 already reads TRUE for KAS on a plain public build.
 

@@ -1,0 +1,166 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": false,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true,
+        "stdio": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.1.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "pi-default",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "pi-default",
+            "value": "pi-default"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "read-only",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Every tool call asks KiroCrew for permission.",
+            "name": "read-only",
+            "value": "read-only"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "ses_pi_1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Reading the file first."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Reading the file first.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/tmp/pi-corpus.txt"
+        },
+        "title": "read",
+        "tool_call_id": "call_pi_corpus_1",
+        "tool_input": "{\n  \"path\": \"/tmp/pi-corpus.txt\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "/tmp/pi-corpus.txt"
+        },
+        "request_id": "out-1",
+        "shell_classified": true,
+        "title": "read",
+        "tool_call_id": "call_pi_corpus_1",
+        "tool_input": "{\n  \"path\": \"/tmp/pi-corpus.txt\"\n}",
+        "tool_kind": "read"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_pi_corpus_1",
+        "tool_final": true,
+        "tool_output": "pi-acp slice5a corpus"
+      },
+      {
+        "kind": "tool_call_update",
+        "title": "read",
+        "tool_call_id": "call_pi_corpus_1",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]
