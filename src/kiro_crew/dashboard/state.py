@@ -3576,6 +3576,7 @@ class _ChatSlot:
         "_pending_steers",
         "_steer_delivery_ids",
         "_steer_send_ids",
+        "_steer_attachment_meta",
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
@@ -4269,6 +4270,10 @@ class _ChatSlot:
         # carries `meta.sendId` like an accepted steer's row does. A steer
         # that persists its own row stamps the id directly and drops this entry.
         self._steer_send_ids: dict[str, str] = {}
+        # Validated attachment lists for a pending steer. Requeue moves them
+        # to the queue entry; a consumption echo releases them after an accepted
+        # steer has stamped its own row.
+        self._steer_attachment_meta: dict[str, dict[str, list[str]]] = {}
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so

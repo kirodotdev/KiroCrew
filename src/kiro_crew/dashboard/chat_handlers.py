@@ -613,6 +613,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 slot,
                 message,
                 send_id=user_meta.get("sendId") if user_meta else None,
+                attachments=user_meta,
             )
             if outcome == STEER_STEERED:
                 return web.json_response({"ok": True, "steered": True})
@@ -3912,6 +3913,7 @@ async def stop_slot_turn(
             # kill discards the text, so there is no requeued entry left to carry
             # the client's send id onto.
             slot._steer_send_ids.pop(_discarded, None)
+            slot._steer_attachment_meta.pop(_discarded, None)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
