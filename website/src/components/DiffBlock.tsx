@@ -4,6 +4,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
 import { basenamePatchHeaders } from '../utils/diffUtils'
+import { patchNamesAFile } from './unifiedPatchHeaders'
 import { PierrePatch } from '../pierre'
 import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
@@ -119,6 +120,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   // copied out. So plain mode renders `code` untouched; its stand-in header
   // below does its own basename shortening on `headerPath` instead.
   const displayPatch = useMemo(() => basenamePatchHeaders(code), [code])
+  const namesAFile = useMemo(() => patchNamesAFile(code), [code])
   const headerPath = extracted?.path ?? pathHint ?? null
   // When a git prefix was stripped and the remainder starts with a
   // conventional root (`home/…`, `tmp/…`, …), the header is ambiguous between
@@ -179,7 +181,12 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
     () => ({
       diffStyle: (sideBySide ? 'split' : 'unified') as 'split' | 'unified',
       overflow: 'wrap' as const,
-      disableFileHeader: false,
+      // Pierre's own file header is the block's title row (file icon, name, +/-
+      // counts) — shown whenever the PATCH names a file, even if the extractor
+      // refuses that path (one-character, `/dev/null`). Hidden only for a
+      // headerless snippet, which renders under a synthesized placeholder name
+      // and so has no filename to assert.
+      disableFileHeader: !namesAFile,
       // A chat diff is a snippet, not a review surface: `simple` is a bare
       // hairline with no label and no expand control, which keeps a short block
       // reading as continuous code. Every other surface keeps `line-info`, whose
@@ -188,7 +195,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
       hunkSeparators: 'simple' as const,
       unsafeCSS: PIERRE_COMPACT_HEADER_CSS + PIERRE_WRAP_NO_HSCROLL_CSS + PIERRE_SEPARATOR_BG_CSS,
     }),
-    [sideBySide],
+    [sideBySide, namesAFile],
   )
 
   const copy = () => { copyToClipboard(code); setCopied(true); setTimeout(() => setCopied(false), 1500) }
