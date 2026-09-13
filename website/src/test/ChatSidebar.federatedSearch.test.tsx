@@ -162,17 +162,25 @@ describe('ChatSidebar – federated history search across connected instances', 
   })
 
   it('routes the search through the federated endpoint when a warm instance exists', async () => {
-    renderSidebar({ warm: true })
-    await searchOlderSessions('deploy checklist')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      renderSidebar({ warm: true })
+      await searchOlderSessions('deploy checklist')
 
-    await waitFor(() => expect(federatedSearchMock).toHaveBeenCalledWith('deploy checklist'))
-    // The federated endpoint REPLACES the local call (backend already merges).
-    expect(sessionsSearchMock).not.toHaveBeenCalled()
+      await waitFor(() => expect(federatedSearchMock).toHaveBeenCalledWith('deploy checklist'))
+      // The federated endpoint REPLACES the local call (backend already merges).
+      expect(sessionsSearchMock).not.toHaveBeenCalled()
 
-    // Both rows render; the remote one carries the instance badge.
-    await screen.findByText('deploy checklist (remote)')
-    expect(screen.getByText('deploy checklist (local)')).toBeTruthy()
-    expect(screen.getByText('clouddeskARM')).toBeTruthy()
+      // Both rows render; the remote one carries the instance badge. Their raw
+      // slot keys intentionally collide, so origin-qualified UI identity is what
+      // keeps React from dropping or mis-reconciling either row.
+      await screen.findByText('deploy checklist (remote)')
+      expect(screen.getByText('deploy checklist (local)')).toBeTruthy()
+      expect(screen.getByText('clouddeskARM')).toBeTruthy()
+      expect(consoleError.mock.calls.flat().join(' ')).not.toMatch(/same key|unique.*key/i)
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   it('marks the remote badge as remote, not as one more neutral meta chip', async () => {

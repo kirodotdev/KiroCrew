@@ -105,6 +105,17 @@ from kiro_crew.dashboard.chat_utils import (
     subagents_attached,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.remote_adopt import (
+    ADOPT_PEER_MODE_UNKNOWN,
+    ADOPT_TARGET_UNKNOWN,
+    AdoptBackfill,
+    AdoptTargetUnknown,
+    adopted_slot_for,
+    apply_adopted_backfill,
+    fetch_adopted_backfill,
+    peer_row_metadata,
+    resolve_adopt_target,
+)
 from kiro_crew.dashboard.remote_relay import (
     RemoteTurnError,
     create_peer_slot,
@@ -2385,6 +2396,24 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # the owner's tunnel credential — a request that is going to be refused must
     # not have already created a session over there.
     instance_id = str(body.get("instance_id") or "")
+    # ADOPT: bind this new local slot to a peer session that ALREADY EXISTS,
+    # instead of minting a fresh one over there. The caller supplies the peer's own
+    # slot key (a `key` from GET /api/instances/{id}/chat-slots), which names the
+    # crew that owns it — so without an `instance_id` there is nothing to resolve
+    # the key against and no peer to route the turn to.
+    #
+    # Refused BEFORE the binding gates below, which all sit inside `if instance_id`
+    # and therefore do not run for this shape at all. It discloses nothing: the
+    # request named no crew, so there is no existence to leak.
+    adopt_remote_slot = str(body.get("adopt_remote_slot") or "")
+    if adopt_remote_slot and not instance_id:
+        return web.json_response(
+            {
+                "error": "adopting a crew session needs the crew it belongs to",
+                "code": "adopt_needs_instance",
+            },
+            status=400,
+        )
     request_app = request.get("app", "")
     if instance_id:
         # (1) Binding a session to a crew is a human act: it comes from the
@@ -2518,7 +2547,106 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 status=400,
             )
     remote_slot_key = ""
-    if instance_id:
+    # Metadata the adopted session inherits from the peer, and its prepared
+    # history. Both empty on the mint path, which is why every use below is
+    # guarded rather than branched on `adopt_remote_slot` a second time.
+    peer_meta: dict[str, str] = {}
+    backfill = AdoptBackfill([], "")
+    if instance_id and adopt_remote_slot:
+        # IDEMPOTENCY, first of two. This one runs before the peer is read at all,
+        # so the common case — a double click on the same peer row — is answered
+        # without a tunnel round-trip or a second transcript copy. It is NOT the
+        # one that closes the concurrent-POST race: the awaits below mean two
+        # requests can clear this together, which is what the recheck immediately
+        # before `get_or_create_slot` exists for.
+        #
+        # Two local slots driving one peer session is not just a duplicate row:
+        # each accumulates its own turns, so the transcripts diverge, and
+        # `read_peer_slots` filters the peer's row on whichever binding it sees.
+        # Returning the existing slot is also what makes the frontend's
+        # `switchSlot(resp.key)` correct on a retry.
+        #
+        # Reachable only by an owner dashboard caller: the app and owner gates
+        # above already refused everyone else, so this is not a read-back oracle.
+        already = adopted_slot_for(state, instance_id, adopt_remote_slot)
+        if already is not None:
+            return web.json_response(state.serialize_slot(already))
+        # The key is CALLER-supplied, so it is validated against the peer's live
+        # session list — the same read the merged sidebar renders. That makes the
+        # check free of new policy: a key absent from that view is forged, closed,
+        # or a slot this hub already drives, and none of the three is adoptable.
+        try:
+            adopt_row = await resolve_adopt_target(state, instance_id, adopt_remote_slot)
+        except AdoptTargetUnknown as exc:
+            # "Not in the peer's list" has TWO causes, and only one is an error.
+            # `read_peer_slots` drops the rows this hub already drives, so the
+            # moment a concurrent adopt of this same pair stamps its binding, the
+            # row this request came to adopt disappears from the very listing used
+            # to validate it. Two tabs on one peer row therefore ended with the
+            # winner opening the session and the LOSER getting a 404 for a session
+            # that exists and is now reachable locally.
+            #
+            # So before treating absence as forgery, ask the one question that
+            # tells the two apart: does a local slot already bind this pair? If it
+            # does, absence is the expected consequence of the adopt having already
+            # happened, and the honest answer is that slot -- the same answer the
+            # early check and the pre-create recheck give. This is why all three
+            # sites go through `adopted_slot_for` rather than each deciding for
+            # itself.
+            raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
+            if raced is not None:
+                return web.json_response(state.serialize_slot(raced))
+            return web.json_response({"error": str(exc), "code": ADOPT_TARGET_UNKNOWN}, status=404)
+        except RemoteTurnError as exc:
+            return web.json_response({"error": str(exc), "code": "remote_bind_failed"}, status=502)
+        remote_slot_key = adopt_remote_slot
+        peer_meta = peer_row_metadata(adopt_row)
+        # The peer's mode is REQUIRED, not preferred. It is the user's privacy
+        # boundary and the peer session already has one, so a session opened as
+        # `incognito` over there must not start writing memory the moment it is
+        # opened on this machine.
+        #
+        # Absent means REFUSE, because the alternative is silent and wrong in the
+        # dangerous direction. `peer_row_metadata` omits the key for a row that
+        # never carried a mode and for one whose value is outside the allowlist,
+        # so falling back to the request's mode would resolve the least
+        # trustworthy case -- a peer whose row we could not read a boundary from
+        # -- to this machine's default of `persistent`. Version skew alone
+        # reaches it: a crew whose slot rows predate the field would hand over
+        # every incognito session as a persistent local one. Refusing costs an
+        # adopt that a newer peer can retry; guessing costs the boundary.
+        peer_mode = peer_meta.get("memory_mode", "")
+        if not peer_mode:
+            return web.json_response(
+                {
+                    "error": (
+                        "the crew did not report this session's memory mode, so it "
+                        "cannot be opened here without guessing its privacy boundary"
+                    ),
+                    "code": ADOPT_PEER_MODE_UNKNOWN,
+                },
+                status=502,
+            )
+        memory_mode = peer_mode
+        # The peer's agent wins too, for the same reason as the mode above and
+        # because this module's contract is that nothing the caller sends decides
+        # what the adopted session claims to be. Unconditional, with no `or agent`
+        # fallback: a peer row carrying no agent means the peer session runs on ITS
+        # default, and resolving that to the REQUEST's agent would open the peer's
+        # conversation under an agent that has never answered in it. Empty here is
+        # the right answer -- the local slot then falls to this machine's own
+        # default the same way any agent-less session does. Stored VERBATIM: the
+        # surrounding resolve/normalize steps are skipped for every peer-bound
+        # create precisely because they answer from THIS machine's roster.
+        agent = peer_meta.get("agent", "")
+        # Read the history BEFORE `get_or_create_slot`, so the peer round-trip
+        # happens outside the `suspend_slots_push` block below. That suspension is
+        # process-wide: holding it across a transcript read would defer every other
+        # client's slot updates for the length of it. Never raises — an adopted
+        # slot with no history is usable, so a failed copy is a notice in the
+        # transcript rather than a refused create.
+        backfill = await fetch_adopted_backfill(state, instance_id, adopt_remote_slot)
+    elif instance_id:
         try:
             # The picks ride the create rather than following it: a second
             # round-trip could fail after the peer session existed, leaving a
@@ -2633,6 +2761,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     _requested_key = _normalize_slot_key(str(name)) if name else ""
     is_new_slot = not _requested_key or _requested_key not in state._slots
 
+    if remote_slot_key and adopt_remote_slot:
+        # The DECIDING idempotency check for an adopt. The one at the top of the
+        # adopt branch runs before `resolve_adopt_target` and
+        # `fetch_adopted_backfill`, and both of those suspend — so two concurrent
+        # identical POSTs clear it together and would each mint a slot bound to one
+        # peer session. Re-asked here, after every await and with nothing awaiting
+        # between this and `get_or_create_slot` below, which is what makes
+        # check-and-create atomic on asyncio's single thread.
+        #
+        # The loser discards the history it just read rather than applying it: the
+        # winner copied the same transcript from the same peer slot, so the work is
+        # redundant, not lost. Returning the winner's slot is also what keeps the
+        # frontend's `switchSlot(resp.key)` correct for whichever request lost.
+        raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
+        if raced is not None:
+            return web.json_response(state.serialize_slot(raced))
+
     # Coalesce every push inside into ONE broadcast at exit, so the first frame
     # any client sees already carries the folder, title, artifact binding and
     # project. Otherwise each of those is a separate post-create correction the
@@ -2717,6 +2862,19 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
         # Pin title if explicitly provided (prevents auto-title from overwriting)
         title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
+        # An adopted session takes the PEER's title, ahead of anything the caller
+        # sent. It is the label the user just clicked in the merged list, so
+        # opening it under a different one — or under a local auto-title generated
+        # from a backfilled history — renames their session out from under them.
+        # Ahead of the caller's, not merely a fallback: the same contract that puts
+        # the peer in charge of `agent` and `memory_mode` puts it in charge of the
+        # name, and the adopt path sends no title of its own, so a caller-supplied
+        # one could only contradict the session being adopted. Pinned below like a
+        # caller-explicit title for the same reason: the background refresh must
+        # not rewrite a name the peer owns. (There is no "peer" title origin;
+        # "user" is the closest true statement, in that a human named it and no
+        # local model may replace it.)
+        title = peer_meta.get("title", "") or title
         if title:
             title, _ = redact_exfiltration_urls(title)
             title, _ = redact_credentials(title)
@@ -2861,6 +3019,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                             status=409,
                         )
                     slot.memory_store = assigned_store
+        # The adopted session's history, appended before the first frame and before
+        # the persist below — list appends only, the read and the redaction pass
+        # already happened outside this suspension. Placed after the app-ownership
+        # check above so a request that is about to 404 never copies a transcript,
+        # and after the folder/title work so the coalesced push carries the whole
+        # session in one frame. It also trails the member-assignment block above,
+        # which can still answer 409 `session_rebound`: a create that is about to
+        # be refused must not copy the peer's transcript either.
+        if backfill.rows or backfill.notice:
+            applied = apply_adopted_backfill(slot, backfill)
+            logger.info("Adopted %s into %s with %d rows", remote_slot_key, slot.key, applied)
         _sync_dashboard_slots(state)
         # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
         # same ordering `session_control.py`'s create span uses ("the whole

@@ -3916,6 +3916,9 @@
       "could_not_send_to_side_chat": "Couldn't send to the side chat"
     },
     "chatSidebar": {
+      "adopt_failed": "Could not open this session here.",
+      "adopt_remote_bind_failed": "Could not reach {{name}} to open this session.",
+      "adopt_target_unknown": "This session is no longer open on {{name}}.",
       "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",
@@ -3934,6 +3937,8 @@
       "loop": "Loop {{count}}/{{total}}",
       "loop_2": "Loop · {{count}}",
       "loop_interrupted": "interrupted",
+      "opening_session_locally": "Opening this session here…",
+      "opens_here_runs_on_instance": "Opens this session here — its turns keep running on {{name}}",
       "pending_your_response": "Pending your response",
       "running_queued": "{{started}} running · {{queued}} queued",
       "show_all_older_sessions": "Show all older sessions",

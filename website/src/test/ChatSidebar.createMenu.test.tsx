@@ -328,6 +328,11 @@ describe('create-button caret menu', () => {
       expect(mocks.createChatSlot).toHaveBeenCalledWith(
         undefined, undefined, undefined, undefined, 'persistent', undefined, undefined,
         undefined, 'i-nobita',
+        // The trailing `adopt_remote_slot`, and it must stay UNDEFINED here: this
+        // is the MINT path ("New chat on crew"), which asks the peer for a brand
+        // new session. Naming a key here would turn it into an adopt of somebody
+        // else's existing session — the two paths differ only by this argument.
+        undefined,
       ),
     )
   })

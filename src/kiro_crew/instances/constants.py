@@ -259,6 +259,29 @@ DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
 # bites on a hostile or broken peer.
 CAPABILITY_REPLY_MAX_BYTES: int = 2 * 1024 * 1024
 
+# Byte ceiling for one peer's live-slots reply, enforced BEFORE JSON decoding for
+# the same reason as the two caps above. The peer answers with a full slot
+# projection per OPEN session — a few KiB each — so even a gateway holding a
+# hundred open sessions lands well under 1 MiB; 4 MiB only ever bites on a
+# hostile or broken peer.
+#
+# Its OWN constant rather than borrowing CAPABILITY_REPLY_MAX_BYTES, and 4 MiB
+# rather than that cap's 2 MiB, because the two bound different payload SHAPES —
+# which is the same split that already separates the two caps above. A capability
+# reply is fixed-shape: one agent roster, one model list, sized by how the peer is
+# configured and not by how much it is being used. This reply and the federated
+# search one are UNBOUNDED-CARDINALITY lists — N open sessions, N search hits —
+# whose honest size scales with a peer's workload, so they carry the looser bound
+# and the search cap's 4 MiB is the precedent this follows.
+#
+# Sharing one constant across endpoints that differ that way is the actual hazard:
+# each of these comments records the specific honest payload its number was sized
+# against, and one symbol cannot hold three such rationales. A later change
+# raising the capability cap for a grown model list would silently loosen this
+# read too, and tightening this one after a memory incident would break the model
+# picker — neither of which the changing author would see.
+PEER_SLOTS_REPLY_MAX_BYTES: int = 4 * 1024 * 1024
+
 
 # Accepted shape for a dashboard-token lifetime: a positive integer of at most
 # four digits followed by ``h`` or ``m``. Canonical here because three layers

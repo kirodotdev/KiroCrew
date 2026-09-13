@@ -10398,7 +10398,18 @@
       "board_update_failed": "Échec de la mise à jour du tableau",
       "open_crew_members": "Membres de l’équipe",
       "open_crew_members_desc": "Ouvre la page Membres de l’équipe : chaque membre est un agent permanent avec son propre fil.",
-      "open_crew_members_gated_desc": "Ouvre d’abord les Réglages pour activer cet aperçu : la page n’est pas disponible avant cela."
+      "open_crew_members_gated_desc": "Ouvre d’abord les Réglages pour activer cet aperçu : la page n’est pas disponible avant cela.",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} session distante n'est pas affichée dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} sessions distantes ne sont pas affichées dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} sessions distantes ne sont pas affichées dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
+      "sessions_from_instance_unavailable": "Les sessions de {{names}} sont indisponibles pour le moment.",
+      "checking_remote_instances": "Vérification des instances distantes…",
+      "adopt_failed": "Impossible d'ouvrir cette session ici.",
+      "adopt_remote_bind_failed": "Impossible de joindre {{name}} pour ouvrir cette session.",
+      "adopt_target_unknown": "Cette session n'est plus ouverte sur {{name}}.",
+      "opening_session_locally": "Ouverture de cette session ici…",
+      "opens_here_runs_on_instance": "Ouvre cette session ici — son exécution continue sur {{name}}",
+      "remote_instances_list_unavailable": "Impossible de lister les instances distantes, leurs sessions ne sont donc pas affichées."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
@@ -10781,6 +10792,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
         "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sessions de l’instance distante",
+        "merge_a_connected_remote_instances_live_sessions": "Fusionne les sessions actives d’une instance distante connectée dans la liste des sessions, chacune marquée d’un badge serveur. Fonctionnel, mais pas terminé.",
         "intro": {
           "webhooks_summary": "Un autre système (CI, bot de revue, pipeline de déploiement) peut lancer ton agent à ta place en envoyant un message avec un jeton d’accès que tu crées sur la page Webhooks.",
           "webhooks_where": "Une fois activé, le lien « Ouvrir Webhooks » apparaît sur cette carte dans les Réglages ; c’est de là que s’ouvre la nouvelle page Webhooks. Elle n’apparaît pas dans la barre latérale tant qu’elle n’est pas terminée. Le désactiver ne fait que masquer la page à nouveau ; les jetons que tu as créés sont conservés.",
