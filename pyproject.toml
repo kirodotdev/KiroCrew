@@ -41,6 +41,7 @@ dev = [
     "mypy==1.14.1",
     "black==26.3.1",
     "isort==6.0.0",
+    "pylint>=3.3",
     # Not a dev TOOL. kiro_crew.config.validation imports jsonschema behind a
     # try/except and returns the config unvalidated when the import fails, so a
     # run without it exercises none of the schema-validation path and silently
