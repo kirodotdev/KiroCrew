@@ -234,9 +234,34 @@ jobs:
           systemctl --user show-environment >/dev/null
           echo "systemd --user session bus: ${XDG_RUNTIME_DIR}/bus"
 
-      # macOS needs nothing equivalent: the pod's launchd backend uses the
-      # per-user launchd domain, which a runner session already has. Printed so
-      # the two legs read the same way in the log.
+      # The SECOND thing a hosted ubuntu runner lacks: a usable namespace sandbox.
+      # ubuntu-24.04 restricts unprivileged user namespaces through AppArmor
+      # (kernel.apparmor_restrict_unprivileged_userns=1), so the pod gateway's
+      # `unshare(CLONE_NEWNS)` answers EPERM and its only Linux sandbox backend
+      # is unavailable. A pod pins `agent.sandbox=auto` with the unsandboxed
+      # opt-in OFF (pod/runtime.py), so the pod's own boot probe then REFUSES the
+      # boot -- correctly: serving a gateway whose every agent turn would fail
+      # while /health answers 200 is the failure the probe exists to catch. On
+      # this job's first nightly run that refusal was six `pod up` errors.
+      #
+      # Same remedy as ci.yml's `e2e` and `backend-test-sandbox` jobs, and the
+      # same PROOF right after it: if the runner image ever stops allowing this,
+      # fail here by name instead of six scenarios deep. The sysctl is host-wide,
+      # so the service-managed pod gateway sees it too. Never the alternative of
+      # seeding `sandbox_allow_unsandboxed_exec` into the pod: that would make the
+      # suite pass by running the product in a mode a real pod refuses.
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify the namespace sandbox backend is available (Linux)
+        if: runner.os == 'Linux'
+        run: unshare --mount --map-root-user true
+
+      # macOS needs neither: the pod's launchd backend uses the per-user launchd
+      # domain, which a runner session already has, and its seatbelt sandbox
+      # backend needs no host opt-in. Printed so the two legs read the same way
+      # in the log.
       - name: Confirm the launchd user domain (macOS)
         if: runner.os == 'macOS'
         run: |

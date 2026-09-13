@@ -10,6 +10,13 @@ Offline and deterministic: the pod's gateway spawns the packaged fake ACP
 backend, pinned into the service definition by the ``pod`` fixture, and the
 ``[[TOOL]]`` sentinel makes it emit a tool call as well as text.
 
+What the assertion reads is the DASHBOARD's stream, not the ACP wire. The fake
+emits an ACP ``tool_call`` update, and ``/api/chat`` surfaces that to the client
+as an SSE row of ``type: "tool"`` (``chat_runner`` renders the tool title into
+it); the literal ``tool_call`` never appears in the body. The first nightly run of
+this suite failed on macOS asserting that literal against a turn that had in fact
+completed WITH its tool row -- a wrong contract in the test, not a lost tool call.
+
 Scope is what the fake backend supports. It speaks the ACP subset the client
 drives and answers on prompt sentinels, so this asserts that a turn COMPLETES
 with a tool call in it. It does not assert real subagent orchestration, which
@@ -17,6 +24,8 @@ needs a model.
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -46,14 +55,41 @@ def test_one_agent_turn_completes_with_a_tool_call(pod) -> None:
         "the pod spawned a different agent or the turn never completed.\n"
         f"stream tail: {text[-2000:]!r}\n{pod.logs()}"
     )
-    assert (
-        "tool_call" in text
-    ), f"the {TOOL_TRIGGER} turn emitted no tool_call event.\nstream tail: {text[-2000:]!r}"
+    tool_rows = [row for row in _sse_rows(text) if row.get("type") == "tool"]
+    assert tool_rows, (
+        f"the {TOOL_TRIGGER} turn surfaced no SSE row of type 'tool', so the fake's "
+        "tool call never reached the dashboard stream.\n"
+        f"stream tail: {text[-2000:]!r}"
+    )
 
     # The turn is also durable, not just streamed: the slot must now hold it.
     slots = pod.api("GET", "chat/slots")
     names = _slot_names(slots)
     assert slot in names, f"the turn's slot is not in GET /api/chat/slots: {sorted(names)}"
+
+
+def _sse_rows(body: str) -> list[dict]:
+    """Every JSON object carried on a ``data:`` line of an SSE body.
+
+    Only the parseable object rows: the terminal ``data: [DONE]`` and any
+    non-object payload are dropped rather than failing the parse, because the
+    scenario's claim is about which rows are PRESENT, and a framing detail must
+    not read as a missing tool call.
+    """
+    rows: list[dict] = []
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:") :].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            parsed = json.loads(payload)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            rows.append(parsed)
+    return rows
 
 
 def _slot_names(body: object) -> set[str]:
