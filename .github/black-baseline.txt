@@ -213,7 +213,6 @@ src/kiro_crew/dashboard/terminal_commands.py
 src/kiro_crew/dashboard/theme_validate.py
 src/kiro_crew/dashboard/token_secret.py
 src/kiro_crew/dashboard/ws_event_scope.py
-src/kiro_crew/deploy/__init__.py
 src/kiro_crew/deploy/engine.py
 src/kiro_crew/deploy/handlers.py
 src/kiro_crew/deploy/pricing.py

@@ -6715,3 +6715,48 @@ def is_readonly_filesystem(path: Path) -> bool:
         return bool(os.statvfs(path).f_flag & os.ST_RDONLY)
     except OSError:
         return False
+
+
+def ensure_owner_writable_dirs(root: str | os.PathLike) -> None:
+    """OR the owner-write bit onto *root* and every directory below it.
+
+    ``shutil.copytree`` preserves source modes verbatim, so a copy made from
+    a read-only install source (mode ``0o555`` -- a Nix store path, a
+    read-only mount, any hardened install) is itself ``0o555`` and the owning
+    uid cannot create files inside the copy it just made. Callers that must
+    write a marker into a fresh copy run this on the destination first.
+
+    Only directories are touched, and only by adding ``S_IWUSR``: creating a
+    file needs a writable parent directory, while the copied files themselves
+    are left exactly as shipped, so a mode customization on a file still
+    diverges skill fingerprints. On Windows ``os.chmod`` honours only the
+    read-only flag, and adding the owner-write bit is precisely clearing it,
+    so the OR is meaningful there and a no-op everywhere the bit is already
+    set. Never raises: a directory this cannot repair surfaces as the
+    original ``PermissionError`` at the caller's write site, which every
+    caller already handles.
+    """
+
+    def _add_owner_write(entry: str) -> None:
+        try:
+            mode = os.lstat(entry).st_mode
+            if stat.S_ISDIR(mode) and not mode & stat.S_IWUSR:
+                os.chmod(entry, stat.S_IMODE(mode) | stat.S_IWUSR)
+        except OSError:
+            logger.debug("could not add owner-write to %s", entry, exc_info=True)
+
+    top = os.fspath(root)
+    if is_link_or_junction(top):
+        return
+    _add_owner_write(top)
+    for dirpath, dirnames, _filenames in os.walk(top):
+        for dname in list(dirnames):
+            entry = os.path.join(dirpath, dname)
+            if is_link_or_junction(entry):
+                # os.walk(followlinks=False) skips POSIX symlinks, but a
+                # Windows junction lstats as a plain directory and WOULD be
+                # descended -- and chmodded THROUGH, touching its target
+                # tree. Prune both so the walk never leaves *root*.
+                dirnames.remove(dname)
+                continue
+            _add_owner_write(entry)

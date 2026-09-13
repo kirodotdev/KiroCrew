@@ -39,7 +39,7 @@ from kiro_crew.hooks import (
     validate_file_path,
 )
 from kiro_crew.metrics.provider import get_recorder
-from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.platform_compat import ensure_owner_writable_dirs, is_link_or_junction
 from kiro_crew.project_scope import project_scope_satisfied
 from kiro_crew.security import (
     is_sensitive_path,
@@ -886,9 +886,16 @@ def _tree_entries(root: Path) -> Iterator[tuple[str, str, str]]:
                 # Permission bits, like file modes below: a chmod on an
                 # installed builtin's directory is a user customization and
                 # must diverge the tree instead of being silently reset by
-                # the next sync. copytree preserves directory modes, so a
-                # clean install still fingerprints equal to its package.
-                yield rel, "dir", f"{stat.S_IMODE(mode):o}"
+                # the next sync. One deliberate exception: the OWNER-WRITE
+                # bit is OR-ed in on both sides of every comparison, because
+                # the install itself adds it to the fresh copy's directories
+                # (``ensure_owner_writable_dirs`` -- a read-only source such
+                # as a Nix store ships 0o555 and the copy must accept the
+                # marker writes). Normalizing here keeps that install-owned
+                # repair from reading as a user chmod, while any other
+                # directory-mode change still diverges. File modes below are
+                # NOT normalized: the install never rewrites file modes.
+                yield rel, "dir", f"{stat.S_IMODE(mode) | stat.S_IWUSR:o}"
         for fname in sorted(filenames):
             entry = Path(dirpath) / fname
             rel = (rel_dir / fname).as_posix()
@@ -932,7 +939,13 @@ def _trees_stat_equal(a: Path, b: Path) -> bool:
     directory itself is as much a user customization as one on any child.
     """
     try:
-        if stat.S_IMODE(os.lstat(a).st_mode) != stat.S_IMODE(os.lstat(b).st_mode):
+        # Owner-write is OR-ed onto both roots for the same reason
+        # ``_tree_entries`` normalizes directory modes: the install adds
+        # that bit to the copy it makes from a read-only source, and that
+        # repair is not a user chmod.
+        if (stat.S_IMODE(os.lstat(a).st_mode) | stat.S_IWUSR) != (
+            stat.S_IMODE(os.lstat(b).st_mode) | stat.S_IWUSR
+        ):
             return False
     except OSError:
         return False
@@ -973,7 +986,10 @@ def _skill_tree_fingerprint(root: Path) -> str | None:
     # on the skill directory itself must diverge the fingerprint exactly like
     # a chmod on any entry inside it.
     try:
-        root_mode = stat.S_IMODE(os.lstat(root).st_mode)
+        # Owner-write OR-ed in, matching ``_tree_entries``' directory-mode
+        # normalization: the install adds that bit to the copy it makes
+        # from a read-only source, and that repair is not a user chmod.
+        root_mode = stat.S_IMODE(os.lstat(root).st_mode) | stat.S_IWUSR
     except OSError:
         return None
     digest.update(f"root\0{root_mode:o}\0".encode("utf-8"))
@@ -1628,6 +1644,14 @@ def _ensure_builtin_skills(base: Path) -> None:
                 # crash the sync.
                 logger.info("Skill %s installed concurrently elsewhere; keeping it", name)
                 continue
+            # copytree preserves source modes verbatim, so a read-only
+            # install source (0o555 -- a Nix store path, a read-only mount)
+            # yields a copy whose directories reject the provenance-marker
+            # write below. Add owner-write to the copy's directories; the
+            # fingerprint comparison normalizes that same bit on both sides,
+            # so this repair does not read as a user customization on the
+            # next sync.
+            ensure_owner_writable_dirs(dest_dir)
             if src_fingerprint is not None:
                 _write_provenance_marker(dest_dir, src_fingerprint)
             else:

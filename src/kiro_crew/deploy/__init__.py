@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.platform_compat import ensure_owner_writable_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,12 @@ def _register_core_skills() -> None:
         # Always copy (not symlink) so realpath stays within skill root.
         try:
             shutil.copytree(skill_dir, link)
+            # copytree preserves source modes verbatim, so a read-only
+            # install source (0o555 -- a Nix store path, a read-only mount)
+            # yields a copy whose directories reject the marker write below,
+            # which the OSError re-raise turns into a gateway abort. Add
+            # owner-write to the copy's directories first.
+            ensure_owner_writable_dirs(link)
             # Write the managed marker so future refreshes know it's ours
             (link / _MANAGED_MARKER).write_text("")
             logger.debug("Copied deploy skill %s", skill_dir.name)
