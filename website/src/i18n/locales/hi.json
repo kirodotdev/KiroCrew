@@ -10315,6 +10315,8 @@
       "session_dropped_into_itself": "सेशन को उसी में नहीं छोड़ा जा सकता… उसी में… उसी में…",
       "session_failed_to_switch_one": "{{count}} सत्र बदलने में विफल रहा",
       "session_failed_to_switch_other": "{{count}} सत्र बदलने में विफल रहे",
+      "remote_session_kept_model_one": "{{count}} सत्र तुम्हारी किसी दूसरी मशीन पर चल रहा है, इसलिए उसने अपना मॉडल बनाए रखा — नीचे की गिनती में यह शामिल नहीं है।",
+      "remote_session_kept_model_other": "{{count}} सत्र तुम्हारी दूसरी मशीनों पर चल रहे हैं, इसलिए उन्होंने अपना मॉडल बनाए रखा — नीचे की गिनती में ये शामिल नहीं हैं।",
       "session_one": "{{count}} सत्र",
       "session_other": "{{count}} सत्र",
       "session_source": "सत्र",

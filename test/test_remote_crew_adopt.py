@@ -42,6 +42,7 @@ from chat_test_helpers import _make_state
 import kiro_crew
 from kiro_crew.dashboard import handlers_instances as hi
 from kiro_crew.dashboard import remote_adopt as ra
+from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
 
 _SECRET = "AKIAIOSFODNN7EXAMPLE"
 
@@ -836,6 +837,200 @@ class TestInheritedMetadata:
 
         assert state._slots[body["key"]].agent == "peer-agent"
 
+    async def test_the_model_comes_from_the_peer_row(self, tmp_path, no_mint):
+        """The peer's pin lands on the local slot.
+
+        Not a routing fix -- the relayed turn body carries no model, so the peer's
+        slot has always decided what answers. It is the LOCAL state that was
+        wrong: ``slot.model`` feeds the header's pin display, the
+        context/autocompact denominator, and the model picker's current value.
+        """
+        mgr = _manager(slots=[_peer_row(model="claude-opus-4.5")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].model == "claude-opus-4.5"
+
+    async def test_a_peer_with_no_model_stays_empty_and_ignores_the_request(
+        self, tmp_path, no_mint
+    ):
+        """Empty means "the peer session runs on ITS default", not "use ours".
+
+        Same no-fallback rule as the agent. Resolving an absent peer model to the
+        REQUEST's would pin the peer's live conversation to a model nobody chose
+        for it -- and the first pick from the picker would then forward that
+        invented value to the peer.
+        """
+        row = _peer_row()
+        assert "model" not in row, "the no-model case must be the peer's silence, not a stub"
+        mgr = _manager(slots=[row], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(
+            state,
+            {
+                "instance_id": "nobita",
+                "adopt_remote_slot": "peer-chat-9",
+                "model": "gpt-5-local",
+            },
+        )
+
+        assert state._slots[body["key"]].model == ""
+
+    async def test_the_peers_model_wins_over_a_caller_supplied_one(self, tmp_path, no_mint):
+        """Inheritance is an OVERRIDE here too: nothing in the request body decides
+        what an adopted session claims to be running."""
+        mgr = _manager(slots=[_peer_row(model="peer-pinned-model")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(
+            state,
+            {
+                "instance_id": "nobita",
+                "adopt_remote_slot": "peer-chat-9",
+                "model": "my-local-model",
+            },
+        )
+
+        assert state._slots[body["key"]].model == "peer-pinned-model"
+
+    async def test_served_model_is_not_a_fallback_for_an_unpinned_peer(self, tmp_path, no_mint):
+        """``served_model`` is display state -- what the live session RESOLVED to.
+
+        Inheriting it as ``model`` would fabricate a user pin out of a runtime
+        detail, and the picker would then forward that invented pin to the peer on
+        the user's first interaction. An unpinned peer session must stay unpinned.
+        """
+        mgr = _manager(
+            slots=[_peer_row(served_model="claude-sonnet-4.5")],
+            transcript=_msgs(),
+        )
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].model == ""
+
+    async def test_the_peer_model_is_bounded_and_redacted(self, tmp_path, no_mint):
+        """A model id is an opaque peer-authored string, so it meets the same sink
+        and the same 128-char clamp as the agent -- no allowlist, because this
+        machine's roster has no standing to judge a cross-version peer's pin."""
+        split_secret = f"{_SECRET[:4]}\u200b{_SECRET[4:]}"
+        mgr = _manager(
+            slots=[_peer_row(model=f"model-{split_secret}-{'x' * 400}")], transcript=_msgs()
+        )
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        model = state._slots[body["key"]].model
+        assert model.startswith("model-"), "the peer's value must have been inherited at all"
+        assert len(model) <= 128
+        assert _SECRET not in model
+        assert split_secret not in model
+        assert "\u200b" not in model
+
+    async def test_the_reasoning_effort_comes_from_the_peer_row(self, tmp_path, no_mint):
+        """The third forwardable control, inherited for the same reason as the model.
+
+        `_PEER_CONTROL_SEGMENTS` makes four controls forwardable; every one left
+        empty locally is a picker seeded from the PEER's roster with no current
+        value, so the user's first pick reads as a change and overwrites the
+        peer's real setting on a live conversation.
+        """
+        mgr = _manager(slots=[_peer_row(reasoning_effort="xhigh")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].reasoning_effort == "xhigh"
+
+    async def test_a_peer_only_level_is_admitted(self, tmp_path, no_mint):
+        """A level no LOCAL session has reported is still the peer's real choice.
+
+        This is the case a membership test cannot serve. The process-dynamic set
+        grows only from local ACP session config, so a hub that mostly drives
+        remote peers holds barely more than the static fallback -- and this value
+        did not come from a local session. Gating on either vocabulary would
+        discard the peer's pin, store no override, and hand the picker back the
+        overwrite this inherit exists to prevent.
+
+        ``turbo`` is deliberately absent from ``EFFORT_LEVELS`` and is not
+        registered here, so it is unknown to this process by construction.
+        """
+        assert "turbo" not in get_reasoning_effort_values()
+        mgr = _manager(slots=[_peer_row(reasoning_effort="turbo")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].reasoning_effort == "turbo"
+
+    async def test_a_shape_violating_effort_is_dropped(self, tmp_path, no_mint):
+        """Shape is the gate, so junk is still refused without a vocabulary.
+
+        Dropping membership does not mean accepting anything: the value is held in
+        local state, persisted, and logged, so it must satisfy the same shape check
+        every ACP-reported level passes. An uppercase, spaced, over-long or
+        punctuation-bearing string is not a level any provider reports.
+        """
+        mgr = _manager(
+            slots=[_peer_row(reasoning_effort="rm -rf /; DROP TABLE")], transcript=_msgs()
+        )
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].reasoning_effort == ""
+
+    async def test_a_trailing_newline_effort_is_dropped(self, tmp_path, no_mint):
+        """The shape check anchors with ``\\Z``, so ``"high\\n"`` is not ``high``.
+
+        This is the near-miss the regex exists to close, and it is the reason
+        dropping the membership test does not weaken the boundary: ``$`` would
+        match before the newline and let the value through to persistence and the
+        subprocess argument.
+        """
+        mgr = _manager(slots=[_peer_row(reasoning_effort="high\n")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].reasoning_effort == ""
+
+    async def test_a_peer_with_no_effort_stays_empty(self, tmp_path, no_mint):
+        """Absent means the peer session runs on ITS default, same as the model."""
+        row = _peer_row()
+        assert "reasoning_effort" not in row, "the no-effort case must be the peer's silence"
+        mgr = _manager(slots=[row], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].reasoning_effort == ""
+
+    async def test_the_request_body_cannot_set_the_effort(self, tmp_path, no_mint):
+        """This endpoint has never accepted an effort, and must not grow one here.
+
+        `api_chat_slot_reasoning_effort` owns setting it. Pinning this keeps the
+        peer-bound create's contract intact: nothing the caller sends decides what
+        the adopted session claims to be.
+        """
+        mgr = _manager(slots=[_peer_row(reasoning_effort="low")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(
+            state,
+            {
+                "instance_id": "nobita",
+                "adopt_remote_slot": "peer-chat-9",
+                "reasoning_effort": "max",
+            },
+        )
+
+        assert state._slots[body["key"]].reasoning_effort == "low"
+
     async def test_peer_metadata_is_redacted_before_it_lands_on_the_slot(self, tmp_path, no_mint):
         """A peer title is model-authored text from another machine, and it reaches
         the sidebar. It meets a redactor here for the same reason the peer-slots
@@ -870,6 +1065,106 @@ class TestInheritedMetadata:
         assert split_secret not in slot.title
         assert "\u200b" not in slot.agent
         assert "\u200b" not in slot.title
+
+
+class TestEveryForwardableControlIsInheritedOrNamed:
+    """The mechanism that produced this bug was a hand-enumerated inherit list,
+    and enumerating it correctly once does not stop the next control from being
+    added to one list and forgotten in the other. This pins the relationship
+    instead of the instances: every key `_PEER_CONTROL_SEGMENTS` makes forwardable
+    is either inherited onto an adopted slot or listed here with a stated reason.
+
+    A forwardable control whose picker is seeded from the peer, but whose local
+    value stays empty, reads as unset -- so the user's first pick looks like a
+    change and is forwarded, overwriting the peer's live setting."""
+
+    #: Controls deliberately NOT inherited, with the reason each is exempt.
+    NOT_INHERITED = {
+        "workspace": (
+            "resolves from THIS machine's agent bindings and feeds local project / "
+            "memory-store selection, so a peer-resolved value would name a workspace "
+            "this machine never resolved. Its first-pick hazard needs a different "
+            "remedy and is tracked separately."
+        ),
+    }
+
+    @staticmethod
+    def _forwardable() -> set[str]:
+        from kiro_crew.dashboard.remote_relay import _PEER_CONTROL_SEGMENTS
+
+        return set(_PEER_CONTROL_SEGMENTS)
+
+    @staticmethod
+    def _inherited_keys() -> set[str]:
+        from kiro_crew.dashboard.remote_adopt import peer_row_metadata
+
+        return set(
+            peer_row_metadata(
+                _peer_row(
+                    agent="peer-agent",
+                    model="model-peer-1",
+                    reasoning_effort="low",
+                    workspace="/peer/ws",
+                )
+            )
+        )
+
+    def test_every_forwardable_control_is_inherited_or_exempt(self):
+        from kiro_crew.dashboard.remote_relay import _PEER_CONTROL_SEGMENTS
+
+        inherited = self._inherited_keys()
+        for control in _PEER_CONTROL_SEGMENTS:
+            assert control in inherited or control in self.NOT_INHERITED, (
+                f"{control!r} is forwardable via _PEER_CONTROL_SEGMENTS but is neither "
+                f"inherited by peer_row_metadata nor listed in NOT_INHERITED with a "
+                f"reason. An empty local box forwards the user's first pick and "
+                f"overwrites the peer."
+            )
+
+    def test_the_exemption_list_names_nothing_that_is_actually_inherited(self):
+        """A stale exemption is as misleading as a missing one: it would claim a
+        control is deliberately dropped while the code inherits it."""
+        assert not (self._inherited_keys() & set(self.NOT_INHERITED))
+
+    def test_the_exemption_list_names_only_forwardable_controls(self):
+        """An exemption for something not forwardable has no hazard to excuse."""
+        from kiro_crew.dashboard.remote_relay import _PEER_CONTROL_SEGMENTS
+
+        assert set(self.NOT_INHERITED) <= set(_PEER_CONTROL_SEGMENTS)
+
+    def test_every_inherited_control_has_a_peer_owned_admission(self):
+        """Inheriting a control is only half of owning it. The other half is what
+        happens to the value on the way back off disk: five review rounds of this
+        family were a LOCAL vocabulary meeting a peer-owned value at one more site
+        — membership, a display-key rejection, a provider-keyed canonicalization,
+        a deprecation rename — each of which blanks or rewrites the pin and hands
+        the picker back the overwrite the inherit exists to prevent.
+
+        So the guard covers interpretation, not just inheritance: a control that
+        is inherited must have an entry in ``_PEER_OWNED_RESTORE``, which is the
+        one decision for "this value is the peer's, not ours"."""
+        from kiro_crew.dashboard.chat_persistence import _PEER_OWNED_RESTORE
+
+        for control in sorted(self._inherited_keys() & self._forwardable()):
+            assert control in _PEER_OWNED_RESTORE, (
+                f"{control!r} is inherited from the peer but has no admission in "
+                f"_PEER_OWNED_RESTORE, so the restore path falls through to this "
+                f"machine's own treatment of it."
+            )
+
+    def test_the_admission_table_names_only_forwardable_controls(self):
+        """The reverse direction, so the table cannot rot: an admission for a
+        control the peer never owns has nothing to admit."""
+        from kiro_crew.dashboard.chat_persistence import _PEER_OWNED_RESTORE
+
+        assert set(_PEER_OWNED_RESTORE) <= self._forwardable()
+
+    def test_the_admission_table_names_nothing_that_is_deliberately_not_inherited(self):
+        """A control exempt from inheritance has no persisted peer value to admit,
+        so an entry for it would claim a decision that is never reached."""
+        from kiro_crew.dashboard.chat_persistence import _PEER_OWNED_RESTORE
+
+        assert not (set(_PEER_OWNED_RESTORE) & set(self.NOT_INHERITED))
 
 
 # ── B. transcript backfill ────────────────────────────────────────────────────

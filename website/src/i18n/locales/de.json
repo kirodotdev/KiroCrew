@@ -10315,6 +10315,8 @@
       "session_dropped_into_itself": "Eine Sitzung lässt sich nicht in sich selbst ablegen… in sich selbst… in sich selbst…",
       "session_failed_to_switch_one": "{{count}} Sitzung konnte nicht gewechselt werden",
       "session_failed_to_switch_other": "{{count}} Sitzungen konnten nicht gewechselt werden",
+      "remote_session_kept_model_one": "{{count}} Sitzung läuft auf einem anderen deiner Rechner und hat ihr Modell behalten — sie wird unten nicht mitgezählt.",
+      "remote_session_kept_model_other": "{{count}} Sitzungen laufen auf deinen anderen Rechnern und haben ihr Modell behalten — sie werden unten nicht mitgezählt.",
       "session_one": "{{count}} Sitzung",
       "session_other": "{{count}} Sitzungen",
       "session_source": "Sitzung",
