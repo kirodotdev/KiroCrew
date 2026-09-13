@@ -47,6 +47,11 @@ from kiro_crew.config.loader import config_dir, data_home
 from kiro_crew.config.paths import legacy_home
 from kiro_crew.constants import MAX_BANNER_CHARS
 from kiro_crew.monitoring.decision import decide_monitor, monitor_budget_reason
+
+# The one place this module names a host: a tick that sent no request is a third
+# outcome ``MonitorObservation`` has no field for, so the marker is the reason code
+# the probe set, and a reason code belongs to the kind that emits it.
+from kiro_crew.monitoring.github_provider_errors import is_unattempted_probe
 from kiro_crew.monitoring.models import (
     MONITOR_BUSY_RETRY_SECS,
     MONITOR_COMPLETION_EVIDENCE_TIMEOUT_SECS,
@@ -2806,7 +2811,19 @@ class AutoNudgeService:
                 provider_error = (
                     observation.provider_error or observation.supplemental_provider_error
                 )
-                if provider_error is not None:
+                if is_unattempted_probe(observation):
+                    # THE THIRD OUTCOME, and it moves neither counter, for the same
+                    # reason ``shadow.apply_monitor_probe`` gives: the provider-error
+                    # budget is finite and never refunded, so it has to measure
+                    # refusals the HOST gave this watch. Charged for a request the
+                    # probe declined to send, a shared cooldown that unrelated work
+                    # opened retires a healthy watch on its own cadence; clearing the
+                    # streak instead is the opposite error, because an outage
+                    # interleaved with skips would never retire the watch it blinds.
+                    # This is the PRODUCTION counting site, so the rule has to hold
+                    # in both or it holds nowhere.
+                    pass
+                elif provider_error is not None:
                     staged_state.provider_error_count += 1
                     staged_state.consecutive_provider_errors += 1
                     staged_state.last_provider_error = provider_error

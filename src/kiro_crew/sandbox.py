@@ -292,6 +292,21 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the spool write and the notice pass happen in the GATEWAY process, which
     # opens the paths directly.
     "inbound-spool",
+    # The durable task queue (``tasks/tasks.db`` + SQLite siblings). Fenced
+    # from agent file tools by ``security._CREW_SECRET_LEAVES``; masked here so
+    # a spawned shell's ``sqlite3`` cannot read other sessions' task prompts or
+    # rewrite their rows. Whole directory (WAL/journal/shm siblings). Nothing
+    # in-sandbox touches it: the subagent manager, the runner adapters and
+    # ``/api/tasks`` all live in the gateway process and open it directly.
+    "tasks",
+    # The per-process scratch root (``agent_scratch``): every kiro-cli session
+    # and every shared runtime gets ``<home>/scratch/<label>-<rand>`` as its
+    # ``$KIROCREW_SCRATCH`` / ``TMPDIR``. Masked as a WHOLE so one session cannot open
+    # another's scratch; each spawn passes its OWN directory back through
+    # ``extra_private_dirs`` (``acp/client.py``, ``acp/runtime.py``) -- a
+    # window INSIDE the mask, not a lift of it -- so the child keeps read-write
+    # on exactly the one directory that is its own.
+    "scratch",
     # The Notes state files below are OWNED by the md-notebook backend, which is itself
     # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
     # registry write's final rename gets EPERM and attach/clone always fails.
@@ -713,6 +728,30 @@ def carveout_chain_has_planted_link(path: str) -> bool:
         logger.debug("could not check the carve-out chain for %s", path, exc_info=True)
         return True
     return False
+
+
+def _private_window_spellings(
+    extra_private_dirs: tuple[str, ...], hidden_dirs: list[str]
+) -> list[str]:
+    """The ``extra_private_dirs`` entries that name a PROPER descendant of a
+    directory that stays hidden.
+
+    A private window is the one directory a spawn keeps inside a masked tree
+    -- its own scratch under the masked scratch root. Unlike
+    ``extra_visible_dirs`` it never lifts the parent's mask: siblings stay
+    hidden, only the window is re-exposed (read-write, it is the process's
+    own). An entry that is not inside a hidden tree needs no window and is
+    dropped; one that EQUALS a hidden target is refused, since that would be a
+    mask lift by another name. Lexical, like every other path rule here.
+    """
+    windows: list[str] = []
+    for raw in extra_private_dirs:
+        path = os.path.abspath(raw)
+        for parent in hidden_dirs:
+            if path.startswith(parent.rstrip(os.sep) + os.sep):
+                windows.append(path)
+                break
+    return list(dict.fromkeys(windows))
 
 
 def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
@@ -5046,6 +5085,7 @@ def _build_launcher_script(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> str:
@@ -5169,6 +5209,7 @@ def _build_launcher_script(
     # without relying on how subpath treats a non-directory.
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
     readonly_json = json.dumps(list(dict.fromkeys(readonly_dirs)))
+    private_json = json.dumps(_private_window_spellings(extra_private_dirs, hidden_dirs))
     # Write carve-outs: validated against the same seals this script
     # embeds. The launcher re-binds each approved directory over itself AFTER
     # the READONLY seal and remounts that bind read-write, so the carve-out
@@ -5393,6 +5434,7 @@ def _locked_mount_flags(target):
 REAL_UID = {uid}
 REAL_GID = {gid}
 SENSITIVE_DIRS = {dirs_json}
+PRIVATE_DIRS = {private_json}
 READONLY_DIRS = {readonly_json}
 WRITABLE_DIRS = {writable_json}
 SENSITIVE_FILES = {files_json}
@@ -5568,14 +5610,35 @@ def main():
                         file=sys.stderr,
                     )
 
-{private_setup}        # Bind-mount empty dirs over credential paths (per-dir tmpdir to
+{private_setup}        # Private windows: a directory INSIDE a hidden tree that stays
+        # visible read-write for THIS spawn only (the process's own scratch
+        # under the masked scratch root). Staged before its parent is masked,
+        # because the mask shadows the real path; the window is then bound
+        # onto a placeholder created inside the parent's empty stand-in, so
+        # every sibling stays hidden.
+        _private_stage = {{}}
+        for p in PRIVATE_DIRS:
+            if os.path.isdir(p):
+                _stage_dir = tempfile.mkdtemp(dir=_tmpfs_src, prefix=_src_prefix)
+                _mount_or_die(p.encode(), _stage_dir.encode(), _MS_BIND,
+                              "staging private window %s" % p)
+                _private_stage[p] = _stage_dir
+        # Bind-mount empty dirs over credential paths (per-dir tmpdir to
         # prevent content leaking across mounts via shared backing dir).
         for d in SENSITIVE_DIRS:
             target = d.encode()
             if os.path.isdir(target):
                 per_dir_empty = tempfile.mkdtemp(dir=_tmpfs_src, prefix=_src_prefix).encode()
+                _windows = [p for p in _private_stage
+                            if p.startswith(d.rstrip("/") + "/")]
+                for p in _windows:
+                    os.makedirs(os.path.join(per_dir_empty.decode(),
+                                             os.path.relpath(p, d)))
                 _mount_or_die(per_dir_empty, target, _MS_BIND,
                               "hiding credential directory %s" % d)
+                for p in _windows:
+                    _mount_or_die(_private_stage[p].encode(), p.encode(), _MS_BIND,
+                                  "opening private window %s" % p)
 
         # Exposed-but-read-only dirs (the governance cache): bind the real dir over
         # itself, then remount that bind MS_RDONLY. Both steps are load-bearing --
@@ -6120,6 +6183,7 @@ def namespace_argv(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> list[str]:
@@ -6181,6 +6245,7 @@ def namespace_argv(
         strip_python_env=strip_python_env,
         extra_hidden_dirs=extra_hidden_dirs,
         extra_visible_dirs=extra_visible_dirs,
+        extra_private_dirs=extra_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
     )
@@ -6314,6 +6379,7 @@ def _build_seatbelt_profile(
     private_layout: _PrivateMemoryLayout | None = None,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> str:
@@ -6367,7 +6433,19 @@ def _build_seatbelt_profile(
         + _md_notebook_degraded_mask_dirs()
         + list(_voice_runtime_sandbox_paths())
     )
+    private_windows = _private_window_spellings(extra_private_dirs, masked_targets)
     for target in masked_targets:
+        windows = [w for w in private_windows if w.startswith(target.rstrip("/") + "/")]
+        if windows:
+            # A private window (the spawn's own scratch) inside a masked tree:
+            # deny the tree except the window, in every direction, so siblings
+            # stay hidden while the process keeps read-write on its own dir.
+            # Same shape as the private-memory log leaf below.
+            exceptions = " ".join(f"(require-not (subpath {json.dumps(w)}))" for w in windows)
+            predicate = f"(require-all (subpath {json.dumps(target)}) {exceptions})"
+            for operation in ("file-read*", "file-write*", "file-link"):
+                rules.append(f"(deny {operation} {predicate})")
+            continue
         if private_memory and private_log_dir.startswith(target.rstrip("/") + "/"):
             # The new host log backing directory is under the existing hidden
             # memory root. Expose only this execution's leaf, never that root.
@@ -6835,6 +6913,7 @@ def sandbox_exec_argv(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> tuple[list[str], str | None]:
@@ -6877,6 +6956,7 @@ def sandbox_exec_argv(
         **private_options,
         extra_hidden_dirs=extra_hidden_dirs,
         extra_visible_dirs=extra_visible_dirs,
+        extra_private_dirs=extra_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
     )
@@ -9157,6 +9237,7 @@ def wrap_argv(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
@@ -9178,7 +9259,10 @@ def wrap_argv(
             must remain inside the same hidden broker namespaces.
         extra_hidden_dirs: Additional absolute directory trees to deny.
         extra_visible_dirs: Trusted paths that must remain visible when an
-            otherwise-hidden parent contains them.
+            otherwise-hidden parent contains them (the whole parent's mask is lifted).
+        extra_private_dirs: The spawn's OWN directories inside a hidden tree
+            (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
+            read-write as a window; the parent's mask and every sibling stay hidden.
         extra_expose_files: Absolute files to keep READABLE inside dirs that
             ``extra_hidden_dirs`` hides. Linux restores a read-only COPY via
             the launcher's ``EXPOSE_FILES`` primitive (cc mode's mechanism
@@ -9467,6 +9551,11 @@ def wrap_argv(
     if private_memory:
         delegate_to_kiro = False
     if delegate_to_kiro:
+        # ``extra_private_dirs`` is deliberately NOT in this test: a private
+        # window only RELAXES a mask owned by Kiro Crew (the scratch root) for the
+        # spawn's own directory. A delegated sandbox applies none of those
+        # masks, so the window is moot there and must not cost the delegation
+        # (on Windows that would send every session to the no-backend path).
         if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs or extra_expose_files:
             # A delegated sandbox cannot enforce KiroCrew-specific path hides.
             # macOS keeps the outer seatbelt. Windows falls through to its
@@ -9479,6 +9568,7 @@ def wrap_argv(
                     strip_python_env=strip_python_env,
                     extra_hidden_dirs=extra_hidden_dirs,
                     extra_visible_dirs=extra_visible_dirs,
+                    extra_private_dirs=extra_private_dirs,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
                 )
@@ -9504,7 +9594,13 @@ def wrap_argv(
         )
     private_options: dict[str, Any] = {"private_memory": True} if private_memory else {}
     if backend == "namespace":
-        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs or extra_expose_files:
+        if (
+            extra_hidden_dirs
+            or extra_visible_dirs
+            or extra_private_dirs
+            or extra_writable_dirs
+            or extra_expose_files
+        ):
             wrapped = namespace_argv(
                 argv,
                 sandbox_level,
@@ -9512,6 +9608,7 @@ def wrap_argv(
                 strip_python_env=strip_python_env,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
+                extra_private_dirs=extra_private_dirs,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )
@@ -9528,7 +9625,13 @@ def wrap_argv(
         # hands the caller a flag to unlink) the moment that list changes.
         return wrapped, _launcher_script_of(wrapped)
     if backend == "sandbox-exec":
-        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs or extra_expose_files:
+        if (
+            extra_hidden_dirs
+            or extra_visible_dirs
+            or extra_private_dirs
+            or extra_writable_dirs
+            or extra_expose_files
+        ):
             return sandbox_exec_argv(
                 argv,
                 sandbox_level,
@@ -9536,6 +9639,7 @@ def wrap_argv(
                 strip_python_env=strip_python_env,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
+                extra_private_dirs=extra_private_dirs,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )
@@ -9842,6 +9946,7 @@ async def wrap_argv_async(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
@@ -9871,6 +9976,8 @@ async def wrap_argv_async(
         options["extra_hidden_dirs"] = extra_hidden_dirs
     if extra_visible_dirs:
         options["extra_visible_dirs"] = extra_visible_dirs
+    if extra_private_dirs:
+        options["extra_private_dirs"] = extra_private_dirs
     if extra_writable_dirs:
         options["extra_writable_dirs"] = extra_writable_dirs
     if extra_expose_files:
@@ -9972,6 +10079,7 @@ def sandboxed_spawn_argv(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
     is_kiro_cli: bool | None = None,
@@ -10000,7 +10108,10 @@ def sandboxed_spawn_argv(
         extra_hidden_dirs: Additional absolute directory trees the caller needs
             hidden in both the macOS Seatbelt and Linux namespace profiles.
         extra_visible_dirs: Trusted paths that must remain visible when an
-            otherwise-hidden parent contains them.
+            otherwise-hidden parent contains them (the whole parent's mask is lifted).
+        extra_private_dirs: The spawn's OWN directories inside a hidden tree
+            (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
+            read-write as a window; the parent's mask and every sibling stay hidden.
         extra_writable_dirs: Self-derived scratch directories inside the sealed
             runtime parent that the child must be able to write — see
             :func:`wrap_argv`. Validated; refused candidates degrade to the
@@ -10024,13 +10135,14 @@ def sandboxed_spawn_argv(
         pass *scrubbed_env* as the subprocess ``env=`` and unlink *cleanup_path*
         (a temp launcher/profile) after the child exits.
     """
-    if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs:
+    if extra_hidden_dirs or extra_visible_dirs or extra_private_dirs or extra_writable_dirs:
         wrapped, cleanup = wrap_argv(
             argv,
             mode=mode,
             strip_python_env=strip_python_env,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
+            extra_private_dirs=extra_private_dirs,
             extra_writable_dirs=extra_writable_dirs,
             first_party_fixed_argv=first_party_fixed_argv,
             is_kiro_cli=is_kiro_cli,
@@ -10178,6 +10290,7 @@ async def sandboxed_spawn_argv_async(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
     executor: ThreadPoolExecutor | None = None,
@@ -10200,6 +10313,8 @@ async def sandboxed_spawn_argv_async(
         options["extra_hidden_dirs"] = extra_hidden_dirs
     if extra_visible_dirs:
         options["extra_visible_dirs"] = extra_visible_dirs
+    if extra_private_dirs:
+        options["extra_private_dirs"] = extra_private_dirs
     if extra_writable_dirs:
         options["extra_writable_dirs"] = extra_writable_dirs
     if first_party_fixed_argv:

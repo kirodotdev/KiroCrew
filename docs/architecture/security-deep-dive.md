@@ -146,6 +146,29 @@ Two properties are load-bearing at the architecture level:
   the audit cannot be written, the delegation is refused. Kiro Crew's own Seatbelt
   takes the spawn on macOS; Windows returns to its no-backend fail-closed policy.
 
+**The crew-home masks do NOT apply on the delegated path, and that is a stated
+residual rather than an oversight.** Kiro Crew's built-in HIDDEN leaves — the
+credential homes, `.env`, `live_target.json`, `inbound-spool`, `whatsapp`,
+`tasks`, `scratch` — are applied by Kiro Crew's OWN launcher (bind mounts on
+Linux, Seatbelt on macOS). A delegated spawn returns before that launcher runs
+(`wrap_argv` → `_delegate_to_kiro_internal_sandbox`), so inside a delegated child
+a shell can open any of them. The residual is the same for every leaf and is not
+specific to any one of them; only the caller-supplied `extra_hidden_dirs` /
+`extra_visible_dirs` / `extra_writable_dirs` / `extra_expose_files` disable
+delegation, because those are the restrictions a caller asked for explicitly and
+the delegated sandbox cannot prove it enforces. `private_memory` disables it too,
+and that is the shape of an actual fix.
+
+Extending the same test to the built-in leaves is the obvious remedy and it is the
+WRONG one: on Windows every first-party kiro-cli spawn would fall to the
+no-backend path, which is unconfined — strictly worse than a delegated sandbox
+that happens not to mask the crew home. So the coherent fix is at the delegation
+layer (teach the delegated sandbox the leaf set, or refuse the leaves' contents at
+a boundary the delegated child still crosses), not at the mask list. Until then,
+Layers 1, 2 and 4 are what cover these paths on those two platforms, and a NEW
+leaf inherits exactly this residual: adding one strictly improves Linux and
+non-delegated macOS, and changes nothing on the delegated paths.
+
 **Launcher shims are deliberately not bypassed on the delegated path.** On that
 path the shim is part of `kiro-cli`'s own sandbox mechanism, so resolving past it
 would defeat the delegated layer. Where an edition needs a managed launcher

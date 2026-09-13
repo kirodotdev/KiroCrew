@@ -2738,24 +2738,56 @@ def test_the_client_bracket_judges_the_snapshot_its_own_spawn_captured(monkeypat
 def test_every_set_mode_send_goes_through_the_one_bracketed_helper():
     """A ``set_mode`` naming an agent is a load of that agent's spec, so it needs the
     same bracket the spawn has -- and there is exactly ONE body that provides it. Both
-    session-start paths (create and resume) call it; neither sends the mode method
-    itself. A protocol written twice is two protocols the moment one copy is edited, so
-    the pin is on the single helper plus the rule that nothing else sends the method."""
+    session-start paths (create and resume) reach it; no body on either path sends the
+    mode method itself. A protocol written twice is two protocols the moment one copy is
+    edited, so the pin is on the single helper plus the rule that nothing else sends the
+    method. Activation may sit in a body the entry point hands off to -- ``create_session``
+    finishes in ``_finish_create_session``, which the late-adoption collector calls too --
+    so the walk FOLLOWS the ``self`` calls instead of naming one method."""
     import ast
     import inspect
     import textwrap
 
     from kiro_crew.acp import runtime as runtime_mod
 
+    def _tree(fn):
+        return ast.parse(textwrap.dedent(inspect.getsource(fn)))
+
+    def _handoffs(fn):
+        return {
+            n.func.attr
+            for n in ast.walk(_tree(fn))
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "self"
+        }
+
+    def _sends_the_mode(fn):
+        return any(
+            isinstance(n, ast.Call)
+            and any(isinstance(a, ast.Name) and a.id == "METHOD_SET_MODE" for a in n.args)
+            for n in ast.walk(_tree(fn))
+        )
+
     helper = runtime_mod.AcpRuntime._activate_mode_bracketed
-    for method in (runtime_mod.AcpRuntime.create_session, runtime_mod.AcpRuntime.load_session):
-        tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
-        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-        attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
-        assert (
-            "METHOD_SET_MODE" not in names
-        ), f"{method.__qualname__} sends set_mode itself instead of through the helper"
-        assert helper.__name__ in attrs, f"{method.__qualname__} does not activate via the helper"
+    for entry in (runtime_mod.AcpRuntime.create_session, runtime_mod.AcpRuntime.load_session):
+        on_path: set[str] = set()
+        pending = [entry.__name__]
+        while pending:
+            name = pending.pop()
+            fn = getattr(runtime_mod.AcpRuntime, name, None)
+            if name in on_path or not inspect.isfunction(fn):
+                continue
+            on_path.add(name)
+            pending.extend(_handoffs(fn))
+        assert helper.__name__ in on_path, f"{entry.__qualname__} does not activate via the helper"
+        senders_on_path = sorted(
+            n for n in on_path if _sends_the_mode(getattr(runtime_mod.AcpRuntime, n))
+        )
+        assert senders_on_path == [
+            helper.__name__
+        ], f"{entry.__qualname__} sends set_mode outside the helper: {senders_on_path}"
 
     # The whole module SENDS the method from exactly one place: the helper. The
     # transport's own method-name table (a dict literal mapping the constant to a

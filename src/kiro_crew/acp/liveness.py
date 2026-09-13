@@ -57,13 +57,50 @@ CPU-only (the evidence string says so — there is no per-process IO counter to
 read). What has no libproc equivalent stays exactly as absent: no socket
 evidence (so a flat model wait is UNKNOWN, never DEAD, and never tagged
 ``established_flat``), no wchan / blocked-fd evidence (so STUCK_INPUT is never
-claimed). The backend is injectable (``darwin_backend`` ctor arg), and the
+claimed — a live tracked child whose subtree is flat is UNKNOWN tagged
+``platform_limited`` instead of WORKING, so it is bounded rather than deferred
+forever). The backend is injectable (``darwin_backend`` ctor arg), and the
 Linux path is untouched by its presence.
 
 Every probe is wrapped: any error degrades the verdict to UNKNOWN — never to a
 kill. Each check is cheap (<10ms of file reads); two-sample deltas are computed
 across successive calls (the dispatch loop's queue-timeout ticks) rather than
 sleeping inline, gated on ``sample_min_secs`` between samples.
+
+Platform evidence matrix (what each host can attest; "absent" is DECLARED, not
+inferred — an absent row never produces DEAD or STUCK_INPUT, and never WORKING
+on liveness alone):
+
+======================  ==========================  ==========================  ==========================
+Evidence                Linux (``/proc``)           macOS (``libproc``)         Windows (no tree backend)
+======================  ==========================  ==========================  ==========================
+process tree            ``task/*/children``         ``proc_listchildpids``      absent → every shell/MCP
+                                                                                verdict UNKNOWN, tagged
+                                                                                ``platform_limited``
+shell child match/exit  cmdline + ``starttime``     argv/path + start time      absent
+subtree movement        CPU jiffies + IO bytes      CPU ns only (no IO)         root-pid CPU only
+                                                                                (model-wait probe)
+blocked on stdin        ``wchan`` + blocked fd →    absent → live+flat child    absent
+(STUCK_INPUT)           STUCK_INPUT                 is UNKNOWN tagged
+                                                    ``platform_limited``
+socket / LLM wait       ``/proc/net`` established   absent → flat model wait    absent
+(``established_flat``)  → UNKNOWN or DEAD           is plain UNKNOWN,
+                                                    never DEAD
+business progress       stream events, ``kirocrew/status`` (platform-independent; outranks all rows)
+======================  ==========================  ==========================  ==========================
+
+Two rules hold on every row. "Process alive" is never sufficient for an
+indefinite deferral: where the platform cannot tell a stuck child from a quiet
+one, the verdict is UNKNOWN with the :data:`EVIDENCE_PLATFORM_LIMITED` tag and
+the caller's no-progress budget (``tool_stall_suspect_secs``, hard-capped)
+bounds it. And "no output" alone never kills a long task that shows movement: a
+subtree whose CPU (or IO, where readable) moves across two samples is WORKING
+whatever it has printed. Where stdin-block evidence is absent, the W4
+(``waiting_input``) classification comes from the tool layer instead —
+:func:`classify_interactive_command` runs at dispatch and its verdict rides
+``ToolCallState.interactive_risk`` — so a prompt-shaped command that goes
+flat on macOS/Windows is classified as waiting for input at the (narrowed)
+budget rather than as an opaque stall.
 
 Attribution on a shared runtime: each handle probes only ITS OWN runtime pid,
 and the cmdline match keys shell evidence to THIS session's in-flight command.
@@ -76,6 +113,7 @@ an injectable ``now`` clock.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -124,6 +162,22 @@ EVIDENCE_SHELL_CHILD_ABSENT = "shell_child_absent"
 # ``client._prompt_loop``'s stale-turn gate, which reaped a live turn on its
 # first silent read because the priming answer landed past the cutoff.
 EVIDENCE_SAMPLING = "sampling"
+
+# Evidence prefix for a verdict the oracle could NOT sharpen because the
+# platform does not expose the evidence that would sharpen it: a live shell
+# child whose subtree is flat on darwin (libproc has no ``wchan`` / blocked-fd
+# view, so stdin-blocked and merely quiet are indistinguishable), or a shell /
+# MCP tool on a host with neither procfs nor a tree backend (Windows). The
+# verdict is UNKNOWN — never WORKING, because "the process is alive" is not
+# sufficient for an indefinite deferral, and never DEAD or STUCK_INPUT,
+# because the evidence for those is exactly what is absent. The caller keeps
+# the STANDARD no-progress budget on this tag (build-scale forbearance), and
+# narrows only when the dispatched command was classified interactive-risk
+# (see :func:`classify_interactive_command`), because that is the one case the
+# missing evidence would have answered. A tag, not a verdict: the declared
+# degradation must be visible in the evidence, the metric bucket and the spec —
+# a silent plain UNKNOWN would hide which platform limit produced it.
+EVIDENCE_PLATFORM_LIMITED = "platform_limited"
 
 # Tool names that are known to wrap a model call (e.g. kiro-cli's use_subagent
 # which starts a sub-agent turn inside the current tool call). The
@@ -197,7 +251,7 @@ def read_pid_stat(proc_root: str, pid: int) -> tuple[str, float, int] | None:
     rparen = raw.rfind(")")
     if rparen < 0:
         return None
-    fields = raw[rparen + 1:].split()
+    fields = raw[rparen + 1 :].split()
     # fields[0] is stat field 3 (state); utime=14, stime=15, starttime=22
     # (1-based stat numbering) -> indexes 11, 12, 19 here.
     try:
@@ -255,9 +309,7 @@ def children_interface_readable(proc_root: str, pid: int) -> bool:
         tids = os.listdir(f"{proc_root}/{pid}/task")
     except OSError:
         return False
-    return any(
-        _read_text(f"{proc_root}/{pid}/task/{tid}/children") is not None for tid in tids
-    )
+    return any(_read_text(f"{proc_root}/{pid}/task/{tid}/children") is not None for tid in tids)
 
 
 def read_cmdline(proc_root: str, pid: int) -> str:
@@ -330,7 +382,7 @@ def socket_inodes(proc_root: str, pid: int) -> set[str]:
         except OSError:
             continue
         if target.startswith("socket:["):
-            inodes.add(target[len("socket:["):-1])
+            inodes.add(target[len("socket:[") : -1])
     return inodes
 
 
@@ -583,6 +635,379 @@ def is_wait_tool(title: str) -> bool:
     return "wait" in [t for t in tokens if t]
 
 
+# ── Interactive-command classification (tool layer, pre-dispatch) ──
+#
+# The tool layer says BEFORE a shell command runs whether it is expected to
+# want a terminal: a pager, an editor, a REPL reading stdin, a package
+# manager's confirmation, a credential prompt. The classification is a
+# TABLE of known programs, not a rewrite of arbitrary flags, and it produces
+# three things and nothing else: a risk class, a non-interactive HINT for the
+# recovery nudge, and whether a replay could repeat side effects. It never
+# rewrites the command (the repo has no env layer on the ACP tool path — the
+# hook gate can only allow or deny), never answers a prompt, and is
+# deliberately conservative about ``side_effecting``: only a pager over a
+# read-only viewer is a safe replay; everything else is assumed to have
+# possibly acted (fail-closed, SPEC-ADDENDUM §6 / RFC §14.6).
+#
+# What the classification feeds: the watchdog narrows the platform-limited
+# UNKNOWN window to the ordinary silence budget when the command was
+# ``narrowing_eligible`` (a prompt-shaped program that the missing stdin
+# evidence would have caught), and a stall on such a command is classified
+# ``waiting_input`` instead of an opaque tool stall. A pager is advisory only:
+# under the tool the stdout is a pipe, so a pager degrades to ``cat`` on its
+# own, and the risk exists to name the hint, not to shorten anything.
+
+INTERACTIVE_NONE = "none"
+INTERACTIVE_PAGER = "pager"
+INTERACTIVE_EDITOR = "editor"
+INTERACTIVE_REPL = "repl"
+INTERACTIVE_CONFIRM = "confirm"
+INTERACTIVE_PROMPT = "prompt"
+
+#: Risk classes whose blocked read the STUCK_INPUT evidence would have caught
+#: on Linux; on a platform without that evidence they justify narrowing the
+#: no-progress window. A pager is excluded on purpose (see above).
+INTERACTIVE_NARROWING_RISKS: frozenset[str] = frozenset(
+    {INTERACTIVE_EDITOR, INTERACTIVE_REPL, INTERACTIVE_CONFIRM, INTERACTIVE_PROMPT}
+)
+
+_PAGER_PROGRAMS = frozenset({"less", "more", "most", "man"})
+_EDITOR_PROGRAMS = frozenset({"vi", "vim", "nvim", "nano", "pico", "emacs", "ed"})
+# Programs that read a script from stdin when given no file, expression or
+# command argument — an open, never-closed stdin pipe hangs them forever.
+_REPL_PROGRAMS = frozenset(
+    {
+        "python",
+        "python3",
+        "python2",
+        "node",
+        "irb",
+        "ruby",
+        "perl",
+        "psql",
+        "mysql",
+        "sqlite3",
+        "redis-cli",
+        "cat",
+        "read",
+    }
+)
+# Option prefixes that give a REPL program something to run other than stdin.
+_REPL_NONINTERACTIVE_OPTS = ("-c", "-e", "-f", "--command", "--eval", "--file", "-m", "-p")
+# Git subcommands that page when stdout is a terminal.
+_GIT_PAGED_SUBCOMMANDS = frozenset(
+    {"log", "diff", "show", "blame", "reflog", "branch", "tag", "grep", "stash", "shortlog"}
+)
+# Package-manager confirmations: program -> (subcommands that confirm, flags that skip it).
+_CONFIRM_TABLE: dict[str, tuple[frozenset[str], tuple[str, ...], str]] = {
+    "apt": (
+        frozenset({"install", "remove", "purge", "upgrade", "dist-upgrade", "autoremove"}),
+        ("-y", "--yes", "--assume-yes"),
+        "apt-get -y … (or DEBIAN_FRONTEND=noninteractive)",
+    ),
+    "apt-get": (
+        frozenset({"install", "remove", "purge", "upgrade", "dist-upgrade", "autoremove"}),
+        ("-y", "--yes", "--assume-yes"),
+        "apt-get -y … (or DEBIAN_FRONTEND=noninteractive)",
+    ),
+    "yum": (
+        frozenset({"install", "remove", "erase", "update", "upgrade"}),
+        ("-y", "--assumeyes"),
+        "yum -y …",
+    ),
+    "dnf": (
+        frozenset({"install", "remove", "erase", "update", "upgrade"}),
+        ("-y", "--assumeyes"),
+        "dnf -y …",
+    ),
+    "pacman": (frozenset({"-S", "-R", "-Syu", "-Su"}), ("--noconfirm",), "pacman --noconfirm …"),
+    "pip": (frozenset({"uninstall"}), ("-y", "--yes"), "pip uninstall -y …"),
+    "pip3": (frozenset({"uninstall"}), ("-y", "--yes"), "pip3 uninstall -y …"),
+    "conda": (frozenset({"install", "remove", "update", "create"}), ("-y", "--yes"), "conda -y …"),
+    "npm": (frozenset({"init", "create"}), ("-y", "--yes"), "npm init -y …"),
+    "yarn": (frozenset({"init", "create"}), ("-y", "--yes"), "yarn init -y …"),
+}
+# Credential / terminal prompts: program -> (flags that make it non-interactive, hint).
+_PROMPT_TABLE: dict[str, tuple[tuple[str, ...], str]] = {
+    "sudo": (
+        ("-n", "--non-interactive", "-S", "--stdin"),
+        "sudo -n … (fails instead of prompting)",
+    ),
+    "ssh": (("-o BatchMode=yes", "-oBatchMode=yes"), "ssh -o BatchMode=yes …"),
+    "scp": (("-o BatchMode=yes", "-oBatchMode=yes", "-B"), "scp -B …"),
+    "sftp": (("-o BatchMode=yes", "-oBatchMode=yes", "-b"), "sftp -b <batchfile> …"),
+    "gpg": (("--batch",), "gpg --batch …"),
+    "passwd": ((), "passwd cannot run non-interactively under the tool"),
+    "su": ((), "su cannot run non-interactively under the tool"),
+    "docker": (("--password-stdin", "-p", "--password"), "docker login --password-stdin"),
+    "gh": (("--with-token",), "gh auth login --with-token < token-file"),
+    "aws": ((), "set AWS_* env or --profile instead of `aws configure`"),
+}
+# Prompt-table programs whose prompt is bound to ONE subcommand.
+_PROMPT_SUBCOMMAND: dict[str, str] = {"docker": "login", "gh": "auth", "aws": "configure"}
+# Shell wrappers to skip when finding the program a segment runs.
+_WRAPPER_PROGRAMS = frozenset(
+    {"env", "nohup", "nice", "ionice", "time", "command", "exec", "stdbuf"}
+)
+_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[|;]|\n")
+
+
+@dataclass(frozen=True)
+class InteractiveClassification:
+    """What the tool layer expects a shell command to want from a terminal.
+
+    ``risk`` is one of the ``INTERACTIVE_*`` classes (``none`` when nothing in
+    the table matched). ``program`` names the matched program, ``reason`` says
+    which rule fired, ``hint`` is the non-interactive form the recovery nudge
+    may PROPOSE (never applied; retries stay inside the granted approval scope
+    and the original parameters). ``side_effecting`` is True unless the match
+    is a read-only viewer: a replay of anything else could repeat an effect.
+    """
+
+    risk: str = INTERACTIVE_NONE
+    program: str = ""
+    reason: str = ""
+    hint: str = ""
+    side_effecting: bool = True
+
+    @property
+    def narrowing_eligible(self) -> bool:
+        return self.risk in INTERACTIVE_NARROWING_RISKS
+
+    @property
+    def replay_safe(self) -> bool:
+        """A non-interactive retry cannot repeat a side effect of THIS command.
+
+        Only the classifier's own read-only verdict counts; the caller must
+        additionally confirm no output/exit was recorded for the call (a command
+        that already produced output may have already acted).
+        """
+        return self.risk != INTERACTIVE_NONE and not self.side_effecting
+
+
+NOT_INTERACTIVE = InteractiveClassification()
+
+
+def _command_text(command: str) -> str:
+    """The shell text of a cached tool input (JSON ``command`` field or raw)."""
+    text = command or ""
+    m = re.search(r"[\"']command[\"']\s*:\s*\"((?:[^\"\\]|\\.)*)\"", text)
+    if m:
+        try:
+            return str(json.loads(f'"{m.group(1)}"'))
+        except ValueError:
+            return m.group(1)
+    return text
+
+
+def _segment_program(tokens: list[str]) -> tuple[str, list[str]]:
+    """``(program, args)`` of one pipeline segment, skipping env and wrappers.
+
+    ``sudo`` is NOT skipped: it is itself a prompt-shaped program (returned as
+    the program so the prompt table sees it), unless it carries a flag that
+    makes it non-interactive, in which case the wrapped program is classified.
+    """
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        base = tok.rsplit("/", 1)[-1]
+        if "=" in base and not base.startswith("-"):
+            i += 1
+            continue
+        if base in _WRAPPER_PROGRAMS or base == "timeout":
+            # Skip the wrapper's own flags and any numeric argument
+            # (``nice -n 10``, ``timeout 30``, ``stdbuf -oL``).
+            i += 1
+            while i < len(tokens) and (tokens[i].startswith("-") or tokens[i][:1].isdigit()):
+                i += 1
+            continue
+        if base == "sudo":
+            rest = tokens[i + 1 :]
+            if any(_has_flag(rest, f) for f in _PROMPT_TABLE["sudo"][0]):
+                # Non-interactive sudo: classify what it wraps, skipping its flags.
+                j = i + 1
+                while j < len(tokens) and tokens[j].startswith("-"):
+                    j += 1
+                i = j
+                continue
+            return "sudo", rest
+        return base, tokens[i + 1 :]
+    return "", []
+
+
+def _has_flag(args: list[str], flag: str) -> bool:
+    if " " in flag:
+        joined = " ".join(args)
+        return flag in joined
+    for a in args:
+        if a == flag or a.startswith(flag + "="):
+            return True
+        # Bundled short flags: ``-ny`` contains ``-y``.
+        if len(flag) == 2 and flag.startswith("-") and a.startswith("-") and not a.startswith("--"):
+            if flag[1] in a[1:]:
+                return True
+    return False
+
+
+def _classify_segment(segment: str, *, last: bool) -> InteractiveClassification:
+    stripped = segment.strip()
+    if not stripped:
+        return NOT_INTERACTIVE
+    stdin_redirected = "<" in stripped
+    stdout_redirected = ">" in stripped or not last
+    tokens = [t for t in re.split(r"\s+", stripped) if t]
+    program, args = _segment_program(tokens)
+    if not program:
+        return NOT_INTERACTIVE
+    positional = [a for a in args if not a.startswith("-") and not a.startswith("<")]
+
+    if program in _EDITOR_PROGRAMS:
+        if program == "emacs" and (_has_flag(args, "--batch") or _has_flag(args, "-batch")):
+            return NOT_INTERACTIVE
+        return InteractiveClassification(
+            INTERACTIVE_EDITOR,
+            program,
+            "editor needs a terminal",
+            "write the file directly (heredoc / file tool) instead of opening an editor",
+            side_effecting=True,
+        )
+    if program in _PAGER_PROGRAMS:
+        if stdout_redirected:
+            return NOT_INTERACTIVE
+        return InteractiveClassification(
+            INTERACTIVE_PAGER,
+            program,
+            "pager on a terminal stdout",
+            f"{program} … | cat  (or PAGER=cat)",
+            side_effecting=False,
+        )
+    if program == "git" and args:
+        sub_i = 0
+        while sub_i < len(args) and args[sub_i].startswith("-"):
+            if args[sub_i] in ("-P", "--no-pager"):
+                return NOT_INTERACTIVE
+            sub_i += 1
+        sub = args[sub_i] if sub_i < len(args) else ""
+        rest = args[sub_i + 1 :]
+        if sub == "commit" and not any(
+            _has_flag(rest, f) for f in ("-m", "--message", "-F", "--file", "--no-edit", "-C", "-c")
+        ):
+            return InteractiveClassification(
+                INTERACTIVE_EDITOR,
+                "git commit",
+                "git commit without -m opens an editor",
+                "git commit -m '<message>' (or GIT_EDITOR=true)",
+                side_effecting=True,
+            )
+        if sub == "rebase" and (_has_flag(rest, "-i") or _has_flag(rest, "--interactive")):
+            return InteractiveClassification(
+                INTERACTIVE_EDITOR,
+                "git rebase -i",
+                "interactive rebase opens an editor",
+                "non-interactive rebase (no -i), or GIT_SEQUENCE_EDITOR=true with a scripted todo",
+                side_effecting=True,
+            )
+        if sub == "add" and (
+            _has_flag(rest, "-p") or _has_flag(rest, "--patch") or _has_flag(rest, "-i")
+        ):
+            return InteractiveClassification(
+                INTERACTIVE_PROMPT,
+                "git add -p",
+                "patch-mode add prompts per hunk",
+                "git add <paths> (no -p / -i)",
+                side_effecting=True,
+            )
+        if sub in _GIT_PAGED_SUBCOMMANDS and not stdout_redirected:
+            if sub == "stash" and rest[:1] != ["list"]:
+                return NOT_INTERACTIVE
+            return InteractiveClassification(
+                INTERACTIVE_PAGER,
+                f"git {sub}",
+                "git pages this subcommand on a terminal stdout",
+                f"git -P {sub} …  (or GIT_PAGER=cat)",
+                side_effecting=False,
+            )
+        return NOT_INTERACTIVE
+    if program in _CONFIRM_TABLE:
+        subs, skip_flags, hint = _CONFIRM_TABLE[program]
+        sub = next((a for a in args if not a.startswith("-") or program == "pacman"), "")
+        if sub in subs and not any(_has_flag(args, f) for f in skip_flags):
+            return InteractiveClassification(
+                INTERACTIVE_CONFIRM,
+                program,
+                f"{program} {sub} asks for confirmation",
+                hint,
+                side_effecting=True,
+            )
+        return NOT_INTERACTIVE
+    if program in _PROMPT_TABLE:
+        flags, hint = _PROMPT_TABLE[program]
+        bound_sub = _PROMPT_SUBCOMMAND.get(program)
+        if bound_sub is not None and (not positional or positional[0] != bound_sub):
+            return NOT_INTERACTIVE
+        if any(_has_flag(args, f) for f in flags):
+            return NOT_INTERACTIVE
+        # ``ssh host <remote command>`` is still prompt-shaped without
+        # BatchMode: the risk is the host-key / password prompt, not the
+        # remote work, and only BatchMode removes it.
+        return InteractiveClassification(
+            INTERACTIVE_PROMPT,
+            program,
+            f"{program} may prompt for a credential or confirmation",
+            hint,
+            side_effecting=True,
+        )
+    if program in _REPL_PROGRAMS:
+        if stdin_redirected or positional:
+            return NOT_INTERACTIVE
+        if any(a.startswith(_REPL_NONINTERACTIVE_OPTS) for a in args):
+            return NOT_INTERACTIVE
+        if program in ("cat", "read"):
+            hint = f"{program} <file>  (or </dev/null)"
+        else:
+            hint = f"{program} -c '<code>' or {program} <file>  (or </dev/null)"
+        return InteractiveClassification(
+            INTERACTIVE_REPL,
+            program,
+            f"{program} with no script reads stdin",
+            hint,
+            side_effecting=program not in ("cat", "read"),
+        )
+    return NOT_INTERACTIVE
+
+
+def classify_interactive_command(command: str) -> InteractiveClassification:
+    """Classify a cached shell-tool input against the interactive table.
+
+    The command is split into pipeline segments (``|``, ``;``, ``&&``,
+    ``||``, newline) and the FIRST segment with a non-``none`` risk wins,
+    except that a narrowing-eligible class outranks a pager found earlier: the
+    pager is advisory, the prompt is what would hang. Never raises — any
+    parse failure is ``NOT_INTERACTIVE`` (fail toward the standard window).
+    """
+    try:
+        text = _command_text(command)
+        segments = [s for s in _SEGMENT_SPLIT_RE.split(text) if s.strip()]
+        best = NOT_INTERACTIVE
+        for idx, seg in enumerate(segments):
+            found = _classify_segment(seg, last=idx == len(segments) - 1)
+            if found.risk == INTERACTIVE_NONE:
+                continue
+            if best.risk == INTERACTIVE_NONE or (
+                found.narrowing_eligible and not best.narrowing_eligible
+            ):
+                best = found
+        return best
+    except Exception:
+        logger.debug("interactive classification failed", exc_info=True)
+        return NOT_INTERACTIVE
+
+
+def non_interactive_hint(command: str) -> str:
+    """The recovery nudge's suggestion for *command*, or "" when none applies."""
+    return classify_interactive_command(command).hint
+
+
 @dataclass
 class ToolCallState:
     """Snapshot of the in-flight tool call the oracle reasons about."""
@@ -621,6 +1046,13 @@ class ToolCallState:
     # attribution: the narrowing applies ONLY when this matches a known
     # model-wrapping tool (see ``_MODEL_WRAPPING_TOOLS``).
     tool_name: str = ""
+    # Pre-dispatch verdict of :func:`classify_interactive_command` for a shell
+    # tool (one of the ``INTERACTIVE_*`` classes; ``none`` for a non-shell tool
+    # or an unmatched command). The oracle itself does not read it — it is
+    # carried here so the caller's window policy and its post-stall
+    # classification see the same value the dispatch computed, and so a
+    # detached consult never re-derives it from a different command string.
+    interactive_risk: str = INTERACTIVE_NONE
 
 
 class LivenessOracle:
@@ -706,6 +1138,16 @@ class LivenessOracle:
 
     # ── Public checks ──
 
+    def _tree_observable(self) -> bool:
+        """Whether this oracle has ANY view of the runtime's process tree.
+
+        True with a darwin backend or a readable ``proc_root``; False on a host
+        with neither (Windows today), where every tree-based probe reads
+        absence of evidence rather than a negative — see
+        :data:`EVIDENCE_PLATFORM_LIMITED`.
+        """
+        return self._darwin is not None or os.path.isdir(self._proc)
+
     def check_tool(self, runtime_pid: int | None, tool: ToolCallState) -> tuple[str, str]:
         """Verdict for an in-flight tool call. Never raises."""
         try:
@@ -747,6 +1189,15 @@ class LivenessOracle:
         moved, evidence = self._tree_movement(runtime_pid)
         if moved:
             return VERDICT_WORKING, f"mcp subtree active ({evidence})"
+        if evidence == "no readable counters" and not self._tree_observable():
+            # No tree at all on this platform: the flat reading is absence of
+            # evidence, and the caller's budget is the only bound. Tagged so
+            # the degradation is visible rather than a plain UNKNOWN.
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: mcp subtree unobservable "
+                "(no process-tree backend on this platform)",
+            )
         # LLM-turn shape inside a tool (e.g. a use_subagent call wrapping a
         # model turn in kiro-cli): the subtree is GENUINELY flat (a real
         # two-sample delta, not the baseline tick or unreadable counters) and
@@ -788,6 +1239,15 @@ class LivenessOracle:
     def _check_shell_child(self, runtime_pid: int, tool: ToolCallState) -> tuple[str, str]:
         if self._darwin is not None:
             return self._check_shell_child_darwin(self._darwin, runtime_pid, tool)
+        if not self._tree_observable():
+            # Neither procfs nor a tree backend (Windows today): no child can be
+            # matched, dated or watched for exit, so every shell verdict is
+            # UNKNOWN. Tagged, so the caller's budget — not "alive, therefore
+            # forever" — is visibly what bounds the call on this platform.
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: no process-tree backend on this platform",
+            )
         descendants = iter_descendants(self._proc, runtime_pid)
 
         # Exact exit detection once a child was matched.
@@ -926,6 +1386,8 @@ class LivenessOracle:
         """Verdict for the tracked shell child *pid* given whether it is still alive."""
         if alive:
             self._child_gone_ts = None
+            if self._darwin is not None:
+                return self._alive_child_verdict_platform_limited(pid)
             stuck = self._stuck_input_check(pid)
             if stuck:
                 return VERDICT_STUCK_INPUT, stuck
@@ -939,6 +1401,33 @@ class LivenessOracle:
                 f"shell child {pid} exited {gone_for:.0f}s ago, no result frame",
             )
         return VERDICT_UNKNOWN, f"shell child exited {gone_for:.0f}s ago (grace)"
+
+    def _alive_child_verdict_platform_limited(self, pid: int) -> tuple[str, str]:
+        """The live-tracked-child verdict where stdin-block evidence is absent.
+
+        On ``/proc`` a live child whose subtree is flat is split by ``wchan`` /
+        blocked-fd evidence into STUCK_INPUT (act now) and WORKING (a quiet
+        build). Without that evidence the two are one state, and the oracle
+        must not pick the forgiving reading for both: a WORKING verdict is
+        deferred with NO window, so a ``python`` REPL wedged on an open stdin
+        pipe would hold its slot for the turn's whole ceiling. So the split is
+        made on the one thing the platform CAN see — movement: a moving
+        subtree is WORKING (a quiet build with CPU or a child that just
+        exited still moves), and a genuinely flat one (a real two-sample
+        delta, not the baseline tick) is UNKNOWN tagged
+        :data:`EVIDENCE_PLATFORM_LIMITED`, which the caller bounds by the
+        no-progress budget. Never STUCK_INPUT: the evidence for that claim is
+        exactly what is missing, and inventing it would auto-answer nothing but
+        would name a cause the recovery nudge then acts on.
+        """
+        moved, evidence = self._tree_movement(pid, key_prefix="stuck")
+        if moved or evidence in (EVIDENCE_SAMPLING, "no readable counters"):
+            return VERDICT_WORKING, f"shell child {pid} alive ({evidence})"
+        return (
+            VERDICT_UNKNOWN,
+            f"{EVIDENCE_PLATFORM_LIMITED}: shell child {pid} alive, subtree flat "
+            f"({evidence}); stdin-block evidence unavailable on this platform",
+        )
 
     def _absent_child_verdict(self, live_descendants: int) -> tuple[str, str]:
         # The tree is observable and nothing in it was started for this tool, so

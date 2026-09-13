@@ -292,17 +292,23 @@ class PoolKey:
 class BackendUnavailable(RuntimeError):
     """Raised by :meth:`BackendPool.get_or_create` when the circuit breaker
     is OPEN for a server, i.e. the backend has been crashing on spawn. The
-    connection handler turns this into a clean ``rejected`` reply so the stub
-    falls back to a per-session exec instead of churning the spawn loop."""
+    connection handler turns this into a classed ``capacity`` reply carrying
+    ``retry_after_secs`` and NO fallback tag: a refusal about the host or the
+    moment never authorises the stub's own exec, because concurrent fallbacks are
+    the unaccounted fan-out the daemon exists to bound."""
 
 
 class PoolAtCapacity(RuntimeError):
     """Raised by :meth:`BackendPool.add` when the pool is full and no idle
     backend can be evicted to make room (every slot is actively attached).
-    The connection handler turns this into a ``rejected`` reply tagged
-    ``fallback: true`` so the stub runs the real backend directly (unpooled)
-    for that session instead of dropping the server's tools for the whole
-    session."""
+    The connection handler turns this into a ``rejected`` reply of class
+    ``capacity`` carrying ``retry_after_secs`` and NO ``fallback`` tag: this is
+    a property of the host, not of the target, so authorising the stub's own
+    unpooled exec would add a process to a host that just refused one -- and the
+    daemon cannot even charge that exec, because a stub predating
+    ``spawn_queue`` closes its socket before exec'ing. A stub that understands
+    the class answers kiro-cli a typed error and keeps serving; one that does
+    not takes its terminal exit and that session loses this server's tools."""
 
 
 # Default deadline (seconds) for draining backends during a blue-green
@@ -339,6 +345,44 @@ class _DrainingBackend:
     backend: "Backend"
     deadline: float  # monotonic deadline
     digest: str
+
+
+class ResidentSlot:
+    """One ``max_backends`` slot claimed BEFORE its backend is spawned.
+
+    A capacity check that runs only in ``add`` runs AFTER the spawn: under
+    pressure the daemon forks a process it then has to reap, and a stub learns
+    it is refused only after paying for the fork. A slot is taken by
+    :meth:`BackendPool.reserve_resident_slot` while nothing is spawned yet,
+    counts against capacity from that moment, and is CONSUMED by ``add`` when
+    the backend lands (the slot becomes the pool entry). ``release`` gives
+    it back on any failure between the two and is idempotent; releasing a
+    consumed slot is a no-op, since the entry owns the capacity then.
+    """
+
+    __slots__ = ("_pool", "digest", "_state")
+
+    def __init__(self, pool: "BackendPool", digest: str) -> None:
+        self._pool = pool
+        self.digest = digest
+        self._state = "pending"
+
+    @property
+    def pending(self) -> bool:
+        return self._state == "pending"
+
+    @property
+    def consumed(self) -> bool:
+        return self._state == "consumed"
+
+    def _consume(self) -> None:
+        self._state = "consumed"
+
+    def release(self) -> None:
+        if self._state != "pending":
+            return
+        self._state = "released"
+        self._pool._release_resident_slot(self)
 
 
 class BackendPool:
@@ -381,6 +425,11 @@ class BackendPool:
         # the same key must not collapse, or one caller's unreserve would drop
         # another's eviction protection. A digest is reserved iff count > 0.
         self._reserved_digests: dict[str, int] = {}
+        # Resident slots claimed for spawns not yet landed in ``_backends``,
+        # keyed by digest. Counted as occupied by every capacity check so a
+        # burst of distinct keys cannot all pass ``add``'s door at once; at most
+        # one per digest because the per-key spawn lock serialises spawns.
+        self._resident_pending: dict[str, ResidentSlot] = {}
         # Strong refs to fire-and-forget LRU-eviction shutdown tasks. The
         # event loop keeps only a weak reference to a bare create_task, so
         # without this an evicted backend's shutdown task can be GC'd before
@@ -436,6 +485,7 @@ class BackendPool:
             "spawns": self._spawns,
             "capacity_rejects": self._capacity_rejects,
             "draining": len(self._draining),
+            "resident_pending": len(self._resident_pending),
             # Reported separately because these sit outside ``max_backends`` by
             # design: an operator reading "size" against the budget would
             # otherwise have no way to see the per-connection processes at all.
@@ -540,9 +590,10 @@ class BackendPool:
         evicted via LRU policy (lowest ``last_used_at``) before insertion.
         A backend with active refcount is NOT a valid eviction target —
         :meth:`_pick_lru_idle_locked` returns ``None`` if every entry is
-        in use, and ``add`` then raises :class:`PoolAtCapacity`. The spawn
-        path in :meth:`get_or_create` translates that into a clean
-        fallback-eligible rejection so the stub runs the backend unpooled.
+        in use, and ``add`` then raises :class:`PoolAtCapacity`. The spawn path
+        in :meth:`get_or_create` translates that into a classed ``capacity``
+        rejection the stub must WAIT on -- never an authorisation to run the
+        backend unpooled, which would put the launch outside every budget.
 
         ``spawn_epoch`` is the :attr:`_drain_epoch` value observed by the
         caller immediately before it started spawning. If a blue-green
@@ -562,7 +613,12 @@ class BackendPool:
                 raise RuntimeError(
                     f"pool key collision: {key.human_readable()} already has a backend"
                 )
-            if len(self._backends) >= self._max_backends:
+            slot = self._resident_pending.pop(digest, None)
+            if slot is not None:
+                # The capacity check already ran when the slot was reserved,
+                # before the spawn; the slot now becomes the entry.
+                slot._consume()
+            elif len(self._backends) + len(self._resident_pending) >= self._max_backends:
                 evicted = await self._evict_lru_locked()
                 if evicted is None:
                     self._capacity_rejects += 1
@@ -652,11 +708,12 @@ class BackendPool:
                     if stale is not None:
                         await stale.shutdown(timeout=2.0)
 
-                # Circuit breaker: refuse to respawn a server
-                # that is crash-looping. The stub falls back to a per-session
-                # exec instead of the gateway churning spawns against a broken
-                # binary. Checked AFTER recording the stale death above so the
-                # death that trips the breaker blocks this very respawn.
+                # Circuit breaker: refuse to respawn a server that is
+                # crash-looping, so the gateway stops churning spawns against a
+                # broken binary. The stub is told to retry, never to exec its own:
+                # a breaker-open answer is capacity-classed. Checked AFTER
+                # recording the stale death above so the death that trips the
+                # breaker blocks this very respawn.
                 if self._breaker is not None and not self._breaker.allow(key.stable_hash()):
                     raise BackendUnavailable(
                         f"circuit breaker OPEN for server {key.server_name!r}; "
@@ -674,9 +731,9 @@ class BackendPool:
                 # that spawn admit a stale-credential backend into the active pool
                 # AFTER the drain completed, defeating revocation. If the retries
                 # are exhausted (a persistent rotation storm), we discard the last
-                # backend and raise BackendUnavailable — a fallback-eligible
-                # failure the stub degrades to an unpooled per-session exec — never
-                # pooling a possibly-stale backend.
+                # backend and raise BackendUnavailable — a capacity-classed refusal
+                # the stub retries against, never an unaccounted per-session exec —
+                # rather than pooling a possibly-stale backend.
                 for _attempt in range(_MAX_SPAWN_DRAIN_RETRIES + 1):
                     spawn_epoch = self._drain_epoch
                     backend = await spawn()
@@ -718,7 +775,7 @@ class BackendPool:
                     return backend
                 # Retries exhausted under a persistent rotation storm: the last
                 # backend was already discarded by the final _DrainedDuringSpawn
-                # branch. Reject fallback-eligibly rather than pooling a stale one.
+                # branch. Refuse as capacity rather than pooling a stale one.
                 raise BackendUnavailable(
                     f"repeated blue-green cutover during spawn of "
                     f"{key.server_name!r}; refusing to pool a possibly-stale "
@@ -732,6 +789,13 @@ class BackendPool:
             # Only reap when the lock is idle (no holder, no queued waiter): a
             # queued waiter proceeds to spawn (or reaps it on its own failure).
             async with self._lock:
+                if digest not in self._backends:
+                    # A slot claimed for this spawn that never landed (retries
+                    # exhausted, spawn raised past the closure's own release)
+                    # would otherwise hold a capacity unit forever.
+                    leftover = self._resident_pending.get(digest)
+                    if leftover is not None and _lock_idle(lock):
+                        leftover.release()
                 if (
                     digest not in self._backends
                     and self._spawn_locks.get(digest) is lock
@@ -836,6 +900,48 @@ class BackendPool:
         """
         async with self._lock:
             return self._exclusive.pop(stub_uuid, None)
+
+    async def reserve_resident_slot(self, key: PoolKey) -> ResidentSlot:
+        """Claim a ``max_backends`` slot for ``key`` BEFORE spawning into it.
+
+        Raises :class:`PoolAtCapacity` when the pool is full of attached or
+        already-claimed entries and no idle one can be LRU-evicted -- with
+        nothing spawned, so the caller has nothing to reap. Idempotent per
+        digest while a claim is pending: the per-key spawn lock means one spawn
+        per digest is in flight, and a blue-green retry inside it reuses the
+        same slot. A digest that already has a live entry gets a consumed
+        (no-op) slot, since ``get_or_create`` reuses that entry instead.
+        """
+        digest = key.stable_hash()
+        async with self._lock:
+            pending = self._resident_pending.get(digest)
+            if pending is not None:
+                return pending
+            slot = ResidentSlot(self, digest)
+            if digest in self._backends:
+                slot._consume()
+                return slot
+            if len(self._backends) + len(self._resident_pending) >= self._max_backends:
+                evicted = await self._evict_lru_locked()
+                if evicted is None:
+                    self._capacity_rejects += 1
+                    raise PoolAtCapacity(
+                        f"pool at capacity ({self._max_backends}) and no idle "
+                        f"backend to evict for {key.human_readable()}"
+                    )
+            self._resident_pending[digest] = slot
+            return slot
+
+    def _release_resident_slot(self, slot: ResidentSlot) -> None:
+        # Synchronous: a dict pop on the single event loop needs no lock, and
+        # the release runs from ``finally`` blocks that must not yield.
+        if self._resident_pending.get(slot.digest) is slot:
+            self._resident_pending.pop(slot.digest, None)
+
+    @property
+    def resident_pending(self) -> int:
+        """Slots claimed for spawns that have not landed yet."""
+        return len(self._resident_pending)
 
     def reserve(self, key: PoolKey) -> None:
         """Mark ``key`` as in-flight (handed out, not yet attached).
@@ -1156,6 +1262,7 @@ class BackendPool:
             self._spawn_locks.clear()
             self._draining.clear()
             self._exclusive.clear()
+            self._resident_pending.clear()
             pending = list(self._shutdown_tasks)
         # Shutdowns are independent: fan out + join with gather.
         # ``return_exceptions=True`` keeps one slow/bad backend from

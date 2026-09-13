@@ -516,7 +516,11 @@ class TestChannelCredentialIsolation:
 # launcher source rather than a copy, so they cannot drift from what the child
 # actually executes.
 _EXPOSE_BLOCK_START = "expose_data = {}"
-_EXPOSE_BLOCK_END = "# Bind-mount empty dirs over credential paths"
+#: The private-window staging sits between the pre-read and the credential
+#: loop, so the end marker is the staging comment: ending at the credential
+#: loop instead would pull staging into a slice named for the pre-read and
+#: exec it with ``PRIVATE_DIRS`` undefined.
+_EXPOSE_BLOCK_END = "# Private windows: a directory INSIDE a hidden tree that stays"
 #: Structural landmarks the slice must contain, so an edit that moves either
 #: marker and shrinks the block fails HERE rather than leaving the assertions
 #: below vacuously green against a fragment that does not hold the read.

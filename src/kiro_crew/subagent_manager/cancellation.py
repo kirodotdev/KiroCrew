@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 from ._component import ManagerComponent
 
@@ -204,11 +204,53 @@ class CancellationCoordinator(ManagerComponent):
         queued ``SubagentInfo`` without registering it in ``_agents``. Returning
         the entry lets cancellation publish the same neutral stopped terminal
         outcome as a run that had already started, including batch accounting.
+
+        A ``_resume_id`` entry is NOT such a spawn and is never matched here.
+        ``request_resume`` files one for a run that is already RESIDENT (runtime
+        alive, lane slot yielded) under the run's own ``_preassigned_id``, so an
+        id match alone cannot tell the two apart — and treating a resume entry as
+        an unstarted spawn hands a live run to ``_report_queued_stop``, whose
+        synthetic ``queued=True`` record replaces the real ``_agents`` row: the
+        coroutine keeps executing, the parent is told the work never started, and
+        the record ``resume_grant`` needs to hand the slot back is gone. Skipping
+        it leaves the run to the paths that own a live one — ``cancel``'s reap
+        for a resident record, the store row for a claimable one, which
+        ``taskq_cancel_queued`` above already returned.
         """
+        # The persisted row is cancelled BEFORE the window entry is dropped, so a
+        # drain racing this cannot claim it; a cancel that did not LAND is
+        # handled below rather than assumed. A row outside the window is cancelled here as well and its
+        # params come back from the store so the queued-stop report is whole.
+        admission = self._manager._admission
+        stored = admission.taskq_cancel_queued(agent_id)
         for index, params in enumerate(self._manager._queue):
-            if str(params.get("_preassigned_id") or "") != agent_id:
+            if params.get("_resume_id") or str(params.get("_preassigned_id") or "") != agent_id:
                 continue
             dropped = self._manager._queue.pop(index)
+            store = admission.taskq_store()
+            if stored is None and store is not None:
+                # A window entry always HAS a row while a store is attached -- a
+                # spawn whose accept the store refused is never queued -- so
+                # nothing cancelled here means the cancel did not LAND: the store
+                # was unreachable, or the row left the unstarted states between
+                # the read and the write. The caller publishes a stop either way,
+                # and a row left `queued` is dispatchable by the next
+                # incarnation, which would run work the user was told had
+                # stopped. So the refusal is audible (the shape `taskq_settle`
+                # uses for a refused `finish`) and re-posted to the writer
+                # thread, where a store that answers again cancels the row;
+                # `taskq_cancel_queued` re-reads the state under its own
+                # transaction, so a row that legitimately started is left alone.
+                logger.warning(
+                    "Queued stop for %s: no store row was cancelled — re-posting the cancel",
+                    agent_id,
+                )
+                admission._post_store_write(
+                    store,
+                    f"queued cancel retry {agent_id}",
+                    admission.taskq_cancel_queued,
+                    agent_id,
+                )
             try:
                 self._manager._emit_queue_depth(
                     str(dropped.get("parent_session_key", "")),
@@ -217,7 +259,7 @@ class CancellationCoordinator(ManagerComponent):
             except Exception:
                 logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
             return dropped
-        return None
+        return stored
 
     def _report_queued_stop_impl(self, params: dict) -> None:
         """Publish a neutral terminal record for work stopped before startup."""
@@ -260,20 +302,35 @@ class CancellationCoordinator(ManagerComponent):
         """
         if not parent_session_key:
             return (0, 0)
-        queued_ids = [
-            str(params.get("_preassigned_id") or "")
-            for params in self._manager._queue
-            if params.get("parent_session_key", "") == parent_session_key
-        ]
-        queued_stopped = 0
-        for agent_id in queued_ids:
-            if not agent_id:
-                continue
-            queued = self._manager._unqueue(agent_id)
-            if queued is None:
-                continue
-            self._manager._report_queued_stop(queued)
-            queued_stopped += 1
+        # UNSTARTED entries only, the same class every other ``_queue`` scan
+        # separates out (the pump's grant loop, the refill's lane census, the
+        # eviction, the reserve): a ``_resume_id`` entry is a RESIDENT run asking
+        # for its lane slot back, filed under its own ``_preassigned_id`` and
+        # carrying its own ``parent_session_key``, so both terms of this match
+        # hit it. It is stopped by the running sweep below — where its intact
+        # ``_agents`` record still is — instead of through the queued-stop path,
+        # which would publish a synthetic "never started" terminal over a live
+        # run. Leaving the entry in the window does not weaken the pre-await
+        # drain this method promises: a resume STARTS nothing (the run is already
+        # resident), so a pump pass during the store read below can only hand a
+        # slot back to a coroutine the running sweep then reaps, and a pass after
+        # the sweep meets a ``user_stopped`` run that ``resume_reserve`` refuses.
+        queued_stopped = self._stop_queued(
+            [
+                str(params.get("_preassigned_id") or "")
+                for params in self._manager._queue
+                if params.get("parent_session_key", "") == parent_session_key
+                and not params.get("_resume_id")
+            ]
+        )
+        # This parent's rows waiting outside the in-memory window. The read is
+        # a store read, so it comes AFTER the in-memory queue is drained: its
+        # await is the first suspension point this method has, and one taken
+        # before the drain would let a stagger timer start a queued agent. A row
+        # started from disk during it is caught by the running sweep below.
+        queued_stopped += self._stop_queued(
+            await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
+        )
 
         running_ids = [
             info.id
@@ -289,6 +346,23 @@ class CancellationCoordinator(ManagerComponent):
         )
         running_stopped = sum(result is True for result in results)
         return (running_stopped, queued_stopped)
+
+    def _stop_queued(self, agent_ids: Sequence[str]) -> int:
+        """Unqueue each id that is still waiting and report it stopped; count them.
+
+        A SEQUENCE, not an iterable: ``_unqueue`` mutates ``_queue``, so a lazy
+        generator over it would stop short of the ids it was asked to remove.
+        """
+        stopped = 0
+        for agent_id in agent_ids:
+            if not agent_id:
+                continue
+            queued = self._manager._unqueue(agent_id)
+            if queued is None:
+                continue
+            self._manager._report_queued_stop(queued)
+            stopped += 1
+        return stopped
 
     async def cancel_impl(self, agent_id: str) -> bool:
         """Cancel a single running subagent. Returns True if found and cancelled.

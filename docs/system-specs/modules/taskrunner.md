@@ -371,8 +371,165 @@ class Project:
 - `cancel(task_id)` cancels specific task; `cancel()` cancels all
 - Completed cron runs are pruned on new start; other completed runs retain bounded history.
 - `_tasks` cleaned in `finally` block (no leaks)
-- `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run.
+- `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run. With a task admission attached (below) the guard is skipped: the lane meters the steps, so an over-limit run queues instead of being refused.
 - Replanned steps also reset sessions after execution (no leaks in `_try_replan`)
+
+## Durable task queue (`taskq.adapters.runner`)
+
+`attach_task_admission(admission)` routes the runner through the shared task
+store (`docs/system-specs/modules/taskq.md`, § Runner adapters). `None` (the
+default, and every test that does not attach one) keeps the legacy behaviour.
+With an admission attached:
+
+| Unit | Row | Lifecycle |
+|---|---|---|
+| a run | `taskrunner:<task_id>` (`kind=taskrunner_step`, `params={task_id, name, spec_path, steps, safe_retry}`) | `_taskq_begin_run` (an `async def`: `accept_async` + `claim_only_async` + `running_async`, every store touch on the writer thread) accepts + claims it with no lane slot -- the run executes nothing itself -- right before `_execute_tasks`, so `safe_retry = bool(run.branch_name)` is known. A refused `starting → running` mark on this row is answered by the row's STATE, not by the refusal (below); `_taskq_end_run` (also `async def`) settles it from the final status: `completed → done`, `failed → failed`, `paused` / `cancelled → cancelled` (an operator decision ends this execution; a resume is a NEW row, so the adopter never restarts what the operator stopped) |
+| a step | `taskrunner:<task_id>:task<N>` (child of the run row, `params={task_id, index, title, safe_retry}`, `scope_ref={auto_approve, agent}`) | `_taskq_admit_step` accepts it through `accept_async` (write-before-ack; a refused write fails the step closed, it never runs off the record) and `await admission.admit(...)` -- memory-pressure DEFER, a lane slot by effective cap, `claim` under a lease -- BEFORE the step opens a session; `_execute_single_task` marks it `running` and settles it `done` / `failed` / `cancelled` — once the step is RUNNING. That mark is a FENCE, not a notification: `admit` committed `starting` one statement earlier, so a refusal is a newer owner or a store outage, and the step body does not run under it (the row is failed and the step returns False) because a row left `starting` reaches no WAITING state and could not persist the first dependency or input wait the turn needed. A cancel that lands earlier, while `admit` is still waiting for a lane slot (a run cancel, a pause, the global timeout), is settled `cancelled` by the ADMISSION instead: `_execute_single_task` catches only `RunnerTaskCancelled` there, and a `queued` row left behind would never be claimed again because `taskrunner_step` has no dispatcher (`taskq.md` § Runner adapters). The normal arms await (`done_async` / `fail_async` / `cancel_async`); the `except CancelledError` / `except BaseException` arms use the SYNCHRONOUS write, because an `await` there can be interrupted before the write is submitted and a dropped terminal write leaves the row active for the next boot's reconciler |
+
+A step re-run after a failure (retry, replan, resume) gets `~N` suffixed ids so the
+earlier outcome stays on the record. The lane is `system` for a run whose
+`source` is `cron` or `hook`, else the session the run was started from
+(`_run_session_keys`).
+
+The run row's slotlessness is what keeps this parent/child pair off the lane's
+self-block fence: a step is a DESCENDANT of the run row, and the lane refuses a
+descendant whose own ancestry holds every slot ([taskq.md](taskq.md) § A
+descendant is never parked behind its own ancestor). A container row that took a
+slot would be exactly that ancestor, so its steps would be refused instead of
+queued at cap 1.
+
+**The container row's `running` mark is read for the row's STATE, never for the
+refusal itself** (`_taskq_begin_run` → `_taskq_row_state`), and that is the one
+place this row is deliberately unlike a step row. A step fails closed on the same
+`False` (the cell above, and `workflows/agent_pool.py` on the workflow path)
+because it holds a lane slot and must reach a WAITING state, which `starting`
+cannot; this row holds no slot and enters no wait, and `TRANSITIONS[STARTING]`
+carries every active terminal, so `_taskq_end_run`'s write still commits from
+`starting` -- measured: a `database is locked` on that one write leaves the row
+`starting` for the whole run, the run completes, the terminal write commits
+`done`, and the next boot's reconcile examines nothing. What the lost mark costs
+is the `{phase, steps}` progress marker. Failing the run over it would also be
+incoherent with the same function's other arms, which run the plan with NO
+container row at all when the accept or the claim does not commit. A TERMINAL
+state is the case that does end the start (`RunnerTaskCancelled`, no handle kept,
+so the run's exit path writes nothing over the outcome): the unfenced
+`unknown_side_effect` a second incarnation's `reconcile_on_boot` writes for an
+active row it does not lease can land in exactly that window, and a plan must
+never execute under a row that already has an outcome. An unreadable state reads
+the same as an absent one -- a read that could not be taken is never why an
+accepted run is refused. Pinned by
+`test_a_run_whose_container_row_already_ended_does_not_start` and
+`test_a_lost_run_row_mark_keeps_the_run_and_still_settles_the_row`.
+
+Inside a step (`task_executor.execute_task(..., taskq=handle)`):
+
+- **Stop reason.** `EVENT_COMPLETE` goes through `classify_stop_reason`; a
+  non-success raises `_TurnNotCompleted` inside the attempt. `stalled` /
+  `recovering` consult the recovery ladder's L3 rung
+  (`admission.decide_recovery`, or `default_ladder()` when no ladder is
+  attached): a `retry` decision writes the row `running → recovering` with
+  `next_run_at = now + delay`,
+  releases the lane slot, waits `_recovery_delay(delay)` (a module seam), then
+  `reclaim`s the row under a NEW generation -- the interrupted turn's late
+  writes are fenced as `stale_result` -- and re-runs the turn with a prompt that
+  names the stall. `execute_task` is a coroutine on the gateway loop, so every
+  handle write it makes goes through an `*_async` seam (`recovering_async`,
+  `running_async`) and every answer read through `recorded_answer_async` /
+  `consume_answer_async`: the DB half runs on the store's writer thread, the
+  slot release and the in-memory bookkeeping stay on the loop. An exhausted rung ends the step FAILED with `task.result`
+  (the partial) kept and `task.error` saying so. `cancelled` and a
+  non-retryable `failed` end the step FAILED at once, partial kept; a retryable
+  `error:` goes through the ordinary bounded retry ladder. Without a `taskq`
+  handle the stall goes through that same ladder immediately (no delay), which
+  is what `test_subagent_stop_reason_consistency.py` pins.
+- **A stall and a logic failure spend DIFFERENT budgets, because they are
+  different in kind.** A logic retry is a fresh attempt at work that WAS
+  attempted and came back wrong; an in-place stall recovery is the same attempt
+  continuing -- the backend went away, the work has not finished being attempted
+  once. `MAX_RETRIES` therefore bounds the logic failures only: each approved
+  stall recovery raises the loop's ceiling by its own turn
+  (`attempt < MAX_RETRIES + stop_recoveries`) rather than spending one, so two
+  ordinary failures can no longer consume the budget a later stall needs, and
+  three stalls can no longer take the retries an ordinary failure after them
+  needs. `attempt` stays the TURN ordinal, which is what keeps the re-run's
+  prompt naming the stall and continuing from the partial instead of re-running
+  bare.
+- **The ceiling on in-place re-runs is the step's own, not the ladder's.** The
+  ladder's L3 count is per-unit and DECAYS after `cooldown_secs`, so a stall
+  once per cooldown is approved for ever; `STOP_RECOVERY_MAX_RETRIES` -- the
+  same in-place budget the chat slot's `_tool_stall_retries` and the sub-agent's
+  `_stop_recovery_used` spend -- bounds one step's re-runs whatever the ladder
+  forgets. Both bounds apply: the ladder refuses first in one incident,
+  the ceiling holds when its count has decayed.
+- **Every durable write on the recovery path is a PRECONDITION, and its refusal
+  is an in-band step outcome.** A refused `recovering` write leaves the row
+  `running`, which the re-claim would find under another owner and RAISE on --
+  unwinding an accepted run over one step -- so the step ends FAILED with its
+  partial instead. Same for a `reclaim` that raises (`RunnerTaskCancelled` from
+  an operator cancel during the backoff, `RunnerAdmissionRefused` from the
+  store) and for a refused `running` mark after the re-claim: `starting` reaches
+  no WAITING state, so a turn re-run under one could not persist the first
+  dependency or input wait it needed, and the mark may have been fenced by a
+  newer owner. Pinned by `test_task_executor_stall_recovery.py`, one case per
+  refusal.
+- **A refused ADMISSION is the same kind of outcome: a failed step, in band.**
+  `_execute_single_task` catches `RunnerAdmissionRefused` beside
+  `RunnerTaskCancelled` and returns False, so the step is FAILED with the
+  refusal named and the run reaches `_try_replan` — the runner's whole answer to
+  a step that did not land. Every refusal that gets there is covered by the one
+  arm: the accept the store would not take, a `claim` that hit an outage, the
+  fenced `starting` write, and `RunnerLaneSelfBlocked` (a
+  `RunnerAdmissionRefused` subclass) when the lane is held end to end by the
+  asking row's own ancestors. It has to be caught HERE and not in one branch of
+  `_execute_tasks`: the parallel branch's `gather(return_exceptions=True)`
+  absorbs a raise while the sequential branch has no such net, so a refusal
+  there would unwind the accepted run past the replan — and even in the parallel
+  branch the absorbed exception left the step `pending` with no error to show.
+  `task.error` has ONE writer for this outcome (`_taskq_admit_step` re-raises
+  without writing it), so an operator never reads the message the other one
+  overwrote. Pinned for both branches by
+  `test_taskrunner_taskq.py::test_a_refused_admission_fails_the_step_and_reaches_replan`.
+- **Dependency signal.** An exception `taskq.dependency.classify_exception`
+  recognises (or one carrying `dependency_signal`) parks the row in
+  `waiting_dependency` (`admission.yield_dependency`), slot released, the
+  session resident; the coordinator's wake (or `admission.tick()` at
+  `retry_at`) re-admits it through capacity and re-runs the turn without
+  spending an attempt. Terminal signals (auth, permanent parameter error) and
+  more than `DEFAULT_MAX_ATTEMPTS` waits fail the step.
+- **Input wait.** The runner adapter's `waiting_input` / `answer_input` pair
+  (`taskq/adapters/runner.py`) parks a row with its lane slot released and
+  wakes it with the operator's answer; a step re-dispatched after a crash
+  replays a persisted, not-yet-consumed answer
+  (`admission.recorded_answer_async`) under `## Operator input` and marks it
+  consumed (`consume_answer_async`) only once the step has durably completed. The controlled terminal whose per-handle question would
+  drive a TaskRunner step into this wait ships in a follow-up PR; until then
+  the executor never enters `waiting_input` on its own. Never auto-answered.
+
+### Adoption after a restart
+
+The boot reconciler has no adapter for `taskrunner_step`, so it only drops the
+dead lease and stamps `awaiting_adapter`; `legacy import` rows arrive
+`recovering`. `attach_task_admission` schedules one `adopt_task_rows()` sweep
+(a concurrent explicit call joins it rather than adopting twice), which runs
+`taskq.adapters.runner.adopt_orphaned_rows`. The sweep is armed only when the
+admission ALREADY has a store: the gateway attaches once while the manager's
+store may still be opening off the loop (so both consumers can refuse typed
+from the moment they serve) and again at the store-ready boundary, and the
+store getter is live — an attach that armed a sweep with no store would adopt
+on the loop pass after the store landed, concurrently with the sweep the second
+attach arms, and two sweeps over one set of rows can settle a row the other has
+already handed back to its run:
+
+| Row | Verdict |
+|---|---|
+| run row, `is_safe_retry` (`params.safe_retry`, i.e. the run had a git worktree, or class `none` / `idempotent_key`) | `recovering`, then `execute_plan(task_id)` -- only steps that did not PASS re-run (`runs.json` / `progress.md` is the checkpoint) |
+| run row, not safe (legacy import, no worktree) | `unknown_side_effect`; the run stays `paused`, a "Run not auto-resumed" notice tells the operator to review and resume by hand |
+| step row, safe | `failed` ("interrupted by a gateway restart; re-run on resume") -- the resume creates a fresh `~N` row for it |
+| step row, not safe | `unknown_side_effect` |
+| any row still `queued` (accepted, never claimed: the crash landed while it waited for a lane slot) whose `params.accepted_by` is a DEAD incarnation | `cancelled` ("never started") -- nothing ran under it, and a resume re-accepts a new row, so leaving it claimable would only park it forever: `taskrunner_step` has no dispatcher |
+| still leased by this incarnation, or `queued` under THIS incarnation (its owner is parked in a live `admit`) | skipped |
+
+Pinned by `test/test_taskrunner_taskq.py` and `test/test_taskq_runner_adapter.py`.
 
 ## Pause / Resume
 
@@ -390,6 +547,7 @@ On gateway restart, any task with `status == "running"` is automatically transit
 - Prevents zombie tasks that appear running but have no backing asyncio task
 - User can resume manually from dashboard
 - Persisted via `runs.json` — status survives restart
+- With a task admission attached, a git-coordinated run is resumed automatically from its checkpoint by the adoption sweep (§ Durable task queue); one without a worktree stays paused for the user
 
 ### Force Approval Gates
 

@@ -19491,8 +19491,13 @@ class TestRunChatModelFallback:
         async def _stop_during_sleep(_secs):
             # Simulate the user pressing Stop while the backoff sleeps: the
             # monotonic generation increments even though the stop resolves
-            # back to "idle" before the sleep returns.
-            slot._stop_generation = getattr(slot, "_stop_generation", 0) + 1
+            # back to "idle" before the sleep returns. Scoped to the backoff this
+            # test is about, because the same-model arm re-reads the stop signals
+            # after ITS wait too: an unscoped press lands on the FIRST backoff,
+            # drops the replay there, and the fallback arm this test measures is
+            # then never reached at all.
+            if slot._fallback_walked:
+                slot._stop_generation = getattr(slot, "_stop_generation", 0) + 1
 
         with patch("asyncio.sleep", new=AsyncMock(side_effect=_stop_during_sleep)):
             await _run_chat(state, slot, "hello")

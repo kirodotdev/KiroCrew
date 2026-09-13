@@ -113,6 +113,30 @@ such as `.kiro/crew` that may also occur in `tmp_path`'s ancestors. Parameterize
 path-repair tests with a same-named ancestor directory so this stays independent
 of the runner's temporary directory.
 
+**A shared append is not atomic off POSIX, so N processes must not observe through
+one file.** `open(path, "a")` is race-free on POSIX because `O_APPEND` makes the
+seek-to-end and the write one kernel step; the Windows CRT emulates append with a
+separate seek and write, so two processes that reach the end offset together write
+over each other and one line is simply GONE. A harness that counts lines to observe
+"how many backends launched" or "how many handshakes completed" then reports a number
+short of the truth, and the test reads it as the behaviour being broken —
+`test_mcp_gateway_pool_integ` counted 11 of 12 windows on Windows while all 12 stubs
+had in fact been answered. The clustered writes are the ones that collide, and a
+coarse clock creates them: several processes sleeping the same delay wake on the same
+15.6 ms tick. Fix by removing the shared file, not by locking it — one file per
+writer (`fake_pool_mcp_server._record` writes `<log>.d/<pid>.txt`) and a reader that
+concatenates them, which needs no cross-platform locking primitive and keeps the
+observation closed-box.
+
+**Ship that reader beside the writer and have every consumer import it**
+(`fake_pool_mcp_server.recorded`). The layout is the harness's contract, not one
+test's private detail, and a consumer that opens the log path itself reads an empty
+history — which is indistinguishable from "the subject recorded nothing", so it stays
+silent until some assertion happens to expect a non-empty one.
+`test_mcp_gateway_pool_integ.test_every_consumer_of_the_fake_reads_it_through_recorded`
+pins the import for every module that spawns the fake, because co-location alone does
+not stop a second consumer from hand-rolling the read.
+
 ### Links: use the conftest helpers, do not skip on Windows
 
 Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
@@ -2170,6 +2194,107 @@ Two more shapes, both MEASURED in a 5x full-suite run on Windows:
   assertion passing vacuously because a stamp aged out. Reading the clock inside the
   test instead is the weaker fix — it shrinks the gap to microseconds without closing it.
 
+More shapes this class hides, all Windows-only and all green on every Linux run:
+
+- **A state written in two phases across a thread boundary.** Waiting on ONE half is
+  not waiting on the state. A dependency park registers its waiter on the store's
+  writer thread and yields the lane slot in the continuation the thread's wake
+  schedules, so a barrier that stops at `len(coordinator.waiters(scope)) == 2` samples
+  `_running_count` mid-park: microseconds wide where a cross-thread wake is a self-pipe
+  write, tens of milliseconds where the loop has to return from an IOCP wait, and
+  `assert 1 == 0` when it loses. Wait on the CONJUNCTION the assertions then read
+  (`test_runloop_integration._await_parked`: waiters, slot count and row state
+  together) with a generous ceiling, never on the first half to become true. That
+  ceiling is a lost-run guard, so reaching it RAISES with the conjunction it last read:
+  a barrier that returns anyway hands its caller a state nobody asked about, and the
+  run then fails as whichever later assertion happens to touch it first — a park that
+  never happened reported as `assert [] == ['provider:acp']` three lines on.
+- **A silent bounded wait reports a THROUGHPUT shortfall as an ordering defect.**
+  `test_subagent_scale.TestDurableQueueScale::test_queue_survives_manager_loss_and_drains_fifo`
+  drained 199 recovered queue rows under `while store.count(DONE) < 199 and
+  time.monotonic() < deadline`, then asserted `started == ids[1:]`. On the Windows
+  shard the deadline expired mid-drain, the loop exited silently, and the run failed
+  as `AssertionError: Right contains 34 more items` — an ORDER assertion, on a list
+  whose 165 entries were in perfect FIFO order. Reproduced on Linux by shrinking the
+  deadline alone. The defect is the silent exit, not the constant: the completion of
+  the drain is its own assertion, so the wait raises naming the shortfall (`drain
+  unfinished after 0.1s: 33 of 199 rows started, 33 DONE, 64 still in the window,
+  running_count=3`) and the order assertion runs only on a complete drain. Two rules
+  this shape teaches. **Size the ceiling from a measurement and say which one:** 199
+  rows is a per-row cost, not a race — 0.58-0.60 s idle on Linux and 0.86 s worst
+  under eight-way local contention (~3-4 ms/row) against ~180 ms/row on the shard
+  that failed, so the ceiling is the measured worst case x 175 (150 s) with the
+  derivation in the comment, and only a wedged queue ever spends it. **Do not poll a
+  sqlite count on the event loop:** each `store.count()` in the hot loop takes the
+  store's connection ON the loop (`on_loop_db` warns for exactly this) and a read
+  contended with the writer thread blocks the loop for the connection's whole busy
+  timeout — the poll slows the drain it is measuring, so gate the DB read behind the
+  in-memory half of the conjunction. The same silent shape sat in that file's shared
+  `_settle(predicate)` helper across 19 call sites; with the ceiling forced to 0 s the
+  raising version fails 14 tests naming what never settled while the silent version
+  fails 11 and passes 3 VACUOUSLY — including one whose `assert secret not in body`
+  is trivially true when no digest was ever built.
+- **A timer asyncio runs BEFORE its own `when`.** `BaseEventLoop._run_once` runs every
+  handle within `loop._clock_resolution` of now, and that resolution IS the `monotonic()`
+  tick above: 15.625 ms on Windows against ~1 ns on Linux. So a callback there reads
+  `loop.time() < handle.when()` for the very handle it was armed as, and code that
+  re-arms a one-shot from inside its own callback while skipping the arm whenever some
+  handle still looks future-dated arms nothing at all — once per rung on Windows, never
+  on Linux. Emulating it locally takes ONE property: `_clock_resolution` set per LOOP
+  INSTANCE, because `BaseEventLoop.__init__` writes its own from
+  `time.get_clock_info('monotonic').resolution` and a class-level value is never read —
+  an unpatched loop reads `1e-09` however coarse the module clock is made. Flooring
+  `BaseEventLoop.time` to the same tick as well reproduces the shard's own SYMPTOM — the
+  park barrier's 20 s gather timing out — in 3 of 24 whole-file runs with the defect in
+  memory, where the pin named next fails on all 24; neither `time.time()` nor the
+  module-level `time.monotonic()` has to move for either.
+  `test_runloop_integration.test_the_ramp_is_woken_when_the_pump_timer_fires_inside_the_clock_resolution`
+  pins the invariant from the resolution alone, with no fake clock. Such a pin also needs
+  a poll SHORTER than the resolution, and that makes a sleep length load-bearing where
+  this file otherwise says to wait on a signal: `_run_once` pops a handle early only
+  while the loop is AWAKE inside `(when - resolution, when)`, so a poll longer than that
+  window leaves the loop asleep until the timer is overdue, no early fire happens, and
+  the pin goes green having exercised nothing. Set the resolution COARSER than the delay
+  under test (4 ticks against a 0.05 s arm) so the window is the whole wait instead of
+  its last tick — at Windows' own 15.625 ms the pop is a lottery on when the loop
+  happens to wake, and 1 of 15 runs starved on one busy core never saw it, which is a
+  flake rather than a defect. Then ASSERT the precondition instead of trusting whoever
+  reads the test next to leave the poll alone — and assert the precondition the DEFECT
+  needs, not merely that a spent future-dated handle was seen somewhere: the pass must
+  have had a deadline to arm, and the margin must fall inside the delay that pass wanted
+  (the dedup's own `now < when <= now + delay`). A spent handle read on a final
+  `deadline is None` pass, or one further out than the pass would have armed, strands
+  nothing, so counting it certifies a precondition the defect never needed and the pin
+  is green again for the wrong reason.
+- **`time.monotonic()` has a ~15.6 ms tick on Windows through 3.12** (GetTickCount64;
+  QueryPerformanceCounter only from 3.13). Two reads inside one tick return the SAME
+  float, so a duration synthesized as `t0 = monotonic() - 0.2` and measured against a
+  second read is exactly 0.2 s round-tripped through a float subtraction — 199.999… at
+  some machine uptimes, which a `>= 200` assertion reads as a failure while the code is
+  correct. Bound such a sample instead of pinning it on the boundary: a floor an order
+  of magnitude below (which still fails a seconds-for-milliseconds bug) and, as the
+  ceiling, a span the test measures itself.
+- **A fixed drain ceiling over a batch of fsync-priced writes is a rate assertion.**
+  Every test in `test_ledger_edge_concurrency` hands the session ledger's single writer
+  thread 30 to 160 appends, and `assert emit.flush(timeout=10.0)` across that batch
+  bounds a write RATE rather than the emitter. One append is an `fsync` behind a
+  cross-process lock:
+  0.4 ms measured on a warm Linux host, over 100 ms on the Windows shard that failed, so
+  one constant covers the work on one host and not on the other.
+  `test_many_producers_one_session_all_entries_land` ran 5.9 s green on `main` and
+  16.1 s red one head later on the SAME shard, where the 943 tests common to both runs
+  came in 2.2x slower end to end — the runner, not the diff. Reproduced on Linux by
+  pricing `Ledger.append` at 100 ms and changing nothing else. The give-up condition has
+  to be a writer that STOPPED rather than one that is slow: poll `flush` in windows and
+  fail when a whole window lands nothing new, measuring the first window from BEFORE the
+  first wait so a real wedge is still reported one window in, and cap the total at half
+  the module's `--timeout` so a trickle fails as a readable assertion instead of a
+  [class 6](#6-a-hang-is-a-lost-run-not-a-failed-test) lost run. Read progress as file
+  SIZE, never as the buffer count: the writer takes a batch OUT of the buffer before it
+  writes it, so an empty buffer is what a wedged writer and a finished one both show —
+  the failing shard's own teardown warning read `0 append(s) buffered, batch in
+  flight=True`.
+
 **Guess-the-latency sleeps are this class too.** `asyncio.sleep(0.05)` "to let the
 first prompt register" is a bet that two awaits and a `to_thread` hop finish inside
 50ms; on a loaded runner they did not, the guard the test exists to exercise was never
@@ -2177,6 +2302,50 @@ armed, and the test blocked on a turn nothing would ever complete — see
 [class 6](#6-a-hang-is-a-lost-run-not-a-failed-test). Wait on the observable state
 (`_await_routed`, an `Event`, the queue entry) and put a bounded `wait_for` around the
 call whose *refusal* is under test, so a missed refusal fails at that line by name.
+
+**A turn budget is not a barrier.** `for _ in range(40): await asyncio.sleep(0)` after
+feeding a frame reads as "let the handler settle", but it staples two different claims
+together and only one is turn-shaped. Measured on the kiro-cli demux
+(`test_native_subagent_boundary`): the roster snapshot a `subagent/list_update` produces
+lands in the SAME event-loop step that empties the reader's buffer — `readuntil` deletes
+the line and the handler runs to its next await without yielding, so ZERO extra turns are
+ever needed — while the auto-reject the same reader spawns for an unroutable permission
+request is a TASK, and how many turns it needs is wall clock, not scheduling. With a 1 s
+answer path (an added thread hop, or a loaded host) the 40-turn budget returns before the
+answer is written and `assert denials == [...]` fails on the barrier. Wait on the
+runtime's own signals instead: the reader's buffer draining for anything the reader
+publishes itself, then `rt._answer_tasks` draining for the answers those frames earned.
+For state published on the way to a broadcast, the frame arriving on the owner's queue IS
+the barrier — the demux snapshots before it broadcasts, so the frame proves the snapshot
+ran.
+
+**A negative assertion is only as strong as the barrier in front of it.**
+`assert qa.empty() and qb.empty()` after a turn budget passes for the trivial reason if
+the demux has not read the line yet. The same pin behind the buffer-drain signal reds on
+the mutation that broadcasts an unknown session's frame; behind the budget it can pass
+either way.
+
+**Ask before you park when a refusal has to be armed under the waiter's own handle.**
+`_rearm_resume` captures `info._resume_event` at ARM time and the re-armed retry drops
+itself if the run's event is no longer that one, so a pin about "a re-arm outliving its
+waiter" has to arrange for the refusal to be armed while the waiter's event is still
+installed. Starting the bounded waiter FIRST makes the pump's refusal pass race the
+waiter's own ceiling, and that pass hops the store's writer thread several times (wait
+expiry, two window refills, the pick's lane resolve). Measured with a 0.35 s delay on
+`TaskStore.run` — an fsync-bound writer thread on a loaded host — the waiter's 0.2 s
+ceiling withdrew the queue entry before the pump picked it, the refusal never happened,
+and the pin failed with "the refused grant armed 0 re-arm(s), not one". The order that
+carries no clock is production's own dependency order: arm `_resume_event`, ask through
+`request_resume` (what `taskq_wake_through` does), wait on the ARM signal, and only then
+park with `request=False`. What the run parks on afterwards can be a short ceiling,
+because by then every issuer of its wake is accounted for and nothing can set the event:
+the give-up is a cost, not a race.
+
+**A lost-run ceiling must sit under the module's own `pytest.mark.timeout`.** A 30 s
+`wait_for` inside a file marked `timeout(30)` can never be reached as a readable failure —
+pytest-timeout kills the worker first, which is
+[class 6](#6-a-hang-is-a-lost-run-not-a-failed-test). Derive the ceiling from that mark
+(20 s under a 30 s mark) and say so where it is defined.
 
 ### 3. Leaked async objects
 

@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from kiro_crew.learn import LessonStore
     from kiro_crew.providers.base import LLMEvent
     from kiro_crew.session import SessionManager
+    from kiro_crew.taskq.adapters import runner as _runner_adapter
 
 from kiro_crew.learn import Lesson
 
@@ -389,7 +390,250 @@ class TaskRunner:
         self._workflow_service = workflow_service
         self._workflow_initializing = False
         self._agent: str = ""
+        # Durable task queue (``taskq``): attached by the gateway once the
+        # SubagentManager's store is open. None keeps the legacy behaviour --
+        # a fixed run cap and no rows. See ``attach_task_admission``.
+        self._task_admission: _runner_adapter.RunnerAdmission | None = None
+        self._run_handles: dict[str, _runner_adapter.Admitted] = {}
+        self._adopt_inflight: asyncio.Task[Any] | None = None
         self._load_runs()
+
+    # ── Durable task queue (taskq) ──
+
+    def attach_task_admission(self, admission: "_runner_adapter.RunnerAdmission | None") -> None:
+        """Route every step through the shared task queue and its lane.
+
+        With an admission attached: a run is a ``taskrunner:<id>`` row, each
+        step a child row admitted through ``RunnerAdmission.admit`` (deferred
+        under memory pressure, bounded by the effective cap, claimed under a
+        lease), and the run cap ``_MAX_CONCURRENT_TASKS`` does not refuse --
+        excess steps queue in the lane instead. Rows a dead incarnation left
+        behind are adopted on the running loop (``adopt_task_rows``).
+
+        The sweep is armed only when the admission already HAS a store, as the
+        workflow service's own attach does: the store getter is live, so a task
+        armed while the store was still opening would otherwise adopt on the
+        loop pass after it lands, concurrently with the sweep the gateway arms
+        at that boundary -- two sweeps over one set of rows.
+        """
+        self._task_admission = admission
+        if admission is None or admission.store is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._adopt_inflight = loop.create_task(self.adopt_task_rows())
+
+    @property
+    def task_admission(self) -> "_runner_adapter.RunnerAdmission | None":
+        return self._task_admission
+
+    async def adopt_task_rows(self) -> "_runner_adapter.AdoptReport | None":
+        """Resume the runs whose rows the boot reconciler left ``awaiting_adapter``.
+
+        A run row that is safe to retry (``params.safe_retry`` -- the run is
+        git-coordinated, so its checkpoint is the last committed step) is
+        resumed through ``execute_plan``, which re-runs only the steps that
+        did not PASS. One that is not safe stays ``paused`` for a human and
+        its row is settled ``unknown_side_effect``. A row that was only ever
+        ACCEPTED (``queued``: the crash landed while it waited for a lane slot)
+        is settled ``cancelled`` -- a resume is a NEW row, so nothing is lost,
+        and no dispatcher exists for this kind to pick the old one up. One sweep
+        at a time: a call that overlaps the sweep ``attach_task_admission``
+        started joins it instead of adopting the same rows twice.
+        """
+        inflight = self._adopt_inflight
+        if inflight is not None and not inflight.done() and inflight is not asyncio.current_task():
+            return await inflight
+        admission = self._task_admission
+        store = admission.store if admission is not None else None
+        if store is None:
+            return None
+        from kiro_crew.taskq import model as _taskq_model
+        from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+        resumable: list[str] = []
+
+        def _resume(rec: _taskq_model.TaskRecord) -> bool:
+            run_id = str(rec.params.get("task_id") or "")
+            if not run_id:
+                run_id = rec.id[len(_runner_adapter.TASKRUNNER_ID_PREFIX) :]
+            run = self._runs.get(run_id)
+            if run is None or run.status not in ("paused", "planned"):
+                return False
+            resumable.append(run_id)
+            return True
+
+        report = await asyncio.to_thread(
+            _runner_adapter.adopt_orphaned_rows,
+            store,
+            kinds=(_taskq_model.KIND_TASKRUNNER_STEP,),
+            resume=_resume,
+        )
+        for run_id in resumable:
+            try:
+                await self.execute_plan(run_id)
+            except ValueError as exc:
+                logger.warning("taskq adopt: could not resume run %s: %s", run_id, exc)
+        for rec_id in report.unknown_side_effect:
+            if ":task" in rec_id:
+                continue
+            run = self._runs.get(rec_id[len(_runner_adapter.TASKRUNNER_ID_PREFIX) :])
+            if run is not None and run.status == "paused":
+                await self._notify(
+                    "\u23f8\ufe0f Run not auto-resumed",
+                    "The interrupted step may have had a side effect (no git worktree "
+                    "to checkpoint against). Review the workspace and resume manually.",
+                    run=run,
+                )
+        return report
+
+    def _taskq_lane_inputs(self, run: Project) -> tuple[str, str]:
+        return self._run_session_keys.get(run.task_id, ""), str(run.source or "")
+
+    async def _taskq_begin_run(self, run: Project) -> None:
+        """Accept + claim the run's container row (no lane slot; steps take those)."""
+        admission = self._task_admission
+        if admission is None or admission.store is None:
+            return
+        from kiro_crew.taskq import model as _taskq_model
+        from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+        session_key, source = self._taskq_lane_inputs(run)
+        row_id = _runner_adapter.run_task_id(run.task_id)
+        try:
+            rec = await admission.accept_async(
+                kind=_taskq_model.KIND_TASKRUNNER_STEP,
+                task_id=row_id,
+                session_key=session_key,
+                source=source,
+                params={
+                    "task_id": run.task_id,
+                    "name": run.name,
+                    "spec_path": run.spec_path,
+                    "steps": len(run.tasks),
+                    _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
+                },
+                workspace=run.work_dir or None,
+                scope_ref={"auto_approve": False, "agent": self._agent},
+                side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
+            )
+        except _runner_adapter.RunnerAdmissionRefused as exc:
+            logger.warning("taskq: run row for %s not accepted: %s", run.task_id, exc)
+            return
+        if rec is None:
+            return
+        handle = await admission.claim_only_async(
+            rec.id, kind=rec.kind, lane=_runner_adapter.lane_for(session_key, source)
+        )
+        if handle is None:
+            return
+        if not await handle.running_async({"phase": "executing", "steps": len(run.tasks)}):
+            # THE ROW'S STATE DECIDES, not the refusal. A refused mark on this
+            # container row is not the sibling case that fails the unit
+            # (``_execute_single_task`` below, ``workflows.agent_pool``): a STEP row
+            # holds a lane slot and must reach a WAITING state, which ``starting``
+            # cannot, while this row holds no slot, enters no wait, and settles from
+            # ``starting`` because ``TRANSITIONS[STARTING]`` carries every active
+            # terminal -- so an uncommitted mark under a live row costs the run its
+            # progress marker and nothing else. What the refusal CAN mean is that
+            # another incarnation's reconcile already gave the row an outcome, and a
+            # plan must never execute under a row that has one, so the state is read
+            # and only a terminal one ends the start.
+            state = await self._taskq_row_state(rec.id)
+            if state is not None and state in _taskq_model.TERMINAL:
+                raise _runner_adapter.RunnerTaskCancelled(
+                    f"{rec.id} is {state}; the run did not start"
+                )
+            logger.warning(
+                "taskq: run row %s did not take the running mark (state=%s); "
+                "the run proceeds and the row settles from %s",
+                rec.id,
+                state,
+                _taskq_model.STARTING,
+            )
+        self._run_handles[run.task_id] = handle
+
+    async def _taskq_row_state(self, row_id: str) -> str | None:
+        """The row's state read on the store's writer thread; None when unreadable.
+
+        Unreadable and absent answer the same, because both leave the caller with
+        no evidence that the row ended: a read that could not be taken must never
+        be the reason an accepted run is refused.
+        """
+        admission = self._task_admission
+        store = admission.store if admission is not None else None
+        if store is None:
+            return None
+        from kiro_crew.taskq.store import TaskStoreUnavailable
+
+        try:
+            state = await store.run(store.state_of, row_id)
+        except TaskStoreUnavailable:
+            logger.debug("taskq: state read for %s failed", row_id, exc_info=True)
+            return None
+        return str(state) if isinstance(state, str) else None
+
+    async def _taskq_end_run(self, run: Project) -> None:
+        handle = self._run_handles.pop(run.task_id, None)
+        if handle is None:
+            return
+        if run.status == "completed":
+            ref = str(Path(run.work_dir) / PROGRESS_FILE) if run.work_dir else None
+            await handle.done_async(result_ref=ref)
+        elif run.status == "failed":
+            await handle.fail_async(run.error or "run failed")
+        else:
+            # ``paused`` / ``cancelled`` are operator decisions: this execution
+            # is over and a later resume is a NEW row. Never left ``recovering``,
+            # or the adopter would restart what the operator stopped.
+            await handle.cancel_async(f"run {run.status}")
+
+    async def _taskq_admit_step(
+        self, run: Project, task: Task
+    ) -> "_runner_adapter.Admitted | None":
+        """Persist the step as a child row and wait for its lane slot."""
+        admission = self._task_admission
+        if admission is None:
+            return None
+        from kiro_crew.taskq import model as _taskq_model
+        from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+        session_key, source = self._taskq_lane_inputs(run)
+        lane = _runner_adapter.lane_for(session_key, source)
+        parent = self._run_handles.get(run.task_id)
+        row_id = _runner_adapter.step_task_id(run.task_id, task.index)
+        if admission.store is not None:
+            try:
+                rec = await admission.accept_async(
+                    kind=_taskq_model.KIND_TASKRUNNER_STEP,
+                    task_id=row_id,
+                    session_key=session_key,
+                    source=source,
+                    params={
+                        "task_id": run.task_id,
+                        "index": task.index,
+                        "title": task.title[:200],
+                        _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
+                    },
+                    workspace=run.work_dir or None,
+                    scope_ref={"auto_approve": bool(run.auto_approve), "agent": self._agent},
+                    side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
+                    parent_id=parent.task_id if parent is not None else None,
+                )
+            except _runner_adapter.RunnerAdmissionRefused:
+                # Nothing accepted: the step fails closed rather than running
+                # off the record. ONE writer records the verdict on the task --
+                # ``_execute_single_task``'s refusal arm, which catches an admit
+                # refusal by the same name -- so a message written here would
+                # only be the one it overwrites.
+                raise
+            if rec is not None:
+                row_id = rec.id
+        return await admission.admit(
+            row_id, kind=_taskq_model.KIND_TASKRUNNER_STEP, lane=lane, session_key=session_key
+        )
 
     @staticmethod
     def _clamp_parallel_steps(requested: int | None, cfg: KiroCrewConfig | None) -> int:
@@ -998,9 +1242,11 @@ class TaskRunner:
             if _override and run.status == "planned":
                 run.work_dir = _override
 
-            # Guard: limit concurrent running tasks — check BEFORE mutating state
+            # Guard: limit concurrent running tasks — check BEFORE mutating state.
+            # With the task queue attached the cap is the lane's: excess steps
+            # queue instead of the run being refused.
             active = sum(1 for t in self._tasks.values() if not t.done())
-            if active >= _MAX_CONCURRENT_TASKS:
+            if self._task_admission is None and active >= _MAX_CONCURRENT_TASKS:
                 raise ValueError(
                     f"Too many concurrent tasks ({active}/{_MAX_CONCURRENT_TASKS}). "
                     "Cancel or wait for a running task to finish."
@@ -1069,6 +1315,7 @@ class TaskRunner:
                     f"{len(run.tasks)} task(s):\n{task_list}",
                     run=run,
                 )
+                await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
                 if run.status == "running":
@@ -1101,6 +1348,7 @@ class TaskRunner:
                 save_progress(run)
                 try:
                     await self._apersist_runs()
+                    await self._taskq_end_run(run)
                     if run.branch_name and not workspace_lost:
                         try:
                             await git_coord.finalize(run)
@@ -1242,6 +1490,7 @@ class TaskRunner:
             await self._notify(
                 "\U0001f4cb Plan ready", f"{len(run.tasks)} task(s):\n{task_list}", run=run
             )
+            await self._taskq_begin_run(run)
             watchdog_task = asyncio.create_task(self._watchdog_loop(run))
             await self._execute_tasks(run, history_key)
             if run.status == "running":
@@ -1269,6 +1518,7 @@ class TaskRunner:
             save_progress(run)
             try:
                 await self._apersist_runs()
+                await self._taskq_end_run(run)
                 if run.branch_name:
                     try:
                         await git_coord.finalize(run)
@@ -1410,33 +1660,108 @@ class TaskRunner:
         session_key: str = "",
     ) -> bool:
         service = self._workflow_service
+        # Admission FIRST: the step holds no session and no slot until the
+        # lane grants one, so a queued step costs a row and a future, nothing
+        # else. A cancel that lands while it waits is settled by the ADMISSION
+        # (``RunnerAdmission.admit``), not here: ``CancelledError`` is a
+        # BaseException and passes this arm, which catches only the row this
+        # incarnation finds already ended.
+        #
+        # A REFUSED admission is a FAILED STEP, in band. Both refusals reach
+        # here -- the store would not accept or claim the row (a fenced
+        # ``starting`` write, an outage, a row another owner holds) and the
+        # lane is held end to end by this step's own ancestors
+        # (``RunnerLaneSelfBlocked``, a ``RunnerAdmissionRefused`` subclass) --
+        # and raising out of one step would unwind the whole accepted RUN past
+        # ``_try_replan``, which is the runner's answer to a step that did not
+        # land. The parallel branch already gets that answer, because
+        # ``gather(return_exceptions=True)`` turns the same raise into a failed
+        # step; the sequential branch has no such net, so the verdict is
+        # returned here and both branches route through one path.
+        if self._task_admission is None:
+            handle = None
+        else:
+            from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+            try:
+                handle = await self._taskq_admit_step(run, task)
+            except _runner_adapter.RunnerTaskCancelled as exc:
+                task.status = TaskStatus.FAILED
+                task.error = f"step cancelled before it started: {exc}"
+                task.finished_at = time.time()
+                return False
+            except _runner_adapter.RunnerAdmissionRefused as exc:
+                task.status = TaskStatus.FAILED
+                task.error = f"the durable queue refused the step: {exc}"
+                task.finished_at = time.time()
+                return False
+        if handle is not None and not await handle.running_async(
+            {"index": task.index, "title": task.title[:120]}
+        ):
+            # PERSIST BEFORE PUBLISH: ``admit`` committed ``starting`` under this
+            # generation one statement ago, so a refused ``starting -> running``
+            # is a newer owner or a store outage, never a forbidden edge. The
+            # step body does not run under it: a row left ``starting`` reaches no
+            # WAITING state, so the first dependency or input wait the step needs
+            # could not persist, and a fenced row means another incarnation owns
+            # the work. The terminal write below is fenced the same way -- it
+            # commits for the outage and is refused for the newer owner, which is
+            # the row that owner already ended.
+            task.status = TaskStatus.FAILED
+            task.error = "the durable row did not take the running mark; the step did not run"
+            task.finished_at = time.time()
+            await handle.fail_async(task.error)
+            return False
         if service is not None and run.workflow_run_id:
             try:
                 await service.step(run.workflow_run_id, task.index, task.title, status="running")
             except Exception:
                 logger.debug("TaskRunner workflow step start publication failed", exc_info=True)
-        success = await execute_single_task(
-            run=run,
-            task=task,
-            history_key=history_key,
-            sessions=self._sessions,
-            ctx=self._ctx,
-            agent=self._agent,
-            on_notify=self._notify,
-            on_approval=self._on_approval,
-            on_tool_approval=self._on_tool_approval,
-            auto_test=self._auto_test,
-            test_cmd=self._test_cmd,
-            # Run-scoped workspace wins over the runner default: a run whose
-            # workspace_dir selected project B must EXECUTE against B, not the
-            # runner's startup dir A (planning already used run.work_dir —
-            # executing elsewhere edits/tests the wrong project). Mirrors
-            # _build_task_prompt's resolution above.
-            work_dir=Path(run.work_dir) if run.work_dir else self._work_dir,
-            log_task_fn=self._log_task,
-            extract_lesson_fn=self._extract_lesson,
-            session_key=session_key,
-        )
+        success = False
+        try:
+            success = await execute_single_task(
+                run=run,
+                task=task,
+                history_key=history_key,
+                sessions=self._sessions,
+                ctx=self._ctx,
+                agent=self._agent,
+                on_notify=self._notify,
+                on_approval=self._on_approval,
+                on_tool_approval=self._on_tool_approval,
+                auto_test=self._auto_test,
+                test_cmd=self._test_cmd,
+                # Run-scoped workspace wins over the runner default: a run whose
+                # workspace_dir selected project B must EXECUTE against B, not the
+                # runner's startup dir A (planning already used run.work_dir —
+                # executing elsewhere edits/tests the wrong project). Mirrors
+                # _build_task_prompt's resolution above.
+                work_dir=Path(run.work_dir) if run.work_dir else self._work_dir,
+                log_task_fn=self._log_task,
+                extract_lesson_fn=self._extract_lesson,
+                session_key=session_key,
+                **({"taskq": handle} if handle is not None else {}),
+            )
+        except asyncio.CancelledError:
+            # The SYNCHRONOUS write on both exceptional arms, deliberately: an
+            # ``await`` here can be interrupted before the terminal write is
+            # submitted, and a dropped one leaves the step row active for the
+            # next boot's reconciler to re-dispatch.
+            if handle is not None:
+                handle.cancel("step cancelled")
+            raise
+        except BaseException as exc:
+            if handle is not None:
+                handle.fail(f"{type(exc).__name__}: {exc}"[:500])
+            raise
+        else:
+            if handle is not None:
+                if success:
+                    await handle.done_async()
+                elif run.status == "paused":
+                    await handle.cancel_async(task.error or "run paused")
+                else:
+                    await handle.fail_async(task.error or "step failed")
         if service is not None and run.workflow_run_id:
             try:
                 await service.step(
@@ -1582,7 +1907,7 @@ class TaskRunner:
             if self._admission_closed():
                 raise ValueError("gateway admission is closed")
             active = sum(1 for task in self._tasks.values() if not task.done())
-            if active >= _MAX_CONCURRENT_TASKS:
+            if self._task_admission is None and active >= _MAX_CONCURRENT_TASKS:
                 raise ValueError(
                     f"Too many concurrent tasks ({active}/{_MAX_CONCURRENT_TASKS}). "
                     "Cancel or wait for a running task to finish."
@@ -1981,6 +2306,7 @@ class TaskRunner:
                 if not await self._ensure_resumable_workspace(run, "retry"):
                     return
                 await self._notify("\U0001f504 Retrying", f"From task {from_task}", run=run)
+                await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
                 if run.status == "running":
@@ -2010,6 +2336,7 @@ class TaskRunner:
                 save_progress(run)
                 try:
                     await self._apersist_runs()
+                    await self._taskq_end_run(run)
                     await self._workflow_finalize(run)
                 finally:
                     if watchdog_task and not watchdog_task.done():

@@ -1638,7 +1638,7 @@ class SessionManager:
         self._provider_factory = provider_factory
         # Installed by the dashboard once its state exists (set_subagent_probe);
         # None means "no dashboard, so no children can be attached".
-        self._subagent_probe: Callable[[str], bool] | None = None
+        self._subagent_probe: "Callable[[str], bool | Awaitable[bool]] | None" = None
         self._allocation_state = SessionRegistryState(
             start_sem=asyncio.Semaphore(_MAX_CONCURRENT_COLD_STARTS)
         )
@@ -2342,7 +2342,7 @@ class SessionManager:
         """Register the lifecycle recycle callback."""
         self._lifecycle_boundary().set_recycle_callback(cb)
 
-    def set_subagent_probe(self, fn: Callable[[str], bool] | None) -> None:
+    def set_subagent_probe(self, fn: "Callable[[str], bool | Awaitable[bool]] | None") -> None:
         """Install the "does *key* have sub-agent work attached?" predicate.
 
         The RSS ceiling consults it before recycling an idle session: with
@@ -2352,8 +2352,14 @@ class SessionManager:
         """
         self._subagent_probe = fn
 
-    def _has_attached_subagents(self, key: str) -> bool:
+    def _has_attached_subagents(self, key: str) -> bool | Awaitable[bool]:
         """Answer the installed sub-agent probe, or False when none is installed.
+
+        The probe's answer is handed back UNCOERCED: the dashboard installs a
+        coroutine probe (its queued half reads the task store, and the sweep
+        that asks is on the gateway loop), and ``bool()`` of a coroutine is True
+        for every session while never running the probe at all. The cleanup
+        boundary awaits an awaitable answer and coerces there.
 
         A raising probe propagates: the cleanup boundary treats that as
         "attached" so the session is kept.
@@ -2361,7 +2367,7 @@ class SessionManager:
         probe = self._subagent_probe
         if probe is None:
             return False
-        return bool(probe(key))
+        return probe(key)
 
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Delegate the ordered compaction gate ladder."""

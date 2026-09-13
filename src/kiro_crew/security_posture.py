@@ -126,6 +126,25 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "and a redaction that fails writes the empty string instead of the input.",
     ),
     (
+        "Subagent wait broadcasts",
+        "subagent_manager/admission/waits.py",
+        "The wait REASON on the `subagent_waiting` frame, which reaches every dashboard "
+        "browser, the SSE relay and every app holding a `subagent:*` scope. It is the "
+        "same provider- and store-authored prose the task routes scrub and the sibling "
+        "`subagent_done` event redacts field by field, so it passes the shared "
+        "exfiltration-URL + credential chain before it leaves the process.",
+    ),
+    (
+        "Task queue panel responses",
+        "dashboard/handlers/tasks.py",
+        "Store-authored prose served by the Tasks & capacity routes: each task "
+        "event's data payload and each row's wait reason, both of which carry a "
+        "tool's or a provider's own error text verbatim. Every string, including "
+        "the ones nested in dicts and lists, passes through the shared "
+        "exfiltration-URL + credential chain before serialization; row "
+        "identifiers are left intact because the panel keys its rows by them.",
+    ),
+    (
         "Memory recovery responses",
         "dashboard/handlers/memory_admin.py",
         "Retired episode text and supersession references, plus backup and restore "
@@ -1413,7 +1432,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # handing them to facade-owned event/completion callbacks, but the split
         # adds no new transport or audience and therefore no additional posture
         # row.
-        "subagent_manager/admission.py",
+        "subagent_manager/admission/gate.py",
+        "subagent_manager/admission/pump.py",
         "subagent_manager/continuation.py",
         "subagent_manager/monitoring.py",
         "subagent_manager/run.py",

@@ -346,6 +346,21 @@ fingerprint against `last_wake_fingerprint`), is the budget spent
 against `_RETRYABLE_PROVIDER_ERRORS`). It takes the clock as a value through its
 `now` parameter and performs no IO at all.
 
+**A skip is a third outcome, and it reaches three places.** A shared `github:api`
+cooldown makes a probe return WITHOUT calling the API, and it borrows the shape of a
+refusal to say so (`REASON_SHARED_COOLDOWN`, `is_unattempted_probe`). That is
+neither a success nor a provider error: it is no evidence about the subject at all,
+so it moves NEITHER counter — at `shadow.apply_monitor_probe` and at the production
+counting site in `autonudge`. `_provider_error_decision` is the third place, and it
+is the one a counter fix does not reach: it reads the same budget one tick into the
+FUTURE (`consecutive_provider_errors + 1 >= max_provider_errors`), so a watch two
+real errors into a budget of three would be retired by an unrelated scope's
+cooldown, having made no call of its own. The prediction therefore refuses to spend
+an unattempted probe, while `monitor_budget_reason` above it keeps stopping a watch
+whose budget is genuinely gone — a cooldown must not become a way to outlive the
+ceiling. The kind gate stays FIRST of the three, so an unattempted probe reporting a
+non-retryable kind is still blocked.
+
 The **delivery** policy is the other half, and it is impure. It lives in
 `MonitorController.tick`, which decides whether a wake is already in flight
 (`wake_in_flight`), whether the last dispatch came back busy (`wake_delivery`

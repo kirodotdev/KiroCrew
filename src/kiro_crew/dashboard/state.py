@@ -1773,6 +1773,31 @@ def build_tool_stall_recovery_prompt(
     return "\n".join(lines)
 
 
+def build_infra_retry_prompt(error_class: str, retry_after_secs: float | None) -> str:
+    """The L1 continuation: retry the refused call, nothing else.
+
+    Deliberately NOT a replay of the user's message: tool calls earlier in the
+    turn may have taken effect. The model is told which call failed and why,
+    and asked to issue that same call again. Opens with
+    ``REFUSAL_RECOVERY_PREFIX``: a capacity refusal IS a tool refusal carried
+    back to the model, and that is the card the dashboard already renders for
+    one -- a new marker would need its own card row and catalog copy.
+    """
+    hint = (
+        f" The server asked for a {int(round(retry_after_secs))}s pause, which has elapsed."
+        if retry_after_secs
+        else ""
+    )
+    return (
+        f"{REFUSAL_RECOVERY_PREFIX}\n"
+        "Your last tool call was refused by the MCP gateway for a transient "
+        f"infrastructure reason ({error_class}), not because of its arguments."
+        f"{hint} Re-issue exactly that tool call now with the same arguments and "
+        "continue from its result. Do not repeat any earlier tool call that "
+        "already returned a result."
+    )
+
+
 # [OPTIONS: a | b | c] — the marker ends a LINE here, so use the MULTILINE/
 # single-line canonical parser. Defined once in constants.py (shared with
 # slack/format.py and the renderer surfaces) so the ReDoS-hardened grammar can
@@ -2107,6 +2132,7 @@ class _ChatSlot:
         "_tool_stall_retries",
         "_tool_stall_exhausted_emitted",
         "_transient_5xx_retries",
+        "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
         "_active_fallback_model",
@@ -2548,6 +2574,15 @@ class _ChatSlot:
         # ConnectionReset) retries on the interactive stream path. Distinct
         # budget from prompt-busy / pipe-death; reset on a completed turn.
         self._transient_5xx_retries: int = 0
+        # L1 gateway-capacity retries: how many times THIS cycle waited out an
+        # infrastructure refusal of a tool call (the ladder owns the budget; this
+        # is the slot-visible count the health panel classifies as recovering).
+        # Deliberately NOT _transient_5xx_retries: that one is a live budget read
+        # by the re-prompt gate, the backoff seed and the model-fallback
+        # threshold, so spending it here shortens the next real 5xx ladder and
+        # brings the fallback swap closer over a wait the primary model had no
+        # part in.
+        self._infra_retries: int = 0
         # Throttle-exhaustion model-fallback walk state (agent.fallback_model).
         # _fallback_candidate_idx / _fallback_walked are PER-CYCLE (next chain
         # position to try + candidates already tried this logical turn, for the

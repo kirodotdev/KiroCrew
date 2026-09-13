@@ -1533,6 +1533,7 @@ async def _cron_message_cb(
     orch.ctx_builder.hooks = MagicMock()
     orch.subagent_mgr = MagicMock()
     orch.subagent_mgr.has_pending_work_for = MagicMock(return_value=False)
+    orch.subagent_mgr.has_pending_work_for_async = AsyncMock(return_value=False)
     _turn = (
         AsyncMock(side_effect=error)
         if error is not None

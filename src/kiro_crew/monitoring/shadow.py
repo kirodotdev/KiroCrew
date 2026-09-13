@@ -12,6 +12,12 @@ from kiro_crew.monitoring.decision import (
     monitor_budget_reason,
     terminal_decision_for_outcome,
 )
+
+# The engine names no host anywhere else, and this import is the exception the
+# observation type forces: a tick that sent no request is a third outcome
+# ``MonitorObservation`` has no field for, so the only marker is the reason code
+# the probe set -- and a reason code belongs to the kind that emits it.
+from kiro_crew.monitoring.github_provider_errors import is_unattempted_probe
 from kiro_crew.monitoring.models import (
     MonitorDecision,
     MonitorObservationStatus,
@@ -95,7 +101,16 @@ async def run_shadow_probe(
     staged.last_observation_status = observation.status
     staged.last_observation_reason_code = observation.reason_code
     provider_error = observation.provider_error or observation.supplemental_provider_error
-    if provider_error is not None:
+    if is_unattempted_probe(observation):
+        # THE THIRD OUTCOME, and it moves neither counter. The provider-error
+        # budget is finite and never refunded, so it has to measure refusals the
+        # HOST gave this watch: charged for a request the probe declined to send,
+        # a cooldown that unrelated work opened retires a healthy watch on its own
+        # cadence. Clearing the streak instead is the opposite error -- an outage
+        # interleaved with skips would never retire the watch it is blinding -- so
+        # a tick that observed nothing leaves the accounting exactly as it was.
+        pass
+    elif provider_error is not None:
         staged.provider_error_count += 1
         staged.consecutive_provider_errors += 1
         staged.last_provider_error = provider_error

@@ -84,6 +84,23 @@ def _manager(sessions: MagicMock | None = None) -> SubagentManager:
     )
 
 
+def _stop_reason(info: SubagentInfo) -> str:
+    """Every marker that says WHY a run stopped, for an assertion message.
+
+    A run cancelled from outside takes the auto-continue branch, which sets
+    neither ``error`` nor ``done``: without these markers in the message, "the
+    run was cancelled" is indistinguishable from "the run produced the wrong
+    answer" -- the reading that let a real loop stall be reported as a
+    memory-mode mismatch.
+    """
+    return (
+        f"error={info.error!r} done={info.done} user_stopped={info.user_stopped} "
+        f"reaped={info.reaped} cancel_retry_used={info._cancel_retry_used} "
+        f"recovering={info._recovering} mode_ready={info._memory_mode_ready} "
+        f"mode={info.memory_mode!r} turns={info.turns}"
+    )
+
+
 # ── SessionManager continuable override (real SessionManager, no processes) ──
 
 
@@ -1669,13 +1686,24 @@ class TestContinuationMemoryMode:
         create_agent_folder(conv_id, task="original", memory_mode=original)
         manager = _manager(_mock_sessions(resumed=True))
         manager._memory_mode_for_session = lambda key: requested
-        info = manager.continue_conversation(conv_id, "follow up")
+        # The ASYNC entry, because this test body is a coroutine: the sync one
+        # takes the accept and the claim as BEGIN IMMEDIATE on this loop, and
+        # each waits on the lock the store's writer thread holds across a query
+        # (`_the_continuation_path_takes_no_store_call_on_the_loop`).
+        info = await manager.continue_conversation_async(conv_id, "follow up")
         assert info is not None and not info.error
         assert not info._memory_mode_ready
         await asyncio.wait_for(manager._tasks[info.id], timeout=5)
         expected = strictest((original, requested)) or "persistent"
         assert not info.error, info.error
-        assert info.memory_mode == expected and info._memory_mode_ready
+        # A cancelled run publishes no mode, which the mode assertion below
+        # would report as a MISMATCH -- the reading that hid a real loop stall
+        # on the Windows shard. Name the cancellation and its stop reason first,
+        # and keep the two facts (WHICH mode, and whether it was published at
+        # all) as separate assertions.
+        assert not info._cancel_retry_used, f"run cancelled, not completed: {_stop_reason(info)}"
+        assert info._memory_mode_ready, f"mode publication never ran: {_stop_reason(info)}"
+        assert info.memory_mode == expected
         assert read_run_memory_mode(conv_id) == expected
         assert read_run_memory_mode(info.id) == expected
         assert manager._ctx_builder.build_message.call_args.kwargs["blocks_reads"] == (
@@ -1683,10 +1711,11 @@ class TestContinuationMemoryMode:
         )
 
         restarted = _manager(_mock_sessions(resumed=True))
-        resumed = restarted.continue_conversation(conv_id, "another turn")
+        resumed = await restarted.continue_conversation_async(conv_id, "another turn")
         assert resumed is not None and not resumed.error
         await asyncio.wait_for(restarted._tasks[resumed.id], timeout=5)
         assert not resumed.error, resumed.error
+        assert not resumed._cancel_retry_used, f"run cancelled: {_stop_reason(resumed)}"
         assert resumed.memory_mode == expected
 
     @pytest.mark.asyncio
@@ -1702,10 +1731,25 @@ class TestContinuationMemoryMode:
         record.write_text(json.dumps(payload), encoding="utf-8")
         sessions = _mock_sessions(resumed=True)
         manager = _manager(sessions)
-        info = manager.continue_conversation("missing-resume-policy", "must not run")
+        # The ASYNC entry for the same reason as the sibling test above, and it
+        # matters here for the same 5s deadline: the sync one's two BEGIN
+        # IMMEDIATEs run on THIS loop, so the deadline is spent waiting on the
+        # store lock rather than on the refusal being reached.
+        info = await manager.continue_conversation_async("missing-resume-policy", "must not run")
         assert info is not None
-        await asyncio.wait_for(manager._tasks[info.id], timeout=5)
-        assert "memory_unavailable" in info.error
+        # ``.get``, not ``[...]``: this refusal is raised on the run's first
+        # steps, and the async entry's own awaits give it enough of the loop to
+        # finish -- and be popped from ``_tasks`` by its finally -- before the
+        # dispatch returns. A missing entry therefore means the terminal is
+        # already recorded on ``info``, which is what the assertions below read.
+        task = manager._tasks.get(info.id)
+        if task is not None:
+            await asyncio.wait_for(task, timeout=5)
+        # A cancelled run carries no error at all, so the membership check below
+        # would read "the refusal was worded differently" for a run that never
+        # reached the allocation boundary.
+        assert not info._cancel_retry_used, f"run cancelled, not refused: {_stop_reason(info)}"
+        assert "memory_unavailable" in info.error, _stop_reason(info)
         assert str(record) not in info.error
         assert "caused by" not in info.error
         assert not info._memory_mode_ready
@@ -1753,3 +1797,147 @@ async def test_cancelled_resume_drains_mode_publication_before_returning(monkeyp
     finally:
         release.set()
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_the_continuation_path_takes_no_store_call_on_the_loop(monkeypatch) -> None:
+    """A continuation dispatched from the gateway loop reaches the task store
+    only on its writer thread -- dispatch, the run's mode publication, and the
+    terminal settle.
+
+    ``store.loop_thread_calls`` is what the claim rests on, not the guard alone:
+    ``OnLoopDBGuard.check`` raises, and most store call sites sit inside an
+    ``except Exception`` that swallows the raise, so a violation shows up as a
+    number and not as a failure. The guard is armed as well, for the sites that
+    do propagate. The counter also covers the SHAPE this pins against: both
+    writes the sync entry would take here (``taskq_accept``, ``taskq_claim``)
+    wait on ``TaskStore._lock``, and a 1s hold by the writer thread freezes a
+    coroutine caller's loop for the whole hold -- measured 0 of ~95 due 10ms
+    heartbeat ticks served through the sync entry against 91 through this one.
+    """
+    from kiro_crew.subagent_manager import admission as admission_mod
+    from kiro_crew.subagent_persistence import create_agent_folder
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(admission_mod.SpawnAdmissionCoordinator, "pump_off_loop", True)
+    create_agent_folder("no-loop-db", task="original", memory_mode="persistent")
+    manager = _manager(_mock_sessions(resumed=True))
+    await manager.wait_taskq_ready()
+    manager._spawn_stagger_secs = 0.0
+    store = manager._admission.taskq_store()
+    assert store is not None, "this pin needs the real durable store"
+    before = store.loop_thread_calls
+    monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+    info = await manager.continue_conversation_async("no-loop-db", "follow up")
+    assert info is not None and not info.error, getattr(info, "error", None)
+    task = manager._tasks.get(info.id)
+    if task is not None:
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=20)
+    for _ in range(40):
+        await asyncio.sleep(0.01)  # let the posted writes land, still under the guard
+    assert store.loop_thread_calls == before  # the reads below are the test's own
+    monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
+    # The run really ran: a refusal or a cancellation would take no store call
+    # either, and would pass an assertion that only counted.
+    #
+    # ``queued`` is checked FIRST and on its own, because it is the one
+    # never-started outcome the two markers below miss: a handle the claim
+    # refused carries ``_memory_mode_ready`` at its dataclass DEFAULT of True
+    # (only a registered run has it set from the conversation key), so a
+    # continuation that never left the queue passes the pair.
+    assert not info.queued and info.done, _stop_reason(info)
+    assert info._memory_mode_ready and not info._cancel_retry_used, _stop_reason(info)
+    assert store.get(info.id) is not None
+
+
+def test_a_stale_resume_entry_does_not_hold_a_conversation() -> None:
+    """A ``_resume_id`` window entry is a RESIDENT run asking for the lane slot
+    it yielded, not an unstarted spawn, so it never answers
+    ``_conversation_busy`` -- the same separation the pump's grant loop, the
+    refill census, the eviction and the child reserve make.
+
+    An entry whose run is still live is answered by the ``_agents`` scan first.
+    The case that reaches this branch is a run that ENDED with its request still
+    queued: the queued-stop path leaves the entry alone by design (dropping it
+    published a "never started" terminal over a live run) and only the bounded
+    waiter's give-up arm withdraws one, while the pump returns above its resume
+    loop whenever no slot is free. Counted, that entry refuses every
+    continuation and every release of the conversation with a
+    ``conversation_busy`` naming a run that is already done.
+    """
+    from kiro_crew.subagent_persistence import create_agent_folder
+
+    create_agent_folder("resume-held", task="original", memory_mode="persistent")
+    manager = _manager(_mock_sessions(resumed=True))
+    manager._agents["resume-held"] = SubagentInfo(
+        id="resume-held", task="original", done=True, user_stopped=True
+    )
+    manager._queue.append(
+        {
+            "_resume_id": "resume-held",
+            "_preassigned_id": "resume-held",
+            "parent_session_key": "web-1",
+            "batch_id": "",
+            "reason": "children finished",
+        }
+    )
+    assert manager._conversation_busy("subagent:resume-held") is None
+    ok, detail = manager.release_conversation("resume-held")
+    assert "conversation_busy" not in detail, detail
+    # An UNSTARTED entry for the same conversation still holds it.
+    manager._queue.append({"_preassigned_id": "resume-held"})
+    held = manager._conversation_busy("subagent:resume-held")
+    assert held is not None and held.queued and held.id == "resume-held"
+
+
+@pytest.mark.asyncio
+async def test_the_followup_watcher_dispatches_no_store_call_on_the_loop(monkeypatch) -> None:
+    """The follow-up watcher is the manager's OWN continuation caller
+    (``spawn_steer mode="follow_up"``), and it dispatches from a task on the
+    gateway loop -- so the entry it picks is what decides whether a queued
+    correction costs the loop two ``BEGIN IMMEDIATE`` waits.
+
+    Pinned separately from the dispatch pin because a counter over
+    ``continue_conversation_async`` says nothing about which entry
+    ``_deliver_followups`` calls: swapping that one line to the sync entry
+    leaves the other pin green.
+    """
+    from kiro_crew.subagent_manager import admission as admission_mod
+    from kiro_crew.subagent_persistence import create_agent_folder
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(admission_mod.SpawnAdmissionCoordinator, "pump_off_loop", True)
+    create_agent_folder("followup-conv", task="original", memory_mode="persistent")
+    manager = _manager(_mock_sessions(resumed=True))
+    await manager.wait_taskq_ready()
+    manager._spawn_stagger_secs = 0.0
+    store = manager._admission.taskq_store()
+    assert store is not None, "this pin needs the real durable store"
+    # A finished run whose task is already popped: what the watcher waits for
+    # before it dispatches the queue as ONE continuation.
+    done = SubagentInfo(
+        id="followup-conv",
+        task="original",
+        conversation_key="subagent:followup-conv",
+        done=True,
+    )
+    done.pending_followups = ["also fix the test"]
+    manager._agents["followup-conv"] = done
+    before = store.loop_thread_calls
+    monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+    await asyncio.wait_for(manager._deliver_followups(done), timeout=20)
+    child = next((a for a in manager._agents.values() if a.id != "followup-conv"), None)
+    assert child is not None, "the watcher dispatched no continuation"
+    task = manager._tasks.get(child.id)
+    if task is not None:
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=20)
+    for _ in range(40):
+        await asyncio.sleep(0.01)  # let the posted writes land, still under the guard
+    assert store.loop_thread_calls == before  # the reads below are the test's own
+    monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
+    # The dispatch really happened (a settled queue with no child would pass a
+    # count-only assertion), and it STARTED: a claim the store refused comes
+    # back queued and takes no on-loop call either.
+    assert done.pending_followups == []
+    assert not child.queued, _stop_reason(child)
+    assert store.get(child.id) is not None

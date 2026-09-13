@@ -1699,42 +1699,48 @@ async def callback(job):
         ):
             assert token in subagent_census, f"subagent lifecycle census lost {token}"
         contracts = {
+            # Subagent admission is a PACKAGE: every module in it is read as one
+            # unit, so a registration site anywhere inside counts here and a new
+            # module cannot carry one in unseen.
             "subagents": (
-                root / "subagent_manager" / "admission.py",
-                2,
+                sorted((root / "subagent_manager" / "admission").glob("*.py")),
+                5,
                 ("subagents.pending_work_count",),
             ),
             "cron": (
-                root / "slack" / "gateway.py",
+                [root / "slack" / "gateway.py"],
                 2,
                 ("len(self._running_script_ids)",),
             ),
             "taskrunner": (
-                root / "taskrunner.py",
+                [root / "taskrunner.py"],
                 3,
                 ("runner.running",),
             ),
             "workflows": (
-                root / "workflows" / "service.py",
+                [root / "workflows" / "service.py"],
                 3,
                 ("workflows.list_runs()", 'run.get("status") == "running"'),
             ),
         }
 
-        for kind, (path, expected_count, census_tokens) in contracts.items():
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            registrations = self._registrations(kind, tree)
+        for kind, (paths, expected_count, census_tokens) in contracts.items():
+            registrations: list[tuple[Path, ast.AST, dict[ast.AST, ast.AST]]] = []
+            for path in paths:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                parents = {
+                    child: parent
+                    for parent in ast.walk(tree)
+                    for child in ast.iter_child_nodes(parent)
+                }
+                registrations.extend(
+                    (path, node, parents) for node in self._registrations(kind, tree)
+                )
             assert (
                 len(registrations) == expected_count
             ), f"{kind} registration sites changed; update the admission/census contract"
-            parents = {
-                child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
-            }
-            for registration in registrations:
-                gated_before_registration = self._has_dominating_admission_guard(
-                    registration, parents
-                )
-                assert gated_before_registration, (
+            for path, registration, parents in registrations:
+                assert self._has_dominating_admission_guard(registration, parents), (
                     f"{kind} registers at {path.name}:{registration.lineno} without a "
                     "dominating terminating admission guard"
                 )

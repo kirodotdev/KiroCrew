@@ -1,7 +1,12 @@
 """Unit tests for scripts/generate_config_baseline.py.
 
 Verifies the baseline generator produces valid JSON with the expected
-structure and entry count.
+structure and entry count, and that the committed snapshot matches it.
+
+The last section goes past shape: a help string is what an operator acts on, so
+where one asserts something the code decides, it is measured against the code
+rather than reviewed. ``TestSpawnQueueWaitHelpMatchesTheDaemon`` is the first
+such key.
 """
 
 from __future__ import annotations
@@ -168,6 +173,170 @@ class TestBaselineGenerator:
         entry = entries_by_path.get("telemetry.otlp_endpoint")
         assert entry is not None, "telemetry.otlp_endpoint entry missing"
         assert entry["sensitive"] is True
+
+
+# ---------------------------------------------------------------------------
+# Help text vs. the code it describes
+# ---------------------------------------------------------------------------
+
+_SPAWN_QUEUE_WAIT_PATH = "mcp_gateway.spawn_queue_wait_secs"
+
+#: The owning spec -- the third copy of the claim, after the schema help and the
+#: committed snapshot. All three are one sentence, so all three face the same
+#: measurement.
+_SPAWN_QUEUE_WAIT_DOC = os.path.join(_REPO_ROOT, "docs", "system-specs", "modules", "config.md")
+
+
+def _schema_help(path: str) -> str:
+    """The help an operator reads in the dashboard and the CLI."""
+    for entry in SCHEMA_REGISTRY:
+        if entry.path == path:
+            return entry.help
+    raise AssertionError(f"{path} missing from SCHEMA_REGISTRY")
+
+
+def _baseline_help(path: str) -> str:
+    """The same string as the committed snapshot ships it."""
+    with open(_COMMITTED_BASELINE, encoding="utf-8") as handle:
+        for entry in json.load(handle)["entries"]:
+            if entry["path"] == path:
+                return entry["help"]
+    raise AssertionError(f"{path} missing from config-baseline.json")
+
+
+def _doc_paragraph_about(doc_path: str, needle: str) -> str:
+    """The one blank-line-delimited paragraph of *doc_path* that names *needle*.
+
+    Scoping to a paragraph is what keeps a prose assertion from passing on a
+    word borrowed from elsewhere in a 1700-line spec; more than one match is a
+    failure rather than a join, because then the claim has two homes and this
+    test would only be watching one of them.
+    """
+    paragraphs = [
+        p for p in Path(doc_path).read_text(encoding="utf-8").split("\n\n") if needle in p
+    ]
+    assert len(paragraphs) == 1, (
+        f"{doc_path} mentions {needle!r} in {len(paragraphs)} paragraphs; "
+        "the claim about this key has to live in exactly one of them"
+    )
+    return paragraphs[0]
+
+
+def _armed_queue_wait(asked: float, ceiling: float) -> float:
+    """The wait the daemon really arms for a stub that asked for *asked*.
+
+    Read through the daemon's own negotiation rather than re-implemented, so a
+    change to the arithmetic reaches this test instead of being mirrored by it.
+    Imported inside the call because ``gatewayd`` is a heavyweight module and
+    every other test here needs none of it.
+    """
+    from kiro_crew.mcp_gateway import admission as adm
+    from kiro_crew.mcp_gateway import gatewayd as gw
+    from kiro_crew.mcp_gateway import host_budget as hb
+
+    admission = adm.Admission(
+        gate=adm.SpawnGate(1),
+        budget=hb.HostBudget(hb.HostBudgetLimits(max_procs=0)),
+        initialize_timeout_secs=1.0,
+        spawn_queue_wait_secs=ceiling,
+    )
+    armed = gw._negotiated_wait_budget({"wait_budget_secs": asked}, admission)
+    assert armed is not None, "a finite positive budget is a queue-aware stub"
+    return armed
+
+
+class TestSpawnQueueWaitHelpMatchesTheDaemon:
+    """The operator-facing sentence about this key has to survive measurement.
+
+    ``test_mcp_gateway_spawn_gate.py`` pins the arithmetic and
+    ``test_committed_snapshot_matches_generator`` holds the schema and the
+    snapshot byte-identical, and a help string can still assert the opposite of
+    both and go green through every one of them: neither reads the prose. The
+    key is a CEILING that the stub's own budget caps first, and the daemon
+    subtracts ``_QUEUE_REFUSAL_MARGIN_SECS`` from what survives, so the refusal
+    reaches a listening stub -- an operator told instead that raising the key
+    buys a longer wait raises it, gets nothing, and concludes the queue is
+    broken.
+    """
+
+    def test_the_key_is_a_ceiling_the_stub_budget_caps_first(self) -> None:
+        """Measured, not read: raising the key past the stub's ask moves nothing."""
+        from kiro_crew.config.sections import McpGatewayConfig
+        from kiro_crew.mcp_gateway import stub as stub_mod
+
+        asked = float(stub_mod._SPAWN_QUEUE_WAIT_BUDGET_SECS)
+        shipped = float(McpGatewayConfig().spawn_queue_wait_secs)
+        at_default = _armed_queue_wait(asked, shipped)
+
+        assert at_default < asked, (
+            f"the daemon arms {at_default}s against a stub that asked for "
+            f"{asked}s: at or above the ask the stub gives up first and runs "
+            "the fallback exec a capacity refusal exists to withhold"
+        )
+        for ceiling in (shipped * 2, shipped * 10, 1e9):
+            assert _armed_queue_wait(asked, ceiling) == at_default, (
+                f"raising the key to {ceiling}s moved the armed wait off "
+                f"{at_default}s, so it is not a ceiling and the help text's "
+                "'buys a queued stub no extra wait' is false"
+            )
+        # ...and lowering it still binds, which is the half that stays useful.
+        assert _armed_queue_wait(asked, shipped / 2.0) < at_default
+
+    def test_every_site_states_the_ceiling_and_never_its_inverse(self) -> None:
+        """One sentence, three copies: schema help, snapshot, owning spec.
+
+        Each site is read down to the text that talks about THIS key -- the two
+        help copies are that text already, and the spec is scoped to the
+        paragraph naming the key, so a check cannot be satisfied by a word the
+        rest of the file happens to carry (`ceiling >= floor`, two sentences
+        along, is exactly that trap).
+        """
+        sites = {
+            "src/kiro_crew/config/sections.py": _schema_help(_SPAWN_QUEUE_WAIT_PATH),
+            "config-baseline.json": _baseline_help(_SPAWN_QUEUE_WAIT_PATH),
+            _SPAWN_QUEUE_WAIT_DOC: _doc_paragraph_about(
+                _SPAWN_QUEUE_WAIT_DOC, "spawn_queue_wait_secs"
+            ),
+        }
+        # The falsified direction, in the spellings that shipped it. A site
+        # asserting the stub loses the race contradicts
+        # ``test_the_key_is_a_ceiling_the_stub_budget_caps_first`` above.
+        inverse = (
+            "gives up before the queue",
+            "needs that constant raised too",
+            "stub gives up first",
+        )
+        for name, text in sites.items():
+            flat = " ".join(text.split()).lower()
+            for phrase in inverse:
+                assert phrase not in flat, (
+                    f"{name} still tells an operator {phrase!r}; the daemon's "
+                    "wait is capped by what the stub asked for and then cut by "
+                    "a margin, so the daemon is the side that gives up first"
+                )
+            assert "ceiling" in flat, (
+                f"{name} does not say the key is a ceiling, which is the only "
+                "thing that makes 'raising it buys no extra wait' follow"
+            )
+            assert (
+                "no extra wait" in flat
+            ), f"{name} does not tell an operator what raising the key yields"
+
+    def test_the_number_the_prose_names_is_the_shipped_default(self) -> None:
+        """Both help copies name a figure; it has to be the one that ships."""
+        from kiro_crew.config.sections import McpGatewayConfig
+        from kiro_crew.mcp_gateway import stub as stub_mod
+
+        shipped = McpGatewayConfig().spawn_queue_wait_secs
+        assert float(stub_mod._RECONNECT_TOTAL_BUDGET_SECS) == float(shipped)
+        for name, text in (
+            ("src/kiro_crew/config/sections.py", _schema_help(_SPAWN_QUEUE_WAIT_PATH)),
+            ("config-baseline.json", _baseline_help(_SPAWN_QUEUE_WAIT_PATH)),
+        ):
+            assert f"above {shipped}" in text, (
+                f"{name} names a threshold other than the shipped default "
+                f"{shipped}; a stale figure sends an operator to the wrong knob"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,15 @@ from kiro_crew.acp.worker_pool import WorkerPool
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.taskq.adapters.runner import (
+    RunnerAdmission,
+    RunnerAdmissionRefused,
+    lane_for,
+    workflow_task_id,
+)
+from kiro_crew.taskq.dependency import DEFAULT_MAX_ATTEMPTS as DEPENDENCY_MAX_ATTEMPTS
+from kiro_crew.taskq.dependency import classify_exception
+from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 
 # Per-step tool-call ceiling — shared with the per-call path (agent_exec) so a
 # single edit retunes both; a hand-duplicated copy here would silently diverge the
@@ -416,3 +425,96 @@ class _AggregatePool:
                 await p.shutdown()
             except Exception:
                 logger.debug("workflow pool: sub-pool shutdown failed", exc_info=True)
+
+
+def admitted_agent_fn(
+    agent_fn: Callable[[str, dict], Any],
+    admission: "RunnerAdmission",
+    *,
+    run_id: str,
+    session_key: str = "",
+    source: str = "",
+    workspace: Optional[str] = None,
+) -> Callable[[str, dict], Any]:
+    """Wrap ``agent_fn`` so every ``ctx.agent()`` call is a ``workflow_agent`` row.
+
+    The call is persisted BEFORE it runs (write-before-ack), admitted through
+    the shared runner lane (deferred under memory pressure, bounded by the
+    effective cap -- the adaptive controller's actuator for this entry -- and
+    claimed under a lease), and settled from its outcome. A dependency error
+    the adapters recognise (a 429 with ``Retry-After``, a 5xx, an auth
+    failure) parks the row in ``waiting_dependency`` with its slot released
+    and re-runs the call when the coordinator wakes it; terminal signals fail
+    it. The ``WorkerPool`` beneath keeps its own ``max_workers`` bound, so live
+    workers never exceed ``min(max_workers, lane.effective)``.
+    """
+    call_no = itertools.count(1)
+    lane = lane_for(session_key, source)
+
+    async def _admitted(prompt: str, opts: dict) -> Any:
+        n = next(call_no)
+        row_id = workflow_task_id(run_id, n)
+        rec = await admission.accept_async(
+            kind=KIND_WORKFLOW_AGENT,
+            task_id=row_id,
+            session_key=session_key,
+            source=source,
+            params={
+                "run_id": run_id,
+                "call": n,
+                "agent": opts.get("agent"),
+                "session": opts.get("session"),
+            },
+            workspace=opts.get("cwd") or workspace,
+            side_effect_class=SIDE_EFFECT_UNKNOWN,
+            provider=opts.get("model"),
+        )
+        handle = await admission.admit(
+            rec.id if rec is not None else row_id,
+            kind=KIND_WORKFLOW_AGENT,
+            lane=lane,
+            session_key=session_key,
+        )
+        if not await handle.running_async({"call": n, "prompt_chars": len(prompt)}):
+            # PERSIST BEFORE PUBLISH: ``admit`` committed ``starting`` under this
+            # generation one statement ago, so a refused ``starting -> running``
+            # is a newer owner or a store outage, never a forbidden edge. The
+            # call does not run under it -- a row left ``starting`` reaches no
+            # WAITING state, so the dependency park below could not persist, and
+            # a fenced row means another incarnation owns this call.
+            error = "the durable row did not take the running mark; the call did not run"
+            await handle.fail_async(error)
+            raise RunnerAdmissionRefused(f"{handle.task_id}: {error}")
+        waits = 0
+        while True:
+            try:
+                result = await agent_fn(prompt, opts)
+            except asyncio.CancelledError:
+                # The SYNCHRONOUS write here and in the ``BaseException`` arm
+                # below, deliberately: an ``await`` on an unwinding path can be
+                # interrupted before the terminal write is submitted, and a
+                # dropped one leaves the row active for the next boot's
+                # reconciler to re-dispatch.
+                handle.cancel("workflow run cancelled")
+                raise
+            except Exception as exc:
+                signal = classify_exception(exc)
+                waits += 1
+                if signal is None or not signal.retryable or waits > DEPENDENCY_MAX_ATTEMPTS:
+                    await handle.fail_async(f"{type(exc).__name__}: {exc}"[:500])
+                    raise
+                if not await admission.yield_dependency(handle, signal):
+                    await handle.fail_async(
+                        f"dependency {signal.dependency_scope} unavailable: {signal.detail or exc}"
+                    )
+                    raise
+                # No ``running`` mark here: the row already carries one when the
+                # wait returns True (see ``task_executor``'s dependency arm).
+                continue
+            except BaseException as exc:
+                handle.fail(f"{type(exc).__name__}: {exc}"[:500])
+                raise
+            await handle.done_async()
+            return result
+
+    return _admitted

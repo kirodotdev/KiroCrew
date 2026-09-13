@@ -755,6 +755,12 @@ class Backend:
     # state and reaps the process group. Respawn priming carries its own
     # bounded wait, so only the lazy first handshake arms this.
     _init_deadline_task: Optional[asyncio.Task[None]] = None
+    # Bound on the first ``initialize`` window, set at construction from the
+    # daemon's configured value (``mcp_gateway.initialize_timeout_secs``). A
+    # field rather than a module constant so the configured value reaches every
+    # backend spawned by this daemon; the spawn-gate watcher reads the same
+    # field, which is what keeps its permit window and this deadline aligned.
+    initialize_timeout_secs: float = _DEFAULT_INITIALIZE_TIMEOUT_SECS
     _dead_reason: Optional[str] = None
     # Idempotency guard for _broadcast_backend_gone (see there): the terminal
     # "backend gone" broadcast is reachable near-simultaneously from several
@@ -1467,7 +1473,7 @@ class Backend:
         if self._init_deadline_task is not None and not self._init_deadline_task.done():
             return
         self._init_deadline_task = asyncio.create_task(
-            self._init_deadline(_DEFAULT_INITIALIZE_TIMEOUT_SECS)
+            self._init_deadline(self.initialize_timeout_secs)
         )
 
     def _cancel_init_deadline(self) -> None:
@@ -3994,8 +4000,14 @@ async def spawn_backend(
     work_dir: str,
     declared_temp_keys: tuple[str, ...] = (),
     secret_env_keys: tuple[str, ...] = (),
+    initialize_timeout_secs: float = _DEFAULT_INITIALIZE_TIMEOUT_SECS,
 ) -> Backend:
     """Spawn a real MCP subprocess and wrap it in a :class:`Backend`.
+
+    ``initialize_timeout_secs`` bounds the backend's first ``initialize``
+    window (``Backend.initialize_timeout_secs``); the daemon threads its
+    configured value here so a constructor argument, not a module setter,
+    carries it.
 
     ``declared_temp_keys`` are the temp-key names (``TMPDIR``/``TMP``/``TEMP``,
     any casing) the operator's agent spec DECLARES for this server -- the
@@ -4168,6 +4180,7 @@ async def spawn_backend(
         stdout=process.stdout,
         created_at=now,
         last_used_at=now,
+        initialize_timeout_secs=float(initialize_timeout_secs),
     )
     backend._last_ping_response_mono = now  # cold-start: not insta-stale
     backend._stderr_task = stderr_task

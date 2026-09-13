@@ -315,7 +315,8 @@ class TestBatchIdentity:
         )
         mgr.spawn = lambda **kw: rejected
 
-        mgr._drain_queue()
+        # The pump is a coroutine on a running loop; await one pass.
+        await mgr._drain_queue_async()
         assert "reject-q-reject" in mgr._tasks, "a rejection at drain time was dropped on the floor"
         await mgr._tasks["reject-q-reject"]
         assert [i.id for i in announced] == ["q-reject"]
@@ -641,6 +642,7 @@ class TestBatchIdentity:
         ctx = MagicMock()
         ctx.hooks.auto_approve_subagent_spawn = False  # hooks exist, gate closed
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=ctx, on_done=_on_done)
+        await mgr.wait_taskq_ready()
         mgr._is_yolo = None
         mgr._on_spawn_approval = None  # no approval callback configured
         mgr._spawn_stagger_secs = 0.0
@@ -748,6 +750,7 @@ class TestBatchIdentity:
     @pytest.mark.asyncio
     async def test_batch_fields_set_and_started_event_fires_once(self):
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        await mgr.wait_taskq_ready()
         mgr._spawn_stagger_secs = 0.0  # no stagger queueing in this test
         events: list[tuple[str, dict]] = []
 
@@ -859,11 +862,23 @@ def _mock_dashboard_state():
     return ds
 
 
-async def _settle(predicate, timeout: float = 5.0) -> None:
-    """Poll until *predicate* is truthy (bounded) — create_task'd injection
-    turns need real event-loop time on slow CI shards, not one sleep(0)."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while not predicate() and asyncio.get_event_loop().time() < deadline:
+async def _settle(predicate, what: str, timeout: float = 5.0) -> None:
+    """Poll until *predicate* is truthy, and FAIL naming *what* on the ceiling.
+
+    create_task'd injection turns need real event-loop time on slow CI shards,
+    not one sleep(0). The ceiling is a lost-run guard, never the barrier: a
+    poll that returns on an unsatisfied predicate hands the assertions a state
+    nobody waited for, and the run then fails as whichever of them touches it
+    first — an injection turn that never ran reported as ``assert 1 == 2``, or
+    as an unrelated ledger mismatch three lines on. Measured on this host,
+    every call site here settles within one 0.02 s poll, so reaching the
+    ceiling is a stall and not a slow runner.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(f"never settled within {timeout}s: {what}")
         await asyncio.sleep(0.02)
 
 
@@ -981,7 +996,7 @@ class TestWaveDigest:
                 err = "boom" if i == 2 else ""
                 await on_done(self._member(i, total, error=err))
                 await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 2)
+            await _settle(lambda: len(injected) >= 2, what="both digest chunks injected")
 
         # TWO chunk injections for 12 members — not 12, not 1.
         assert len(injected) == 2
@@ -1049,7 +1064,7 @@ class TestWaveDigest:
             mgr.batch_members_pending = MagicMock(return_value=False)
             await on_done(m1)
             await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the wave digest injected")
 
         body = "\n".join(injected)
         # Each member shows its SERVED id inline.
@@ -1091,7 +1106,7 @@ class TestWaveDigest:
             mgr.batch_members_pending = MagicMock(return_value=False)
             await on_done(m0)
             await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the wave digest injected")
 
         body = "\n".join(injected)
         assert "· model" not in body
@@ -1131,7 +1146,7 @@ class TestWaveDigest:
             mgr.batch_members_pending = MagicMock(return_value=False)
             await on_done(m0)
             await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the wave digest injected")
 
         body = "\n".join(injected)
         # The raw credential-shaped value must not appear verbatim in the
@@ -1181,7 +1196,7 @@ class TestWaveDigest:
             await asyncio.sleep(0)
             await on_done(self._member(1, total))
             await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the wave-close digest injected")
             await _drain_injections(orch)
 
         body = "\n".join(injected)
@@ -1231,7 +1246,7 @@ class TestWaveDigest:
             await asyncio.sleep(0)
             await on_done(self._member(1, total))
             await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the wave-close digest injected")
             await _drain_injections(orch)
 
         body = "\n".join(injected)
@@ -1297,7 +1312,7 @@ class TestWaveDigest:
                 mgr.batch_members_pending = MagicMock(return_value=i != total - 1)
                 await on_done(self._member(i, total))
                 await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 2)
+            await _settle(lambda: len(injected) >= 2, what="both digest chunks injected")
 
         assert len(injected) == 2
         # FIFO: the observed order is [chunk 1/2, chunk 2/2] — the escalation
@@ -1386,11 +1401,13 @@ class TestWaveDigest:
                 await asyncio.sleep(0)
                 # Let each flush's injection turn finish before the next member
                 # reports, so both flushes take the direct (idle-slot) branch.
-                await _settle(lambda: slot.task is None)
+                await _settle(
+                    lambda: slot.task is None, what="this member's injection turn finished"
+                )
             # Both chunks' injection turns must report consumption before their
             # holds can settle — the settle is owed to the turn, not to the
             # `_on_done` return.
-            await _settle(lambda: len(settled) >= 2)
+            await _settle(lambda: len(settled) >= 2, what="both chunks' holds settled")
         # Members 0-8 are held for chunk 1; member 9 (the 10th) flushes it.
         # Members 10 is held for chunk 2; member 11 (wave close) flushes it.
         held_idx = list(range(9)) + [10]
@@ -1522,7 +1539,7 @@ class TestWaveDigest:
             assert all(
                 members[i]._digest_held for i in range(9)
             ), "precondition: the first nine members must be held for the chunk"
-            await _settle(turn_started.is_set)
+            await _settle(turn_started.is_set, what="the injection turn started")
             assert turn_started.is_set(), "precondition: the injection turn started"
             assert slot.task is not None and not slot.task.done(), (
                 "precondition: the hand-off is still in flight — this is the "
@@ -1547,7 +1564,7 @@ class TestWaveDigest:
 
             # The model consumes the digest — NOW the hand-off is confirmed.
             release_consume.set()
-            await _settle(lambda: bool(settled))
+            await _settle(lambda: bool(settled), what="the confirmed hand-off settled its holds")
 
         # Settled through the manager by the side that owns the hand-off, once,
         # with exactly this chunk's held members. (``settle_queued_delivery`` is
@@ -1696,7 +1713,9 @@ class TestWaveDigest:
                 mgr.batch_members_pending = MagicMock(return_value=True)
                 await on_done(m)
                 await asyncio.sleep(0)
-            await _settle(lambda: slot.task is None)
+            await _settle(
+                lambda: slot.task is None, what="the auth-required injection turn finished"
+            )
 
         assert (
             slot._last_turn_auth_required is True
@@ -1757,7 +1776,7 @@ class TestWaveDigest:
                 mgr.batch_members_pending = MagicMock(return_value=True)
                 await on_done(m)
                 await asyncio.sleep(0)
-            await _settle(lambda: slot.task is None)
+            await _settle(lambda: slot.task is None, what="the failing injection turn finished")
 
         assert settled == [] and marked == [], (
             "a failed hand-off must not tombstone the held siblings — their "
@@ -1814,7 +1833,7 @@ class TestWaveDigest:
                 # member succeeds, so its own guard_msg is empty.
                 await on_done(self._member(i, total, error="boom" if i == 2 else ""))
                 await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 2)
+            await _settle(lambda: len(injected) >= 2, what="both digest chunks injected")
         assert len(injected) == 2  # chunked: 10 + 2
         combined = "\n".join(injected)
         # The held member's escalation instruction reached the parent, in the
@@ -1860,7 +1879,7 @@ class TestWaveDigest:
                 mgr.batch_members_pending = MagicMock(return_value=i != total - 1)
                 await on_done(self._member(i, total))
                 await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the single-chunk digest injected")
         assert len(injected) == 1  # one chunk digest, not 3 per-agent turns
         digest = injected[0]
         assert digest.startswith("[Subagent batch completion event]")
@@ -1901,7 +1920,7 @@ class TestWaveDigest:
         solo.result = "solo result"
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat):
             await on_done(solo)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the per-agent completion injected")
         assert len(injected) == 1
         assert injected[0].startswith("[Subagent completion event]")
         assert "Batch results" not in injected[0]
@@ -2130,7 +2149,7 @@ class TestDigestHoldDeadline:
             )
             sweep = getattr(real, "_sweep_digest_holds", lambda _now: None)
             sweep(time.time() + hold + 5)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the partial digest injected")
 
         assert len(injected) == 1, "straggler withheld both finished siblings"
         digest = injected[0]
@@ -2210,7 +2229,7 @@ class TestDigestHoldDeadline:
             flush.done = True
             flush._digest_flush_only = True
             await on_done(flush)
-            await _settle(lambda: len(injected) >= 1)
+            await _settle(lambda: len(injected) >= 1, what="the flush-only digest injected")
 
         assert len(injected) == 1
         digest = injected[0]
@@ -2241,7 +2260,7 @@ class TestDigestHoldDeadline:
         # one of the settle callers, so it inherits the same ownership rule
         # without a second code path.
         assert flush._digest_settle_ids == []
-        await _settle(lambda: bool(settled))
+        await _settle(lambda: bool(settled), what="the flushed holds settled")
         assert settled == [["s0", "s1"]]
 
     @pytest.mark.asyncio
@@ -2322,3 +2341,144 @@ class TestRetryGating:
         assert resp.status == 200
         assert mgr.spawn.call_args.args[0] == "original raw task"
         assert mgr.spawn.call_args.kwargs["parent_session_key"] == "dashboard:m"
+
+
+# ── 6. Durable task queue at scale ───────────────────────────────────
+
+# Ceiling for the whole-queue drain below. The drain is a THROUGHPUT budget,
+# not a race: every row costs one claim + finalize round trip through the
+# store's writer thread, so the wall clock tracks the runner's per-row cost and
+# nothing about ordering. Measured on this Linux host: 0.58-0.60 s for 199 rows
+# idle and 0.86 s worst with eight copies of the test running at once — ~3-4 ms
+# per row, ~9 rows landing per poll wake. The Windows CI shard that reported
+# this drained 165 rows in under 30 s, i.e. ~180 ms per row, ~50x this host, so
+# all 199 want ~36 s there. 150 s is the measured worst case x 175, which is
+# also ~4x the shard's own projected time. It is a LOST-RUN guard, never the
+# barrier — the wait returns the instant the last row lands, so a healthy run
+# pays only what the drain costs.
+_DRAIN_CEILING_SECS = 150.0
+
+
+async def _await_drained(mgr, store, started: list[str], expected: int) -> None:
+    """Wait until *mgr* has drained *expected* queued rows, or fail saying so.
+
+    The completion of the drain is its OWN assertion. A bounded loop that
+    exits silently on its ceiling hands the next assertion a SHORT list, and
+    the run then fails as ``assert started == ids[1:]`` — "Right contains 34
+    more items" — which reads as a queue that lost or reordered rows when
+    every row it did drain was in FIFO order and the drain was merely
+    unfinished. So the ceiling raises here instead, naming how many of the rows
+    landed and how long it waited, and the order assertion runs only on a
+    complete drain.
+
+    What is waited on is the conjunction the assertions then read: rows
+    started, the window emptied, the running count back to zero and the
+    store's own DONE count. ``_release_slot`` → ``_drain_queue`` is what
+    advances the queue in production (the pump coalesces a request that lands
+    mid-pass into one more pass), so this polls that path rather than pumping
+    it — measured identical, 23 wakes and 0.6 s either way.
+    """
+    from kiro_crew.taskq import model
+
+    t0 = time.monotonic()
+    deadline = t0 + _DRAIN_CEILING_SECS
+    while time.monotonic() < deadline:
+        # The in-memory half of the conjunction gates the store read: a
+        # ``count()`` here takes the store's connection ON the event loop
+        # (``on_loop_db`` warns for exactly this), and one contended with the
+        # writer thread blocks the loop for the connection's whole busy
+        # timeout — including the drain this is waiting for.
+        if len(started) >= expected and not mgr._queue and mgr._running_count == 0:
+            if store.count(state=model.DONE) >= expected:
+                return
+        await asyncio.sleep(0.005)
+    raise AssertionError(
+        f"drain unfinished after {time.monotonic() - t0:.1f}s: "
+        f"{len(started)} of {expected} rows started, "
+        f"{store.count(state=model.DONE)} DONE, "
+        f"{len(mgr._queue)} still in the window, "
+        f"running_count={mgr._running_count}"
+    )
+
+
+class TestDurableQueueScale:
+    """The in-memory ``_queue`` is a bounded window over ``tasks.db``.
+
+    2000 accepted spawns are 2000 committed rows and at most
+    ``agent.task_dispatch_window`` dicts in memory; every row survives the
+    manager being thrown away, and a fresh manager drains them in order.
+    """
+
+    @pytest.mark.asyncio
+    async def test_2000_spawns_are_2000_rows_and_at_most_64_dicts(self):
+        from kiro_crew.taskq import model
+
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=4)
+        await mgr.wait_taskq_ready()
+        mgr._spawn_stagger_secs = 0.0
+        store = mgr._taskq
+        assert store is not None and store.window == 64
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+        ):
+            ids = [
+                mgr.spawn(f"task {i}", parent_session_key="dashboard:s1").id for i in range(2000)
+            ]
+        assert len(set(ids)) == 2000
+        assert store.count() == 2000
+        assert store.count(state=model.STARTING) == 4
+        assert store.count(state=model.QUEUED) == 1996
+        assert len(mgr._queue) == 64
+        assert mgr.queued_count_for("dashboard:s1") == 1996
+        assert mgr.has_pending_work_for("dashboard:s1") is True
+        # the window holds the OLDEST queued rows, in submission order
+        assert [p["_preassigned_id"] for p in mgr._queue] == ids[4:68]
+
+    @pytest.mark.asyncio
+    async def test_queue_survives_manager_loss_and_drains_fifo(self):
+        from kiro_crew.taskq import model
+
+        first = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1
+        )
+        await first.wait_taskq_ready()
+        first._spawn_stagger_secs = 0.0
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+        ):
+            ids = [first.spawn(f"t{i}", parent_session_key="dashboard:s1").id for i in range(200)]
+        first._taskq.close()
+        del first
+        second = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=3
+        )
+        await second.wait_taskq_ready()
+        second._spawn_stagger_secs = 0.0
+        second._last_spawn_ts = 0.0
+        store = second._taskq
+        assert store.count(state=model.QUEUED) == 199
+        started: list[str] = []
+
+        async def run(self, info):
+            started.append(info.id)
+            info.done = True
+            second._claim_finalize(info)
+            if second._release_slot(info):
+                second._running_count -= 1
+                second._drain_queue()
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=run),
+        ):
+            second._drain_queue()  # the recovery kick; releases pump the rest
+            await _await_drained(second, store, started, 199)
+        assert started == ids[1:]  # FIFO across the window boundary, none lost
+        assert store.count(state=model.DONE) == 199
+        assert len(mgr_queue := second._queue) == 0, mgr_queue
+        assert second._running_count == 0

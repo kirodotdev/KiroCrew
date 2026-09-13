@@ -1652,6 +1652,33 @@ resume a stale session persisted under the other namespace. The schema is the
 source of truth for this list: `requires_restart()` over `SCHEMA_REGISTRY`
 answers it, and this prose is a reader's convenience.
 
+The broker's admission keys are in that `mcp_gateway.*` set and ride the
+daemon's argv from `GatewayManager._spawn_once`: `spawn_concurrency_initial`
+(4), `spawn_concurrency_min` (1) and `spawn_concurrency_max` (8) size the
+daemon-global spawn gate (a fixed count of backend spawn+initialize windows in
+flight, FIFO past it; the band is what the adaptive controller later moves the
+live value within); `spawn_queue_wait_secs` (600) is the CEILING on how long a
+queue-aware stub is held before a `capacity` refusal and matches the DEFAULT of
+the stub's own reconnect budget (`stub.py` `_RECONNECT_TOTAL_BUDGET_SECS`, a
+constant the stub reads no config for, pinned equal by
+`test_stub_reconnect_budget.py`); the wait the daemon actually arms is
+`min(asked, key)` less `gatewayd._QUEUE_REFUSAL_MARGIN_SECS`
+([`mcp.md`](../../architecture/mcp.md#admission-before-allocation)), so the
+daemon gives up strictly first and raising the key above 600 s buys a queued stub
+no extra wait — what the stub asked for caps it before the margin comes off, and
+that constant is what has to rise instead. Because the key's help text is the
+only statement of this an operator reads, `test_config_baseline.py` pins the
+sentence against that arithmetic rather than leaving it to review;
+`initialize_timeout_secs` (10) bounds a fresh backend's first
+`initialize` and is threaded onto each `Backend` as a constructor field;
+`host_budget_max_procs` / `host_budget_max_rss_mb` / `host_budget_max_fds` (all
+0) cap what the host budget admits across pooled, private and fallback
+backends, where `0` means derive from the available-memory sample the gateway
+takes at spawn and the daemon's descriptor soft limit (processes never below
+`max_backends`; memory left unbounded). The loader clamps them (floor ≥ 1,
+ceiling ≥ floor, budgets ≥ 0). Semantics and the wire protocol they govern:
+[`docs/architecture/mcp.md`](../../architecture/mcp.md#admission-before-allocation).
+
 ### Which write paths kick the watcher
 
 Every door onto `config.json` ends at `notify_config_written()`, so the dashboard,
@@ -1721,6 +1748,27 @@ class AgentConfig:
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
+    task_queue_enabled: bool = True   # persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db before its id is returned; memory pressure defers instead of refusing. false = the in-memory spawn queue, for one release (tasks.db left in place, unread). See modules/taskq.md
+    task_dispatch_window: int = 64    # max queued spawns held in memory; the rest are rows read FIFO as the window drains. Load-time clamped to [1, 4096]; restart=True
+    task_store_journal_mode: str = "auto"  # tasks.db SQLite journal: "auto" = WAL locally, DELETE when $KIROCREW_HOME is on a network filesystem; "wal" | "delete" force one (RFC overload-resilience §13 Q6 reversal). Unknown -> "auto"; restart=True
+    admit_wait_secs: int = 30         # admitted -> queued after this, and how long a memory-deferred spawn waits before re-check. Load-time clamped to [1, 3600]; restart=True
+    start_collect_timeout_secs: int = 300  # how long the session-start gate's StartCollector keeps a timed-out session/new (row `recovering`) to adopt a late answer before the attempt is abandoned. Load-time clamped to [10, 3600]; restart=True
+    session_start_concurrency: int = 2  # ACP session/new requests outstanding per gateway event loop (SessionStartGate; fixed, not adaptive). Queue time behind it is not start time. Load-time clamped to [1, 64]; restart=True
+    lane_weights: dict[str, int] = {}    # per-lane weight overrides keyed by root session key or 'system'; unlisted lanes weigh 1, and a weight shapes the share of picks, never a hard cap. Each value load-time clamped to [1, 64]; non-string and empty keys dropped. Live
+    child_reserve: int = 1               # execution slots a depth-0 task may never take while a nested task is queued or a parent waits on children; also lifts an adaptive squeeze to adaptive_floor + child_reserve while a parent waits (never above max_subagents). 0 disables. Load-time clamped to [0, 8]. Live. See modules/subagent.md § Fairness lanes and the child reserve
+    recovery_backoff_base_secs: float = 2.0    # first retry delay of the shared recovery ladder (tool call / backend / ACP runtime) and of a dependency wait; doubles with equal jitter. Snapshotted onto the process ladder by `recovery.ladder.configure_default_ladder(cfg)` in `GatewayOrchestrator._init_subagents`; the gatewayd supervisor's rung is pinned and does not follow it, and the two import-time readers (`acp/client._ACP_RESPAWN_BACKOFF_S`, `taskq/model.recovery_backoff_secs`) keep the static defaults. Load-time clamped to [0.1, 60]; restart=True. See modules/session.md § Recovery ladder
+    recovery_backoff_max_secs: float = 120.0   # cap on that delay; a server retry hint is honoured up to it. Same snapshot seam and same exclusions as the base. Load-time clamped to [1, 3600], never below the base; restart=True
+    adaptive_concurrency: bool = True        # run the adaptive concurrency controller: a runtime execution cap beneath max_subagents (the ceiling, never written) plus the MCP daemon's spawn-gate capacity. false = user cap only. Live. See modules/adaptive-concurrency.md
+    adaptive_concurrency_mode: str = "aimd"  # "aimd" | "fixed" ("fixed" pins both caps at their initial values -- the one-flip reversal). Live
+    adaptive_floor: int = 1                  # lowest execution cap under sustained pressure. Load-time clamped to [1, 64]. Live
+    adaptive_initial: int = 4                # fresh-gateway execution cap, bounded by max_subagents; earned upward. Load-time clamped to [1, 64]. Live
+    # AIMD tuning uses fixed constants in adaptive/policy.py.
+    controller_sample_secs: int = 5          # adaptive controller sampling interval. Load-time clamped to [1, 300]. Live
+    dependency_max_attempts: int = 20          # coordinated probes a dependency scope gets before every waiter is failed. Load-time clamped to [1, 1000]
+    dependency_wait_deadline_secs: int = 3600  # wall-clock ceiling on one dependency wait; 0 = attempts cap only. Load-time clamped to [0, 86400]
+    dependency_wake_per_tick: int = 0          # waiters released per wake tick after the recovery probe; 0 = the current effective admission capacity. Load-time clamped to [0, 4096]
+    dependency_wake_spacing_secs: float = 1.0  # pause between staged wake ticks. Load-time clamped to [0, 60]
+    interactive_command_policy: str = "cancel"  # "cancel" | "wait": what the tool-stall watchdog does when a stalled shell command is classified waiting_input -- cancel that call non-lethally and re-drive with a non-interactive hint, or announce waiting_input once and keep the turn open (bounded by the turn ceiling). Never answers the prompt. An unknown value loads as "cancel". Read by _load_watchdog_settings (new handles + hot-apply). See modules/acp-client.md § Interactive-command policy
 
 @dataclass
 class SessionConfig:

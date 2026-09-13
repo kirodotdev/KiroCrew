@@ -263,10 +263,21 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         )
         if d.get("error"):
             return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
+        # A task-plan definition runs SYNCHRONOUSLY behind this call
+        # (`start_workflow_definition` awaits `execute_plan`), so by the time the
+        # response arrives the plan has already finished or the POST timed out
+        # under it. Promising a later injection there would tell the caller to
+        # wait for an event that has already happened, or that never will.
+        blocking = bool(d.get("task_id"))
         return _wf_return(
             "workflow_run",
             f"Started saved workflow `/workflow {workflow_ref}` as `{d.get('run_id')}` "
-            f"from revision {d.get('revision')}. Its result will be injected here on completion.",
+            f"from revision {d.get('revision')}. "
+            + (
+                "It ran to completion behind this call; read the outcome with " "`workflow_status`."
+                if blocking
+                else "Its result will be injected here on completion."
+            ),
         )
     if not source and intent:
         # Author-in-run (M6.7): returns a run_id INSTANTLY — the script is

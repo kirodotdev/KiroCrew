@@ -50,6 +50,8 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [subagent.md](subagent.md) | Spawning background workers, result delivery, and orphan recovery. |
+| [adaptive-concurrency.md](adaptive-concurrency.md) | The adaptive concurrency controller: a runtime execution cap beneath the user's ceiling and the MCP daemon's spawn-gate capacity, halved on corroborated host pressure, +1 per clean window, pause-and-probe under severe pressure; provider throttling scoped to its dependency channel. |
+| [taskq.md](taskq.md) | The durable task queue under every accepted unit of work: `tasks.db`, the validated state machine, write-before-ack, atomic claim with lease and generation fencing, the bounded dispatch window, legacy import and reconcile-first boot. |
 | [monitor-architecture.md](monitor-architecture.md) | The paradigm every monitoring loop follows: the seven layers, the plural probe contract, level-triggered decision, versioned state, and how to add a new monitored kind. Umbrella over the two implementation specs below. |
 | [agent-interrupt-controller.md](agent-interrupt-controller.md) | `kiro_crew.irq`: masking, coalescing, epoch resets and an error backstop for script-cron pollers, so a cheap probe interrupts an expensive agent turn instead of the turn polling. Also the app-facing probe SDK. |
 | [babysit-pr-watch.md](babysit-pr-watch.md) | Zero-token PR polling for babysit loops: a script cron that wakes the owning session only on unexpected state. |

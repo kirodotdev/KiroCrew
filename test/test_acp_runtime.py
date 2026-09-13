@@ -44,12 +44,14 @@ from kiro_crew.acp.runtime import (
     AcpSessionHandle,
     _ColdStartAdmission,
 )
+from kiro_crew.acp.session_handle import NATIVE_CHILD_ROSTER_CAP
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
+    EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
     JSONRPC_METHOD_NOT_FOUND,
@@ -65,6 +67,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
     JsonRpcMessage,
 )
+from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
 
 # ── Harness ──
 
@@ -1158,7 +1161,12 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
 
     assert wrapped["argv"] == [launch_path, "acp", "--agent", runtime._agent]
     assert wrapped["mode"] == "auto"
-    assert wrapped["kwargs"] == {
+    wrap_kwargs = dict(wrapped["kwargs"])
+    # The per-process scratch window is allocated at spawn time; its path is
+    # runtime-owned, so only its presence and shape are pinned here.
+    extra_private = wrap_kwargs.pop("extra_private_dirs")
+    assert isinstance(extra_private, (list, tuple))
+    assert wrap_kwargs == {
         "strip_python_env": True,
         "is_kiro_cli": True,
     }
@@ -6789,7 +6797,7 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     monkeypatch.setattr(
         runtime_mod,
         "wrap_argv",
-        lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
+        lambda argv, mode, strip_python_env=False, is_kiro_cli=None, **_kw: (argv, None),
     )
     monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
     monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
@@ -6847,7 +6855,7 @@ async def test_runtime_spawn_names_its_own_browser_session(monkeypatch):
     monkeypatch.setattr(
         runtime_mod,
         "wrap_argv",
-        lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
+        lambda argv, mode, strip_python_env=False, is_kiro_cli=None, **_kw: (argv, None),
     )
     monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
     monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
@@ -8343,6 +8351,353 @@ async def test_session_swap_on_warm_runtime_does_not_inherit_child_routing():
     finally:
         await _drain_audits(rt)
         await _stop_reader(task)
+
+
+# ── the recognition cap's residual: what a TRUNCATED roster says out loud ─────
+#
+# `_snapshot_subagent_sessions` recognises at most NATIVE_CHILD_ROSTER_CAP ids —
+# the same bound `AcpSessionHandle` counts them under — and reports what it
+# refused two ways: one warning naming the count, and a distinct auto-reject
+# reason on a permission request it cannot attribute. Both are SNAPSHOT-scoped:
+# the frame carries the backend's full list, so the previous frame's truncation
+# must not colour this frame's refusals. `test_native_subagent_boundary.py` pins
+# the cap and the two reasons end to end; what follows pins the two properties
+# an operator reads them THROUGH — one line per truncated roster rather than per
+# truncated id, and an attribution that expires with the snapshot that earned it.
+
+
+def _unroutable_permission_frame(child_sid: str, request_id: int) -> dict:
+    """A permission REQUEST for a session this runtime has no queue for."""
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "session/request_permission",
+        "params": {
+            "sessionId": child_sid,
+            "toolCall": {"toolCallId": "tc-1", "title": "bash"},
+            "options": [
+                {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+            ],
+        },
+    }
+
+
+async def _await_count(seq: list, n: int, what: str, timeout: float = 5.0) -> None:
+    """Wait on the observable condition — the answer/audit runs as a spawned
+    task off the reader loop, so a sleep guess is the flake this suite's
+    `_drain` docstring describes."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while len(seq) < n:
+        if loop.time() >= deadline:
+            raise AssertionError(f"only {len(seq)} {what} recorded, expected {n}")
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_roster_overflow_warns_once_per_episode_not_once_per_frame(caplog):
+    """A truncation episode gets ONE warning, however many frames re-announce it.
+
+    Two volume properties, one per axis of the same product:
+
+    Per FRAME. The roster arrives as `subagent/list_update`, which kiro-cli
+    re-broadcasts on every child status change — so above the cap every
+    rebroadcast re-earns the warning at a frame rate this client does not
+    choose. Measured on this handler with the throttle removed: 10 over-cap
+    snapshots → 10 identical WARNING records (~245 message bytes each), and the
+    tail count holds at 40, so the log VOLUME is what grows, not the number. It
+    is the assertion below that fails in that state. The frames
+    below only move a child's `status`, which is the real steady state and the
+    case a "same count, don't log" throttle would appear to handle by accident:
+    it suppresses while the tail happens to hold still and floods again the
+    moment one child completes.
+
+    Per ID. A single frame's tail must not become one line per truncated id
+    either — the count is the whole diagnostic, "40 announced children are
+    unrecognisable here", and a per-id line states it only if the reader counts
+    the lines.
+
+    And a roster INSIDE the cap must say nothing at all: the warning has to
+    mean "children went unrecognised", never "a roster arrived", or an
+    operator cannot use its presence as the signal.
+    """
+    import logging
+
+    rt, _, _ = _make_runtime()
+    _register(rt, "parent-session")
+    overflow = 40
+    roster = [{"sessionId": f"c-{i}"} for i in range(NATIVE_CHILD_ROSTER_CAP + overflow)]
+    statuses = ("running", "pending", "completed")
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        rt._snapshot_subagent_sessions({"subagents": roster})
+        truncation = [r for r in caplog.records if "recognition cap" in r.getMessage()]
+        assert len(truncation) == 1
+        assert truncation[0].levelno == logging.WARNING
+        assert str(overflow) in truncation[0].getMessage()
+        assert len(rt._subagent_sessions) == NATIVE_CHILD_ROSTER_CAP
+        assert rt._subagent_roster_overflow == overflow
+
+        # Nine more frames naming the SAME children with moved statuses. The id
+        # set is identical, the frame is not, and the tail count is unchanged.
+        for n in range(9):
+            rt._snapshot_subagent_sessions(
+                {
+                    "subagents": [
+                        {"sessionId": e["sessionId"], "status": statuses[(i + n) % 3]}
+                        for i, e in enumerate(roster)
+                    ]
+                }
+            )
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+        assert rt._subagent_roster_overflow == overflow
+        # Inside the interval the repeats are held, not emitted — this is the
+        # assertion that fails on the per-frame implementation.
+        assert rt._roster_overflow_repeats == 9
+        assert rt._roster_overflow_peak == overflow
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        rt._snapshot_subagent_sessions({"subagents": roster[:8]})
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert rt._subagent_roster_overflow == 0
+    # The episode ended under one interval, so its residual repeat count is
+    # flushed rather than dropped: a truncation storm that stops quickly must
+    # still report more than its first frame.
+    assert [r.getMessage() for r in caplog.records if "further snapshot(s)" in r.getMessage()] == [
+        f"subagent roster truncated on 9 further snapshot(s); largest tail "
+        f"{overflow} id(s) past the {NATIVE_CHILD_ROSTER_CAP}-id recognition cap"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_roster_truncation_folds_into_one_throttled_summary(caplog):
+    """The repeats become a throttled DEBUG summary carrying the count and peak.
+
+    Same mechanism as `_note_dropped_frame` above, deliberately: one interval
+    constant, a monotonic window, a count flushed on the next event past it, and
+    no timer task on the demux loop. What the summary carries is the count of
+    repeated snapshots and the LARGEST tail they named — the peak, because
+    sizing the cap reads the worst case, and which tail happens to be current at
+    an arbitrary flush instant is noise.
+    """
+    import logging
+
+    import kiro_crew.acp.runtime as runtime_mod
+
+    rt, _, _ = _make_runtime()
+    _register(rt, "parent-session")
+
+    def _over(extra: int) -> dict:
+        return {
+            "subagents": [{"sessionId": f"c-{i}"} for i in range(NATIVE_CHILD_ROSTER_CAP + extra)]
+        }
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        rt._snapshot_subagent_sessions(_over(40))  # the loud one, opens the window
+        for extra in (40, 77, 40, 12):
+            rt._snapshot_subagent_sessions(_over(extra))
+        assert [
+            r.getMessage() for r in caplog.records if "further snapshot(s)" in r.getMessage()
+        ] == []
+
+        # Age the window out; the next truncated snapshot flushes the summary.
+        rt._roster_overflow_summary_at -= runtime_mod._ROSTER_OVERFLOW_SUMMARY_INTERVAL_SECS + 1.0
+        rt._snapshot_subagent_sessions(_over(40))
+
+    summaries = [r for r in caplog.records if "further snapshot(s)" in r.getMessage()]
+    assert len(summaries) == 1, [r.getMessage() for r in summaries]
+    assert summaries[0].levelno == logging.DEBUG
+    assert "truncated on 5 further snapshot(s)" in summaries[0].getMessage()
+    assert "largest tail 77 id(s)" in summaries[0].getMessage()
+    # Still exactly one loud record for the whole episode.
+    assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+    # Flushing reopens the window rather than closing the episode.
+    assert rt._roster_overflow_repeats == 0
+    assert rt._roster_overflow_peak == 0
+    assert rt._roster_overflow_summary_at != 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_truncation_after_the_roster_recovers_is_loud_again(caplog):
+    """The reset boundary is the EPISODE, and both ways out of one re-arm it.
+
+    Without this the throttle would swallow a genuinely new truncation for the
+    rest of the runtime's life, which is worse than the volume it fixes: the
+    warning's whole job is that a truncated tail is otherwise invisible. The
+    boundary is the overflow count returning to 0, which is exactly the two
+    events that already retire the snapshot ATTRIBUTION (a roster inside the
+    cap, and the owning session unregistering) — one lifetime for both halves of
+    the same signal, so the loud line and the auto-reject reason can never
+    disagree about whether the cap is under pressure.
+    """
+    import logging
+
+    rt, _, _ = _make_runtime()
+    _register(rt, "parent-session")
+    over = {"subagents": [{"sessionId": f"c-{i}"} for i in range(NATIVE_CHILD_ROSTER_CAP + 40)]}
+    inside = {"subagents": [{"sessionId": "c-0"}]}
+
+    def _loud() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        rt._snapshot_subagent_sessions(over)
+        rt._snapshot_subagent_sessions(over)
+        assert len(_loud()) == 1
+        # Way out #1: a roster the cap did not truncate.
+        rt._snapshot_subagent_sessions(inside)
+        assert rt._roster_overflow_summary_at == 0.0
+        rt._snapshot_subagent_sessions(over)
+        assert len(_loud()) == 2, _loud()
+
+        # Way out #2: the owner leaves, taking its roster with it. The next
+        # owner's first truncation is a new episode.
+        rt._snapshot_subagent_sessions(over)
+        rt.unregister_session("parent-session")
+        assert rt._subagent_roster_overflow == 0
+        assert rt._roster_overflow_summary_at == 0.0
+        _register(rt, "successor-session")
+        rt._snapshot_subagent_sessions(over)
+        assert len(_loud()) == 3, _loud()
+        assert rt._subagent_owner == "successor-session"
+
+
+@pytest.mark.asyncio
+async def test_unroutable_permission_reason_follows_the_last_roster_snapshot():
+    """The cap-truncation attribution expires with the snapshot that earned it.
+
+    A `list_update` carries the backend's FULL child list, so the count of ids
+    it truncated describes that frame and nothing later. Left sticky, one
+    truncated roster would re-label every unknown-session denial for the rest of
+    the runtime's life as a cap truncation — and the SEL reason is precisely the
+    signal an operator uses to decide whether to raise the cap, so a stuck one
+    both invents cap pressure that is not there and buries the next real
+    truncation in it. Unregistering the owner is not the only way back: the very
+    next clean roster is already the whole truth.
+
+    Both halves are asserted where the operator reads them — the SEL row's
+    `error` field and the `child_permission_denied` metric — not on the private
+    counter alone.
+    """
+    import kiro_crew.sel as sel_mod
+
+    audited: list[dict] = []
+    denied: list[dict] = []
+
+    class _CapturingSel:
+        def log_tool_invocation(self, **kwargs):  # noqa: D401 - stub
+            audited.append(kwargs)
+
+    def _spy_counter(name, attrs=None, **_kw):
+        if name == CHILD_PERMISSION_DENIED:
+            denied.append(dict(attrs or {}))
+
+    rt, reader, proc = _make_runtime()
+    _register(rt, "parent-session")
+    task = await _start_reader(rt)
+    try:
+        with (
+            patch.object(sel_mod, "sel", lambda: _CapturingSel()),
+            patch("kiro_crew.acp.runtime.emit_counter", _spy_counter),
+        ):
+            # Snapshotted by direct call, not fed as a frame: a roster naming
+            # NATIVE_CHILD_ROSTER_CAP children serialises past this reader's
+            # line limit, so a fed frame would measure the stdout buffer
+            # instead of the cap.
+            rt._snapshot_subagent_sessions(
+                {"subagents": [{"sessionId": f"c-{i}"} for i in range(NATIVE_CHILD_ROSTER_CAP + 2)]}
+            )
+            assert rt._subagent_roster_overflow == 2
+
+            _feed(reader, _unroutable_permission_frame("ghost-a", 301))
+            await _drain(reader)
+            await _await_count(denied, 1, "denial metric")
+            await _drain_audits(rt)
+            assert denied == [{"surface": "runtime", "reason": "roster_overflow_auto_reject"}]
+            assert [row["error"] for row in audited] == ["roster_overflow_auto_reject"]
+
+            # A later roster that truncated NOTHING: this child was never
+            # announced, and saying "the cap truncated it" would be false.
+            rt._snapshot_subagent_sessions({"subagents": [{"sessionId": "c-0"}]})
+            assert rt._subagent_roster_overflow == 0
+
+            _feed(reader, _unroutable_permission_frame("ghost-b", 302))
+            await _drain(reader)
+            await _await_count(denied, 2, "denial metric")
+            await _drain_audits(rt)
+            assert denied[1] == {
+                "surface": "runtime",
+                "reason": "unregistered_session_auto_reject",
+            }
+            assert audited[1]["error"] == "unregistered_session_auto_reject"
+
+            # The owner leaving is the other way back: the truncated roster it
+            # owned is gone, so a denial on the warm runtime after it must not
+            # still be attributed to that roster's cap pressure.
+            rt._snapshot_subagent_sessions(
+                {"subagents": [{"sessionId": f"c-{i}"} for i in range(NATIVE_CHILD_ROSTER_CAP + 2)]}
+            )
+            rt.unregister_session("parent-session")
+            _feed(reader, _unroutable_permission_frame("ghost-c", 303))
+            await _drain(reader)
+            await _await_count(denied, 3, "denial metric")
+            await _drain_audits(rt)
+            assert denied[2]["reason"] == "unregistered_session_auto_reject"
+            assert audited[2]["error"] == "unregistered_session_auto_reject"
+
+        # No request was left hanging or counted as a drop: each got the
+        # request's own least-destructive reject option, immediately.
+        answered = [json.loads(c.args[0].decode()) for c in proc.stdin.write.call_args_list]
+        assert [(f["id"], f["result"]["outcome"]) for f in answered] == [
+            (301, {"outcome": "selected", "optionId": "reject_once"}),
+            (302, {"outcome": "selected", "optionId": "reject_once"}),
+            (303, {"outcome": "selected", "optionId": "reject_once"}),
+        ]
+        assert rt._dropped_frames == {}
+    finally:
+        await _drain_audits(rt)
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_a_kas_frame_naming_the_parent_itself_gets_no_native_child_row():
+    """A parent is never its own sub-agent — in the count OR in the display row.
+
+    `_note_native_child` answers "is this id tracked as a child of mine", and
+    the KAS display roster keys its row on that answer, which is what keeps
+    every native-child store inside one cap. The parent's own id is refused by
+    the count, so it must be refused by the row too: a row the counted set does
+    not hold can never be recognised as a duplicate, and here it would also
+    render the session as a sub-agent of itself. The frame is still a parent
+    sub-agent frame, so it keeps emitting its list event rather than falling
+    through to be re-rendered as an ordinary tool call.
+    """
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    handle = AcpSessionHandle("sA", asyncio.Queue(), rt)
+
+    def _subtask_frame(subtask_id: str, tool_call_id: str) -> dict:
+        return {
+            "sessionUpdate": "tool_call",
+            "toolCallId": tool_call_id,
+            "title": f"Sub-agent: {subtask_id}",
+            "status": "in_progress",
+            "_meta": {"kiro": {"agentSubtaskId": subtask_id, "kind": "agent-subtask"}},
+        }
+
+    events = handle._handle_kas_subagent(_subtask_frame("sA", "k1"))
+    assert events is not None and [e.kind for e in events] == [EVENT_SUBAGENT_LIST]
+    assert handle.native_child_sessions == frozenset()
+    assert handle._kas_subagent_roster == {}
+    assert handle.native_child_overflow == 0
+
+    # A real child on the same handle still gets its row, so the refusal above
+    # is about identity and not about the roster being inert.
+    handle._handle_kas_subagent(_subtask_frame("child-1", "k2"))
+    assert set(handle._kas_subagent_roster) == {"child-1"} == set(handle.native_child_sessions)
 
 
 def test_child_low_fidelity_requires_structured_security_context():

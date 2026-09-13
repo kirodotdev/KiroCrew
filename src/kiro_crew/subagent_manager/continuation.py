@@ -61,6 +61,24 @@ class ContinuationCoordinator(ManagerComponent):
             if not a.done and (a.conversation_key or f"subagent:{a.id}") == conv_key:
                 return a
         for p in self._manager._queue:
+            # UNSTARTED entries only, the class every other ``_queue`` scan
+            # separates out (the pump's grant loop, the refill census, the
+            # eviction, the child reserve). A ``_resume_id`` entry is a RESIDENT
+            # run asking for the lane slot it yielded: it carries no
+            # ``conversation_key``, so the synthetic key below is its RUN id --
+            # which IS the conversation id of a first-generation continuable
+            # run. A live parked run is answered by the ``_agents`` loop above,
+            # so what this skips is a leftover entry whose run has ENDED: only
+            # ``_withdraw_resume``'s give-up arm drops one, and the queued-stop
+            # path deliberately leaves it alone rather than publishing a "never
+            # started" terminal over a live run. Counting it here answers "run X
+            # is in flight — use spawn_steer" (which then says ``not_running``)
+            # for as long as the pool stays full, because the pump returns above
+            # its resume loop with no free slot -- and it also refuses
+            # ``release_conversation`` and makes the TTL sweep keep refreshing a
+            # conversation nothing holds.
+            if p.get("_resume_id"):
+                continue
             pkey = str(p.get("conversation_key") or "") or (
                 f"subagent:{p.get('_preassigned_id', '')}"
             )
@@ -243,6 +261,31 @@ class ContinuationCoordinator(ManagerComponent):
         if seeded:
             logger.info("Rebuilt conversation TTL registry from disk: %d conversation(s)", seeded)
 
+    def native_child_resume_refusal(self, conversation_id: str) -> str | None:
+        """The typed ``native_child_not_resumable`` reason when *conversation_id*
+        is a harness-native child of a LIVE session, else None.
+
+        Asks every live ``AcpSessionHandle`` (the provider's ``client`` on the
+        runtime path); a handle that is not one, or a session manager without
+        a registry, answers nothing. Read-only: no session is created.
+        """
+        sessions = getattr(self._manager._sessions, "_sessions", None)
+        if not isinstance(sessions, dict):
+            return None
+        for sess in list(sessions.values()):
+            provider = getattr(sess, "provider", None)
+            handle = getattr(provider, "client", None) or provider
+            probe = getattr(handle, "native_child_resume_refusal", None)
+            if not callable(probe):
+                continue
+            try:
+                reason = probe(conversation_id)
+            except Exception:  # noqa: BLE001 - a broken handle is not a child
+                continue
+            if reason:
+                return str(reason)
+        return None
+
     def continue_conversation_impl(
         self,
         conv_id: str,
@@ -255,6 +298,82 @@ class ContinuationCoordinator(ManagerComponent):
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
     ) -> SubagentInfo | None:
+        """Dispatch a follow-up *task* into conversation *conv_id* (sync callers).
+
+        Every check and every bookkeeping step lives in
+        :meth:`_continue_prelude_impl`; this wrapper only hands the resolved
+        spawn arguments to the sync ``spawn``. Event-loop callers use
+        ``continue_conversation_async`` so the durable row is written off-loop.
+
+        That is a hard requirement, not a preference. The prelude itself takes
+        no store call at all, but the sync ``spawn`` takes TWO ``BEGIN
+        IMMEDIATE`` transactions on the CALLING thread -- ``taskq_accept``'s row
+        write and ``taskq_claim`` -- and each of them waits on
+        ``TaskStore._lock``, which the store's own writer thread holds across a
+        query. Measured on this path against a 1s hold: a coroutine caller's
+        loop serves 0 of the ~95 10ms heartbeat ticks due in that window, where
+        ``continue_conversation_async`` serves 91. Neither write can be posted
+        instead (``_post_store_write``): the accept's error is what REFUSES the
+        spawn, so its value has to be awaited -- which is exactly what the async
+        entry does.
+        """
+        prelude = self._manager._continue_prelude(
+            conv_id,
+            task,
+            parent_session_key,
+            agent,
+            model,
+            max_turns,
+            cwd,
+            _preassigned_id,
+            _memory_mode,
+        )
+        if not isinstance(prelude, dict):
+            return prelude
+        return self._manager.spawn(**prelude)
+
+    async def continue_conversation_async_impl(
+        self,
+        conv_id: str,
+        task: str,
+        parent_session_key: str = "",
+        agent: str = "",
+        model: str | None = None,
+        max_turns: int = 0,
+        cwd: str = "",
+        _preassigned_id: str = "",
+        _memory_mode: str | None = None,
+    ) -> SubagentInfo | None:
+        """:meth:`continue_conversation_impl` for event-loop callers: the same
+        prelude, then ``spawn_async`` (write-before-ack with the store write on
+        its writer thread)."""
+        prelude = self._manager._continue_prelude(
+            conv_id,
+            task,
+            parent_session_key,
+            agent,
+            model,
+            max_turns,
+            cwd,
+            _preassigned_id,
+            _memory_mode,
+        )
+        if not isinstance(prelude, dict):
+            return prelude
+        return await self._manager.spawn_async(**prelude)
+
+    def _continue_prelude_impl(
+        self,
+        conv_id: str,
+        task: str,
+        parent_session_key: str = "",
+        agent: str = "",
+        model: str | None = None,
+        max_turns: int = 0,
+        cwd: str = "",
+        _preassigned_id: str = "",
+        _memory_mode: str | None = None,
+    ) -> "SubagentInfo | dict[str, Any] | None":
         """Dispatch a follow-up *task* into conversation *conv_id*.
 
         ``_preassigned_id`` mirrors ``spawn``: a caller that must persist the
@@ -324,6 +443,18 @@ class ContinuationCoordinator(ManagerComponent):
         # Re-check: SessionMap.get self-prunes entries whose session files
         # are missing, so a surviving mapping == resumable files on disk.
         if not self._manager._sessions.resumable_sid(conv_key):
+            # A harness-native child (kiro-cli ``use_subagent``, a KAS
+            # subtask) has no conversation of its own: the typed refusal
+            # names the parent instead of the generic lookup miss.
+            native_refusal = self.native_child_resume_refusal(conv_id)
+            if native_refusal is not None:
+                return SubagentInfo(
+                    id=uuid.uuid4().hex[:8],
+                    task=_redact(task),
+                    done=True,
+                    parent_session_key=parent_session_key,
+                    error=native_refusal,
+                )
             # Point the caller at the prior result if the run folder survives
             # (result.txt outlives the session under the tombstone TTL).
             result_hint = ""
@@ -392,8 +523,8 @@ class ContinuationCoordinator(ManagerComponent):
         # network mount takes to answer. Async callers resolve it off-loop instead:
         # crew passes its slot project, and `recorded_cwd()` gives the others the
         # run's own recorded path to hand back in.
-        return self._manager.spawn(
-            task,
+        return dict(
+            task=task,
             _preassigned_id=_preassigned_id,
             parent_session_key=parent_session_key,
             agent=agent,
@@ -703,7 +834,7 @@ class ContinuationCoordinator(ManagerComponent):
         # Finalization may hold the conversation for a beat after the task is
         # popped (shielded report); retry a bounded number of times.
         for _attempt in range(self._manager._FOLLOWUP_BUSY_RETRIES):
-            child = self._manager.continue_conversation(
+            child = await self._manager.continue_conversation_async(
                 info.id,
                 task,
                 parent_session_key=info.parent_session_key,

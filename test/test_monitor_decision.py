@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.monitoring.decision import decide_monitor, monitor_budget_reason
+from kiro_crew.monitoring.github_provider_errors import REASON_SHARED_COOLDOWN
 from kiro_crew.monitoring.models import (
+    MONITOR_STOP_PROVIDER_ERROR_BUDGET,
     MonitorBudgets,
     MonitorDecision,
     MonitorObservation,
@@ -385,3 +387,91 @@ class TestVerdictRejectsMalformedPayloads:
         )
 
         assert verdict.entries == (first, second)
+
+
+class TestAnUnattemptedProbeNeverPredictsRetirement:
+    """The third outcome, at the layer that SPENDS the budget rather than charges it.
+
+    ``shadow.apply_monitor_probe`` and the production counting site in
+    ``autonudge`` both already refuse to charge a shared-cooldown skip, and both
+    are pinned. Neither of them sees this: ``_provider_error_decision`` reads the
+    SAME budget one tick into the future (``consecutive_provider_errors + 1``),
+    so a skip arriving on a watch one real error short of its ceiling retires it
+    on a failure nothing will ever count -- and the watch made no API call of its
+    own to earn that.
+    """
+
+    @staticmethod
+    def _skip() -> MonitorObservation:
+        return MonitorObservation(
+            "fp-cooldown",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.RATE_LIMITED,
+            reason_code=REASON_SHARED_COOLDOWN,
+        )
+
+    @staticmethod
+    def _real() -> MonitorObservation:
+        """The same shape MINUS the one field that says nothing was attempted."""
+        return MonitorObservation(
+            "fp-cooldown",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.RATE_LIMITED,
+            reason_code="provider_rate_limited",
+        )
+
+    def test_a_skip_one_error_short_of_the_ceiling_retries_instead(self) -> None:
+        state = _state(
+            consecutive_provider_errors=2,
+            budgets=MonitorBudgets(max_provider_errors=3),
+        )
+
+        assert (
+            decide_monitor(state, self._skip(), now=1_100.0).decision
+            is MonitorDecision.RETRY_PROVIDER
+        )
+
+    def test_the_same_observation_with_a_real_reason_still_retires(self) -> None:
+        """The differential is the pin: without it the first test passes on a
+        decision that stopped distinguishing the two."""
+        state = _state(
+            consecutive_provider_errors=2,
+            budgets=MonitorBudgets(max_provider_errors=3),
+        )
+
+        assert (
+            decide_monitor(state, self._real(), now=1_100.0).decision
+            is MonitorDecision.STOP_BLOCKED
+        )
+
+    def test_a_budget_the_watch_really_spent_still_stops_a_skip(self) -> None:
+        """Only the PREDICTION is corrected. An exhausted budget is not a
+        prediction, so ``monitor_budget_reason`` keeps the stop -- otherwise this
+        fix would make a shared cooldown a way to outlive the ceiling forever.
+        """
+        state = _state(
+            provider_error_count=3,
+            budgets=MonitorBudgets(max_provider_errors=3),
+        )
+
+        assert monitor_budget_reason(state, now=1_100.0) == MONITOR_STOP_PROVIDER_ERROR_BUDGET
+        assert (
+            decide_monitor(state, self._skip(), now=1_100.0).decision is MonitorDecision.STOP_BUDGET
+        )
+
+    def test_a_skip_on_a_non_retryable_kind_is_still_blocked(self) -> None:
+        """The kind gate runs FIRST and stays first: an unattempted probe that
+        somehow reports a non-retryable kind is not made retryable by being
+        unattempted.
+        """
+        observation = MonitorObservation(
+            "fp-cooldown",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.AUTHENTICATION,
+            reason_code=REASON_SHARED_COOLDOWN,
+        )
+
+        assert (
+            decide_monitor(_state(), observation, now=1_100.0).decision
+            is MonitorDecision.STOP_BLOCKED
+        )

@@ -95,7 +95,6 @@ from kiro_crew.security import (
     redact_path_segments,
     sandbox_credential_targets,
 )
-from kiro_crew.slack.handler import is_tracked_channel
 from kiro_crew.validation import (
     FILE_READ_SCHEMA,
     MODEL_ID_RE,
@@ -133,6 +132,13 @@ _SUBAGENT_SESSION_PREFIX = "subagent:"
 
 
 logger = logging.getLogger(__name__)
+
+
+def is_tracked_channel(channel_id: str) -> bool:
+    """Load the Slack probe only when a file delivery needs it."""
+    from kiro_crew.slack.handler import is_tracked_channel as probe
+
+    return probe(channel_id)
 
 
 def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str:

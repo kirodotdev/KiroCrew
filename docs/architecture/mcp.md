@@ -590,10 +590,146 @@ env pin `KIROCREW_MCP_SPILL_THRESHOLD` → config key → built-in 256 KiB), mar
 for a second reason as well: it is handed to asyncio readers as `limit=` when they
 are CONSTRUCTED and cannot be changed afterwards. `socket_path`, `overlay_dir`,
 `idle_timeout_secs`, `max_backends`, `prewarm_count`, `stub_servers`,
-`poolable_servers`, `stub_overrides`, `pool_identity_env` and
-`forward_declared_env` ride the daemon's command line or size structures built
-once at spawn, so they too are marked `restart=True` in the config schema and
-apply to a broker started after the change.
+`poolable_servers`, `stub_overrides`, `pool_identity_env`,
+`forward_declared_env`, `spawn_concurrency_initial`, `spawn_concurrency_min`,
+`spawn_concurrency_max`, `spawn_queue_wait_secs`, `initialize_timeout_secs`,
+`host_budget_max_procs`, `host_budget_max_rss_mb` and `host_budget_max_fds` ride
+the daemon's command line or size structures built once at spawn, so they too
+are marked `restart=True` in the config schema and apply to a broker started
+after the change.
+
+### Admission before allocation
+
+The daemon bounds how many backend processes it FORKS AND INITIALISES at once,
+and how many it is answerable for in total, before anything is allocated. Two
+objects, built once in `run_gatewayd` beside the pool (`mcp_gateway/admission.py`,
+`mcp_gateway/host_budget.py`) and threaded into every spawn path -- pooled,
+connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
+
+- **`HostBudget`** charges a fixed per-backend estimate (`procs`, `rss_mb`,
+  `fds`) BEFORE the fork and releases it only when `process.wait()` returns, so a
+  backend that survives SIGKILL stays charged until it is really gone. Pooled,
+  private and fallback backends are charged identically: exclusivity is a
+  topology property, not a budget exemption, and a stub's per-session exec after
+  a `compat`/`isolation` rejection is one more process on the host, charged by
+  the daemon when it sends the rejection and released when that connection
+  reaches EOF (a new stub keeps the socket inheritable across its exec so EOF is
+  the backend exiting). Ceilings come from `mcp_gateway.host_budget_max_*`; `0`
+  derives processes from the available-memory sample the supervising gateway
+  passes on argv (never below `max_backends`) and descriptors from the daemon's
+  own `RLIMIT_NOFILE`, and leaves memory unbounded.
+- **`SpawnGate`** is one daemon-wide count of spawn+initialize windows in
+  flight, FIFO past that. Fixed capacity from `spawn_concurrency_initial`
+  (default 4), clamped to `[spawn_concurrency_min, spawn_concurrency_max]`
+  (1/8); `set_capacity(n)` is the seam the adaptive controller plugs into. A
+  `Permit` covers the fork and the backend's first `initialize`: `ready` is sent
+  to the stub before the handshake arrives (the stub forwards kiro-cli's first
+  frame), so the spawn path never awaits it inline -- a detached watcher on
+  `_init_done_event`, bounded by `Backend.initialize_timeout_secs` (a
+  constructor field fed from `mcp_gateway.initialize_timeout_secs`, not a module
+  setter), settles the permit `success` (ready), `failure` (handshake failed;
+  the permit is then held until the process is reaped) or `neutral` (no
+  handshake ever arrived -- an unused prewarm or a client that never
+  initialised is not congestion). `settle` is exactly-once and separate from
+  `release`, which is idempotent and settles `neutral` on its own; cancellation
+  at any boundary is neutral. Prewarm settles neutral the moment the fork
+  returns; it also re-reads the queue depth BEFORE EACH KEY and stands that key
+  down while any stub is queued (`_PrewarmStoodDown`, logged and skipped like any
+  other prewarm failure), and takes its wait with a `_PREWARM_SPAWN_WAIT_SECS`
+  deadline. Both because a pass lasts as long as its spawns: a once-per-pass
+  check leaves a stub that arrives during one queued behind the rest of it, and
+  the gate has no priority lane, so what bounds a stub sitting behind a prewarm
+  that already enqueued is that deadline. An unbounded prewarm wait would also
+  park under `_prewarm_lock`, which the credential-rotation re-warm has to take.
+- **`BackendPool.reserve_resident_slot`** moves the `max_backends` check in
+  front of the fork: a slot is claimed (or `PoolAtCapacity` raised with nothing
+  to reap) before `spawn_backend`, and `add` consumes it. Private backends take
+  none, as before.
+
+Acquisition order inside `_acquire_backend`'s spawn closure -- after the per-key
+`_spawn_locks` dedup and after `CircuitBreaker.allow`, so a permit is never held
+during a breaker cooldown and no pool lock is held while queued -- is
+**SpawnGate → HostBudget → resident slot → fork**, released in reverse on any
+failure before the fork. Deadlock argument: the budget and the slot never wait
+(they succeed or raise), so the only wait is the gate's FIFO, and a gate waiter
+holds nothing another waiter needs; a holder of resource k only ever waits for
+resource k+1, so the wait-for graph is acyclic. **That is why the gate is first
+and not last.** A charge taken before the wait prices a process that does not
+exist for as long as the wait lasts -- up to `spawn_queue_wait_secs`, 600 s by
+default -- so a queue of ten reaches the ceiling with nothing running and the
+eleventh stub is refused `capacity` on an idle host, a refusal that deliberately
+authorises no fallback. Taken after the permit, the budget and the slot are read
+against the host as it is at the moment of the fork. The daemon's drain closes
+admission FIRST -- queued waiters fail with `SpawnGateClosed`, watchers are
+cancelled (releasing their permits neutral), charges are dropped -- then
+proceeds with the existing teardown.
+
+**Wire.** `REGISTERED_CAPABILITIES` carries `spawn_queue`. A stub that saw it
+sends `{"type": "ensure_backend", "wait_budget_secs": N}` and the daemon queues
+the spawn for `min(N, spawn_queue_wait_secs)` LESS
+`_QUEUE_REFUSAL_MARGIN_SECS` (capped at half, so the subtraction is strict for
+any N), writing
+`{"type": "queued", "position": p, "capacity": c, "in_flight": i, "waited_secs": w}`
+every 5 s; a stub that did not negotiate it sends the bare frame, never sees
+`queued`, and its gate wait is bounded at 20 s so its own 25 s pre-flight timer
+still governs. The margin is the same property as that 20 s: **the daemon has to
+give up first.** The stub starts its timer before it writes the frame and the
+daemon starts its own only after reading it, so equal budgets -- which is what
+the shipped defaults are, 600 s on each side -- expire on the stub first, and a
+stub whose budget expires runs the per-session `fallback_exec` that a `capacity`
+refusal exists to withhold, charged to nothing. Raising `spawn_queue_wait_secs`
+above the stub's constant is harmless for the same reason: what the stub asked
+for caps the answer before the margin is taken off it. While any acquire or respawn waits, the connection handler keeps
+reading (`_await_answering_pings`): bridge pings get their `pong` at once and
+any other frame is parked and processed in order afterwards, so the stub's
+liveness monitor never declares a queued daemon dead -- bounded in both
+dimensions by `_MAX_PENDING_FRAMES` / `_MAX_PENDING_BYTES`, the same guard class
+as `backend._STUB_INBOX_MAXSIZE` in the reverse direction, because only the main
+loop drains the park and it cannot run until the wait returns; past either bound
+the pending acquire is cancelled and that ONE connection is dropped so
+co-pooled sessions survive. `rejected` frames carry
+`class`: `capacity` (resident pool full, host budget exhausted, wait budget
+spent, breaker OPEN, a fork refused for memory/descriptors) with
+`retry_after_secs`; `compat` (a pooled target this daemon cannot run or map);
+`isolation` (a private target it cannot launch). `fallback: true` rides
+`compat`/`isolation` and NOTHING else, on every wire shape: it authorises the
+stub's own per-session exec, and a stub that never negotiated `spawn_queue`
+closes its socket before exec'ing, so the charge `_reply_rejected` takes is
+released at that EOF -- before the process it pays for exists -- and N
+simultaneous `capacity` refusals would leave N backends the host budget never
+sees, which is the unbounded fan-out admission exists to end.
+**The compatibility cost is deliberate and falls on the pre-`spawn_queue` stub
+alone.** It cannot read `class`, so it reads the untagged refusal as terminal and
+exits 1 with `initialize` unanswered: kiro-cli reports that server as failed and
+that ONE session loses its tools until the retry, where before it would have run
+an unaccounted copy. **The bound is on the refusal ARRIVING inside that stub's own
+pre-flight window**, which is 25 s in the pre-upgrade binary: a refusal later than
+that reaches a stub which has already given up waiting and exec'd on a path that
+reads no frame, so the exec is unaccounted however the frame is tagged. What keeps
+the daemon inside the window is `_LEGACY_SPAWN_WAIT_SECS`, pinned strictly under
+25 s. It bounds the GATE wait only, so a refusal raised after the permit — a full
+pool or an open breaker, past up to `_MAX_SPAWN_DRAIN_RETRIES` spawn-and-initialize
+rounds — can still exceed it; that residual is the reason the pin exists rather
+than a claim it removes. The refusal is recorded on both sides -- `_audit_pool_rejected`
+on the daemon, a `terminal:` line in `stub_fallback.jsonl` that
+`fallback_counts()` keeps separate from real fallbacks in the `stats` reply -- so
+the degradation is observable rather than silent. A stub that DID negotiate
+`spawn_queue` pays nothing: it keeps its transport and answers `-32001` below.
+`compat` is not refused with it, because there the host is fine and the exec is
+the topology the connection asked for; refusing it would strand every session
+behind a daemon whose target map drifted. The stub (`stub.py`) negotiates
+`spawn_queue` on all three of its paths -- cold-start `ensure_backend`, the
+`_reconnect` replay (which now pre-flights before replaying `initialize`, and
+retries a `capacity` answer within its remaining budget) and the bridge (where
+a `queued` frame during a respawn counts as proof of life like a `pong`) -- and
+renews a 25 s SILENCE timer on `queued`/`keepalive`/`pong` rather than running a
+fixed deadline, bounded by its 600 s reconnect budget -- inside which the
+daemon's own wait always ends, per the margin above. The `capacity` rejection
+that ends the wait is answered to kiro-cli as JSON-RPC error `-32001` with
+`data.class` and `data.retry_after_secs` on every request, the stdio transport
+left open (`_serve_capacity_refusal`): the session is told the gateway is full,
+not that the server crashed, and no exec is run. The `stats` frame carries an
+`admission` snapshot (gate capacity/in-flight/queued/outcomes, budget counters).
 
 ### Windows target command spelling
 

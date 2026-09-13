@@ -148,7 +148,77 @@ class ResourceStatus:
         load = f"{self.load_per_cpu}/core" if self.load_per_cpu is not None else "unknown"
         lines.append(f"  CPU cores: {self.cpu_count}   1-min load: {load}")
         lines.append(f"  Posture: {self.posture.upper()}")
+        lines.extend(adaptive_summary_lines())
         return lines
+
+
+def adaptive_state() -> dict | None:
+    """The adaptive concurrency controller's structured state, or ``None``.
+
+    Read from the gateway-process registry in ``kiro_crew.adaptive.controller``
+    (one controller per gateway). ``None`` means no controller is running in
+    this process -- the CLI, a subagent process, a test -- and the caller
+    omits the section. Never raises.
+    """
+    try:
+        from kiro_crew.adaptive.controller import current_state
+
+        return current_state()
+    except Exception:  # pragma: no cover - defensive; the probe must never raise
+        logger.debug("adaptive controller state unavailable", exc_info=True)
+        return None
+
+
+def adaptive_summary_lines(state: dict | None = None) -> list[str]:
+    """Effective caps and controller state, for the ``resource_status`` tool.
+
+    Empty when no controller runs here. Otherwise: the live execution cap
+    against the user's ceiling, the spawn-gate capacity, whether dispatch is
+    paused or probing, and the last decision's action and reason -- what the
+    dashboard's resources popover and ``kirocrew doctor`` show as "effective
+    concurrency vs user max and the current pressure reason".
+    """
+    if state is None:
+        state = adaptive_state()
+    if not state:
+        return []
+    lines = ["Adaptive concurrency (enforced beneath the user cap):"]
+    if not state.get("enabled", True):
+        lines.append(
+            f"  Disabled (agent.adaptive_concurrency=false); execution cap = user max "
+            f"{state.get('exec_ceiling')}"
+        )
+        return lines
+    mode = state.get("mode", "aimd")
+    exec_cap = state.get("effective_exec_cap")
+    ceiling = state.get("exec_ceiling")
+    gate_cap = state.get("spawn_gate_capacity")
+    gate_ceiling = state.get("gate_ceiling")
+    status = "paused" if state.get("paused") else "active"
+    if state.get("probing"):
+        status = "probing"
+    lines.append(
+        f"  Mode: {mode}   Execution cap: {exec_cap}/{ceiling}   "
+        f"MCP spawn gate: {gate_cap}/{gate_ceiling}   Dispatch: {status}"
+    )
+    last = state.get("last") or {}
+    if last:
+        signals = ",".join(last.get("signals") or []) or "none"
+        lines.append(
+            f"  Last decision: {last.get('action')} ({last.get('reason')}); signals: {signals}"
+        )
+        throttled = last.get("throttled_providers") or []
+        if throttled:
+            lines.append(
+                f"  Provider throttling (scoped, not a host signal): {', '.join(throttled)}"
+            )
+    counts = state.get("counts") or {}
+    if counts:
+        lines.append(
+            "  Decisions: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        )
+    return lines
 
 
 def _resolve_thresholds(cfg: object | None) -> tuple[float, float]:

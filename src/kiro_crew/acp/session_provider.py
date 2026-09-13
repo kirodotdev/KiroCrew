@@ -44,6 +44,7 @@ from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
+from kiro_crew.recovery.ladder import InfraError
 
 logger = logging.getLogger(__name__)
 
@@ -869,6 +870,23 @@ class AcpSessionProvider(LLMProvider):
         ``True`` — a truthy stand-in must not read as a verdict.
         """
         return getattr(self._handle, "last_compaction_transient", False) is True
+
+    @property
+    def last_infra_error(self) -> InfraError | None:
+        """The live session handle's L1 verdict — read THROUGH, never cached.
+
+        The handle clears it at turn start and overwrites it on every later tool
+        result, so a copy stored here would keep serving a spent verdict after a
+        success or an empty output. Deliberately NOT the
+        ``child_fidelity_aware`` shape (stored then re-applied): that one exists
+        only because the placeholder client is discarded, and an InfraError
+        belongs to one tool result and cannot be re-applied to another.
+
+        ``isinstance``, not truthiness: a stand-in handle that auto-creates
+        attributes must not read as a verdict.
+        """
+        err = getattr(self._handle, "last_infra_error", None)
+        return err if isinstance(err, InfraError) else None
 
     # ── Streaming (AcpClient-compatible method name) ──
 

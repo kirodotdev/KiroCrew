@@ -44,7 +44,7 @@ from kiro_crew.workflow_memory import (
 )
 
 from .agent_exec import build_agent_fn
-from .agent_pool import build_pooled_agent_fn
+from .agent_pool import admitted_agent_fn, build_pooled_agent_fn
 from .events import EventStream
 from .library import (
     SOURCE_FORMAT_PYTHON,
@@ -210,6 +210,7 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
         definition_library: Any = None,
         task_runner: Any = None,
+        task_admission: Any = None,
         context_builder: Any = None,
         _load_persisted: bool = True,
     ) -> None:
@@ -258,6 +259,13 @@ class WorkflowService:
         # workflows/agent_pool.py). The pool is per-run and torn down when the run
         # ends. Off => the original cold-start-per-call path (build_agent_fn).
         self._pool_agents = pool_agents
+        # Durable task queue (``taskq.adapters.runner.RunnerAdmission``): when
+        # attached, every ``ctx.agent()`` call of every run is a
+        # ``workflow_agent`` row admitted through the shared lane (write-
+        # before-ack, defer on memory pressure, bounded by the effective cap).
+        # None keeps the pool's own fixed semaphore as the only bound.
+        self._task_admission = task_admission
+        self._adopt_inflight: Any = None
         self._seq = 0
         self._host_streams: dict[str, EventStream] = {}
         # Rehydrate any persisted runs from a prior process, and continue the
@@ -680,8 +688,61 @@ class WorkflowService:
             # The underlying shielded add stays supervised by AutoNudgeService.
             await asyncio.gather(*still_pending, return_exceptions=True)
 
+    def attach_task_admission(self, admission: Any) -> None:
+        """Attach (or detach with ``None``) the shared runner admission.
+
+        Attaching also settles the ``workflow_agent`` rows a dead incarnation
+        left behind: a workflow run restarts through its own registry
+        (``rerun_subtree`` replays finished calls from the cache), never by
+        re-running one agent call from its row, so every orphaned call row
+        ends terminal rather than re-dispatching -- ``failed`` (or
+        ``unknown_side_effect``) for one that was running, ``cancelled`` for one
+        that was accepted and never claimed, which no dispatcher would ever
+        pick up because this kind has none.
+        """
+        self._task_admission = admission
+        if admission is None or getattr(admission, "store", None) is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._adopt_inflight = loop.create_task(self.adopt_task_rows())
+
+    async def adopt_task_rows(self) -> Any:
+        """Settle orphaned ``workflow_agent`` rows; None when no store is attached.
+
+        One sweep at a time: a call overlapping the one ``attach_task_admission``
+        started joins it instead of settling the same rows twice.
+        """
+        inflight = self._adopt_inflight
+        if inflight is not None and not inflight.done() and inflight is not asyncio.current_task():
+            return await inflight
+        admission = self._task_admission
+        store = getattr(admission, "store", None) if admission is not None else None
+        if store is None:
+            return None
+        from kiro_crew.taskq.adapters.runner import adopt_orphaned_rows
+        from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT
+
+        return await asyncio.to_thread(
+            adopt_orphaned_rows,
+            store,
+            kinds=(KIND_WORKFLOW_AGENT,),
+            resume=lambda _rec: False,
+        )
+
+    @property
+    def task_admission(self) -> Any:
+        return self._task_admission
+
     def _runner(
-        self, run_id: str, *, timeout_secs: Optional[int] = None, memory_scope: Any = None
+        self,
+        run_id: str,
+        *,
+        timeout_secs: Optional[int] = None,
+        memory_scope: Any = None,
+        session_key: str = "",
     ) -> WorkflowRunner:
         # ``timeout_secs`` overrides the service default for THIS run only (clamped
         # into [MIN, MAX] so a per-run value can lengthen the ceiling but never
@@ -732,6 +793,13 @@ class WorkflowService:
                 run_id=run_id,
                 memory_scope=memory_scope,
                 context_builder=self._context_builder,
+            )
+        # Both paths meter through the task queue when one is attached: the
+        # lane (not the pool's semaphore alone) is what the adaptive controller
+        # moves, and the row is what survives a restart.
+        if self._task_admission is not None:
+            agent_fn = admitted_agent_fn(
+                agent_fn, self._task_admission, run_id=run_id, session_key=session_key
             )
 
         async def _teardown() -> None:
@@ -957,7 +1025,10 @@ class WorkflowService:
             )
 
         started = await self._runner(
-            run_id, timeout_secs=timeout_secs, memory_scope=memory_scope
+            run_id,
+            timeout_secs=timeout_secs,
+            memory_scope=memory_scope,
+            session_key=session_key,
         ).run_background(
             "",  # no source — author inside the run
             registry=self.registry,
@@ -1013,7 +1084,10 @@ class WorkflowService:
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
         started = await self._runner(
-            run_id, timeout_secs=timeout_secs, memory_scope=memory_scope
+            run_id,
+            timeout_secs=timeout_secs,
+            memory_scope=memory_scope,
+            session_key=session_key,
         ).run_background(
             source,
             registry=self.registry,
@@ -1402,7 +1476,10 @@ class WorkflowService:
         replay_results = {} if edited else dict(prior.agent_results)
         label = "rerun-edited" if edited else f"rerun@{from_index}"
         started = await self._runner(
-            new_id, timeout_secs=timeout_secs, memory_scope=memory_scope
+            new_id,
+            timeout_secs=timeout_secs,
+            memory_scope=memory_scope,
+            session_key=origin,
         ).run_background(
             run_source,
             registry=self.registry,

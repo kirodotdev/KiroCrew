@@ -81,7 +81,7 @@ state/reason labels plus missing-file and non-JSON poll counts.
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
 | `_TURN_LIMIT` | 100 | Default tool-call budget per subagent (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
-| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). Surface-only — a stalled subagent is never auto-terminated; the user closes it from the UX (per-row stop / Stop-all) and the 30-min `_TIMEOUT_SECS` ceiling still applies. |
+| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). Surface-only — the idle badge itself never terminates or yields anything; the user closes it from the UX (per-row stop / Stop-all) and the 30-min `_TIMEOUT_SECS` ceiling still applies. A WATCHDOG stall (`EVENT_COMPLETE` with `error: tool stall`) is a different signal and IS acted on: see *Stop reason → state*. |
 | `_SYSTEM_PREFIX` | (string) | Injected before task text to prevent spawn recursion |
 | `COMPLETION_KEEP_DEFAULT_CHARS` | 3000 | Default character cap for the completion event injected into the parent session (configurable via `agent.completion_keep_chars`). Lives in `context_management.py` alongside the helper. |
 
@@ -147,7 +147,7 @@ ALL of them from the new config, whichever writer produced it (dashboard,
 
 | Config path | Manager field | Normalization (same as the constructor) |
 |---|---|---|
-| `agent.max_subagents`, `agent.subagent_auto_max`, `agent.subagent_mem_buffer_pct`, `agent.subagent_cost_gb`, `agent.subagent_cpu_cost_cores`, `session.pool_size` | `_max_concurrent` | `resolve_max_subagents(cfg)` — explicit pin (floored at 3) or the host-sized auto value |
+| `agent.max_subagents`, `agent.subagent_auto_max`, `agent.subagent_mem_buffer_pct`, `agent.subagent_cost_gb`, `agent.subagent_cpu_cost_cores`, `session.pool_size` | `_user_max_concurrent` (and `_max_concurrent` re-clamped) | `resolve_max_subagents(cfg)` — explicit pin (floored at 3) or the host-sized auto value |
 | `agent.subagent_max_turns` | `_default_turn_limit` | `int` |
 | `agent.subagent_timeout_secs` | `_default_timeout` | `0` keeps `_TIMEOUT_SECS` |
 | `agent.subagent_stall_idle_secs` | `_stall_idle_secs` | `0` keeps `_STALL_IDLE_SECS` |
@@ -174,10 +174,24 @@ gate (`_should_stagger_queue_impl`, `_drain_queue_impl`), the run timeout
 approval policy — so the assignment is the whole apply. Two cap-change
 invariants:
 
-- **Raising the cap admits queued spawns.** `reconfigure` calls `_drain_queue()`
-  when the new cap exceeds the old one and the queue is non-empty; the pump
-  re-checks the gate and honours the stagger interval, so freed capacity fills
-  one start per `subagent_spawn_stagger_secs`, never in a burst.
+- **Raising the cap admits queued spawns.** `reconfigure` calls
+  `_notify_cap_raised()` when the new cap exceeds the old one; it drains a
+  non-empty queue through the pump, which re-checks the gate and honours the
+  stagger interval, so freed capacity fills one start per
+  `subagent_spawn_stagger_secs`, never in a burst.
+- **A raise also reaches the gate that is not this manager's.** The same
+  `_notify_cap_raised()` rings `set_cap_raise_listener`'s hook — the runner lane
+  (TaskRunner steps, workflow `ctx.agent()` calls), which is bounded by
+  `_max_concurrent` but keeps its own waiters. It reads the cap live, so it
+  always SEES a raise, but a waiter parked while the cap was `0` holds no slot
+  and no release of its own will ever wake it: the raise is its only edge, and
+  an empty subagent queue must not suppress it. `_notify_cap_raised` therefore
+  runs on the event loop, never from a worker thread — the lane resolves
+  futures. Details: [taskq.md](taskq.md) § Runner adapters.
+- **A resume is not a start.** A `_resume_id` window entry (a live run whose
+  wait ended) is granted before the stagger check and does not bump
+  `_last_spawn_ts`: the run is already resident, so there is no process burst
+  to smooth, and an in-place recovery no longer pays the stagger interval.
 - **Lowering the cap cancels nothing.** In-flight runs keep going; the gate
   simply admits no new spawn until `_running_count` drains below the new cap on
   its own.
@@ -186,8 +200,46 @@ The advisory cap the `spawn_run` tool description advertises (`mcp_tools/spawn.p
 re-resolves through the same `resolve_max_subagents(KiroCrewConfig.load())` on each
 tool listing, so the advertised and enforced numbers agree after a write.
 
+### `set_effective_cap(cap | None) -> int` — the adaptive-controller seam
+
+The resolved user cap is a **ceiling**, not the live value. Two fields:
+`_user_max_concurrent` is what `apply_limits` writes (the pin or the auto-sized
+value); `_adaptive_cap` is what the adaptive concurrency controller
+([`adaptive-concurrency.md`](adaptive-concurrency.md)) writes through
+`set_effective_cap`. `_max_concurrent` -- the attribute every admission read
+site consults -- is always `min(_user_max_concurrent, _adaptive_cap)` (or the
+user cap alone when no bound is set). The two writers never touch each other's
+field: a config raise cannot lift the adaptive bound, a config cut below the
+bound clamps it, and the controller never writes `config.json`. `None` removes
+the bound; `0` pauses new grants (in-flight runs finish; nothing is cancelled).
+A raise goes through the same `_notify_cap_raised` a config raise uses: the
+staggered queue drain, plus the runner lane's `pump()` (see the two cap-change
+invariants above). Neither raise site grants past the new cap.
+`reconfigure`'s "sizing unchanged" path re-applies `_user_max_concurrent`, not
+`_max_concurrent`, so a reload can never shrink the ceiling to the bound.
+`user_max_concurrent` exposes the ceiling; `max_concurrent` stays the effective
+value the gate enforces and the dashboard's capacity error reports. A fresh
+gateway starts bounded at `min(user_max, agent.adaptive_initial)` and earns its
+way up.
+
 ### `spawn(task, parent_session_key="") -> SubagentInfo | None`
 Spawns a background agent. Returns `SubagentInfo` or `None` if at capacity. Uses atomic `_running_count` to prevent race conditions. `parent_session_key` tracks the originating session for completion injection.
+
+Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
+1. Policy refusals that leave no durable trace: empty task, memory identity,
+   `cwd` outside `subagent_cwd_allowed_roots`, spawn governance.
+2. **Persist** the row in the task store (write-before-ack; see § Durable task
+   queue). A store write failure is a refusal with
+   `error_code="task_store_unavailable"`; the id is never handed out as accepted.
+3. Memory floor (`spawn_min_memory_gb`) and posture gate (`admission_gate`,
+   `cached_admission_check`): with a store, **defer** (row stays `queued`,
+   `next_run_at = now + admit_wait_secs`, pump wake-up armed, caller gets a
+   `queued` id); without one, refuse as before.
+4. Capacity / stagger gate: queue (window or store-only) or proceed.
+5. Agent name validation (a failure marks the row `failed`), then the **atomic
+   claim** (`admitted`, generation++). A row cancelled while it waited fails the
+   claim here and is never started.
+6. Register, take the slot, `starting`; then the approval branch below.
 
 Spawn flow:
 1. **YOLO mode**: skips approval, runs immediately
@@ -253,7 +305,18 @@ subagent run, not on the current run's remaining tools.
 
 ### `cancel_for_parent(parent_session_key) -> (running, queued)`
 Stops every running agent and removes every not-yet-started stagger/concurrency
-queue entry owned by one parent session. Queue removal happens before the first
+queue entry owned by one parent session. A `_resume_id` entry is NOT one of
+those: it is a RESIDENT run asking for the lane slot it yielded back, filed
+under that run's own `_preassigned_id` and its parent key, so it matches both
+terms of the queued scan and is skipped there — exactly as the pump's grant
+loop, the refill's lane census, the eviction, the child reserve and
+`_conversation_busy` all separate it out. The running sweep stops such a run instead, where its intact `_agents`
+record still is: routing it through the queued-stop path publishes a synthetic
+`queued=True` "never started" terminal OVER that record, so the coroutine keeps
+executing, the parent is told the work never began, and `resume_grant` can never
+return the slot because the record it reads is gone. Pinned by
+`test_overload_integration_glue.py::test_stop_all_reaps_a_resident_resumed_run_it_never_treats_as_queued`
+and `::test_stop_all_never_takes_the_queued_stop_path_for_a_claimable_resident_row`. Queue removal happens before the first
 suspending await, so a scheduled drain cannot start work after the stop request.
 Each removed queue entry emits a neutral stopped terminal record through the
 normal completion consumer, which closes batch accounting instead of stranding a
@@ -280,7 +343,8 @@ Two delivery modes for `spawn_steer` (REST `POST /api/spawn/{id}/steer`, body `m
 ### Properties
 - `running -> list[SubagentInfo]` — currently running agents
 - `count -> int` — number of running agents
-- `max_concurrent -> int` — capacity limit
+- `max_concurrent -> int` — the EFFECTIVE capacity limit (`min(user cap, adaptive cap)`)
+- `user_max_concurrent -> int` — the user's resolved cap, the ceiling the adaptive bound sits under
 
 ## SubagentInfo
 
@@ -299,6 +363,9 @@ class SubagentInfo:
     tool_count: int       # observed tool calls (incl. auto-approved); drives running-card progress
     last_activity: float  # time.time() of last stream event; reset to _exec_started; drives idle-stall
     stalled: bool         # reaper flagged this subagent as idle/stalled (UI signal)
+    stop_reason: str      # ACP stop_reason of the completion that ended the run
+    stop_class: str       # classify_stop_reason() class (succeeded|stalled|recovering|cancelled|failed)
+    partial: bool         # result is text streamed before a non-success completion
     _awaiting_approval: bool  # blocked on a human approval prompt (spawn gate or mid-run tool) → exempt from idle-stall
 ```
 
@@ -331,9 +398,47 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 - The gateway completion consumer (`_subagent_done`) classifies three-way: a stopped agent is announced as "stopped by user ⏹" with partial output flagged, and in orchestrator mode records **neither** `record_success` nor `record_failure`.
 - **Intentional-cancel rule**: every code path that cancels a subagent task on purpose MUST set a terminal marker first — `cancel()` → `user_stopped`, `cancel_all()` → `_shutting_down`, `_force_reap` → `reaped`. An unmarked cancel is treated as unexpected and recovered once (below). Enforced MECHANICALLY, not by convention: all in-module intentional cancels route through the `_cancel_task_intentionally(task, info, reason=...)` chokepoint, which verifies a marker is visible before cancelling (a missing marker logs an error and consumes the recovery budget defensively so a mis-marked cancel can never zombie-respawn), and a source-scan test asserts no raw `.cancel()` on a managed run task exists outside the chokepoint.
 
-## Transient Retry (mid-stream 5xx)
+## Stop reason → state (`classify_stop_reason`)
 
-`_run_inner` streams through `_stream_with_transient_retry`, mirroring the main path's retry ladder: transient backend errors (the `-32603` class, per `acp_error_is_transient`) are retried with exponential backoff on the same live session; each retry fires a `subagent_retrying` WS event (chip shows `⟳ retrying`) and a SEL audit record. **Replay-safety**: if ANY activity was observed (text chunk, approved tool turn, or auto-allowed tool call), the retry sends `_TRANSIENT_CONTINUE_MSG` instead of the original prompt — a mutating tool may have executed before the first text chunk, and replaying the full prompt would re-run it. **Budget**: `TRANSIENT_RETRIES` applies only while ZERO activity was observed (replaying the bare prompt is side-effect-free); after any activity, recovery is ONE-SHOT — exactly one continuation turn, matching the main path's `_posttoken_retry_used` rule, since each post-activity continuation is an independent opportunity to repeat a side effect. The two ladders (this one and `dashboard/chat_runner.py`'s) are intentionally-identical copies cross-referenced in both sources; a change to either's predicate or budget must be mirrored. Non-transient errors and exhausted budgets propagate to the generic error arm.
+`EVENT_COMPLETE` only says the stream ENDED. The ACP layer sets `stop_reason` on it (`acp/types.py`: `end_turn`, `cancelled`, `stale_recover`, `refusal`, `error: tool stall`, `error: compaction failed`, `error: …`), and every completion consumer — the main chat (`dashboard/chat_runner.py`), the sub-agent run (`subagent_manager/run.py`), nested children (same path) and the task runner (`task_executor.py`) — maps it through ONE function, `acp.types.classify_stop_reason(stop_reason, *, compaction_transient=False) -> StopClass`. No entry spells its own `startswith("error:")` or a private retry budget; `test_subagent_stop_reason_consistency.py` pins both the table and each entry's use of it.
+
+| `stop_reason` | `StopClass.name` | recoverable | Sub-agent run | Main chat | Task runner |
+|---|---|---|---|---|---|
+| `end_turn`, absent | `succeeded` | — | `outcome=completed`, `record_success`, taskq `done` | normal completion | step `PASSED` |
+| `error: tool stall` | `stalled` | yes | continue-nudge in place ×`STOP_RECOVERY_MAX_RETRIES`, then `failed` (partial flagged) | `slot._tool_stall_retries` continue-nudge ×`STOP_RECOVERY_MAX_RETRIES`, then "Session stuck" | attempt fails → existing bounded retry ladder (retry prompt names the stall) |
+| `stale_recover` | `recovering` | yes | same budget as `stalled` (the sub-agent has no reset+resume ladder; a truly wedged session stalls again and exhausts the budget) | session reset + resume + continue-nudge, `slot._stale_recovery_retries` | attempt fails → retry ladder |
+| `cancelled` | `cancelled` | no | `user_stopped` → neutral `stopped` (error unset); otherwise `error="cancelled (stop_reason=cancelled)…"`, tombstone `cancelled` | user stop | attempt fails → retry ladder |
+| `error: compaction failed` | `failed`; `recovering` only with `compaction_transient=True` | only transient | terminal `failed` (verdict not passed: no in-place replay is safe) | passes the ACP verdict; transient + nothing emitted → re-queue | attempt fails |
+| `refusal` | `failed` (`retryable=False`) | no | `failed` | actionable refusal notice, no retry | attempt fails |
+| other `error:*` | `failed` (`retryable=True`) | no | `failed` | pipe-death re-queue (`_acp_pipe_death_retries`) | attempt fails |
+| anything else | `failed` (`known=False`) | no | `failed`, error names the unexpected reason | logged as unexpected, handled as `failed` | attempt fails |
+
+`STOP_RECOVERY_MAX_RETRIES` (3) is the one continue-nudge budget shared by the main chat and the sub-agent run. It is a re-export of `recovery.ladder.SESSION_RECOVERY_MAX_ATTEMPTS`, the ladder's L3 in-place budget, which the main chat's pipe-death re-queue (`slot._acp_pipe_death_retries`) reads as well — one number for every "continue this session on the same runtime" count (`test_runloop_integration.py` pins the identity).
+
+**Sub-agent in-place recovery** (`_stream_with_transient_retry` → `_yield_for_stop_recovery`): a `recoverable` completion is WITHHELD from the run loop while budget remains and no terminal marker (`user_stopped`, `_reap_started`, `reaped`, `_shutting_down`) is set. The run then
+
+1. **yields its LANE slot through admission** — `admission.yield_slot(info, WaitRecord.dependency("session:<stop class>", source=liveness_oracle))`: `_release_slot` + `_running_count -= 1` + `_drain_queue()`, so queued work starts; the session (process, FDs, memory) stays alive and keeps its residency charge (SPEC-ADDENDUM §2: the logical slot is released, real resources are not pretended away). If a typed `waiting_input` status already yielded the slot earlier in the stream (below), this step is skipped;
+2. the durable row goes **`running -> waiting_dependency` under the run's own lease** (`wait_json` names the scope and the oracle as evidence) and a `stop_recovery` task event + progress marker (`{phase: yielded|readmitted, stop_class, attempt, slot_released}`) is appended. It deliberately does NOT transition to taskq `recovering`: that is the LOST-OWNER state, drops the lease and makes the id claimable — i.e. a duplicate run of the same task while the owner is alive;
+3. emits `subagent_waiting {state, reason, resume, residency_charged}` (from `yield_slot`), `subagent_recovering {attempt, max, stop_reason, stop_class}` and a SEL `subagent.stop_recovery` record;
+4. **re-admits through the pump** (`_await_lane_resume`: `admission.request_resume` queues a `_resume_id` entry at the front of the window; the coroutine parks on `info._resume_event` until `resume_grant` sets it — slot held again, row `running` under a NEW generation, `subagent_resumed`; bounded by `_RECOVERY_SLOT_WAIT_SECS`; never a poll of the running count) and sends `TOOL_STALL_RECOVERY_PREFIX` + `build_tool_stall_recovery_prompt(...)` on the SAME session — the preserved partial is finished, the original task is never re-sent. `stuck_input` is read from the completion's typed `status.wait_reason == waiting_input` first, the evidence-text marker second. If re-admission is refused (deadline, shutdown, stop, reap) the resume entry is withdrawn, the budget is spent and the withheld completion is surfaced as `failed`.
+
+**Typed input wait (W4)**: an `EVENT_STRUCTURED_STATUS` frame whose `status.wait_reason` is `waiting_input` (execution layer or liveness oracle; `acp-client.md` § Structured status protocol) makes the run yield its lane slot at once — `WaitRecord.input(tool_call_id)`, row `waiting_input`, `subagent_waiting {state: waiting_input, resume: input}` — while the blocked process stays resident. Under the default `cancel` policy the `error: tool stall` completion that follows re-enters through step 4 above.
+
+**L1 — a tool call the gateway refused** (`_yield_for_infra_retry`): a completion that ended NORMALLY (`end_turn`) while the session handle's `last_infra_error` is an `InfraError` (the MCP stub's `-32001 capacity`, backend gone, spawn-queue timeout) is withheld the same way. `default_ladder().observe_failure(L1_tool_call, unit="subagent:<id>", retry_after_secs=…)` decides retry-or-escalate and gives the jittered delay; on `retry` the delay becomes the `retry_at` of a `DependencySignal` on scope `mcp_gateway:<class>` and the run parks on the coordinator (below) so every sub-agent refused by the same gateway waits on ONE schedule and wakes by capacity; the continuation is `build_infra_retry_prompt` (re-issue exactly the refused call) on the same session. Once the ladder escalates, the completion is surfaced as the normal completion it was — the parent sees the refused call in the result. This is in-place, not a `retry_wait` re-dispatch: a registered run re-dispatched under its own id would double-report.
+
+**Durable row timing**: the row is `starting` from claim through session creation, the session-start gate and any late adoption; it becomes `running` at the run's FIRST stream event (`ensure_running_marked`, `SubagentInfo._taskq_running_marked`) — or, for a provider error / stall that lands before any frame, at the moment the wait is recorded (the turn WAS issued on a live session, and a wait can only be written on a `running` row; a `starting` row would be parked `retry_wait` instead). A late adoption writes `running` at adoption (it leaves the claimable `recovering`).
+
+The MECHANISM that delivers that invariant is the write channel, not luck. `ensure_running_marked` POSTS the mark and `yield_slot` POSTS the wait write, so on the store's single writer thread the wait lands behind the mark even when both are issued in ONE synchronous block — which is the normal case, because `session_handle` yields every event of one update back to back and appends the structured status to that same list. The dependency path is the exception and does not come through `ensure_running_marked` at all: `coordinator.report`'s wait write chooses wait-vs-park from its own result in the same critical section, so `_dependency_verdict` hands `(coordinator, store, task_id, signal, generation)` into `_dependency_report_db` and the mark plus `report` run as ONE unit on the writer thread. The mark it hands over is UNCONDITIONAL — `TaskStore.advance` is what decides, never the in-memory `info._taskq_running_marked`, which is published ahead of a posted write whose refusal reaches nobody, so a flag-gated park would write `retry_wait` on a live resident run. Details and the refused-edge consequences: [taskq.md](taskq.md) § Off the event loop.
+
+**Record**: `SubagentInfo.stop_reason`, `stop_class` and `partial` (True when text streamed before a non-success completion) are set on the completion that ended the run and carried on `subagent_done`; the gateway's parent injection appends the partial under an explicit "did NOT finish" banner when `partial` is set. `outcome` stays the three-way canonical source (`stopped` / `failed` / `completed`); the class says WHY.
+
+**Task runner**: `task_executor.execute_single_task` raises `_TurnNotCompleted(stop_class, stop_reason, partial=…)` inside the attempt's `try` for any non-success class, so the existing ladder (`MAX_RETRIES`, same-error loop detection, session reset between attempts) owns the recovery and `task.result` keeps the partial.
+
+## Transient Retry (mid-stream 5xx) and dependency waits
+
+`_run_inner` streams through `_stream_with_transient_retry`. A transient backend error (the `-32603` class, per `acp_error_is_transient`) is first shown to the dependency adapters (`taskq.dependency.classify_exception`, [taskq.md](taskq.md) § Dependency waits). When the manager has a durable store and an adapter recognises the error — a provider throttle (`rate_limited`, `concurrency_exceeded`), a 5xx / connection loss (`dependency_unavailable`) — the run does NOT retry in the turn: `_yield_for_dependency` calls `coordinator.report(id, signal, generation)` (ONE store write: `running -> waiting_dependency` with the scope's `retry_at`), releases its lane slot through `admission.yield_slot(persist=False)`, reports a typed throttle to `AdaptiveController.record_provider_throttle(scope)`, arms the pump and parks on `_await_lane_resume(request=False)`. The coordinator wakes the scope by capacity — one probe, then `wake_per_tick` per `wake_spacing_secs` — and a live run's wake comes back through admission (`monitoring.taskq_wake_through` → `request_resume`; admission's `resume_grant` writes the `wake_wait` under the run's generation, so one wake is one write). After the grant the run replays the original prompt (zero activity) or sends `_TRANSIENT_CONTINUE_MSG` (any activity, one-shot, same rule as below). A scope the coordinator fails (attempts cap, wall-clock deadline) releases the parked run through `on_fail` (`SubagentInfo._wait_failed`) and the run ends `failed` with the provider error; a terminal signal (`auth_failed`, `permanent_param_error`, quota with no reset) propagates at once. Two runs throttled by the same provider therefore share one schedule and never two timers; the main chat reads the same schedule (`chat_runner._shared_dependency_delay`) without joining it.
+
+The in-turn ladder below handles what no adapter classifies (and every transient when the durable queue is off — `agent.task_queue_enabled=false`): errors are retried with exponential backoff on the same live session; each retry fires a `subagent_retrying` WS event (chip shows `⟳ retrying`) and a SEL audit record. **Replay-safety**: if ANY activity was observed (text chunk, approved tool turn, or auto-allowed tool call), the retry sends `_TRANSIENT_CONTINUE_MSG` instead of the original prompt — a mutating tool may have executed before the first text chunk, and replaying the full prompt would re-run it. **Budget**: `TRANSIENT_RETRIES` applies only while ZERO activity was observed (replaying the bare prompt is side-effect-free); after any activity, recovery is ONE-SHOT — exactly one continuation turn, matching the main path's `_posttoken_retry_used` rule, since each post-activity continuation is an independent opportunity to repeat a side effect. The two ladders (this one and `dashboard/chat_runner.py`'s) are intentionally-identical copies cross-referenced in both sources; a change to either's predicate or budget must be mirrored. Non-transient errors and exhausted budgets propagate to the generic error arm.
 
 ## Unexpected-Cancel Recovery (one-shot auto-continue)
 
@@ -342,7 +447,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
 - **Side-effect gate**: recovery fires ONLY when `tool_count == 0`. The respawn runs on a fresh session with no ledger of prior tool calls, so once any tool has executed the model cannot verify which side effects already happened — the run is finalized instead (error `"cancelled (auto-continue suppressed: tools already executed …)"`, partial output preserved and delivered). Text-only activity is safe to resume.
 - One-shot: gated by `info._cancel_retry_used`; the recovered run's own cancel is terminal.
 - Explicit handshake: `_resume` awaits the ORIGINAL task's full teardown (session release/reset, slot decrement, registry pop) before respawning — never a timed sleep.
-- Slot re-acquisition: waits (bounded, `_RECOVERY_SLOT_WAIT_SECS`) for free capacity; the slot claim and `create_task` are ATOMIC (no await between) so a concurrent `_drain_queue` cannot overshoot `max_concurrent`.
+- Slot re-acquisition: waits (bounded, `_RECOVERY_SLOT_WAIT_SECS`) for free capacity; the slot claim and `create_task` are ATOMIC (no await between) so a concurrent `_drain_queue` cannot overshoot `max_concurrent`. The dispatcher honours the same invariant from its side with reserve-then-commit: when `spawn_impl` stops at the store claim (`ClaimPoint`) it has ALREADY taken the slot (`_running_count += 1`, stagger token) synchronously, the claim is awaited on the writer thread, and the re-entry (`_claimed=`) consumes that reservation instead of counting again; a claim the store refused or could not take, or a refusal at re-entry, releases it (`release_reservation`). So nothing admitted during the await -- a `spawn`, a `resume_grant`, a recovery re-acquisition -- can take a slot the dispatcher is about to use.
 - Shutdown-reachable: the pending `_resume` task is registered in `_tasks` under `"{id}:recovery"` so `cancel_all()` cancels it; a cancelled recovery finalizes the record terminally and never respawns.
 - Failed recovery (no slot / teardown timeout) still fully finalizes: `subagent_done` emitted, tombstoned, delivered via `on_done`.
 - Replay-safety at respawn: when the first attempt streamed partial text, the respawned prompt is prefixed with `_CANCEL_RESUME_PREFIX` so the model continues instead of restarting (the prefix also gates on `tool_count` as defense-in-depth, though the side-effect gate above means a tool-activity run never reaches respawn). A bare original prompt is re-sent only for a zero-activity first attempt.
@@ -352,6 +457,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
 `start_reaper()` launches a periodic loop (60s interval) that force-kills subagents exceeding the configured timeout deadline. Defense-in-depth for cases where `asyncio.wait_for` fails to fire due to event-loop saturation or orphaned tasks.
 
 - `_reaper_loop`: sweeps every 60s, calls `_force_reap` on expired agents
+- **taskq pump** (`OrphanStallMonitor.taskq_pump`, facade `_taskq_pump`): `start_reaper` runs it once after `taskq_boot_dispatch` (building the manager's `DependencyCoordinator` from `agent.dependency_*` over the admission store, `capacity = _max_concurrent`, and running `coordinator.rebuild()` after `open_default_store` ran `WaitLedger.rebuild()`), every sweep re-runs it as the backstop, and every run that parks on a wait calls it. One pass = `admission.taskq_expire_waits()` (wait deadlines) + `coordinator.tick()` (due scopes) + a one-shot `loop.call_later` re-armed at `coordinator.next_deadline()`, so a scope is woken when it is due, not on the next 60s sweep. The coordinator is registered process-wide (`taskq.dependency.register_coordinator`) for the main chat's read of scope schedules. Terminal runs call `coordinator.forget(id)` from `_run`'s finally (a finished probe is the scope's recovery signal) and withdraw any pending resume entry.
 - `_force_reap`: reset with 30s timeout → SIGKILL fallback → mark done → fire `subagent_done` WS event
 - **Startup-stall admission ends when the first provider stream begins.** A provider may create its child process lazily from `stream()`, so a missing PID before the first response is not proof that execution never started. The marker resets for every recovery execution; the startup watchdog may reap only a subagent with no first stream, no runtime PID, and no completed turn. The ordinary wall-clock deadline remains unchanged.
 - **Terminal completion is arbitrated by FOUR separate guards, not by `reaped` alone.** Two paths can finish a subagent — `_force_reap` and `_run`'s `finally` — and between them there are four distinct one-time concerns. Earlier revisions tried to arbitrate them with `reaped` plus `done` and every attempt satisfied two while breaking a third (duplicate delivery when the marker was set late; a lost outcome when it was set early and the reaper was cancelled; a lost outcome when the claim was handed back to a run that had already exited; and finally **no reporter at all plus a leaked concurrency slot** when the report claim was gated on `not info.done`). The guards are now:
@@ -535,6 +641,351 @@ and `mcp_core.py` reads it via `os.environ.get()`. If the env var is missing
 `~/.kiro/crew/session_pid_{getppid()}.txt` for backward compatibility. The
 session key flows through the `/api/spawn` endpoint as `parent_session`.
 
+## Durable task queue (`kiro_crew.taskq`)
+
+Specified in [taskq.md](taskq.md); this section is the manager's side of it.
+
+- **Store.** `SubagentManager.__init__` opens `$KIROCREW_HOME/tasks/tasks.db`
+  through `taskq.open_default_store` (schema → legacy import → reconcile) when
+  `agent.task_queue_enabled` is true. With a running event loop, the constructor
+  schedules `_initialize_taskq`: `asyncio.to_thread(_open_taskq)` owns config,
+  SQLite open, integrity checking, migrations, import, reconcile and wait rebuild.
+  It attaches the result on the loop only after that work finishes. Until then,
+  spawns return `task_store_unavailable`; `wait_taskq_ready` lets startup await
+  attachment without cancelling the worker, and is also the point at which the
+  gateway binds the runner admission to the now-existing dependency coordinator
+  and runs its adoption sweep ([taskq.md](taskq.md) § Runner adapters).
+  `dependency_coordinator_async()` is the loop-side accessor that builds the
+  coordinator on the store's writer thread, because the first build rebuilds the
+  wait schedule from every waiting row; the run loop's own dependency arms
+  (`_run_inner`'s coordinator read and `_yield_for_dependency`) take it, and the
+  gateway calls it as `_ensure_subagent_coordinator()` before each loop-side
+  wiring pass so the sync `dependency_coordinator()` those passes read is a
+  hit on the built one. Synchronous constructors without a
+  running loop open inline, as does a loop caller under
+  `SpawnAdmissionCoordinator.open_store_off_loop=False` (the test suite's root
+  fixture, next to `pump_off_loop`; `test_taskq_startup.py` turns it back on to
+  pin the worker path). A store that cannot be opened while the
+  queue is ENABLED is recorded as `_taskq_unavailable` and every `spawn` /
+  `spawn_async` is refused typed (`error_code=task_store_unavailable`, the
+  cause in `error`) -- accepted work must never live only in memory. That
+  refusal is fail-closed but NOT until the next restart: `_taskq_init_task` is
+  re-armed from the reaper sweep (`taskq_reopen_if_due`) on the shared recovery
+  schedule until the open succeeds, with `_taskq_reopen_attempts` /
+  `_taskq_reopen_at` as its state and `taskq_arm_reopen` -- called by whoever
+  recorded the failure, off the loop -- as the one place the deadline is set. The
+  retry deliberately does NOT live inside `_initialize_taskq`: the gateway boot
+  path awaits `wait_taskq_ready`, so a loop there would hang boot instead of
+  recovering. `_initialize_taskq` also never un-attaches: a re-open that comes
+  back empty leaves an attached store alone. Why re-opening mid-life is the boot
+  open repeated: [taskq.md](taskq.md) § An enabled queue never falls back.
+  `agent.task_queue_enabled=false` is the one way to run on the in-memory queue
+  alone; `_taskq is None and _taskq_unavailable is None` is the test for "legacy".
+- **`spawn_async` (event-loop callers, `POST /api/spawn`).** `prepare_spawn`
+  runs every policy gate and returns a `PreparedSpawn`; the row is written on
+  the store's writer thread (`TaskStore.run`); then `spawn(**params,
+  _preassigned_id=id, _store_accepted=True)` starts the run. The SQLite lock
+  wait never blocks the loop and the caller is acked only once the row exists.
+  **Batch accounting happens exactly once, on the FIRST entry** (`not
+  _from_queue and not _store_accepted`): the prepare pass counts the member,
+  so a member `prepare_spawn` refuses is counted like any other refusal and
+  `/api/spawn`'s `counted: true` is true for it; the `_store_accepted`
+  re-entry and a drained row never count again. **The mutable policy gates
+  (memory identity, cwd allowlist, governance) run once per submission**: on
+  the first entry and again when the pump drains a stored row (the re-check
+  before dispatch). The `_store_accepted` re-entry skips them -- a refusal
+  AFTER the row was committed would leave executable work queued behind a
+  refusal the caller already saw. A drained row the pump refuses is marked
+  `failed` in the store in the same step (`_refuse_row` -> `taskq_fail`), so
+  the caller's verdict and the store's agree. Capacity is never a refusal for a
+  committed row: a prevalidated app spawn (`_agent_prevalidated`, the SpawnSDK)
+  that finds no slot queues like any other row, with the flag CLEARED in its
+  queue entry so the drain re-validates the agent and re-proves app ownership
+  (`_validate_app_agent_ownership`, the SpawnSDK's filename-prefix test) before
+  starting; an entry that fails that re-check is refused and its row failed.
+  The durable row never carries the flag at all (`taskq_build_record` strips
+  it; `_window_entry` drops it from any row that still holds one), so a start
+  rebuilt from the store -- window refill or restart -- runs the same gates
+  (`test_overload_integration_glue.py::test_durable_row_never_carries_prevalidation`).
+  `approval_mode` is the OTHER process-local param and is stripped by both, for
+  the same reason at higher stakes: an ad-hoc `approval_mode="auto"` skips the
+  spawn gate AND pre-approves the run's tools, so a row carrying it replays one
+  request's consent into a start nobody authorised. A row is written by one build
+  and started by another, which is why the READ side strips it too rather than
+  trusting the row (`test_taskq_admission_integration.py::test_a_row_on_disk_carrying_auto_approval_faces_the_spawn_gate`
+  drains a row that still holds the grant and asserts the approval callback ran).
+  The value stays recorded in `scope_ref`, which the schema defines as references
+  rather than grants and which no start path reads.
+- **Wakes.** Only `resume_grant` writes `running` (`wake_wait(to=running)`,
+  slot reserved, runtime resident) — and the landed wake is the PRECONDITION
+  for the publish: the pump reserves the lane slot on the loop
+  (`resume_reserve`), the wake runs on the writer thread
+  (`resume_grant_async`), and `_slot_released` / `_wait_record` /
+  `_taskq_generation` / `_resume_event` are written only from its result. A
+  refused or unreachable wake releases the reservation and leaves the run parked
+  on its bounded `_await_lane_resume` timeout, so the no-overshoot invariant
+  above is unchanged and a grant is never reported for a slot the store does not
+  back. The publish re-tests the run's LIVENESS across that split for the same
+  reason it re-tests the row: a reservation is not a grant, `resume_reserve`'s
+  own `done` / `reaped` / `user_stopped` gate ran on the near side of an await,
+  and the pump reserves EVERY queued resume in one synchronous pass before
+  granting them one at a time — so a run whose entry sits behind another's can
+  end while its own slot is already reserved. `yield_slot` spent that run's
+  one-shot release token, so publishing `_slot_released = False` onto it charges
+  a lane slot no terminal path can hand back and the cap falls by one per such
+  resume. `_resume_publish` gives the reservation back instead, never with a
+  re-arm, and adopts a wake that already LANDED even then, so the run's own
+  terminal write is fenced by the generation the row now carries rather than by
+  the stale one. The row-state refusal beside it reads the same way: `retry=False`
+  says the row is not this run's to resume any more, NOT that the row left a wait.
+  A row still IN a wait passes `retry=False` too, because the only wait state that
+  can reach the refusal is one a re-dispatch entered under a newer generation, and
+  re-arming would ask the pump for a lane slot on another owner's row once a second
+  until the waiter's own bound gave up. `resume_reserve` reserves nothing while gateway admission is CLOSED (the
+  updater's boundary, [session.md](session.md) § Update pause): the run stays
+  parked with its wait intact and the next wake asks again, because a slot taken
+  behind the census the updater just read is work a restart would interrupt
+  mid-turn. The window refill answers the same gate — a row hydrated into
+  `_queue` after the close would only be refused by the spawn gate, and left on
+  disk it is the next boot's work. A live parent whose last child ended stays
+  `waiting_children` (`on_child_terminal(defer_wake=True)`) until the pump
+  grants its slot; every other wake lands in claimable `retry_wait` (see
+  `taskq.md` § Waits). `taskq_excluded_ids` keeps the refill from claiming a
+  row whose run is live in this process.
+- **`_queue` is a bounded window**, never the whole backlog. It holds at most
+  `agent.task_dispatch_window` (64) dicts — the same dict shape as before,
+  `_preassigned_id` included, plus `_lane` on entries the refill brought in
+  (popped before `spawn(**params)`) — and `_drain_queue_impl` refills it
+  lane-fairly from the store at the start of every pump and after every pop
+  (`taskq_refill_window`; see § Fairness lanes and the child reserve). A new
+  spawn joins the window directly only when there is room AND no older row
+  waits outside it (`taskq_should_window`), so dispatch is FIFO inside a lane
+  across the boundary. `queued_count_for` /
+  `has_pending_work_for` / `batch_members_pending` / the stuck-wave and
+  digest-hold sweeps /
+  `cancel_for_parent` all add the store-only rows (`taskq_overflow`,
+  `taskq_batch_pending`, `taskq_pending_ids_for`). An event-loop caller takes the
+  `*_async` sibling instead — `queued_count_for_async` /
+  `has_pending_work_for_async` over `taskq_overflow_async`,
+  `taskq_pending_ids_for_async` for `cancel_for_parent`, and
+  `batch_members_pending_async` / `_sweep_stuck_waves_async` /
+  `_sweep_digest_holds_async` over `taskq_batch_pending_async` (the reaper and
+  the gateway's completion consumer are the coroutines that hold them) — each of
+  which snapshots the
+  in-memory exclusion set on the loop and runs only the `count_pending` /
+  `list_pending` / `fetch_pending_by_batch` half on the store's writer thread.
+  Each wave helper's own split is the same: the candidates come from manager
+  state on the loop (`_batch_pending_in_memory`, `_stuck_wave_candidates`,
+  `_expired_digest_holds`) and only the per-wave store read is offloaded. The
+  sync entries stay for the sync callers.
+- **A store-only count answers "some" while the store cannot be read, never
+  "none".** No store at all is a queue with no rows in it; a locked, busy or full
+  one is a queue whose rows nobody can see, and only the first is evidence that
+  nothing is waiting. So `taskq_overflow` / `taskq_overflow_async` answer
+  `taskq_bridge.UNKNOWN_PENDING` (1) on a `TaskStoreUnavailable`, and
+  `taskq_batch_pending` / `taskq_batch_pending_async` answer True. Every consumer
+  is a fail-closed PREDICATE — the attached-children guard before a session
+  teardown (`chat_utils.subagents_attached`, whose own `except` arm therefore
+  covers a probe that raises for some other reason rather than this one), the cron
+  reset-deferral guards (`has_pending_work_for`), Slack's pending probe, and the
+  wave digest, whose bookkeeping is PRUNED when it closes so an early close is not
+  one wrong message but a SECOND digest for the same batch. Two readers take
+  `taskq_batch_pending` with OPPOSITE polarity and True is the safer failure for
+  both: `_sweep_stuck_waves` skips its reconcile (the next sweep re-examines the
+  wave), and `_sweep_digest_holds` — reached only for a hold already past
+  `DIGEST_HOLD_SECS` — forces the partial digest out, so the price is a chunk that
+  may race the wave-close flush rather than every finished sibling's result staying
+  undelivered for the length of the outage. The queue-depth chip is the only reader
+  for which the value is a number, and one advisory unit during an outage the log
+  already names is the price. `taskq_pending_ids_for` is the
+  exception and stays `[]`: it enumerates ids to cancel, and inventing one would
+  cancel a row nobody read. Pinned by
+  `test_taskq_admission_integration.py::test_an_unreadable_overflow_keeps_the_attached_children_guard_closed`
+  and `::test_an_unreadable_batch_read_holds_the_wave_open`.
+- **Claim before registration.** `taskq_claim(agent_id)` runs right before the
+  info is registered; it returns `(generation, proceed)`. `proceed=False`
+  means the store knows the row and refuses it (cancelled while waiting): spawn
+  returns a `queued`+`done`+`user_stopped` info without registering and the
+  drain takes the next row. A row the store never saw (a legacy in-memory
+  entry, as tests inject) proceeds with generation 0. The generation is stored
+  on `SubagentInfo._taskq_generation`.
+- **State marks.** `starting` when the run task (or the approval prompt) is
+  created; `running` at `_exec_started` in `_run_inner`; terminal via
+  `_claim_finalize` → `taskq_settle` (`user_stopped → cancelled`, `error →
+  failed`, else `done`, `result_ref` = the run's `result.txt`). Because the
+  one-shot report token is the writer, exactly the reporter of the outcome
+  writes it, and a stale generation (a superseded dispatch of the same id) is
+  fenced out by the store.
+- **The settle's PROPAGATION is owed by the reporter, not by the row's write.**
+  Both settle paths have the SAME three arms — committed, `TaskStoreUnavailable`,
+  unexpected exception — and the propagation runs on all of them, because the
+  one-shot `_claim_finalize` token means a propagation this settle skips is one
+  nothing anywhere retries: a waiting parent is left parked on a wait no wake
+  will ever end, and a cancelled parent's children keep running unnoticed. The
+  unexpected-exception arm costs more than the propagation, which is why neither
+  path may let one leave: the token is already spent when `taskq_settle` runs, so
+  an escape loses the TERMINAL REPORT too — the claimer never sees True, reports
+  nothing, and no second claimer can. Both halves decide from the child ID they
+  are handed rather than from the child's row (`on_child_terminal` adds it to the
+  terminal set itself), and both absorb a store outage of their own.
+- **The one arm that does NOT propagate is the one where the reporter is not the
+  owner**: `taskq_superseded_by_live_owner` — the terminal write was refused AND
+  the row now carries a newer generation AND is not terminal. A live replacement
+  holds a `_claim_finalize` token of its own, and here the propagation is not
+  merely redundant — because `on_child_terminal` takes the report as the
+  evidence, it marks the child terminal and wakes a parent awaiting it as its
+  last child WHILE the replacement is still running. The predicate is the row's
+  LIVENESS, never "my generation is stale", because the other two refusals still
+  owe the propagation: a transition the table refused from a PARKED row
+  (`retry_wait -> done` is closed) leaves the row at this run's own generation,
+  so nobody else will ever report it; and a fenced row that is already TERMINAL
+  was settled by another owner — the shape of an operator cancel through
+  `/api/tasks`, whose `store.cancel` bumps the generation — where re-running the
+  propagation decides the same thing (`on_child_terminal` rebuilds the terminal
+  set from the store) while skipping it parks the parent until the next boot's
+  `WaitLedger.rebuild`. One row read, shared by both paths and reached through
+  `store.run` on the posted one; an unreadable store answers "not superseded",
+  since an outage leaves this generation on the row. Pinned on both settle paths
+  by `test_taskq_admission_integration.py::test_a_terminal_write_the_store_refused_still_resumes_the_parent`
+  and `::test_a_fenced_settle_propagates_unless_a_live_owner_holds_the_row`.
+- **Cancel.** `_unqueue_impl` cancels the store row FIRST (`taskq_cancel_queued`,
+  which also returns the params for a store-only row so the queued-stop report
+  is whole), then drops the window entry. `cancelled` beats the drain in either
+  order (see taskq.md § Atomic claim). It matches UNSTARTED entries only: a
+  `_resume_id` entry carries a resident run's own id, so an id match cannot tell
+  the two apart, and both callers would then convert a live or already-reported
+  run into a synthetic queued terminal — `cancel`'s fall-through for a `done` or
+  absent record (a resume entry outlives its run's terminal; nothing on that path
+  withdraws one) and the parent sweep. Pinned by
+  `test_overload_integration_glue.py::test_cancel_never_reports_a_queued_stop_over_a_run_that_already_ended`.
+- **Restart.** `start_reaper` calls `taskq_boot_dispatch`, which arms one pump
+  wake-up when persisted rows are pending. Rows in `queued` re-dispatch under
+  their original ids and params; rows a dead incarnation had `starting`/`running`
+  are settled by reconcile — a subagent's default side-effect class is
+  `unknown`, so such a run ends `unknown_side_effect` (never silently re-run)
+  unless its tombstone proves an outcome; the existing orphan reconciliation
+  still delivers the notification.
+- **Memory pressure defers.** See admission order step 3. SEL outcomes:
+  `deferred_low_memory` / `deferred_memory_critical` (store) vs the legacy
+  `refused_low_memory` / `refused_memory_critical`.
+- **Nested tree.** `taskq_accept` sets `parent_id` (and inherits `root_id`)
+  when the spawning session is `subagent:<id>` and that id has a row, so the
+  store holds the S → A → B links a restart rebuilds from.
+- **Waits (taskq.md § Waits).** `admission.yield_slot(info, WaitRecord)`
+  releases the lane slot (`_release_slot` token, `_running_count -= 1`, pump)
+  and writes the record (`running → waiting_*`, same generation); the runtime is
+  untouched and its residency stays charged. `request_resume(info)` puts a
+  `_resume_id` entry at the FRONT of the window; `_drain_queue_impl` grants it
+  by capacity through `resume_grant` (`_running_count += 1`, store `wake` under
+  a NEW generation adopted into `info._taskq_generation`). `resume_granted(id)`
+  tells a caller whether the run holds its slot again. Events:
+  `subagent_waiting`, `subagent_resumed`.
+- **A re-armed resume belongs to the WAITER that asked.** A grant the pump
+  refused is asked for again on a timer (`_rearm_resume`, `_RESUME_REARM_SECS`),
+  and the timer checks ownership when it FIRES: an `info._resume_event` that is
+  no longer the one it was armed under means the waiter is gone and it asks for
+  nothing. `request_resume`'s own three gates do not cover that — a bounded
+  `_await_lane_resume` that gave up is neither `done` nor holding its slot nor
+  already queued — and it withdraws its QUEUE entry, which a `TimerHandle` is
+  not in. Granted after the give-up, the lane slot is charged to a run whose
+  `_release_slot` token `yield_slot` already spent, so nothing gives it back and
+  the fresh entry re-arms in turn. A request made with no event of its own (the
+  one-shot children wake, whose holder is a `/api/spawn/{id}/resume` long poll)
+  keeps retrying. Pinned by
+  `test_runloop_integration.py::test_a_rearm_outliving_its_bounded_waiter_grants_nothing`.
+- **`waiting_children` (W3) is detected from the execution layer.** When a
+  child registers or queues under `subagent:<parent>`, `taskq_child_registered`
+  reads the parent's trusted in-flight tool snapshot (`_inflight_tool.tool_name`
+  from `_meta.kiro`): a name ending in `spawn_sub_agents` means the parent is
+  blocked on its children and has no runnable work of its own, so it yields
+  with `WaitRecord.children(outstanding ids, tool_call_id)`; later children of
+  the same call join the awaited set (`update_wait`). A parent that used
+  `spawn_run` keeps running and keeps its slot. `taskq_settle` then calls
+  `taskq_child_terminal`: the parent wakes on its LAST awaited child (each
+  parent re-admitted individually, no tree-wide burst); `on_child_failure`
+  (params, default `continue`) `fail_parent` fails the parent now
+  (`reason=child_failed`) and cancels the remaining children, children first.
+  A CANCELLED parent cascades to its children (`taskq_cancel_children_of`:
+  live runs through `cancel`, store-only rows through `cancel_tree`); a `done`
+  or `failed` parent leaves them running. `taskq_expire_waits` (once per second
+  on the pump path) fails waits past `deadline_at` and cancels their live runs.
+  `spawn_sub_agents`' own blocking wait is this W3 record; its `still_running`
+  return (wait expiry) stays as specified below and cancels nothing.
+
+## Fairness lanes and the child reserve (RFC §6, §13 Q3 / Q5)
+
+The dispatcher's order is not global FIFO. The store side is in
+[taskq.md](taskq.md) § Fairness lanes; this is the manager's side
+(`subagent_manager/admission/fairness.py`).
+
+- **Lane of a spawn.** `lane_for_session(parent_session_key)`: a
+  `subagent:<id>` key walks the live parent chain (`_agents`, then the store
+  row) to the root session; any other key is a root and maps by
+  `lanes.lane_key_for` (cron / hook / heartbeat / background / empty →
+  `system`). Entries the refill brought in carry the row's `lane` as `_lane`.
+- **Pick order (`pick_window_index`).** A queued resume (`_resume_id`, FIFO
+  among resumes) first — its run is already resident — then `LaneScheduler`
+  weighted round-robin over the lanes with eligible window entries, oldest
+  head winning a tie. `_drain_queue_impl` pops that index, not index 0. With
+  only the child reserve left, "eligible" means nested (`entry_is_child`:
+  `parent_session_key` starts with `subagent:`); when no window entry
+  qualifies the window is topped up with `children_only` rows and the pick
+  runs once more.
+- **Refill (`taskq_refill_window`).** Every lane with a store row waiting gets
+  its head into the window (a window full of one lane evicts that lane's
+  YOUNGEST entries back to store-only — they are queued rows, refetched later
+  in FIFO order — never a resume entry), then the remaining room is filled by
+  `fetch_dispatchable_fair`. Two scheduler
+  balances (`lane_scheduler()` for the pick, `lane_refill_scheduler()` for
+  the refill) so the refill never spends the pick's credit.
+- **The eviction has a floor, and it is not "keep every head"
+  (`_evict_for_lanes`).** A lane keeps its head for as long as ANY lane holds a
+  spare entry. A full window holding exactly one entry per lane has no spare, and
+  there keeping every head frees nothing — so the `children_only` top-up hydrates
+  no row, the slot the child reserve is holding open can never be filled from
+  disk, and a tree waits on its own child for as long as the process lives, which
+  is the deadlock the reserve exists to prevent. The youngest head goes instead,
+  at most ONE per call, so the window churns by a single entry and that entry is a
+  queued row the refill refetches in FIFO order. Pinned end to end by
+  `test_fairness_lanes.py::test_reserve_pulls_a_child_into_a_window_holding_one_entry_per_lane`
+  and directly by `::test_eviction_frees_one_lane_head_per_call_and_never_a_resume`.
+- **`CapacityView` (`capacity_view()`).** One reading per decision:
+  `cap_total` = `_max_concurrent`, lifted to `min(user_max_concurrent,
+  adaptive_floor + child_reserve)` ONLY while a parent is in
+  `waiting_children` AND `_adaptive_cap` is set (a cap the user or a test
+  pinned is never lifted); `roots_cap` = what a depth-0 start may fill:
+  `cap_total - child_reserve` while the reserve is active (a nested row or a
+  resume is waiting for a slot), else the whole cap, and never more than the
+  unlifted cap. `any_slot` gates children and resumes; `root_slot` gates
+  roots. `_should_stagger_queue_impl` reads `any_slot`; `spawn_impl`
+  additionally queues a root that `root_may_start()` refuses. A parent that
+  merely waits while its children RUN reserves nothing — unrelated sessions
+  fill the cap (RFC §14.3). `agent.child_reserve=0` disables the rule.
+- **Why the reserve.** A parent that yields holds no slot, so the rule bites
+  when starts compete: with cap 2, S → A → B and roots R1, R2 queued, S yields
+  for A, A takes the reserve while R2 waits; A yields for B, B takes it; B
+  ends → A's resume, then S's, before R2. Roots fill the cap again once
+  nothing nested is pending. Under an adaptive squeeze to 1 with a parent
+  waiting, the child gets a second slot the roots never see, so the tree
+  progresses instead of waiting behind a root's whole run.
+- **No checkpoint-pause (RFC Q3).** A dedicated-runtime parent that waits on
+  its children keeps its resident process and its host charge; nothing closes
+  or resumes that runtime, and no flag or seam for it ships.
+- **Resume hold (`wait_resume_granted`, `GET /api/spawn/{id}/resume`).**
+  Between the store `wake` (last child ended) and the pump's grant the parent
+  must not be handed its tool result. `wait_resume_granted(id, timeout)`
+  awaits the per-run `_resume_event` that `resume_grant` sets (one event per
+  wait; retired on the grant); True at once for a run holding its slot or
+  unknown here. `dashboard/handlers/spawn_resume.py` serves
+  `GET /api/spawn/{agent_id}/resume?wait_secs=N` (held server-side up to
+  `MAX_HOLD_SECS` = 8 s, under the MCP client's 10 s GET timeout) →
+  `{known, granted, slot_released, resume_pending, done}`, and
+  `GET /api/spawn/lanes` → `admission.lane_snapshot_async()`.
+- **Settings.** `FairnessSettings.from_agent_config(cfg.agent)` (cached on
+  the manager for `FAIRNESS_SETTINGS_TTL_SECS` = 2 s; `set_fairness_settings`
+  pins a value for live reload and tests): `lane_weights`, `child_reserve`,
+  `adaptive_floor`.
+
 ## Scale Plumbing (60-100 concurrent agents)
 
 Large waves must not flood the WS socket, the parent LLM's context, or the UI. Five mechanisms — WS coalescing/replay-batching and UI caps are inert below their thresholds; digest chunking applies uniformly to every multi-task wave (single-task spawns behave byte-identical to legacy):
@@ -658,7 +1109,9 @@ Blocking poll semantics:
 - An errored/crashed sub-agent is treated as settled so one bad agent cannot keep the loop spinning until the deadline.
 - The loop pings `POST /api/session-keepalive` every 60s so the gateway's `is_responsive()` does not flag the (legitimately long-blocked) session as stale and SIGTERM the ACP subprocess mid-poll. The `wait` tool pings the same endpoint for the same reason but on a **5s** interval and with a body, because there the reply doubles as an early-end control channel (see `modules/learn-cron-dashboard.md` § Wait countdown and early end); this loop sends `{}` and ignores the reply, so 60s is sufficient.
 - `max_wait` defaults to 7200s (2 hours), clamped to `[60, 7200]`, and is configurable via the `KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT` environment variable. The deadline uses `time.monotonic()`.
-- Returns a newline-separated list of per-agent JSON results (`status`: `completed` / `error` / `timed_out`), all redacted for credentials and exfiltration URLs.
+- Returns a newline-separated list of per-agent JSON results (`status`: `completed` / `error`), all redacted for credentials and exfiltration URLs.
+- **The result is held until the parent holds its slot again.** A `subagent:<id>` parent yielded its lane slot for this wait (W3); once every child is settled the tool long-polls `GET /api/spawn/{parent}/resume?wait_secs=8` (`_hold_for_parent_resume`) until `granted` — each request is held server-side on the grant event, so there is no grant interval — bounded by the same `max_wait` deadline. `known=False` (finished run, other incarnation, legacy gateway error payload) and a chat-turn parent release the hold at once. If the deadline passes while the slot is still ungranted, the children's results are still returned, followed by `{"status": "resume_pending", "parent": id, "note": ...}`.
+- **The wait expiring is a fact about the call, not about the children.** When `max_wait` passes with sub-agents unsettled, the result ends with ONE envelope `{"status": "still_running", "task_ids": [...], "states": {id: "queued" | "running" | "waiting_permission"}, "waited_secs": N, "query": "spawn_status/spawn_list", "note": ...}`. Those children are NOT cancelled, NOT marked failed or timed out, NOT marked collected (so their completion events still inject), and keep their own execution budget (`subagent_timeout_secs`); the SEL outcome is `partial` with a `still_running` count. Settled siblings' results are still returned inline in the same reply.
 
 Difference from `spawn_run`: `spawn_run` returns immediately and delivers
 results later via completion-event injection; `spawn_sub_agents` blocks and
@@ -761,6 +1214,22 @@ On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
   promotion probes arbitration and the per-agent off-loop-writer lock non-blocking.
   Contention returns retryable `conversation_busy`, so a later retry writes
   `keep=True` only after every older writer completes.
+- **A resume entry never holds a conversation.** `_conversation_busy`'s `_queue`
+  scan matches UNSTARTED entries only. A `_resume_id` entry carries no
+  `conversation_key`, so its synthetic key is the RUN's id — which IS the
+  conversation id of a first-generation continuable run. While that run is live
+  the `_agents` scan answers first, so the case that reaches the queue branch is
+  an entry whose run has ENDED: only `_await_lane_resume`'s give-up arm withdraws
+  one, the queued-stop path deliberately leaves it alone (dropping it published a
+  "never started" terminal over a live run), and the pump returns above its
+  resume loop whenever no slot is free — so under a full pool the entry outlives
+  its run indefinitely. Counted, it answered
+  `conversation_busy: run X is in flight — use spawn_steer` for a run that is
+  done (and `spawn_steer` then answers `not_running`, a dead end), refused
+  `release_conversation`, and made the TTL sweep refresh `last_used` on a
+  conversation nothing holds, so its session files were never deleted. Pinned by
+  `test_subagent_continuable.py::test_a_stale_resume_entry_does_not_hold_a_conversation`,
+  which also pins that an UNSTARTED entry on the same conversation still holds it.
   Off-loop promotion lets `update_state` acquire that non-reentrant writer lock
   normally, avoiding self-deadlock while preserving serialization.
   Transient persistence errors likewise return retryable without dispatch. Retry
@@ -956,8 +1425,24 @@ Decision + lifecycle:
   — a companion runtime), calls `runtime.create_session()`, and wraps the handle
   in `AcpSessionProvider`. `SubagentInfo._session_sharing` / `_shared_provider`
   record the shared path.
-- On any failure the code falls back transparently to the legacy
-  per-process path (`get_or_create`).
+- `runtime.create_session()` runs under the ACP `SessionStartGate`
+  (`agent.session_start_concurrency`, see acp-client.md). `_create_shared_session`
+  passes `on_gate_acquired`, which resets `info._exec_started` / `last_activity`
+  at gate EXIT so the 120s startup watchdog and the stall clock never count
+  queue time, and records the wait in `info._start_queue_wait_ms`.
+- **A `session/new` timeout is congestion, never a reason for a dedicated
+  process.** `AcpRequestTimeout` from the shared runtime goes to
+  `_await_late_start`: the row is marked `recovering`, and the run waits for
+  the `StartCollector` that still owns the outstanding request. A late answer
+  the collector adopts (the run is still live: not stopped, reaped or shut
+  down) continues the run on that session under `_late_start_provider` and
+  resets the start clock again; any other verdict (`torn_down`, `abandoned`,
+  `runtime_dead`) ends the attempt with a `start_abandoned:` error. No second
+  `session/new` and no `get_or_create` is issued for congestion.
+- Only a NON-timeout failure of the shared runtime itself (dead, spawn failed)
+  still falls back to the legacy per-process path (`get_or_create`); the
+  explicit `model` / `reasoning_effort` / `allowed_tools` / `bare` / private
+  memory constraints take the dedicated path by decision, not by fallback.
 - Cleanup (`_run` finally + `_force_reap`) calls `_shared_provider.shutdown()` to
   tear down only the session — it never kills the shared runtime, which other
   subagents may still use. The runtime is killed when the parent session ends

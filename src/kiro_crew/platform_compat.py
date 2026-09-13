@@ -5341,6 +5341,30 @@ def restrict_dir_to_owner(path: str | os.PathLike) -> None:
     _apply_owner_only_dacl(path, inherit=True)
 
 
+def path_volume_is_remote(path: str | os.PathLike) -> bool | None:
+    """Is *path* on a NETWORK volume? True, False for local, None for unknown.
+
+    The Windows half of "which kind of filesystem holds this file", for a caller
+    that already answers the question from ``/proc/mounts`` or ``statfs``
+    elsewhere: Windows exposes no mount table, so the volume ROOT's drive type
+    is the source (:func:`windows_acl.volume_is_remote`, ``GetDriveTypeW``),
+    which reports a UNC root and a mapped network drive alike as remote.
+
+    None -- never False -- for every case where nothing was established: off
+    Windows, where the caller has its own mount-table source and must not read
+    this as "local"; a volume the OS reports as ``DRIVE_UNKNOWN`` or
+    ``DRIVE_NO_ROOT_DIR``; and a failed query. Root-only, so it costs no SMB
+    round trip and is safe for a path that does not exist yet.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        return windows_acl.volume_is_remote(path)
+    except (windows_acl.AclUnavailable, OSError, ValueError):
+        logger.debug("could not classify the volume holding a path", exc_info=True)
+        return None
+
+
 def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
     """Apply an owner-only DACL to *path* in-process. Windows-only.
 
@@ -6687,6 +6711,25 @@ def raise_nofile_soft_limit(target: int) -> None:
             resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
     except (ValueError, OSError, ImportError):
         logger.debug("Could not raise RLIMIT_NOFILE", exc_info=True)
+
+
+def nofile_soft_limit() -> int:
+    """This process's open-file soft limit, or ``0`` where there is none.
+
+    POSIX: ``resource.getrlimit(RLIMIT_NOFILE)`` soft value; ``RLIM_INFINITY``
+    reads as ``0``. Windows: ``0`` — there is no per-process descriptor rlimit
+    (see :func:`raise_nofile_soft_limit`), so a caller sizing an fd budget from
+    this value leaves the dimension unbounded, which matches the platform.
+    """
+    if not IS_POSIX:
+        return 0
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError, ImportError):
+        return 0
+    if soft == resource.RLIM_INFINITY:
+        return 0
+    return max(0, int(soft))
 
 
 # ---------------------------------------------------------------------------

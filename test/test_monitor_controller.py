@@ -842,6 +842,70 @@ async def test_probe_persistence_failure_leaves_live_claim_and_timer_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_a_shared_cooldown_skip_does_not_retire_a_healthy_watch(tmp_path):
+    """The PRODUCTION counting site owes the third outcome the same answer as shadow.
+
+    A probe the monitor declined itself -- the shared ``github:api`` schedule was
+    still ahead of now -- borrows a refusal's SHAPE, so charging it spends a budget
+    that exists to count refusals the HOST gave THIS watch. Unrelated work opening
+    that cooldown then retires a healthy watch on its own cadence, with no request
+    ever sent. Clearing the streak is the opposite error, so the skip must move
+    neither counter.
+    """
+    from kiro_crew.monitoring.github_provider_errors import REASON_SHARED_COOLDOWN
+
+    service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    loop = await service.add_monitor(
+        slot_key="chat-1",
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(max_runtime_secs=600, max_provider_errors=2),
+        now=100.0,
+    )
+    assert loop.monitor is not None
+    skip = GitHubPullRequestProbeResult(
+        response=None,
+        canonical={},
+        observation=MonitorObservation(
+            "",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.RATE_LIMITED,
+            reason_code=REASON_SHARED_COOLDOWN,
+            summary="Shared GitHub cooldown; no request sent.",
+        ),
+    )
+
+    budget = loop.monitor.budgets.max_provider_errors
+    for tick in range(budget + 1):
+        verdict = await service.apply_monitor_probe(
+            loop.id,
+            skip,
+            now=120.0 + tick,
+            config_generation=loop.monitor.config_generation,
+        )
+        assert verdict.decision is MonitorDecision.RETRY_PROVIDER, tick
+
+    assert loop.monitor.outcome is None and loop.monitor.stopped_reason == ""
+    assert loop.monitor.provider_error_count == 0
+    assert loop.monitor.consecutive_provider_errors == 0
+    assert loop.monitor.last_observation_reason_code == REASON_SHARED_COOLDOWN
+
+    # A refusal the HOST gave still spends the budget, so the skip did not make a
+    # real outage survivable.
+    real = _result(MonitorObservationStatus.PROVIDER_ERROR)
+    for _ in range(budget):
+        verdict = await service.apply_monitor_probe(
+            loop.id, real, now=200.0, config_generation=loop.monitor.config_generation
+        )
+    assert verdict.decision is MonitorDecision.STOP_BLOCKED
+    assert loop.monitor.provider_error_count == budget
+    service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_supplemental_provider_failures_advance_the_bounded_error_streak(tmp_path):
     """Readable canonical facts do not make an incomplete provider read free to retry."""
     service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())

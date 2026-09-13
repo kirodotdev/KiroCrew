@@ -2493,7 +2493,7 @@ class TelegramDispatcher:
         # Rotated: the subagent's completion arrives later and is routed by this
         # key, so binding it to a generation the next message abandons sends the
         # result to a conversation nobody is reading.
-        reply = spawn_task_reply(
+        reply = await spawn_task_reply(
             arg, self.subagent_manager, session_key or self._rotated_session_key(route)
         )
         if reply is None:
