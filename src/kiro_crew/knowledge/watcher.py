@@ -590,11 +590,11 @@ class KnowledgeWatcher:
             # single-flight finalize guarantee; a single-row best-effort write is
             # an acceptable inline cost on this error path.
             try:
-                self.store.db.execute(
+                self.store.db.execute(  # on-loop-io-ok: best-effort finalize in a cancel handler, see comment above
                     "UPDATE ingestion_jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
                     (status, str(exc), datetime.now().isoformat(), job_id),
                 )
-                self.store.db.commit()
+                self.store.db.commit()  # on-loop-io-ok: commits the finalize above, same cancel-handler constraint
                 sel().log_tool_invocation(
                     session_key="watcher",
                     agent="knowledge-watcher",

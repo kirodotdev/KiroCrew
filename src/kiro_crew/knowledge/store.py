@@ -200,8 +200,10 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 # ``async def`` scan cannot see, which is why this guard exists.
 #
 # Both narrowings below are temporary and exist for the same reason: this store
-# still has on-loop callers left -- the lines in
-# ``.github/sync-io-in-async-baseline.txt``, all of it knowledge paths.
+# still has on-loop callers left -- the watcher's marked cancel-path finalize
+# (``# on-loop-io-ok`` in ``knowledge/watcher.py``; the lexical baseline in
+# ``.github/sync-io-in-async-baseline.txt`` is now empty, and a marker is an
+# exemption, not an offload) plus the interprocedural path below.
 #
 # ``dashboard/handlers/knowledge.py`` takes the store through a worker for every
 # take of its OWN, endpoints and background tasks alike. It is not the whole
@@ -212,7 +214,8 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 # loop ONE FRAME DOWN. That path is interprocedural backlog, invisible to the
 # lexical baseline, and stays with the cleanup rather than with this file.
 #
-# Two takes are left in the lexical baseline. The watcher's self-heal rebuild
+# Two takes stay inline, carried as ``# on-loop-io-ok`` markers, and the
+# lexical baseline is empty. The watcher's self-heal rebuild
 # finalizes its job row inline on its cancellation path, where an interrupted
 # ``to_thread`` could drop the write -- ``start_rebuild_job`` sweeps a stale
 # 'processing' row to 'abandoned', so the single-flight guard recovers either
