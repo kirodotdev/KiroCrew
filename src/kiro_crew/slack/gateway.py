@@ -281,6 +281,7 @@ from kiro_crew.platform.update_governance import (
     update_blocked_reason,
 )
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.ready_line import capture_stdout_fd, emit_ready_line
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -1711,6 +1712,10 @@ class GatewayOrchestrator:
         self._no_open = no_open
         self._port_override = port_override
         self._json_ready = json_ready
+        # Capture the real stdout NOW, before any loader (llama-cpp embedding
+        # model load) can dup2 /dev/null over fd 1 on a worker thread and
+        # swallow the READY line. See kiro_crew.ready_line.
+        self._ready_out_fd = capture_stdout_fd() if json_ready else None
         self._approval_mode = approval_mode
         self._test_mode = test_mode
         self._supervised = supervised
@@ -12713,7 +12718,10 @@ class GatewayOrchestrator:
                 "pid": os.getpid(),
                 "home": str(data_home()),
             }
-            print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
+            # Write to the pre-captured stdout dup: a concurrent embedding
+            # model load may have dup2'd /dev/null over fd 1 at this moment.
+            emit_ready_line(ready_payload, self._ready_out_fd)
+            self._ready_out_fd = None
 
         self._install_shutdown_signal_handlers()
 
