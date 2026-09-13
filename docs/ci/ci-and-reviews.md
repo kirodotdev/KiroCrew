@@ -387,6 +387,132 @@ Details worth knowing:
     no in-repo signal. The response is the rollback above, not waiting for the
     timeout; the allowlist and the project name are fixed on the infrastructure
     side, not in this file.
+  - **A runner that starts and then loses its job leaves the job queued forever,
+    and a watchdog heals it.** The webhook can start a build and the job can
+    still never run. Every CodeBuild build registers a fresh just-in-time
+    runner, and that runner has to open a broker session with GitHub before it
+    can take the job. On 2026-09-12 the broker answered the runner's first
+    `CreateSession` with a 500 having already half-created the session, so every
+    retry was refused with "a session for this runner already exists";
+    `actions/runner` gives up on that conflict after a hard-coded four minutes,
+    GitHub's cleanup of the ghost session takes longer than that, and the runner
+    exits 0 — CodeBuild recorded the build as SUCCEEDED. The job it was started
+    for stayed *queued* (its label names one run attempt, so no other runner can
+    ever match it; see the `timeout-minutes` point above), the run stayed
+    *in_progress*, and because the `CI` concurrency group does not cancel
+    in-progress runs on `main`, every later `main` push was held *pending* behind
+    it and then evicted by the next push: one orphaned frontend shard held
+    `main`'s group for ten hours (19:33 to 05:31 UTC) and cost eleven `main`
+    verdicts before a human cancelled the run. The runner-side defect is
+    upstream and open
+    ([actions/runner#3441](https://github.com/actions/runner/issues/3441);
+    same family as
+    [#3624](https://github.com/actions/runner/issues/3624) and
+    [#2809](https://github.com/actions/runner/issues/2809)), so the repository
+    carries a watchdog rather than waiting for it:
+    `.github/workflows/ci-runner-watchdog.yml` runs `scripts/ci/runner_watchdog.py`
+    every ten minutes on `ubuntu-latest` (never on CodeBuild — a watchdog for a
+    path cannot depend on that path). It lists the queued and in-progress `CI`
+    runs, and calls a run *orphaned* when one of its jobs is still `queued`,
+    carries a `codebuild-` label, and has waited more than 15 minutes
+    (queue-to-start on CodeBuild is measured in seconds here, so that margin is
+    generous). It then cancels the run, waits for the cancellation to land, and
+    re-runs it: the re-run is a new attempt, so `changes` recomputes the label
+    with the new attempt suffix and GitHub emits fresh `workflow_job.queued`
+    webhooks that start fresh runners. The watchdog re-runs *all* jobs rather
+    than only the failed ones, because `gh run rerun --failed` reuses the first
+    attempt's `changes` outputs and therefore re-queues the routed jobs under a
+    label whose attempt suffix is stale, and CodeBuild's documentation does not
+    say whether it honours that. Slow is not dead: a queued `codebuild-` job is
+    also what CodeBuild account-concurrency saturation looks like, so the
+    watchdog reads what the *other* routed jobs are doing, counting only starts
+    after the orphaned job queued (a fleet that was fine before the orphan
+    queued says nothing about the fleet it is waiting on) — if a CodeBuild job
+    that did get a runner started in that window after waiting five
+    minutes or more, CodeBuild is queueing, and the tick reports the runs as
+    `skipped-saturated` and heals nothing; if *nothing* has started on
+    CodeBuild in that window (live runs, then the newest completed runs), the
+    evidence is inconclusive — a fleet outage looks exactly like an orphan from
+    the queued side — and the tick reports `skipped-no-dispatch-evidence`,
+    heals nothing, and points at the rollback above. Guard rails: runs younger than
+    15 minutes are never actionable (their jobs are still read, since a slow
+    start inside one is saturation evidence); the verdict is re-derived from a fresh read
+    immediately before the cancel and the cancel is sent only if the same
+    attempt is still orphaned (a human who re-ran it by hand has moved it to a
+    new attempt, which is left alone); fork runs are reported, never touched; a
+    run at attempt 3 or later is reported, never touched, so a run that keeps
+    orphaning is escalated rather than looped; at most five runs are healed per
+    tick; a refused cancel or re-run (403 when a human got there first) is
+    logged and left for the next tick. Once a cancel is accepted the watchdog
+    owns the run until it is re-run: it polls to `completed`, escalates to
+    `force-cancel` after 90 s, and re-runs each run as it completes inside one
+    shared five-minute budget. The whole tick runs inside the script's own
+    nine-minute budget, and a re-run is begun only while enough of it remains
+    to verify the re-run at its longest (a newer run landing in the window and
+    being restored, in turn), so the job's `timeout-minutes` — set above the
+    budget — never cuts a restoration off half-way; a re-run that cannot start
+    in time is named in an error and left for the recovery pass. The
+    saturation/outage evidence is re-read once before any run is re-read for
+    its cancel and judged against the current wall clock, so a run's own
+    re-read sits immediately before its cancel, and a fleet that saturated
+    since the top of the tick holds the run (and one that cannot be re-read
+    fails closed); a cancel itself is posted only while enough of the budget
+    remains to verify its re-run. The API has no conditional cancel or
+    re-run, so each mutation is verified after the fact: once a cancel lands, the run's
+    conclusion and attempt are read back (a run that finished on its own keeps
+    its verdict; one somebody re-ran in the gap is re-run again), and each
+    re-run is bracketed by newest-of-branch checks — before it, and again after
+    a short settle — so a newer run that appeared in the window is never left
+    cancelled by the re-run's entry into the concurrency group: the re-run is
+    cancelled, that cancellation is waited out (force-cancelled if slow; if it
+    still has not completed the tick fails rather than judge), and the newer run is read
+    until it reaches a terminal state or the settle window closes (a cancelled
+    successor is re-run through the same bracket, so a run landing in *its*
+    window is restored in turn, two levels deep at most, unless a yet-newer run
+    has taken the branch over; one still running when the window closes is
+    never called settled, since a group cancel can land late, and is a named
+    failure instead). Every read on that path
+    is guarded (and a cancel or re-run whose response was lost is never
+    re-posted — it is reconciled from the run's own state, since a repeat on a
+    landed mutation is a conflict that would read as a refusal), and every wait is a wall-clock window capped by the tick's
+    deadline (API latency counts, not just the sleeps): an API failure keeps the run owned (a status poll that fails is
+    retried until the shared deadline names the run; a successor that cannot be
+    read for the whole window is a failed outcome that names it), and a read
+    that fails before any mutation leaves the run untouched — no API error can
+    escape the heal with a cancelled run unnamed. The lookup behind those
+    checks matches branch *names*, which forks share, so it is paged until a
+    run from the same head repository appears and fails closed — red tick, run
+    named — if the listing never reaches ours; a successor that does not settle
+    inside the window, a successor that cannot be re-run, and a re-run refusal
+    that nobody else's re-run explains all red the tick the same way, so a lost
+    verdict is never a green watchdog; a run that outlives the budget is named in an
+    error, the job exits 1, and the next tick's recovery pass re-runs it —
+    that pass reads recently cancelled `CI` runs, pull requests included,
+    recognises the orphan fingerprint on their cancelled jobs (`codebuild-`
+    label, no runner name, queued past the threshold when cancelled — a shape a
+    healthy run a human stopped never shows, so a deliberate cancel is not
+    resurrected) and re-runs only those still the newest run of their branch.
+    The saturation/outage hold does not apply to it: that hold protects
+    finished work, and a cancelled orphan has none left — re-running it into an
+    outage leaves it queued until the fleet returns, whereas holding it would
+    let the recovery window expire and abandon it silently. It runs before the
+    live heals and takes the per-tick cap first, so a sustained backlog of live
+    orphans cannot starve it until the window expires. **The schedule ships disarmed**: `WATCHDOG_ARMED` at the top of the
+    workflow is `"false"`, so every scheduled tick is a dry run — it classifies
+    and writes its step summary but touches nothing — until a maintainer, having
+    read a few summaries against real API shapes and seen no healthy run called
+    `orphaned`, flips it to `"true"` in a one-line commit. A manual dispatch is
+    governed by its own `dry_run` input regardless, so a stuck run can be healed
+    by hand before arming. A `CI` run in *pending* with no jobs is
+    **not** something the watchdog touches — that run is waiting on its
+    concurrency group, not on a runner, and healing the run that holds the group
+    is what releases it; the step summary names it so the reader knows why it
+    waits. **Manual fallback** when the watchdog itself is held queued by
+    Actions saturation, or for a run it declined: `gh run cancel <run-id>`, wait
+    for the run to report `completed`, then `gh run rerun <run-id>`
+    (`gh run rerun <run-id> --failed` keeps the successful jobs but carries the
+    stale-label caveat). `workflow_dispatch` with `dry_run: true` (the default
+    for a manual dispatch) detects and reports without acting.
   - **Trust model.** A self-hosted runner exposes its host identity to the job it
     runs; that is inherent, not something this PR adds. What bounds it: only runs
     triggered by accounts that can push here reach the runner (forks never do);
