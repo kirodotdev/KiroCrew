@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  forgetPinnedSessionOrderManual,
+  markPinnedSessionOrderManual,
   PINNED_SESSION_ORDER_KEY,
+  PINNED_SESSION_ORDER_MANUAL_KEY,
+  readPinnedSessionOrderIsManual,
   commitPinnedSessionMembership,
   commitPinnedSessionOperations,
   commitPinnedSessionSnapshot,
@@ -79,5 +83,30 @@ describe('pinnedSessionOrder', () => {
     expect(readPinnedSessionOrder()).toEqual([])
     commitPinnedSessionMembership('c', true, ['a', 'b'])
     expect(readPinnedSessionOrder()).toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('clearing an arrangement', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  it('exposes exactly one way to end an arrangement', async () => {
+    // Two functions once differed only by writing a '0' undo state. With no undo shipped that
+    // value became unreachable, leaving a split that reads as two rules where there is one.
+    const module = await import('../utils/pinnedSessionOrder')
+    const enders = Object.keys(module).filter(name => /^(clear|forget)Pinned/.test(name))
+    expect(enders).toEqual(['forgetPinnedSessionOrderManual'])
+  })
+
+  it('leaves no marker behind, so the section simply follows the sort again', () => {
+    markPinnedSessionOrderManual()
+    forgetPinnedSessionOrderManual()
+    expect(localStorage.getItem(PINNED_SESSION_ORDER_MANUAL_KEY)).toBeNull()
+    expect(readPinnedSessionOrderIsManual()).toBe(false)
+  })
+
+  it('does nothing when no arrangement was recorded', () => {
+    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['a', 'b']))
+    forgetPinnedSessionOrderManual()
+    expect(localStorage.getItem(PINNED_SESSION_ORDER_MANUAL_KEY)).toBeNull()
   })
 })

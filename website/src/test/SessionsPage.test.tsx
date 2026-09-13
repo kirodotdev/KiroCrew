@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { Routes, Route, useSearchParams } from 'react-router-dom'
 import SessionsPage, { recencyGroup } from '../pages/SessionsPage'
 import { renderWithProviders, createTestStore } from './helpers'
@@ -308,6 +308,7 @@ describe('SessionsPage', () => {
   it('orders the Pinned group by the sidebar\'s manual pin order, not recency', async () => {
     // pinnedSessionOrder.ts is the user-arranged artifact both surfaces share.
     localStorage.setItem('mc-pinned-session-order', JSON.stringify(['s-b', 's-a']))
+    localStorage.setItem('mc-pinned-session-order-manual', '1')
     renderPage([
       slot('s-a', 'Pinned, touched recently', NOW - 60_000, { pinned: true }),
       slot('s-b', 'Pinned, ranked first by hand', NOW - 3_600_000, { pinned: true }),
@@ -317,6 +318,40 @@ describe('SessionsPage', () => {
     // Recency alone would put s-a first; the manual order says s-b.
     expect(rows[0]).toHaveAttribute('data-testid', 'sessions-row-s-b')
     expect(rows[1]).toHaveAttribute('data-testid', 'sessions-row-s-a')
+    localStorage.removeItem('mc-pinned-session-order')
+    localStorage.removeItem('mc-pinned-session-order-manual')
+  })
+
+  it('re-sorts the Pinned group when the arrangement changes after render', async () => {
+    renderPage([
+      slot('s-a', 'Pinned, touched recently', NOW - 60_000, { pinned: true }),
+      slot('s-b', 'Pinned, ranked first by hand', NOW - 3_600_000, { pinned: true }),
+    ])
+    let sections = await screen.findAllByRole('region')
+    expect(within(sections[0]).getAllByTestId(/sessions-row-/)[0]).toHaveAttribute('data-testid', 'sessions-row-s-a')
+
+    await act(async () => {
+      localStorage.setItem('mc-pinned-session-order', JSON.stringify(['s-b', 's-a']))
+      localStorage.setItem('mc-pinned-session-order-manual', '1')
+      window.dispatchEvent(new Event('mc-pinned-session-order-changed'))
+    })
+
+    sections = await screen.findAllByRole('region')
+    expect(within(sections[0]).getAllByTestId(/sessions-row-/)[0]).toHaveAttribute('data-testid', 'sessions-row-s-b')
+    localStorage.removeItem('mc-pinned-session-order')
+    localStorage.removeItem('mc-pinned-session-order-manual')
+  })
+
+  it('keeps the recency order while no manual pin arrangement is recorded', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['s-b', 's-a']))
+    renderPage([
+      slot('s-a', 'Pinned, touched recently', NOW - 60_000, { pinned: true }),
+      slot('s-b', 'Pinned, ranked first by hand', NOW - 3_600_000, { pinned: true }),
+    ])
+    const sections = await screen.findAllByRole('region')
+    const rows = within(sections[0]).getAllByTestId(/sessions-row-/)
+    expect(rows[0]).toHaveAttribute('data-testid', 'sessions-row-s-a')
+    expect(rows[1]).toHaveAttribute('data-testid', 'sessions-row-s-b')
     localStorage.removeItem('mc-pinned-session-order')
   })
 })

@@ -52,7 +52,8 @@ import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import { useLanguage } from '../i18n/LanguageProvider'
-import { pinMutationKeysInFlight, useSessionActions } from '../hooks/useSessionActions'
+import { useSessionActions } from '../hooks/useSessionActions'
+import { readPinMutationKeysInFlight } from '../utils/pinMutationsInFlight'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { platformShortcut } from '../utils/platform'
@@ -63,7 +64,7 @@ import ResizeHandle from '../components/ResizeHandle'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../components/SearchFilterBar'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_META_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../components/listShell'
 import { safeSetItem } from '../utils/safeStorage'
-import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
+import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, PINNED_SESSION_ORDER_MANUAL_KEY, markPinnedSessionOrderManual, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, readPinnedSessionOrderIsManual, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { LAYOUT } from '../components/layout'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
@@ -3279,10 +3280,21 @@ function ChatSidebar({
     () => reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinnedOrder),
     [storedPinnedOrder, naturalPinnedOrder],
   )
-  const pinnedRank = useMemo(() => new Map(pinnedOrder.map((key, index) => [key, index])), [pinnedOrder])
+  const [pinnedOrderIsManual, setPinnedOrderIsManual] = useState(readPinnedSessionOrderIsManual)
+  // Pre-marker the rows render in `naturalPinnedOrder` while `pinnedOrder` still holds stored
+  // bookkeeping, so anything positional must read the rendered sequence or act on a hidden list.
+  const effectivePinnedOrder = pinnedOrderIsManual ? pinnedOrder : naturalPinnedOrder
+  const pinnedRank = useMemo(
+    () => new Map(effectivePinnedOrder.map((key, index) => [key, index])),
+    [effectivePinnedOrder],
+  )
+  // Rank reaches the COMPARATOR only once the user has reordered; `pinnedRank` itself
+  // stays populated because the drag affordances below address rows by position.
+  const pinnedRankForSort = pinnedOrderIsManual ? pinnedRank : undefined
   useEffect(() => {
     const refresh = (fromStorage: boolean) => {
       const incoming = readPinnedSessionOrder()
+      setPinnedOrderIsManual(readPinnedSessionOrderIsManual())
       setStoredPinnedOrder(current => {
         const changed = incoming.length !== current.length
           || incoming.some((key, index) => key !== current[index])
@@ -3293,7 +3305,9 @@ function ChatSidebar({
     }
     const onSameTabChange = () => refresh(false)
     const onStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === PINNED_SESSION_ORDER_KEY) refresh(true)
+      if (event.key === null
+        || event.key === PINNED_SESSION_ORDER_KEY
+        || event.key === PINNED_SESSION_ORDER_MANUAL_KEY) refresh(true)
     }
     window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, onSameTabChange)
     window.addEventListener('storage', onStorage)
@@ -3305,13 +3319,28 @@ function ChatSidebar({
   const reorderPinned = useCallback((activeKey: string, overKey: string) => {
     setStoredPinnedOrder(current => {
       const naturalSet = new Set(naturalPinnedOrder)
-      const pending = pinMutationKeysInFlight().filter(key => !naturalSet.has(key))
-      const reconciled = reconcilePinnedSessionOrder(current, [...naturalPinnedOrder, ...pending])
+      const pending = readPinMutationKeysInFlight().filter(key => !naturalSet.has(key))
+      // Baseline is the VISIBLE order, not the stored one: pre-marker they differ, and
+      // permuting the stored order would persist an arrangement the user never saw.
+      // Once intent exists the live stored order IS that arrangement, and it is the only
+      // copy holding a pending-unpin row in its manual place, so reconcile from it.
+      const baseline = pinnedOrderIsManual ? current : effectivePinnedOrder
+      const reconciled = reconcilePinnedSessionOrder(baseline, [...naturalPinnedOrder, ...pending])
       const next = movePinnedSession(reconciled, activeKey, overKey)
-      persistPinnedSessionOrder(next)
+      // A drop onto the row itself is a no-op move, so it states no preference: latching
+      // the marker there would detach pinned rows from the sort control with no reorder.
+      if (next.length === reconciled.length && next.every((key, i) => key === reconciled[i])) return current
+      // The marker is a claim ABOUT the stored order, so it may only be set once that order
+      // is on disk. A quota-rejected write is swallowed and the tiny marker still fits.
+      if (!persistPinnedSessionOrder(next)) return current
+      // The one path that carries user intent, so it is the only one that may turn rank
+      // into a sort key. Membership writes must not, or a plain pin freezes the section.
+      // In-memory rank must not outlive the stored marker, or this sidebar sorts by an
+      // arrangement the flyout and the next reload both discard.
+      if (markPinnedSessionOrderManual()) setPinnedOrderIsManual(true)
       return next
     })
-  }, [naturalPinnedOrder])
+  }, [naturalPinnedOrder, effectivePinnedOrder, pinnedOrderIsManual])
 
   // ── Stale-session collapse ─────────────────────────────────────────────────
   // Sessions idle past the threshold collapse behind a per-container
@@ -3684,7 +3713,7 @@ function ChatSidebar({
   const [columnEditId, setColumnEditId] = useState<string | null>(null)  // column whose popover is open
   const pinnedRankAuthorityEstablished = useRef(storedPinnedOrder.length > 0)
   useEffect(() => {
-    if (!slotsLoaded || !tagColumnsSettled || pinMutationKeysInFlight().length > 0) return
+    if (!slotsLoaded || !tagColumnsSettled || readPinMutationKeysInFlight().length > 0) return
     const boardProjection = orderedColumns.length > 0
     if (boardProjection && !pinnedRankAuthorityEstablished.current
       && storedPinnedOrder.length === 0) return
@@ -4139,11 +4168,11 @@ function ChatSidebar({
       // ranking hint inside explicit search results.
       .sort((a, b) => searchRanked
         ? (searchRanked.get(a.key) ?? Infinity) - (searchRanked.get(b.key) ?? Infinity)
-        : comparePinnedThenSort(a, b, sortKey, pinned, pinnedRank))
+        : comparePinnedThenSort(a, b, sortKey, pinned, pinnedRankForSort))
     frozenSlotsRef.current = next
     return next
   },
-    [slots, filterDimensions, searchRanked, pinned, pinnedRank, sortKey, dragFrozen]
+    [slots, filterDimensions, searchRanked, pinned, pinnedRankForSort, sortKey, dragFrozen]
   )
 
   // Hold the row under the pointer in place. Under a last-activity sort,
@@ -5564,18 +5593,18 @@ function ChatSidebar({
   // all N memo boundaries per frame and defeats both the row memo and the
   // displacement window for any membership change. The handler runs only on
   // a keypress, where the latest values are what it wants anyway.
-  const keyboardReorderInputsRef = useRef({ searchRanked, pinnedOrder, slotFolders, reorderPinned })
-  keyboardReorderInputsRef.current = { searchRanked, pinnedOrder, slotFolders, reorderPinned }
+  const keyboardReorderInputsRef = useRef({ searchRanked, effectivePinnedOrder, slotFolders, reorderPinned })
+  keyboardReorderInputsRef.current = { searchRanked, effectivePinnedOrder, slotFolders, reorderPinned }
   const reorderPinnedByKeyboard = useCallback((
     key: string,
     container: string,
     delta: -1 | 1,
     row: HTMLElement,
   ) => {
-    const { searchRanked, pinnedOrder, slotFolders, reorderPinned } = keyboardReorderInputsRef.current
+    const { searchRanked, effectivePinnedOrder, slotFolders, reorderPinned } = keyboardReorderInputsRef.current
     if (searchRanked) return
     const rendered = new Set(sessionRowsInScope(row).map(el => el.dataset.sessionRow || ''))
-    const peers = pinnedOrder.filter(candidate => rendered.has(candidate) && (container === 'flat'
+    const peers = effectivePinnedOrder.filter(candidate => rendered.has(candidate) && (container === 'flat'
       || (slotFolders[candidate] || 'root') === container))
     const index = peers.indexOf(key)
     const target = peers[index + delta]

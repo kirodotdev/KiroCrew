@@ -58,7 +58,8 @@ function groupEntries(entries: StorageEntry[]): StorageGroup[] {
   return [...map.values()].sort((a, b) => b.bytes - a.bytes)
 }
 
-const formatBytes = (bytes: number): string => fmtBytes(bytes)
+const formatBytes = (bytes: number): string =>
+  bytes < 1000 ? `${bytes}${i18nT('pages.localStorageDebug.bytes_suffix')}` : fmtBytes(bytes)
 
 /** Approximate quota (browsers vary; 5 MB is the common floor) */
 const ESTIMATED_QUOTA = 5 * 1024 * 1024

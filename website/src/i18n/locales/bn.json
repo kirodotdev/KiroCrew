@@ -7330,6 +7330,7 @@
       "unknown_error": "অজানা ত্রুটি"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "সাজানোর ক্রম অনুসরণ করুন (সব পিন করা)",
       "bring_back_to_main": "মূল উইন্ডোতে ফিরিয়ে আনুন",
       "close_session": "সেশন বন্ধ করুন",
       "copy_link": "লিঙ্ক কপি করুন",
@@ -11144,6 +11145,7 @@
     "localStorageDebug": {
       "all_keys": "সব কী",
       "by_category": "বিভাগ অনুযায়ী",
+      "bytes_suffix": "B",
       "clear": "সাফ করুন",
       "clear_old_caches": "পুরোনো ক্যাশ সাফ করুন",
       "delete_cached_scroll_positions_from_old_sessions": "পুরোনো সেশন থেকে ক্যাশ করা সারির উচ্চতা এবং সংরক্ষিত পড়ার অবস্থান মুছে ফেলুন (নিরাপদ — স্ক্রল করলে আবার তৈরি হয়)",

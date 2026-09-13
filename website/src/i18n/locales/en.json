@@ -3760,10 +3760,10 @@
         "backup_install_save": "Save name",
         "backup_install_rename_failed": "Couldn't save the install name. It is unchanged.",
         "backup_install_name_label": "Install name",
-        "backup_attribution_self": "{{label}} \u00b7 this install",
+        "backup_attribution_self": "{{label}} · this install",
         "backup_attribution_self_unnamed": "this install",
-        "backup_attribution_other": "\"{{label}}\" (another install \u00b7 {{id}})",
-        "backup_attribution_other_unnamed": "another install \u00b7 {{id}}",
+        "backup_attribution_other": "\"{{label}}\" (another install · {{id}})",
+        "backup_attribution_other_unnamed": "another install · {{id}}",
         "backup_attribution_unverified": "unverified origin",
         "backup_origin_unknown": "unknown origin",
         "backup_none_from_this_install": "No backups from this install. Include the other installs' archives to see theirs.",
@@ -4988,6 +4988,7 @@
       "unknown_error": "Unknown error"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "Follow sort order (all pinned)",
       "bring_back_to_main": "Bring back to main",
       "close_session": "Close session",
       "copy_link": "Copy link",
@@ -6925,6 +6926,7 @@
     "localStorageDebug": {
       "all_keys": "All Keys",
       "by_category": "By Category",
+      "bytes_suffix": "B",
       "clear": "Clear",
       "clear_old_caches": "Clear Old Caches",
       "delete_cached_scroll_positions_from_old_sessions": "Delete cached row heights and saved reading positions from old sessions (safe — rebuilt as you scroll)",

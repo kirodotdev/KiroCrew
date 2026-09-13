@@ -5,7 +5,7 @@ import { Plus } from 'lucide-react'
 import type { ChatSlot } from '../../types'
 import { compareBySort, comparePinnedThenSort } from './sessionOrder'
 import { i18nT } from '../../i18n/t'
-import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
+import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, PINNED_SESSION_ORDER_MANUAL_KEY, readPinnedSessionOrder, readPinnedSessionOrderIsManual, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
 import { LIST_TITLE_CLS } from '../../components/listShell'
 
 /** Rows shown before the list defers to "show all". Sized so the flyout stays
@@ -136,10 +136,19 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
     [storedPinnedOrder, naturalPinnedOrder],
   )
   const pinnedRank = useMemo(() => new Map(pinnedOrder.map((key, index) => [key, index])), [pinnedOrder])
+  // Mirrors ChatSidebar: rank is a stated preference, so it applies only after an
+  // explicit reorder. Gating here too keeps a row's position identical on both surfaces.
+  const [pinnedOrderIsManual, setPinnedOrderIsManual] = useState(readPinnedSessionOrderIsManual)
+  const pinnedRankForSort = pinnedOrderIsManual ? pinnedRank : undefined
   useEffect(() => {
-    const refresh = () => setStoredPinnedOrder(readPinnedSessionOrder())
+    const refresh = () => {
+      setStoredPinnedOrder(readPinnedSessionOrder())
+      setPinnedOrderIsManual(readPinnedSessionOrderIsManual())
+    }
     const onStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === PINNED_SESSION_ORDER_KEY) refresh()
+      if (event.key === null
+        || event.key === PINNED_SESSION_ORDER_KEY
+        || event.key === PINNED_SESSION_ORDER_MANUAL_KEY) refresh()
     }
     window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
     window.addEventListener('storage', onStorage)
@@ -154,8 +163,8 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
   // question than the one hovering it asks. Pin-first still applies so a row
   // does not change position between the two surfaces.
   const ordered = useMemo(
-    () => [...slots].sort((a, b) => comparePinnedThenSort(a, b, 'date-desc', pinned, pinnedRank)),
-    [slots, pinned, pinnedRank],
+    () => [...slots].sort((a, b) => comparePinnedThenSort(a, b, 'date-desc', pinned, pinnedRankForSort)),
+    [slots, pinned, pinnedRankForSort],
   )
   const rows = ordered.slice(0, FLYOUT_MAX_ROWS)
   const hidden = ordered.length - rows.length
