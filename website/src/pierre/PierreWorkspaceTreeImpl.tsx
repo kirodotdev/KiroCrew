@@ -383,7 +383,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // and post-paint effects would flash an empty then UNFILTERED tree before
   // the search below re-applies — data, search, and reveal must all land in
   // the same pre-paint pass so the first visible frame is already correct.
-  const pathsKey = useMemo(() => paths.join('\n'), [paths])
+  const pathsKey = useMemo(() => JSON.stringify(paths), [paths])
   const lastPathsKey = useRef<string | null>(null)
   // Expansion persists for `all` mode only: `changed` mode starts fully open
   // by design and holds a handful of paths, so there is nothing to remember.

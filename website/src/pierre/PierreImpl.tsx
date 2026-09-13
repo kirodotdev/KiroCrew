@@ -6,7 +6,7 @@
  * look/behavior of code and diff rendering is decided.
  */
 import { useId, useMemo } from 'react'
-import type { BaseCodeOptions, FileContents, SupportedLanguages } from '@pierre/diffs'
+import type { BaseCodeOptions, FileContents, FileDiffMetadata, SupportedLanguages } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import { getOrCreateWorkerPoolSingleton } from '@pierre/diffs/worker'
@@ -231,6 +231,52 @@ export function normalizePatchHunks(patch: string): string {
   return changed ? lines.join('\n') : patch
 }
 
+/** Parse a unified patch into Pierre's per-file diff metadata.
+ *
+ *  Deliberately not `<PatchDiff>`: that component ASSERTS exactly one complete
+ *  file diff and throws otherwise, but our patches stream through partial frames
+ *  (bare headers, unterminated hunks) and may carry several files. A parser
+ *  throw is reported as "nothing parsed" so the caller can fall back to plain
+ *  text rather than blank.
+ *
+ *  Every file gets a CONTENT-derived cache key: Pierre defaults it to the file
+ *  NAME and caches highlight results by it, so the same path with different text
+ *  (a streaming patch, a refreshed pull request) would otherwise serve the first
+ *  render's tokens forever. `surface` is passed straight through to
+ *  `contentCacheKey` for its churn accounting, so each caller supplies its own
+ *  instance-qualified value. */
+export function parsePatchFileDiffs(patch: string, surface?: string): FileDiffMetadata[] {
+  try {
+    const parsed = parsePatchFiles(normalizePatchHunks(patch)).flatMap(p => p.files)
+    for (const f of parsed) {
+      // Strip git's a/ b/ prefixes: Pierre keeps them verbatim, so every
+      // file would render as a rename (a/x → b/x) in the file header.
+      if (f.name?.startsWith('b/') && f.prevName?.startsWith('a/')) {
+        f.name = f.name.slice(2)
+        const prev = f.prevName.slice(2)
+        f.prevName = prev === f.name ? undefined : prev
+      }
+      f.cacheKey = contentCacheKey(f.name ?? '', patch, surface)
+    }
+    return parsed
+  } catch {
+    return []
+  }
+}
+
+/** Whether a parse result is unusable even though it produced files.
+ *
+ *  Zero HUNKS across every file is the subtle failure: Pierre reads that as a
+ *  pure rename and draws a header with `+0 −0` and no rows — so when the raw text
+ *  plainly carries changes, that is a parse failure rather than an empty rename
+ *  of a file nobody renamed. `normalizePatchHunks` should prevent it; this guard
+ *  is what keeps a future unparseable shape readable instead of blank. */
+export function patchLostItsHunks(files: readonly FileDiffMetadata[], patch: string): boolean {
+  if (files.length === 0) return true
+  const noHunks = files.every(f => (f.hunks?.length ?? 0) === 0)
+  return noHunks && /^[+-](?![+-][+-] )/m.test(patch)
+}
+
 /** One highlight worker pool for the whole tab, built by the first surface that
  *  actually intends to highlight and never torn down. Deliberately NOT
  *  `WorkerPoolContextProvider`: that provider terminates the shared singleton
@@ -359,38 +405,9 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
     [dark, options],
   )
   const poolBroken = useWorkerPoolBroken()
-  // Parse here rather than using <PatchDiff>: that component ASSERTS exactly
-  // one complete file diff and throws otherwise, but chat patches stream
-  // through partial frames (bare headers, unterminated hunks) and may carry
-  // several files. Unparseable-yet text renders as plain monospace until a
-  // later frame parses; a parser throw is treated the same way.
-  const files = useMemo(() => {
-    try {
-      const parsed = parsePatchFiles(normalizePatchHunks(patch)).flatMap(p => p.files)
-      for (const f of parsed) {
-        // Strip git's a/ b/ prefixes: Pierre keeps them verbatim, so every
-        // file would render as a rename (a/x → b/x) in the file header.
-        if (f.name?.startsWith('b/') && f.prevName?.startsWith('a/')) {
-          f.name = f.name.slice(2)
-          const prev = f.prevName.slice(2)
-          f.prevName = prev === f.name ? undefined : prev
-        }
-        f.cacheKey = contentCacheKey(f.name ?? '', patch, surfaceId + ':patch')
-      }
-      return parsed
-    } catch {
-      return []
-    }
-  }, [patch, surfaceId])
-  // Zero files is an outright parse failure. Zero HUNKS across every file is
-  // the subtler one: Pierre reads that as a pure rename and draws a header with
-  // `+0 −0` and no rows — so when the raw text plainly carries changes, treat
-  // it as a failure too rather than showing an empty rename of a file nobody
-  // renamed. normalizePatchHunks should prevent this; the guard is what keeps a
-  // future unparseable shape readable instead of blank.
-  const noHunks = files.length > 0 && files.every(f => (f.hunks?.length ?? 0) === 0)
-  const looksLikeChanges = /^[+-](?![+-][+-] )/m.test(patch)
-  if (files.length === 0 || (noHunks && looksLikeChanges)) return <PlainCodeFallback text={patch} />
+  // Parse here rather than using <PatchDiff>: see `parsePatchFileDiffs`.
+  const files = useMemo(() => parsePatchFileDiffs(patch, surfaceId + ':patch'), [patch, surfaceId])
+  if (patchLostItsHunks(files, patch)) return <PlainCodeFallback text={patch} />
   // No plain-diff gate needed: `PierrePatch` returns the raw patch text before
   // it ever requests this chunk in that mode, so reaching here means colour is
   // on. That early return is the strongest form of the saving — the module, the
