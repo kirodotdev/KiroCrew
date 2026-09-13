@@ -6026,6 +6026,23 @@ const chatSlice = createSlice({
         if (target !== state.activeSlot) {
           state.lastChunkSeq = runs[safeKey(target)]?.lastChunkSeq
           state.lastChunkGen = runs[safeKey(target)]?.lastChunkGen
+          // The run mirrors describe the slot ON SCREEN, and from this reducer
+          // on that is the target: `activeSlot` moves below and the cached
+          // transcript is restored with it, so a mirror still carrying the
+          // outgoing slot's run state hands every reader of it -- the
+          // transcript's fold, the composer's busy rule, the Stop affordance --
+          // the wrong session until `fulfilled` lands. Take the target's keyed
+          // entry, which its background frames maintained while it was not
+          // active; `fulfilled` overwrites this from the server, and
+          // `rejected` restores the origin snapshot captured above, before this
+          // write. A turn that started in the background but has not yet sent
+          // its first frame reads idle here, exactly as its pane did while it
+          // was in the background (the keyed entry is promoted only by ordered
+          // frames; see warmSlotCache.fulfilled).
+          const incoming = runs[safeKey(target)]?.state ?? 'idle'
+          state.slotState = incoming
+          state.slotRunning = incoming !== 'idle'
+          state.slotStopping = incoming === 'stopping'
         }
         // Set activeSlot immediately so WS events for the new slot are accepted.
         // Restore cached messages if available (instant switch), otherwise show loading.

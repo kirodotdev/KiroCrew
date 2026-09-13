@@ -254,6 +254,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import { useSlotDeferredValue } from '../hooks/useSlotDeferredValue'
+import { useLatchedRunning } from '../hooks/useLatchedRunning'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { ModelInfo } from '../providers/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from '../components/AgentDropdownList'
@@ -313,10 +314,6 @@ import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { createTurnGrouper, applyRunningState, REASONING_ROLES } from './chat/groupDisplayItems'
-// Hold-down for the display-layer running latch: a slots broadcast that
-// catches the agent between tool calls flaps `running` false for well under
-// a second; only a false that persists longer reflects the turn ending.
-const RUNNING_LATCH_MS = 2500
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import ChatSidebar from './ChatSidebar'
@@ -4181,22 +4178,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const groupTurns = useMemo(() => createTurnGrouper(), [])
   const groupedTurns = useMemo(() => groupTurns(messages), [groupTurns, messages])
 
-  // LATCHED running for the DISPLAY layer only. The raw flag is derived
-  // from slots broadcasts that catch the agent momentarily idle BETWEEN
-  // tool calls, so mid-turn it flaps false for a beat and back. Each flap
-  // marks the trailing turn complete: TurnBlock auto-collapses it, the
-  // next broadcast re-expands it, and on a long-running turn (hundreds of
-  // steps) that is a multi-thousand-px accordion right above a reader
-  // parked at the bottom -- the field-reported self-bounce, reproduced on
-  // the bottom rig as a ~2Hz scrollHeight oscillation. TRUE applies
-  // immediately (a new turn must render live), FALSE only after holding
-  // steady past the flap window.
-  const [runningLatched, setRunningLatched] = useState(slotRunning)
-  useEffect(() => {
-    if (slotRunning) { setRunningLatched(true); return }
-    const timer = setTimeout(() => setRunningLatched(false), RUNNING_LATCH_MS)
-    return () => clearTimeout(timer)
-  }, [slotRunning])
+  // LATCHED running for the DISPLAY layer only, scoped to the slot that raised
+  // it: the flap it absorbs is one session's own broadcast, and a latch carried
+  // across a switch paints the incoming transcript's steps unfolded for the
+  // whole window. See useLatchedRunning.
+  const runningLatched = useLatchedRunning(activeSlot, !!slotRunning)
   const displayItems = useMemo<DisplayItem[]>(
     () => applyRunningState(groupedTurns, runningLatched),
     [groupedTurns, runningLatched],
