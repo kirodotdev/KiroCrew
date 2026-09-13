@@ -10,6 +10,11 @@ browser-visible status/watch/plan surface.
 the App Store, is opt-in, and its window surfaces need the Electron shell.
 `permissions`: `api`, `storage`, `events`, `cron`, `spawn`.
 
+The desktop pet keeps polling the gateway while disabled so enabling Mochi in
+the App Store takes effect without restarting the shell. Probe diagnostics are
+deduplicated per outcome for one minute, including alternating HTTP errors and
+disabled responses; actual enabled-state changes still log immediately.
+
 ## Layout
 
 | Path | What it is |
