@@ -852,6 +852,81 @@ def test_build_timeout_reaps_a_descendant_that_escaped_the_group(tmp_path):
     assert events == ["enumerate", "kill424242", "kill515151"], events
 
 
+def test_build_timeout_clears_a_measured_cold_build():
+    """The build budget must clear the SLOWEST healthy build, not the fastest.
+
+    It sat at 300s from the first commit while the frontend grew to ~50 runtime
+    dependencies. `npm run build` is `tsc -b` then a production bundle; on a
+    developer machine that took 75-98s as a repeat build but 328s and 420s on the
+    first build after `npm ci` -- and the slow case is the one Dev Fleet's
+    Pull+Build always runs, so every sync was SIGKILLed mid-build and the
+    dashboard silently kept serving the previous bundle. The floor here is what
+    stops the constant drifting back under the work it has to cover.
+    """
+    assert frontend._BUILD_TIMEOUT >= 600, (
+        "the build budget no longer clears a measured cold build (~420s) on a busy "
+        "machine; a build that overruns it is killed and the dashboard goes stale"
+    )
+
+
+def test_build_budget_leaves_room_under_dev_fleet_s_run_deadline():
+    """A budget that never fires cannot report anything.
+
+    dev_fleet's stream watchdog kills the whole sync run at ``_RUN_DEADLINE_S``,
+    counted from fetch -- before preflight, merge, pip and `npm ci` have reached
+    the build. A build budget at or near that deadline is dead code on the very
+    caller this change exists for: the watchdog kills the tree first, so the
+    actionable timeout warning is never emitted and the stale bundle stays served
+    with no reason given. The build may therefore claim at most HALF the run,
+    leaving the other half for everything before it.
+    """
+    runtime = pytest.importorskip(
+        "kiro_crew.apps.builtins.dev_fleet.runtime",
+        reason="dev_fleet app backend not importable in this environment",
+    )
+    assert frontend._BUILD_TIMEOUT * 2 <= runtime._RUN_DEADLINE_S, (
+        f"the build budget ({frontend._BUILD_TIMEOUT}s) leaves under half of "
+        f"dev_fleet's {runtime._RUN_DEADLINE_S}s run deadline for fetch, preflight, "
+        "merge, pip and npm ci -- the watchdog pre-empts the build and its warning "
+        "is never emitted"
+    )
+
+
+def test_build_timeout_message_names_the_budget_that_expired(tmp_path):
+    """The warning has to say what expired.
+
+    "Frontend build timed out -- dashboard may be stale" told the operator
+    nothing they could act on: not which budget was hit, not how long it waited.
+    This line is the ONLY trace the failure leaves, so it carries the number.
+    """
+    (tmp_path / "src" / "kiro_crew" / "static").mkdir(parents=True)
+    (tmp_path / "website").mkdir()
+    killed: list[int] = []
+    logged: list[str] = []
+
+    class _HangingProc:
+        pid = 424242
+        returncode = None
+
+        def wait(self, timeout=None):
+            if not killed:
+                raise subprocess.TimeoutExpired(cmd="npm", timeout=timeout or 0)
+            return -9
+
+    with patch.object(frontend.subprocess, "Popen", lambda *a, **kw: _HangingProc()), \
+         patch.object(frontend.platform_compat, "process_descendants", lambda pid: []), \
+         patch.object(
+             frontend.platform_compat, "kill_process_tree",
+             lambda pid, sig: killed.append(pid) or True,
+         ):
+        assert frontend.build_and_stage(
+            tmp_path, npm="/usr/bin/true", log=logged.append
+        ) is False
+
+    timeout_line = next((m for m in logged if "timed out" in m), "")
+    assert f"{frontend._BUILD_TIMEOUT}s" in timeout_line, logged
+
+
 def test_stage_built_dist_accepts_an_explicit_source_dir(tmp_path):
     """A caller may stage from a build directory other than website/dist."""
     (tmp_path / "src" / "kiro_crew" / "static").mkdir(parents=True)

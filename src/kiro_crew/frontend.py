@@ -34,9 +34,40 @@ logger = logging.getLogger(__name__)
 _DIR_NAME = "website"
 _SIBLING_DIR_NAME = "KiroCrewWebsite"
 
-# Build timeouts (seconds). npm installs/builds can be slow on cold caches.
+# Build timeouts (seconds). These are WEDGE backstops, not schedules: whatever is
+# still running when one expires is SIGKILLed, so the build budget has to clear
+# the slowest HEALTHY build while still FIRING BEFORE the caller's own deadline --
+# a budget that never fires cannot report anything.
+#
+# 300s does not cover the build. `npm run build` is `tsc -b` followed by a
+# production bundle; on one developer machine it took 75-98s as a repeat build but
+# 328s and 420s on the first build after `npm ci` -- and it is that slow case the
+# budget has to clear, because the caller which hits this most, Dev Fleet's
+# Pull+Build, always builds immediately after `npm ci`. The type-check is the bulk
+# of it and does not amortize: the app project sets `noEmit`, so build mode looks
+# for an output file that never exists (`tsc -b --dry --verbose`: "out of date
+# because output file 'src/App.js' does not exist") and re-checks the whole app
+# every run. Shrinking that work is the real cure and is not attempted here.
+#
+# The CEILING is that same caller: dev_fleet's stream watchdog kills the whole
+# sync run at ``runtime._RUN_DEADLINE_S`` (1800s), counted from fetch -- before
+# preflight, merge, pip and `npm ci` have even reached the build. A build budget
+# at or near 1800s therefore never expires there; the watchdog kills the tree
+# first and the warning below is never emitted, which is the silent-stale-bundle
+# outage this change exists to end. So the build claims at most HALF that
+# deadline, leaving the other half for everything the sync does before it.
+#
+# Residual, deliberately not closed here: if the steps before the build consume
+# more than the build budget, the watchdog still pre-empts it and reports its own
+# `[timeout] ... deadline` line instead of the specific one below. Closing that
+# needs the REMAINING deadline threaded from dev_fleet into the build child, which
+# is a change to that app's run supervisor rather than to this module.
+#
+# _INSTALL_TIMEOUT is left at its original value: the installs measured here ran
+# 11s (warm cache) and 136s (full), which it already clears, and dev_fleet's own
+# `npm ci` is a separate raw step this does not bound at all.
 _INSTALL_TIMEOUT = 300
-_BUILD_TIMEOUT = 300
+_BUILD_TIMEOUT = 900
 #: How long to wait for a killed install tree to actually exit before restoring
 #: over it. Short by design: the group has already been SIGKILLed, so this only
 #: covers reaping, and waiting longer would delay a recovery that is already late.
@@ -347,7 +378,10 @@ def _npm_build_and_stage_locked(
             proc.wait(timeout=_BUILD_KILL_GRACE)
         except subprocess.TimeoutExpired:
             log("  ⚠️  Frontend build did not die after SIGKILL")
-        log("  ⚠️  Frontend build timed out — dashboard may be stale")
+        log(
+            f"  ⚠️  Frontend build timed out after {_BUILD_TIMEOUT}s"
+            " — dashboard may be stale"
+        )
         return False
     if proc.returncode != 0:
         log("  ⚠️  Frontend build failed — dashboard may be stale")
@@ -792,7 +826,10 @@ def build_frontend_sync(
                     # reason to skip it.
                     _reap_tree(proc)
                     backup.rollback()
-                    log("  ⚠️  Frontend npm install timed out — the dependency tree was left as it was")
+                    log(
+                        f"  ⚠️  Frontend npm install timed out after {_INSTALL_TIMEOUT}s"
+                        " — the dependency tree was left as it was"
+                    )
                     return
                 if proc.returncode != 0:
                     backup.rollback()
@@ -974,7 +1011,10 @@ async def build_frontend_async(
             # Killed mid-install, so what is on disk is PARTIAL. Restore before
             # reporting, so the message is true by the time anyone reads it.
             await _offload(backup.rollback)
-            _warn("Frontend npm install timed out -- the dependency tree was left as it was")
+            _warn(
+                f"Frontend npm install timed out after {_INSTALL_TIMEOUT}s"
+                " -- the dependency tree was left as it was"
+            )
             return
         if npm_i.returncode != 0:
             await _offload(backup.rollback)
