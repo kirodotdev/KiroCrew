@@ -291,10 +291,12 @@ async def test_hung_teardown_does_not_wedge_the_pass(_harness, monkeypatch):
     await asyncio.wait_for(hr.reconcile_once([]), timeout=2.0)
 
     # quick was reconciled; hang's teardown was left running, NOT cancelled.
-    # On a loaded runner the 0.1s watchdog can trip quick too (two to_thread
-    # hops precede on_app_disable), but a trip never cancels: quick's task keeps
-    # running and clears the signature on its own. Await that observable state
-    # instead of racing the watchdog window.
+    # The zero watchdog returns the pass before EITHER spawned task reaches
+    # on_app_disable (two to_thread hops precede it), so the trip covers quick as
+    # well as hang on every run -- deterministically, matching the budget this
+    # test patches. A trip never cancels, so quick's task keeps running and
+    # clears the signature on its own; await that observable state rather than
+    # reading it at the instant the pass returns.
     await _await_until(
         lambda: hi.loaded_hook_signature("quick") is None,
         message="quick must reconcile despite hang",
