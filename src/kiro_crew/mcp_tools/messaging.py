@@ -397,9 +397,10 @@ def schemas() -> list[dict[str, Any]]:
                 "Slack when the caller's Slack identity permits it. Use "
                 "when you've generated a report, export, artifact, or any "
                 "file the user should receive. Native channel delivery is "
-                "not guaranteed: when this session has no eligible channel "
-                "destination the result says so and the file is reachable "
-                "only from the dashboard. To put an IMAGE inline in a "
+                "not guaranteed: the result reports skips and failures, and "
+                "a Slack-linked session reports a successful Slack upload. "
+                "If neither delivers, the file remains available from the "
+                "dashboard. To put an IMAGE inline in a "
                 "messaging conversation, reference it in your reply as "
                 "![alt](/abs/path) from the session's working directory — "
                 "the channel renderer uploads it as a native picture, which "
@@ -1069,6 +1070,7 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     # native leg first would reroute the file to the linked chat instead of
     # the named Slack channel.
     channel_warning = ""
+    channel_skip_reason = ""
     # Resolve-half of the shared strict gate only: file_send degrades (skips
     # the native channel leg) rather than refusing when identity is absent.
     strict_key, _ = mcp_core.require_strict_session_key("file_send native delivery")
@@ -1090,7 +1092,8 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             # point: without it the caller reads a bare "File sent" and cannot
             # tell a delivery from a dashboard-only copy, so an agent that
             # picked the wrong tool has nothing to correct against.
-            channel_warning = _describe_channel_skip(str(channel_resp["skipped"]))
+            channel_skip_reason = str(channel_resp["skipped"])
+            channel_warning = _describe_channel_skip(channel_skip_reason)
     # Also upload to Slack when the caller's Slack identity permits it.
     #
     # Resolve identity as a THREE-state result (see
@@ -1106,6 +1109,10 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     # tracked channel) because its identity is known and none of those paths
     # broadcast at channel root for an unknown caller.
     identity, thread_ts = mcp_core._classify_slack_identity()
+    # Slack-linked sessions cannot have a native document-channel destination.
+    # Its routine no-destination skip says nothing about the Slack leg below.
+    if identity == "thread" and channel_skip_reason == "no_channel_destination":
+        channel_warning = ""
     slack_warning = ""
     if identity == "unresolved":
         mcp_core.sel().log_tool_invocation(
@@ -1138,6 +1145,11 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             # Same three-state response as the channel leg above, same rule: a
             # skip the endpoint computed and audited must not read as an upload.
             slack_warning = _describe_slack_skip(str(slack_resp["skipped"]))
+        elif slack_resp.get("ok") is True:
+            # ok-without-skipped means the endpoint actually delivered, for
+            # every resolved identity (owner DM, session-map thread, tracked
+            # channel) — not just Slack-linked threads.
+            slack_warning = " (delivered to Slack)"
     msg = f"File sent: {dest.name} ({desc})" if desc else f"File sent: {dest.name}"
     return msg + channel_warning + slack_warning
 

@@ -1303,7 +1303,7 @@ class TestFileSend:
         src.write_text("all green")
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
             out = _call_tool("file_send", {"path": str(src), "description": "CI report"})
-        assert out == "File sent: report.txt (CI report)"
+        assert out == "File sent: report.txt (CI report) (delivered to Slack)"
         dest = mcp_core.outbox_dir() / "report.txt"
         assert dest.read_text() == "all green"
         notify = next(c for c in m.call_args_list if c[0][0] == "/api/outbox/notify")
@@ -1318,7 +1318,7 @@ class TestFileSend:
         with patch.object(mcp_core, "_post", return_value={"ok": True}):
             out = _call_tool("file_send", {"path": str(src)})
         assert out.startswith("File sent: report_")
-        assert out.endswith(".txt")
+        assert out.endswith(".txt (delivered to Slack)")
         assert (mcp_core.outbox_dir() / "report.txt").read_text() == "older"
 
     def test_missing_file_is_refused(self, tmp_path):
@@ -1348,7 +1348,7 @@ class TestFileSend:
         src.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
         with patch.object(mcp_core, "_post", return_value={"ok": True}):
             out = _call_tool("file_send", {"path": str(src)})
-        assert out == "File sent: shot.png"
+        assert out == "File sent: shot.png (delivered to Slack)"
 
     def test_notify_error_is_propagated(self, tmp_path):
         src = tmp_path / "report.txt"
@@ -1431,7 +1431,10 @@ class TestFileSend:
 
         with patch.object(mcp_core, "_post", side_effect=_post) as m:
             out = _call_tool("file_send", {"path": str(src)})
-        assert out == "File sent: report.txt (channel upload failed: telegram api 400)"
+        assert out == (
+            "File sent: report.txt (channel upload failed: telegram api 400)"
+            " (delivered to Slack)"
+        )
         assert any(c[0][0] == "/api/slack/upload-file" for c in m.call_args_list)
 
     def test_an_explicit_slack_channel_beats_native_delivery(self, tmp_path, monkeypatch):
@@ -1453,7 +1456,7 @@ class TestFileSend:
             c[0][0] != "/api/channel/upload-file" for c in m.call_args_list
         ), "native delivery must not run for an explicitly named channel"
         assert any(c[0][0] == "/api/slack/upload-file" for c in m.call_args_list)
-        assert out == "File sent: report.txt"
+        assert out == "File sent: report.txt (delivered to Slack)"
 
     def test_an_unidentified_caller_gets_no_native_delivery(self, tmp_path, monkeypatch):
         # The lenient session resolver includes a /proc ancestor walk, under
@@ -1465,7 +1468,9 @@ class TestFileSend:
         src.write_text("ok")
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
             out = _call_tool("file_send", {"path": str(src)})
-        assert out == "File sent: report.txt"
+        # The native leg is refused (no strict identity), but the Slack leg's
+        # own classifier still resolves this caller, so its delivery reports.
+        assert out == "File sent: report.txt (delivered to Slack)"
         assert all(c[0][0] != "/api/channel/upload-file" for c in m.call_args_list)
 
     def test_native_delivery_pins_the_strict_identity_on_the_wire(self, tmp_path, monkeypatch):
