@@ -62,6 +62,33 @@ _LIVENESS_PING_INTERVAL_SECS = 30.0
 # threshold raced with run_chaos.py and produced spurious
 # "gatewayd_pid_changed_unexpectedly" during legitimate chaos tests.
 _LIVENESS_MAX_CONSECUTIVE_FAILURES = 3
+# Deadline for the ESCALATED probe, run once after a fast ping misses. The fast
+# ping's 2s bound measures load, not liveness: a daemon carrying 100+ concurrent
+# connections can be entirely healthy and still not reach its pong handler
+# inside 2s, and because ``_ping_raw`` gives up at its own deadline the manager
+# never SEES the late reply — so no amount of evidence in the pong helps unless
+# something waits long enough to collect it. That is this probe's whole job. It
+# runs at most once per interval, so the cost is one slow round-trip on a box
+# already in trouble, and it is what makes "busy" distinguishable from "dead".
+_LIVENESS_ESCALATED_TIMEOUT_SECS = 20.0
+# Event-loop lag, self-reported by the daemon, above which a missed fast ping
+# counts as a liveness failure rather than as load. A loaded loop returns to its
+# 1s sampler within tens of milliseconds; a loop blocked in a synchronous call
+# cannot return at all, so its samples keep aging. Seconds of lag therefore
+# means blocked, not busy. It takes _LIVENESS_MAX_CONSECUTIVE_FAILURES such
+# readings to declare a zombie, because the figure is a windowed PEAK: one
+# recovered spike stays in that window for a while after the daemon is fine
+# again, and killing on it would take out a daemon that is answering
+# (see GatewayManager._classify_missed_ping).
+_LOOP_LAG_WEDGE_MS = 5000.0
+# Respawn circuit breaker: this many respawns inside this window means respawning
+# is not working. Without it the backoff cannot damp anything, because it resets
+# to its floor once a daemon survives 30s (see ``_run_watchdog``) — which a
+# healthy-but-overloaded daemon always does, so a misjudged kill repeats at a
+# fixed cadence indefinitely. Tripping the breaker stops the cycle and leaves
+# the failure visible instead of hiding it behind an endless retry.
+_RESPAWN_BREAKER_MAX_IN_WINDOW = 5
+_RESPAWN_BREAKER_WINDOW_SECS = 900.0
 # SIGTERM → SIGKILL grace period on shutdown. DERIVED, never a literal: a
 # hand-written 5.0 here was shorter than gatewayd's own 10s drain window, so the
 # supervisor SIGKILLed every restart that had attached stubs before the daemon
@@ -206,6 +233,10 @@ class GatewayManager:
         self._adopted = False
         self._stand_downs_issued = 0
         self._last_drift_check = 0.0
+        #: ``time.monotonic()`` of each respawn attempt inside the breaker's
+        #: rolling window. Bounded by pruning, not by size, because entries
+        #: older than the window carry no signal.
+        self._respawn_times: list[float] = []
         self._lifecycle_lock = asyncio.Lock()
 
     @property
@@ -900,14 +931,16 @@ class GatewayManager:
             except Exception:
                 pass
 
-    async def _ping_payload(self) -> Optional[dict]:
+    async def _ping_payload(self, *, timeout: Optional[float] = None) -> Optional[dict]:
         """The daemon's ``pong`` payload, or ``None`` if it did not answer one.
 
         Split out of :meth:`_ping_once` so the adoption gate can read the
         coverage report the reply carries without changing the boolean contract
-        the five other call sites rely on.
+        the five other call sites rely on. ``timeout`` overrides the default
+        round-trip deadline for the escalated liveness probe, which must outlast
+        a loaded event loop to collect the load evidence at all.
         """
-        msg = await self._ping_raw()
+        msg = await self._ping_raw(timeout=timeout)
         return msg if isinstance(msg, dict) and msg.get("type") == "pong" else None
 
     async def _ping_once(self) -> bool:
@@ -916,15 +949,16 @@ class GatewayManager:
         """
         return (await self._ping_payload()) is not None
 
-    async def _ping_raw(self) -> Optional[dict]:
+    async def _ping_raw(self, *, timeout: Optional[float] = None) -> Optional[dict]:
         """One ping round-trip; the decoded reply, or ``None`` on any failure."""
+        deadline = _PING_TIMEOUT_SECS if timeout is None else timeout
         try:
             reader, writer = await asyncio.wait_for(
                 transport.connect(
                     self._spec.socket_path,
                     limit=READ_BUFFER_LIMIT_BYTES,
                 ),
-                timeout=_PING_TIMEOUT_SECS,
+                timeout=deadline,
             )
         except (asyncio.TimeoutError, OSError) as exc:
             logger.warning("mcp-gateway ping connect failed: %s", exc)
@@ -932,12 +966,12 @@ class GatewayManager:
         try:
             writer.write(b'{"type":"ping"}\n')
             try:
-                await asyncio.wait_for(writer.drain(), timeout=_PING_TIMEOUT_SECS)
+                await asyncio.wait_for(writer.drain(), timeout=deadline)
             except (asyncio.TimeoutError, ConnectionError):
                 return None
             try:
                 line = await asyncio.wait_for(
-                    reader.readuntil(b"\n"), timeout=_PING_TIMEOUT_SECS,
+                    reader.readuntil(b"\n"), timeout=deadline,
                 )
             except (asyncio.TimeoutError, asyncio.IncompleteReadError,
                     asyncio.LimitOverrunError):
@@ -1266,6 +1300,16 @@ class GatewayManager:
                     # here would terminate the watchdog and leave the adopted
                     # daemon unsupervised.
                     continue
+            if not self._respawn_breaker_allows():
+                logger.error(
+                    "mcp-gateway: respawn circuit breaker tripped — %d respawns "
+                    "within %.0fs. NOT respawning again; sessions fall back to "
+                    "per-session MCP. Investigate the daemon rather than "
+                    "restarting it, since restarting is what stopped working.",
+                    _RESPAWN_BREAKER_MAX_IN_WINDOW,
+                    _RESPAWN_BREAKER_WINDOW_SECS,
+                )
+                return
             try:
                 await self._clear_stale_socket()
                 await self._spawn_once()
@@ -1277,6 +1321,25 @@ class GatewayManager:
             await asyncio.sleep(30.0)
             if self._process is not None and self._process.returncode is None:
                 backoff = _RESPAWN_BACKOFF_START_SECS
+
+    def _respawn_breaker_allows(self) -> bool:
+        """Record this respawn attempt and report whether it may proceed.
+
+        The backoff alone cannot bound a repeating kill, because it resets to
+        its floor once a daemon survives 30s — and an overloaded daemon that was
+        killed for being busy always survives that long before the next probe
+        misjudges it again. So the cadence stays fixed and the cycle is
+        unbounded. This counts attempts in a rolling window instead, which is
+        the only signal that distinguishes "a crash we should recover from" from
+        "recovery itself is not working".
+        """
+        now = time.monotonic()
+        cutoff = now - _RESPAWN_BREAKER_WINDOW_SECS
+        self._respawn_times = [t for t in self._respawn_times if t >= cutoff]
+        if len(self._respawn_times) >= _RESPAWN_BREAKER_MAX_IN_WINDOW:
+            return False
+        self._respawn_times.append(now)
+        return True
 
     async def _liveness_probe_loop(self) -> str:
         """Ping the daemon every ``_LIVENESS_PING_INTERVAL_SECS``.
@@ -1294,21 +1357,74 @@ class GatewayManager:
                 # Outer loop will notice _stopping and exit; yield a
                 # benign reason that gets ignored on stop.
                 return "stopping"
-            ok = await self._ping_once()
-            if ok:
+            if await self._ping_once():
+                consecutive_failures = 0
+                continue
+            # The fast ping missed. That is NOT yet evidence of death: its 2s
+            # bound measures how loaded the daemon is, and ``_ping_raw`` gives
+            # up at that bound, so a healthy daemon serving 100+ connections
+            # looks identical to a dead one here. Spend one slow round-trip to
+            # find out which, because killing the wrong one costs every
+            # attached session its tools.
+            verdict = await self._classify_missed_ping()
+            if verdict is None:
                 consecutive_failures = 0
                 continue
             consecutive_failures += 1
             logger.warning(
-                "mcp-gateway: liveness ping failed (%d/%d consecutive)",
-                consecutive_failures, _LIVENESS_MAX_CONSECUTIVE_FAILURES,
+                "mcp-gateway: liveness ping failed (%d/%d consecutive): %s",
+                consecutive_failures, _LIVENESS_MAX_CONSECUTIVE_FAILURES, verdict,
             )
             if consecutive_failures >= _LIVENESS_MAX_CONSECUTIVE_FAILURES:
                 return (
                     f"zombie detected: {consecutive_failures} consecutive "
                     f"ping failures over "
                     f"{int(consecutive_failures * _LIVENESS_PING_INTERVAL_SECS)}s"
+                    f" (last: {verdict})"
                 )
+
+    async def _classify_missed_ping(self) -> Optional[str]:
+        """Decide whether a missed fast ping counts as a liveness failure.
+
+        ``None`` means it does not: the daemon answered the escalated probe and
+        reported no stall, so it is ALIVE and merely loaded, and the caller
+        resets its streak. Any string is the reason it counts as ONE failure,
+        which the caller feeds to the existing three-strikes grace.
+
+        Nothing here kills on a single observation. The lag figure the pong
+        carries is a PEAK over a trailing window, because a reading that held
+        only the latest sample would let a stall erase itself during catch-up
+        (see ``gatewayd._loop_lag_peak_ms``) — and a peak is by construction
+        historical, so a daemon that has already recovered still reports the
+        spike while answering probes normally. Killing on one such reading would
+        take out a responsive daemon and drop every attached stub, which is the
+        exact harm this path exists to prevent. Three consecutive readings cannot
+        come from one recovered spike, because the window expires first.
+
+        An older daemon reports no ``loop_lag_ms``. Its answer therefore reads as
+        loaded-not-dead and behaves exactly as it does today: answered means
+        alive. The absence of the field is the capability signal, so no version
+        handshake is needed.
+        """
+        pong = await self._ping_payload(timeout=_LIVENESS_ESCALATED_TIMEOUT_SECS)
+        if pong is None:
+            return f"no reply within {_LIVENESS_ESCALATED_TIMEOUT_SECS:.0f}s"
+        lag = pong.get("loop_lag_ms")
+        if isinstance(lag, (int, float)) and float(lag) >= _LOOP_LAG_WEDGE_MS:
+            return (
+                f"answered, but reports event-loop lag {float(lag):.0f}ms "
+                f"(>= {_LOOP_LAG_WEDGE_MS:.0f}ms)"
+            )
+        logger.warning(
+            "mcp-gateway: fast ping missed but daemon answered a %.0fs probe "
+            "(loop_lag_ms=%s connections=%s in_flight=%s) — loaded, not dead; "
+            "not counting a liveness failure",
+            _LIVENESS_ESCALATED_TIMEOUT_SECS,
+            lag,
+            pong.get("connections_in_flight"),
+            pong.get("backends_in_flight"),
+        )
+        return None
 
     async def _terminate_process(self, *, grace_secs: float) -> None:
         proc = self._process

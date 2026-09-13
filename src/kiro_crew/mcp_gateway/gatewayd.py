@@ -498,6 +498,7 @@ async def run_gatewayd(
     socket_liveness: Optional[asyncio.Task[None]] = None
     owner_liveness: Optional[asyncio.Task[None]] = None
     diagnostic: Optional[asyncio.Task[None]] = None
+    loop_lag: Optional[asyncio.Task[None]] = None
     heartbeat: Optional[asyncio.Task[None]] = None
     flush_sweeper: Optional[asyncio.Task[None]] = None
     topup_sweeper: Optional[asyncio.Task[None]] = None
@@ -601,6 +602,16 @@ async def run_gatewayd(
         diagnostic = asyncio.create_task(
             _zombie_diagnostic(server, pool, connections, stop_event),
             name="mcp-gateway-zombie-diagnostic",
+        )
+
+        # Load evidence for the health pong. Published here because this is
+        # where the three objects first exist together; the sampler is what
+        # lets a supervisor tell "busy" from "wedged" instead of inferring
+        # death from how long a reply took.
+        publish_load_sources(server=server, connections=connections, pool=pool)
+        loop_lag = asyncio.create_task(
+            _loop_lag_sampler(stop_event),
+            name="mcp-gateway-loop-lag",
         )
 
         # Per-backend heartbeat sweep: recycle gone/wedged
@@ -805,6 +816,11 @@ async def run_gatewayd(
             diagnostic.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await diagnostic
+
+        if loop_lag is not None:
+            loop_lag.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await loop_lag
 
         if heartbeat is not None:
             heartbeat.cancel()
@@ -2293,6 +2309,124 @@ _OWNER_PID: int = 0
 #: (off the loop) so the pong can publish it without a syscall or a ``ps``.
 _OWN_START_TIME: str = ""
 
+#: How often :func:`_loop_lag_sampler` wakes to measure its own scheduling
+#: delay. Short enough that a stall shows up inside one liveness interval,
+#: long enough that the sampler itself is not part of the load it measures.
+_LOOP_LAG_SAMPLE_SECS = 1.0
+
+#: Milliseconds by which the sampler's last wake ran late. This is the ONLY
+#: signal that separates "this daemon is busy" from "this daemon is wedged":
+#: a loaded event loop still returns to the sampler within tens of
+#: milliseconds, while a loop blocked in a synchronous call cannot return at
+#: all. Published in the pong so the supervisor stops inferring death from
+#: reply latency, which measures load and not liveness.
+_LAST_LOOP_LAG_MS: float = 0.0
+
+#: How far back the reported lag looks. The consumer polls far less often than
+#: the sampler samples, so reporting only the LATEST sample hides exactly the
+#: event worth reporting: after a stall the sampler catches up within
+#: milliseconds and overwrites its own evidence, and a supervisor arriving one
+#: interval later reads a healthy number for a loop that just blocked for
+#: seconds. Sized to the supervisor's own probe interval so nothing that
+#: happened between two polls is invisible to them.
+_LOOP_LAG_PEAK_WINDOW_SECS = 30.0
+
+#: ``(monotonic_ts, lag_ms)`` samples inside the peak window. Bounded by
+#: pruning: at one sample per ``_LOOP_LAG_SAMPLE_SECS`` the window holds a few
+#: dozen floats.
+_LOOP_LAG_SAMPLES: list[tuple[float, float]] = []
+
+#: Live objects the pong reads load evidence from, published once by
+#: :func:`_amain` after they exist. Module state rather than a threaded
+#: parameter for the same reason ``_OWN_START_TIME`` is: ``_pong_payload`` is
+#: called from a connection handler that does not own these objects, and
+#: widening every caller to carry them would put the daemon's whole health
+#: surface into an unrelated signature.
+_LOAD_SERVER: Optional[transport.TransportServer] = None
+_LOAD_CONNECTIONS: Optional[set[asyncio.Task[None]]] = None
+_LOAD_POOL: Optional[BackendPool] = None
+
+
+def publish_load_sources(
+    *,
+    server: Optional[transport.TransportServer],
+    connections: set[asyncio.Task[None]],
+    pool: BackendPool,
+) -> None:
+    """Register the objects :func:`_pong_payload` reads load evidence from."""
+    global _LOAD_SERVER, _LOAD_CONNECTIONS, _LOAD_POOL
+    _LOAD_SERVER = server
+    _LOAD_CONNECTIONS = connections
+    _LOAD_POOL = pool
+
+
+async def _loop_lag_sampler(stop_event: asyncio.Event) -> None:
+    """Measure this event loop's own scheduling delay into ``_LAST_LOOP_LAG_MS``.
+
+    Sleeps toward a FIXED schedule rather than a relative delay, so the lag it
+    reports is cumulative drift against wall time and not the last sleep's
+    rounding. On an overrun it RESYNCS the schedule instead of replaying the
+    slots it missed: replaying would spin through them in microseconds, and each
+    pass would overwrite the reading with a smaller catch-up value until the
+    stall it just measured had erased itself.
+    """
+    global _LAST_LOOP_LAG_MS
+    target = time.monotonic()
+    while not stop_event.is_set():
+        target += _LOOP_LAG_SAMPLE_SECS
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=max(0.0, target - time.monotonic()),
+            )
+            return  # stop_event fired: shutting down
+        except asyncio.TimeoutError:
+            pass
+        now = time.monotonic()
+        lag_ms = max(0.0, (now - target) * 1000.0)
+        _LAST_LOOP_LAG_MS = lag_ms
+        _LOOP_LAG_SAMPLES.append((now, lag_ms))
+        cutoff = now - _LOOP_LAG_PEAK_WINDOW_SECS
+        while _LOOP_LAG_SAMPLES and _LOOP_LAG_SAMPLES[0][0] < cutoff:
+            _LOOP_LAG_SAMPLES.pop(0)
+        if now > target:
+            # Overran the slot. Resync so the next deadline is measured from
+            # here rather than from a schedule this loop cannot meet.
+            target = now
+
+
+def _loop_lag_peak_ms() -> float:
+    """The worst scheduling delay seen inside the peak window."""
+    if not _LOOP_LAG_SAMPLES:
+        return _LAST_LOOP_LAG_MS
+    cutoff = time.monotonic() - _LOOP_LAG_PEAK_WINDOW_SECS
+    recent = [lag for ts, lag in _LOOP_LAG_SAMPLES if ts >= cutoff]
+    return max(recent) if recent else _LAST_LOOP_LAG_MS
+
+
+def _pong_load_evidence() -> dict[str, Any]:
+    """Load fields for the pong; never raises and never blocks.
+
+    Absent fields are the capability signal: a daemon that predates this
+    reports no ``loop_lag_ms``, and a supervisor that sees none must fall back
+    to treating any answered ping as alive. So every lookup here degrades to
+    omission rather than to a wrong number.
+    """
+    evidence: dict[str, Any] = {"loop_lag_ms": round(_loop_lag_peak_ms(), 3)}
+    try:
+        if _LOAD_SERVER is not None:
+            evidence["is_serving"] = bool(_LOAD_SERVER.is_serving())
+    except Exception:
+        pass
+    if _LOAD_CONNECTIONS is not None:
+        evidence["connections_in_flight"] = len(_LOAD_CONNECTIONS)
+    try:
+        if _LOAD_POOL is not None:
+            evidence["backends_in_flight"] = _LOAD_POOL.outstanding_work_total()
+    except Exception:
+        pass
+    return evidence
+
 
 def _pong_payload() -> dict[str, Any]:
     """What a ping is answered with.
@@ -2302,7 +2436,10 @@ def _pong_payload() -> dict[str, Any]:
     CODE -- the case the target check cannot see, since two checkouts resolve
     the same stems while disagreeing about a wire shape. ``owner_pid`` lets it
     tell whether anyone is still supervising this daemon; ``start_time`` is the
-    identity a pinned kill must match. Every field is
+    identity a pinned kill must match. The load fields (``loop_lag_ms``,
+    ``is_serving``, ``connections_in_flight``, ``backends_in_flight``) let the
+    supervisor tell a BUSY daemon from a dead one, so it stops reading reply
+    latency as death. Every field is
     additive: an older manager reads ``type`` and ``targets`` and ignores the
     rest, and an older daemon omits the new ones, which the manager treats as
     unverifiable rather than as a match.
@@ -2317,6 +2454,7 @@ def _pong_payload() -> dict[str, Any]:
         # signal this pid pins the signal on the process that ANSWERED, not on
         # whatever holds the number by the time the signal is sent.
         "start_time": _OWN_START_TIME,
+        **_pong_load_evidence(),
     }
 
 

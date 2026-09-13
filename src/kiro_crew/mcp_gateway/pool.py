@@ -426,6 +426,23 @@ class BackendPool:
         # advisory (used for metrics / capacity heuristics only).
         return len(self._backends)
 
+    def outstanding_work_total(self) -> int:
+        """Client responses every live backend still owes, summed.
+
+        Deliberately lock-free and synchronous: the one caller is the health
+        pong, and a health reading that has to wait on ``_lock`` would be
+        delayed by exactly the contention it exists to report. The count may
+        therefore be a beat stale, which is the correct trade for a signal
+        whose whole purpose is to answer while the daemon is busy.
+        """
+        total = 0
+        for backend in list(self._backends.values()) + list(self._exclusive.values()):
+            try:
+                total += backend.outstanding_work
+            except Exception:  # pragma: no cover — defensive
+                continue
+        return total
+
     def stats(self) -> dict[str, int]:
         """Point-in-time counters for tests and diagnostics."""
         return {
