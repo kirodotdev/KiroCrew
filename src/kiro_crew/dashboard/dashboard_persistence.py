@@ -104,6 +104,9 @@ class DashboardPersistenceCoordinator:
         # guard also reads it during the write. A generation comparison avoids
         # erasing a new dirty mark set concurrently by the event loop.
         generation = slot._dirty_gen
+        # Captured BEFORE the write: a concurrent writer can arm a field while this flush
+        # is in flight, and this flush did not carry it.
+        carried_debt = frozenset(getattr(slot, "_meta_retry_fields", ()) or ())
         try:
             save_slot_to_history(owner, slot)
         except Exception:
@@ -112,6 +115,11 @@ class DashboardPersistenceCoordinator:
         else:
             if slot._dirty_gen == generation:
                 slot._dirty = False
+                # The fields this flush carried are written from this object, so they are
+                # no debt now; a surviving marker would suppress every later adopt.
+                owed = getattr(slot, "_meta_retry_fields", None)
+                if owed and carried_debt:
+                    owed.difference_update(carried_debt)
 
     def _flush_dirty_slots(self, owner: Any) -> None:
         """Persist dirty transcripts, open tabs, then context snapshots."""

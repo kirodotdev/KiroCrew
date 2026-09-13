@@ -564,7 +564,7 @@ class TestFilingOnSurface:
         marker blocks re-inheritance by design).
         """
         dashboard_state._tags = [{"id": "t1", "name": "alpha", "color": "#123456"}]
-        dashboard_state._tags_authoritative = True
+        dashboard_state.publish_committed_tag_ids(dashboard_state._tags)
         slot = channel_slots.surface_channel_session(
             dashboard_state,
             self._info(),
@@ -587,7 +587,7 @@ class TestFilingOnSurface:
         must be dropped, not resurrected.
         """
         dashboard_state._tags = [{"id": "t1", "name": "alpha", "color": "#123456"}]
-        dashboard_state._tags_authoritative = True
+        dashboard_state.publish_committed_tag_ids(dashboard_state._tags)
         slot = channel_slots.surface_channel_session(
             dashboard_state,
             self._info(),
@@ -602,15 +602,18 @@ class TestFilingOnSurface:
     ) -> None:
         """An unreadable tags.json must not erase a filed chat's tags.
 
-        The three sibling restore paths gate their prune on
-        ``_tags_authoritative``; this path must match. Intersecting with an
+        The sibling restore paths gate their prune on the committed vocabulary
+        snapshot; this path must match. Intersecting with an
         unknown (empty) vocabulary would drop every persisted id, the next
         save would write the empty list to disk, and the sticky filing marker
         would block re-inheritance forever — silent, permanent loss from one
         bad boot.
         """
         dashboard_state._tags = []
-        dashboard_state._tags_authoritative = False
+        # UNKNOWN vocabulary: nothing was ever published, so the committed snapshot
+        # is None. Set explicitly rather than inherited from the fixture, so the
+        # precondition this test depends on is stated where it is read.
+        dashboard_state._committed_tag_ids = None
         slot = channel_slots.surface_channel_session(
             dashboard_state,
             self._info(),
@@ -942,7 +945,7 @@ class TestReconcilePassFiling:
             channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
         )
         dashboard_state._tags = [{"id": "t1", "name": "alpha", "color": "#123456"}]
-        dashboard_state._tags_authoritative = True
+        dashboard_state.publish_committed_tag_ids(dashboard_state._tags)
         for f in dashboard_state._folders:
             if f["id"] == fid:
                 f["tags"] = ["t1"]
@@ -979,7 +982,7 @@ class TestReconcilePassFiling:
         )
         # The folder still references "deleted"; the vocabulary does not have it.
         dashboard_state._tags = [{"id": "t1", "name": "alpha", "color": "#123456"}]
-        dashboard_state._tags_authoritative = True
+        dashboard_state.publish_committed_tag_ids(dashboard_state._tags)
         for f in dashboard_state._folders:
             if f["id"] == fid:
                 f["tags"] = ["deleted", "t1"]
@@ -1010,7 +1013,7 @@ class TestReconcilePassFiling:
             channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
         )
         dashboard_state._tags = [{"id": "t1", "name": "alpha", "color": "#123456"}]
-        dashboard_state._tags_authoritative = True
+        dashboard_state.publish_committed_tag_ids(dashboard_state._tags)
         for f in dashboard_state._folders:
             if f["id"] == fid:
                 f["tags"] = ["t1"]

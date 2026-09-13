@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -12,8 +13,10 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
+from enum import Enum
 from itertools import islice
+from typing import Any
 
 from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
@@ -43,6 +46,7 @@ from kiro_crew.dashboard.slot_buffers import (
     serialize_deferred_notes,
     union_deferred_notes,
 )
+from kiro_crew.dashboard.snapshot_commit import drain_shielded
 from kiro_crew.dashboard.state import (
     _TRANSIENT_ROLES,
     DashboardState,
@@ -1103,6 +1107,7 @@ def _rehydrate_slot_from_history(
             # fail-closed `not_creator` check would strand them.
             slot._created_by = str(meta["created_by"])
         if meta.get("folder_id"):
+            # ADOPTED VERBATIM, as the base did. See history.md.
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
             slot._channel_folder_filed = True
@@ -1125,18 +1130,12 @@ def _rehydrate_slot_from_history(
         raw_tags = meta.get("tags")
         if isinstance(raw_tags, list):
             slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
+            # load_tags() runs before any slot restore, so the loaded vocabulary is
+            # authoritative and a dangling id is pruned; UNKNOWN still fails open.
+            slot.tags = state.tag_ids_for_restore(slot.tags)
             # Prune ids missing from the vocabulary: tag deletion commits the
             # vocab write first (crash-atomic), so a crash mid-delete can
-            # leave dangling ids on the persisted slot line. load_tags() runs
-            # before any slot restore, so state._tags is authoritative here.
-            # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
-            # or I/O failure): pruning then would wipe EVERY assignment and
-            # the next save persists the loss. A legitimately-empty vocabulary
-            # (user deleted the last tag) IS authoritative and must prune —
-            # otherwise a crash mid-delete resurrects the dangling id forever.
-            if getattr(state, "_tags_authoritative", True):
-                known = {t.get("id") for t in state._tags}
-                slot.tags = [t for t in slot.tags if t in known]
+            # leave dangling ids on the persisted slot line.
             # Keep "tags changed => revision changed" everywhere tags are
             # replaced (chat_tags.py cannot be imported here: it imports us).
             bump_revision = getattr(slot, "bump_tags_revision", None)
@@ -1644,6 +1643,7 @@ def _apply_recent_session(
         # legitimate member with not_creator.
         slot._created_by = str(meta["created_by"])
     if meta.get("folder_id"):
+        # ADOPTED VERBATIM, as the base did, matching the bulk path. See history.md.
         slot.folder_id = meta["folder_id"]
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
@@ -1667,18 +1667,8 @@ def _apply_recent_session(
     raw_tags = meta.get("tags")
     if isinstance(raw_tags, list):
         slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
-        # Prune ids missing from the vocabulary: tag deletion commits the
-        # vocab write first (crash-atomic), so a crash mid-delete can
-        # leave dangling ids on the persisted slot line. load_tags() runs
-        # before any slot restore, so state._tags is authoritative here.
-        # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
-        # or I/O failure): pruning then would wipe EVERY assignment and
-        # the next save persists the loss. A legitimately-empty vocabulary
-        # (user deleted the last tag) IS authoritative and must prune —
-        # otherwise a crash mid-delete resurrects the dangling id forever.
-        if getattr(state, "_tags_authoritative", True):
-            known = {t.get("id") for t in state._tags}
-            slot.tags = [t for t in slot.tags if t in known]
+        # Same rule as the rehydrate path, and the same single validator.
+        slot.tags = state.tag_ids_for_restore(slot.tags)
         # Keep "tags changed => revision changed" everywhere tags are
         # replaced (chat_tags.py cannot be imported here: it imports us).
         bump_revision = getattr(slot, "bump_tags_revision", None)
@@ -3830,6 +3820,544 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     return False
 
 
+class SweepMergeOutcome(Enum):
+    """The three-way result of a sweep merge, named so a caller cannot mis-decode it.
+
+    Naming the outcomes is what makes the DISPOSITION explicit: ``COMMITTED`` owes
+    nothing, ``SUPERSEDED`` reconciles against the observed record, and ``UNCONFIRMED``
+    must arm ``_dirty`` — three
+    answers that want different handling, two of them NON-COMMITTED and each owing
+    something different. Every member is truthy, which is part of the point: no outcome
+    can be read as "nothing happened" by a caller that forgot to dispatch. It also makes
+    an incoherent combination unexpressible, where a pair of booleans could say a write
+    both landed and was superseded.
+
+    The dispatch in :func:`persist_swept_slot_meta` names all three members, so a member
+    ADDED here without giving it a disposition there would fall into the transient
+    branch. There is exactly one dispatching consumer and none is invited, so that
+    coupling is deliberate: change the two together.
+    """
+
+    #: The merge was written under the record's own lock. Nothing further is owed.
+    COMMITTED = "committed"
+    #: The guard ran against a non-empty record and REFUSED: another writer owns the
+    #: field, and the observed value is the newer truth. The caller's in-memory value
+    #: is stale, so it must be RECONCILED via ``adopt`` and ``_dirty`` must NOT be
+    #: armed -- the periodic flush full-saves from memory and would write back exactly
+    #: the stale value the guard just refused.
+    SUPERSEDED = "superseded"
+    #: No ``conversation_log``, or the record is absent/unreadable, or the guard never
+    #: ran. Transient: arm ``_dirty`` and let the periodic flush retry.
+    UNCONFIRMED = "unconfirmed"
+
+
+async def _merge_slot_meta(
+    state: DashboardState,
+    slot: _ChatSlot,
+    fields: dict[str, object],
+    guard: Callable[[dict], bool],
+    expected_history_key: str,
+) -> tuple[SweepMergeOutcome, dict]:
+    """Merge a few slot-owned metadata fields into a slot's record, lock-held.
+
+    PRIVATE, and the single step of :func:`persist_swept_slot_meta` -- there is
+    exactly one caller and none is invited. It is a module-level function because the
+    two halves are different responsibilities with different contracts: this one owns
+    the LOCK-HELD WRITE and the outcome it produces (a required guard with no
+    default, the existence re-check taken inside the lock, and the refusal CAUSE in
+    its ``(SweepMergeOutcome, observed)`` result), while the caller owns the
+    DISPOSITION of that outcome
+    (adopt the observed value, arm ``_dirty``, log, never raise). Inlining would put
+    both contracts in one body and leave the cause distinction to be rebuilt by
+    whoever reads it. That the two suites can also substitute it to inject the
+    concurrency window and the superseded/absent outcomes is a consequence of the
+    split, not its reason.
+
+    It exists at all because a full save REBUILDS every
+    ``SLOT_OWNED_META_KEYS`` entry from the in-memory object, and in that set an
+    absent field means "cleared" — so a full save issued after a concurrent close
+    committed silently erases that close's ``closed`` / ``closed_at`` and the
+    dismissed tab returns on the next restart. An identity re-check before the
+    persist cannot close that window, because the check is taken BEFORE the
+    await: the close can land in between and still be clobbered.
+
+    A merge writes only the named fields under the SAME per-session cross-process
+    lock (``update_metadata_if`` enters ``_locked``), so every key it does not
+    name — ``closed`` included — survives whatever landed in the meantime.
+
+    Deliberately NOT :func:`update_metadata_off_loop`: on a running loop that one
+    dispatches fire-and-forget and swallows I/O errors, so the write would be
+    unordered against the response and a failure invisible. Its own docstring
+    points async callers at the ``to_thread`` form used here, which both orders
+    the write and lets an error propagate so the caller can arm ``_dirty``.
+
+    Returns ``(outcome, observed)``. ``COMMITTED`` means the merge was written;
+    ``SUPERSEDED`` and ``UNCONFIRMED`` both mean nothing was written, and they are
+    not interchangeable — see below.
+
+    THE EXISTENCE CHECK IS RE-TAKEN INSIDE THE LOCK, via
+    :meth:`update_metadata_if`, and that is not a refinement of checking first.
+    ``update_metadata`` UPSERTS: it creates the file when absent. Acquiring the
+    lock can itself mean waiting, so a check taken before it is a decision made
+    against a snapshot, and "checked, then wrote" is not "checked at the moment of
+    writing". A session deleted in that window was RECREATED by the write, so
+    deleted history came back. Guarding under the lock is the only shape that
+    refuses.
+
+    *guard* is REQUIRED, and evaluated under the same lock, for the mirror-image
+    hazard: the write is decided from an IN-MEMORY read of the slot, so if another
+    writer has since changed the same field on disk, the caller's value is stale
+    and writing it destroys the newer one. A caller passes the guard to say what it
+    believed about the record; when that belief fails the merge is
+    skipped rather than forced. There is deliberately NO default: an
+    existence-only fallback would let a caller opt out of stating its belief, which
+    is the weaker discipline this function exists to enforce, and every real
+    consumer has a belief worth checking.
+
+    A refusal is reported with its CAUSE, as ``(SweepMergeOutcome, observed)``:
+
+    * ``COMMITTED, {}`` — the merge landed. Nothing owed.
+    * ``SUPERSEDED, meta`` — the guard ran under the record's lock and refused, so
+      disk DIFFERS from what the caller believed and *meta* is what the lock saw.
+      That normally means another writer owns the field, making the caller's
+      in-memory value the stale one to be RECONCILED with ``_dirty`` left unarmed:
+      the periodic flush full-saves from the in-memory object, which would write
+      exactly the stale value the guard just refused. It means the OPPOSITE when the
+      slot already carried unflushed edits, because an earlier failed save leaves
+      disk behind and the newer value only in memory. The caller decides between
+      them; a refusal alone cannot say which side is newer.
+    * ``UNCONFIRMED, {}`` — no ``conversation_log``, or the record is
+      absent/unreadable. Transient, so arm ``_dirty`` and let the flush retry.
+
+    The three ways a merge declines to write want OPPOSITE handling, which is why the
+    cause travels as a NAMED outcome rather than a bare bool. The guard
+    is wrapped here rather than at each call site so the distinction between
+    "another writer owns this" and "there is no record" is produced once, by the
+    code that actually knows which happened.
+    """
+    log = state.conversation_log
+    if log is None:
+        return SweepMergeOutcome.UNCONFIRMED, {}
+    # PINNED, not re-resolved: a rebind across the caller's await would otherwise
+    # retarget the scrub onto the new transcript. See history.md.
+    key = expected_history_key
+
+    def _merge() -> tuple[SweepMergeOutcome, dict]:
+        seen: dict = {}
+        ran = [False]
+
+        def _observing_guard(meta: dict) -> bool:
+            ran[0] = True
+            seen.clear()
+            seen.update(meta)
+            return guard(meta)
+
+        if log.update_metadata_if(key, fields, _observing_guard):
+            return SweepMergeOutcome.COMMITTED, {}
+        # No write. If the guard RAN against a non-empty record and still
+        # refused, another writer owns the field and ``seen`` is the newer
+        # truth. If it never ran (unreadable record — update_metadata_if fails
+        # closed before calling it) or ran against an empty one, there is simply
+        # nothing to merge into.
+        if ran[0] and seen:
+            return SweepMergeOutcome.SUPERSEDED, dict(seen)
+        return SweepMergeOutcome.UNCONFIRMED, {}
+
+    return await asyncio.to_thread(_merge)
+
+
+async def _adopt_against_the_locked_record(
+    state: DashboardState,
+    key: str,
+    apply: Callable[[dict], None],
+) -> bool:
+    """Run *apply* on the record's metadata while that record's lock is held.
+
+    COMPARE-AND-SET, not a narrowed window. Confirming currency and then adopting are two
+    steps, and any gap between them is a window an alias write on a shared transcript can
+    land in -- after which adopt imports metadata the store has already superseded and a
+    later full save makes it durable. ``update_metadata_if`` evaluates its guard INSIDE
+    ``_locked(key)``, so applying there means the value adopted is the value the record
+    holds at that instant; there is no interval to lose a race in.
+
+    The guard always returns False: this borrows the lock to read, and owes no write.
+
+    *apply* runs ON the event loop that owns the slot, marshalled from the locked worker
+    and waited for, so the lock covers the mutation and no other task can interleave a
+    folder edit between the read and the write. Returns whether it ran, so the caller can
+    fall back when the record was EMPTY. A read that cannot take the lock RAISES rather
+    than returning False, because an unread record may hold a value newer than the
+    caller's pre-await snapshot, and falling back would make that snapshot durable.
+    """
+    log = getattr(state, "conversation_log", None)
+    writer = getattr(log, "update_metadata_if", None) if log is not None else None
+    if not key or not callable(writer):
+        return False
+    loop = asyncio.get_running_loop()
+
+    def _locked() -> bool:
+        applied = False
+
+        def _apply_under_lock(current: dict) -> bool:
+            nonlocal applied
+            if isinstance(current, dict) and current:
+                done = threading.Event()
+
+                def _on_loop() -> None:
+                    try:
+                        apply(current)
+                    finally:
+                        done.set()
+
+                # Marshalled onto the owning event loop and WAITED FOR, so the record's
+                # lock still covers it. No deadlock: that loop awaits this very call.
+                loop.call_soon_threadsafe(_on_loop)
+                done.wait()
+                applied = True
+            return False
+
+        writer(key, {}, _apply_under_lock)
+        return applied
+
+    try:
+        return await asyncio.to_thread(_locked)
+    except Exception:
+        logger.debug("could not adopt against the locked record", exc_info=True)
+        raise
+
+
+def _remember_meta_retry_fields(slot: _ChatSlot, fields: Iterable[str]) -> None:
+    """Record that THESE metadata fields are owed a retry on *slot*.
+
+    Per-field because the alternative is ``_dirty``, which means "messages changed" and
+    is reused widely enough that it cannot distinguish an unsent message from a folder
+    this protocol failed to write. Best-effort: a slot that rejects the attribute simply
+    has no unflushed fields recorded, which is the fail-open side.
+    """
+    try:
+        owed = set(getattr(slot, "_meta_retry_fields", ()) or ())
+        owed.update(fields)
+        slot._meta_retry_fields = owed
+    except Exception:  # noqa: BLE001 - bookkeeping must never break a delete
+        logger.debug("could not record the metadata fields owed a retry", exc_info=True)
+
+
+def _forget_meta_retry_fields(slot: _ChatSlot, fields: Iterable[str]) -> None:
+    """Drop *fields* from *slot*'s owed set once a write for them has landed."""
+    try:
+        owed = set(getattr(slot, "_meta_retry_fields", ()) or ())
+        if owed:
+            slot._meta_retry_fields = owed - set(fields)
+    except Exception:  # noqa: BLE001 - bookkeeping must never break a delete
+        logger.debug("could not clear the metadata fields owed a retry", exc_info=True)
+
+
+def _raise_metadata_inflight(slot: _ChatSlot) -> None:
+    """Raise *slot*'s guarded-metadata-write counter, which holds the periodic flush off.
+
+    Production slots initialise the counter, while compatibility callers may provide a mock
+    that synthesises missing attributes; a non-integer value is treated as an absent counter
+    rather than leaked into the cleanup path.
+    """
+    inflight = getattr(slot, "_metadata_persist_inflight", 0)
+    slot._metadata_persist_inflight = inflight + 1 if type(inflight) is int else 1
+
+
+def _lower_metadata_inflight(slot: _ChatSlot) -> None:
+    """Release one hold taken by :func:`_raise_metadata_inflight`, never below zero."""
+    inflight = getattr(slot, "_metadata_persist_inflight", 0)
+    slot._metadata_persist_inflight = inflight - 1 if type(inflight) is int and inflight > 0 else 0
+
+
+@contextlib.asynccontextmanager
+async def metadata_persist_held(slot: _ChatSlot) -> AsyncIterator[Callable[[Any], Any]]:
+    """Hold the periodic flush off *slot* while a guarded metadata write is owed.
+
+    ``flush_slot_now`` full-rebuilds every ``SLOT_OWNED_META_KEYS`` entry from the
+    in-memory object, and returns early ONLY when this counter is raised. A sweep write
+    goes through ``update_metadata_if`` rather than ``save_slot_off_loop``, so nothing
+    else raises it: without this, a flush landing in the sweep's await can overwrite a
+    concurrent refile, or omit a ``closed`` that the in-memory slot does not carry.
+
+    The hold OUTLIVES the write, which is why the work is run through the yielded runner
+    rather than awaited directly by the caller. A worker in ``asyncio.to_thread`` cannot be
+    cancelled, so a cancellation delivered while it waits for the record lock would drop the
+    hold with the write still in flight and let the flush race it. Draining here closes that
+    at the hold: a caller-side shield would only protect the callers that remember one.
+
+    try/finally rather than a pair of calls: the sweep has five dispositions and an
+    exception path, and a counter leaked on any one of them would silence the flush for
+    that slot for the process's life.
+    """
+    raised = False
+    try:
+        _raise_metadata_inflight(slot)
+        raised = True
+    except Exception:  # noqa: BLE001 - a slot that rejects the counter simply is not held
+        logger.debug("could not hold off the flush for a swept slot", exc_info=True)
+
+    started: list[asyncio.Future] = []
+
+    async def _run_held(work: Any) -> Any:
+        task = asyncio.ensure_future(work)
+        started.append(task)
+        # Shielded, so a cancellation delivered here unwinds THIS await and leaves the
+        # write running; the drain below is what the hold then waits on.
+        return await asyncio.shield(task)
+
+    try:
+        yield _run_held
+    finally:
+        for task in started:
+            if not task.done():
+                await drain_shielded(task)
+        if raised:
+            try:
+                _lower_metadata_inflight(slot)
+            except Exception:  # noqa: BLE001 - never mask the delete's own outcome
+                logger.debug("could not release the swept slot's flush hold", exc_info=True)
+
+
+async def persist_swept_slot_meta(
+    state: DashboardState,
+    slot: _ChatSlot,
+    fields: dict[str, object],
+    *,
+    guard: Callable[[dict], bool],
+    adopt: Callable[[_ChatSlot, dict, dict[str, object]], None],
+    label: str,
+    expected_history_key: str,
+) -> None:
+    """Persist one slot's field during a vocabulary-delete sweep.
+
+    INTERIM BY DESIGN, and now with a destination: this helper exists only to bridge the
+    deferred merge-aware-save layer decision, tracked at kirodotdev/KiroCrew#8361. When
+    that lands, this function and its ``guard``/``adopt`` closures retire together with the
+    force-save census gate and the adopter allowlist. Do not grow a third sweep site onto
+    it -- that makes the real fix more expensive, not less.
+
+    A single helper for both the folder-delete and tag-delete strips, because near-twin
+    copies are the drift risk this exists to prevent: the next fix would otherwise have
+    to be made twice, correctly, in two files.
+
+    THE PROTOCOL IS NOT RESTATED HERE. The two checks, the five-way disposition, the rule
+    that ``adopt`` must not arm ``_dirty``, and why one big lock was rejected are stated
+    once in ``docs/system-specs/modules/history.md`` under "Metadata-only persistence for
+    a sweep". Scoped to ONE slot on purpose: the caller keeps its own loop. This returns
+    ``None``: the :class:`SweepMergeOutcome` is consumed HERE, and dispatching on it is
+    exactly what the helper exists to centralise -- a caller that received it back would
+    be free to disposition it differently, which is the drift this replaced.
+
+    A THIRD SWEEP SITE SHOULD NOT LAND ON THIS. It is a stopgap for the two delete
+    sweeps, not an on-ramp: every consumer is a bespoke guard/adopt closure that the
+    layer fix (a merge-aware save) has to unwind
+    again, so a third site makes that fix more expensive rather than less. If one is
+    genuinely needed before the layer decision is taken, that is the signal to take the
+    decision instead. The dispatch below is exhaustive by construction rather than by
+    machinery: three members, three arms.
+
+    Everything field-specific is passed in, because the two deletes genuinely
+    differ and collapsing them would be the bad abstraction:
+
+    * *fields* is the merge payload the caller already computed, handed back to
+      *adopt* so it can tell whether the slot still holds what was submitted.
+    * *guard* is the under-lock predicate stating what the caller believed.
+    * *adopt* owns both that unchanged test and the validation of ``observed``.
+      Those diverge sharply: the folder side routes a scalar through one
+      validator, while the tag side must check the container's TYPE before
+      reading any entry out of it and then prune against the tag vocabulary.
+    * *label* prefixes the warning so the log still names which delete failed.
+    """
+    if state._slots.get(slot.key) is not slot:
+        # The dirty flag only helps if the slot returns AND has messages, so a message-less
+        # one is persisted here -- as the UNCONFIRMED and exception arms below also do.
+        slot._dirty = True
+        if not getattr(slot, "messages", None):
+            await persist_meta_correction_without_messages(
+                state, slot, fields, guard, expected_history_key, label
+            )
+        return
+    try:
+        # PER-FIELD, not the slot's ``_dirty``: that flag means "messages changed" and
+        # cannot say whether THIS field is unflushed. See _remember_meta_retry_fields.
+        unflushed = set(getattr(slot, "_meta_retry_fields", ()) or ())
+        swept_is_unflushed = bool(unflushed & set(fields))
+        outcome, observed = await _merge_slot_meta(
+            state, slot, fields, guard=guard, expected_history_key=expected_history_key
+        )
+        # Every member names its disposition, because the two non-committed ones want
+        # OPPOSITE handling: SUPERSEDED reconciles against the observed record, while
+        # UNCONFIRMED retries. The three arms cover all three members, so the shape is
+        # exhaustive by construction and nothing can fall through.
+        if outcome is SweepMergeOutcome.COMMITTED:
+            # This write landed, so nothing is owed for these fields any more.
+            _forget_meta_retry_fields(slot, fields)
+        elif outcome is SweepMergeOutcome.SUPERSEDED:
+            # A refusal proves disk DIFFERS from what the caller believed, NOT that disk
+            # is newer; an earlier failed write of THIS field leaves the newer one here.
+            if swept_is_unflushed:
+                slot._dirty = True
+            # SUPPRESSED when routing moved: ``observed`` describes a transcript the
+            # slot has left, so adopting it would import a stale placement.
+            elif slot_history_key(slot) == expected_history_key:
+
+                def _adopt_if_still_ours(current: dict) -> None:
+                    # Routing re-taken HERE, inside the lock: value and identity are both
+                    # checked at the instant of the adopt, not before an await.
+                    if slot_history_key(slot) == expected_history_key:
+                        adopt(slot, current, fields)
+
+                adopted = await _adopt_against_the_locked_record(
+                    state, expected_history_key, _adopt_if_still_ours
+                )
+                if not adopted and slot_history_key(slot) == expected_history_key:
+                    # The record was EMPTY, not unreadable: a lock failure raises above and
+                    # is armed for retry, so nothing newer can exist to lose here.
+                    adopt(slot, observed, fields)
+        else:
+            # UNCONFIRMED: absent or unreadable — transient, so retry via the flush.
+            # A message-less slot is skipped by that flush, so persist it here instead.
+            slot._dirty = True
+            _remember_meta_retry_fields(slot, fields)
+            if not getattr(slot, "messages", None):
+                await persist_meta_correction_without_messages(
+                    state, slot, fields, guard, expected_history_key, label
+                )
+    except Exception:  # noqa: BLE001 - retried by the periodic flush
+        slot._dirty = True
+        _remember_meta_retry_fields(slot, fields)
+        logger.warning(
+            "%s: slot persist failed for %s; marked dirty for periodic-flush retry",
+            label,
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )
+        if not getattr(slot, "messages", None):
+            await persist_meta_correction_without_messages(
+                state, slot, fields, guard, expected_history_key, label
+            )
+
+
+async def persist_meta_correction_without_messages(
+    state: DashboardState,
+    slot: _ChatSlot,
+    fields: dict,
+    guard: Callable[[dict], bool],
+    expected_history_key: str | None,
+    label: str,
+) -> None:
+    """Write a metadata-only correction the periodic flush cannot carry.
+
+    ``flush_slot_now`` returns early for a slot with no messages, so arming ``_dirty``
+    on one queues a retry that never runs and the correction survives only in memory.
+    This writes the same metadata directly: an update needs no message window, so it
+    reaches disk for exactly the slots the flush declines. Pinned to the transcript key
+    the sweep decided against, matching the guarded merge it stands in for.
+
+    GUARDED, never an upsert. The write is refused when the record is ABSENT, which is
+    the point: a session permanently deleted inside this window must not be recreated on
+    disk by a correction that arrives after it. The existence test lives HERE rather than
+    in the caller's guard, because ``update_metadata_if`` treats an absent record as
+    readable-and-empty and would otherwise merge -- creating the file and resurrecting
+    deleted history whenever a caller passes a permissive guard.
+
+    Best-effort by the same contract as its caller: a correction that cannot be written
+    is logged, never raised, because the delete it belongs to has already committed.
+    """
+    log = getattr(state, "conversation_log", None)
+    if log is None:
+        return
+    key = expected_history_key or slot_history_key(slot)
+
+    loop = asyncio.get_running_loop()
+
+    def _take_the_locked_values(meta: dict) -> None:
+        for name in fields:
+            if not hasattr(slot, name):
+                continue
+            if name == "tags":
+                # ABSENT means EMPTY: the full save omits ``tags`` when the list is empty.
+                # A present-but-malformed value is refused instead, by the isinstance below.
+                raw_tags = meta.get(name, [])
+                if isinstance(raw_tags, list):
+                    validated = state.tag_ids_for_restore(
+                        [str(t) for t in raw_tags if isinstance(t, str) and t]
+                    )
+                    if validated != list(slot.tags):
+                        slot.tags = validated
+                        # "tags changed => revision changed": otherwise a queued PUT holding
+                        # the pre-reconcile revision passes CAS and drops what landed here.
+                        bump_revision = getattr(slot, "bump_tags_revision", None)
+                        if callable(bump_revision):
+                            bump_revision()
+            elif name == "folder_id":
+                slot.folder_id = state.folder_id_for_restore(meta.get(name))
+            else:
+                setattr(slot, name, meta.get(name, getattr(slot, name)))
+
+    def _present_and_allowed(meta: dict) -> bool:
+        if not meta:
+            return False
+        if guard(meta):
+            return True
+        # Refused because disk moved on. Reconcile from the record while its lock still
+        # covers these values, so no later full save can carry the restored copy over them.
+        done = threading.Event()
+
+        def _on_loop() -> None:
+            try:
+                _take_the_locked_values(meta)
+            finally:
+                done.set()
+
+        loop.call_soon_threadsafe(_on_loop)
+        done.wait()
+        return False
+
+    try:
+        async with metadata_persist_held(slot) as run_held:
+            written = await run_held(
+                asyncio.to_thread(log.update_metadata_if, key, fields, _present_and_allowed)
+            )
+    except Exception:  # noqa: BLE001 - the delete already committed; report and move on
+        logger.warning(
+            "%s: metadata-only correction failed for %s",
+            label,
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )
+    else:
+        if written:
+            _forget_meta_retry_fields(slot, fields)
+        else:
+            logger.debug(
+                "%s: metadata-only correction declined for %s (record absent, or moved and "
+                "reconciled into the slot)",
+                label,
+                key,
+            )
+
+
+def meta_unchanged_guard(folder_id: str, tags: list[str]) -> Callable[[dict], bool]:
+    """Refuse a correction when disk moved after the values that correction was derived from.
+
+    A restore's correction carries what the slot held BEFORE revalidation, so it is only
+    safe while disk still holds those same values. A concurrent refile or retag persists a
+    newer placement, and writing the restored copy over it loses the user's edit durably --
+    the correction acquires the record lock later and wins by arriving second.
+
+    Compares the FIELDS rather than merely asserting presence: presence alone cannot tell
+    an untouched record from one another writer has already moved on.
+    """
+    expected_tags = [t for t in (tags or []) if isinstance(t, str)]
+
+    def _guard(meta: dict) -> bool:
+        on_disk_tags = [t for t in (meta.get("tags") or []) if isinstance(t, str)]
+        return meta.get("folder_id", "") == folder_id and on_disk_tags == expected_tags
+
+    return _guard
+
+
 async def save_slot_off_loop(
     state: DashboardState,
     slot: _ChatSlot,
@@ -3844,6 +4372,21 @@ async def save_slot_off_loop(
     rows_only: bool = False,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
+
+    ``force=True`` writes the WHOLE slot from memory, so a full save issued after a
+    concurrent close committed erases that close's ``closed`` flag. Callers still on that
+    protocol are counted by ``_FORCE_SAVE_CLOBBER_SITES`` and not restated here; the two
+    vocabulary-delete sweeps are not among them, because they route through
+    :func:`persist_swept_slot_meta`, which writes metadata only.
+
+    The deferred layer decision -- why making the save merge-aware is the viable fix and
+    persisting ``closed`` positively is not -- is recorded in
+    ``docs/system-specs/modules/history.md`` under "Metadata-only persistence for a sweep",
+    not restated here. The caller count is pinned by
+    ``test_the_deferred_force_save_layer_decision_has_not_grown``
+    (``_FORCE_SAVE_CLOBBER_SITES``), so adding another fails the build and puts the
+    decision in front of whoever is adding it. A new sweep site should route through
+    :func:`persist_swept_slot_meta` rather than grow another spelling.
 
     :func:`_save_slot_to_history` holds the per-session cross-process
     ``_locked`` across its read-modify-``atomic_write``. That lock, invoked on
@@ -3905,21 +4448,21 @@ async def save_slot_off_loop(
             rows_only=rows_only,
         )
 
-    def _begin_guarded_metadata_write() -> None:
-        inflight = getattr(slot, "_metadata_persist_inflight", 0)
-        # Production slots initialize this counter, while compatibility callers
-        # may provide a mock that synthesizes missing attributes. Treat a
-        # non-integer value as an absent counter rather than leaking it into the
-        # write's cleanup path.
-        slot._metadata_persist_inflight = inflight + 1 if type(inflight) is int else 1
-
-    def _finish_guarded_metadata_write() -> None:
-        inflight = getattr(slot, "_metadata_persist_inflight", 0)
-        slot._metadata_persist_inflight = (
-            inflight - 1 if type(inflight) is int and inflight > 0 else 0
-        )
-
     guarded_metadata = expected_history_key is not None
+
+    # Captured BEFORE dispatch: a concurrent writer can arm debt this write did not carry,
+    # and clearing the whole owed set on success would silence that field's retry.
+    debt_this_save_carries = (
+        frozenset(getattr(slot, "_meta_retry_fields", ()) or ()) & SLOT_OWNED_META_KEYS
+        if force
+        else frozenset()
+    )
+
+    def _discharge_carried_debt(saved: bool) -> None:
+        # A refused save wrote nothing, so its carried debt is still owed.
+        if saved and debt_this_save_carries:
+            _forget_meta_retry_fields(slot, debt_this_save_carries)
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -3927,7 +4470,7 @@ async def save_slot_off_loop(
     if loop is None:
         if best_effort:
             try:
-                return _do()
+                saved = _do()
             except Exception:  # noqa: BLE001 - best-effort durable copy
                 # A swallowed failure must NOT be silently final: mark the slot
                 # dirty so the periodic flush retries the write. Metadata-only
@@ -3936,36 +4479,51 @@ async def save_slot_off_loop(
                 # a lock timeout / I/O error would drop the change and the flush
                 # would never retry it, losing an acknowledged edit after restart.
                 slot._dirty = True
+                if force:
+                    # A force save rewrites every slot-owned key from memory, so a
+                    # failure leaves memory the unpersisted side for all of them.
+                    _remember_meta_retry_fields(slot, SLOT_OWNED_META_KEYS)
                 logger.warning(
                     "save_slot_off_loop: inline save failed slot=%s", slot.key, exc_info=True
                 )
                 return True
-        return _do()
+            _discharge_carried_debt(saved)
+            return saved
+        saved = _do()
+        _discharge_carried_debt(saved)
+        return saved
     if best_effort:
         if guarded_metadata:
-            _begin_guarded_metadata_write()
+            _raise_metadata_inflight(slot)
         try:
-            return await loop.run_in_executor(None, _do)
+            saved = await loop.run_in_executor(None, _do)
         except Exception:  # noqa: BLE001 - best-effort durable copy
             # See the inline branch above: re-arm the periodic flush so a
             # swallowed metadata/message save is retried rather than lost.
             slot._dirty = True
+            if force:
+                _remember_meta_retry_fields(slot, SLOT_OWNED_META_KEYS)
             logger.warning(
                 "save_slot_off_loop: offloaded save failed slot=%s", slot.key, exc_info=True
             )
             return True
+        else:
+            _discharge_carried_debt(saved)
+            return saved
         finally:
             if guarded_metadata:
-                _finish_guarded_metadata_write()
+                _lower_metadata_inflight(slot)
     # Non-best-effort: propagate so the caller can roll back (do NOT remove the
     # session until the durable write is confirmed).
     if guarded_metadata:
-        _begin_guarded_metadata_write()
+        _raise_metadata_inflight(slot)
     try:
-        return await loop.run_in_executor(None, _do)
+        saved = await loop.run_in_executor(None, _do)
     finally:
         if guarded_metadata:
-            _finish_guarded_metadata_write()
+            _lower_metadata_inflight(slot)
+    _discharge_carried_debt(saved)
+    return saved
 
 
 def _build_history_prefix(slot: _ChatSlot) -> str:

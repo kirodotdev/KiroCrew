@@ -859,3 +859,586 @@ Messages include `source_thread` and `source_user` fields:
 - Session keys prefixed `dashboard:` for dashboard chat slots
 
 Dashboard history list shows source icons: 🖥 (dashboard) / 💬 (Slack).
+
+## Vocabulary Deletes and Slot Metadata Persistence
+
+Deleting a folder or a tag has to strip that id off every slot carrying it, while ordinary
+tab activity — closes, forks, resumes, retags — runs concurrently on the same event loop.
+This section is the durable home for that protocol. It is recorded here rather than only in
+handler comments because the arguments are cross-file and outlive any one call site; the
+handlers reference behaviour by SYMBOL, and so does this section, so neither goes stale when
+line numbers move.
+
+### Commit-and-sweep is one unit with respect to cancellation
+
+The sweep also PINS its transcript key. Pass one records `slot_history_key(slot)` alongside
+the slot; pass two passes it as `expected_history_key`, which the merge uses instead of
+re-resolving routing at write time. Without the pin a concurrent rebind landing in the
+pass-two await window retargets the scrub onto the new transcript and leaves the deleted id
+on the record that actually carries it — durable, because the sweep never revisits. Adoption
+is suppressed when routing moved, since the observed record is then one the slot has left.
+The parameter is REQUIRED rather than defaulted, so a new sweep site cannot omit it, and it
+is the same pin every other write site in these handlers already uses.
+
+The pin closes a rebind landing in the PASS-TWO await. An earlier window it cannot reach is a
+rebind landing inside the COMMIT await: pass one then reads routing that has already moved, so
+it pins the new transcript faithfully and the record still carrying the deleted id is one no
+slot addresses any more. **The capture that finds that record is LIVE, and it aims a write the sweep already makes.**
+Both sweeps retain each matching slot together with the transcript key it held BEFORE the commit,
+and pass two pins that key as `expected_history_key` — a required parameter, not a defaulted one —
+so that write lands on the record the deleted id is on rather than on whichever transcript a rebind
+moved routing to. NO SECOND key-addressed write follows it, and none is owed: a persisted
+`folder_id` naming no live folder is a state the ruling below accepts, absorbed in the four places
+listed there, the third of which names this record exactly ("a dangling `folder_id` left on the old
+transcript is ignored on the next load"), and its one behavioural consequence — a withheld
+auto-file suggestion — cannot arise for a record no slot routes to.
+
+Pass one is YIELD-FREE, and that is now enforced rather than merely recorded here. The baseline
+it captures — the transcript key — is
+atomic with the in-memory write only while nothing yields, so a single `await` in that loop
+makes every slot after the first read a baseline an earlier slot's persist already let the user
+move. The other ordering rules in this section are enforced by gates a
+restructuring refactor could satisfy while breaking the ordering itself, so this one is asserted
+directly: `test_pass_one_of_each_delete_sweep_stays_yield_free` fails if the loop yields, and
+fails if its own structural detector stops matching the loop.
+
+**The four persisted-restore paths adopt `folder_id` VERBATIM, exactly as the base did.**
+`_rehydrate_slot_from_history`, `_apply_recent_session`, `api_chat_slot_resume` and the
+channel-arrival metadata branch in `channel_slots.py` read a value they did not author and
+cannot date, so they validate nothing: absence there is ambiguous and a stale `folders.json`
+would unfile filings made after its snapshot. They do not route through
+`folder_id_for_restore` even for a SHAPE check, because the only thing such a check changes is
+rejecting a malformed id the base kept harmlessly — the sidebar renders any unknown id as Unfiled.
+There is NO withholding channel: a caller either reads a KNOWN vocabulary, in which case an id
+absent from it is pruned, or an UNKNOWN one, in which case everything is kept. A slot arriving from
+stale metadata after the sweep's snapshot
+therefore keeps a VISIBLE dangling id, which the next folder operation settles.
+
+`commit_snapshot_while_holding_the_lock` hands the snapshot write to a thread that cannot be
+interrupted, so a cancelled delete still LANDS the vocabulary removal and then re-raises the
+cancellation. Both delete handlers then sweep the slots. Cancellation arriving in the gap
+therefore left disk self-inconsistent — the row gone, slot metadata still naming it — and the
+sweep is what would have repaired it.
+
+Shielding the commit alone cannot close this, because the gap is BETWEEN the halves: the unit
+that must be atomic is commit-and-sweep. So each handler CAPTURES the commit's cancellation
+rather than propagating it, runs its synchronous clear (which has no yield point and so cannot
+be interrupted part-way), hands the awaiting half to
+`sweep_to_completion_despite_cancellation`, and re-raises afterwards. That helper drains in a
+loop, because an already-cancelled task has a fresh cancellation delivered on every await, and
+a sweep failure supersedes the cancellation so the caller's `except Exception` is still reached.
+
+This stands on its own two consequences, and neither involves the restore paths: a
+cancellation that skipped the cleanup would lose the operation's ONLY audit line, and it
+would leave the tag vocabulary inconsistent until the next boot. Cold start neither cleans up
+nor prunes — it adopts what it reads — so nothing here depends on a restore-time fail-safe.
+
+**A cancellation does not prove the write landed, so the sweep requires POSITIVE
+confirmation.** It can arrive while awaiting the store lock, before any write is issued.
+Sweeping then is the mirror hazard of skipping it: every conversation is unfiled out of a
+folder that still exists. `state._folders` cannot tell the two apart — the mutator edits it
+in place before the write and a cancellation does not roll it back, so it reads as deleted
+either way. The handlers therefore key on PUBLICATION, which happens only after the write
+confirms: on a cancellation they sweep only when the id has left `_committed_folder_ids` (or
+`_committed_tag_ids`), and refuse when the vocabulary is UNKNOWN. That post-commit read is a
+confirmation, not the fail-open rule, which is why the single-reader gate exempts it
+alongside the pre-delete snapshot.
+
+### Scope: restore-time validation is mid-session, not cold-start
+Read this before the sweep protocol below, because the two have different blast radii. The
+sweep is confined to the two delete handlers. The **validation** is wider, but it is not
+universal, and it is not symmetric between the two vocabularies. Every **mid-session** path
+that rebuilds a slot from persisted metadata routes its `tags` through `tag_ids_for_restore`
+— revert, fork, the popped-slot restores in close and cleanup, the parked-slot restores in
+app teardown, and channel arrival's default filing. **The two vocabularies are deliberately NOT
+aligned at the popped and parked restores.** A dangling folder id renders as Unfiled — the sidebar
+resolves ids through the vocabulary and buckets the misses under `UNFILED_GROUP_KEY`, whose own
+definition in `groupHistoryByFolder` names "no folder_id, or a deleted folder" as the two inputs it
+absorbs — so the residue there costs a withheld auto-file suggestion, while a
+stripped tag has no such absorbing surface and costs the user data. An earlier revision revalidated
+`folder_id` at those three sites too, on the argument that the parked restores sit in the same
+absorbing surface and so should be treated alike. That is symmetry, not a harm: it justified the
+folder arm by its resemblance to the tag arm rather than by anything the folder residue costs. Under
+this document's own selection criterion — surface is warranted only where the residue costs DATA —
+the folder arm at `close_slot`, `api_chat_slots_cleanup` and `_teardown_worker_slot` was withdrawn,
+along with the membership samplings that fed it. The same criterion withdrew it at the fork
+producer's inherit-copy, where the child simply keeps what the parent legitimately holds.
+
+**The two REFUSED-MOVE REVERTS keep their folder arm, and the difference is not inconsistency.**
+`api_chat_slot_folder` and `api_chat_slot_create` reattach a placement the operation moved AWAY
+from. If that folder was deleted inside the window, reattaching it writes an id the user never
+chose — a placement nobody asked for, rather than one they had — and the next save makes it durable.
+That is a data cost, so the criterion warrants the surface there. It is reproduced by
+`test_refused_refile_does_not_restore_a_folder_deleted_in_the_window`. The other folder arm that
+remains is the delete sweep's own superseded-merge adopt, and it stays because
+it arbitrates a write the sweep is itself performing rather than revalidating someone else's.
+
+Those remaining folder callers hold no observation either: they route the value through the
+validator, which drops an id absent from a KNOWN vocabulary and keeps everything while the
+vocabulary is UNKNOWN. The **four
+cold-start paths adopt the persisted value verbatim** and validate nothing:
+`_rehydrate_slot_from_history`, `_apply_recent_session`, resume, and the channel metadata
+branch. That is deliberate — a readable-but-stale `folders.json` must not unfile a filing made
+after its snapshot. Nothing the validator does reaches those four, the malformed-id rejection
+included: they never call it, so a malformed id already on disk survives a restart and is
+dropped only when a mid-session path revalidates it.
+
+Which rejection acts depends on the caller, and the split is the point — see "Two dispositions"
+below for the full rationale. Do not read this section as licence to prune at boot — restoring
+that would reintroduce the silent durable mass-unfile, which is the harm this whole split
+exists to avoid.
+
+**A KNOWN vocabulary is authoritative, and that is the whole rule.** An earlier revision made an
+await-window caller prove a present-to-absent TRANSITION, sampling membership before its await and
+preserving an id already absent when the operation began. That is WITHDRAWN, on both vocabularies.
+What it bought was immunity to a
+readable-but-stale store, and nothing in this tree produces one — every vocabulary mutation is
+commit-first, so a slot never references an id a readable store lacks, and such a store can only
+arrive from outside the process with no occurrence reported. Four observation states threaded
+through a dozen call sites was surface bought against an unreported premise, and the same criterion
+already withdrew the tag deletion record and the cold-start withholding. What remains is two states:
+KNOWN prunes an absent id, UNKNOWN keeps everything. The asymmetry that survives is deliberate: a
+preserved dangling id self-corrects
+on the next folder operation and cold-start already keeps it, whereas unfiling a validly-filed
+conversation is unrecoverable.
+
+**A dangling `folder_id` in the commit→sweep crash window is ACCEPTED, and deliberately not
+purged by a durable store.** No journal, boot step or record/retire lifecycle exists to prove
+such an id deletable at cold start, and none is owed: the harm one would purge is already absorbed
+in four places:
+
+* the sidebar buckets a `folder_id` naming no known folder into Unfiled, so it renders exactly as
+  an unfiled conversation (`groupHistoryByFolder` maps any id absent from
+  `folderById` to `UNFILED_GROUP_KEY`);
+* `api_chat_slot_resume` clears it under `_unhide_folder`'s lock-held existence verdict, which is
+  the only place existence can be read without a race;
+* the folder-delete handler's own refusal path records that "a dangling `folder_id` left on the old
+  transcript is ignored on the next load";
+* this module says the same of the cron-folder sibling — "a dangling `folder_id` is benign
+  (grouping renders unknown ids as ungrouped)".
+
+The one place a dangling id changes behaviour is `maybe_suggest_folder`, whose
+`if slot.folder_id or slot._folder_suggested: return` suppresses an auto-file suggestion for that
+session — a withheld suggestion, not lost data, and self-correcting the moment the user files or
+unfiles anything.
+
+Against that, the store cost a new on-disk format, a startup step, a thread lock, and — decisively
+— a second FORGEABLE input. It lived in `config_dir()`, the same directory as `folders.json`, so
+anything able to forge the vocabulary could also forge the evidence; and where a forged vocabulary
+alone only reaches the fail-open KEEP path, evidence flips that into a prune, turning a
+read-consistency problem into mass unfiling. A store whose whole purpose is to LICENCE a
+destructive action must not share a trust boundary with the data it adjudicates. The dangling id
+stays, and prune licences stay confined to a transition an in-process caller observed itself.
+
+**The tag side ships no such record either, and the criterion below is why.** An earlier revision
+of this change did ship one — `deleted_tags.json`, written before the vocabulary commit, with
+readers that pruned only an id both recorded AND absent. It was withdrawn. Applying the criterion
+honestly rules it out: the residue a tag record would remove is a withheld suggestion at render, the
+same cost the folder ruling already accepts as benign, so a new persisted format, monotonic growth
+and withdrawal choreography on every failure exit bought surface the residue did not justify. The
+crash-mid-delete coverage the record was reached for is what the boot-time authoritative prune below
+already provides, and that prune is what the base carried.
+
+**THE SELECTION CRITERION, for whoever adds a durable deletion record for any vocabulary.** The
+rule is this: such a record is warranted only when the residue it removes costs the user DATA, and
+is refused when the residue costs only a withheld suggestion. Ask, in order — what does a dangling
+id cost at render? If the surface drops the miss and carries on, as the sidebar does for both
+`folder_id` and a tag id, take the dangling id and add no store. If a stale id instead survives into
+something the user reads as truth, a record is warranted. Then check the two properties that make it
+safe to add: the prune must require the record AND absence, so a forged record alone licenses
+nothing; and the ids must never be reusable, so a dangling id cannot collide back onto a live row. A
+vocabulary failing either property does not get a record, whatever the residue costs. Both
+vocabularies in this tree are refused by the first question, which is the answer that keeps them
+consistent.
+
+**Every tag site prunes against the vocabulary it just read.** A readable-but-stale `tags.json`
+parses as KNOWN, so neither the UNKNOWN nor
+the KNOWN-EMPTY rule catches it, and pruning against it at boot strips every tag applied since that
+snapshot — durable loss, because the next slot save persists the shortened list and nothing
+re-applies a stripped tag. That is the cost of pruning on bare absence, and it is not
+a reason to stop pruning: no handler in this tree leaves the store stale, and no
+occurrence of an externally-staled store has been reported, so every reader takes the base
+rule — `load_tags()` runs before any slot restore, the loaded vocabulary is authoritative, and an id
+it does not know is dangling. An UNWRITTEN or unreadable store is UNKNOWN rather than a confident
+empty, and that fails open, which is what keeps a swallowed seed-write failure from stripping every
+assignment.
+
+**Why the boot prune is kept even though a stale store would strip.** The strip is real and
+reproducible: a `tags.json` holding one id, a second tag applied to the slot afterwards, then a
+prune with no observation, and the later tag is gone. What decides the question is not whether
+that CAN happen but whether anything in this tree makes it happen. Nothing does -- every
+vocabulary mutation is commit-first -- and no externally-staled store has been reported. So the
+boot readers prune, exactly as the base did, and no caller withholds. The one loss this ordering could cause is bounded by the
+UNKNOWN arm: a store that failed to write is not a confident empty, so it fails open instead of
+stripping every assignment, which is the case a swallowed seed-write failure produces.
+
+**What the boot prune buys, stated because it is the reason it stays.** When a process dies
+between a delete's commit and its sweep, a slot can hold an id the vocabulary does not list, and
+boot is the pass that drops it. Withholding it would leave that id on the slot line through every
+later save, and closing the gap some other way would need evidence that an absent id was DELETED
+rather than merely unlisted -- a durable per-id record, which the criterion above refuses for this
+vocabulary. Pruning at boot needs no such record, because the store was just read and is
+authoritative. The residue that remains is the one the folder side also carries: an id absent from
+a vocabulary that is UNKNOWN, kept by the fail-open arm and dropped at render.
+
+No caller observes the vocabulary before its await any more: the fork producer, the close and
+cleanup restores, and the app-teardown revalidation of a parked slot each pass the value alone, and
+both validators take one argument.
+
+EVERY caller is therefore the same case. `validate_folder_tag_ids` reads a
+vocabulary that is current by construction -- no await separates the read from the test -- so the
+plain membership test is right there. `api_chat_slot_resume` is the same case for the same reason:
+the vocabulary it reads was loaded before any restore, so it prunes an id absent from it at any
+vocabulary size. The
+UNKNOWN arm is what covers the store none of them could read. So the declared residuals number two,
+one per vocabulary: `api_chat_slot_resume` on the tag side, and the default-filing branch of
+`surface_channel_session` on the folder side.
+
+That the remaining callers prune is deliberate, and it is a behaviour change rather than a
+pure bug fix: before, a `folder_id` naming a folder that no longer existed survived every restart
+untouched, because nothing downstream validated it. The cost of the change is bounded by the
+UNKNOWN/KNOWN split in "Vocabulary knownness" below — an unread or unreadable store is
+UNKNOWN and prunes nothing — so the drop applies only to ids a *committed* vocabulary
+proves absent. Anyone auditing the risk of this protocol should start here: the sweep is
+the narrow half, and this is the wide one.
+
+### Two-pass sweep, and why the split is load-bearing
+
+`api_chat_folder_delete` and `api_chat_tag_delete` each sweep in two passes:
+
+1. **Pass one** strips the id from every matching slot with **no yield point inside it**. It
+   iterates the captured set plus the live view, so a slot in both is visited twice and the
+   second visit is a no-op.
+2. **Pass two** performs all the awaiting, one persist per swept slot, via
+   `persist_swept_slot_meta`.
+
+The split exists because the persist is an `await`. A single interleaved loop would let
+anything that COPIES slot metadata mid-sweep observe a half-swept set and write a stale id
+into a record the sweep has already passed. Pass one's yield-free property is the guarantee
+that no copier can see a partial state.
+
+**Iterate a snapshot, never the live view, in any loop that awaits.** A loop that awaits
+while iterating `state._slots` directly can raise `dictionary changed size during iteration`
+out of the handler *after* the vocabulary row is already deleted, leaving the strip
+half-applied. `test_no_slot_wide_loop_awaits_over_a_live_view` enforces this repo-wide.
+
+**There is no third pass.** A third pass over the live view would exist only to catch a
+writer that re-points a live slot inside the await window. The only producer that could do
+so is the fork's inheritance copy, and that is validated at source (below), so such a pass
+has no present producer. Add one only alongside a producer a test can demonstrate.
+
+**And one round is enough.** A second round would exist only to catch a residual producer:
+an arrival landing while the vocabulary store's lock was held, which a validator would have
+to let through if it could not distinguish a committed removal from one about to be rolled
+back. No such window exists, because the validators read a COMMITTED snapshot published only
+after a write confirms. So an arrival on any path either validates against a vocabulary that
+no longer contains the deleted id, or is refused at its own copy site. With no producer left
+to chase, a second round has nothing to find.
+
+### Producers must validate at the source, not be chased downstream
+
+Every writer that adopts a folder id or tag list onto a slot from a PERSISTED record routes
+through one of two readers on `DashboardState`:
+
+- `folder_id_for_restore` — validates a single folder id.
+- `tag_ids_for_restore` — prunes a list of tag ids.
+
+The fork's inheritance copy in `api_chat_slot_fork` is SPLIT, by decision. Its TAG copy routes
+through `tag_ids_for_restore`. Its FOLDER copy is verbatim — `new_slot.folder_id =
+slot.folder_id` — because the fork lands the child in the same folder the parent is showing,
+and validating there would silently unfile the child whenever the parent's own id is stale.
+The child's id is corrected by the same restore-path readers as any other slot on its next
+rebuild, so the verbatim copy defers the check rather than skipping it. A folder deleted in
+this window is caught by the delete sweep, which sees the new record once it exists.
+
+The writers that do NOT call a validator are safe for a stated structural reason, and a new
+writer must establish one of these or call a validator:
+
+- It holds the same write lock as the delete handler — `api_chat_slot_tags`, and auto-tagging
+  via `tags_write_lock`.
+- Its vocabulary read and its slot assignment have **no `await` between them**, so it cannot
+  be interleaved mid-window — `api_chat_slot_drop`, and the resume/rehydrate restores, which
+  assign raw values and then validate with no suspension point in between.
+- Its existence check and its assignment have no `await` between them, and its refusal path
+  restores through a validator — `api_chat_slot_folder` and `api_chat_slot_create`.
+
+### Vocabulary knownness: two states, one field each
+
+`_committed_folder_ids` and `_committed_tag_ids` hold the COMMITTED vocabulary — what is on
+disk, not the live working list, which a mutation moves ahead of disk and a failed write
+rolls back. Each has exactly two meaningful states, and conflating them is the recurring
+defect this encoding exists to prevent:
+
+| value | meaning | behaviour |
+| ----------- | ------------- | ---------------------------------------- |
+| `None` | UNKNOWN | **fails open** — every id is kept |
+| `frozenset()` | KNOWN-EMPTY | **prunes** — the user deleted the last one |
+
+`None` arises from a never-loaded, unparsable or unreadable store. Pruning against it would
+wipe every assignment on every slot and the next save would make that loss durable. An empty
+frozenset is a real answer and must prune, or a crash mid-delete resurrects a dangling id
+forever. Publication is therefore **not** gated on the vocabulary already being known: the
+write that ends the ignorance must publish, or the field stays `None` for the process life.
+
+### Metadata-only persistence for a sweep
+
+A sweep must not full-save a slot. `force=True` writes the whole slot from memory, so a save
+issued after a concurrent close committed erases that close's `closed` flag — the in-memory
+object still reads open and last-write-wins makes the resurrection durable. Sweeps therefore
+route through `persist_swept_slot_meta`, which applies **two checks at different points**:
+
+1. **Slot identity**, re-checked on the event loop **before** awaiting the merge. An absent
+   or rebound key means the write is withheld and the slot marked `_dirty`, so the periodic
+   flush retries if the slot returns.
+2. **The caller's `guard`**, run **inside** the awaited merge, under the record's own lock,
+   deciding against state read after the lock is held.
+
+The identity check closes the popped-BEFORE-the-await window; the guard closes the
+changed-under-us window. Neither closes a pop landing DURING the await, and neither needs
+to: the write is metadata-only, so it touches only the swept field and cannot erase a
+`closed` that committed in that window. Neither check substitutes for the other.
+
+**The five-way disposition, decided in the helper and not by its callers.** A caller supplies
+only a `guard` and an `adopt`; what happens to each answer is fixed here so a sweep site
+cannot get it wrong by omission:
+
+1. **Identity lost** — the write is withheld entirely and `_dirty` armed. Writing a
+   pre-close object back would erase a `closed` that committed across the caller's `await`.
+2. **Merged** — a metadata-only merge, never a full save, because a full save rebuilds every
+   `SLOT_OWNED_META_KEYS` entry from the live object where an absent `closed` means cleared.
+3. **Superseded** — `adopt` reconciles against the observed record and must **not** arm
+   `_dirty`. The periodic flush full-saves from memory, so arming it there would write back
+   exactly the stale value the guard just refused.
+4. **Unconfirmed** (absent or unreadable) — arm `_dirty` for the periodic flush.
+5. **Exception** — arm `_dirty` and log rather than raise. Both callers reach the helper
+   *after* the vocabulary row has committed, so letting an I/O error escape would turn a
+   delete that HAPPENED into a 500 and skip the caller's remaining bookkeeping.
+
+`guard` must return a real `bool`: the two falsy answers are not interchangeable. Point 3 is
+the one way to get this wrong by omission, so it is pinned by tests independently of the two
+existing call sites.
+
+**Why not one big lock.** A single state-level `asyncio.Lock` serialising the delete sweeps
+against slot close looks like the smaller change, and was rejected for two independent
+reasons. First, it does not remove the need for the helper at all: the clobber it prevents is
+CROSS-PROCESS — the periodic flush, a cron run and the gateway all write the same session
+file — and an in-process lock is invisible to them, so the metadata-only merge under the
+record's own file lock is required regardless; the async lock would buy nothing the file lock
+does not already give while adding a second lock ordering. Second, its blast radius is the
+wrong shape: it would serialise every close behind every vocabulary delete, so a slow folder
+delete blocks tab dismissal process-wide, turning a rare correctness window into a routine
+latency cost. The guards are per-slot and cost nothing when nothing is racing.
+
+**Deferred layer decision.** The `save_slot_off_loop(..., force=True)` callers that remain on
+the clobber protocol are each annotated in place, and counted in ONE place only —
+`_FORCE_SAVE_CLOBBER_SITES`, which is AST-derived. This document deliberately does not restate
+that number: a second spelling drifts the moment a caller lands or leaves. The general fix is one
+decision at the
+persistence layer — make the save merge-aware — which
+removes the hazard for all callers at once and lets `persist_swept_slot_meta`'s
+guard/adopt surface be retired rather than replicated. That decision is TRACKED at
+kirodotdev/KiroCrew#8361 — so the census gate, the adopter allowlist and the helper all
+point at a destination rather than only at this paragraph, and nothing forcing the decision
+is exactly the failure mode the issue exists to prevent. Read live on 2026-09-12 that issue
+was OPEN, titled "Make the slot save merge-aware so a full save cannot erase a concurrent
+close", and its body named all four symbols it retires: `persist_swept_slot_meta`,
+`SweepMergeOutcome`, `_FORCE_SAVE_CLOBBER_SITES` and `_UNVALIDATED_VOCABULARY_WRITERS`. The
+symbol list is checkable from the issue; its open/scheduled state is not, and moves.
+So the retirement set is pinned on both ends rather than only described here. Until it lands a
+new sweep site should route through that helper rather than grow another spelling.
+
+### Cancellation atomicity
+
+`asyncio.to_thread` cannot interrupt its worker, so cancelling a handler mid-write still
+lands the bytes. A vocabulary write therefore:
+
+- **shields** the write, so a cancelled handler does not cancel a write already started;
+- publishes the committed snapshot **as an explicit statement on both exits**, gated on the
+  write having succeeded, so publication survives cancellation of the awaiting coroutine and
+  never asserts a vocabulary that failed to land. It is deliberately NOT a done-callback: a
+  callback is scheduled with `call_soon`, so a cancellation racing the write's completion
+  unwinds through the delete handler while the callback is still queued, and the handler's
+  sweep decision then reads the pre-removal committed set and skips a sweep that is owed;
+- **drains under the lock** before unwinding, because releasing the store lock with the
+  worker still writing lets the next mutation write and then be overwritten by the older
+  worker finishing last;
+- **rolls back on a drained failure**, propagating the write's error rather than the
+  cancellation, because each transaction site restores its pre-mutation copy on
+  `except Exception` only.
+
+A captured cancellation is re-raised **last**, after every durable consequence of the commit
+and after the operation's SEL audit emission. Two reasons, and both are load-bearing:
+`log_api_access` is the only audit record for a delete, so re-raising first leaves a
+committed mutation with no trace of it and nothing backfills the entry; and the tag delete's
+folder/board strips are durable cleanup, so skipping them leaves the deleted id referenced on
+disk. Those strips run through `sweep_to_completion_despite_cancellation` rather than merely
+being moved after the re-raise, because the task is still cancelled: their own awaits raise
+`CancelledError` again, which their `except Exception` cannot catch.
+
+`sweep_to_completion_despite_cancellation` **itself re-raises** once it has drained, which is
+its contract — so a shielded call is not a barrier that later statements sit safely behind.
+Every delete handler therefore captures the cancellation at that call site too, not just
+around the vocabulary write: a cancellation arriving while slot persistence runs would
+otherwise unwind out of the first shielded call and skip the folder/board dereference and the
+audit that follow it. Shielding the later work is necessary but not sufficient; control has
+to reach it. Both handlers coalesce their captures into one re-raise at the end, so exactly
+one cancellation propagates and cancellation semantics are preserved.
+
+All four parts live in **one** helper, `commit_snapshot_while_holding_the_lock`, which both
+the folder store and the tag store call. They were briefly two hand-synced spellings, one
+per vocabulary, and a cancellation protocol maintained in two places drifts toward silent
+data loss. A new vocabulary must call the shared helper rather than restate the sequence.
+
+### Maintained developer surface: what the build gates cost a future contributor
+
+**EIGHT gate families ship**, all repo-wide AST scans: no awaited loop over a live `_slots`
+view; no folder publication bypassing the commit choke point; no tag-snapshot write bypassing
+its chain; every `slot.folder_id` / `slot.tags` adopter validates or is allowlisted; the
+`force=True` census does not grow; no sweep drain escapes its cancellation capture; a parked
+slot is revalidated before it re-enters the registry; and removing `closed` from the owned set
+requires an explicit adopt clear. Two of the eight carry a **maintained list** a future
+contributor has to update, and those two are the whole of the permanent contributor cost.
+
+**A DECLARED RESIDUAL, in place of a generation counter.** The sweep's superseded-merge adopt
+compares the placement VALUE, so it cannot distinguish "nobody moved this" from "moved away and
+back" inside its own persist await: the sweep sets the field blank in pass one, and a user who
+moves out and back to unfiled leaves that same blank matching on both sides, so a two-moves-stale
+`observed` is adopted and the conversation is refiled into a folder the user has just left. An
+earlier revision closed this with a per-slot generation counter bumped on every `folder_id` write.
+That counter had exactly ONE reader, and a per-write counter on a hot field is a permanent cost
+carried for a window this narrow, so it was withdrawn and the window is recorded here instead. The
+cost when it lands is one wrong auto-file the user can correct, in the same class as the dangling
+id this document already accepts.
+
+**THE ADOPT RUNS UNDER THE RECORD'S LOCK.** Confirming that an observation is current and then
+applying it are two steps, and any interval between them is one an alias write on a shared
+transcript can land in — after which the adopt imports metadata the record no longer holds and a
+later full save makes it durable. `_adopt_against_the_locked_record` removes the interval instead
+of shrinking it: `update_metadata_if` evaluates its guard inside the record's lock, so the adopt
+reads and applies at one instant, and the slot's routing identity is re-checked there too. The
+guard returns False throughout — this borrows the lock to read and owes no write. A record that is
+absent or unreadable falls back to the merge's own under-lock observation, which is sound because
+an empty record holds nothing newer to lose. `test_an_alias_write_in_the_adopt_window_cannot_be_overwritten_by_a_stale_observation`
+pins the closure and fails when the lock is bypassed.
+
+Declaring the rest of the gate cost here so it is visible before
+someone meets it as a surprising red build:
+
+- **`_UNVALIDATED_VOCABULARY_WRITERS`** — a name-keyed allowlist, counted only in the dict
+  itself for the same reason the census is: a restated size drifts the moment an entry lands or
+  leaves. It sits
+  behind `test_every_vocabulary_adopter_validates_or_is_allowlisted`. Every function that
+  assigns `slot.folder_id` or `slot.tags` must either route through
+  `folder_id_for_restore` / `tag_ids_for_restore` or appear here with the structural reason it
+  is exempt. Adding a new adopter therefore means one of two deliberate acts, never silence.
+  The allowlist is keyed on the function NAME, so renaming an exempt function fails the gate —
+  which is the intended prompt to re-justify the exemption rather than carry it forward.
+- **`_FORCE_SAVE_CLOBBER_SITES`** — an UPPER BOUND, and its value lives only
+  in the constant. A new `force=True`
+  slot-metadata save fails it; removing one does not, and the constant is lowered instead. An
+  exact pin was the alternative and was rejected: it reds the build for the PR that DELETES a
+  clobber site, which is the change this scaffold exists to reach. The risk an exact pin would
+  have covered — the interim surface retired site-by-site while its scaffolding, the guard/adopt
+  protocol, this census and the adopter allowlist, quietly stays — is carried instead by the
+  companion test asserting the census is non-empty: at zero sites the bound passes vacuously, so
+  that test fails and names the whole surface as removable. The assertion message asks, on any
+  change, whether the remaining sites still justify the scaffolding. That is what keeps
+  the deferred layer decision from quietly growing OR from outliving its cause, and why the count
+  lives in a test rather than only in prose.
+  When the layer fix lands (a merge-aware save) this gate and
+  the whole `persist_swept_slot_meta` guard/adopt surface retire together.
+
+Both are cause-level constraints on future work rather than tests of current behaviour, so
+they outlive the change that introduced them. Treat a failure in either as a design prompt,
+never as a number to adjust.
+
+**If the layer fix never lands, this is what stands on its own.** The scaffolding and the fix are
+separable, and keying each piece to the cause it serves says which is which. PERMANENT, because
+they answer the crash and the vocabulary-correctness classes rather than the clobber protocol:
+snapshotting the slot view in both sweeps; committing the vocabulary removal before unfiling;
+`tag_ids_for_restore` as the single prune reader; the committed-vocabulary snapshots that keep
+UNKNOWN distinct from empty; the boot-time
+authoritative prune; the cancellation-atomicity helpers in `snapshot_commit`; and the gate families
+that police an awaited loop over a live `_slots` view and a vocabulary publication without a
+confirmed write. RETIRING, because each exists only to bridge the deferred save:
+`persist_swept_slot_meta` and `SweepMergeOutcome`, the `_FORCE_SAVE_CLOBBER_SITES` census with its
+non-empty companion, the adopter allowlist with its per-entry shape backstop, and
+`_ChatSlot._meta_retry_fields` with the discharge threading that serves it in `save_slot_off_loop`
+and the periodic flush — that field has exactly one deciding reader, the sweep's unflushed test, so
+it retires with the sweep rather than outliving it as a general debt protocol. So a stalled
+layer fix costs the retiring half's maintenance, not the fix.
+
+### Two dispositions this change makes deliberately, and what would reverse them
+
+Recorded here rather than argued in a review thread, so the tree states them.
+
+**1. The clobber cause is DEFERRED, not overlooked — and the deferral is bounded by a gate.**
+`force=True` rebuilding every `SLOT_OWNED_META_KEYS` field, where an absent `closed` reads as
+open, is the cause. It is fixed at the two sweep sites and left at the others, each annotated
+in place and counted by `_FORCE_SAVE_CLOBBER_SITES`. That is a choice, with a cost: the
+`persist_swept_slot_meta` / `SweepMergeOutcome` / guard-adopt surface exists only to bridge the
+gap, and the layer fix (a merge-aware save) retires all of it. Persisting `closed`
+positively is NOT an alternative candidate: the payload is rebuilt from a slot that reads
+open, so a stale explicit `false` overwrites an on-disk `true` exactly as an absent key
+erases it — the encoding changes, the staleness does not. Nor is the merge-aware fix a
+one-line change to `SLOT_OWNED_META_KEYS`: dropping `closed`/`closed_at` from that set does
+close the clobber at every site at once, but it breaks adopt-reopen, because a session
+restored with `adopt_closed=True` is live in memory while `closed=true` is still on disk and
+today it is the next ordinary save's omission that clears the flag (live consumers:
+`handlers/members.py`, `slack/gateway.py`, both pinned by `test_channel_slots.py`). The save
+cannot tell "stale, unaware of the close" from "deliberately reopened" — both present as a
+slot that reads open — so the fix needs the save to be told which, via an explicit clear at
+the adopt sites or a tri-state argument. That is a signature change plus a per-site intent
+audit, so the decision is scheduled rather than taken now;
+`test_removing_closed_from_the_owned_set_requires_an_explicit_adopt_clear` guards the
+half-fix.
+The reason for deferring is scope, not doubt — the layer fix changes the on-disk contract for
+all 25 slot-owned keys, needs a back-compat read path for existing history files, and touches
+`force=True` callers this change never goes near. What reverses it: the layer decision being
+taken, at which point this section, the census gate, and the guard/adopt surface are deleted
+together. What must NOT happen instead: another site adopting the stopgap, which is why the
+gate fails upward.
+
+**2. Restore-time pruning makes `_committed_*` publication correctness load-bearing for user
+data on every startup path, and that is accepted knowingly.** Before, a dangling `folder_id`
+survived every restart untouched. The blast radius of validating it is every boot, resume, fork
+and channel arrival — not only a delete race — which is why the two rejections are now split by
+CALLER rather than applied uniformly. Three things bound it, and all three are mechanism rather
+than convention: `None` means UNKNOWN and prunes nothing, so an unreadable or unparsed store
+cannot unfile anything; publication happens only after a write CONFIRMS, at one choke point per
+vocabulary, each pinned by its own gate; and the derivation has exactly one spelling per
+vocabulary.
+
+**The stale-store residual is CLOSED, not merely bounded.** A store that is *readable but stale*
+— a restored backup, a half-synced data home — parses as KNOWN, so no fail-open rule catches it,
+and pruning against it unfiles every filing made since that snapshot and lets the next save make
+that durable. The loader still cannot distinguish "never
+existed" from "was deleted", so rather than accept that trade the four cold-start paths
+(`_rehydrate_slot_from_history`, `_apply_recent_session`, `api_chat_slot_resume`, and the
+metadata branch of `surface_channel_session`) do not validate the persisted `folder_id` at
+all. Those callers
+adopt a value they did not author and cannot date, so absence there is ambiguous. The eight
+await-window callers keep pruning, because each acts on a value it captured itself moments
+earlier, where absence really does mean "deleted inside my window". The MALFORMED rejection stays
+unconditional everywhere — it is the crash this validator exists to stop, and a non-string can
+never equal a folder id. Net effect: a visible dangling id that self-corrects on the next folder
+operation replaces a silent durable mass unfile, which is also the base tree's own recorded
+disposition at the resume site.
+
+**Both vocabularies take the same two-state rule, and this records what was withdrawn.**
+An earlier revision let a caller sample the vocabulary before its await and keep any id already
+absent from it, on both the tag and folder validators. Five callers threaded it:
+the fork producer, whose new record no sweep can see; the close and cleanup restores, whose popped
+slots sit in no snapshot; and the app-teardown revalidation of a parked slot. It is now
+GONE, and every caller takes the plain rule: prune an id absent from a KNOWN vocabulary, keep
+everything while it is UNKNOWN. The bulk restore
+readers in `chat_persistence` were always this shape — they take the authoritative prune against the
+store `load_tags()` just read; an unwritten or unreadable store is UNKNOWN and fails open.
+regardless, and the tag loader's identical UNKNOWN/KNOWN split let the same channel fit without a
+second design.
+
+No per-pass aggregate warning watches the stale-store case, and none would have anything to
+watch: withholding the cold-start prune means a stale vocabulary produces no drops on the paths
+that adopt a persisted value, so the only drop left is a MALFORMED value. That is reported by a
+single debug line at the rejection arm itself. Counting drops per pass would be a surface whose
+stated purpose is unreachable, which is worse than no surface because it reads as coverage.

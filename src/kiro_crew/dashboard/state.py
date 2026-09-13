@@ -246,6 +246,7 @@ MONITOR_WAKE_PREFIX = "[Monitor wake]"
 #: Return type of a mutate_folders callback.
 _T = TypeVar("_T")
 
+
 _CHANNEL_ID_PREFIX_RE = re.compile(r"^([a-z][a-z0-9_-]*):(.*)$", re.IGNORECASE)
 _CHANNEL_LABELS = {
     "slack": "Slack",
@@ -3473,6 +3474,7 @@ class _ChatSlot:
         "_prefetch_ttl_task",
         "_dirty_flag",
         "_dirty_gen",
+        "_meta_retry_fields",
         "_metadata_persist_inflight",
         "_orch_tracker",
         "_plan_cancelled",
@@ -3840,6 +3842,9 @@ class _ChatSlot:
         # Bumped by the _dirty setter on every True. Lets the periodic flush tell
         # "the True I started this save under" from "a NEW True set during it".
         self._dirty_gen: int = 0
+        # Metadata field names a guarded sweep write failed to persist. Per-field
+        # because ``_dirty`` above means "messages changed" and cannot answer it.
+        self._meta_retry_fields: set[str] = set()
         # A guarded metadata write has changed this live slot but has not yet
         # committed.  The periodic writer must not serialize that provisional
         # state to an unpinned transcript while the guarded write waits.
@@ -5446,6 +5451,21 @@ class DashboardState:
         # never acquires it.
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
+        # The COMMITTED folder vocabulary: the ids a confirmed write has actually
+        # put on disk. ``None`` means UNKNOWN (never loaded, parse failure, I/O
+        # failure, or no file at all), and restore-time pruning of a folder_id
+        # must then fail open -- pruning against an unreadable vocabulary would
+        # unfile EVERY conversation and the next save persists the loss. An empty
+        # frozenset is a KNOWN empty vocabulary (the user deleted their last
+        # folder) and does prune.
+        #
+        # Deliberately NOT ``self._folders``. That list is the LIVE working copy:
+        # ``mutate_folders`` applies its callback to it and only then persists, so
+        # it can show a removal that is about to be rolled back. This snapshot is
+        # swapped in ONLY after a write confirms, so every reader of it sees
+        # committed state without needing the store lock -- which is what lets
+        # ``folder_id_for_restore`` stay a plain synchronous reader.
+        self._committed_folder_ids: frozenset[str] | None = None
         self._cron_folders: list[dict[str, Any]] = []  # cron job folder groupings
         # Malformed cron_folders.json entries dropped at load time, kept verbatim
         # so save_cron_folders round-trips them back instead of erasing bytes it
@@ -5481,12 +5501,26 @@ class DashboardState:
         # DURING load (seed/back-fill), so without preservation a single
         # hand-edited-but-malformed row is wiped at boot with no user action.
         self._unparsed_tag_entries: list[Any] = []
-        # True once load_tags() parsed tags.json successfully (or seeded a
-        # fresh install). False means the vocabulary state is UNKNOWN (parse
-        # or I/O failure) — restore-time pruning must fail open then, because
-        # a legitimately-empty vocabulary (user deleted every tag) must still
-        # prune dangling ids while an unreadable one must not wipe anything.
-        self._tags_authoritative: bool = False
+        # The COMMITTED tag vocabulary, and the SINGLE encoding of whether the
+        # vocabulary is knowable at all. Knownness is not carried on a separate
+        # boolean: one field answers both questions, so there is no pair to keep in
+        # sync and no boot-time-only flag to go stale when a write moves disk.
+        #
+        # These ids are what a confirmed write has actually put on disk. ``None``
+        # means UNKNOWN (never loaded, parse failure, I/O failure), and a reader must
+        # then fail open. An empty frozenset is a KNOWN empty vocabulary and does
+        # prune.
+        #
+        # Deliberately NOT ``self._tags``. That list is the LIVE working copy: a tag
+        # mutation applies to it in memory and only then persists, rolling it back if
+        # the write raises, and the delete handler strips an id from it before its
+        # own snapshot write. So between mutation and confirmation the live list is
+        # ahead of disk, and on a failed write it is restored — a reader validating
+        # against it can import an id that never landed. This snapshot is published
+        # only after a write confirms, so it carries no uncommitted state.
+        #
+        # Mirrors ``_committed_folder_ids``.
+        self._committed_tag_ids: frozenset[str] | None = None
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
         self._tag_boards: list[dict[str, Any]] = []
         # Malformed tag-board (sidebar column) entries dropped at load time,
@@ -7067,7 +7101,207 @@ class DashboardState:
     def load_folders(self) -> None:
         """Load usable folder definitions without replacing good state on failure."""
         path = config_dir() / self._FOLDERS_FILE
-        self._folders = _FOLDER_REPOSITORY.load(path, self._folders)
+        # The repository owns the parse. It also reports whether the vocabulary is
+        # KNOWABLE, which is the one thing the returned rows cannot express: every
+        # failure shape -- absent file, non-list document, unreadable store -- returns
+        # the rows unchanged, so rows alone cannot separate "unreadable" from "parsed
+        # an empty list". ``None`` means UNKNOWN and restore-time pruning must FAIL
+        # OPEN; a frozenset, including an empty one, is a KNOWN vocabulary and does
+        # prune. Assigned rather than conditionally set, so a later boot pass that
+        # bails out cannot leave an earlier success's snapshot behind.
+        self._folders, authoritative = _FOLDER_REPOSITORY.load(path, self._folders)
+        # UNKNOWN stays UNKNOWN: an absent, unparsable or unreadable store cannot be
+        # told apart from a deleted one, so the committed set is cleared rather than
+        # published, and every restore validator fails open until a confirmed write
+        # publishes a real one.
+        if authoritative:
+            self.publish_committed_folder_ids(self._folders)
+        else:
+            self._committed_folder_ids = None
+
+    def folder_id_for_restore(
+        self,
+        value: object,
+    ) -> str:
+        """Validate a PERSISTED ``folder_id`` before it is adopted onto a slot.
+
+        One helper rather than a copy at each site that adopts a derived ``folder_id``.
+        The three ORIGINAL copies -- the two restore paths and the metadata branch of
+        ``surface_channel_session`` -- were byte-identical, which is exactly how the
+        fail-open rule below drifts apart later: a reader who fixes one copy has no
+        reason to look for the others. Those three do not call this at all; they
+        adopt verbatim as the base did, because at cold start absence is ambiguous.
+
+        Every call site that routes through it holds a value it captured ITSELF before
+        an await -- which is what makes absence afterwards meaningful:
+
+        * ``api_chat_slot_folder`` twice, the refused-move revert and the
+          persist-failure rollback (the first answers ``_unhide_folder``'s verdict, the
+          second answers a refused save and is compare-and-set guarded);
+        * ``api_chat_slot_create``'s refused-move revert -- a sibling of the first, and
+          it had to be fixed with it, because the create path has no pre-check at all
+          and relies solely on ``_unhide_folder``'s lock-held verdict, so its revert is
+          the only place its stale capture can be caught;
+        * ``_adopt_observed_placement`` in ``api_chat_folder_delete``, the sweep's own
+          superseded-merge adoption;
+        * and the default-filing branch of ``surface_channel_session``, whose id is
+          resolved across one await and persisted across another before the slot surfaces.
+
+        Two callers do NOT appear above and their absence is deliberate: the app-teardown
+        restore of a parked slot and ``api_chat_slot_fork`` both handle their TAG ids through
+        :meth:`tag_ids_for_restore` and leave ``folder_id`` alone, because a folder id the
+        sidebar cannot resolve renders as Unfiled while a stripped tag costs the user data.
+
+        The two REVERT paths are the ones worth reading twice, because they are the only
+        sites that both call this helper AND hold a lock-taken verdict: the refused-move
+        revert in ``api_chat_slot_folder`` and its sibling in ``api_chat_slot_create``
+        each answer an ``_unhide_folder`` existence verdict taken INSIDE the folder-store
+        lock and scoped to the id that verdict was computed for. This helper cannot
+        replace that verdict -- it still fails open on an UNKNOWN vocabulary, which is
+        precisely a state a lock-held verdict CAN resolve -- so on those two paths the
+        two compose: this drops a structurally invalid value and a value absent from the
+        committed vocabulary, the verdict drops a confirmed dangling one the snapshot
+        cannot speak to. ``api_chat_slot_resume`` keeps a lock-held prune of its own and
+        does NOT call this helper at all, so nothing composes there; its prune is
+        sufficient alone. ``api_chat_slot_fork`` does not call it either: it inherits the
+        parent's ``folder_id`` verbatim and validates only its TAG ids.
+
+        Order matters, and the two rejections are NOT the same rule:
+
+        1. MALFORMED (anything that is not a ``str``) is dropped unconditionally.
+           A metadata line is JSON, so a corrupt or hand-edited value can be an
+           array or an object — and a non-empty one is TRUTHY, so it passes the
+           caller's ``if meta.get("folder_id"):`` guard and reaches the membership
+           test below, where ``x not in {...}`` raises ``TypeError: unhashable type``.
+           That
+           membership test is THIS function's own, so the crash is one this validator
+           would introduce rather than one it inherits — the base adopted the value
+           verbatim and did not crash. The rejection is still correct on its own terms,
+           not as a crash fix: a non-string can never equal a folder's ``id``, so no
+           reading of the folder list could vindicate it, and folder ids are strings by
+           contract. The rejection reaches only values that come THROUGH here, which
+           does not include the cold-start paths: they adopt verbatim without calling
+           this at all, so a malformed id already on disk survives a restart untouched
+           and is dropped only once a mid-session path revalidates it.
+        2. UNKNOWN VOCABULARY fails OPEN and keeps the value. If ``folders.json``
+           failed to parse, could not be read, or is absent, there is no committed
+           snapshot — and absence of evidence is not evidence of absence. Pruning
+           there would unfile EVERY conversation and the next save would persist
+           the loss.
+
+        So fail-open protects LEGITIMATE ids from an UNKNOWN vocabulary; it has
+        nothing to say about a structurally invalid value, and extending it to
+        cover one would leave the crash reachable on precisely the path where the
+        vocabulary is least trustworthy.
+
+        THERE IS NO THIRD FAIL-OPEN, and that is the point of validating against
+        ``_committed_folder_ids`` rather than ``self._folders``. Reading the live list
+        would require a lock probe to avoid pruning against a removal that
+        ``mutate_folders`` is about to roll back, and such a probe is store-wide and
+        id-unscoped: ANY concurrent folder write -- a rename, a reorder, a create --
+        would disable pruning for every conversation for the whole hold time, with a
+        window that grows with every new writer's critical section. The snapshot
+        removes the need for one outright:
+        it is swapped in only AFTER a write confirms and never on the rollback
+        path, so it cannot show uncommitted state and there is nothing to guard
+        against. This method stays a plain synchronous unlocked reader, and that is
+        sound rather than merely tolerable.
+
+        A legitimately-empty vocabulary (the user deleted the last folder) is a
+        KNOWN empty frozenset and does prune — otherwise a crash mid-delete
+        resurrects a dangling id forever. ``None`` is reserved for UNKNOWN, so the
+        two cases that a bare ``set()`` would conflate stay distinct.
+
+        Returns the id to keep, or ``""`` to leave the conversation unfiled.
+        """
+        if not isinstance(value, str):
+            # The smaller replacement for the removed per-pass aggregate warning: this
+            # arm was silent, and it is this validator's one UNCONDITIONAL drop -- every
+            # other arm can be withheld by a caller, this one never is.
+            logger.debug("dropping folder_id %r: not a string", value)
+            return ""
+        committed = self._committed_folder_ids
+        if committed is None:
+            return value
+        if value in committed:
+            return value
+        # LOGGED at debug, not warned: an individual drop is usually correct and
+        # uninteresting, and this validator takes only the id so it cannot name the slot.
+        logger.debug("dropping folder_id %r: absent from the committed vocabulary", value)
+        return ""
+
+    def tag_ids_for_restore(
+        self,
+        values: list[str],
+    ) -> list[str]:
+        """Prune PERSISTED tag ids against the committed tag vocabulary.
+
+                The tag counterpart to :meth:`folder_id_for_restore`, and here for the same
+                reason: the identical two-line prune stood at four restore sites -- the
+                rehydrate and ``_apply_recent_session`` paths in ``chat_persistence``, the
+                History-resume path in ``chat_handlers``, and ``validate_folder_tag_ids`` in
+                ``chat_tags`` -- each with its own prose
+                restatement of the fail-open rule. Four hand-synced spellings of one rule is
+                how the rule drifts: a reader who corrects one copy has no reason to look for
+                the other three, and the direction it drifts in is silent data loss.
+
+                THE TWO COLD-START SITES CALL THIS TOO, with no observation. At boot the store
+                has just been read and ``load_tags`` runs before any slot restore, so the loaded
+                vocabulary IS authoritative and a persisted id it does not know is dangling.
+                What an unwritten or unreadable store leaves behind is UNKNOWN, not a confident
+                empty, and that fails open on the first branch below.
+
+                A FIFTH site is the fork's inheritance copy in ``api_chat_slot_fork``, and it
+                differs in kind from the four: those adopt a persisted list, while the fork
+                copies one live slot's list onto a NEW record. That made it the one writer a
+                tag delete's sweeps could not see, since the record does not exist when any
+                snapshot is taken -- so it is validated here at the producer rather than
+                chased by a downstream sweep. ``PERSISTED`` in the summary line above is
+                therefore the common case, not the only one; the rule applied is identical.
+
+                THE DISTINCTION THIS EXISTS TO PRESERVE, which a bare ``set()`` default would
+                destroy:
+
+                * ``None`` is UNKNOWN -- never loaded, a parse failure, an I/O failure. It
+                  FAILS OPEN and every id is kept. Pruning against an unknown vocabulary would
+                  wipe every assignment on the slot, and the next slot save would make that
+                  loss durable.
+                * ``frozenset()`` is a KNOWN-EMPTY vocabulary -- the user deleted the last tag.
+                  It DOES prune, because otherwise a crash mid-delete resurrects a dangling id
+                  forever.
+
+        TWO STATES, not four. A KNOWN vocabulary prunes an id absent from it; an UNKNOWN one
+                (``None`` -- never loaded, a parse failure, an unwritten seed) keeps everything.
+                That is the whole rule, and every caller gets it.
+
+                AN EARLIER REVISION CARRIED A WITHHOLDING CHANNEL here and on the folder side,
+                letting a caller observe the vocabulary before its await and prune only on an
+                observed present-to-absent transition. It was withdrawn. What it bought was
+                immunity to a readable-but-stale store, and no handler in this tree produces one:
+                every vocabulary mutation is commit-first -- a create persists the definition, and
+                rolls back and returns, before the slot is assigned; a delete persists the removal
+                crash-atomically -- so a slot never references an id a readable store lacks. Such a
+                store can only arrive from OUTSIDE the process, and no occurrence has been
+                reported, so four observation states threaded through a dozen call sites were
+                surface bought against an unreported premise.
+
+                A dangling id kept by the UNKNOWN arm is dropped by the
+                sidebar when it resolves ids through the vocabulary.
+
+                Read from the COMMITTED snapshot rather than live ``state._tags``: the live
+                list is a working copy that a mutation moves ahead of disk and a failed write
+                restores, so validating against it can import an id that never landed.
+
+                ``getattr`` rather than a direct attribute read, matching what the four call
+                sites did, so a state object constructed without the field behaves exactly as
+                it did before this was collapsed rather than raising.
+
+                Returns the ids to keep, in their original order.
+        """
+        committed = getattr(self, "_committed_tag_ids", None)
+        if committed is None:
+            return values
+        return [t for t in values if t in committed]
 
     def save_folders(self) -> None:
         """Persist folder definitions for synchronous boot-time callers."""
@@ -7387,11 +7621,41 @@ class DashboardState:
     async def mutate_folders(self, mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]]) -> _T:
         """Serialize a folder mutation and confirm its off-loop persistence."""
 
-        def _mark_committed() -> None:
-            # This runs under the repository lock and only after the write is
-            # confirmed.  A failed/no-op transaction must not make clients
-            # re-fetch a tree that never changed, and concurrent commits must
-            # not collapse two monotonic generation bumps into one.
+        def _mark_committed(snapshot: list[dict[str, Any]]) -> None:
+            """Record BOTH post-confirmation signals, under the lock, after the write.
+
+            Two pieces of bookkeeping live here, added independently and both
+            required. They are ordered vocabulary-first only because the vocabulary
+            is what other code's CORRECTNESS depends on; neither reads the other.
+
+            The repository calls this only after persistence is proven, never on the
+            no-op or rolled-back branches, and still holding the store lock -- which
+            is exactly what both signals need.
+
+            (1) The COMMITTED vocabulary. *snapshot* is the list the repository
+            serialized and confirmed, so the vocabulary cannot disagree with the bytes
+            on disk -- that is why it is passed in rather than re-read from
+            ``self._folders``. Publishing optimistically, before the write, would be
+            exactly the uncommitted state ``folder_id_for_restore`` must not trust.
+
+            Published HERE rather than at any one call site: ``load_folders`` can only
+            report a vocabulary when the file already EXISTED at boot, so a first run
+            that created a folder and then deleted it would otherwise leave the restore
+            validator disabled for the life of the process, and a slot restored
+            afterwards would keep a ``folder_id`` naming the deleted folder durably.
+
+            ``id`` is TESTED rather than indexed: every writer today mints a str id, but
+            this runs for EVERY folder mutation, and one malformed row must not raise
+            AFTER the bytes already landed -- that would report a failed write that in
+            fact succeeded.
+
+            (2) The generation bump, which upstream keeps here for the same reason: a
+            failed persist restores the previous list, and a generation bumped for a
+            rolled-back mutation would make every client re-GET state that never
+            changed -- and would let the NEXT real change land on the same number if it
+            raced the rollback.
+            """
+            self.publish_committed_folder_ids(snapshot)
             self._folders_generation = self.folders_generation() + 1
 
         return await _FOLDER_REPOSITORY.mutate(
@@ -7415,6 +7679,52 @@ class DashboardState:
         """Render a cycle-safe root-to-leaf folder breadcrumb."""
         return _FOLDER_REPOSITORY.breadcrumb(self._folders, folder_id, sep)
 
+    def publish_committed_folder_ids(self, snapshot: list[dict[str, Any]]) -> None:
+        """Adopt *snapshot* as the committed folder vocabulary. Call ONLY after a write confirms.
+
+        THE FOLDER MIRROR OF :meth:`publish_committed_tag_ids`, and the single spelling
+        of this derivation. Two sites need the set -- the repository
+        load and ``mutate_folders``' post-commit hook
+        -- and deriving it at each is what lets them disagree on whether an
+        empty-string ``id`` counts, which
+        is exactly the drift one choke point exists to prevent: a reader who tightens one
+        copy has no reason to look for the other two, and here the two answers disagree
+        about whether a malformed row is part of the vocabulary that every restore
+        validator prunes against.
+
+        ``id`` is TESTED rather than indexed, and an empty string is EXCLUDED: a folder
+        id is a slot's ``folder_id``, where ``""`` already means UNFILED, so admitting it
+        into the vocabulary would make "unfiled" a filing that validates.
+
+        Order matters the same way it does for tags: after the persist returns without
+        raising, never before it and never on a rollback path.
+        """
+        self._committed_folder_ids = frozenset(
+            f["id"] for f in snapshot if isinstance(f.get("id"), str) and f["id"]
+        )
+
+    def publish_committed_tag_ids(self, snapshot: list[dict[str, Any]]) -> None:
+        """Adopt *snapshot* as the committed tag vocabulary. Call ONLY after a write confirms.
+
+        ORDER IS THE WHOLE POINT: after the persist returns without raising, never
+        before it and never on a rollback path. A snapshot published optimistically
+        would be exactly the uncommitted state that reading ``_tags`` already exposes,
+        and would reintroduce the hazard by the back door.
+
+        Takes the list that was actually serialized rather than re-reading
+        ``self._tags``, so the vocabulary cannot disagree with the bytes on disk even
+        if a later mutation touches the live list.
+
+        ``id`` is TESTED rather than indexed: every writer today mints a str id, but
+        this runs on the persist path for every tag mutation, and one malformed row
+        must not raise AFTER the bytes already landed — that would report a failed
+        write that in fact succeeded. Same rule the loader applies, for the same
+        reason, and the same rule ``mutate_folders`` applies on the folder side.
+        """
+        self._committed_tag_ids = frozenset(
+            t["id"] for t in snapshot if isinstance(t.get("id"), str) and t["id"]
+        )
+
     def load_tags(self) -> None:
         """Load tag vocabulary and sidebar columns from disk; seed defaults if missing.
 
@@ -7428,7 +7738,17 @@ class DashboardState:
         # restored, so the claim's disk read/write never lands on the loop.
         ensure_tags_revision_epoch()
         tags_path = config_dir() / self._TAGS_FILE
+        # UNKNOWN until this pass proves otherwise. Reset at entry rather than
+        # relying on the __init__ value because more than one boot path reaches this
+        # loader, so an earlier success must not leave a stale snapshot behind when a
+        # later pass bails out on a corrupt file.
+        self._committed_tag_ids = None
         file_existed = tags_path.exists()
+        # Bound BEFORE the try so the publication gate below can read it on every
+        # path, including the exception one. This local is the only carrier of "was the
+        # vocabulary knowable"; nothing outside this method needs it, because what
+        # callers actually need is the committed id set published below.
+        vocab_ok = False
         try:
             vocab_ok = True
             if file_existed:
@@ -7451,16 +7771,16 @@ class DashboardState:
                     # restore-time pruning wipe assignments against it.
                     vocab_ok = False
                     logger.warning("tags.json is not a list; treating vocabulary as unknown")
-            # Authoritative only when the file is missing (fresh install,
-            # seeded below) or parsed as a list — INCLUDING a legitimately-
-            # empty [] — so restore-time pruning of dangling ids is safe.
-            self._tags_authoritative = vocab_ok
+            # Knowable only when the file is missing (fresh install, seeded below) or
+            # parsed as a list — INCLUDING a legitimately-empty [] — so restore-time
+            # pruning of dangling ids is safe. *vocab_ok* already carries exactly that.
         except Exception:
             logger.warning("Failed to load tags", exc_info=True)
             # Treat a parse error like a present file: do not re-seed.
             file_existed = True
-            # Vocabulary state unknown — restore-time pruning must fail open.
-            self._tags_authoritative = False
+            # Vocabulary state unknown — restore-time pruning must fail open, which
+            # follows from leaving the committed snapshot at the ``None`` set on entry.
+            vocab_ok = False
         # Back-fill the status flag for legacy tags saved before the field existed.
         # The 5 seed ids are canonical status tags; everything else defaults to False.
         seed_ids = {t["id"] for t in self._DEFAULT_TAGS}
@@ -7475,6 +7795,32 @@ class DashboardState:
             mutated = True
         if mutated:
             self.save_tags()
+        # Published HERE, and ONLY here, because this is the first point at which
+        # ``self._tags`` matches what is on disk. On a FRESH INSTALL the seed above runs
+        # after the parse branch was skipped, so publishing any earlier captured an EMPTY
+        # list -- and empty is KNOWN-EMPTY, which PRUNES, so a reconciliation landing in
+        # that window would strip every seeded default tag and the next slot save would
+        # make the loss durable. The back-fill changes no ids, but publishing after it
+        # too keeps ONE publication site instead of two conditional ones.
+        #
+        # THE FILE IS RE-STATTED, and that is the load-bearing half of this condition.
+        # ``save_tags`` routes through ``_atomic_write_json``, which SWALLOWS its
+        # exception and only logs -- so a seed write that failed returns normally and
+        # leaves *vocab_ok* untouched. Publishing on *vocab_ok* alone would therefore
+        # advertise the five defaults as the committed vocabulary while no ``tags.json``
+        # exists at all, and every reader trusts that set: a slot restored from history
+        # would have its own tag ids pruned as unknown vocabulary, and the next slot save
+        # would write the pruned list back. Confirming the file exists is what
+        # distinguishes "seeded" from "tried to seed", and only the former is knowledge.
+        #
+        # Gated on *vocab_ok* too, the local that decided whether the vocabulary is
+        # knowable at all, so this publication CANNOT upgrade UNKNOWN to KNOWN: a non-list
+        # document and a read failure both leave it False and the snapshot ``None``.
+        # ``None`` and ``frozenset()`` must stay distinct -- one has to fail open, the
+        # other has to prune. This is the ONLY place knownness is decided, and the
+        # committed snapshot is the only thing that carries it outward.
+        if vocab_ok and tags_path.exists():
+            self.publish_committed_tag_ids(self._tags)
 
         # Column layout: flat list of {id, name, tag_ids, mode, order}.
         # Empty list = single implicit "all sessions" column (legacy UX).
@@ -7499,10 +7845,12 @@ class DashboardState:
                     # column API rejects unknown ids, so a dangling id left
                     # in place would make that column's filter permanently
                     # un-editable (the popover echoes the full list back).
-                    # Same fail-open rule as the slot-restore prune: only
-                    # prune when the vocabulary is authoritative.
-                    if self._tags_authoritative:
-                        known = {t.get("id") for t in self._tags}
+                    # Same fail-open rule as the slot-restore prune, and now the same
+                    # SOURCE: the committed snapshot published just above, never the
+                    # live list. ``None`` means the vocabulary was unreadable, so prune
+                    # nothing; ``frozenset()`` is a known-empty vocabulary and prunes.
+                    if self._committed_tag_ids is not None:
+                        known = self._committed_tag_ids
                         for col in self._tag_boards:
                             tag_ids = col.get("tag_ids")
                             if isinstance(tag_ids, list):
