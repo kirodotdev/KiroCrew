@@ -509,6 +509,28 @@ export default function TerminalCompletion({ term, sessionId, active }: {
         if (e.key === 'Enter') return true
         if (e.key === 'Tab') return claim(e)
       }
+      // Ctrl+Shift+C copies the selection. Nothing in this app answers the
+      // chord: xterm's evaluateKeyboardEvent yields no key for
+      // Ctrl+Shift+letter, and the ctrl pass-through below would drop it
+      // before the switch — so without this branch it is a no-op in the
+      // desktop shell. (A browser-level binding like Chrome's DevTools
+      // shortcut fires outside the page either way; this branch handles what
+      // reaches the page.) Fire the native `copy` event (the same route as
+      // Electron's right-click `role: copy`): xterm's own `copy` listener
+      // serialises the selection, so there is no textarea and no focus move,
+      // and unlike navigator.clipboard.writeText it needs no clipboard
+      // permission — the packaged app denies that permission, which is what
+      // broke the toolbar path in #9740. Matched on e.code so the physical
+      // key works on layouts whose C position types another glyph. With no
+      // selection the chord passes through, leaving shell behaviour
+      // unchanged. This handler is the single owner of the custom-key-handler
+      // slot — a second attachCustomKeyEventHandler elsewhere would shadow
+      // this one.
+      if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && e.code === 'KeyC') {
+        if (!term.hasSelection()) return true
+        document.execCommand('copy')
+        return claim(e)
+      }
       const s = stateRef.current.sug
       if (!s) return true
       if (e.ctrlKey || e.metaKey || e.altKey) return true
