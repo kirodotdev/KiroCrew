@@ -205,6 +205,70 @@ class TestConnect:
         assert rc == 1
         assert "Dashboard tunnel did not become ready" in capsys.readouterr().out
 
+    def test_connect_probes_dashboard_health_on_local_port(self, monkeypatch):
+        # When the tunnel is ready, connect warns (via cli_server's probe) if the
+        # box serves "Dashboard HTML not found" instead of a working SPA.
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: True)
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(
+            connect_mod,
+            "connect",
+            lambda *a, **k: connect_mod.Connection(
+                instance_id="i-0abc",
+                local_port=5599,
+                remote_port=5476,
+                token="tok",
+                url="http://127.0.0.1:5599/?token=tok",
+                ready=True,
+                process=None,  # .wait() skipped
+            ),
+        )
+        probed = {}
+        # cli_cloud defers the probe import into _cloud_connect (CLI lazy-import
+        # ratchet, issue #3504), so patch it at its source module.
+        import kiro_crew.cli_server as cli_server
+
+        monkeypatch.setattr(
+            cli_server,
+            "_probe_dashboard_health",
+            lambda port: probed.setdefault("port", port),
+        )
+        rc = cli_cloud._cloud_connect(_args(profile="", region="", tag="kc-1"))
+        assert rc == 0
+        assert probed.get("port") == 5599
+
+    def test_doctor_reports_frontend_build_prerequisites(self, monkeypatch, capsys, tmp_path):
+        # Doctor reports whether the launcher can build from archived source; an
+        # ignored checkout dist is deliberately irrelevant to provenance.
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda a: ("", "us-east-1"))
+        monkeypatch.setattr(
+            "shutil.which", lambda name, **kw: "/usr/bin/npm" if name == "npm" else None
+        )
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_install_hint", lambda: "")
+        monkeypatch.setattr(
+            cli_cloud.iam,
+            "reachability_check",
+            lambda *a, **k: {"reachable": False, "note": "offline"},
+        )
+        import kiro_crew.cloud.source as source_mod
+
+        monkeypatch.setattr(source_mod, "repo_root", lambda: tmp_path)
+        assert cli_cloud._cloud_doctor(_args(profile="", region="")) == 0
+        assert "cannot be prebuilt" in capsys.readouterr().out
+
+        website = tmp_path / "website"
+        website.mkdir()
+        (website / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+        assert cli_cloud._cloud_doctor(_args(profile="", region="")) == 0
+        assert "frontend source ready" in capsys.readouterr().out
+
+        (website / "package-lock.json").unlink()
+        assert cli_cloud._cloud_doctor(_args(profile="", region="")) == 0
+        assert "package-lock.json is missing" in capsys.readouterr().out
+
 
 class TestDestroy:
     def test_destroy_dry_run(self, monkeypatch, capsys):

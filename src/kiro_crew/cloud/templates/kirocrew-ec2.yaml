@@ -283,6 +283,14 @@ Resources:
       # EXPANDED size is guarded by test_cloud_ec2.py's UserData size test;
       # when it trips, trim the script or move knowledge here, never delete it.
       #
+      # "Dashboard health": the WaitCondition gate accepts the box only when
+      #   the root URL answers AND its body lacks the gateway's
+      #   DASHBOARD_HTML_NOT_FOUND_MARKER (dashboard/handlers/core.py). The
+      #   gateway serves that guidance page with HTTP 200 when static/dist is
+      #   missing, so a bare status check would bless a dashboard-less box.
+      #   install.sh fails closed on a missing/incomplete bundle first; this is
+      #   the backstop at the serving layer, for a box whose assets vanish
+      #   after install already succeeded.
       # "Reboot resume": State Manager runs wildcard associations when a new
       #   managed node first comes online. An account-level
       #   AWS-RunPatchBaseline association can therefore patch and reboot the
@@ -680,13 +688,19 @@ Resources:
           systemctl enable kirocrew.service || fail "could not enable kirocrew.service"
           systemctl start kirocrew.service || fail "could not start kirocrew.service"
 
-          echo "--- waiting for the gateway to answer on 127.0.0.1:${DashboardPort} ---"
+          echo "--- waiting for the gateway to serve the dashboard on 127.0.0.1:${DashboardPort} ---"
+          # see "Dashboard health"
           ok=0
           for i in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://127.0.0.1:${DashboardPort}/ 2>/dev/null; then ok=1; break; fi
+            if curl -fsS http://127.0.0.1:${DashboardPort}/ 2>/dev/null \
+              | grep -q 'Dashboard HTML not found'; then
+              :
+            elif curl -fsS -o /dev/null http://127.0.0.1:${DashboardPort}/ 2>/dev/null; then
+              ok=1; break
+            fi
             sleep 5
           done
-          [ "$ok" = "1" ] || fail "gateway did not become healthy within 5 minutes"
+          [ "$ok" = "1" ] || fail "gateway did not serve the dashboard within 5 minutes"
 
           echo "=== KiroCrew bootstrap complete $(date -u) ==="
           signal_ok=0
@@ -717,6 +731,8 @@ Resources:
     Properties:
       Handle: !Ref WaitHandle
       # 25 min: cold boot + dnf + NodeSource + npm build (vite) + pip install.
+      # The vite build time only applies when the launch shipped no prebuilt
+      # static/dist (the usual path skips it); keep the budget for that fallback.
       Timeout: "1500"
       Count: 1
 
