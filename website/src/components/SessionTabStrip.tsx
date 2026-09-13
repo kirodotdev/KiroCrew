@@ -192,7 +192,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
               // helper's own contract: last prop wins, so spreading it first
               // would leave the refused click showing only the session name and
               // no reason. Closing still works: it is local.
-              {...offlineProps(connected, 'switch sessions', accessibleName)}
+              {...offlineProps(connected, i18nT('utils.offline.switch_sessions'), accessibleName)}
               onClick={() => onSelect(key)}
               // Middle-click closes, the other half of the convention this PR
               // already imports for OPENING on a sidebar row. A user who learned

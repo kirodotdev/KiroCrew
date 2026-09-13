@@ -1688,7 +1688,7 @@ const put = (url: string, body: object, sessionKey?: string, extra?: HeadersInit
   trackArtifactWrite(url, fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: JSON.stringify(body) }))
 const del = (url: string, body?: object, sessionKey?: string, extra?: HeadersInit) =>
   trackArtifactWrite(url, fetch(url, { method: 'DELETE', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: body ? JSON.stringify(body) : undefined }))
-const patch = (url: string, body: object, sessionKey?: string) =>
+const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSignal) =>
   trackArtifactWrite(url, fetch(url, {
     method: 'PATCH',
     // Same override as post(): replace the shared `dashboard:ui` placeholder with
@@ -1696,6 +1696,7 @@ const patch = (url: string, body: object, sessionKey?: string) =>
     // restricted-session gate applies to it.
     headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) },
     body: JSON.stringify(body),
+    signal,
   }))
 
 // Publish the blessed transport so a downstream edition can build its OWN typed
@@ -3656,7 +3657,7 @@ export const api = {
   chatMode: (mode: string, slot?: string) => post('/api/chat/mode', { mode, slot: slot || '' }).then(j),
   generateTitle: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/generate-title').then(j),
   resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
-  renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),
+  renameSlot: (slot: string, title: string, signal?: AbortSignal) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }, undefined, signal).then(j),
   regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
   /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
   continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),

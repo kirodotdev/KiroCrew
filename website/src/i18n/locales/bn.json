@@ -7337,6 +7337,7 @@
       "mark_as_read": "পড়া হিসেবে চিহ্নিত করো",
       "mark_as_unread": "অপঠিত হিসেবে চিহ্নিত করো",
       "move_to_folder": "ফোল্ডারে সরান…",
+      "offline_reason": "গেটওয়ে অফলাইন — ম্লান করা কাজগুলোর জন্য সংযোগ দরকার",
       "open_in_new_tab": "সেশন ট্যাবে খুলুন",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
@@ -7353,6 +7354,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "কাস্টম রং",
+      "custom_color_picker": "কাস্টম রং নির্বাচক",
       "hex_color_code": "হেক্স রঙের কোড",
       "no_color": "কোনো রঙ নেই"
     },
@@ -10004,10 +10006,13 @@
       "screenshot_failed_reason": "স্ক্রিনশট ব্যর্থ হয়েছে: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "সেশনের নাম পরিবর্তন করা যায়নি",
+      "could_not_rename_to": "“{{name}}”-তে নাম পরিবর্তন করা যায়নি",
+      "rename_already_saving": "আগে থেকেই এই সেশনের নাম পরিবর্তন সংরক্ষণ করা হচ্ছে — তোমার খসড়া রাখা হয়েছে; কিছুক্ষণ পরে আবার চেষ্টা করুন",
       "could_not_generate_title": "শিরোনাম তৈরি করা যায়নি",
       "could_not_open_side_chat": "সাইড চ্যাট খোলা যায়নি",
       "side_command_not_run": "/side কমান্ড চলেনি। আপনার বার্তা এখনও কম্পোজারে আছে।",
-      "could_not_send_to_side_chat": "সাইড চ্যাটে পাঠানো যায়নি"
+      "could_not_send_to_side_chat": "সাইড চ্যাটে পাঠানো যায়নি",
+      "rename_reverted_try_again": "আগের শিরোনাম ফিরিয়ে আনা হয়েছে — আবার চেষ্টা করুন।"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",
@@ -14870,9 +14875,31 @@
       "saving": "সংরক্ষণ হচ্ছে..."
     },
     "offline": {
+      "change_folder_settings": "ফোল্ডার সেটিংস পরিবর্তন",
+      "change_tags": "ট্যাগ পরিবর্তন",
+      "close_sessions": "সেশন বন্ধ",
+      "create_folders": "ফোল্ডার তৈরি",
+      "create_sessions": "সেশন তৈরি",
+      "delete_folders": "ফোল্ডার মুছে ফেলা",
       "disabled_gateway_offline": "{{label}} নিষ্ক্রিয় — গেটওয়ে অফলাইন",
+      "export_sessions": "সেশন এক্সপোর্ট",
       "gateway_offline_reconnect": "গেটওয়ে অফলাইন — {{action}} করতে আবার সংযুক্ত হও",
-      "submit_comments": "মন্তব্য জমা দেওয়া"
+      "hide_folders": "ফোল্ডার লুকানো",
+      "move_folders": "ফোল্ডার সরানো",
+      "move_sessions": "সেশন সরানো",
+      "optimize": "প্রম্পট অপ্টিমাইজ",
+      "pin_sessions": "সেশন পিন",
+      "recolor_sessions": "সেশনের রং পরিবর্তন",
+      "regenerate_titles": "শিরোনাম পুনরায় তৈরি",
+      "reload_sessions": "সেশন পুনরায় লোড",
+      "rename_folders": "ফোল্ডারের নাম পরিবর্তন",
+      "rename_sessions": "সেশনের নাম পরিবর্তন",
+      "resume_sessions": "সেশন পুনরায় শুরু",
+      "send": "পাঠানো",
+      "send_to_instances": "ইনস্ট্যান্সে পাঠানো",
+      "submit_comments": "মন্তব্য জমা দেওয়া",
+      "switch_session_modes": "সেশন মোড পরিবর্তন",
+      "switch_sessions": "সেশন পরিবর্তন"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "তোমার ব্রাউজার পপ-আউট উইন্ডো ব্লক করেছে। এই সাইটের জন্য পপ-আপ চালু করো, তারপর আবার চেষ্টা করো।"

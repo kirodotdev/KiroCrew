@@ -44,8 +44,8 @@ const dashboardState = {
  * Seed the open slot via TagPopoverProvider (the context owns open-state);
  * the slot's tags still live in the Redux store, so `slots` seeds those.
  */
-function renderPopover({ slotKey, slots = [] }: { slotKey: string | null; slots?: Partial<ChatSlot>[] }) {
-  const store = createTestStore({ dashboard: { ...dashboardState, slots } as unknown as RootState['dashboard'] })
+function renderPopover({ slotKey, slots = [], connected = true }: { slotKey: string | null; slots?: Partial<ChatSlot>[]; connected?: boolean }) {
+  const store = createTestStore({ dashboard: { ...dashboardState, connected, slots } as unknown as RootState['dashboard'] })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
     <QueryClientProvider client={qc}>
@@ -64,6 +64,43 @@ function renderPopover({ slotKey, slots = [] }: { slotKey: string | null; slots?
 }
 
 beforeEach(() => vi.clearAllMocks())
+
+describe('SlotTagPopover (gateway offline)', () => {
+  it('still opens and lists the tags, because the picker renders from cached state', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: ['t1'] }], connected: false })
+    expect(await screen.findByTestId('slot-tag-picker')).toBeInTheDocument()
+    expect(await screen.findByText('Alpha')).toBeInTheDocument()
+    expect(screen.getByRole('menuitemcheckbox', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('refuses a toggle and says why, rather than posting a write the gateway cannot take', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: false })
+    const alpha = await screen.findByRole('menuitemcheckbox', { name: /Alpha/ })
+    expect(alpha).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(alpha)
+    expect(api.setSlotTags).not.toHaveBeenCalled()
+    expect(screen.getByTestId('tag-offline-reason')).toBeInTheDocument()
+  })
+
+  it('refuses creating a tag while offline', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: false })
+    await screen.findByTestId('slot-tag-picker')
+    const input = screen.getByPlaceholderText(/New tag/i)
+    expect(input).toBeDisabled()
+    fireEvent.change(input, { target: { value: 'Gamma' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(api.createChatTag).not.toHaveBeenCalled()
+  })
+
+  it('when connected the same controls take writes and show no refusal', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: true })
+    const alpha = await screen.findByRole('menuitemcheckbox', { name: /Alpha/ })
+    expect(alpha).toHaveAttribute('aria-disabled', 'false')
+    expect(screen.queryByTestId('tag-offline-reason')).not.toBeInTheDocument()
+    fireEvent.click(alpha)
+    await waitFor(() => expect(api.setSlotTags).toHaveBeenCalled())
+  })
+})
 
 describe('SlotTagPopover (connected)', () => {
   it('renders nothing when no slot is targeted', () => {

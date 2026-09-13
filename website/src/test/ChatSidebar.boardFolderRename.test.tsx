@@ -86,7 +86,9 @@ const folders: ChatFolder[] = [{ id: FOLDER_ID, name: 'CDF', order: 0 }]
 function renderWith(cols: TagColumn[]) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      // Load-bearing: rename is guarded on a live gateway, and these cases
+      // exercise the online mechanics rather than the offline refusal.
+      status: {}, connected: true, slots: [], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',

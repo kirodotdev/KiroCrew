@@ -6,10 +6,13 @@ import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import ExportSessionItem from './ExportSessionItem'
 import SessionColorSwatches from './SessionColorSwatches'
+import OfflineMenuReason from './OfflineMenuReason'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { useAppSelector } from '../store'
+import { useConnected } from '../hooks/useConnected'
+import { offlineProps } from '../utils/offline'
 import { selectSlotSubagents } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
@@ -109,6 +112,16 @@ export default function SessionActionsMenu({
   // its behaviour). `unread` comes from dashboard.unreadSlots — the same source
   // toggleRead reads — and pin/folder/colour from the slot itself.
   const isUnread = useAppSelector(s => s.dashboard.unreadSlots.includes(slotKey))
+  const connected = useConnected()
+  // Every gateway-backed item carries the SAME offline treatment: dimming only the
+  // rename would read as a claim that the undimmed siblings are safe offline.
+  // Muted AND translucent, because opacity alone left the deliberately-live rows
+  // (Mark as unread, Tags…) reading as dimmed beside their gated neighbours.
+  const offlineItem = (verb: string, label: string, onSelect: () => void) => ({
+    className: connected ? undefined : 'opacity-40 text-muted',
+    ...offlineProps(connected, verb, label),
+    onSelect: connected ? onSelect : (e?: Event) => e?.preventDefault(),
+  })
   const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
   const isPinned = !!slot?.pinned
   const isRunning = !!slot?.running
@@ -136,17 +149,17 @@ export default function SessionActionsMenu({
     // Modifiers to the tab itself
     [
       onRename && (
-        <Item key="rename" onSelect={onRename}>
+        <Item key="rename" {...offlineItem(i18nT('utils.offline.rename_sessions'), i18nT('components.sessionActionsMenu.rename'), onRename)}>
           <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
         </Item>
       ),
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
         <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? i18nT('components.sessionActionsMenu.mark_as_read') : i18nT('components.sessionActionsMenu.mark_as_unread')}
       </Item>,
-      <Item key="pin" onSelect={() => togglePin(slotKey)}>
+      <Item key="pin" {...offlineItem(i18nT('utils.offline.pin_sessions'), isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin'), () => togglePin(slotKey))}>
         <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
-      <Item key="mode" onSelect={() => toggleMode(slotKey)}>
+      <Item key="mode" {...offlineItem(i18nT('utils.offline.switch_session_modes'), slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot'), () => toggleMode(slotKey))}>
         <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot')}
       </Item>,
       folders.length > 0 && (
@@ -155,10 +168,13 @@ export default function SessionActionsMenu({
           variant={variant}
           folders={folders}
           currentFolderId={currentFolderId}
-          onPick={(folderId) => move(slotKey, folderId)}
+          onPick={(folderId) => { if (!connected) return; move(slotKey, folderId) }}
+          offlineVerb={i18nT('utils.offline.move_sessions')}
           label={i18nT('components.sessionActionsMenu.move_to_folder')}
         />
       ),
+      // Tags is a local read: the popover renders from cached slot state, so the
+      // opener keeps full weight and its writes gate inside the popover instead.
       <Item key="tags" onSelect={() => openTagPopover(slotKey)}>
         <TagIcon size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.tags')}
       </Item>,
@@ -241,7 +257,7 @@ export default function SessionActionsMenu({
         key="reload"
         disabled={reloadBlocked}
         title={i18nT('components.sessionActionsMenu.reload_session_tooltip')}
-        onSelect={() => reload(slotKey)}
+        {...offlineItem(i18nT('utils.offline.reload_sessions'), i18nT('components.sessionActionsMenu.reload_session'), () => reload(slotKey))}
       >
         <RotateCw size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reload_session')}
         {reloadBlocked && (
@@ -255,10 +271,13 @@ export default function SessionActionsMenu({
     ],
     // Close session — terminal, destructive
     [
-      <Item key="close" className="text-danger focus:text-danger" onSelect={() => close(slotKey)}>
+      <Item key="close" {...offlineItem(i18nT('utils.offline.close_sessions'), i18nT('components.sessionActionsMenu.close_session'), () => close(slotKey))} className={`text-danger focus:text-danger${connected ? '' : ' opacity-40'}`}>
         <X size={13} /> {i18nT('components.sessionActionsMenu.close_session')}
       </Item>,
     ],
+    // LAST on purpose: a gateway drop while the menu is open mounts this row, and
+    // anywhere above the items it would shift them under a mid-aim pointer.
+    !connected ? [<OfflineMenuReason key="offline-reason" />] : [],
   ])
 
   return (

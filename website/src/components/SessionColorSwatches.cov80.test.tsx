@@ -3,7 +3,7 @@ import type React from 'react'
 import { renderWithProviders } from '../test/helpers'
 import SessionColorSwatches from './SessionColorSwatches'
 import { store } from '../store'
-import { sseSlots, sseSlotColor } from '../store/dashboardSlice'
+import { sseSlots, sseSlotColor, sseConnected } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import type { ChatSlot } from '../types'
 
@@ -24,8 +24,10 @@ const clearSlotColor = vi.mocked(api.clearSlotColor)
  * so both halves only agree when the Provider IS the real store. Render through
  * it rather than a throwaway test store.
  */
-const render = (ui: React.ReactElement) =>
-  renderWithProviders(ui, { store: store as never })
+const render = (ui: React.ReactElement) => {
+  store.dispatch(sseConnected())
+  return renderWithProviders(ui, { store: store as never })
+}
 
 function seedStore(colorIndex: number | null) {
   store.dispatch(sseSlots([

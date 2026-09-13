@@ -11,6 +11,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { store } from '../store'
+import { sseConnected } from '../store/dashboardSlice'
 import type { InstanceView } from '../api/client'
 
 const mocks = vi.hoisted(() => ({
@@ -69,13 +72,16 @@ function StubItem({ title, disabled, onSelect, children }: {
 
 function renderWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  store.dispatch(sseConnected())
   return render(
     <QueryClientProvider client={qc}>
+      <Provider store={store}>
       <DropdownMenu open>
         <DropdownMenuContent forceMount>
           <SendToInstanceSubmenu slotKey="slot-1" variant="dropdown" />
         </DropdownMenuContent>
       </DropdownMenu>
+      </Provider>
     </QueryClientProvider>,
   )
 }

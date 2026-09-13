@@ -6,6 +6,7 @@ import type { ErrorReport } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
+  className?: string
   title?: string
   disabled?: boolean
   'aria-describedby'?: string
@@ -78,6 +79,7 @@ export default function ErrorNotice({
   onHandoff,
   className = '',
   messageClassName = '',
+  wrapAction = false,
   testId,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
@@ -130,6 +132,11 @@ export default function ErrorNotice({
    */
   messageClassName?: string
   /**
+   * Let the hand-off drop BELOW the message at narrow widths. Opt-in because it
+   * restructures the row, and every existing caller was laid out without it.
+   */
+  wrapAction?: boolean
+  /**
    * `data-testid` for the root element. Several notices can share one surface
    * (a page-level read failure above a row's own mutation failure), and a
    * shared `role="alert"` makes a lookup ambiguous — a call site that migrates
@@ -179,20 +186,44 @@ export default function ErrorNotice({
       data-testid={testId}
     >
       <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
-      <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
-        {title && <strong className="font-semibold">{title} </strong>}
-        {/* Wrapped only when asked: the bare text node is the shape every
-            existing consumer's tests read. */}
-        {messageClassName ? <span className={messageClassName}>{message}</span> : message}
-      </div>
-      {askAgent && (
-        <AskAgentButton
-          report={report}
-          message={message}
-          onHandoff={onHandoff}
-          className="mt-[1px]"
-        />
-      )}
+      {(() => {
+        const text = (
+          <>
+            {title && <strong className="font-semibold">{title} </strong>}
+            {/* Wrapped only when asked: the bare text node is the shape every
+                existing consumer's tests read. */}
+            {messageClassName ? <span className={messageClassName}>{message}</span> : message}
+          </>
+        )
+        const action = askAgent && (
+          <AskAgentButton
+            report={report}
+            message={message}
+            onHandoff={onHandoff}
+            className="mt-[1px]"
+          />
+        )
+        // Inline at sidebar width squeezed the message to one word per line, so
+        // the opted-in row lets the action fall beneath it instead.
+        if (wrapAction) {
+          return (
+            <div className="min-w-0 flex-1 flex flex-wrap items-start gap-x-2 gap-y-1">
+              <div className="min-w-0 grow basis-[12rem] whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
+                {text}
+              </div>
+              {action}
+            </div>
+          )
+        }
+        return (
+          <>
+            <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
+              {text}
+            </div>
+            {action}
+          </>
+        )
+      })()}
       {onDismiss && (
         <button
           type="button"

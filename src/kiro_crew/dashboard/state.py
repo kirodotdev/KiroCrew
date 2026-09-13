@@ -8310,7 +8310,7 @@ class DashboardState:
                 )
             )
 
-    def push_slot_title(self, key: str, title: str, *, full: bool = True) -> None:
+    def push_slot_title(self, key: str, title: str, *, full: bool = True, epoch: int | None = None) -> None:
         """Push a targeted title update for a single slot.
 
         By default also pushes a full slots update so the sidebar reflects the
@@ -8318,8 +8318,15 @@ class DashboardState:
         high-frequency streaming partials (word-by-word title reveal) to send
         only the lightweight ``slot_title`` event; finalize with a ``full=True``
         call once.
+
+        ``epoch`` publishes the slot's monotonic title epoch so a consumer can
+        discard a frame a newer rename has already superseded. Omit it for a
+        title no rename ordered (background generation), which never competes.
         """
-        self._broadcast({"_type": "slot_title", "key": key, "title": title})
+        event: dict[str, object] = {"_type": "slot_title", "key": key, "title": title}
+        if epoch is not None:
+            event["epoch"] = epoch
+        self._broadcast(event)
         if full:
             self.push_slots_update()
 

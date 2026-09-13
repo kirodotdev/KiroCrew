@@ -153,14 +153,14 @@ describe('ChatInput', () => {
 
     it('disables Optimize button when connected=false even with text', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hello" connected={false} />)
-      const btn = screen.getByRole('button', { name: /Optimize disabled/ })
+      const btn = screen.getByRole('button', { name: /Optimize prompt disabled/ })
       expect(btn).toBeDisabled()
     })
 
     it('exposes offline-aware aria-label and tooltip on Optimize button', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hi" connected={false} />)
-      const btn = screen.getByLabelText('Optimize disabled — gateway offline')
-      expect(btn).toHaveAttribute('title', 'Gateway offline — reconnect to optimize')
+      const btn = screen.getByLabelText('Optimize prompt disabled — gateway offline')
+      expect(btn).toHaveAttribute('title', 'Gateway offline — reconnect to optimize prompts')
     })
 
     it('keeps Optimize enabled when connected=true with text', () => {

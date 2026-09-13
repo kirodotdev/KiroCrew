@@ -4993,6 +4993,7 @@
       "copy_link": "Copy link",
       "focus_popped_out_window": "Focus popped-out window",
       "move_to_folder": "Move to folder…",
+      "offline_reason": "Gateway offline — the dimmed actions need a connection",
       "pop_out_to_window": "Pop out to window",
       "rename": "Rename",
       "reveal_in_sidebar": "Reveal in sidebar",
@@ -5000,6 +5001,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "Custom color",
+      "custom_color_picker": "Custom color picker",
       "hex_color_code": "Hex color code",
       "no_color": "No color"
     },
