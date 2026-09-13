@@ -1682,6 +1682,28 @@ class TestManifestResolution:
         assert _REAL_REQUIRED_REVISIONS() is None
 
 
+def _attributed_lifecycle_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A launcher, and the registry/bundle of the package attributable to it.
+
+    A real-FILE launcher beside its install prefix's ``node_modules``, which is
+    the shape ``_launcher_node_modules`` resolves. Deliberately not a symlink, so
+    the seam tests need no symlink privilege and run on every platform.
+    """
+    prefix = tmp_path / "prefix"
+    package = prefix / "node_modules" / "@playwright" / "cli"
+    core = package / "node_modules" / "playwright-core"
+    (core / "lib" / "tools" / "cli-client").mkdir(parents=True)
+    (core / "browsers.json").write_text('{"browsers": []}', encoding="utf-8")
+    launcher = prefix / "bin" / "playwright-cli"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    return (
+        launcher,
+        core / "lib" / "tools" / "cli-client" / "registry.js",
+        core / "lib" / "coreBundle.js",
+    )
+
+
 def _lifecycle_contract_tree(tmp_path: Path) -> tuple[Path, Path]:
     package = tmp_path / "node_modules" / "@playwright" / "cli"
     core = package / "node_modules" / "playwright-core"
@@ -1695,40 +1717,194 @@ def _lifecycle_contract_tree(tmp_path: Path) -> tuple[Path, Path]:
 def test_lifecycle_env_contract_is_confirmed_from_serving_cli_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    package, registry, bundle = _lifecycle_contract_tree(tmp_path)
+    launcher, registry, bundle = _attributed_lifecycle_tree(tmp_path)
     registry.write_text("process.env.PWTEST_DAEMON_SESSION_DIR", encoding="utf-8")
     bundle.write_text("process.env.PWTEST_SOCKETS_DIR || os.tmpdir()", encoding="utf-8")
-    monkeypatch.setattr(mod, "_cli_package_dirs", lambda: [package])
+    monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
     mod._source_contains.cache_clear()
 
-    assert mod.cli_lifecycle_env_supported() is True
+    assert mod.cli_lifecycle_env_support() == (mod.SeamSupport.SUPPORTED, "")
 
 
 def test_lifecycle_env_contract_fails_when_upstream_hook_disappears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    package, registry, bundle = _lifecycle_contract_tree(tmp_path)
+    launcher, registry, bundle = _attributed_lifecycle_tree(tmp_path)
     registry.write_text("process.env.PWTEST_DAEMON_SESSION_DIR", encoding="utf-8")
     bundle.write_text("// lifecycle socket override removed upstream", encoding="utf-8")
-    monkeypatch.setattr(mod, "_cli_package_dirs", lambda: [package])
+    monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
     mod._source_contains.cache_clear()
 
-    assert mod.cli_lifecycle_env_supported() is False
+    assert mod.cli_lifecycle_env_support()[0] is mod.SeamSupport.UNSUPPORTED
 
 
-def test_lifecycle_contract_never_falls_through_to_stale_package(
+def test_lifecycle_contract_never_falls_through_to_a_stale_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    active, active_registry, active_bundle = _lifecycle_contract_tree(tmp_path / "active")
-    stale, stale_registry, stale_bundle = _lifecycle_contract_tree(tmp_path / "stale")
-    active_registry.write_text("// hook removed", encoding="utf-8")
-    active_bundle.write_text("// hook removed", encoding="utf-8")
-    stale_registry.write_text("process.env.PWTEST_DAEMON_SESSION_DIR", encoding="utf-8")
-    stale_bundle.write_text("process.env.PWTEST_SOCKETS_DIR || os.tmpdir()", encoding="utf-8")
-    monkeypatch.setattr(mod, "_cli_package_dirs", lambda: [active, stale])
+    """A launcher's own package answers for it, or nothing does.
+
+    The standalone install prefix is a legitimate fallback for a revision lookup
+    but not for a seam verdict: it describes a DIFFERENT install, so letting it
+    answer for an unattributable launcher would put the original misreport back
+    in a narrower case. Here the standalone package is healthy and the launcher
+    is unattributable -- the verdict must be UNVERIFIED, not SUPPORTED.
+    """
+    _launcher, standalone_registry, standalone_bundle = _attributed_lifecycle_tree(tmp_path)
+    standalone_registry.write_text("process.env.PWTEST_DAEMON_SESSION_DIR", encoding="utf-8")
+    standalone_bundle.write_text("process.env.PWTEST_SOCKETS_DIR || os.tmpdir()", encoding="utf-8")
+    monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "prefix"))
+    orphan = tmp_path / "elsewhere" / "playwright-cli"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "cli_path", lambda: str(orphan))
     mod._source_contains.cache_clear()
 
-    assert mod.cli_lifecycle_env_supported() is False
+    # The standalone package on its own would answer SUPPORTED.
+    assert mod._cli_package_dirs()
+    support, detail = mod.cli_lifecycle_env_support()
+
+    assert support is mod.SeamSupport.UNVERIFIED
+    assert str(orphan) in detail
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink launcher shape")
+def test_a_symlink_launcher_resolving_into_the_package_is_confirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape that DOES attribute by ANCESTRY: an ``npm install -g`` symlink.
+
+    The launcher resolves INTO the package tree, so an ancestor is the package
+    and no ``node_modules`` probe is needed. Its sibling above covers the
+    real-file shape, which reaches the package the other way.
+    """
+    package, registry, bundle = _lifecycle_contract_tree(tmp_path)
+    registry.write_text("process.env.PWTEST_DAEMON_SESSION_DIR", encoding="utf-8")
+    bundle.write_text("process.env.PWTEST_SOCKETS_DIR || os.tmpdir()", encoding="utf-8")
+    entrypoint = package / "cli.js"
+    entrypoint.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    launcher = tmp_path / "bin" / "playwright-cli"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(entrypoint)
+    monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "absent-prefix"))
+    monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
+    mod._source_contains.cache_clear()
+
+    assert mod.cli_lifecycle_env_support() == (mod.SeamSupport.SUPPORTED, "")
+
+
+def test_an_unattributable_launcher_is_unverified_and_names_the_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A version-manager shim resolves to itself, not into any package tree.
+
+    No bundle is read, so the CLI's capability is unknown. Reporting that as
+    UNSUPPORTED is what sent an operator to upgrade a CLI that carried both
+    hooks; the verdict must name the launcher it could not attribute instead.
+    """
+    shim = tmp_path / "shims" / "playwright-cli"
+    shim.parent.mkdir(parents=True)
+    shim.write_text('#!/bin/sh\nexec versionctl exec -- "$0" "$@"\n', encoding="utf-8")
+    monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "absent-prefix"))
+    monkeypatch.setattr(mod, "cli_path", lambda: str(shim))
+
+    support, detail = mod.cli_lifecycle_env_support()
+
+    assert support is mod.SeamSupport.UNVERIFIED
+    assert str(shim) in detail
+    assert "attributable" in detail
+
+
+def test_no_resolved_launcher_is_unverified_rather_than_a_capability_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod, "cli_path", lambda: None)
+    monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", "/nonexistent-prefix")
+
+    support, detail = mod.cli_lifecycle_env_support()
+
+    assert support is mod.SeamSupport.UNVERIFIED
+    assert "no trusted playwright-cli launcher" in detail
+
+
+def test_a_package_without_a_serving_core_tree_is_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attribution reached the CLI package but no ``playwright-core`` serves it."""
+    prefix = tmp_path / "prefix"
+    package = prefix / "node_modules" / "@playwright" / "cli"
+    package.mkdir(parents=True)
+    launcher = prefix / "bin" / "playwright-cli"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
+
+    support, detail = mod.cli_lifecycle_env_support()
+
+    assert support is mod.SeamSupport.UNVERIFIED
+    assert str(package) in detail
+
+
+def test_an_unreadable_bundle_is_unverified_rather_than_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bundle that cannot be stat'd was never searched for the hook."""
+    launcher, registry, _bundle = _attributed_lifecycle_tree(tmp_path)
+    registry.write_text("process.env.PWTEST_DAEMON_SESSION_DIR", encoding="utf-8")
+    monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
+    mod._source_contains.cache_clear()
+
+    support, detail = mod.cli_lifecycle_env_support()
+
+    assert support is mod.SeamSupport.UNVERIFIED
+    assert "could not be read" in detail
+
+
+@pytest.mark.parametrize(
+    ("size", "why"),
+    [(0, "an empty bundle is not a bundle without the needle"), (None, "past the size ceiling")],
+)
+def test_a_bundle_the_reader_refuses_is_unverified_not_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: int | None, why: str
+) -> None:
+    """The size guard REFUSES to read; a refusal measures nothing.
+
+    Reporting it as UNSUPPORTED is the same defect as an unattributable
+    launcher: a claim about bytes that were never searched.
+    """
+    launcher, registry, bundle = _attributed_lifecycle_tree(tmp_path)
+    registry.write_text("process.env.PWTEST_DAEMON_SESSION_DIR", encoding="utf-8")
+    bundle.write_text("" if size == 0 else "process.env.PWTEST_SOCKETS_DIR || x", encoding="utf-8")
+    if size is None:
+        monkeypatch.setattr(mod, "_LIFECYCLE_SOURCE_MAX_BYTES", 1)
+    monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
+    mod._source_contains.cache_clear()
+
+    support, detail = mod.cli_lifecycle_env_support()
+
+    assert support is mod.SeamSupport.UNVERIFIED, why
+    assert "could not be read" in detail
+
+
+def test_the_dashboard_layout_gate_separates_attribution_from_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sibling gate carries the same three-valued contract."""
+    launcher, _registry, bundle = _attributed_lifecycle_tree(tmp_path)
+    monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
+
+    bundle.write_text(
+        'makeSocketPath("dashboard", "app"); process.env.PWTEST_SOCKETS_DIR || x',
+        encoding="utf-8",
+    )
+    mod._source_contains.cache_clear()
+    assert mod.cli_dashboard_socket_support() == (mod.SeamSupport.SUPPORTED, "")
+
+    bundle.write_text("// dashboard socket layout renamed upstream", encoding="utf-8")
+    mod._source_contains.cache_clear()
+    assert mod.cli_dashboard_socket_support()[0] is mod.SeamSupport.UNSUPPORTED
+
+    monkeypatch.setattr(mod, "cli_path", lambda: None)
+    assert mod.cli_dashboard_socket_support()[0] is mod.SeamSupport.UNVERIFIED
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable and permission semantics")

@@ -65,9 +65,11 @@ from urllib.parse import urlsplit
 
 from kiro_crew import platform_compat
 from kiro_crew.browser_cli.install import (
+    ATTRIBUTION_REMEDY,
+    SeamSupport,
     _redact,
     cli_command,
-    cli_dashboard_socket_supported,
+    cli_dashboard_socket_support,
     cli_env,
     cli_path,
 )
@@ -379,7 +381,39 @@ def _session_lock(session: str) -> threading.Lock:
 #: Whether the "installed CLI lacks the dashboard socket layout" warning has been
 #: emitted: said once per process, at WARNING, so an upstream rename is visible
 #: in the gateway log instead of a silent loss of the auto-attach.
-_layout_warned = False
+#: One warning per distinct dashboard-layout loss, keyed on the reason. A repeat
+#: of the SAME reason is silenced -- the gate is consulted before every reveal --
+#: while a reason that CHANGED is a different host state and still speaks. Keyed
+#: rather than a once-ever flag so an UNVERIFIED host that later becomes
+#: UNSUPPORTED, or vice versa, is not silently held at its first reading.
+_warned_layout_losses: set[str] = set()
+
+
+def _warn_layout_loss(support: SeamSupport, detail: str) -> None:
+    """Report why the reveal was skipped, naming which of the two states it was.
+
+    ``UNVERIFIED`` names the attribution that failed and what to do about it;
+    only ``UNSUPPORTED`` -- the bundle read, the layout genuinely gone -- may
+    describe the installed CLI. Mirrors :func:`launch._warn_lifecycle_loss`, so
+    the "one line per distinct reason" contract holds for both seam gates.
+    """
+    if support is SeamSupport.UNVERIFIED:
+        message = (
+            "could not verify the dashboard socket layout the Browser panel's auto-attach "
+            f"relies on: {detail}; to fix this, {ATTRIBUTION_REMEDY}. A launched page will "
+            "need one click on its session in the framed dashboard, and the installed CLI's "
+            "own layout was not measured."
+        )
+    else:
+        message = (
+            "installed playwright-cli does not expose the dashboard socket layout the "
+            "Browser panel's auto-attach relies on; a launched page will need one click "
+            "on its session in the framed dashboard"
+        )
+    if message in _warned_layout_losses:
+        return
+    _warned_layout_losses.add(message)
+    logger.warning("%s", message)
 
 
 def _dashboard_socket_path(env: dict[str, str]) -> str | None:
@@ -389,25 +423,20 @@ def _dashboard_socket_path(env: dict[str, str]) -> str | None:
     gateway set for both of its CLI children (:func:`ui_socket_env`). ``None``
     when that root is not set -- the children are then on the CLI's own default
     path, which this module deliberately does not re-derive -- when the installed
-    CLI's bundle does not carry the layout (:func:`cli_dashboard_socket_supported`,
-    which is reported once at WARNING so the loss is visible), or on Windows,
+    CLI's bundle does not carry the layout, or that layout could not be measured
+    at all (:func:`cli_dashboard_socket_support`, whose loss is reported once at
+    WARNING naming which of the two it was), or on Windows,
     where the dashboard uses a named pipe and the human picks the session from
     the dashboard's own sidebar instead.
     """
-    global _layout_warned
     if platform_compat.IS_WINDOWS:
         return None
     root = env.get(SOCKETS_ENV, "").strip()
     if not root:
         return None
-    if not cli_dashboard_socket_supported():
-        if not _layout_warned:
-            _layout_warned = True
-            logger.warning(
-                "installed playwright-cli does not expose the dashboard socket layout the "
-                "Browser panel's auto-attach relies on; a launched page will need one click "
-                "on its session in the framed dashboard"
-            )
+    support, detail = cli_dashboard_socket_support()
+    if support is not SeamSupport.SUPPORTED:
+        _warn_layout_loss(support, detail)
         return None
     return os.path.join(root, "dashboard", "app.sock")
 

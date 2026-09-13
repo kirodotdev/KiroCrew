@@ -545,15 +545,15 @@ gateway life. This is the same hook the generated sessions use, gated on the sam
 installed-source probe, and it exists so the gateway KNOWS where its two children
 meet rather than re-deriving the CLI's default path (temp directory plus a hash
 of the user name). It is left unset — the children fall back to the CLI's
-default and the reveal below is skipped — when the installed CLI does not expose
-the hook, when the path would overflow the AF_UNIX budget (a pod's long home),
-or when the directory cannot be prepared owner-only.
+default and the reveal below is skipped — when the hook cannot be CONFIRMED on
+the CLI that would run, when the path would overflow the AF_UNIX budget (a pod's
+long home), or when the directory cannot be prepared owner-only.
 
 **Reveal.** The `show` dashboard lists a new session in its sidebar but does not
 attach its viewport to it, so after a successful launch the gateway asks it to:
 one JSON line (`{"sessionName": …}`) on the dashboard app's singleton socket,
 `<socket root>/dashboard/app.sock`. That layout is upstream's, so it is pinned
-the way the socket-root hook is — `install.cli_dashboard_socket_supported` reads
+the way the socket-root hook is — `install.cli_dashboard_socket_support` reads
 the serving `playwright-core` bundle for `makeSocketPath("dashboard", "app")`
 and a rename turns the reveal into a skip reported once at WARNING in the
 gateway log (not a debug line), so the loss of the auto-attach is visible. The CLI's own way to reveal,
@@ -562,10 +562,41 @@ socket is stale it becomes the winner and launches a Chromium app window on the
 gateway host. Connecting ourselves fails closed — no listener, no reveal, nothing
 else — and Windows (a named pipe) skips it.
 
+*Attribution is not capability.* Both seam gates
+(`install.cli_lifecycle_env_support`, `install.cli_dashboard_socket_support`)
+answer a `SeamSupport` verdict plus a detail line, and the three values are not
+degrees of the same thing. `UNSUPPORTED` means the serving bundle was READ and a
+needle is gone — a real upstream capability gap, and the only verdict allowed to
+describe the installed CLI. `UNVERIFIED` means no bundle was read at all: no
+`@playwright/cli` package directory is attributable to the resolved launcher, no
+`playwright-core` tree serves the package, or the bundle was never read — absent,
+empty, past the source-size ceiling, or an I/O failure. Both still fail closed, so
+an `UNVERIFIED` host keeps the CLI's own lifecycle environment untouched exactly
+as before; what changes is what the log says.
+
+Both gates anchor on the resolved launcher ALONE, through
+`_cli_package_for_launcher`, and deliberately NOT on `_cli_package_dirs`. That
+list falls back to the standalone install prefix, which is right for a revision
+lookup — a fallback revision beats no revision — and wrong for a seam verdict,
+which is a claim about the CLI that will actually run. A package belonging to a
+different install answering for a launcher whose own package could not be found
+is the same misreport in a narrower case. The
+`UNVERIFIED` line names the launcher it could not attribute and the remedy
+(`install.ATTRIBUTION_REMEDY` — install the CLI where `cli_path` resolves it),
+because a capability claim there points the operator at a CLI upgrade that cannot
+apply: the seams are present in the bundled 0.1.17 and in 0.1.19 alike, and what
+varied was only whether the launcher's ancestry reached the package. `PATH` is not
+a launcher source, so re-admitting a version-manager shim is deliberately NOT the
+remedy. Each line is emitted once per distinct reason rather than once per session
+start, keyed on the message in `launch._warned_lifecycle_losses` and
+`launcher._warned_layout_losses`; a reason that CHANGED is a different host state
+and speaks again, so a host moving between `UNVERIFIED` and `UNSUPPORTED` is not
+held at its first reading.
+
 *Probe note.* The reveal rests on two byte-level needles in the serving
 `playwright-core` package's core bundle (the `coreBundle` file under its `lib`
 directory, beside the package's `browsers.json`), measured by
-`install.cli_dashboard_socket_supported` before every reveal attempt:
+`install.cli_dashboard_socket_support` before every reveal attempt:
 `makeSocketPath("dashboard", "app")` (the dashboard's singleton socket) and
 `process.env.PWTEST_SOCKETS_DIR ||` (the socket-root hook the launcher and the
 `show` child share). The answer is cached by the bundle's path, mtime and size,
@@ -575,7 +606,7 @@ WARNING above. Both needles are present in `@playwright/cli@0.1.18` and in
 `playwright-core@1.63.0-alpha-2026-08-31` (the dependency of `@playwright/cli@0.1.19`).
 When an upgrade turns the WARNING on, re-measure the needles against the new
 bundle and either update them or cut the reveal unit (`_reveal`,
-`_dashboard_socket_path`, `install.cli_dashboard_socket_supported`, their tests
+`_dashboard_socket_path`, `install.cli_dashboard_socket_support`, their tests
 and this paragraph) — the page still opens and frames without it; only the
 auto-attach is lost.
 

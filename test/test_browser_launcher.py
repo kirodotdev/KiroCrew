@@ -120,7 +120,11 @@ def _fresh_launcher_state(monkeypatch: pytest.MonkeyPatch):
         "ui_socket_env",
         lambda env: {launcher.SOCKETS_ENV: SOCKET_ROOT, DAEMON_ENV: DAEMON_ROOT},
     )
-    monkeypatch.setattr(launcher, "cli_dashboard_socket_supported", lambda: True)
+    monkeypatch.setattr(
+        launcher,
+        "cli_dashboard_socket_support",
+        lambda: (launcher.SeamSupport.SUPPORTED, ""),
+    )
     # No reveal socket exists in tests; the helper must stay silent about that.
     monkeypatch.setattr(launcher, "_reveal", lambda session, env: None)
 
@@ -621,7 +625,11 @@ class TestReveal:
         assert launcher._dashboard_socket_path({}) is None
         assert launcher._dashboard_socket_path({"TMPDIR": "/tmp", "USER": "u"}) is None
         # An installed CLI whose bundle does not carry the layout: no reveal.
-        monkeypatch.setattr(launcher, "cli_dashboard_socket_supported", lambda: False)
+        monkeypatch.setattr(
+            launcher,
+            "cli_dashboard_socket_support",
+            lambda: (launcher.SeamSupport.UNSUPPORTED, ""),
+        )
         assert launcher._dashboard_socket_path({launcher.SOCKETS_ENV: "/pw/root"}) is None
 
     def test_windows_skips_the_reveal_silently(
@@ -630,7 +638,7 @@ class TestReveal:
         """The dashboard listens on a named pipe there and the human picks the
         session from the sidebar; no path, and no warning about a lost layout."""
         monkeypatch.setattr(launcher.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(launcher, "_layout_warned", False)
+        monkeypatch.setattr(launcher, "_warned_layout_losses", set())
         with caplog.at_level(logging.WARNING, logger=launcher.__name__):
             assert launcher._dashboard_socket_path({launcher.SOCKETS_ENV: "/pw/root"}) is None
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -641,14 +649,61 @@ class TestReveal:
         """An upstream rename must be visible in the gateway log, not a silent
         loss of the auto-attach -- and said once, not on every launch."""
         monkeypatch.setattr(launcher.platform_compat, "IS_WINDOWS", False)
-        monkeypatch.setattr(launcher, "cli_dashboard_socket_supported", lambda: False)
-        monkeypatch.setattr(launcher, "_layout_warned", False)
+        monkeypatch.setattr(
+            launcher,
+            "cli_dashboard_socket_support",
+            lambda: (launcher.SeamSupport.UNSUPPORTED, ""),
+        )
+        monkeypatch.setattr(launcher, "_warned_layout_losses", set())
         with caplog.at_level(logging.WARNING, logger=launcher.__name__):
             assert launcher._dashboard_socket_path({launcher.SOCKETS_ENV: "/pw/root"}) is None
             assert launcher._dashboard_socket_path({launcher.SOCKETS_ENV: "/pw/root"}) is None
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
         assert "dashboard socket layout" in warnings[0].getMessage()
+
+    def test_an_unverified_layout_warns_about_attribution_not_capability(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """No bundle was read, so the log must not claim the CLI lacks the layout."""
+        monkeypatch.setattr(launcher.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            launcher,
+            "cli_dashboard_socket_support",
+            lambda: (launcher.SeamSupport.UNVERIFIED, "no trusted playwright-cli launcher"),
+        )
+        monkeypatch.setattr(launcher, "_warned_layout_losses", set())
+        with caplog.at_level(logging.WARNING, logger=launcher.__name__):
+            assert launcher._dashboard_socket_path({launcher.SOCKETS_ENV: "/pw/root"}) is None
+        message = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING][0]
+        assert "could not verify" in message
+        assert "no trusted playwright-cli launcher" in message
+        assert launcher.ATTRIBUTION_REMEDY in message
+        assert "does not expose" not in message
+
+    def test_a_changed_layout_reason_speaks_again(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """Silencing a repeat must not silence a host that moved to another state.
+
+        A once-ever flag would hold an UNVERIFIED host at its first reading and
+        never report the UNSUPPORTED it later became.
+        """
+        monkeypatch.setattr(launcher.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(launcher, "_warned_layout_losses", set())
+        verdicts = [
+            (launcher.SeamSupport.UNVERIFIED, "reason one"),
+            (launcher.SeamSupport.UNVERIFIED, "reason one"),
+            (launcher.SeamSupport.UNSUPPORTED, ""),
+        ]
+        monkeypatch.setattr(launcher, "cli_dashboard_socket_support", lambda: verdicts.pop(0))
+        with caplog.at_level(logging.WARNING, logger=launcher.__name__):
+            for _ in range(3):
+                assert launcher._dashboard_socket_path({launcher.SOCKETS_ENV: "/pw/root"}) is None
+        messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(messages) == 2
+        assert "reason one" in messages[0]
+        assert "does not expose" in messages[1]
 
     @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets only")
     def test_sends_one_reveal_line_to_the_running_dashboard(self, request: pytest.FixtureRequest):

@@ -56,7 +56,11 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.browser_cli.install import cli_lifecycle_env_supported
+from kiro_crew.browser_cli.install import (
+    ATTRIBUTION_REMEDY,
+    SeamSupport,
+    cli_lifecycle_env_support,
+)
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -166,6 +170,39 @@ def _operator_base(configured: str) -> Path | None:
     return path
 
 
+#: One warning per distinct lifecycle loss, keyed on the reason. A repeat of the
+#: SAME reason is silenced -- the gate is consulted on every session start, and
+#: an unattributable launcher otherwise logs one identical line per start -- while
+#: a reason that CHANGED is a different state and still speaks.
+_warned_lifecycle_losses: set[str] = set()
+
+
+def _warn_lifecycle_loss(support: SeamSupport, detail: str) -> None:
+    """Report why the CLI's lifecycle environment was left unchanged.
+
+    ``UNVERIFIED`` names the attribution that failed and what to do about it.
+    Only ``UNSUPPORTED`` -- both bundles read, a hook genuinely gone -- may
+    describe the installed CLI, because only then was the CLI measured. One
+    message for both claimed the capability gap either way, which sends the
+    operator to upgrade a CLI whose bundles already carry both hooks.
+    """
+    if support is SeamSupport.UNVERIFIED:
+        message = (
+            f"could not verify the playwright-cli daemon socket/session hooks: {detail}; "
+            f"leaving its lifecycle environment unchanged. To fix this, {ATTRIBUTION_REMEDY}. "
+            "The installed CLI's own capability was not measured."
+        )
+    else:
+        message = (
+            "installed playwright-cli does not expose the stable daemon "
+            "socket/session hooks; leaving its lifecycle environment unchanged"
+        )
+    if message in _warned_lifecycle_losses:
+        return
+    _warned_lifecycle_losses.add(message)
+    logger.warning("%s", message)
+
+
 def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     """Environment additions keeping daemon sockets reachable and discoverable.
 
@@ -190,11 +227,9 @@ def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     session_name = env.get(SESSION_ENV, "").strip()
     if not _session_leaf(session_name):
         return {}
-    if not cli_lifecycle_env_supported():
-        logger.warning(
-            "installed playwright-cli does not expose the stable daemon "
-            "socket/session hooks; leaving its lifecycle environment unchanged"
-        )
+    support, detail = cli_lifecycle_env_support()
+    if support is not SeamSupport.SUPPORTED:
+        _warn_lifecycle_loss(support, detail)
         return {}
     configured_sockets = env.get(SOCKETS_ENV, "").strip()
     configured_daemons = env.get(DAEMON_DIR_ENV, "").strip()
@@ -271,12 +306,15 @@ def ui_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     would otherwise have to re-derive). An operator-configured root is honoured
     as a BASE and namespaced under it, the same doctrine as
     :func:`browser_socket_env`; one of our own roots arriving by inheritance is
-    regenerated. Empty -- leaving the children on the CLI's default -- when the
-    installed CLI does not expose the hook, when the path would overflow the
-    AF_UNIX budget (a pod's long home), or when the directory cannot be
-    prepared owner-only. Performs filesystem I/O; event-loop callers offload it.
+    regenerated. When the hook cannot be confirmed on the CLI that would run, a
+    warning explains why and the result is empty, leaving the children on the
+    CLI's default. The result is also empty when the path would overflow the
+    AF_UNIX budget (a pod's long home), or when the directory cannot be prepared
+    owner-only. Performs filesystem I/O; event-loop callers offload it.
     """
-    if not cli_lifecycle_env_supported():
+    support, detail = cli_lifecycle_env_support()
+    if support is not SeamSupport.SUPPORTED:
+        _warn_lifecycle_loss(support, detail)
         return {}
     configured = env.get(SOCKETS_ENV, "").strip()
     if configured and not Path(configured).is_absolute():
