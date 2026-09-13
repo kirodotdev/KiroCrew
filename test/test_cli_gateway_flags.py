@@ -34,6 +34,7 @@ def _ns(**kwargs) -> argparse.Namespace:
         "json_ready": False,
         "approval": None,
         "test_mode": False,
+        "supervised": False,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -56,6 +57,7 @@ class TestNoFlags:
             "json_ready": False,
             "approval_mode": None,
             "test_mode": False,
+            "supervised": False,
         }
 
     def test_legacy_flags_pass_through(self):
@@ -378,3 +380,54 @@ class TestIsReadOnlyTool:
         # ["read", "setter", "field"]. None equal an entry in
         # _WRITE_INDICATORS (which lists "set", not "setter").
         assert _is_read_only_tool("read_setter_field") is True
+
+
+
+# ─── --supervised resolution (flag OR env, implies --no-open) ────────────
+
+
+class TestSupervisedResolution:
+    """`--supervised` (or KIROCREW_SUPERVISED=1) is resolved to one bool and
+    forces --no-open; without it the resolved value is False."""
+
+    def test_supervised_absent_by_default(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SUPERVISED", raising=False)
+        result = _resolve_gateway_args(_ns())
+        assert result["supervised"] is False
+        # It does not silently flip --no-open when not supervised.
+        assert result["no_open"] is False
+
+    def test_flag_enables_and_implies_no_open(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SUPERVISED", raising=False)
+        result = _resolve_gateway_args(_ns(supervised=True))
+        assert result["supervised"] is True
+        # Supervised has no terminal/browser of its own — --no-open is forced
+        # even though the flag was not passed.
+        assert result["no_open"] is True
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes"])
+    def test_env_enables(self, monkeypatch, value):
+        monkeypatch.setenv("KIROCREW_SUPERVISED", value)
+        result = _resolve_gateway_args(_ns(supervised=False))
+        assert result["supervised"] is True
+        assert result["no_open"] is True
+
+    @pytest.mark.parametrize("value", ["", "0", "off", "no", "false"])
+    def test_env_falsey_does_not_enable(self, monkeypatch, value):
+        monkeypatch.setenv("KIROCREW_SUPERVISED", value)
+        result = _resolve_gateway_args(_ns(supervised=False))
+        assert result["supervised"] is False
+        assert result["no_open"] is False
+
+    def test_flag_wins_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SUPERVISED", raising=False)
+        assert _resolve_gateway_args(_ns(supervised=True))["supervised"] is True
+
+    def test_supervised_leaves_tunnel_and_crons_untouched(self, monkeypatch):
+        # --supervised forces publishing off inside run_gateway (loopback-only
+        # sidecar), but the RESOLVER only sets supervised + no_open; it must not
+        # rewrite the no_tunnel/no_crons flags a caller passed.
+        monkeypatch.delenv("KIROCREW_SUPERVISED", raising=False)
+        result = _resolve_gateway_args(_ns(supervised=True))
+        assert result["no_tunnel"] is False
+        assert result["no_crons"] is False

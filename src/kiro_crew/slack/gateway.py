@@ -1684,6 +1684,12 @@ class GatewayOrchestrator:
     #: AttributeError.
     _mcp_stub_servers_started: frozenset[str] = frozenset()
 
+    #: Declared on the class, like ``_mcp_stub_servers_started``, so it is total
+    #: for every construction path — including the ``__new__`` fixtures that
+    #: bypass ``__init__``. A partially built orchestrator reading it must get
+    #: "not supervised" (today's behaviour), not AttributeError.
+    _supervised: bool = False
+
     def __init__(
         self,
         cfg: KiroCrewConfig,
@@ -1695,6 +1701,7 @@ class GatewayOrchestrator:
         json_ready: bool = False,
         approval_mode: str | None = None,
         test_mode: bool = False,
+        supervised: bool = False,
     ) -> None:
         # NOTE: test_heartbeat_prompt_deliver.py creates instances via __new__
         # (bypassing __init__). Update that fixture if new attributes are added.
@@ -1706,6 +1713,7 @@ class GatewayOrchestrator:
         self._json_ready = json_ready
         self._approval_mode = approval_mode
         self._test_mode = test_mode
+        self._supervised = supervised
         creds = cfg.load_credentials()
         self._app_token = creds.get(CRED_SLACK_APP_TOKEN, "")
         self._bot_token = creds.get(CRED_SLACK_BOT_TOKEN, "")
@@ -2212,6 +2220,13 @@ class GatewayOrchestrator:
         (``dashboard/remote_mirror``), never registers on ``/api/ws``, and so is
         not in ``_ws_clients`` at all.
         """
+        # Supervised mode: the host process has promised to render approval
+        # prompts on its own surface (the CLI TUI, per the bridge approval
+        # contract), so a prompt is answerable even though no dashboard-user
+        # websocket is registered here. Reporting "attached" is what stops a
+        # spawn from being refused as unreachable in a headless sidecar.
+        if self._supervised:
+            return True
         if self.dashboard_state is None:
             return False
         try:
@@ -6038,6 +6053,12 @@ class GatewayOrchestrator:
 
     async def _init_heartbeat(self) -> None:
         """Initialize and start the heartbeat service."""
+        # Supervised mode runs no heartbeat: it is the always-on background
+        # session that processes the HEARTBEAT.md task queue for a standalone
+        # gateway, which a host-driven sidecar does not own. Skipping it keeps
+        # the sidecar from opening a session slot the host never drives.
+        if self._supervised:
+            return
         startup = getattr(self, "_memory_startup", None)
         if startup is not None and (startup.stopped or not startup.ready):
             raise RuntimeError("Heartbeat service cannot start before memory preparation completes")
@@ -10482,6 +10503,15 @@ class GatewayOrchestrator:
         stub change recorded for the next gateway start is not applied early as a
         side effect of that unrelated restart.
         """
+        # Supervised mode skips the broker entirely. Its daemon (gatewayd)
+        # detaches from this process group and survives the reap, orphaning a
+        # process and leaving a run-secret behind on every launch; a supervised
+        # sidecar's spawn slice does not need MCP stubbing, so not starting it is
+        # both correct and the fix for that orphan. Sessions fall back to the
+        # per-session MCP path exactly as they do when no server is stubbed.
+        if self._supervised:
+            logger.info("Supervised mode: skipping mcp-gateway broker")
+            return
         cfg_gw = self._cfg.mcp_gateway
         stubs = frozenset(cfg_gw.stub_servers) if stub_servers is None else stub_servers
         if not stubs:
@@ -12714,7 +12744,10 @@ class GatewayOrchestrator:
         # Persisted Crew work and legacy channel agents can dispatch providers
         # immediately when resumed, so start them only after the shared memory
         # barrier. The dashboard control shell existed throughout preparation.
-        if not self._no_dashboard:
+        # Skipped under supervision: these resume prior channel-agent and chat
+        # sessions, which a host-driven sidecar neither owns nor surfaces;
+        # restoring them would dispatch providers for work no client will read.
+        if not self._no_dashboard and not self._supervised:
             self._start_dashboard_workers_after_memory_ready()
 
         # These services can run memory-backed work as soon as they start.
@@ -12923,6 +12956,10 @@ class GatewayOrchestrator:
             print("👻 MCP probe timed out — continuing without full probe")
 
         # ── Start background session (this IS gated on the probe) ──
+        # Skipped under supervision: the background session is the always-warm
+        # slot for dashboard/channel chat, which a supervised sidecar does not
+        # serve; starting it only spends a session pool slot and its warm-up
+        # work the host never uses.
         async def _start_bg_session() -> None:
             try:
                 assert self.sessions is not None
@@ -12931,7 +12968,8 @@ class GatewayOrchestrator:
             except Exception:
                 logger.warning("Background session start failed", exc_info=True)
 
-        asyncio.create_task(_start_bg_session())
+        if not self._supervised:
+            asyncio.create_task(_start_bg_session())
 
         # Stale-asset watchdog: detects when an update prunes the running
         # install's static assets and triggers graceful shutdown so the
@@ -13954,6 +13992,7 @@ async def run_gateway(
     json_ready: bool = False,
     approval_mode: str | None = None,
     test_mode: bool = False,
+    supervised: bool = False,
 ) -> None:
     """Start the Slack Socket Mode gateway (blocks until shutdown).
 
@@ -13975,7 +14014,13 @@ async def run_gateway(
     # as soon as the gateway is listening. Set unconditionally so a False here
     # also CLEARS a value a previous gateway left behind in the same process
     # (the test harness boots more than one), rather than letting it leak.
-    set_publish_disabled(no_tunnel)
+    #
+    # Supervised mode forces publishing off. A supervised sidecar is reached
+    # only over loopback by its host, never remotely, so it must not publish a
+    # tunnel; this is also what keeps the tunnel's blocking connect off the boot
+    # path, so READY prints deterministically instead of parking on
+    # ``await setup_tunnel`` when a config left ``tunnel.enabled`` on.
+    set_publish_disabled(no_tunnel or supervised)
 
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE before any service spins up.
@@ -14107,6 +14152,7 @@ async def run_gateway(
         json_ready=json_ready,
         approval_mode=approval_mode,
         test_mode=test_mode,
+        supervised=supervised,
     )
     try:
         await orchestrator.run()

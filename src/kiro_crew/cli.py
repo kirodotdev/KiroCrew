@@ -489,6 +489,15 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     approval = getattr(args, "approval", None)
     no_open = getattr(args, "no_open", False)
     test_mode = bool(getattr(args, "test_mode", False))
+    # Supervised mode is enabled by EITHER the flag or the env var so a host
+    # that cannot easily append a flag (or that spawns through a wrapper) can
+    # still request it. It implies --no-open: a supervised sidecar has no
+    # terminal or browser to open, and the host owns the UI surface.
+    supervised = bool(getattr(args, "supervised", False)) or os.environ.get(
+        "KIROCREW_SUPERVISED"
+    ) in ("1", "true", "TRUE", "yes")
+    if supervised:
+        no_open = True
     if test_mode:
         # Bundle defaults; explicit flags above take precedence (they are
         # already populated in the locals when the user passed them).
@@ -572,6 +581,7 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
         "json_ready": json_ready,
         "approval_mode": approval,
         "test_mode": test_mode,
+        "supervised": supervised,
     }
 
 
@@ -1375,6 +1385,19 @@ Examples:
             "that widens dashboard.url off loopback still does. Use for an "
             "instance that must not publish a tunnel (a Dev Fleet pod passes "
             "this); reach it with `ssh -L` instead."
+        ),
+    )
+    gw_parser.add_argument(
+        "--supervised",
+        action="store_true",
+        help=(
+            "Run as a supervised sidecar of a host process (the Rust CLI). "
+            "Binds the dashboard socket and prints KIROCREW_READY before any "
+            "optional service, then does NOT open a browser, publish a tunnel, "
+            "start the background/heartbeat session or session restore, or "
+            "run the mcp-gateway broker. Also enabled by KIROCREW_SUPERVISED=1. "
+            "The host promises to render approval prompts, so a spawn approval "
+            "is never refused as unreachable."
         ),
     )
     gw_parser.add_argument(

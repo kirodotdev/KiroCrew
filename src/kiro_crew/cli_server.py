@@ -2153,6 +2153,7 @@ async def _gateway(
     json_ready: bool = False,
     approval_mode: str | None = None,
     test_mode: bool = False,
+    supervised: bool = False,
 ) -> None:
     """Load config and start the gateway (dashboard + configured messaging channels)."""
     # Activate mise once at gateway start so every subprocess we
@@ -2219,6 +2220,7 @@ async def _gateway(
         json_ready=json_ready,
         approval_mode=approval_mode,
         test_mode=test_mode,
+        supervised=supervised,
     )
 
 
