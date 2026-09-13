@@ -529,7 +529,13 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
 # answered with method-not-found rather than reaching the turn.
 # opencode is not a member either: its ``initialize`` result advertises
 # ``sessionCapabilities`` of close, fork, list and resume, and nothing else.
-ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# pi joined on slice-7 evidence: the adapter answers ``_session/steer`` with
+# ``{queued: true}`` while a turn streams, strips Crew's ``<user_message>`` framing,
+# injects via pi's own mid-turn ``sendUserMessage(..., {deliverAs: "steer"})``, and
+# rides the ``steering_queued``/``steering_consumed`` notifications on
+# ``session/update`` exactly like kiro's (``pi-session.ts steer()``, pinned by
+# ``test/fixtures/acp_frames/pi/steer.jsonl``).
+ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_PI})
 
 # Backends that can serve a MANUAL ``/compact`` (the user-typed slash command).
 # Both members act on the ``/compact`` prompt that ``AcpProvider.compact()``

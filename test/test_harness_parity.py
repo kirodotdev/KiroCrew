@@ -252,6 +252,9 @@ def test_steer_is_opt_in() -> None:
     assert "ACP_BACKENDS_STEER" in source
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_STEER
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
+    # pi on slice-7 evidence: the adapter implements `_session/steer` with the
+    # kiro notification dialect (queued/consumed), pinned by the steer corpus.
+    assert ACP_BACKEND_PI in ACP_BACKENDS_STEER
 
 
 def test_mcp_config_hot_reload_is_opt_in() -> None:
