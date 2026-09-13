@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio as _asyncio
+import logging as _logging
+import time as _time
+from typing import TYPE_CHECKING, Any
 
 from ._component import ManagerComponent
 
+_glue_logger = _logging.getLogger(__name__)
+
 if TYPE_CHECKING:
+    from kiro_crew.taskq import dependency as _dependency
+
     from ..subagent import (
         _CLK_TCK,
         _REAPER_INTERVAL,
@@ -54,6 +61,221 @@ class OrphanStallMonitor(ManagerComponent):
             self._manager._reaper_task = asyncio.create_task(self._manager._reaper_loop())
             # One-shot orphan reconciliation on startup
             self._manager._reconcile_task = asyncio.create_task(self._manager._reconcile_orphans())
+            # Durable rows that survived the restart are dispatched once the
+            # loop runs; the dependency coordinator rebuilds its per-scope
+            # schedule from the same rows (after ``WaitLedger.rebuild`` ran in
+            # ``open_default_store``) and the pump is armed for its first
+            # deadline.
+            self._manager._admission.taskq_boot_dispatch()
+            self._manager._taskq_pump()
+
+    # ── taskq pump: dependency coordinator + wait deadlines ──────────────────
+
+    def _dependency_coordinator_impl(self) -> Any:
+        """The manager's ONE dependency coordinator (``taskq.dependency``), or None.
+
+        Built lazily from ``agent.dependency_*`` on first use, over the same
+        store the admission glue writes, and registered process-wide so the
+        main chat can read its scope schedules. None without a durable store:
+        the coordinator's whole point is a schedule that survives the run, so
+        with the queue disabled the run loop keeps its in-turn ladder.
+        """
+        return self.taskq_coordinator()
+
+    def taskq_coordinator(self) -> "_dependency.DependencyCoordinator | None":
+        """Build the manager's ONE coordinator, or return the built one.
+
+        The FIRST build reads every waiting row (``rebuild``), so a coroutine
+        caller takes ``ensure_coordinator_async`` /
+        ``SubagentManager.dependency_coordinator_async`` instead of this entry.
+        """
+        existing = getattr(self._manager, "_taskq_dependency_coordinator", None)
+        if existing is not None:
+            return existing
+        store = self._manager._admission.taskq_store()
+        if store is None:
+            return None
+        from kiro_crew.on_loop_db import OnLoopStoreError
+        from kiro_crew.taskq import dependency as _dependency
+
+        try:
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            agent_cfg: Any = KiroCrewConfig.load().agent
+        except Exception:
+            agent_cfg = None
+        coordinator = _dependency.coordinator_from_config(
+            store,
+            agent_cfg,
+            capacity=lambda: max(1, int(self._manager._max_concurrent)),
+            on_wake=self.taskq_on_wake,
+            wake_through=self.taskq_wake_through,
+            on_fail=self.taskq_on_wait_failed,
+        )
+        try:
+            restored = coordinator.rebuild()
+        except OnLoopStoreError:
+            # Not a rebuild failure: the guard's verdict names THIS caller as
+            # the defect. Swallowing it would report a restored schedule of 0
+            # and leave every waiter unscheduled with nothing said about why.
+            raise
+        except Exception:
+            restored = 0
+            _glue_logger.warning("dependency coordinator rebuild failed", exc_info=True)
+        if restored:
+            _glue_logger.info("dependency coordinator: %d waiter(s) restored", restored)
+        setattr(self._manager, "_taskq_dependency_coordinator", coordinator)
+        _dependency.register_coordinator(coordinator)
+        return coordinator
+
+    def taskq_wake_through(self, task_id: str, generation: int | None) -> bool:
+        """Coordinator seam: a LIVE run that yielded its lane slot re-enters
+        through admission (FIFO, capacity, stagger) -- never a direct wake.
+
+        Returns True when this manager owns the run and queued its resume;
+        the coordinator then writes nothing but the wake event. False hands
+        the row back to the coordinator (parked row, or a run that is gone).
+        """
+        info = self._manager._agents.get(task_id)
+        if info is None or info.done or info.reaped or not info._slot_released:
+            return False
+        if generation is not None and info._taskq_generation not in (0, generation):
+            return False
+        return self._manager._admission.request_resume(
+            info, reason="dependency scope recovered; resumed through admission"
+        )
+
+    def taskq_on_wake(self, task_id: str) -> None:
+        """Coordinator woke a PARKED row (``retry_wait -> queued``): arm the pump."""
+        if task_id in self._manager._agents:
+            return  # a live run's wake went through ``taskq_wake_through``
+        try:
+            _asyncio.get_event_loop().call_later(0.0, self._manager._drain_queue)
+        except RuntimeError:
+            pass
+
+    def taskq_on_wait_failed(self, task_id: str, reason: str) -> None:
+        """Coordinator failed a scope: release the run blocked on its wake."""
+        info = self._manager._agents.get(task_id)
+        if info is None or info.done:
+            return
+        info._wait_failed = str(reason or "dependency wait failed")
+        event = getattr(info, "_resume_event", None)
+        if event is not None:
+            event.set()
+
+    def _taskq_pump_impl(self) -> None:
+        """One pump pass: expire wait deadlines, tick due dependency scopes, re-arm.
+
+        Runs from every reaper sweep as the backstop and re-arms itself with a
+        one-shot timer at the coordinator's next ``retry_at`` so a scope is
+        woken when it is due, not on the next 60s sweep.
+        """
+        self.taskq_pump()
+
+    def taskq_pump(self) -> None:
+        admission = self._manager._admission
+        store = admission.taskq_store()
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and store is not None and type(admission).pump_off_loop:
+            pending = getattr(self._manager, "_taskq_tick_task", None)
+            if pending is not None and not pending.done():
+                return
+
+            live_store = store
+
+            async def _sweep() -> None:
+                try:
+                    admission.taskq_expire_waits_apply(
+                        await live_store.run(admission.taskq_expire_waits_store)
+                    )
+                    await admission.ensure_coordinator_async()
+                    coordinator = self.taskq_coordinator()
+                    if coordinator is None:
+                        return
+                    callbacks: list[Any] = []
+                    live_waiters = frozenset(
+                        (task_id, info._taskq_generation)
+                        for task_id, info in self._manager._agents.items()
+                        if not info.done and not info.reaped and info._slot_released
+                    )
+                    woken = await live_store.run(
+                        coordinator.tick, callbacks=callbacks, live_waiters=live_waiters
+                    )
+                    deadline = await live_store.run(coordinator.next_deadline)
+                    for callback in callbacks:
+                        callback()
+                    self.taskq_arm_tick(woken, deadline)
+                except Exception:
+                    _glue_logger.warning("taskq: dependency pump failed", exc_info=True)
+
+            setattr(
+                self._manager,
+                "_taskq_tick_task",
+                admission.track_store_task(loop.create_task(_sweep())),
+            )
+            return
+        try:
+            admission.taskq_expire_waits()
+        except Exception:
+            _glue_logger.debug("taskq: wait expiry failed", exc_info=True)
+        coordinator = self.taskq_coordinator()
+        if coordinator is None:
+            # No shared schedule: the runner adapters' time-based waits
+            # (TaskRunner steps / workflow calls parked in ``retry_wait``) are
+            # woken by their own ledger tick from this same sweep.
+            runner_tick = getattr(self._manager, "_runner_admission_tick", None)
+            if runner_tick is not None:
+                try:
+                    runner_tick()
+                except Exception:
+                    _glue_logger.debug("taskq: runner admission tick failed", exc_info=True)
+            return
+        try:
+            woken = coordinator.tick()
+        except Exception:
+            _glue_logger.warning("dependency coordinator tick failed", exc_info=True)
+            woken = []
+        self.taskq_arm_tick(woken, coordinator.next_deadline())
+
+    def taskq_arm_tick(self, woken: list[str], deadline: float | None) -> None:
+        """Apply the worker's result and re-arm its next loop-owned timer."""
+        if woken:
+            _glue_logger.info("dependency coordinator woke %d waiter(s)", len(woken))
+        if deadline is None:
+            return
+        delay = max(0.05, deadline - _time.time())
+        try:
+            loop = _asyncio.get_event_loop()
+        except RuntimeError:
+            return
+        pending = getattr(self._manager, "_taskq_pump_timer", None)
+        if pending is not None and not pending.cancelled():
+            when = pending.when()
+            now_loop = loop.time()
+            if now_loop < when <= now_loop + delay:
+                return  # an earlier (or equal) timer is still armed
+        # A later timer that is still armed simply fires a harmless extra pass;
+        # the earlier deadline gets its own one-shot.
+        setattr(self._manager, "_taskq_pump_timer", loop.call_later(delay, self._taskq_pump_fired))
+
+    def _taskq_pump_fired(self) -> None:
+        """The armed one-shot's callback: this handle is SPENT before the pass runs.
+
+        asyncio runs a timer whose ``when`` is within the loop's clock resolution of
+        now -- 15.625 ms wherever ``monotonic()`` rides the system tick, against ~1 ns
+        on Linux -- so a pass re-entering through this handle would read its own
+        ``when`` as a still-armed timer and arm nothing for the next rung. The
+        one-shot is the only tick between reaper sweeps, so every waiter behind that
+        scope would then wait for a sweep, or forever in a process with no reaper.
+        Clearing the handle before the pass states that a fired timer is spent, which
+        arm time cannot tell from a handle that is still to fire.
+        """
+        setattr(self._manager, "_taskq_pump_timer", None)
+        self.taskq_pump()
 
     async def _reconcile_orphans_impl(self) -> None:
         """Scan for orphaned agent folders from a prior gateway run.
@@ -426,19 +648,34 @@ class OrphanStallMonitor(ManagerComponent):
             # Wave liveness backstop: reconcile waves wedged by submissions
             # lost before the process boundary (see _sweep_stuck_waves).
             try:
-                self._manager._sweep_stuck_waves(now)
+                await self._manager._sweep_stuck_waves_async(now)
             except Exception:
                 logger.debug("Reaper: stuck-wave sweep failed", exc_info=True)
             # Digest hold deadline: release completed wave results that a
             # straggler (or a hung member) has been withholding.
             try:
-                self._manager._sweep_digest_holds(now)
+                await self._manager._sweep_digest_holds_async(now)
             except Exception:
                 logger.debug("Reaper: digest-hold sweep failed", exc_info=True)
             try:
                 self._manager._sweep_conversations(now)
             except Exception:
                 logger.debug("Reaper: conversation sweep failed", exc_info=True)
+            # Wait deadlines + due dependency scopes: the pump's own one-shot
+            # timer normally fires first; this sweep is the backstop.
+            try:
+                self._manager._taskq_pump()
+            except Exception:
+                logger.debug("Reaper: taskq pump failed", exc_info=True)
+            # A store that failed to open is re-attempted here rather than at the
+            # next restart: the conditions kept as a refusal (a lock, a busy or
+            # full disk, a read-only mount) are transient, and while one stands
+            # EVERY spawn is refused. Same rule as the conversation-registry
+            # rebuild above, and its backoff deadline is what bounds the cost.
+            try:
+                self._manager._admission.taskq_reopen_if_due()
+            except Exception:
+                logger.debug("Reaper: task-store re-open failed", exc_info=True)
             try:
                 compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
             except Exception:

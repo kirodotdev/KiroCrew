@@ -956,6 +956,85 @@ class TestVolumeClassification:
         assert windows_acl._volume_is_local(fake, Path("relative/gh")) is (sys.platform == "win32")
 
 
+class TestRemoteVolumeVerdict:
+    """`volume_is_remote`, the tri-state sibling `taskq` picks a journal mode from.
+
+    Runs on every runner: the root is derived with `ntpath`, so the Windows
+    shapes are real strings here rather than something only a Windows host can
+    produce, and the drive type comes from the injected handle.
+    """
+
+    @pytest.mark.parametrize(
+        "drive_type,expected",
+        [
+            (4, True),
+            (3, False),
+            (2, False),
+            (5, False),
+            (6, False),
+            (0, None),
+            (1, None),
+            (9, None),
+        ],
+    )
+    def test_the_drive_type_decides(self, drive_type, expected) -> None:
+        fake = _FakeDlls()
+        fake.drive_type = drive_type
+        assert windows_acl._volume_remote_verdict(fake, Path("C:/kiro/tasks.db")) is expected
+
+    def test_a_unc_path_is_classified_from_the_share_root(self) -> None:
+        seen: list[str] = []
+        fake = _FakeDlls()
+        fake.GetDriveTypeW = lambda root: (seen.append(root), 4)[1]
+        verdict = windows_acl._volume_remote_verdict(fake, Path(r"\\server\share\kiro\tasks.db"))
+        assert verdict is True
+        assert seen == ["\\\\server\\share\\"]
+
+    def test_a_mapped_drive_is_classified_from_its_letter_root(self) -> None:
+        seen: list[str] = []
+        fake = _FakeDlls()
+        fake.GetDriveTypeW = lambda root: (seen.append(root), 4)[1]
+        verdict = windows_acl._volume_remote_verdict(fake, Path(r"Z:\kiro\crew\tasks.db"))
+        assert verdict is True
+        assert seen == ["Z:\\"]
+
+    def test_a_local_drive_is_not_remote(self) -> None:
+        fake = _FakeDlls()
+        fake.drive_type = 3  # DRIVE_FIXED
+        assert windows_acl._volume_remote_verdict(fake, Path(r"C:\Users\me\.kiro")) is False
+
+    def test_a_path_with_no_volume_root_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No root, no verdict: unknown, which is not the same fact as local.
+
+        The root comes from `ntpath.abspath`, which on Windows resolves a
+        drive-less string against the CURRENT drive and so always yields one -- a
+        POSIX-shaped path names no volume only off Windows, where `abspath` has no
+        drive to supply. The missing root is therefore driven directly, so the fact
+        holds on every runner, and the drive type is made unaskable to prove the
+        unknown came from the absent root rather than from a queried volume.
+        """
+        fake = _FakeDlls()
+        fake.GetDriveTypeW = lambda root: pytest.fail(f"queried the drive type of {root!r}")
+        monkeypatch.setattr(windows_acl, "_volume_root", lambda _path: None)
+        assert windows_acl._volume_remote_verdict(fake, Path("/home/me/.kiro")) is None
+
+    def test_the_public_form_classifies_through_the_dll_handle(self, reader) -> None:
+        fake = reader(_FakeDlls())
+        fake.drive_type = 4  # DRIVE_REMOTE
+        assert windows_acl.volume_is_remote(r"\\server\share\tasks.db") is True
+        fake.drive_type = 3  # DRIVE_FIXED
+        assert windows_acl.volume_is_remote(r"C:\kiro\tasks.db") is False
+
+    def test_the_public_form_refuses_where_there_is_no_volume_to_classify(self) -> None:
+        """`_load` refuses off Windows, so the CALLER -- not this module -- decides
+        what that means (`platform_compat.path_volume_is_remote` answers None)."""
+        if sys.platform == "win32":
+            assert windows_acl.volume_is_remote("C:\\") is False
+            return
+        with pytest.raises(windows_acl.AclUnavailable):
+            windows_acl.volume_is_remote("/home/me/.kiro")
+
+
 # ── the real ACL read ────────────────────────────────────────────────────────
 
 

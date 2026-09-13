@@ -1,24 +1,27 @@
-"""Admission behavior for the SubagentManager facade."""
+"""The spawn gate: every policy and capacity check between a request and its row (``spawn_impl``)."""
 
 from __future__ import annotations
 
+import logging as _logging
 from typing import TYPE_CHECKING
 
-from ._component import ManagerComponent
+from .._component import ManagerComponent
+from .types import ClaimPoint, PreparedSpawn
+
+_glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
 if TYPE_CHECKING:
-    from ..subagent import (
+    pass
+
+    from ...subagent import (
         KiroCrewConfig,
-        SpawnApprovalUnreachable,
-        Stats,
         SubagentInfo,
-        _context_groups_field,
         _validate_agent,
+        _validate_app_agent_ownership,
         _vet_spawn_governance,
         asyncio,
         cached_admission_check,
         check_memory_available,
-        create_agent_folder,
         logger,
         platform_compat,
         redact_credentials,
@@ -30,10 +33,14 @@ if TYPE_CHECKING:
     )
 
 
-class SpawnAdmissionCoordinator(ManagerComponent):
-    """Own admission transitions while state remains facade-owned."""
-
+class _GateMixin(ManagerComponent):
     __slots__ = ()
+
+    if TYPE_CHECKING:
+        # Sibling-mixin methods this module reaches through ``self``; typing only.
+        CLAIM_UNAVAILABLE: str
+
+        TASK_STORE_UNAVAILABLE_CODE: str
 
     def spawn_impl(
         self,
@@ -60,8 +67,14 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
+        _store_accepted: bool = False,
+        _prepare_only: bool = False,
+        _stop_before_claim: bool = False,
+        _claimed: "tuple[int, bool, str] | None" = None,
+        _window_hint: "bool | None" = None,
+        _child_registration: bool = True,
         _memory_mode: str | None = None,
-    ) -> SubagentInfo | None:
+    ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
 
         Approval priority (first match wins):
@@ -127,9 +140,13 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # never registers and never completes — if it weren't counted here,
         # batch_members_pending() would see submitted < expected FOREVER and
         # the wave digest would never fire, permanently stranding every
-        # sibling's held result. A queued member re-enters
-        # spawn() via _drain_queue — never double-count it.
-        if batch_id and not _from_queue:
+        # sibling's held result. Counted exactly ONCE, on the FIRST entry: a
+        # queued member re-enters via _drain_queue and an accepted
+        # ``spawn_async`` member re-enters with ``_store_accepted`` -- neither
+        # is a new submission. The prepare pass IS the first entry, so a
+        # member ``prepare_spawn`` refuses is counted like any other refusal,
+        # which is what makes ``/api/spawn``'s ``counted: true`` true.
+        if batch_id and not _from_queue and not _store_accepted:
             _bs = self._manager._batch_submitted.setdefault(batch_id, [0, max(0, int(batch_total))])
             _bs[0] += 1
             self._manager._batch_progress_ts[batch_id] = time.time()
@@ -187,8 +204,36 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 )
             )
 
+        def _refuse_row(info: SubagentInfo) -> SubagentInfo:
+            """A policy refusal of a spawn whose row ALREADY exists (a drained
+            row the pump re-checks) marks that row failed in the same step,
+            so the refusal the caller sees is also the store's verdict and
+            the pump can never dispatch work that was refused."""
+            if _from_queue and info.error:
+                self._manager._admission.taskq_fail(agent_id, info.error)
+            return self._manager._announce_rejection(info)
+
+        # The mutable policy gates (memory identity, cwd allowlist,
+        # governance) run ONCE per submission: on the first entry, and again
+        # when the pump drains a stored row (the re-check before dispatch). An
+        # accepted ``spawn_async`` row re-entering with ``_store_accepted``
+        # passed them moments ago in ``prepare_spawn`` and must not be refused
+        # AFTER its row was committed -- a refusal here would leave executable
+        # work queued while the caller was told it was refused.
+        _gate = not _store_accepted and _claimed is None
+        # ``_claimed`` is the second half of the event-loop dispatcher's split:
+        # the first half stopped at ``_stop_before_claim`` with every gate
+        # passed AND the slot reserved (running count + stagger token taken
+        # synchronously), the claim was taken on the writer thread, and this
+        # re-entry goes straight to registration, CONSUMING that reservation.
+        # The capacity gates are not re-run: the reservation is the slot, and a
+        # second check would read our own reservation as a full cap.
+        _dispatch_now = _claimed is not None
+
         # Freeze before queueing or awaiting approval; a replacement parent must
-        # not change the mode of work already admitted under its predecessor.
+        # not change the mode of work already admitted under its predecessor. A
+        # re-entry carries the frozen mode in its params, so this only re-checks
+        # it.
         try:
             if _memory_mode is None:
                 resolver = self._manager._memory_mode_for_session
@@ -202,7 +247,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             }:
                 raise ValueError("unknown memory mode")
         except Exception:
-            return self._manager._announce_rejection(
+            return _refuse_row(
                 SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
@@ -219,12 +264,12 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         try:
             if not isinstance(memory_store, str):
                 raise ValueError("the supplied memory identity is malformed")
-            if memory_store:
+            if memory_store and _gate:
                 from kiro_crew.memory_stores import require_memory_store
 
                 memory_store = require_memory_store(memory_store)
         except (OSError, ValueError) as exc:
-            return self._manager._announce_rejection(
+            return _refuse_row(
                 SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
@@ -237,112 +282,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 )
             )
 
-        # --- Memory guard: refuse to spawn if system memory is critically low ---
-        try:
-            min_mem = KiroCrewConfig.load().agent.spawn_min_memory_gb
-        except Exception:
-            min_mem = 4.0
-        mem_ok, avail_gb = check_memory_available(min_gb=min_mem)
-        if not mem_ok:
-            logger.warning(
-                "Subagent spawn refused: only %.2f GB available (min %.1f GB required)",
-                avail_gb,
-                min_mem,
-            )
-            sel().log_tool_invocation(
-                session_key=parent_session_key or "",
-                source="subagent",
-                tool_name="spawn_run",
-                outcome="refused_low_memory",
-                metadata={
-                    "available_gb": avail_gb,
-                    "min_gb": min_mem,
-                    "task": _redacted_task[:120],
-                },
-            )
-            info = SubagentInfo(
-                id=agent_id,
-                task=_redacted_task,
-                agent=agent,
-                parent_session_key=parent_session_key,
-                done=True,
-                error=f"spawn refused: only {avail_gb:.1f} GB memory available (need {min_mem:.0f} GB)",
-                batch_id=batch_id,
-                batch_total=max(0, int(batch_total)),
-            )
-            return self._manager._announce_rejection(info)
-        if avail_gb < 0 and platform_compat.IS_LINUX:
-            # A negative reading means the guard did not run: /proc/meminfo is
-            # unreadable on the one platform where it must exist. Proceeding
-            # is the stated fail-open contract for an unmeasurable host, but
-            # on Linux it must be observable rather than indistinguishable
-            # from a healthy check. macOS/Windows structurally lack
-            # /proc/meminfo, so emitting there would fire on every spawn and
-            # drown the signal.
-            logger.warning(
-                "Subagent memory guard could not run (min %.1f GB); proceeding unchecked",
-                min_mem,
-            )
-            # Context-aware pass so a host with a companion loaded is not
-            # audited with the weaker OSS baseline (the census gate in
-            # test_security_posture.py pins the baseline site count). Imported
-            # here because this function runs rebound on the subagent module's
-            # namespace, where a module-level import in this file is inert
-            # (see _component.bind_component_globals). The slice comes AFTER
-            # redaction: slicing first could split a companion-only credential
-            # at the boundary and persist an unmatched fragment.
-            from kiro_crew.platform.context import redact_log_via_context
-
-            task_note = redact_log_via_context(_redacted_task)[:120]
-            sel().log_tool_invocation(
-                session_key=parent_session_key or "",
-                source="subagent",
-                tool_name="spawn_run",
-                outcome="memory_check_unavailable",
-                metadata={
-                    "min_gb": min_mem,
-                    "task": task_note,
-                },
-            )
-
-        # --- Admission gate: refuse NEW spawns while host memory posture is
-        # critical. Complements the absolute spawn_min_memory_gb floor above
-        # with the posture tier (resource_critical_gb) and shares its
-        # off-switch (agent.admission_gate) with the cron scheduler's deferral
-        # gate. This method is sync and runs on the gateway event loop, so it
-        # reads the CACHED off-thread verdict — never inline config/procfs
-        # I/O; bounded staleness is acceptable for pressure-shedding.
-        # In-flight subagents are untouched; direct user chat turns are
-        # not gated; fails open on an unknown posture. ---
-        admission = cached_admission_check()
-        if not admission.admitted:
-            logger.warning("Subagent spawn refused: %s", admission.reason)
-            sel().log_tool_invocation(
-                session_key=parent_session_key or "",
-                source="subagent",
-                tool_name="spawn_run",
-                outcome="refused_memory_critical",
-                metadata={
-                    "available_gb": admission.available_gb,
-                    "posture": admission.posture,
-                    "task": _redacted_task[:120],
-                },
-            )
-            info = SubagentInfo(
-                id=agent_id,
-                task=_redacted_task,
-                agent=agent,
-                parent_session_key=parent_session_key,
-                done=True,
-                error=f"spawn refused: {admission.reason}",
-                batch_id=batch_id,
-                batch_total=max(0, int(batch_total)),
-            )
-            return self._manager._announce_rejection(info)
-
         # --- CWD validation: reject bad paths before consuming a slot ---
-        resolved_cwd = ""
-        if cwd:
+        resolved_cwd = cwd if cwd and not _gate else ""
+        if cwd and _gate:
             try:
                 allowed_roots = KiroCrewConfig.load().agent.subagent_cwd_allowed_roots
             except Exception:
@@ -371,14 +313,14 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     batch_id=batch_id,
                     batch_total=max(0, int(batch_total)),
                 )
-                return self._manager._announce_rejection(info)
+                return _refuse_row(info)
 
         # --- Governance: spawn capability gate (blast-radius containment) ---
         # A policy/profile may disable sub-agent spawning entirely, or bound it
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
         # the PARENT surface so a per-app/per-surface profile contains what it
         # can spawn — even if the kiro side would allow it.
-        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app)
+        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app) if _gate else None
         if gov_spawn_err:
             logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
             sel().log_tool_invocation(
@@ -389,7 +331,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 error=gov_spawn_err,
                 metadata={"agent": agent, "task": _redacted_task[:120]},
             )
-            return self._manager._announce_rejection(
+            return _refuse_row(
                 SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
@@ -402,24 +344,77 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 )
             )
 
-        now = time.monotonic()
-        should_queue, slot_free = self._manager._should_stagger_queue(now)
-        if should_queue:
-            # A prevalidated app spawn must NOT sit in the queue. _agent_prevalidated
-            # skips the agent-directory ownership scan on drain (it was validated
-            # off the loop at request time); if it waited in the queue, the app
-            # could be disabled and its agent file removed meanwhile, and the drain
-            # would then run a same-named FOREIGN agent under the app's auto-approval
-            # without re-checking ownership. Fail closed: reject so the caller
-            # re-requests and re-validates ownership fresh. Only the app SpawnSDK
-            # sets _agent_prevalidated, and because such a spawn never enters the
-            # queue, a drain re-entry (_from_queue) never carries the flag.
-            if _agent_prevalidated:
-                logger.warning(
-                    "Rejecting prevalidated app spawn that would queue "
-                    "(agent=%s, app=%s): retry to revalidate ownership",
-                    agent,
-                    app,
+        # --- Persist BEFORE any resource check: write-before-ack. Policy refusals
+        # above (empty task, memory identity, cwd, governance) never reach the
+        # store, so a refused spawn leaves no row; from here on the row exists
+        # and every later exit either starts it, defers it, or marks it failed.
+        # A drained spawn (_from_queue) already has its row. ---
+        queue_params: dict = {
+            "task": task,
+            "parent_session_key": parent_session_key,
+            "agent": agent,
+            "max_turns": max_turns,
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+            "allowed_tools": allowed_tools,
+            "bare": bare,
+            "cwd": resolved_cwd,
+            "approval_mode": approval_mode,
+            "silent": silent,
+            "batch_id": batch_id,
+            "batch_total": batch_total,
+            "keep": keep,
+            "conversation_key": conversation_key,
+            "app": app,
+            "include_memory": include_memory,
+            "include_lessons": include_lessons,
+            "include_project": include_project,
+            # Queued alongside the context triple, and for the same
+            # reason: the drain re-enters `spawn` from this dict alone, so
+            # a field missing here is a scope the run silently regains.
+            # For the store that means a delegation which happened to hit
+            # the concurrency gate runs against the GLOBAL memory instead
+            # of the crew it was handed to.
+            "memory_store": memory_store,
+            "_memory_mode": _memory_mode,
+            "_agent_prevalidated": _agent_prevalidated,
+            "_preassigned_id": agent_id,
+        }
+        if _prepare_only:
+            # ``spawn_async``: every policy gate above has passed; hand back the
+            # row to write OFF-LOOP, then re-enter with ``_store_accepted``.
+            return PreparedSpawn(
+                agent_id=agent_id,
+                params=dict(queue_params),
+                record=self._manager._admission.taskq_build_record(
+                    agent_id,
+                    queue_params,
+                    parent_session_key=parent_session_key,
+                    memory_store=memory_store,
+                    app=app,
+                    model=model,
+                    allowed_tools=allowed_tools,
+                    approval_mode=approval_mode,
+                ),
+            )
+        if not _from_queue and not _store_accepted:
+            store_err = self._manager._admission.taskq_accept(
+                agent_id,
+                queue_params,
+                parent_session_key=parent_session_key,
+                memory_store=memory_store,
+                app=app,
+                model=model,
+                allowed_tools=allowed_tools,
+                approval_mode=approval_mode,
+            )
+            if store_err:
+                sel().log_tool_invocation(
+                    session_key=parent_session_key or "",
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="refused_task_store",
+                    metadata={"error": store_err[:200], "subagent_id": agent_id},
                 )
                 return self._manager._announce_rejection(
                     SubagentInfo(
@@ -428,15 +423,205 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                         agent=agent,
                         parent_session_key=parent_session_key,
                         done=True,
-                        error=(
-                            "spawn queue is at capacity; the app spawn was not queued "
-                            "to avoid a stale ownership check — retry to revalidate and "
-                            "spawn"
-                        ),
+                        error=f"spawn refused: task store unavailable ({store_err})",
+                        error_code=self.TASK_STORE_UNAVAILABLE_CODE,
                         batch_id=batch_id,
                         batch_total=max(0, int(batch_total)),
                     )
                 )
+        _durable = self._manager._admission.taskq_store() is not None
+
+        def _deferred(reason: str, refused: SubagentInfo) -> SubagentInfo | None:
+            # Pressure is a scheduling fact, not a verdict on the task: the row
+            # stays queued, holds nothing, and is re-checked after the admit
+            # wait. None when the store holds no such row (a legacy in-memory
+            # entry): there is nothing durable to park, so the caller refuses --
+            # ``_from_queue`` alone does not prove a row exists, because
+            # ``_queue`` also holds entries that never reached the store, so the
+            # write's BOOLEAN is what separates the two and is never discarded.
+            # WHERE that write runs is the caller's: a row this very call wrote
+            # (``_store_accepted``) is queued either way and posts it, a
+            # coroutine dispatcher (``_stop_before_claim``) owns every DB phase
+            # and gets it parked with both answers, and only a caller with no
+            # loop to hand it to takes ``BEGIN IMMEDIATE`` here -- on the loop
+            # that wait is the whole busy timeout, with chat and the heartbeat
+            # behind it.
+            queued = SubagentInfo(
+                id=agent_id,
+                task=_redacted_task,
+                agent=agent,
+                app=app,
+                parent_session_key=parent_session_key,
+                queued=True,
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+                include_memory=include_memory,
+                include_lessons=include_lessons,
+                include_project=include_project,
+            )
+            if _store_accepted:
+                self._manager._admission.taskq_defer_posted(agent_id, reason=reason)
+            elif _stop_before_claim:
+                self._manager._admission.park_defer(
+                    agent_id,
+                    reason=reason,
+                    parent_session_key=parent_session_key,
+                    batch_id=batch_id,
+                    queued=queued,
+                    refused=refused,
+                )
+                return queued
+            elif not self._manager._admission.taskq_defer(agent_id, reason=reason):
+                return None
+            self._manager._emit_queue_depth(parent_session_key, batch_id)
+            return queued
+
+        # --- Memory guard: defer (durable) or refuse (legacy) while host memory
+        # is critically low. ---
+        try:
+            min_mem = KiroCrewConfig.load().agent.spawn_min_memory_gb
+        except Exception:
+            min_mem = 4.0
+        mem_ok, avail_gb = (True, -1.0) if _dispatch_now else check_memory_available(min_gb=min_mem)
+        if not mem_ok:
+            logger.warning(
+                "Subagent spawn %s: only %.2f GB available (min %.1f GB required)",
+                "deferred" if _durable else "refused",
+                avail_gb,
+                min_mem,
+            )
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="deferred_low_memory" if _durable else "refused_low_memory",
+                metadata={
+                    "available_gb": avail_gb,
+                    "min_gb": min_mem,
+                    "task": _redacted_task[:120],
+                },
+            )
+            # Built ahead of the deferral, not after it: a parked defer whose
+            # write finds no row answers with this same refusal, off-loop.
+            info = SubagentInfo(
+                id=agent_id,
+                task=_redacted_task,
+                agent=agent,
+                parent_session_key=parent_session_key,
+                done=True,
+                error=f"spawn refused: only {avail_gb:.1f} GB memory available (need {min_mem:.0f} GB)",
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+            )
+            deferred = (
+                _deferred(f"low memory: {avail_gb:.1f} GB available, need {min_mem:.0f} GB", info)
+                if _durable
+                else None
+            )
+            if deferred is not None:
+                return deferred
+            return self._manager._announce_rejection(info)
+        if avail_gb < 0 and platform_compat.IS_LINUX and not _dispatch_now:
+            # A negative reading means the guard did not run: /proc/meminfo is
+            # unreadable on the one platform where it must exist. Proceeding
+            # is the stated fail-open contract for an unmeasurable host, but
+            # on Linux it must be observable rather than indistinguishable
+            # from a healthy check. macOS/Windows structurally lack
+            # /proc/meminfo, so emitting there would fire on every spawn and
+            # drown the signal.
+            logger.warning(
+                "Subagent memory guard could not run (min %.1f GB); proceeding unchecked",
+                min_mem,
+            )
+            # Context-aware pass so a host with a companion loaded is not
+            # audited with the weaker OSS baseline (the census gate in
+            # test_security_posture.py pins the baseline site count). Imported
+            # here because this function runs rebound on the subagent module's
+            # namespace, where a module-level import in this file is inert
+            # (see _component.bind_component_globals). The slice comes AFTER
+            # redaction: slicing first could split a companion-only credential
+            # at the boundary and persist an unmatched fragment.
+            from kiro_crew.platform.context import redact_log_via_context
+
+            task_note = redact_log_via_context(_redacted_task)[:120]
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="memory_check_unavailable",
+                metadata={"min_gb": min_mem, "task": task_note},
+            )
+
+        # --- Admission gate: DEFER new spawns while host memory posture is
+        # critical (refuse only when no durable store backs the deferral).
+        # Complements the absolute spawn_min_memory_gb floor above with the
+        # posture tier (resource_critical_gb) and shares its off-switch
+        # (agent.admission_gate) with the cron scheduler's deferral gate. This
+        # method is sync and runs on the gateway event loop, so it reads the
+        # CACHED off-thread verdict -- never inline config/procfs I/O; bounded
+        # staleness is acceptable for pressure-shedding. In-flight subagents
+        # are untouched; direct user chat turns are not gated; fails open on
+        # an unknown posture. ---
+        admission = cached_admission_check()
+        if not admission.admitted and not _dispatch_now:
+            logger.warning(
+                "Subagent spawn %s: %s", "deferred" if _durable else "refused", admission.reason
+            )
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="deferred_memory_critical" if _durable else "refused_memory_critical",
+                metadata={
+                    "available_gb": admission.available_gb,
+                    "posture": admission.posture,
+                    "task": _redacted_task[:120],
+                },
+            )
+            info = SubagentInfo(
+                id=agent_id,
+                task=_redacted_task,
+                agent=agent,
+                parent_session_key=parent_session_key,
+                done=True,
+                error=f"spawn refused: {admission.reason}",
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+            )
+            deferred = _deferred(str(admission.reason), info) if _durable else None
+            if deferred is not None:
+                return deferred
+            return self._manager._announce_rejection(info)
+
+        now = time.monotonic()
+        should_queue, slot_free = self._manager._should_stagger_queue(now)
+        if _dispatch_now:
+            should_queue = False
+        # Child reserve (RFC §6, Q3): a depth-0 start may not take the last
+        # reserved slot(s) while nested work is pending or a parent waits on
+        # its children; only children and resuming parents may. The gate
+        # above answered for the whole cap, so narrow it here for roots.
+        _is_child = bool(self._manager._admission.taskq_parent_id_for(parent_session_key))
+        if (
+            not should_queue
+            and not _dispatch_now
+            and not _is_child
+            and not self._manager._admission.root_may_start()
+        ):
+            should_queue, slot_free = True, False
+        if should_queue:
+            # A prevalidated app spawn does not carry its prevalidation INTO the
+            # queue. `_agent_prevalidated` skips the agent-directory ownership
+            # scan (it was validated off the loop at request time); while the
+            # spawn waits, the app could be disabled and its agent file removed,
+            # and the drain would then run a same-named FOREIGN agent under the
+            # app's auto-approval. Capacity is a scheduling fact, not a verdict:
+            # the row was accepted (write-before-ack), so it QUEUES like any
+            # other spawn -- with the flag cleared, so the drain re-validates
+            # the agent AND, for an app spawn, re-proves app ownership
+            # (`_validate_app_agent_ownership`) before it starts.
+            if _agent_prevalidated:
+                queue_params["_agent_prevalidated"] = False
             # Carry this spawn's id (assigned at the top) in the queue entry so
             # the drained spawn runs under it. The identity must survive the
             # round-trip because it is the only handle the caller gets: spawn_run
@@ -448,39 +633,18 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             # the default 2s stagger that is EVERY member after the first, so a
             # 2-agent wave permanently rendered "1 agent running" while the
             # sidebar and Subagents panel correctly showed 2.
-            self._manager._queue.append(
-                {
-                    "task": task,
-                    "parent_session_key": parent_session_key,
-                    "agent": agent,
-                    "max_turns": max_turns,
-                    "model": model,
-                    "reasoning_effort": reasoning_effort,
-                    "allowed_tools": allowed_tools,
-                    "bare": bare,
-                    "cwd": resolved_cwd,
-                    "approval_mode": approval_mode,
-                    "silent": silent,
-                    "batch_id": batch_id,
-                    "batch_total": batch_total,
-                    "keep": keep,
-                    "conversation_key": conversation_key,
-                    "app": app,
-                    "include_memory": include_memory,
-                    "include_lessons": include_lessons,
-                    "include_project": include_project,
-                    # Queued alongside the context triple, and for the same
-                    # reason: the drain re-enters `spawn` from this dict alone, so
-                    # a field missing here is a scope the run silently regains.
-                    # For the store that means a delegation which happened to hit
-                    # the concurrency gate runs against the GLOBAL memory instead
-                    # of the crew it was handed to.
-                    "memory_store": memory_store,
-                    "_memory_mode": _memory_mode,
-                    "_agent_prevalidated": _agent_prevalidated,
-                    "_preassigned_id": agent_id,
-                }
-            )
+            # The in-memory queue is a bounded WINDOW over the store's queued
+            # rows: a new row joins it only when there is room and no older
+            # row is waiting outside it (FIFO across the boundary); otherwise
+            # it waits on disk and the drain's refill brings it in. A drained
+            # spawn that hit the stagger gate re-joins the window directly --
+            # it is already the oldest eligible row.
+            if _from_queue or (
+                _window_hint
+                if _window_hint is not None
+                else self._manager._admission.taskq_should_window(agent_id)
+            ):
+                self._manager._queue.append(queue_params)
             logger.info(
                 "Subagent queued (%d running, %d queued, slot_free=%s)",
                 self._manager._running_count,
@@ -507,8 +671,8 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 task=_redacted_task,
                 agent=agent,
                 app=app,
-                queued=True,
                 parent_session_key=parent_session_key,
+                queued=True,
                 memory_mode=_memory_mode,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
@@ -516,6 +680,13 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 include_lessons=include_lessons,
                 include_project=include_project,
             )
+            # A queued child still blocks a parent waiting in spawn_sub_agents:
+            # the parent yields its slot now, which is what lets the queue it
+            # is waiting on actually drain (taskq.waits, W3). An event-loop
+            # caller (``_child_registration=False``) runs that branch itself,
+            # awaited, with its store reads and writes on the writer thread.
+            if _child_registration:
+                self._manager._admission.taskq_child_registered(info)
             return info
 
         # `_agent_prevalidated` skips the on-loop agent-directory scan: a caller
@@ -524,6 +695,25 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # `_validate_agent` re-scan/stat every agent file synchronously here,
         # stalling chat and the heartbeat on a populated agents directory. Only
         # the app path sets it; every other caller still validates inline.
+        if agent and app and not _agent_prevalidated:
+            # An app spawn that waited in the queue re-proves ownership here:
+            # the same filename-prefix test the SpawnSDK ran off-loop at request
+            # time (an app may only run its OWN materialized agents).
+            owner_err = _validate_app_agent_ownership(agent, app)
+            if owner_err:
+                self._manager._admission.taskq_fail(agent_id, owner_err)
+                info = SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent=agent,
+                    app=app,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=owner_err,
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+                return self._manager._announce_rejection(info)
         if agent and not _agent_prevalidated:
             # Validate against the cwd the subagent will ACTUALLY run in. When no
             # explicit cwd was given the runtime falls back to the session pool's
@@ -535,6 +725,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             )
             agent, err, err_code = _validate_agent(agent, effective_cwd)
             if err:
+                # The row was accepted; an agent name that does not resolve at
+                # dispatch is a terminal failure of THAT row, never a silent drop.
+                self._manager._admission.taskq_fail(agent_id, err)
                 info = SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
@@ -547,6 +740,62 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     batch_total=max(0, int(batch_total)),
                 )
                 return self._manager._announce_rejection(info)
+
+        # --- Atomic claim: the ONE write that takes the row for dispatch. It
+        # bumps the generation every later write is fenced with, and it fails
+        # for a row cancelled while it waited (the store is re-read here, after
+        # the wait, which is what makes cancel-vs-drain safe). ---
+        if _claimed is not None:
+            taskq_generation, proceed, claim_reason = _claimed
+        else:
+            if _stop_before_claim and self._manager._admission.taskq_store() is not None:
+                # Reserve-then-commit: take the slot NOW, before the caller
+                # awaits the claim, so nothing admitted during that await can
+                # overshoot the cap or skip the stagger.
+                self._manager._running_count += 1
+                self._manager._last_spawn_ts = time.monotonic()
+                return ClaimPoint(agent_id)
+            taskq_generation, proceed, claim_reason = self._manager._admission.taskq_claim(agent_id)
+        if not proceed and claim_reason == self.CLAIM_UNAVAILABLE:
+            # The store could not take the row (busy / unavailable). Starting
+            # anyway would run work no lease tracks -- generation 0, invisible
+            # to reconcile, restartable by the next pump. The row stays
+            # ``queued`` on disk; the caller keeps a QUEUED handle and the
+            # pump retries after the admit wait.
+            logger.warning("taskq: claim of %s unavailable; left queued for the pump", agent_id)
+            self._manager._emit_queue_depth(parent_session_key, batch_id)
+            try:
+                asyncio.get_event_loop().call_later(
+                    self._manager._admission.taskq_admit_wait_secs(), self._manager._drain_queue
+                )
+            except RuntimeError:
+                pass
+            return SubagentInfo(
+                id=agent_id,
+                task=_redacted_task,
+                agent=agent,
+                app=app,
+                parent_session_key=parent_session_key,
+                queued=True,
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+                include_memory=include_memory,
+                include_lessons=include_lessons,
+                include_project=include_project,
+            )
+        if not proceed:
+            self._manager._emit_queue_depth(parent_session_key, batch_id)
+            return SubagentInfo(
+                id=agent_id,
+                task=_redacted_task,
+                agent=agent,
+                parent_session_key=parent_session_key,
+                queued=True,
+                done=True,
+                user_stopped=True,
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+            )
 
         info = SubagentInfo(
             id=agent_id,
@@ -574,8 +823,10 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
+        info._taskq_generation = taskq_generation
         self._manager._agents[agent_id] = info
-        self._manager._running_count += 1
+        if not _dispatch_now:  # a ClaimPoint re-entry already holds its reservation
+            self._manager._running_count += 1
         self._manager._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval
         # Batch lifecycle: announce the wave ONCE, on its first member to
         # actually start (queued members haven't started yet — the event marks
@@ -656,6 +907,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 # counts it as complete — without an announce, a wave whose
                 # final member lands here closes with no event and every held
                 # sibling digest strands forever.
+                self._manager._admission.taskq_settle(info)
                 return self._manager._announce_rejection(info)
         elif self._manager._on_spawn_approval:
             self._manager._tasks[agent_id] = asyncio.create_task(
@@ -679,6 +931,20 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     self._manager._safe_announce(info)
                 )
 
+        if info.done:
+            # Rejected after the claim (no approval mechanism): terminal in the
+            # store too, under the generation the claim minted.
+            self._manager._admission.taskq_settle(info)
+        else:
+            # Registered and handed to a run (or to the approval prompt, which
+            # is part of starting): admitted -> starting. ``running`` is written
+            # by the run itself at its first stream event.
+            self._manager._admission.taskq_mark(info, "starting")
+            # Nested: a parent blocked in spawn_sub_agents yields its lane slot
+            # for this child (taskq.waits, W3); an event-loop caller awaits the
+            # off-loop variant instead.
+            if _child_registration:
+                self._manager._admission.taskq_child_registered(info)
         return info
 
     async def _safe_announce_impl(self, info: SubagentInfo) -> None:
@@ -720,320 +986,3 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             except RuntimeError:
                 pass  # no running loop (sync/test context)
         return info
-
-    def _should_stagger_queue_impl(self, now: float) -> tuple[bool, bool]:
-        """Decide whether a spawn arriving at *now* must be queued.
-
-        Returns ``(should_queue, slot_free)``. A spawn is queued when either no
-        slot is free (at capacity) OR a spawn started within the stagger window
-        (``subagent_spawn_stagger_secs``) — so the initial fill never bursts and
-        no two agents start within the interval (dynamic-subagent-sizing.md §5.3).
-        """
-        slot_free = self._manager._running_count < self._manager._max_concurrent
-        too_soon = (now - self._manager._last_spawn_ts) < self._manager._spawn_stagger_secs
-        return (not slot_free or too_soon, slot_free)
-
-    def _drain_queue_impl(self) -> None:
-        """Spawn the next queued task if a slot is available and the stagger
-        interval has elapsed.
-
-        This is the single staggered pump: at most one start per
-        ``subagent_spawn_stagger_secs`` (dynamic-subagent-sizing.md §5.3). If a
-        slot is free but a spawn started too recently, it reschedules itself at
-        the interval boundary rather than bursting.
-        """
-        if (
-            not self._manager._queue
-            or self._manager._running_count >= self._manager._max_concurrent
-        ):
-            return
-        elapsed = time.monotonic() - self._manager._last_spawn_ts
-        if elapsed < self._manager._spawn_stagger_secs:
-            # Too soon since the last start — reschedule at the boundary.
-            try:
-                asyncio.get_event_loop().call_later(
-                    self._manager._spawn_stagger_secs - elapsed, self._manager._drain_queue
-                )
-            except RuntimeError:
-                pass  # no running loop (sync/test context)
-            return
-        params = self._manager._queue.pop(0)
-        # A run can be cancelled WHILE it waits here — a user stop, or a session
-        # deleted out from under it. Starting it anyway would execute tools for
-        # work already reported as stopped, so skip it and drain the next one
-        # instead: `cancel()` marks the info terminal but cannot unqueue this.
-        queued_id = str(params.get("_preassigned_id") or "")
-        if queued_id:
-            waiting = self._manager._agents.get(queued_id)
-            if waiting is not None and (waiting.done or waiting.user_stopped or waiting.reaped):
-                logger.info("Skipping queued spawn %s: cancelled while waiting", queued_id)
-                self._manager._emit_queue_depth(
-                    str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))
-                )
-                if self._manager._queue:
-                    self._manager._drain_queue()
-                return
-        logger.info(
-            "Draining queue: spawning '%s' (%d left)",
-            str(params.get("task", ""))[:40],
-            len(self._manager._queue),
-        )
-        # The popped item's parent just lost one waiting agent — re-emit its
-        # queued depth (0 when this was its last) so the chip's "waiting" count
-        # tracks the drain. Done before spawn() so an immediate re-queue there
-        # (still too soon since last start) re-bumps it correctly afterwards.
-        self._manager._emit_queue_depth(
-            str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))
-        )
-        # spawn() re-checks the gate; since elapsed >= stagger and a slot is
-        # free, it starts immediately and updates _last_spawn_ts. Forward the FULL
-        # kwarg set so approval_mode / silent / model / allowed_tools / bare survive
-        # the queue round-trip — including `_preassigned_id`, which makes the agent
-        # start under the id its caller was already told (and, if the gate re-queues
-        # it, keeps that id across the second round-trip too).
-        drained = self._manager.spawn(**params, _from_queue=True)
-        # A drained spawn has NO synchronous reader: this call site is a timer
-        # callback, and the original caller was handed a queued info long ago. So a
-        # terminal rejection here — the cwd was deleted while the run waited, the
-        # agent stopped resolving — was dropped on the floor: no completion event,
-        # and the caller's own bookkeeping showed the run as still going. Crew left
-        # such a topic `running` forever.
-        #
-        # Only for NON-batch runs, which is exactly the set `_announce_rejection`
-        # skips (it announces batch members itself, from inside `spawn`). Announcing
-        # regardless double-counted a queued batch rejection: the wave's own
-        # accounting closed early and emitted a duplicate or incomplete digest.
-        if (
-            drained is not None
-            and drained.done
-            and drained.error
-            and not drained.batch_id
-            and self._manager._on_done
-        ):
-            try:
-                self._manager._tasks[f"reject-{drained.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(drained)
-                )
-            except RuntimeError:
-                pass  # no running loop (sync/test context)
-        if self._manager._queue and self._manager._running_count < self._manager._max_concurrent:
-            try:
-                asyncio.get_event_loop().call_later(
-                    self._manager._spawn_stagger_secs, self._manager._drain_queue
-                )
-            except RuntimeError:
-                pass
-
-    async def _spawn_with_approval_impl(self, info: SubagentInfo) -> None:
-        """Request approval before starting the subagent.
-
-        If approval is denied the subagent is marked as done with an
-        error and the running count is decremented without executing.
-
-        A callback that has nowhere to raise the prompt reports it by raising
-        ``SpawnApprovalUnreachable``, and the spawn is refused right here rather
-        than left registered until the reaper's deadline. Waiting is only correct
-        when a prompt actually reached a surface and went unanswered; when it
-        reached none, the wait can only end one way and costs the caller the full
-        deadline to learn it.
-
-        Args:
-            info (SubagentInfo): The subagent metadata.
-        """
-        assert self._manager._on_spawn_approval is not None
-        request_id: str = f"spawn:{info.id}"
-        # Set only on the unreachable path, where it carries the refusal prose.
-        # Also the flag that picks the audit reason below, so the two cannot
-        # drift apart.
-        no_surface_error: str = ""
-        try:
-            from kiro_crew.security import (
-                redact_credentials,
-                redact_exfiltration_urls,
-            )
-
-            task_safe, _ = redact_exfiltration_urls(info.task)
-            task_safe, _ = redact_credentials(task_safe)
-            task_preview: str = task_safe[:80]
-            # Mark the pre-execution spawn gate as a human-wait so the reaper
-            # does not misreport it. This is the SAME lifecycle the mid-run TOOL
-            # approvals use in run.py: set before the await, cleared in a
-            # finally. The run has NOT started here (_exec_started is None),
-            # which is exactly what lets _force_reap distinguish a never-answered
-            # spawn approval from a mid-run tool prompt and report the accurate
-            # cause.
-            info._awaiting_approval = True
-            # Name the wait as well as marking it. The flag above is machine
-            # state read by the reaper and by the wire; this is the line an
-            # operator gets. Without it an operator has no lead at all:
-            # ``kirocrew logs`` holds no record keyed to the affected run id,
-            # while a wait with no deadline of its own holds the run at turn 0.
-            # ``parent_session_key`` is in the record on purpose: an unowned
-            # spawn (the CLI posts none) raises its prompt with ``slot=""``, so
-            # it is surfaced only on the global approvals feed and appears in no
-            # chat tab, which is the case with the least other evidence.
-            logger.info(
-                "Subagent %s awaiting spawn approval (request_id=%s, parent=%s)",
-                info.id,
-                request_id,
-                info.parent_session_key or "<unowned>",
-            )
-            try:
-                approved: bool = await self._manager._on_spawn_approval(
-                    request_id, f"spawn_run({task_preview})", info.parent_session_key
-                )
-            finally:
-                info._awaiting_approval = False
-        except SpawnApprovalUnreachable as unreachable:
-            # Not a refusal: nobody was there to refuse. Ordered ABOVE the
-            # generic handler below, which would otherwise flatten this into the
-            # same "spawn rejected" a human decline produces — and the generic
-            # prose is slow to diagnose.
-            #
-            # The raiser names the missing SURFACE; the rungs are this gate's own
-            # cascade. Keeping the split means the sentence does not go stale
-            # when a channel learns to deliver the prompt itself.
-            detail = str(unreachable).strip() or "no interactive surface is attached"
-            # TWO AUDIENCES, and which text each gets is a security decision, not
-            # a formatting one. The rung list is the OPERATOR's: it names two
-            # `config.json` keys, and `security.py` records that `config.json` is
-            # writable by any auto-approved agent shell. `info.error` travels to
-            # the calling agent as a completion event — automation input — so
-            # putting the how-to there hands the party this gate CONSTRAINS the
-            # recipe for removing it, which an unattended or prompt-injected
-            # agent can simply follow. The log is where an operator looks, so
-            # the how-to lives here and nowhere the agent can read it.
-            logger.warning(
-                "Subagent %s refused: the spawn approval prompt reached no "
-                "surface that could answer it (%s, parent=%s). To let spawns run "
-                "without a prompt, use any one of: spawn with "
-                'approval_mode="auto"; turn on Trust for the parent session in '
-                "the dashboard; set hooks.auto_approve_subagent_spawn to true in "
-                'config.json; or add "subagent" to hooks.auto_approve_sources.',
-                info.id,
-                detail,
-                info.parent_session_key or "<unowned>",
-            )
-            approved = False
-            # Terse, and names no file and no key — so it is actionable for the
-            # agent (tell the human, or stop delegating) without being followable
-            # into a self-granted bypass.
-            no_surface_error = (
-                "spawn rejected: no surface could show the approval prompt, so "
-                f"nobody could answer it ({detail}). The spawn was refused now "
-                "rather than held until the reaper's deadline. Ask the operator "
-                "to open the dashboard and spawn again, or to enable spawn "
-                "auto-approval."
-            )
-        except Exception:
-            logger.exception("Spawn approval failed for %s", info.id)
-            approved = False
-
-        if not approved:
-            info.done = True
-            # Prose only, deliberately no ``error_code``. The one reader of
-            # that field (``POST /api/spawn``) runs BEFORE this task does, so a
-            # code minted here would reach no caller — and an unread code is
-            # contract surface bought for nothing (see ``error_code``'s own
-            # note in ``subagent.py``). The audit ``reason`` below is what
-            # separates this from a decline for a machine; the prose is what
-            # separates it for the agent that receives the completion event.
-            info.error = no_surface_error or "spawn rejected"
-            # Slot accounting through the one-shot token, NOT a bare decrement.
-            # A user Stop funnels into `_force_reap` and can land while this
-            # approval is still pending (a human prompt has no deadline), and
-            # `_force_reap` releases the slot and reports. A bare decrement here
-            # would double-release — driving `_running_count` negative — and the
-            # announce below would double-report the completion.
-            if self._manager._release_slot(info):
-                self._manager._running_count -= 1
-                self._manager._drain_queue()
-            self._manager._tasks.pop(info.id, None)
-            # ``outcome`` keeps its existing vocabulary — the refusal is still a
-            # rejection — and the reason rides in metadata, so an auditor can
-            # tell a declined spawn from an undeliverable one without a new
-            # outcome value to teach every reader.
-            _reject_meta: dict[str, str] = {"subagent_id": info.id}
-            if no_surface_error:
-                _reject_meta["reason"] = "no_approval_surface"
-            sel().log_tool_invocation(
-                session_key=info.parent_session_key,
-                source="subagent",
-                tool_name="spawn_run",
-                outcome="rejected",
-                metadata=_reject_meta,
-            )
-            logger.info("Subagent %s spawn rejected", info.id)
-            # Report ownership through the same claim every other terminal path
-            # uses, so a concurrent reap/stop cannot also announce.
-            if self._manager._on_done and self._manager._claim_finalize(info):
-                await self._manager._safe_announce(info)
-            return
-
-        self._manager._log_spawned(info)
-        await self._manager._run(info)
-
-    def _log_spawned_impl(self, info: SubagentInfo) -> None:
-        """Record spawn metrics and audit log entry.
-
-        Args:
-            info (SubagentInfo): The subagent metadata.
-        """
-        # Persist agent folder to disk for orphan recovery
-        try:
-
-            create_agent_folder(
-                info.id,
-                task=info.task,
-                agent=info.agent,
-                parent_session=info.parent_session_key,
-                max_turns=info.max_turns,
-                context_groups=_context_groups_field(info),
-                memory_store=info.memory_store,
-                memory_mode=info.memory_mode,
-            )
-        except Exception:
-            logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
-            # The run task may already be registered. Its normal terminal path
-            # settles the failure before allocating a provider, for every store.
-            info.error = "memory_unavailable: could not persist this run's memory binding"
-            return
-
-        Stats().inc_subagent_spawned()
-        # Beside that stat, and for the same reason: this is the confirmed-start
-        # funnel. Every path reaches it only AFTER the spawn is approved -- the
-        # approval path calls it once the user allows and returns earlier on a
-        # rejection -- so a rejected or unstarted spawn is never counted, which
-        # the admission-time increment could not promise. ``concurrency`` is the
-        # live running count, bounded by ``_max_concurrent``, so the aggregator's
-        # MAX over that attribute is the concurrency high-water mark without a
-        # second instrument.
-        #
-        # Imported HERE, not at module scope: ``bind_component_globals`` rebinds
-        # every ``*_impl`` function's ``__globals__`` to ``subagent``'s namespace
-        # for patch compatibility, so a module-level import in this file is not
-        # visible from inside this function at all.
-        try:
-            from kiro_crew.metrics.events import SUBAGENTS_SPAWNED, emit_counter
-
-            emit_counter(
-                SUBAGENTS_SPAWNED,
-                {
-                    "concurrency": self._manager._running_count,
-                    "batched": bool(getattr(info, "batch_id", "")),
-                },
-            )
-        except Exception:
-            logger.debug("subagent spawned counter failed", exc_info=True)
-        sel().log_tool_invocation(
-            session_key=info.parent_session_key,
-            source="subagent",
-            tool_name="spawn_run",
-            outcome="spawned",
-            metadata={
-                "subagent_id": info.id,
-                "agent": info.agent or "kirocrew",
-                "cwd": info.cwd,
-            },
-        )
-        logger.info("Subagent %s spawned: %s", info.id, info.task[:80])

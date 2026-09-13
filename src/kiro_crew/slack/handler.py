@@ -2681,7 +2681,7 @@ async def maybe_handle_keyword_command(
 
     # ── Subagent spawn: "spawn <task>" (before cron to avoid NL overlap) ──
     if subagent_manager:
-        spawn_reply = _handle_spawn_command(text, subagent_manager, session_key)
+        spawn_reply = await _handle_spawn_command(text, subagent_manager, session_key)
         if spawn_reply:
             await slack.post_message(channel, spawn_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
@@ -5404,9 +5404,15 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
     return blocks
 
 
-def _handle_spawn_command(text: str, manager: SubagentManager, session_key: str = "") -> str | None:
-    """Intercept spawn/bg keyword commands. Returns reply or None."""
-    return spawn_command_reply(text, manager, session_key)
+async def _handle_spawn_command(
+    text: str, manager: SubagentManager, session_key: str = ""
+) -> str | None:
+    """Intercept spawn/bg keyword commands. Returns reply or None.
+
+    Async so the accept runs through ``spawn_async`` on the task store's writer
+    thread instead of taking ``BEGIN IMMEDIATE`` on the Slack gateway's loop.
+    """
+    return await spawn_command_reply(text, manager, session_key)
 
 
 async def _handle_cron_command(

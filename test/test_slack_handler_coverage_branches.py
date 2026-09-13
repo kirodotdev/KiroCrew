@@ -490,13 +490,15 @@ class TestUnknownBangCommand:
 # small command helpers — empty-argument early returns
 # ──────────────────────────────────────────────────────────────────────
 class TestCommandHelperEarlyReturns:
-    def test_spawn_with_no_task_declines(self):
+    @pytest.mark.asyncio
+    async def test_spawn_with_no_task_declines(self):
         manager = MagicMock()
-        assert mc.spawn_task_reply("", manager) is None
+        assert await mc.spawn_task_reply("", manager) is None
         manager.spawn.assert_not_called()
 
-    def test_spawn_keyword_without_prefix_declines(self):
-        assert h._handle_spawn_command("summarize this", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_spawn_keyword_without_prefix_declines(self):
+        assert await h._handle_spawn_command("summarize this", MagicMock()) is None
 
     @pytest.mark.asyncio
     async def test_task_run_with_no_argument_declines(self):

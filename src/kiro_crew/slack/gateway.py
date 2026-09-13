@@ -349,6 +349,7 @@ from kiro_crew.validation import CHANNEL_ID_RE
 from kiro_crew.wecom.gateway import warn_if_channel_uncredentialed
 
 if TYPE_CHECKING:
+    from kiro_crew.adaptive.controller import AdaptiveController
     from kiro_crew.dashboard.state import _ChatSlot
     from kiro_crew.discord.client import DiscordClient
     from kiro_crew.imessage.client import IMessageClient
@@ -451,6 +452,49 @@ def _injection_slot_busy(slot: Any) -> bool:
     """
     task = slot.task
     return bool(slot.running) or (task is not None and not task.done())
+
+
+async def _subagent_work_pending(manager: Any, parent_session_key: str) -> bool:
+    """Whether *parent_session_key* still has sub-agents running or QUEUED.
+
+    Asked through ``SubagentManager.has_pending_work_for_async``, whose store
+    ``count_pending`` runs on the task store's writer thread: the synchronous
+    entry takes the SQLite connection on this loop, and a wait there freezes
+    every session's turn behind it. A manager double without the async sibling
+    is asked synchronously -- the pre-queue behaviour those doubles model, and
+    the same probe ``dashboard.handlers.messaging._spawn_on_loop`` makes for
+    ``spawn_async``.
+    """
+    import inspect
+
+    entry = getattr(manager, "has_pending_work_for_async", None)
+    if inspect.iscoroutinefunction(entry):
+        return bool(await entry(parent_session_key))
+    return bool(manager.has_pending_work_for(parent_session_key))
+
+
+async def _subagent_queued_count(manager: Any, parent_session_key: str) -> int:
+    """This parent's QUEUED spawn count, read off-loop like
+    :func:`_subagent_work_pending` (which also counts the running ones)."""
+    import inspect
+
+    entry = getattr(manager, "queued_count_for_async", None)
+    if inspect.iscoroutinefunction(entry):
+        return int(await entry(parent_session_key))
+    return int(manager.queued_count_for(parent_session_key))
+
+
+async def _subagent_batch_pending(manager: Any, batch_id: str) -> bool:
+    """Whether any member of *batch_id* is still outstanding, read off-loop for
+    :func:`_subagent_work_pending`'s reason: the store half of
+    ``batch_members_pending`` is a ``fetch_pending_by_batch`` on the connection
+    this loop would otherwise block on."""
+    import inspect
+
+    entry = getattr(manager, "batch_members_pending_async", None)
+    if inspect.iscoroutinefunction(entry):
+        return bool(await entry(batch_id))
+    return bool(manager.batch_members_pending(batch_id))
 
 
 # Whole-callback transient retries for the cron LLM path (session acquire /
@@ -1747,6 +1791,10 @@ class GatewayOrchestrator:
         # as an inert None so other modules referencing it degrade gracefully.
         self.secretary_svc: object | None = None
         self.subagent_mgr: SubagentManager | None = None
+        # Adaptive concurrency controller: started by _start_adaptive_controller
+        # after dashboard and task-store readiness; stopped in shutdown before
+        # the manager is cancelled so no actuator fires into a closing manager.
+        self._adaptive_controller: AdaptiveController | None = None
         self._subagent_coalescer_inst: "SubagentEventCoalescer | None" = None
         # Wave accounting for the completion digest (batch_id -> progress).
         self._batch_progress: dict[str, dict] = {}
@@ -1755,6 +1803,14 @@ class GatewayOrchestrator:
             set()
         )  # job IDs with in-flight script/command execution
         self.task_runner: TaskRunner | None = None
+        # Runner admission over the task queue, attached by _wire_runner_admission
+        self._runner_admission: Any = None
+        # Whether the consumers' orphan-adoption sweep has already been handed
+        # out over a store that existed. The first wiring pass can run while the
+        # store is still opening off the loop, and adopting nothing is not the
+        # same as having adopted: _runner_admission_store_ready re-attaches then,
+        # and this keeps that from becoming a SECOND sweep over the same rows.
+        self._runner_admission_adopted = False
         self.channel_history: ChannelHistory | None = None
         self.dashboard_state: DashboardState | None = None
         self._background_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
@@ -5204,7 +5260,9 @@ class GatewayOrchestrator:
                             # for the NEXT agent's still-in-flight turn.
                             _has_pending = bool(
                                 self.subagent_mgr
-                                and self.subagent_mgr.has_pending_work_for(agent_session_key)
+                                and await _subagent_work_pending(
+                                    self.subagent_mgr, agent_session_key
+                                )
                             )
                             _has_injecting = self._cron_injecting.get(agent_session_key, 0) > 0
                             if _has_pending or _has_injecting:
@@ -5925,7 +5983,8 @@ class GatewayOrchestrator:
                     # queued behind the concurrency/stagger gate, or
                     # mid-injection — _subagent_done will reset after the last one.
                     has_pending = bool(
-                        self.subagent_mgr and self.subagent_mgr.has_pending_work_for(session_key)
+                        self.subagent_mgr
+                        and await _subagent_work_pending(self.subagent_mgr, session_key)
                     )
                     has_injecting = self._cron_injecting.get(session_key, 0) > 0
                     if has_pending or has_injecting:
@@ -7914,6 +7973,15 @@ class GatewayOrchestrator:
 
     def _init_subagents(self) -> None:
         """Initialize the subagent manager."""
+        from kiro_crew.recovery.ladder import configure_default_ladder
+
+        # The process recovery ladder is snapshotted from config HERE because
+        # this step is unconditional and runs before the task runner, the
+        # dashboard and any chat slot — i.e. before any layer can decide a
+        # retry, and outside the event-loop failure branch that would otherwise
+        # be the first to want a delay. `agent.recovery_backoff_*` are
+        # restart=True, so one snapshot is the whole contract.
+        configure_default_ladder(self._cfg)
 
         # Per-slot WS events route by EXACT slot-key match in the frontend —
         # `subagent_event_slot` maps a parent session key to the tab that
@@ -8229,6 +8297,16 @@ class GatewayOrchestrator:
                 )
             elif info.error:
                 detail = f"Error: {info.error}"
+                # A run that ended on a stall / cancel / transport death keeps
+                # what it streamed as a flagged PARTIAL (``info.partial``, set by
+                # the stop-reason classifier in subagent_manager/run.py); deliver
+                # it so the parent continues from it instead of re-submitting the
+                # whole task.
+                if info.partial and info.result:
+                    detail += (
+                        "\n\nPartial output (the run did NOT finish — do not treat "
+                        f"this as a completed result):\n{info.result}"
+                    )
             elif result_path and (info.result_truncated or _is_orchestrator):
                 detail = summarize_result(info.result, result_path)
             else:
@@ -8395,7 +8473,7 @@ class GatewayOrchestrator:
                     try:
                         _last = bool(
                             self.subagent_mgr
-                            and not self.subagent_mgr.batch_members_pending(_batch_id)
+                            and not await _subagent_batch_pending(self.subagent_mgr, _batch_id)
                         )
                     except Exception:
                         _last = False
@@ -9259,7 +9337,7 @@ class GatewayOrchestrator:
                         a.parent_session_key == parent_key and a.id != info.id
                         for a in self.subagent_mgr.running
                     )
-                    or self.subagent_mgr.queued_count_for(parent_key) > 0
+                    or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
                 )
                 still_injecting = self._cron_injecting.get(parent_key, 0) > 0
                 if not still_running and not still_injecting:
@@ -9508,6 +9586,296 @@ class GatewayOrchestrator:
             completion_keep_chars=self._cfg.agent.completion_keep_chars,
         )
         self.subagent_mgr.start_reaper()
+
+    def _start_adaptive_controller(self, cfg: KiroCrewConfig | None = None) -> None:
+        """Run the adaptive concurrency controller beside the subagent manager.
+
+        It bounds the manager's live cap beneath the user's ceiling and moves
+        the MCP daemon's spawn gate through ``GatewayManager.set_spawn_capacity``
+        (read through ``self._mcp_gateway_manager`` at call time, so a broker
+        that starts or restarts later is picked up without rewiring).
+        """
+        if self.subagent_mgr is None or self._adaptive_controller is not None:
+            return
+        from kiro_crew.config import live
+
+        cfg = cfg if cfg is not None else self._cfg
+        if not getattr(cfg.agent, "adaptive_concurrency", True):
+            if getattr(self, "_adaptive_start_sub", None) is None:
+                self._adaptive_start_sub: Subscription | None = live.watch_object(
+                    self,
+                    "agent.adaptive_concurrency",
+                    method="_start_adaptive_controller",
+                    name="GatewayAdaptiveStart",
+                )
+            return
+        # Inside the ENABLED branch, not at module scope: a module-level import
+        # here drags ``adaptive.{controller,policy,signals}`` into every
+        # importer of ``slack.gateway`` -- the boot path -- for an operator who
+        # turned the controller off, which the AUTOSDE boot-path rule forbids
+        # for a subsystem a disabled switch never uses. The watch above is what
+        # brings the import back when the switch flips, so gating the import
+        # costs a disabled host nothing and an enabled one one lazy load.
+        from kiro_crew.adaptive import controller as adaptive_controller
+        from kiro_crew.adaptive.controller import AdaptiveController
+
+        async def _set_gate(capacity: int) -> int | None:
+            mgr = self._mcp_gateway_manager
+            return None if mgr is None else await mgr.set_spawn_capacity(capacity)
+
+        async def _gate_stats() -> dict:
+            mgr = self._mcp_gateway_manager
+            return {} if mgr is None else await mgr.stats()
+
+        cfg_gw = cfg.mcp_gateway
+        try:
+            controller = AdaptiveController(
+                self.subagent_mgr,
+                cfg=cfg,
+                set_gate_capacity=_set_gate,
+                read_gate_stats=_gate_stats,
+                gate_initial=int(getattr(cfg_gw, "spawn_concurrency_initial", 4)),
+                gate_floor=int(getattr(cfg_gw, "spawn_concurrency_min", 1)),
+                gate_ceiling=int(getattr(cfg_gw, "spawn_concurrency_max", 8)),
+            )
+            controller.start()
+        except Exception:
+            logger.warning("adaptive concurrency controller failed to start", exc_info=True)
+            return
+        self._adaptive_controller = controller
+        subscription = getattr(self, "_adaptive_start_sub", None)
+        if subscription is not None:
+            subscription.cancel()
+            self._adaptive_start_sub = None
+        adaptive_controller.register(controller)
+        self._wire_overload_health(controller)
+
+    def _wire_overload_health(self, controller: AdaptiveController) -> None:
+        """Publish the controller's caps and degrade reason to session health,
+        and the subagent manager's dependency coordinator to the process.
+
+        ``session_health`` renders ``effective_caps`` per lane and one
+        ``degrade_reason``; both are pulled through the sources registered
+        here at compute time, so the health payload never holds a stale copy.
+        The degrade reason is a closed-set token (``adaptive_<action>``) because
+        it is also a metric attribute. The dependency coordinator is whatever
+        the manager built beside its task store; ``register_coordinator`` is
+        how a caller with no task row (main chat, monitors) reads the shared
+        ``retry_at`` for a scope.
+        """
+        from kiro_crew.dashboard import session_health
+        from kiro_crew.taskq import dependency as taskq_dependency
+
+        def _spawn_gate_cap() -> dict | None:
+            state = controller.state()
+            if not state.get("enabled"):
+                return None
+            return {
+                "effective": state.get("spawn_gate_capacity"),
+                "applied": state.get("applied_gate_cap"),
+                "pending": state.get("gate_pending"),
+                "floor": state.get("gate_floor"),
+                "ceiling": state.get("gate_ceiling"),
+            }
+
+        def _exec_cap() -> dict | None:
+            state = controller.state()
+            if not state.get("enabled"):
+                return None
+            return {
+                "adaptive": state.get("effective_exec_cap"),
+                "ceiling": state.get("exec_ceiling"),
+                "paused": bool(state.get("paused")),
+                "probing": bool(state.get("probing")),
+            }
+
+        def _degrade_reason() -> str | None:
+            state = controller.state()
+            if state.get("paused"):
+                return "adaptive_pause"
+            if state.get("probing"):
+                return "adaptive_probe"
+            last = state.get("last") or {}
+            action = last.get("action") if isinstance(last, dict) else None
+            return "adaptive_decrease" if action == "decrease" else None
+
+        monitor = session_health.default_monitor()
+        monitor.register_cap_source("spawn_gate", _spawn_gate_cap)
+        monitor.register_cap_source("subagents", _exec_cap)
+        monitor.register_pressure_source(_degrade_reason)
+
+        coordinator = self._subagent_dependency_coordinator()
+        if coordinator is not None:
+            taskq_dependency.register_coordinator(coordinator)
+
+    def _subagent_dependency_coordinator(self) -> Any:
+        """The subagent manager's ONE dependency coordinator, or None.
+
+        None while the manager's store is still opening off the loop: the
+        coordinator's whole point is a schedule over durable rows.
+
+        Read on the loop by the wiring passes, so the FIRST build -- which reads
+        every waiting row -- is paid for off-loop by
+        :meth:`_ensure_subagent_coordinator` before each of them.
+        """
+        coordinator = getattr(self.subagent_mgr, "dependency_coordinator", None)
+        if callable(coordinator):
+            coordinator = coordinator()
+        return coordinator
+
+    async def _ensure_subagent_coordinator(self) -> None:
+        """Build the manager's dependency coordinator on the store's writer
+        thread, before the loop-side wiring asks for it.
+
+        A no-op with no manager, with the store still opening (there is nothing
+        to schedule yet -- the second wiring pass binds it then), and once one
+        exists.
+        """
+        mgr = self.subagent_mgr
+        if mgr is None:
+            return
+        entry = getattr(mgr, "dependency_coordinator_async", None)
+        if entry is None:
+            return
+        await entry()
+
+    def _unwire_overload_health(self) -> None:
+        """Drop the health sources and the coordinator handle at shutdown so a
+        late health read reports no caps instead of a stopped controller's."""
+        from kiro_crew.dashboard import session_health
+        from kiro_crew.taskq import dependency as taskq_dependency
+
+        session_health.default_monitor().clear_sources()
+        taskq_dependency.register_coordinator(None)
+        self._unwire_runner_admission()
+
+    def _wire_runner_admission(self) -> None:
+        """Put TaskRunner steps and workflow ``ctx.agent()`` calls on the task queue.
+
+        First of two passes, run while the dashboard socket is being bound so
+        both consumers have their admission -- and therefore the typed
+        ``task_store_unavailable`` refusal -- from the moment they can serve a
+        request. One :class:`RunnerAdmission` over the subagent manager's store
+        and effective cap, attached to the TaskRunner and the WorkflowService,
+        with the lane's raise edge registered on the manager (see
+        :meth:`SubagentManager.set_cap_raise_listener`).
+
+        The manager's store may still be opening off the loop here, in which
+        case there is no dependency coordinator yet and no rows to adopt;
+        :meth:`_runner_admission_store_ready` is the second pass that binds
+        both once there is. Until then the admission's own ``tick`` is what
+        wakes its time-based waits, from the reaper sweep -- which is also the
+        steady state when the durable queue is OFF for good.
+        """
+        mgr = self.subagent_mgr
+        if mgr is None:
+            return
+        try:
+            from kiro_crew.recovery.ladder import default_ladder
+            from kiro_crew.taskq.adapters.runner import runner_admission_for
+
+            coordinator = self._subagent_dependency_coordinator()
+            admission = runner_admission_for(
+                mgr, cfg=self._cfg, ladder=default_ladder(), coordinator=coordinator
+            )
+            # Before anything else in here, so a manager that cannot take the
+            # raise edge leaves nothing half-wired: the lane's ceiling is this
+            # manager's cap whether or not a coordinator exists yet.
+            mgr.set_cap_raise_listener(admission.lane.pump)
+            if coordinator is not None:
+                self._subscribe_runner_admission(coordinator, admission)
+            else:
+                setattr(mgr, "_runner_admission_tick", admission.tick)
+        except Exception:
+            logger.warning("runner task admission not wired", exc_info=True)
+            return
+        self._runner_admission = admission
+        self._attach_runner_admission_consumers(admission)
+
+    @staticmethod
+    def _subscribe_runner_admission(coordinator: Any, admission: Any) -> None:
+        """Put the runner's waiters on the coordinator's per-scope schedule, so
+        a 429 seen by a TaskRunner step and one seen by a sub-agent share ONE
+        retry instant. A give-up is delivered as a wake: the waiter reads the
+        row, finds it terminal and stops retrying."""
+        coordinator.subscribe(
+            on_wake=admission.on_wake,
+            on_fail=lambda task_id, _reason: admission.on_wake(task_id),
+        )
+
+    def _attach_runner_admission_consumers(self, admission: Any) -> None:
+        """Hand *admission* (or ``None``, to detach) to both runner consumers.
+
+        Attaching is also what runs each consumer's orphan-adoption sweep, and
+        a sweep has rows only once the store exists -- so record whether THIS
+        attach carried one. Adopting nothing is not the same as having adopted.
+        """
+        if admission is not None:
+            self._runner_admission_adopted = admission.store is not None
+        if self.task_runner is not None:
+            self.task_runner.attach_task_admission(admission)
+        workflow_service = getattr(self.dashboard_state, "workflow_service", None)
+        if workflow_service is not None:
+            workflow_service.attach_task_admission(admission)
+
+    async def _runner_admission_store_ready(self) -> None:
+        """Second pass: bind what the first pass had no store for. Idempotent.
+
+        Called once the manager's store is attached. A boot that never lost the
+        race passes straight through it -- the coordinator is already bound and
+        the sweep already ran. A boot that did lose the race gets, HERE, the
+        three things that were unavailable at socket-bind time: the shared
+        coordinator (the runner's only wake path once a store exists, because
+        the reaper pump stops calling the fallback ``tick`` from the moment
+        there are rows), the wake / give-up subscription, and the consumers'
+        adoption sweep over the rows a dead incarnation left behind.
+
+        Runs while both consumers are still idle: the sweep settles any
+        unleased ACTIVE row, so it must not race live work.
+        """
+        mgr = self.subagent_mgr
+        admission = getattr(self, "_runner_admission", None)
+        if mgr is None or admission is None:
+            return
+        try:
+            coordinator = await mgr.dependency_coordinator_async()
+            if coordinator is not None and admission.coordinator is None:
+                admission.attach_coordinator(coordinator)
+                self._subscribe_runner_admission(coordinator, admission)
+                if hasattr(mgr, "_runner_admission_tick"):
+                    delattr(mgr, "_runner_admission_tick")
+                # A wait parked through the ledger between the coordinator's
+                # own build and this handover is in neither schedule: the
+                # build-time rebuild ran before it, and an attached
+                # coordinator stops ``tick`` scanning the ledger. Re-reading
+                # the rows AFTER the attach leaves no such window, because a
+                # park from here on reports to the coordinator itself.
+                store = admission.store
+                if store is not None:
+                    restored = await store.run(coordinator.rebuild)
+                    if restored:
+                        logger.info(
+                            "runner admission: %d dependency waiter(s) rejoined on store ready",
+                            restored,
+                        )
+            if admission.store is not None and not self._runner_admission_adopted:
+                self._attach_runner_admission_consumers(admission)
+        except Exception:
+            logger.warning("runner task admission not bound to its store", exc_info=True)
+
+    def _unwire_runner_admission(self) -> None:
+        admission = getattr(self, "_runner_admission", None)
+        if admission is None:
+            return
+        self._runner_admission = None
+        self._runner_admission_adopted = False
+        self._attach_runner_admission_consumers(None)
+        mgr = self.subagent_mgr
+        if mgr is None:
+            return
+        mgr.set_cap_raise_listener(None)
+        if hasattr(mgr, "_runner_admission_tick"):
+            delattr(mgr, "_runner_admission_tick")
 
     def _start_dashboard_workers_after_memory_ready(self) -> None:
         """Start dashboard workers whose restored jobs may enter memory."""
@@ -10157,6 +10525,15 @@ class GatewayOrchestrator:
                 max_backends=cfg_gw.max_backends,
                 mcp_target_env=target_env,
                 prewarm_count=cfg_gw.prewarm_count,
+                # Admission keys ride the daemon's argv like max_backends.
+                spawn_concurrency_initial=cfg_gw.spawn_concurrency_initial,
+                spawn_concurrency_min=cfg_gw.spawn_concurrency_min,
+                spawn_concurrency_max=cfg_gw.spawn_concurrency_max,
+                spawn_queue_wait_secs=cfg_gw.spawn_queue_wait_secs,
+                initialize_timeout_secs=cfg_gw.initialize_timeout_secs,
+                host_budget_max_procs=cfg_gw.host_budget_max_procs,
+                host_budget_max_rss_mb=cfg_gw.host_budget_max_rss_mb,
+                host_budget_max_fds=cfg_gw.host_budget_max_fds,
             )
         )
         # Pre-resolve npm-launcher targets in the background. An npx spec asks the
@@ -10522,6 +10899,15 @@ class GatewayOrchestrator:
 
         # Kill all ACP processes and close connections
         cleanup_tasks: list = []
+        if self._adaptive_controller is not None:
+            # Reached only past a live controller, so the module is resident
+            # already: this import is a dict lookup, never the load a
+            # module-scope spelling puts on the boot path.
+            from kiro_crew.adaptive import controller as adaptive_controller
+
+            adaptive_controller.register(None)
+            self._unwire_overload_health()
+            cleanup_tasks.append(self._adaptive_controller.stop())
         if self.subagent_mgr:
             cleanup_tasks.append(self.subagent_mgr.cancel_all())
         if self.sessions:
@@ -12241,7 +12627,6 @@ class GatewayOrchestrator:
             await self._init_dashboard()
         else:
             await self._init_api_server()
-
         # The dashboard/API socket is bound now. A missing wrapper can take the
         # full pip timeout to repair, so track that work without delaying READY.
         # The task itself catches and logs failures; startup remains available.
@@ -12298,9 +12683,30 @@ class GatewayOrchestrator:
             print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
 
         self._install_shutdown_signal_handlers()
+
+        # TaskRunner + workflow agent calls join the durable task queue and the
+        # runner lane now that both consumers exist (the WorkflowService is
+        # built by the dashboard server). AFTER the READY print, not before it:
+        # the coordinator's first build runs `rebuild()` over every waiting row,
+        # and `test_memory_startup` pins that no such work precedes readiness.
+        # Nothing dispatches in between -- the dashboard workers and cron start
+        # further down, after the memory barrier.
+        await self._ensure_subagent_coordinator()
+        self._wire_runner_admission()
+
         if not await self._wait_for_memory_preparation():
             await self._shutdown_and_exit()
             return
+        if self.subagent_mgr is not None:
+            await self.subagent_mgr.wait_taskq_ready()
+            # The store exists now; bind the coordinator and the adoption sweep
+            # the socket-bind pass could not see. Before the dashboard workers
+            # and cron start, so the sweep never races live runner work.
+            await self._runner_admission_store_ready()
+            # Also off-loop for the health wiring the controller start does: the
+            # pass above binds no coordinator when it wired no admission.
+            await self._ensure_subagent_coordinator()
+            self._start_adaptive_controller()
 
         # Persisted Crew work and legacy channel agents can dispatch providers
         # immediately when resumed, so start them only after the shared memory

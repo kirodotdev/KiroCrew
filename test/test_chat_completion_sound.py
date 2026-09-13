@@ -29,7 +29,7 @@ def completion_state(tmp_path, monkeypatch):
 
 
 async def finish_frame(state, slot):
-    cr._finish_queue_cycle(state, slot)
+    await cr._finish_queue_cycle(state, slot)
     tasks = list(state._background_tasks)
     if tasks:
         await asyncio.gather(*tasks)
@@ -152,7 +152,7 @@ async def test_plan_handoff_notifies_only_completion_or_manual_approval(
 
     async def run_stage(state, slot, message, **kwargs):
         slot.append("assistant", "Stage result", "msg msg-a")
-        cr._finish_queue_cycle(state, slot)
+        await cr._finish_queue_cycle(state, slot)
 
     monkeypatch.setattr(orchestrator, "_run_chat", run_stage)
     await asyncio.wait_for(orchestrator._stage_loop(state, slot, auto_run=auto_run), timeout=10)

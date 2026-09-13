@@ -197,6 +197,24 @@ def test_manager_reports_resolved_cap_for_auto_sentinel(patch_host) -> None:
     assert mgr.max_concurrent == 16  # live manager is the source of truth (§5.2)
 
 
+def test_manager_effective_cap_sits_under_the_resolved_ceiling(patch_host) -> None:
+    """The adaptive controller's ``set_effective_cap`` bounds the live value
+    beneath the resolved cap; the resolved cap stays readable as the ceiling
+    and is never written by the bound."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.subagent import SubagentManager
+
+    patch_host(174.7, 48)
+    cap = resolve_max_subagents(_cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16))
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), max_concurrent=cap)
+    assert mgr.set_effective_cap(4) == 4  # fresh-process start: min(user_max, 4)
+    assert mgr.max_concurrent == 4
+    assert mgr.user_max_concurrent == 16
+    assert mgr.set_effective_cap(40) == 16  # ceiling binds
+    assert mgr.set_effective_cap(None) == 16
+
+
 # ---------------------------------------------------------------------------
 # Unified spawn staggering (Stage 4, dynamic-subagent-sizing.md §5.3)
 # ---------------------------------------------------------------------------

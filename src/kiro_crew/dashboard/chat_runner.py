@@ -38,14 +38,19 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CONSUMED,
+    STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    STOP_RECOVERY_MAX_RETRIES,
     TERMINAL_TOOL_STATUSES,
+    WAIT_REASON_INPUT,
     RefusalInfo,
+    StructuredStatus,
+    classify_stop_reason,
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
 from kiro_crew.agent_discovery import warm_project_agent_names
@@ -173,6 +178,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     append_and_surface,
+    build_infra_retry_prompt,
     build_refusal_recovery_prompt,
     build_refusal_steer_notice,
     build_stale_recovery_prompt,
@@ -275,6 +281,12 @@ from kiro_crew.providers.base import (
     SessionMcpReport,
 )
 from kiro_crew.quick_prompts import QUICK_PROMPTS
+from kiro_crew.recovery.ladder import (
+    L1_TOOL_CALL,
+    SESSION_RECOVERY_MAX_ATTEMPTS,
+    InfraError,
+    default_ladder,
+)
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
@@ -349,7 +361,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     should_notice_leaked_tool_call,
     should_notice_mixed_turn_leak,
     should_recover_promise_only,
-    subagents_attached,
+    subagents_attached_async,
 )
 
 
@@ -4088,6 +4100,54 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     return None
 
 
+async def _recovery_delay(secs: float) -> None:
+    """Sleep before an L1 re-queue; a module seam so tests replace the wait."""
+    if secs > 0:
+        await asyncio.sleep(secs)
+
+
+def _shared_dependency_delay(exc: BaseException, local_delay: float, *, slot_key: str) -> float:
+    """The delay a transient provider error should wait: the LOCAL backoff, floored
+    by the dependency coordinator's shared schedule for the error's scope.
+
+    The main chat holds no task row, so it never joins the coordinator's
+    schedule (that would persist wait events for a row that does not exist);
+    it reads the scope's ``retry_at`` so five sessions throttled by one
+    provider wait out ONE cooldown instead of five. A typed throttle is also
+    reported to the adaptive controller (``record_provider_throttle``): a
+    provider 429 is a per-provider signal there, never a host signal.
+    """
+    from kiro_crew.taskq.dependency import (
+        KIND_CONCURRENCY_EXCEEDED,
+        KIND_RATE_LIMITED,
+        classify_exception,
+        shared_retry_at,
+    )
+
+    try:
+        signal = classify_exception(exc)
+    except Exception:
+        return local_delay
+    if signal is None or signal.terminal:
+        return local_delay
+    if signal.kind in (KIND_RATE_LIMITED, KIND_CONCURRENCY_EXCEEDED):
+        try:
+            from kiro_crew.adaptive.controller import current as _current_controller
+
+            controller = _current_controller()
+            if controller is not None:
+                controller.record_provider_throttle(signal.dependency_scope)
+        except Exception:
+            logger.debug("provider throttle report failed for slot %s", slot_key, exc_info=True)
+    delay = float(local_delay)
+    if signal.retry_at is not None:
+        delay = max(delay, float(signal.retry_at) - time.time())
+    shared = shared_retry_at(signal.dependency_scope)
+    if shared is not None:
+        delay = max(delay, shared - time.time())
+    return max(0.0, delay)
+
+
 def _should_suppress_requeue(slot) -> bool:
     """Return True if a stop is active and re-queue should be suppressed."""
     if slot._stop_state != "idle":
@@ -4234,7 +4294,7 @@ async def _consume_pending_reset(
             slot._pending_reset_history_key = current_key
             _arm_pending_reset_retry(state, slot)
             return torn_down
-        if subagents_attached(state, slot, pending_key, "consume_pending_reset"):
+        if await subagents_attached_async(state, slot, pending_key, "consume_pending_reset"):
             # Left armed on purpose, same as the discard branch below: the
             # reset releases the shared runtime attached children run on, so
             # applying it now would discard their work. The retry task owns
@@ -4306,7 +4366,7 @@ async def _consume_pending_reset(
                     _arm_pending_reset_retry(state, slot)
     if allow_discard and slot._pending_discard_conversation_key:
         discard_key = slot._pending_discard_conversation_key
-        if subagents_attached(state, slot, discard_key, "consume_pending_discard"):
+        if await subagents_attached_async(state, slot, discard_key, "consume_pending_discard"):
             # Left armed on purpose: releasing the shared runtime now would kill
             # children that are still running, queued, or delivering a result.
             logger.debug(
@@ -6328,7 +6388,7 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 
     try:
         if not slot._pending_synthesis:
-            _finish_queue_cycle(state, slot)
+            await _finish_queue_cycle(state, slot)
             return
         if slot._queue:
             state.push_slots_update()
@@ -6339,7 +6399,7 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
             or state.subagents.running_agents_for(f"dashboard:{slot.key}")
             or slot._subagent_deliveries_inflight != 0
         ):
-            _finish_queue_cycle(state, slot)
+            await _finish_queue_cycle(state, slot)
             return
 
         # All delivery guards hold. Consume immediately before the turn begins.
@@ -6395,10 +6455,14 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
         slot._synthesis_inflight = False
 
 
-def _finish_queue_cycle(
+async def _finish_queue_cycle(
     state: DashboardState, slot: _ChatSlot, *, allow_automatic_successor: bool = True
 ) -> None:
-    """Start synthesis when eligible, otherwise mark a queue cycle idle."""
+    """Start synthesis when eligible, otherwise mark a queue cycle idle.
+
+    A coroutine because the terminal ``chat_done`` frame it emits asks
+    :func:`chat_utils.chat_done_payload` whether the floor really goes back to
+    the user, and that question reaches the task store."""
 
     will_synthesize = (
         allow_automatic_successor
@@ -6450,7 +6514,7 @@ def _finish_queue_cycle(
     slot.append("done", "", "done")
     slot.task = None
     state.push_slots_update()
-    state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+    state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
     # The turn that just finished is the most likely moment for this session's
     # PRs to have moved (opened, pushed, merged, reviewed), so re-read their
     # status now instead of leaving the sidebar chips on TTL rotation and the
@@ -6592,7 +6656,7 @@ async def _run_chat(
             "msg msg-err",
         )
         try:
-            state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+            state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         except Exception:  # pragma: no cover - unblock is best-effort
             logger.debug("chat_done broadcast failed for refused remote slot", exc_info=True)
         return
@@ -7233,6 +7297,17 @@ async def _run_chat(
     # _recovering_promise: the turn announced work it never did, so it must not
     # be recorded as a success or reset the retry budgets.
     _noticed_leak = False
+    # Set when the turn's LAST tool result was an infrastructure refusal the
+    # recovery ladder chose to retry (L1: the MCP stub's -32001 capacity error
+    # or a gateway recoverable_infra marker) and one continuation was queued.
+    # Same un-landed semantics as _recovering_promise.
+    _recovering_infra = False
+    # Set when the L1 run for this slot ran out of attempts and the turn was
+    # given up. Distinct from _recovering_infra, which also marks the turn
+    # un-landed and so suppresses turn settlement, budget resets and
+    # consolidation: an escalated turn DOES land (nothing is re-queued), it just
+    # must not be recorded as the dependency having recovered.
+    _l1_escalated = False
     # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
     # Bound at turn scope, not at the consume site: the consume lives inside the
     # context-builder leg, and the probe/base legs skip it entirely — reading an
@@ -8637,6 +8712,9 @@ async def _run_chat(
             await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
 
         _stop_reason = ""
+        # Class of the turn's completion (acp.types.classify_stop_reason); the
+        # absent-reason default is `succeeded`, refined on EVENT_COMPLETE.
+        _stop_class = classify_stop_reason("")
         # Cleared at turn START so post-turn consumers never read the PREVIOUS
         # turn's value: a turn that dies before EVENT_COMPLETE (ACP crash, auth
         # expiry, transport drop) never reaches the assignment below, and a
@@ -8649,6 +8727,7 @@ async def _run_chat(
         _stall_tool_title = ""
         _stall_command = ""
         _stall_evidence = ""
+        _stall_status: StructuredStatus | None = None
         # Structured refusal forwarded on the terminal (``AcpEvent.refusal``).
         # ``None`` unless the turn ended in a model-side refusal; read by the
         # refusal card below, which renders the same shape for every harness.
@@ -11421,9 +11500,14 @@ async def _run_chat(
                 # call inside it and the unconditional emit below read it, and a
                 # zero-billing timeout takes the second path only.
                 if event.stop_reason == STOP_REASON_STALE_RECOVER:
-                    _turn_exhausted = _prompt_depth > 0 or slot._stale_recovery_retries >= 3
+                    _turn_exhausted = (
+                        _prompt_depth > 0
+                        or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+                    )
                 elif event.stop_reason == STOP_REASON_TOOL_STALL:
-                    _turn_exhausted = _prompt_depth > 0 or slot._tool_stall_retries >= 3
+                    _turn_exhausted = (
+                        _prompt_depth > 0 or slot._tool_stall_retries >= STOP_RECOVERY_MAX_RETRIES
+                    )
                 else:
                     _turn_exhausted = False
                 # Model + provider for the row AND the metric attributes, resolved
@@ -11645,17 +11729,23 @@ async def _run_chat(
                     _stall_tool_title = event.title
                     _stall_command = event.tool_input
                     _stall_evidence = event.text
-                if (
-                    _stop_reason
-                    and _stop_reason != STOP_REASON_END_TURN
-                    and _stop_reason != STOP_REASON_CANCELLED
-                    and _stop_reason != STOP_REASON_STALE_RECOVER
-                    and _stop_reason != STOP_REASON_TOOL_STALL
-                    # An abandoned post-compaction-failure turn is an EXPECTED
-                    # terminal state (the compaction notice already told the
-                    # user); no retry, so it must not log as unexpected.
-                    and _stop_reason != STOP_REASON_COMPACTION_FAILED
-                ):
+                    # The watchdog's typed verdict (``kirocrew/status``), when the
+                    # provider carries one: the wait reason is read from it, not
+                    # parsed back out of the evidence text.
+                    _stall_status = getattr(event, "status", None)
+                # One mapping for every entry (acp.types.classify_stop_reason):
+                # a reason the table does not know is logged here and handled
+                # below as the generic `failed` class. An abandoned
+                # post-compaction-failure turn is an EXPECTED terminal state
+                # (the compaction notice already told the user), so it is a
+                # known class and must not log as unexpected.
+                _stop_class = classify_stop_reason(
+                    _stop_reason,
+                    compaction_transient=(
+                        getattr(client, "last_compaction_transient", False) is True
+                    ),
+                )
+                if _stop_reason and not _stop_class.known:
                     logger.warning(
                         "Unexpected stop_reason %r for slot %s",
                         _stop_reason,
@@ -11691,7 +11781,7 @@ async def _run_chat(
                 # No explicit chat_message: slot.append already emits ONE, and it
                 # carries `meta` -- a second frame here would arrive untagged.
 
-            if _prompt_depth == 0 and slot._stale_recovery_retries < 3:
+            if _prompt_depth == 0 and slot._stale_recovery_retries < STOP_RECOVERY_MAX_RETRIES:
                 slot._stale_recovery_retries += 1
                 _queue_recovery(
                     0,
@@ -11700,7 +11790,7 @@ async def _run_chat(
                     payload=RecoveryPayload.CONTINUATION,
                 )
                 _emit_stale("⟳ Recovering a stalled turn…", will_retry=True)
-            elif slot._stale_recovery_retries >= 3:
+            elif slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES:
                 # Budget exhausted — terminal for this slot until a turn
                 # actually completes. The budget is deliberately NOT reset
                 # here: zeroing it would re-arm a fresh 3-attempt recovery
@@ -11745,8 +11835,13 @@ async def _run_chat(
 
             _idle_m = re.search(r"idle_secs=(\d+)", _stall_evidence or "")
             _idle_secs = int(_idle_m.group(1)) if _idle_m else 0
-            _stuck = "stuck_input" in (_stall_evidence or "")
-            if _prompt_depth == 0 and slot._tool_stall_retries < 3:
+            # Typed first: an execution-layer / oracle ``waiting_input`` status
+            # is the verdict; the evidence-text marker stays as the fallback for
+            # a provider that forwards no status object.
+            _stuck = (
+                _stall_status is not None and _stall_status.wait_reason == WAIT_REASON_INPUT
+            ) or "stuck_input" in (_stall_evidence or "")
+            if _prompt_depth == 0 and slot._tool_stall_retries < STOP_RECOVERY_MAX_RETRIES:
                 slot._tool_stall_retries += 1
                 _body = build_tool_stall_recovery_prompt(
                     _stall_tool_title,
@@ -11761,7 +11856,7 @@ async def _run_chat(
                     payload=RecoveryPayload.CONTINUATION,
                 )
                 _emit_stall("⟳ Tool appeared stalled — recovering…", will_retry=True)
-            elif slot._tool_stall_retries >= 3:
+            elif slot._tool_stall_retries >= STOP_RECOVERY_MAX_RETRIES:
                 # Budget exhausted — mirrors the stale_recover branch above:
                 # budget left alone (a wedged slot must not re-enter a fresh
                 # recovery cycle); the emitted flag dedups the metric and
@@ -11865,7 +11960,11 @@ async def _run_chat(
         # (mirrors AcpProcessDied handling). Eager reconnect in the provider
         # restores MCPs in background; re-queue ensures the user's message
         # is not silently dropped.
-        if _stop_reason and _stop_reason.startswith("error:"):
+        # The RETRYABLE `failed` class is exactly the generic "error:" family: a
+        # tool stall, a compaction failure and a refusal have already been
+        # handled above (or are non-retryable), so only transport / process
+        # death reaches this re-queue.
+        if _stop_class.name == STOP_CLASS_FAILED and _stop_class.retryable:
             _rc = getattr(client, "exit_code", None)
             _rc_suffix = f" (exit {_rc})" if _rc is not None else ""
 
@@ -11879,7 +11978,7 @@ async def _run_chat(
                 # No explicit chat_message: slot.append already emits ONE, and it
                 # carries `meta` -- a second frame here would arrive untagged.
 
-            if _prompt_depth == 0 and slot._acp_pipe_death_retries < 3:
+            if _prompt_depth == 0 and slot._acp_pipe_death_retries < SESSION_RECOVERY_MAX_ATTEMPTS:
                 slot._acp_pipe_death_retries += 1
                 _requeue_text, _requeue_payload = build_recovery_requeue(
                     message,
@@ -11894,7 +11993,7 @@ async def _run_chat(
                     payload=_requeue_payload,
                 )
                 _emit_error(f"⟳ Connection lost{_rc_suffix} — retrying...", will_retry=True)
-            elif slot._acp_pipe_death_retries >= 3:
+            elif slot._acp_pipe_death_retries >= SESSION_RECOVERY_MAX_ATTEMPTS:
                 _emit_error(f"Session stuck{_rc_suffix} — please start a new chat.")
             else:
                 _emit_error(f"⟳ Connection lost{_rc_suffix} — please retry.")
@@ -11916,7 +12015,7 @@ async def _run_chat(
             assistant_text = ""
             _wsred.reset()
             _produced_visible_output = True
-            state.broadcast_ws("chat_done", chat_done_payload(state, slot, continuing=True))
+            state.broadcast_ws("chat_done", await chat_done_payload(state, slot, continuing=True))
 
             # claude-agent-acp performs /compact synchronously inside session/prompt;
             # there is no out-of-band _kiro.dev/compaction/status notification, so
@@ -12502,6 +12601,89 @@ async def _run_chat(
                 "re-sending (an active monitor loop retries on its next cycle).",
                 "msg msg-info",
             )
+        # L1 of the recovery ladder (RFC overload-resilience §7): the turn ended
+        # normally but its LAST tool result was an INFRASTRUCTURE refusal -- the
+        # MCP stub's ``-32001 capacity`` error (the gateway daemon had no spawn
+        # capacity inside the stub's wait budget) or a gateway
+        # ``recoverable_infra`` marker. The model cannot tell that from a real
+        # tool failure and typically gives up; the work is not done and the cause
+        # is transient. Retry ONCE per attempt on the shared schedule: wait the
+        # server's retry hint (jittered, capped), then inject a continuation that
+        # names the failed call and asks for exactly that call again -- never a
+        # verbatim replay of the user's message, since earlier calls this turn
+        # may have taken effect. Bounded by the ladder (3 attempts per slot, then
+        # escalate = stop retrying here and say so). The classification is the
+        # ACP layer's (``client.last_infra_error``), not a regex over the text
+        # here. Same stop / steer / follow-up guards as every sibling recovery.
+        elif (
+            _prompt_depth == 0
+            and _stop_reason == STOP_REASON_END_TURN
+            # isinstance, not a None check: like ``last_compaction_transient``
+            # this attribute is read through getattr on whichever client class
+            # serves the slot, and a provider (or test stand-in) that exposes an
+            # auto-created attribute must not be read as a verdict.
+            and isinstance(getattr(client, "last_infra_error", None), InfraError)
+            and not _armed_final
+            and not slot._in_stage_execution
+            and not _should_suppress_requeue(slot)
+            and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+            and not _has_user_queued_followup(slot)
+            and not getattr(slot, "_pending_steers", None)
+        ):
+            _infra = client.last_infra_error
+            _l1 = default_ladder().observe_failure(
+                L1_TOOL_CALL,
+                slot.key,
+                retry_after_secs=_infra.retry_after_secs,
+                reason=_infra.error_class,
+            )
+            if _l1.retry:
+                logger.info(
+                    "L1 recovery for slot %s: last tool result was %s (retry_after=%s); "
+                    "retrying in %.1fs (attempt %d)",
+                    slot.key,
+                    _infra.error_class,
+                    _infra.retry_after_secs,
+                    _l1.delay_secs,
+                    _l1.attempt,
+                )
+                slot.append(
+                    "notice",
+                    "⟳ The last tool call was refused for lack of gateway capacity "
+                    f"— retrying it in {int(round(_l1.delay_secs))}s "
+                    f"(attempt {_l1.attempt}).",
+                    "msg msg-info",
+                )
+                # Honour the server's retry hint before re-queuing: the delay is
+                # already capped by the policy, and the slot shows as recovering
+                # (its OWN retry counter is non-zero) for the duration. Never the
+                # transient-5xx counter: that is a live budget read by the
+                # re-prompt gate, the backoff seed and the throttle-exhaustion
+                # model-fallback threshold, so counting a gateway-capacity wait
+                # there shortens the next real 5xx ladder, inflates its backoff
+                # seed, and brings the swap onto agent.fallback_model that many
+                # errors closer — for a wait the model had no part in.
+                slot._infra_retries += 1
+                await _recovery_delay(_l1.delay_secs)
+                _queue_recovery(
+                    0,
+                    build_infra_retry_prompt(_infra.error_class, _infra.retry_after_secs),
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=RecoveryPayload.CONTINUATION,
+                )
+                _recovering_infra = True
+            else:
+                # This turn lands (nothing is re-queued) but the dependency never
+                # came back, so the settlement below must not close the L1 run as
+                # a recovery.
+                _l1_escalated = True
+                slot.append(
+                    "notice",
+                    "ℹ️ The last tool call was refused for lack of gateway capacity "
+                    f"and the automatic retries are spent ({_l1.attempt}). Re-send "
+                    "the request once the gateway has capacity.",
+                    "msg msg-info",
+                )
         # Promise-only guard: the turn ended NORMALLY with visible text
         # whose FINAL segment only ANNOUNCES an immediate action ("I'll do that
         # now") without making the tool call, so the work never happened yet the
@@ -12729,7 +12911,17 @@ async def _run_chat(
             and not _recovering_promise
             and not _recovering_compaction
             and not _noticed_leak
+            and not _recovering_infra
         ):
+            # A landed turn closes this slot's L1 run of infrastructure failures
+            # (a no-op when none was open); the ladder measures the outage. An
+            # ESCALATED run is closed with forget instead: the run ended spent,
+            # so the next user turn gets a fresh budget without a recovery
+            # duration being measured for an outage that never closed.
+            if _l1_escalated:
+                default_ladder().forget(L1_TOOL_CALL, slot.key)
+            else:
+                default_ladder().observe_success(L1_TOOL_CALL, slot.key)
             # A non-zero stall budget reaching this reset on an OK turn is a
             # COMPLETED recovery cycle: the stall branches return early, so the
             # only way here with an armed budget is the synthetic recovery turn
@@ -12756,6 +12948,7 @@ async def _run_chat(
             slot._stale_recovery_exhausted_emitted = False
             slot._tool_stall_exhausted_emitted = False
             slot._transient_5xx_retries = 0
+            slot._infra_retries = 0
             # Per-cycle fallback-chain walk state resets with the budgets; the
             # sticky _active_fallback_model / _fallback_primary_model pair
             # deliberately survives a landed turn — the session stays on the
@@ -12812,6 +13005,7 @@ async def _run_chat(
             and not _recovering_promise
             and not _recovering_compaction
             and not _noticed_leak
+            and not _recovering_infra
             and not _is_monitor_wake
         ):
             _maybe_consolidate(state, slot)
@@ -12824,6 +13018,7 @@ async def _run_chat(
             and not _recovering_promise
             and not _recovering_compaction
             and not _noticed_leak
+            and not _recovering_infra
         ):
             # An unacted turn (promise-only, or a tool call leaked as text) is
             # deliberately NOT recorded as a landed success: it announced or
@@ -13158,7 +13353,7 @@ async def _run_chat(
         slot._acp_pipe_death_retries += 1
         if _should_suppress_requeue(slot):
             pass
-        elif _prompt_depth == 0 and slot._acp_pipe_death_retries <= 3:
+        elif _prompt_depth == 0 and slot._acp_pipe_death_retries <= SESSION_RECOVERY_MAX_ATTEMPTS:
             # Persisted card: reliably visible at turn-teardown (an ephemeral
             # chat_status is dropped by the frontend once the streaming turn ends).
             # slot.append already emits ONE chat_message (via _on_message /
@@ -13179,7 +13374,7 @@ async def _run_chat(
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=_requeue_payload,
             )
-        elif slot._acp_pipe_death_retries > 3:
+        elif slot._acp_pipe_death_retries > SESSION_RECOVERY_MAX_ATTEMPTS:
             slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
         else:
             slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
@@ -13265,7 +13460,7 @@ async def _run_chat(
             _is_pipe_death = "process exited" in _msg or "not running" in _msg
             if _is_pipe_death:
                 slot._acp_pipe_death_retries += 1
-                _exhausted = slot._acp_pipe_death_retries > 3
+                _exhausted = slot._acp_pipe_death_retries > SESSION_RECOVERY_MAX_ATTEMPTS
                 _status = "⟳ Connection lost — retrying…"
             else:
                 slot._prompt_busy_retries += 1
@@ -13337,7 +13532,12 @@ async def _run_chat(
             # case the else escalates to a session destroy (poisoned
             # persisted conversation; see the escalation block there).
             slot._transient_5xx_retries += 1
-            _delay = transient_retry_delay(slot._transient_5xx_retries)
+            # Local curve, floored by the dependency coordinator's shared
+            # cooldown for this provider scope (one schedule per scope, RFC
+            # §4.4); a typed throttle is reported to the adaptive controller.
+            _delay = _shared_dependency_delay(
+                exc, transient_retry_delay(slot._transient_5xx_retries), slot_key=slot.key
+            )
             logger.info(
                 "Transient backend 5xx in slot %s (attempt %d/%d) — re-prompting "
                 "live session in %.1fs: %s",
@@ -13471,6 +13671,7 @@ async def _run_chat(
                 # budget (premature fallback swap + spurious throttle notice)
                 # and a restore probe suppressed by the stale walk index.
                 slot._transient_5xx_retries = 0
+                slot._infra_retries = 0
                 slot._fallback_candidate_idx = 0
                 slot._fallback_walked = []
             else:
@@ -13759,6 +13960,7 @@ async def _run_chat(
                 _queue_recovery(0, message, kind=SYNTHETIC_RECOVERY_KIND)
                 # Fresh conversation ⇒ fresh ladder for the recovery cycle.
                 slot._transient_5xx_retries = 0
+                slot._infra_retries = 0
             else:
                 _err_text, _ = redact_exfiltration_urls(str(exc))
                 _err_text, _ = redact_credentials(_err_text)
@@ -13807,6 +14009,12 @@ async def _run_chat(
                 # TRANSIENT_RETRIES. (_posttoken_retry_used needs no counterpart
                 # here: it is already refreshed at genuine-turn start.)
                 slot._transient_5xx_retries = 0
+                # Same NO-REQUEUE-exit rule for the L1 gateway-capacity count:
+                # without it a cycle whose L1 continuation died here leaves the
+                # slot reading "recovering" on the health panel until some later
+                # turn happens to land (the happy-path reset only runs when a
+                # cycle COMPLETES).
+                slot._infra_retries = 0
                 # Same terminal-cycle refresh for the fallback-chain walk state
                 # (the sticky _active_fallback_model deliberately survives — the
                 # session really is on the fallback until the restore probe
@@ -14210,7 +14418,7 @@ async def _run_chat(
             next_turn_started = await _start_next_queued_turn(state, slot)
 
         if not next_turn_started:
-            _finish_queue_cycle(
+            await _finish_queue_cycle(
                 state,
                 slot,
                 allow_automatic_successor=_memory_preparation_admitted,

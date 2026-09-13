@@ -217,7 +217,7 @@ async def test_empty_queue_boundary_emits_no_finalize(tmp_path, monkeypatch):
     started = await cr._start_next_queued_turn(state, slot)
     assert started is False
 
-    cr._finish_queue_cycle(state, slot)
+    await cr._finish_queue_cycle(state, slot)
     await asyncio.sleep(0)
 
     kinds = [t for t, _ in frames]

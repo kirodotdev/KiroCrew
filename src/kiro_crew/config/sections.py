@@ -1210,11 +1210,229 @@ class AgentConfig:
         metadata=_meta(
             "Posture Admission Gate",
             "While available memory is at or below resource_critical_gb, defer "
-            "scheduled cron firings to the next tick and refuse new subagent "
-            "spawns until memory frees. Manually triggered cron runs, in-flight "
-            "subagents, and direct chat turns are never gated; an unreadable "
-            "probe admits (fail-open). Set false to make the critical posture "
-            "advisory-only.",
+            "scheduled cron firings to the next tick and defer new subagent "
+            "spawns (they stay queued in the task store and are re-checked "
+            "after admit_wait_secs) until memory frees. Manually triggered cron "
+            "runs, in-flight subagents, and direct chat turns are never gated; "
+            "an unreadable probe admits (fail-open). Set false to make the "
+            "critical posture advisory-only.",
+        ),
+    )
+    task_queue_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Durable Task Queue",
+            "Persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db "
+            "before its id is returned, so accepted work survives a gateway crash "
+            "and memory pressure defers a spawn instead of refusing it. Set false "
+            "to fall back to the in-memory spawn queue for one release; tasks.db "
+            "is left in place and unread.",
+        ),
+    )
+    task_dispatch_window: int = field(
+        default=64,
+        metadata=_meta(
+            "Task Dispatch Window",
+            "Maximum number of queued spawns the gateway keeps in memory at once; "
+            "the rest wait as rows in tasks.db and are read in FIFO order as the "
+            "window drains. 2000 accepted tasks are 2000 rows and this many "
+            "Python objects. Clamped to 1..4096.",
+            restart=True,
+        ),
+    )
+    task_store_journal_mode: str = field(
+        default="auto",
+        metadata=_meta(
+            "Task Store Journal Mode",
+            "SQLite journal mode for tasks.db: 'auto' picks WAL on a local disk and "
+            "DELETE when $KIROCREW_HOME is detected on a network filesystem (WAL "
+            "needs local shared memory); 'wal' or 'delete' force one and skip the "
+            "detection. Unknown values read as 'auto'.",
+            restart=True,
+        ),
+    )
+    admit_wait_secs: int = field(
+        default=30,
+        metadata=_meta(
+            "Admit Wait (seconds)",
+            "How long an admitted task may wait for its resources before it goes "
+            "back to queued, and how long a spawn deferred by the memory posture "
+            "gate waits before it is re-checked. Clamped to 1..3600.",
+            restart=True,
+        ),
+    )
+    start_collect_timeout_secs: int = field(
+        default=300,
+        metadata=_meta(
+            "Start Collect Timeout (seconds)",
+            "After a session start times out, how long the start collector keeps "
+            "the task in 'recovering' to adopt a late session/new response before "
+            "the start is retried. Reserved for the session-start gate; clamped "
+            "to 10..3600.",
+            restart=True,
+        ),
+    )
+    lane_weights: dict[str, int] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Lane Weights",
+            "Per-lane weight overrides for the task dispatcher, keyed by lane "
+            "(a root session key, or 'system'). Unlisted lanes weigh 1. Values "
+            "are clamped to 1..64. Weights shape the share of picks, never a hard cap: a "
+            "lane with nothing pending costs the others nothing.",
+        ),
+    )
+    child_reserve: int = field(
+        default=1,
+        metadata=_meta(
+            "Child Reserve",
+            "Execution slots a top-level (depth-0) task may never take while a "
+            "nested task is queued or a parent is waiting on its children. Only "
+            "children and resuming parents may use them, so a fleet of parents "
+            "can never hold every slot with no child able to start; while a "
+            "parent waits, an adaptive cap is also lifted to at least "
+            "adaptive_floor + child_reserve (never above max_subagents). 0 "
+            "disables the reserve. Clamped to 0..8.",
+        ),
+    )
+    recovery_backoff_base_secs: float = field(
+        default=2.0,
+        metadata=_meta(
+            "Recovery Backoff Base (seconds)",
+            "First retry delay of the shared recovery ladder (tool call, backend, "
+            "ACP runtime) and of a coordinated dependency wait; each further "
+            "attempt doubles it with jitter. One schedule for every layer, so "
+            "layers never retry in lock-step; snapshotted once at gateway start. "
+            "The gateway-daemon supervisor keeps its own pinned floor. "
+            "Clamped to 0.1..60.",
+            restart=True,
+        ),
+    )
+    recovery_backoff_max_secs: float = field(
+        default=120.0,
+        metadata=_meta(
+            "Recovery Backoff Cap (seconds)",
+            "Longest delay between two recovery attempts on the shared ladder or "
+            "a dependency wait; a server-stated retry hint is honoured up to this "
+            "cap. Snapshotted once at gateway start. Clamped to 1..3600 and never "
+            "below the base.",
+            restart=True,
+        ),
+    )
+    session_start_concurrency: int = field(
+        default=2,
+        metadata=_meta(
+            "Session Start Concurrency",
+            "How many ACP session/new requests may be outstanding at once per "
+            "gateway event loop (the SessionStartGate). session/new blocks while "
+            "the backend initializes the session's MCP servers, so a burst of "
+            "subagent starts on one shared runtime slows every start until the "
+            "budget is hit; queued starts wait in FIFO order and their queue time "
+            "is not counted against the start budget or the startup watchdog. A "
+            "fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn "
+            "gate and the execution-cap controller. Clamped to 1..64.",
+            restart=True,
+        ),
+    )
+    adaptive_concurrency: bool = field(
+        default=True,
+        metadata=_meta(
+            "Adaptive Concurrency",
+            "Run the adaptive concurrency controller: a runtime execution cap "
+            "beneath max_subagents (the ceiling, never written) that halves on "
+            "corroborated host pressure (event-loop lag, low memory, fd/process "
+            "counts, attributable start timeouts, slow starts on several MCP "
+            "servers) and earns +1 back per clean window, plus the same shaping "
+            "for the MCP gateway daemon's spawn gate. A fresh gateway starts at "
+            "min(max_subagents, adaptive_initial) and earns its way up. Set false "
+            "to run at the user cap only.",
+        ),
+    )
+    adaptive_concurrency_mode: str = field(
+        default="aimd",
+        metadata=_meta(
+            "Adaptive Concurrency Mode",
+            "'aimd': multiplicative decrease / additive increase with pause-and-"
+            "probe. 'fixed': both caps pinned at their initial values -- a plain "
+            "semaphore -- the one-flip reversal if the controller is seen to "
+            "oscillate.",
+            enum=["aimd", "fixed"],
+        ),
+    )
+    adaptive_floor: int = field(
+        default=1,
+        metadata=_meta(
+            "Adaptive Floor",
+            "Lowest execution cap the controller may shrink to under sustained "
+            "pressure (a pause takes new grants to 0 temporarily). Clamped to "
+            "1..64.",
+        ),
+    )
+    adaptive_initial: int = field(
+        default=4,
+        metadata=_meta(
+            "Adaptive Initial Cap",
+            "Execution cap a fresh gateway starts at, bounded by max_subagents. "
+            "The controller raises it one step per clean window once work "
+            "completes. Clamped to 1..64.",
+        ),
+    )
+    controller_sample_secs: int = field(
+        default=5,
+        metadata=_meta(
+            "Controller Sample Interval (seconds)",
+            "How often the adaptive controller samples the host and the spawn "
+            "gate. Clamped to 1..300.",
+        ),
+    )
+    dependency_max_attempts: int = field(
+        default=20,
+        metadata=_meta(
+            "Dependency Max Attempts",
+            "Coordinated retries a dependency scope gets before every task "
+            "waiting on it is failed with the reason. One probe per attempt for "
+            "the whole scope, not one per waiting task. Clamped to 1..1000.",
+        ),
+    )
+    dependency_wait_deadline_secs: int = field(
+        default=3600,
+        metadata=_meta(
+            "Dependency Wait Deadline (seconds)",
+            "Wall-clock ceiling a task may wait on one dependency scope before "
+            "it is failed with the reason; 0 disables the clock and leaves only "
+            "the attempts cap. Clamped to 0..86400.",
+        ),
+    )
+    dependency_wake_per_tick: int = field(
+        default=0,
+        metadata=_meta(
+            "Dependency Wake Per Tick",
+            "How many waiting tasks a recovered dependency releases per wake "
+            "tick, after the single probe that confirms recovery. 0 = the "
+            "current effective admission capacity, so a recovered dependency "
+            "never replays every waiter at once. Clamped to 0..4096.",
+        ),
+    )
+    dependency_wake_spacing_secs: float = field(
+        default=1.0,
+        metadata=_meta(
+            "Dependency Wake Spacing (seconds)",
+            "Pause between wake ticks while a recovered dependency's waiters are "
+            "released in capacity-sized batches. Clamped to 0..60.",
+        ),
+    )
+    interactive_command_policy: str = field(
+        default="cancel",
+        metadata=_meta(
+            "Interactive Command Policy",
+            "What the tool-stall watchdog does when a stalled shell command is "
+            "classified as waiting for input (a pager, editor, REPL or confirm "
+            "prompt). 'cancel' ends that tool call non-lethally and re-drives the "
+            "turn with a non-interactive hint; 'wait' announces a waiting_input "
+            "status once and keeps the turn open for real input, bounded by the "
+            "turn's own ceiling. Neither ever answers the prompt itself. Read "
+            "when a session handle is created and on config hot-apply.",
+            enum=["cancel", "wait"],
         ),
     )
     workflow_run_timeout_secs: int = field(
@@ -4877,6 +5095,96 @@ class McpGatewayConfig:
             "agents with ~S servers each need N*S slots. Bounded by design: idle "
             "backends drain after idle_timeout_secs, so steady-state RAM tracks real "
             "concurrency, not this ceiling.",
+            restart=True,
+        ),
+    )
+    spawn_concurrency_initial: int = field(
+        default=4,
+        metadata=_meta(
+            "Spawn Concurrency",
+            "How many MCP backend spawn+initialize windows the broker runs at once, "
+            "across every server and session (pooled, private and respawned alike). "
+            "Further spawns wait their turn in FIFO order and the waiting stub is "
+            "kept informed, so a burst of new sessions cold-starts its servers a few "
+            "at a time instead of forking hundreds of processes against one disk. "
+            "This is the starting value the adaptive controller moves between "
+            "spawn_concurrency_min and spawn_concurrency_max. Distinct from "
+            "max_backends, which bounds how many backends stay RESIDENT.",
+            restart=True,
+        ),
+    )
+    spawn_concurrency_min: int = field(
+        default=1,
+        metadata=_meta(
+            "Spawn Concurrency Floor",
+            "Lowest value the adaptive controller may cut spawn concurrency to "
+            "under host pressure. At least 1: something always makes progress.",
+            restart=True,
+        ),
+    )
+    spawn_concurrency_max: int = field(
+        default=8,
+        metadata=_meta(
+            "Spawn Concurrency Ceiling",
+            "Highest value the adaptive controller may raise spawn concurrency to "
+            "when spawns keep succeeding without pressure.",
+            restart=True,
+        ),
+    )
+    spawn_queue_wait_secs: int = field(
+        default=600,
+        metadata=_meta(
+            "Spawn Queue Wait",
+            "Longest a session's stub is held in the broker's spawn queue before it "
+            "is refused for capacity. The default matches the stub's own reconnect "
+            "budget (a constant, mcp_gateway/stub.py _RECONNECT_TOTAL_BUDGET_SECS): "
+            "for that long kiro-cli's transport stays open and the server's tools "
+            "stay listed. Raising this above 600 needs that constant raised too, or "
+            "the stub gives up before the queue does. A refusal after this is "
+            "reported to the session as a typed error naming the class and a retry "
+            "hint, never as a crashed server.",
+            restart=True,
+        ),
+    )
+    initialize_timeout_secs: int = field(
+        default=10,
+        metadata=_meta(
+            "Initialize Timeout",
+            "Seconds a freshly spawned backend has to answer its first MCP "
+            "initialize once the session sends it. A backend that stays silent is "
+            "failed and reaped so its slot frees; the broker holds the spawn "
+            "permit for this same window. Raise it for servers whose startup is "
+            "legitimately slow (large runtimes, remote resolution).",
+            restart=True,
+        ),
+    )
+    host_budget_max_procs: int = field(
+        default=0,
+        metadata=_meta(
+            "Host Budget: Processes",
+            "Ceiling on MCP backend processes the broker is answerable for on this "
+            "host -- pooled, private and the per-session exec a stub runs when the "
+            "broker cannot serve it, charged identically. 0 (default) derives it "
+            "from available memory at broker start, never below max_backends.",
+            restart=True,
+        ),
+    )
+    host_budget_max_rss_mb: int = field(
+        default=0,
+        metadata=_meta(
+            "Host Budget: Memory (MiB)",
+            "Ceiling on the summed per-backend memory estimate the broker admits. "
+            "0 (default) leaves memory to the process ceiling above.",
+            restart=True,
+        ),
+    )
+    host_budget_max_fds: int = field(
+        default=0,
+        metadata=_meta(
+            "Host Budget: Descriptors",
+            "Ceiling on the file descriptors the broker itself holds for backends "
+            "(three pipes each). 0 (default) derives it from the broker's own "
+            "open-file limit, leaving room for stub connections.",
             restart=True,
         ),
     )

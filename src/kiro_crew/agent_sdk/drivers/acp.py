@@ -53,6 +53,7 @@ __all__ = [
     "derived_agent_permissions",
     "finish_suspended_spawn",
     "kiro_cli_resolves",
+    "provider_error_client",
     "resolve_pin_spelling",
     "run_kiro_native_commands",
 ]
@@ -68,6 +69,22 @@ def finish_suspended_spawn(process: object, pid: int, *, label: str) -> bool:
     except AcpError:
         return False
     return True
+
+
+def provider_error_client() -> object | None:
+    """The module that owns the provider-error vocabulary, or ``None`` when absent.
+
+    The dependency adapter (``taskq/adapters/acp_provider.py``) maps
+    ``classify_provider_error``'s verdict and the ``PROVIDER_ERROR_*`` kinds onto
+    the dependency vocabulary; it reads them through this handle so one set of
+    patterns serves the formatter, the retry classifier and the adapter. Imported
+    at call time: the client is large and this is reached from the taskq path.
+    """
+    try:
+        from kiro_crew.acp import client as acp_client
+    except Exception:  # noqa: BLE001 - the adapter degrades to duck typing
+        return None
+    return acp_client
 
 
 def resolve_pin_spelling(model_id: str, advertised: object) -> str:

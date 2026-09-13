@@ -1240,6 +1240,24 @@ def _slot_meta_txn_lock(state: Any) -> LoopBoundLock:
     return lock
 
 
+async def _subagent_work_pending(subagents: Any, parent_session_key: str) -> bool:
+    """Whether *parent_session_key* still has sub-agents running or QUEUED.
+
+    Asked through ``SubagentManager.has_pending_work_for_async``, whose store
+    ``count_pending`` runs on the task store's writer thread; the synchronous
+    entry takes the SQLite connection on the dashboard's own event loop. A
+    manager double without the async sibling is asked synchronously -- the
+    pre-queue behaviour those doubles model, and the same probe
+    ``handlers.messaging._spawn_on_loop`` makes for ``spawn_async``.
+    """
+    import inspect
+
+    entry = getattr(subagents, "has_pending_work_for_async", None)
+    if inspect.iscoroutinefunction(entry):
+        return bool(await entry(parent_session_key))
+    return bool(subagents.has_pending_work_for(parent_session_key))
+
+
 async def api_chat_slot_folder(request: web.Request) -> web.Response:
     """PATCH /api/chat/slots/{slot}/folder — assign slot to a folder."""
 
@@ -1575,7 +1593,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
                 # so deriving it differently here reports "idle" while that
                 # slot's subagents are still running and flips the execution
                 # model out from under them.
-                busy = bool(subs.has_pending_work_for(effective_session_key(slot)))
+                busy = bool(await _subagent_work_pending(subs, effective_session_key(slot)))
             except Exception:
                 busy = True  # fail closed: refuse rather than risk the flip
         if slot.running or busy:

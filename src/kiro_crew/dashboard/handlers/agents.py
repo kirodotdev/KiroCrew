@@ -4702,7 +4702,10 @@ async def _retire_legacy_member_contexts(
     request: web.Request, cfg: KiroCrewConfig, name: str, prior_store: str
 ) -> web.Response | None:
     """Retire idle V1 providers while retaining their original conversation identity."""
-    from kiro_crew.dashboard.chat_utils import effective_session_key, subagents_attached
+    from kiro_crew.dashboard.chat_utils import (
+        effective_session_key,
+        subagents_attached_async,
+    )
 
     state = request.app.get("state")
     if state is None:
@@ -4724,7 +4727,7 @@ async def _retire_legacy_member_contexts(
                 slot.running
                 or slot._in_stage_execution
                 or (provider is not None and provider.has_active_turn())
-                or subagents_attached(state, slot, key, "member_memory_opt_in")
+                or await subagents_attached_async(state, slot, key, "member_memory_opt_in")
             ):
                 return web.json_response(
                     {

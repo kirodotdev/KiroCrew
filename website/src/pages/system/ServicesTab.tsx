@@ -18,6 +18,7 @@ import { Card, CardTitle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import McpGatewayCard from '../McpGatewayCard'
 import HostRuntimeCard from './HostRuntimeCard'
+import TasksCapacityCard from './TasksCapacityCard'
 import { fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { SystemData } from '../../types'
@@ -300,6 +301,10 @@ export default function ServicesTab() {
 
       {/* Host runtime — self-hides outside the Windows desktop shell */}
       <HostRuntimeCard />
+
+      {/* Durable task queue + effective concurrency — the capacity the
+          services above are serving right now */}
+      <TasksCapacityCard />
     </>
   )
 }

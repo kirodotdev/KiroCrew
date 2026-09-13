@@ -975,6 +975,58 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     return result
 
 
+#: Server-side hold per resume-poll request (seconds); under the client GET
+#: timeout so a held request never reads as a hang.
+RESUME_HOLD_SECS = 8.0
+
+
+def _hold_for_parent_resume(parent_session: str, deadline: float) -> dict[str, Any] | None:
+    """Block until the subagent parent's slot is granted back, or *deadline*.
+
+    Only a ``subagent:<id>`` parent has a lane slot to wait for; a chat-turn
+    parent returns at once. The gateway answers ``known=False`` for a run it
+    does not hold (finished, other incarnation), which also releases the hold.
+    Returns a note for the tool result when the deadline passed first; None
+    when the parent holds its slot (or nothing had to be held).
+    """
+    if not parent_session.startswith("subagent:"):
+        return None
+    parent_id = parent_session[len("subagent:") :]
+    if not parent_id:
+        return None
+    held = False
+    while True:
+        remaining = deadline - mcp_core.time.monotonic()
+        if remaining <= 0:
+            break
+        if is_tool_cancelled():
+            raise ToolCancelled("spawn_sub_agents cancelled while awaiting the parent's slot")
+        hold = max(0.0, min(RESUME_HOLD_SECS, remaining))
+        try:
+            st = mcp_core._get(f"/api/spawn/{parent_id}/resume?wait_secs={hold:.1f}")
+        except Exception:
+            return None  # a gateway that cannot answer is not a reason to hold
+        if not isinstance(st, dict) or st.get("error"):
+            return None
+        if st.get("known") is not True or st.get("granted") is not False:
+            return None
+        # ``granted`` False with the hold consumed: the pump has not reached
+        # this parent yet; ask again (the request itself was the wait).
+        held = True
+    if not held:
+        # The deadline was already spent on the children (still_running is
+        # reported for them); nothing about the slot was observed.
+        return None
+    return {
+        "status": "resume_pending",
+        "parent": parent_id,
+        "note": (
+            "The children finished but this run's execution slot was not granted back "
+            "before the wait deadline; it re-enters through admission by capacity."
+        ),
+    }
+
+
 def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SPAWN_SUB_AGENTS_SCHEMA)
     agents_input = args.get("agents")
@@ -1078,12 +1130,28 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             break
         mcp_core.time.sleep(poll_interval)
 
+    # Hold the result until the PARENT holds its execution slot again. A
+    # subagent parent blocked here yielded its lane slot (waiting_children);
+    # its last child ending wakes it in the store, but the slot comes back
+    # through admission's pump by capacity. Handing the result over before the
+    # grant would let the parent run on without a slot. Event-driven: each
+    # request is held server-side until the grant or its bound, so a grant is
+    # seen at once. Bounded by the same deadline; on expiry the results are
+    # still returned, with the pending resume named.
+    _resume_note = _hold_for_parent_resume(parent_session, deadline)
+
     # Collect results
     sa_results: list[str] = []
     completed = 0
-    timed_out = 0
+    still_running = 0
     errored = 0
     _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
+    # Children the wait ended on, with the state each was last seen in. The
+    # wait expiring is a fact about THIS call, not about them: they keep their
+    # own execution budget, are never cancelled here, and their completion
+    # events still arrive, so the caller is told how to keep following them
+    # rather than told they failed.
+    _unsettled: dict[str, str] = {}
     for aid in sa_ids:
         sa_st = mcp_core._get(f"/api/spawn/{aid}")
         sa_name = _redact_sa(sa_st.get("agent", ""))
@@ -1105,8 +1173,13 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                 )
             )
         elif not sa_st.get("done"):
-            timed_out += 1
-            sa_results.append(json.dumps({"agent": label, "status": "timed_out"}))
+            still_running += 1
+            if sa_st.get("awaiting_approval"):
+                _unsettled[aid] = "waiting_permission"
+            elif sa_st.get("queued"):
+                _unsettled[aid] = "queued"
+            else:
+                _unsettled[aid] = "running"
         else:
             completed += 1
             _settled_ids.add(aid)
@@ -1132,17 +1205,37 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                     }
                 )
             )
+    if _unsettled:
+        sa_results.append(
+            json.dumps(
+                {
+                    "status": "still_running",
+                    "task_ids": list(_unsettled),
+                    "states": _unsettled,
+                    "waited_secs": int(max_wait),
+                    "query": "spawn_status/spawn_list",
+                    "note": (
+                        "The blocking wait ended; these sub-agents were NOT cancelled and "
+                        "keep running on their own budget. Their [Subagent completion "
+                        "event] messages still arrive; poll spawn_list or spawn_status "
+                        "for progress."
+                    ),
+                }
+            )
+        )
+    if _resume_note:
+        sa_results.append(json.dumps(_resume_note))
     if sa_errors:
         sa_results.append(json.dumps({"status": "spawn_errors", "errors": sa_errors}))
     mcp_core.sel().log_tool_invocation(
         session_key=_audit_owner(parent_session),
         source="mcp_core",
         tool_name="spawn_sub_agents",
-        outcome="completed" if not timed_out and not errored else "partial",
+        outcome="completed" if not still_running and not errored else "partial",
         metadata={
             "spawned": len(sa_ids),
             "completed": completed,
-            "timed_out": timed_out,
+            "still_running": still_running,
             "errored": errored,
         },
     )
@@ -1151,8 +1244,8 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     # on_done callback triggers a new _run_chat turn that clobbers any
     # [OPTIONS:] buttons rendered in the synthesis.
     # Only mark agents whose results were actually delivered inline
-    # (completed or errored) — timed-out agents may still complete later
-    # and their real result must not be suppressed.
+    # (completed or errored) — still-running agents complete later and
+    # their real result must not be suppressed.
     if _settled_ids and parent_session:
         try:
             mcp_core._post(

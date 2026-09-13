@@ -307,7 +307,7 @@ to Settings > Developer (`pages/settings/FeaturePreviewsSection.tsx`); the old
 | Tab | What it is | Page | Handler | Endpoints |
 |---|---|---|---|---|
 | `logs` | Live gateway log stream and level control | `pages/LogsPage.tsx` (`LogViewer`) | `handlers/updates.py` | `GET /api/logs`, `GET,POST /api/logs/level` |
-| `system` | Host runtime, services, sessions, performance | `pages/SystemPage.tsx`, `pages/system/` | `handlers_system.py`, `handlers/session_storage.py` | `GET /api/system`, `GET /api/system/session-storage` |
+| `system` | Host runtime, services, sessions, performance; the Services plane's **Tasks & capacity** card (task queue depth, effective concurrency per lane, degrade reason, waits and recovery) | `pages/SystemPage.tsx`, `pages/system/` (`TasksCapacityCard.tsx`) | `handlers_system.py`, `handlers/session_storage.py`, `handlers/tasks.py`, `handlers/spawn_resume.py` | `GET /api/system`, `GET /api/system/session-storage`, `GET /api/sessions/health`, `GET /api/spawn/lanes`, `GET /api/spawn/{agent_id}/resume`, `GET /api/tasks`, `GET /api/tasks/summary`, `GET /api/tasks/{task_id}`, `POST /api/tasks/{task_id}` (`answer_input`, `cancel_wait`), `POST /api/tasks/{task_id}/cancel` |
 | `telemetry` | Startup timings and context traces | `pages/TelemetryPanel.tsx` | `handlers/telemetry.py` | `GET /api/telemetry/startup`, `GET /api/telemetry/context-trace` |
 | `storage` | Raw localStorage inspector | `pages/LocalStorageDebug.tsx` | — (client only) | — |
 | `mcp-pool` | MCP connection pool state | `pages/settings/McpManagement.tsx` | `handlers/mcp.py` | `GET /api/mcp/active`, `GET /api/mcp/scopes`, `POST /api/mcp/probe` |

@@ -103,7 +103,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     history_corpus_unreadable,
     slot_history_key,
-    subagents_attached,
+    subagents_attached_async,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.remote_adopt import (
@@ -1016,7 +1016,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     t.cancel()
         stop_msg = "🛑 [SYSTEM] Orchestration stopped by user."
         append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")
-        state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+        state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         return web.json_response({"ok": True, "stopped": True})
 
     # ── Reset rounds after user guidance (not a stop) ───────────────
@@ -3410,7 +3410,7 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
         logger.info("Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key)
 
 
-def _subagents_attached_response(
+async def _subagents_attached_response(
     state: DashboardState, slot: _ChatSlot, session_key: str, operation: str
 ) -> web.Response | None:
     """409 while sub-agent children are attached to *session_key*, else None.
@@ -3419,14 +3419,15 @@ def _subagents_attached_response(
     dispatching a new turn (continue) interleaves with their writes, and a
     session teardown (reload) kills the shared runtime they run on.
 
-    The probes themselves live in :func:`chat_utils.subagents_attached`, shared
+    The probes themselves live in :func:`chat_utils.subagents_attached_async`
+    (a coroutine because the queued probe reads the task store), shared
     with the deferred consume in ``chat_runner`` that applies a queued
     conversation discard. That teardown reaches the same runtime without passing
     through any endpoint, so it must apply the same policy — and two copies of
     the probe block is how the two would diverge. This wrapper only shapes the
     refusal.
     """
-    if subagents_attached(state, slot, session_key, operation):
+    if await subagents_attached_async(state, slot, session_key, operation):
         return web.json_response(
             {"error": "sub-agents are running", "code": "slot_subagents_running"},
             status=409,
@@ -4409,7 +4410,7 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         # `f"dashboard:{slot.key}"`: a channel-born slot's children register
         # under the channel key, and the dashboard-prefixed form silently
         # matches nothing — `_history_key_for`'s own docstring says as much.
-        denied_409 = _subagents_attached_response(
+        denied_409 = await _subagents_attached_response(
             state, slot, effective_session_key(slot), "continue"
         )
         if denied_409 is not None:
@@ -5173,7 +5174,7 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     # sub-agent runtime the parent's children run on. ``slot.running`` is False
     # while they keep going — the parent turn ends first — so nothing above
     # catches it, and the same guard the reload route uses is what does.
-    attached = _subagents_attached_response(state, slot, key, "slot_reset_conversation")
+    attached = await _subagents_attached_response(state, slot, key, "slot_reset_conversation")
     if attached is not None:
         return attached
 
@@ -6540,7 +6541,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # Children guard, shared with reload/model: the reset tears down the
         # runtime attached sub-agents run on, so a parent that is idle but
         # still has children must refuse rather than discard their work.
-        children_409 = _subagents_attached_response(state, slot, session_key, "slot_agent")
+        children_409 = await _subagents_attached_response(state, slot, session_key, "slot_agent")
         if children_409 is not None:
             _rollback_switch()
             return children_409
@@ -7190,7 +7191,9 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             # completion event in flight) must refuse rather than discard
             # their work. Same probe block as api_chat_slot_reload; only the
             # rollback is added here because this handler committed first.
-            children_409 = _subagents_attached_response(state, slot, session_key, "slot_model")
+            children_409 = await _subagents_attached_response(
+                state, slot, session_key, "slot_model"
+            )
             if children_409 is not None:
                 _rollback_pick()
                 return children_409
@@ -7678,7 +7681,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             # running, queued, or mid-delivery is skipped rather than have
             # their work discarded — regardless of skip_running, which speaks
             # to the parent's own turn, not to its children.
-            if subagents_attached(state, slot, session_key, "slots_model"):
+            if await subagents_attached_async(state, slot, session_key, "slots_model"):
                 skipped_running.append(name)
                 continue
             # Reset before flipping the model and isolate per-slot failures: if
@@ -7944,7 +7947,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # Children guard, shared with reload/model: the reset tears down
             # the runtime attached sub-agents run on. Nothing is committed
             # yet, so a refusal here changes nothing.
-            children_409 = _subagents_attached_response(
+            children_409 = await _subagents_attached_response(
                 state, slot, session_key, "slot_reasoning_effort"
             )
             if children_409 is not None:
@@ -8173,7 +8176,7 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
         # Children guard, shared with api_chat_slot_continue: RUNNING children
         # die with the parent runtime, and _subagents_attached_response
         # documents why queued children and in-flight deliveries count too.
-        denied_409 = _subagents_attached_response(state, slot, session_key, "reload")
+        denied_409 = await _subagents_attached_response(state, slot, session_key, "reload")
         if denied_409 is not None:
             return denied_409
         if _test_interleave is not None:
@@ -8341,7 +8344,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # below tears down, so refuse rather than discard their work -- the
         # same probe every sibling switch (agent, model, effort, reload)
         # applies. Before the commit, so no rollback is needed.
-        children_409 = _subagents_attached_response(state, slot, session_key, "slot_workspace")
+        children_409 = await _subagents_attached_response(
+            state, slot, session_key, "slot_workspace"
+        )
         if children_409 is not None:
             return children_409
         # Never tear down an in-flight turn: the model handler's early

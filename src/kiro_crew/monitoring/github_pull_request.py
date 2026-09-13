@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -15,9 +16,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 from kiro_crew.github_runner import SetupError, resolve_gh, run_gh
+from kiro_crew.monitoring.github_provider_errors import (
+    REASON_SHARED_COOLDOWN,
+    classify_cli_error,
+    shared_cooldown,
+    shared_cooldown_summary,
+)
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET,
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
+    MonitorObservation,
+    MonitorObservationStatus,
     ProviderErrorKind,
 )
 from kiro_crew.monitoring.provider_cli import audit_provider_cli_denied
@@ -286,6 +295,13 @@ class GitHubPullRequestProvider:
             results.update(
                 _group_error(members, _classified_failure(ProviderErrorKind.AUTHORIZATION)),
             )
+            return results
+        cooldown = _shared_cooldown(time.time())
+        if cooldown is not None:
+            # One cooldown per CALL, charged to every subject: the shared
+            # `github:api` scope is a property of the host's rate limit, not of a
+            # subject, and none of these queries ran.
+            results.update({member.raw: _shared_cooldown_result(cooldown) for member in members})
             return results
         try:
             gh = self._resolver()
@@ -1087,66 +1103,19 @@ def _review_thread_page(node: Mapping[str, Any]) -> tuple[int, bool, bool, str |
     return unresolved, nodes_complete, has_next, cursor
 
 
-def _classify_cli_error(raw: str) -> ProviderErrorKind:
-    lowered = raw.lower()
-    if any(marker in lowered for marker in ("rate limit", "abuse detection", "too many requests")):
-        return ProviderErrorKind.RATE_LIMITED
-    status_match = _HTTP_STATUS_RE.search(raw)
-    if status_match is not None:
-        status = int(status_match.group(1), 10)
-        if status == 429:
-            return ProviderErrorKind.RATE_LIMITED
-        if status == 401:
-            return ProviderErrorKind.AUTHENTICATION
-        if status == 403:
-            return ProviderErrorKind.AUTHORIZATION
-        if status == 404:
-            return ProviderErrorKind.NOT_FOUND
-        if status >= 500:
-            return ProviderErrorKind.TRANSIENT
-    if "could not resolve host" in lowered:
-        return ProviderErrorKind.TRANSIENT
-    # The status regex above reads only the first `http <ddd>` it matches, so a
-    # real 429 behind an earlier status reaches here instead: on
-    # "http 200 ... http 429" the regex matches the 200, which is not a status
-    # that block maps, so it returns nothing and the 429 survives to this check.
-    # The substring form also fires on a malformed "http 4290", which the regex
-    # skips because \b rejects a fourth digit. That false positive is accepted
-    # but not free: RATE_LIMITED is retryable, yet every provider error still
-    # spends one of the monitor's `max_provider_errors` (3 by default) and that
-    # cumulative count is never refunded, so mislabelling shortens the watch.
-    if "http 429" in lowered:
-        return ProviderErrorKind.RATE_LIMITED
-    if any(
-        marker in lowered
-        for marker in (
-            "bad credentials",
-            "authentication",
-            "not logged into",
-            "gh auth login",
-        )
-    ):
-        return ProviderErrorKind.AUTHENTICATION
-    if any(
-        marker in lowered
-        for marker in (
-            "not found",
-            "could not resolve to a repository",
-            "could not resolve to a pullrequest",
-        )
-    ):
-        return ProviderErrorKind.NOT_FOUND
-    if any(
-        marker in lowered
-        for marker in (
-            "forbidden",
-            "permission",
-            "resource not accessible",
-            "saml",
-        )
-    ):
-        return ProviderErrorKind.AUTHORIZATION
-    return ProviderErrorKind.TRANSIENT
+# ``gh`` stderr classification and the process-wide ``github:api`` cooldown are
+# shared with the sibling monitor (``monitoring.github_provider_errors``); the
+# module-level names stay so tests and callers address them per monitor.
+_classify_cli_error = classify_cli_error
+_shared_cooldown = shared_cooldown
+
+
+def _shared_cooldown_result(retry_at: float) -> GitHubPullRequestProbeResult:
+    return _provider_error(
+        ProviderErrorKind.RATE_LIMITED,
+        REASON_SHARED_COOLDOWN,
+        summary=shared_cooldown_summary(retry_at),
+    )
 
 
 def _reduce_provider_errors(kinds: Sequence[ProviderErrorKind]) -> ProviderErrorKind:
@@ -1214,5 +1183,20 @@ def _exception_failure(error: BaseException) -> _Failure:
     return _classified_failure(_provider_exception_kind(error))
 
 
-def _provider_error(kind: ProviderErrorKind, reason_code: str) -> GitHubPullRequestProbeResult:
-    return provider_error_result(kind, reason_code)
+def _provider_error(
+    kind: ProviderErrorKind, reason_code: str, *, summary: str = ""
+) -> GitHubPullRequestProbeResult:
+    result = provider_error_result(kind, reason_code)
+    if not summary:
+        return result
+    return GitHubPullRequestProbeResult(
+        response=None,
+        canonical={},
+        observation=MonitorObservation(
+            "",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=kind,
+            reason_code=reason_code,
+            summary=summary,
+        ),
+    )

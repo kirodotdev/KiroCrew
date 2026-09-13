@@ -1616,20 +1616,53 @@ class TestCheckMemoryAvailable:
 
 
 class TestSpawnMemoryGuard:
-    """Tests that spawn() refuses when memory is low — covers Coverlay lines."""
+    """spawn() under low memory: deferred into the durable queue, or refused
+    when no store backs the deferral."""
 
-    def test_spawn_refused_low_memory(self):
-        """spawn() returns error SubagentInfo when memory is below threshold."""
-        from unittest.mock import MagicMock, patch
+    def _mgr(self):
+        from unittest.mock import MagicMock
 
         from kiro_crew.subagent import SubagentManager
 
-        mgr = SubagentManager(
+        return SubagentManager(
             sessions=MagicMock(),
             ctx_builder=MagicMock(),
             on_done=MagicMock(),
             max_concurrent=3,
         )
+
+    def test_spawn_deferred_low_memory(self):
+        """With the task store open, the row stays queued with a retry time."""
+        from unittest.mock import MagicMock, patch
+
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 2.5)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is False and info.queued is True
+        row = mgr._taskq.get(info.id)
+        assert row is not None and row.state == "queued" and row.next_run_at is not None
+        mock_sel.return_value.log_tool_invocation.assert_called_once()
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "deferred_low_memory"
+        assert call_kwargs["metadata"]["available_gb"] == 2.5
+
+    def test_spawn_refused_low_memory(self):
+        """Without a store, spawn() returns an error SubagentInfo."""
+        from unittest.mock import MagicMock, patch
+
+        mgr = self._mgr()
+        mgr._taskq = None
 
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(False, 2.5)),

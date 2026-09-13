@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from fake_pool_mcp_server import recorded
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import gatewayd as gw
@@ -197,10 +198,14 @@ def _resolver_for(
 
 
 def _observed_callers(log: Path) -> list[str]:
-    """The session key each ``tools/call`` reached the backend carrying."""
-    if not log.exists():
-        return []
-    return log.read_text(encoding="utf-8").splitlines()
+    """The session key each ``tools/call`` reached the backend carrying.
+
+    Read through the fake's own :func:`~fake_pool_mcp_server.recorded`, which is
+    the only thing that knows the on-disk layout: each daemon generation here
+    spawns its own backend process, so the identities are spread across per-pid
+    files that a direct read of *log* would never see.
+    """
+    return recorded(log)
 
 
 async def _start_daemon(sock: Path, resolver) -> tuple[asyncio.Event, asyncio.Task]:
