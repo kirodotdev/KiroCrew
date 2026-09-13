@@ -88,6 +88,65 @@ async def test_unloadable_config_still_creates_with_empty_agent(
     assert dashboard_state._slots["no-config"].agent == ""
 
 
+@pytest.mark.asyncio
+async def test_folder_create_keeps_missing_agent_verbatim_not_rewritten(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A folder create whose saved default_agent does not resolve keeps the name
+    VERBATIM on the slot — the create layer never permanently rewrites it to the
+    default (a transient discovery failure would otherwise replace a valid
+    binding for good). The chat still starts on the global default because
+    DISPATCH resolves it (see the runtime-fallback test), so the verbatim name
+    both avoids a fault and recovers automatically if the agent returns."""
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"})  # default_agent="default"
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **k: None)
+    # A real folder so folder_id validates and the create is folder-originated.
+    dashboard_state._folders = [
+        {"id": "fld", "name": "Payments", "order": 0, "default_agent": "gone-agent"}
+    ]
+    await _create_slot(
+        dashboard_state,
+        {"name": "in-folder", "agent": "gone-agent", "folder_id": "fld"},
+    )
+    # The slot keeps the requested agent VERBATIM — the create layer never
+    # permanently rewrites it (a transient discovery failure would otherwise
+    # replace a valid binding for good). The runtime fallback below is what makes
+    # the chat actually START on the global default when the agent is absent.
+    assert dashboard_state._slots["in-folder"].agent == "gone-agent"
+
+
+@pytest.mark.asyncio
+async def test_runtime_resolution_falls_back_to_default_for_absent_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The requirement — a chat whose saved agent is absent starts on the
+    global default rather than faulting — is satisfied at DISPATCH: dispatch
+    resolves the slot agent via ``resolve_agent_bindings``, which returns the
+    configured default kiro agent when the requested name does not resolve. This
+    is why the create layer can keep the name verbatim without faulting."""
+    from kiro_crew.config.loader import resolve_agent_bindings
+
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"})
+    bindings = resolve_agent_bindings(cfg, "gone-agent")
+    assert bindings.requested_resolved is False
+    assert bindings.kiro_agent == "kirocrew"  # the default's kiro agent, not a fault
+
+
+@pytest.mark.asyncio
+async def test_non_folder_create_keeps_unresolvable_agent_verbatim(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A create keeps a caller-named agent VERBATIM even if it does not currently
+    resolve, preserving the user's explicit intent against momentary resolution
+    staleness; dispatch resolves the default at run time."""
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"})
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **k: None)
+    await _create_slot(dashboard_state, {"name": "no-folder", "agent": "gone-agent"})
+    assert dashboard_state._slots["no-folder"].agent == "gone-agent"
+
+
 # ── The same-binding relaxation on /api/chat's 409 guard ──
 #
 # Stamping the resolved default alias at creation means a programmatic first
@@ -298,11 +357,11 @@ async def test_create_resolves_off_loop_without_adopting_a_concurrent_slot(
     calls = []
     replacement = _ChatSlot("offloop-create", agent="another-owner")
 
-    def resolve(config, agent):
+    def resolve(config, agent, project=None):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         calls.append(agent)
-        result = original(config, agent)
+        result = original(config, agent, project)
         if replace_slot:
             loop.call_soon_threadsafe(
                 dashboard_state._slots.__setitem__, replacement.key, replacement
