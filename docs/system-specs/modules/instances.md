@@ -255,7 +255,14 @@ non-POSIX (§12). Treat a Windows hub as unverified.
    capped-exponential backoff (`recover_backoff_max_secs`, 30s; the wait grows
    1, 2, 4, 8, 16 then holds at the cap), which spans roughly a two-minute
    window: long enough to outlast a transient drop (screen lock, proxy warmup).
-   The counter resets on a successful rebuild or a successful `connect()`. If it
+   The counter resets on a successful rebuild or a successful `connect()`. A
+   successful rebuild records the replacement child's `local_port` alongside its
+   `forwarder_pid` / `forwarder_start` / `forwarder_sig` in one write — the same
+   field set `connect()` persists. A rebuild takes its port from the live
+   tunnel, and `forwarder_sig` is a MAC over that port, so the port travels with
+   the identity that signs it; recording one without the other points both the
+   pane URL and the reclaim's signature check at a port the recorded child is
+   not bound to. If it
    gives up, the diagnosis ladder runs automatically. The slow SSH I/O runs
    *without* the manager lock so self-heal cannot stall a concurrent
    connect/disconnect/shutdown.

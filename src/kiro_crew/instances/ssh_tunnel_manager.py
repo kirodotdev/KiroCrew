@@ -2070,11 +2070,23 @@ class SshTunnelManager:
         """Reset the attempt counter and persist the hints, under lock, iff tracked.
 
         A rebuild replaced the tunnel child, so the recorded forwarder
-        identity (``forwarder_pid`` + ``forwarder_start``) must move with
+        identity (``forwarder_pid`` + ``forwarder_start`` + the
+        ``local_port`` that child is bound to) must move with
         ``was_connected`` — a stale identity would point a later hard-kill
         reclaim at a process that does not exist (harmless, the identity
         check refuses it) while the ACTUAL replacement child leaked
         unrecorded. All hints go in one write.
+
+        ``local_port`` belongs in that set for two reasons, and this write
+        carries the same fields as :meth:`connect`'s so the pair cannot drift
+        apart. A rebuild takes its port from the LIVE tunnel (see
+        :meth:`_recover`), which may differ from the recorded one. And
+        ``forwarder_sig`` is a MAC over the port, so recording a pid against
+        a different port than the one it was signed with leaves the signature
+        failing verification — the reclaim then refuses the very child this
+        write exists to record, and every consumer reading the recorded port
+        (the pane URL, :meth:`diagnose`'s fallback) addresses a port nothing
+        is listening on.
 
         The persist stays INSIDE the manager lock so write order equals
         lock-acquisition order: a concurrent :meth:`disconnect`'s
@@ -2111,6 +2123,7 @@ class SshTunnelManager:
                 self._registry.update,
                 instance_id,
                 was_connected=True,
+                local_port=tunnel.status.local_port,
                 forwarder_pid=forwarder_pid,
                 forwarder_start=forwarder_start,
                 forwarder_sig=forwarder_sig,

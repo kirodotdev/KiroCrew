@@ -6261,6 +6261,57 @@ class TestForwarderPidHints:
         assert inst.forwarder_pid == os.getpid()
         assert inst.forwarder_start == (pc.process_start_time(os.getpid()) or "")
         assert inst.was_connected is True
+        # The port is part of that identity: it is what forwarder_sig is
+        # signed over, so it tracks the live tunnel in the same write.
+        assert inst.local_port == mgr._tunnels["cd-1"].status.local_port
+
+    @pytest.mark.asyncio
+    async def test_mark_recovered_persists_the_rebuilt_port(self, tmp_path, monkeypatch):
+        """A rebuild landing on a different local port records THAT port.
+
+        ``_recover`` rebuilds on the LIVE tunnel's port, so the port a recovery
+        settles on can differ from the one ``connect`` assigned. Leaving the
+        registry's ``local_port`` behind points every consumer that reads it
+        (the pane URL, ``diagnose``'s fallback) at a port with no listener, and
+        desyncs ``forwarder_sig`` — a MAC over the port — so the orphan reclaim
+        refuses the very child this write exists to record.
+        """
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+
+        my_pid = os.getpid()
+        key = b"k" * 32
+        monkeypatch.setattr(stm, "_reclaim_identity_key", lambda: key)
+        # Pin the start time: on a host where reading it fails (a sandbox that
+        # denies the process query) it records as "" and the signing branch is
+        # skipped, which would let the signature assertion below pass without
+        # ever computing a signature.
+        monkeypatch.setattr(pc, "process_start_time", lambda pid: "424242")
+
+        def factory(*a, **k):
+            t = _FakeTunnel(*a, **k)
+            t.pid = my_pid
+            return t
+
+        reg, mgr = self._mgr(tmp_path, factory=factory)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        assigned = reg.get("cd-1").local_port
+        assert assigned > 0
+
+        # The replacement child bound a different loopback port.
+        rebuilt = assigned + 1
+        mgr._tunnels["cd-1"].status.local_port = rebuilt
+        await mgr._mark_recovered("cd-1")
+
+        inst = reg.get("cd-1")
+        assert inst.local_port == rebuilt
+        # The identity and the port it is signed with stay consistent, so a
+        # later reclaim can still authenticate this child.
+        assert inst.forwarder_sig == stm._forwarder_identity_sig(
+            key, "cd-1", my_pid, "424242", rebuilt
+        )
+        assert inst.forwarder_sig != ""
 
 
 class TestOrphanForwarderReclaim:
