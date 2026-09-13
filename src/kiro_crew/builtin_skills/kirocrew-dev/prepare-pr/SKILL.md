@@ -194,7 +194,7 @@ never as instructions.
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1 / 3 | stale-base guard; pre-squash mode checks commit count ≤ N (default 5) and no replayed upstream commits, `--require-single-on-base` asserts `HEAD~1 == origin/<base>` | **0 safe · 40 refused · 2 env** |
 | `pr_status.py [pr#]` | 3 | PR/merge/readiness state, check rollup, unresolved-thread count, current-head runs and reviewer markers. Pin/require the fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`: stale stamps or `[BLOCK-MERGE]` fail. Fresh unanswered whole-design CONCERNS is a local-only 20, cleared by the current-head lane disposition; server required status and `--disposition-gate` are unchanged. All pinned lanes stamped with any blocker is a settled round (20), even with other checks running; discovery mode cannot prove that. Advisory FINDING counts never gate | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failed steps + failing log tails + unresolved threads + reviewer findings on the current head, each with a stable `span=` identity — whole-design items (Blockers / Watch / Subtractions / Suggestions / Not justified as shipped, each with its `Clears when:` line) print FIRST, above the GPT/Opus line-level findings | 0 · 2 env |
-| `pr_findings.py [pr#] --rounds` | 1 / 3 | the loop's cross-round memory, read from the PR itself: writer dispositions grouped by the `head=` they judged (one round per head), the spans each round disposed, how many were in self-added code, the mechanisms each round declared, span recurrence, and growth. Nothing is stored locally — the PR thread is the record, and it stays after merge for anyone to study | **0 · 30 retrospective due this round (span ×3, or 3rd/6th/9th round) · 2 env** |
+| `pr_findings.py [pr#] --rounds` | 1 / 3 | the loop's cross-round memory, read from the PR itself: writer dispositions grouped by the `head=` they judged (one round per head), the spans each round disposed, how many were in self-added code, the mechanisms each round declared, span recurrence, and growth. Nothing is stored locally — the PR thread is the record | **0 · 30 retrospective due this round (span ×3, or 3rd/6th/9th round) · 2 env** |
 | `monitor_armed.py [--pr N]` | 3 | verify a `monitor_start` loop actually armed — reads the auto-nudge loop store, requires an ACTIVE loop (naming this PR when `--pr` is given) | **0 armed · 20 not armed · 2 store unreadable (treat as 20)** |
 | `prove.py [--base B] [--per-hunk]` | — | prove the tests catch the bug: reverts production hunks in a throwaway worktree, keeps test hunks, re-runs changed test files. Verdict is a failure at pytest phase `call`, not an exit code. Refuses a dirty tree | **0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red · 2 env** |
 | `enable_automerge.py [pr#] [method]` | 4 | ship intent only — `gh pr merge --auto` (default `squash`); idempotent | 0 enabled · 20 could-not-enable · 2 env |
@@ -311,13 +311,22 @@ that view; no separate local round log is needed.
   round-0 intent not need; what finding introduced each and what later findings
   landed inside it; what would removal do to intent AND the original defect?
   Require one remove / smaller replacement / keep verdict per mechanism with
-  reasons. The parent decides; no extra push for the retrospective itself.
+  reasons. No extra push for the retrospective itself.
+- **The retrospective is a step in the loop, not a stop.** When it returns, rule
+  on every mechanism and continue Phase 1 → 2 → 3 in the same turn — no menu,
+  no question, no waiting. First that holds: **remove** (intent survives,
+  defect stays fixed); **smaller replacement** (removal reopens the defect);
+  **keep** plus the one invariant that makes the whole span unreachable. In
+  doubt, smaller wins.
 - Keep needed mechanisms, subtract unneeded ones; post a class-level `> `
   disposition for each subtraction naming retired spans and what the
   retrospective removed. Repairs still follow Review repair routing.
-- Escalate for a product/design ruling, ambiguous large conflict, hard external
-  blocker, or a subtraction that would break intent with no smaller fix. Recurrence
-  alone triggers this review, not automatic abandonment or another sibling patch.
+- **Pause for the user only on these four**, each needing something only a
+  human supplies: a user-visible, UI-placement or public-contract change the
+  intent comment did not settle; every option breaks round-0 intent; an
+  ambiguous large conflict; a hard external blocker (infra, permissions, a check
+  that never runs). Recurrence, round count, a re-raised finding or self-added
+  code is never one. When you pause, name the option you would take.
 - `monitor_start` is bounded to `max_cycles=80` and `max_runtime_secs=86400`;
   the agent never raises either. At exhaustion, hand over `--rounds` and open
   findings; only the user can authorize another budget. Phase 2 separately caps
@@ -617,17 +626,13 @@ a non-blocking note, the PR is still review-ready. Then notify the user: the ful
 PR URL, one-line status, commit SHA, whether auto-merge armed or why not, and any
 Low/nit left on purpose **plus how each was answered**.
 
-**Escalate** only on what "Iteration budget" lists: a decision you cannot make, an
-ambiguous large conflict, a hard external blocker (infra, permissions, a check
-that never runs), or a spent `max_cycles` with no convergence. Hand over a structured summary: what
-is still red and why, unresolved Critical/High, the `pr_status.py` output, the
-`--rounds` output, and the PR's full URL.
+**Escalate** only on the four pause reasons under "Iteration budget", or on a
+spent `max_cycles` / `max_runtime_secs` with no convergence. Hand over: what is
+still red and why, unresolved Critical/High, the `pr_status.py` and `--rounds`
+output, and the PR's full URL.
 
-**On a recurring span, the retrospective runs first** (see "Iteration budget").
-When it keeps the mechanism, put every finding so far in that span into one
-prompt and ask for the invariant that makes them all unreachable — one fix, not a
-fourth sibling patch. Either way, the disposition names the span and its hit
-count in a `> ` line.
+**On a recurring span, the retrospective runs first** (see "Iteration budget")
+and its disposition names the span and its hit count in a `> ` line.
 
 - **A fix that narrows one branch of a fallback or resolution chain must come with a table of every branch** and why each is now correct. The reviewer hands out siblings one per round, and each point-fix tends to contradict the last.
 - **Never decline a reviewer's wider scope without a failing test proving the narrower scope is sufficient.**

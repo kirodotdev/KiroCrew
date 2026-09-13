@@ -27,6 +27,17 @@ a mandatory stop at the third round. Local review passes, monitor cycles and wal
 clock measure different costs. The current bounds and escalation rules live only
 in `SKILL.md`; none is a target, and only the user may extend an exhausted budget.
 
+## Why the retrospective decides and continues
+
+In practice the loop stopped at every `--rounds` exit 30: the parent collected the
+retrospective, posted the remove / replace / keep verdicts as a menu, and waited.
+That turned an every-third-round review into a mandatory user gate, which is the
+opposite of what the loop is for. The verdicts are almost always decidable from the
+intent comment and the defect the mechanism was added for, so the skill now names
+the pick order and a default, and lists the only four situations where a human
+supplies something the agent cannot. Recurrence is the trigger for the review, not
+a reason to hand the PR back.
+
 ## Why the two Phase 0 gates come before opening
 
 Measured across the 20 slowest PRs on this repo, rounds spent before the decision
