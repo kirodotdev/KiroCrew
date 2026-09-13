@@ -2291,7 +2291,11 @@ def _build_message_entry_uncached(m: dict) -> dict | None:
     if role == "system" and cls_val:
         entry["cls"] = cls_val
     if isinstance(m.get("meta"), dict):
-        entry["meta"] = _redact_meta_for_role(role, m["meta"])
+        persisted_meta = _redact_meta_for_role(role, m["meta"])
+        # MEMORY-ONLY: `provisional` gates the read projection while a note's
+        # durability is in flight, so a persisted one would hide the row forever.
+        persisted_meta.pop("provisional", None)
+        entry["meta"] = persisted_meta
     return entry
 
 

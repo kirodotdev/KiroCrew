@@ -3023,6 +3023,11 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
     out: list[dict] = []
     for m in _collapse_wire_rows(messages):
         role = m.get("role", "")
+        # A provisional row is in slot.messages but withheld from stream and push;
+        # this HTTP projection reads the window directly, so it must hide it too.
+        meta_obj = m.get("meta")
+        if isinstance(meta_obj, dict) and meta_obj.get("provisional"):
+            continue
         if role == "chunk":
             text = m.get("content", "")
             if text:

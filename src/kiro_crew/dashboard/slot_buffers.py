@@ -656,7 +656,17 @@ class SlotBufferCoordinator:
             current for current in slot._pending_context if not entry_expired(current, now)
         ]
         while len(slot._pending_context) >= max_pending_context:
-            slot._pending_context.pop(0)
+            # A note's PROVISIONAL half goes before anyone's accepted entry: it holds a slot
+            # only across its own durability await, and its producer reports the skip.
+            provisional = next(
+                (
+                    i
+                    for i, queued in enumerate(slot._pending_context)
+                    if queued.get("awaitingCommit")
+                ),
+                None,
+            )
+            slot._pending_context.pop(0 if provisional is None else provisional)
         slot._pending_context.append(entry)
 
     @staticmethod
@@ -727,7 +737,7 @@ class SlotBufferCoordinator:
             return 0
         from kiro_crew.dashboard.chat_utils import effective_session_key
 
-        held = slot._deferred_notes[:]
+        held: list[dict[str, Any]] = slot._deferred_notes[:]
         slot._deferred_notes.clear()
         live_session = effective_session_key(slot)
         written = 0
@@ -789,6 +799,18 @@ class SlotBufferCoordinator:
                 slot._deferred_notes[:0] = held[index:]
                 raise
             written += 1
+            # BOTH halves are committed now, which is the whole reason the mirror waits
+            # for the flush: at POST it would assert content the session never received.
+            mirror: Callable[[], None] | None = note.get("mirror")
+            if mirror is not None:
+                try:
+                    mirror()
+                except Exception:
+                    # Never load-bearing: the note is written either way, and the
+                    # suffix-restore above must not fire for a delivery failure.
+                    logger.warning(
+                        "held note mirror dispatch failed for slot %s", slot.key, exc_info=True
+                    )
         return written
 
     @staticmethod
