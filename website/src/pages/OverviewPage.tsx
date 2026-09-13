@@ -18,7 +18,7 @@ import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
 import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
-import type { NormalizedUsage } from '../providers'
+import { providerUsageQuery } from '../api/providerUsageQuery'
 
 import { i18nT } from '../i18n/t'
 import { fmtDuration } from '../i18n/format'
@@ -69,11 +69,7 @@ function DrillIn({ title, onBack, children, hideTitle = false }: { title: string
 /** Usage summary card — shares the query cache with the Usage drill-in. */
 function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
   const provider = useProvider()
-  const { data, isError, error } = useQuery<NormalizedUsage>({
-    queryKey: ['provider-usage', provider.id],
-    queryFn: () => provider.fetchUsage(),
-    enabled: provider.capabilities.usageBilling,
-  })
+  const { data, isError, error } = useQuery(providerUsageQuery(provider))
   const b = data?.billing
   const today = data?.sessions.today
   return (
@@ -84,14 +80,13 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
           {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
         </button>
       </CardTitle>
+      {provider.capabilities.usageBilling && isError && (
+        <ErrorNotice title={data ? i18nT('pages.sessionsTab.could_not_refresh') : undefined} message={error?.message} askAgent testId="overview-usage-error" />
+      )}
       {!provider.capabilities.usageBilling ? (
         <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.usage_tracking_is_not_available_for')} {provider.displayName}.</div>
-      ) : isError ? (
-        // askAgent on: a read of the provider's usage report; the card holds no
-        // input. Without this branch a rejected fetch left the skeleton up forever.
-        <ErrorNotice message={error?.message} askAgent testId="overview-usage-error" />
       ) : !data ? (
-        <div className="skeleton h-14 rounded" />
+        !isError && <div className="skeleton h-14 rounded" />
       ) : (
         <div className="flex flex-col gap-2">
           <div className="text-[13px] text-muted">

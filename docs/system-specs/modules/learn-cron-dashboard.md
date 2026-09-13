@@ -25,6 +25,17 @@ server's message rather than reading a period key that is not there. The zeros
 on that path are a shape, not a measurement, which is what the `error` field
 says.
 
+The Overview usage summary and Usage report share a per-provider browser-memory
+cache for the dashboard lifetime. Opening either view shows the last successful
+report immediately. Data is fresh for five minutes; an older report refreshes
+asynchronously on return. While either view is mounted, the query refreshes
+every five minutes, including in a background browser tab. Leaving both views
+stops polling but does not discard the report. A failed refresh identifies the
+figures as the last values read and shows the error alongside them; the next
+refresh can recover without clearing the report. A provider without usage
+support shows neutral status text, not an error. No report is persisted to disk,
+and the top-bar credit readout keeps its separate billing refresh policy.
+
 ## Self-Learning (`learn.py`)
 
 Global Memory V1 retains the background LLM contradiction sweep after a
