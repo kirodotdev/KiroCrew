@@ -66,7 +66,7 @@ from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count, row_mid
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
+from kiro_crew.messaging.link import channel_label, channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -80,21 +80,6 @@ logger = logging.getLogger(__name__)
 #: the dashboard is already open, and each pass is a cheap metadata scan.
 RECONCILE_INTERVAL_SECS = 30
 
-#: Human-facing label per channel namespace, used only when a session has no
-#: title of its own yet (first turn still in flight).
-_CHANNEL_LABELS: dict[str, str] = {
-    "slack": "Slack",
-    "discord": "Discord",
-    "telegram": "Telegram",
-    "whatsapp": "WhatsApp",
-    "webex": "Webex",
-    "wecom": "WeCom",
-    "teams": "Teams",
-    "weixin": "Weixin",
-    "imessage": "iMessage",
-    "feishu": "Feishu",
-    "unified": "Direct message",
-}
 #: In-memory window for a newly surfaced slot. Deliberately the same bound the
 #: dashboard's own ``restore_recent_sessions`` uses, so a channel tab and a
 #: dashboard tab of equal length hold equal amounts of history — the tab is the
@@ -102,11 +87,6 @@ _CHANNEL_LABELS: dict[str, str] = {
 #: Older lines stay on disk as the frozen prefix and are reachable through the
 #: slot-detail endpoint's pagination.
 _RESTORE_WINDOW = 500
-
-
-def channel_label(session_key: str) -> str:
-    """Human-facing label for the channel *session_key* came from."""
-    return _CHANNEL_LABELS.get(channel_namespace_of(session_key), "Channel")
 
 
 def channel_slot_name(session_key: str) -> str:
@@ -422,9 +402,24 @@ def surface_channel_session(
         logger.debug("channel slot %s exists with a conflicting memory_mode", slot_name)
         return None
 
-    raw_title = session_info.get("title") or meta.get("title") or ""
-    slot.title = _redact_assistant(raw_title) if raw_title else channel_label(stem)
-    slot._titled = bool(raw_title)
+    # The persisted header value is the title; the transport label is a
+    # display-only fallback owned by ``_ChatSlot.display_title``. The shared
+    # contract restores title finality, origin, and refresh budget together.
+    # Local import: chat_persistence imports from this module, so a module-level
+    # import here would be circular.
+    from kiro_crew.dashboard.chat_persistence import (
+        _persisted_title_is_titled,
+        _rehydrate_slot_title,
+    )
+
+    persisted_title = meta.get("title")
+    persisted_title = persisted_title if isinstance(persisted_title, str) else ""
+    _rehydrate_slot_title(
+        slot,
+        persisted_title,
+        titled=_persisted_title_is_titled(meta),
+        metadata=meta,
+    )
     if meta.get("created_at"):
         slot.created_at = meta["created_at"]
     # The identity of the transcript this surfacing read — lets a later save
@@ -819,22 +814,32 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
     if not candidates:
         return 0
 
-    def _load_meta() -> tuple[dict[str, dict[str, Any]], dict[str, float]]:
+    def _load_meta() -> tuple[dict[str, dict[str, Any]], dict[str, float], set[str]]:
         out: dict[str, dict[str, Any]] = {}
         mt: dict[str, float] = {}
+        unreadable: set[str] = set()
         # One key per session: the tab and the channel share one transcript, so
         # `closed` is written once and read once. File mtimes ride along as the
         # fallback close instant for legacy `closed` flags that predate the
         # `closed_at` stamp.
+        metadata_status = getattr(log, "get_metadata_status", None)
         mtime_of = getattr(log, "mtime_of", None)
         for s in candidates:
             key = s.get("key", "")
-            if not key or key in out:
+            if not key or key in out or key in unreadable:
                 continue
             try:
-                out[key] = log.get_metadata(key)
+                if metadata_status is not None:
+                    meta, readable = metadata_status(key)
+                    if not readable:
+                        unreadable.add(key)
+                        continue
+                else:
+                    meta = log.get_metadata(key)
             except Exception:
-                out[key] = {}
+                unreadable.add(key)
+                continue
+            out[key] = meta
             if mtime_of is not None:
                 try:
                     stamp = mtime_of(key)
@@ -842,14 +847,23 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
                     stamp = None
                 if stamp is not None:
                     mt[key] = stamp
-        return out, mt
+        return out, mt, unreadable
 
     # Instant the metadata snapshot below is taken. The stale-flag clear later
     # in this pass is scoped to closes OLDER than this — a `closed` written
     # after the snapshot (the user dismissing a tab mid-pass, or any writer
     # this pass cannot see) must survive the clear.
     snapshot_time = time.time()
-    metadata, mtimes = await loop.run_in_executor(None, _load_meta)
+    metadata, mtimes, unreadable = await loop.run_in_executor(None, _load_meta)
+    if unreadable:
+        # An unreadable header is skipped this pass because surfacing on `{}`
+        # writes an empty title over the real one on the next save. The next
+        # reconcile pass re-reads it from disk.
+        logger.info(
+            "channel reconcile: deferring %d session(s) with unreadable metadata",
+            len(unreadable),
+        )
+        candidates = [s for s in candidates if s.get("key", "") not in unreadable]
     eligible = eligible_channel_sessions(
         candidates, metadata=metadata, cutoff=cutoff, mtimes=mtimes
     )

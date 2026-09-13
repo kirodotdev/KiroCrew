@@ -77,6 +77,7 @@ from kiro_crew.messaging.link import (
     UNBIND_REASON_UNSPECIFIED,
     UNBIND_REASON_USER_UNLINK,
     ChannelLink,
+    channel_label,
     channel_namespace_of,
     is_channel_session_key,
 )
@@ -1188,6 +1189,17 @@ _CHAT_N_RE = re.compile(r"chat-\d+")
 # name). Applied at the serialization boundary (``_ChatSlot.display_title``),
 # so a brand-new empty session, the pre-send window, and the pre-LLM window all
 # read the same. The LLM auto-title / fallback replace it with a real title.
+#
+# Cross-process wire vocabulary, frozen within a release series. The crew peer
+# listing serialises ``display_title`` (``slot_projection``), so an unnamed
+# session on a peer arrives as this exact string, and ``peer_row_metadata``
+# (``remote_adopt.py``) reads equality with it as "the peer's slot has no name".
+# Changing the string -- including localising it -- breaks adopt against every
+# same-series peer still sending the old value, because that peer's placeholder
+# is then pinned locally as a user rename. It changes only across a release-series
+# boundary, both sides together. ``test_remote_crew_adopt.py::
+# test_new_session_title_is_frozen_wire_vocabulary`` pins the literal so a change
+# fails a test that does not move with both ends of the wire.
 NEW_SESSION_TITLE = "New Session…"
 
 # Matches a slot-key *identifier* used as a title (both the stripped
@@ -3898,14 +3910,16 @@ class _ChatSlot:
 
     @property
     def display_title(self) -> str:
-        """Title for UI display. Shows ``NEW_SESSION_TITLE`` while the slot is
-        still on its untouched default key (untitled) — covering brand-new
-        empty sessions and the window before the LLM title lands — otherwise
-        the real title. Slots with a meaningful non-key title (plan, cron,
-        fork, slack) are unaffected since their title != key.
+        """Title for UI display.
+
+        A channel tab's label is provenance, not a name, so an empty channel
+        title shows its transport instead of the new-session placeholder. Other
+        empty or untouched slots keep the placeholder; real titles pass through.
         """
-        if not self._titled and (
-            not self.title or self.title == self.key or _SLOT_KEY_TITLE_RE.match(self.title)
+        if self.channel_origin and not self.title:
+            return channel_label(self.linked_session_key or self.key)
+        if not self.title or (
+            not self._titled and (self.title == self.key or _SLOT_KEY_TITLE_RE.match(self.title))
         ):
             return NEW_SESSION_TITLE
         return self.title
