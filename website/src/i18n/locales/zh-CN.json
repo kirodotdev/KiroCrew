@@ -7231,6 +7231,7 @@
       "unknown_error": "未知错误"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "跟随排序（所有置顶）",
       "bring_back_to_main": "移回主窗口",
       "close_session": "关闭会话",
       "copy_link": "复制链接",
