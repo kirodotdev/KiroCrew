@@ -682,6 +682,36 @@ describe('SessionAutomationPopover', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('sends the real stale-write baseline when an ordinary legacy goal is edited', async () => {
+    const wire = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep checking.', idle_secs: 300,
+      max_cycles: 24, cycle_count: 2, active: true, last_fire_ts: 0,
+      message_fingerprint: 'fp-real', message_redacted: false,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ loop: wire }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const automation = normalizeAutomationRecord(wire)
+    expect(automation).toMatchObject({ messageFingerprint: 'fp-real' })
+    renderPopover(automation)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Goal description' }), {
+      target: { value: 'Watch the other pull request instead.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    const patchCall = fetchMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    )
+    expect(patchCall, 'the edit never reached a PATCH').toBeTruthy()
+    const sent = JSON.parse(String((patchCall?.[1] as RequestInit).body))
+    // An empty baseline is not a weaker check: the service refuses every falsy one, so
+    // dropping the fingerprint makes an ordinary edit permanently unsaveable.
+    expect(sent.expect_fingerprint).toBe('fp-real')
+  })
+
   it('replaces a bounded draft with a legacy loop that arrives while open', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       loop: {
@@ -706,13 +736,17 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('spinbutton', { name: 'Max cycles (0 = infinite)' })).toHaveValue(24)
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    // NO `message` in the body: the served goal is a redacted PROJECTION, so echoing an
+    // unedited one back would store the mask over the real goal.
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Keep checking.', idle_secs: 300, max_cycles: 24, active: true,
-      }),
+      body: JSON.stringify({ idle_secs: 300, max_cycles: 24, active: true }),
     }))
+    const patchCall = fetchMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    )
+    expect(JSON.parse(String((patchCall?.[1] as RequestInit).body))).not.toHaveProperty('message')
   })
 
   it('applies a mutation response when the captured automation is still current', async () => {

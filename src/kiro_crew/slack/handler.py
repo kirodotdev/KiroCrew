@@ -97,6 +97,7 @@ from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trust
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
 from kiro_crew.platform import current_context
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -4685,11 +4686,14 @@ async def handle_message(
             slot_name = linked_session_key.removeprefix("dashboard:")
             slot = getattr(ds, "_slots", {}).get(slot_name)
             if slot:
-                slot.append("user", text, "msg msg-u")
+                # The turn has already run, so this mirror is an EGRESS: persisted, then
+                # served to dashboard readers. Scrub it as every other user row is.
+                mirrored = redact_row_via_context(text)
+                slot.append("user", mirrored, "msg msg-u")
                 slot.append("assistant", accumulated, "msg msg-a")
                 if slot._on_message:
                     slot._on_message(
-                        slot.key, {"role": "user", "content": text, "cls": "msg msg-u"}
+                        slot.key, {"role": "user", "content": mirrored, "cls": "msg msg-u"}
                     )
                     slot._on_message(
                         slot.key, {"role": "assistant", "content": accumulated, "cls": "msg msg-a"}

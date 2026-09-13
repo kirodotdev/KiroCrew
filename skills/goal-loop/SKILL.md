@@ -103,6 +103,9 @@ Then:
    session, the UI 🎯 "Set a goal", or `POST /api/autonudge`. Revise a running
    loop in place with `PATCH /api/autonudge/{loop_id}` (or `monitor_update`),
    which keeps its cycle count; `DELETE /api/autonudge/{loop_id}` stops it.
+   Changing the goal TEXT over REST also needs `expect_fingerprint` (the
+   `message_fingerprint` from a GET) or the call answers 409; `monitor_update`
+   threads it for you.
 
 ## The goal-loop cycle (what the agent does)
 

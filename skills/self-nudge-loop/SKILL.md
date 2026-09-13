@@ -115,6 +115,13 @@ Endpoints:
 | GET | `/api/autonudge/slot/{slot_key}` | `?token=…` | loop bound to slot (or null) |
 | POST | `/api/autonudge` | `?token=…` | start/replace a loop |
 | PATCH | `/api/autonudge/{loop_id}` | `?token=…` | edit message / idle / active |
+
+A `message` edit may carry `expect_fingerprint`, the `message_fingerprint` from a prior
+GET. When you send one it is ENFORCED: a fingerprint that no longer matches answers **409**
+`autonudge_stale_baseline`, because someone changed the goal after you read it, so re-GET
+and decide against the current text rather than retrying blind. Send none — as a cron or
+`curl` holding no baseline would — and the write applies unconditionally, exactly as
+`idle_secs`, `max_cycles` and `active` do.
 | DELETE | `/api/autonudge/{loop_id}` | `?token=…` | stop and remove |
 
 **Preferred path for agents: use the `autonudge_stop` MCP tool** for self-halt (reads `KIROCREW_SESSION_KEY`, looks up the bound loop, DELETEs it — no token handling needed on your side). The REST flow above is for external scripts, new-loop arming, and debugging.

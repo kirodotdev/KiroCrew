@@ -609,6 +609,9 @@ class MonitorState:
     #: because no outcome is recorded in the meantime a restart in the window finds
     #: a plain live loop rather than one tagged as finished and refused revival.
     terminal_pending: str = ""
+    #: True once that owed turn HAS been delivered but its settlement write never
+    #: reached disk, so a restart settles it instead of delivering it again.
+    terminal_delivered: bool = False
     next_probe_at: float = 0.0
     outcome: MonitorOutcome | None = None
     stopped_reason: str = ""
