@@ -31,10 +31,9 @@ import type { CSSProperties, SVGProps } from 'react'
  * stock proportions were hard to read.
  *
  * API is lucide-compatible (size + spread SVG props incl. className), so these
- * drop into existing <PanelLeft size={16}/> call sites unchanged. The optional
- * open prop lets a persistent toggle change pane state without replacing its SVG.
+ * drop into existing <PanelLeft size={16}/> call sites unchanged.
  */
-type PanelIconProps = SVGProps<SVGSVGElement> & { size?: number | string; open?: boolean }
+type PanelIconProps = SVGProps<SVGSVGElement> & { size?: number | string }
 
 const FRAME = { x: 2.5, y: 3.25, width: 19, height: 17.5, rx: 3 } as const
 
@@ -81,11 +80,11 @@ function paneVars(rest: PaneRect, hover: PaneRect, open: boolean): CSSProperties
   } as CSSProperties
 }
 
-function makePanelIcon(side: keyof typeof PANE_GEOMETRY, defaultOpen: boolean, displayName: string) {
-  function PanelIcon({ size = 24, style, open = defaultOpen, ...props }: PanelIconProps) {
-    const rest = PANE_GEOMETRY[side][open ? 'open' : 'closed']
-    const hover = PANE_GEOMETRY[side][open ? 'closed' : 'open']
-    const vars = paneVars(rest, hover, open)
+function makePanelIcon(side: keyof typeof PANE_GEOMETRY, open: boolean, displayName: string) {
+  const rest = PANE_GEOMETRY[side][open ? 'open' : 'closed']
+  const hover = PANE_GEOMETRY[side][open ? 'closed' : 'open']
+  const vars = paneVars(rest, hover, open)
+  function PanelIcon({ size = 24, style, ...props }: PanelIconProps) {
     return (
       <svg
         xmlns="http://www.w3.org/2000/svg"

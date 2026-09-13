@@ -10,13 +10,9 @@ import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
-/* The pane title row is flex-flow chrome inside a pane whose root opens no
- * stacking context, so any z-index on it competes with the SHELL's layers,
- * not just the pane's own. At z-50 the split-pane headers painted over the
- * mobile workspace overlay (z-[47], ChatPage) and the sessions-drawer scrim
- * (z-[46]): the panel's tab strip disappeared under the pane titles and its
- * own controls were unreachable. The row only needs to clear the pane's z-[1]
- * / z-[2] message chrome. These pins keep it below every shell overlay. */
+/* Split-view chrome on the ChatPane root: the focus-dim overlay and the title
+ * row's leading edge (#10585). Both are pinned here against the pane's own
+ * markup, independent of the grid that hands them down. */
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -55,8 +51,8 @@ import ChatPane from '../components/ChatPane'
 
 const SLOT = 'chat-1-stacking'
 
-/** Shell overlays the pane header must stay under: the sessions-drawer scrim
- *  (z-[46]) and the mobile workspace panel (z-[47]) in ChatPage. */
+/** Shell overlays the dim must stay under: the sessions-drawer scrim (z-[46])
+ *  and the mobile workspace panel (z-[47]) in ChatPage. */
 const SHELL_OVERLAY_FLOOR = 46
 
 function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
@@ -85,19 +81,6 @@ function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
   )
 }
 
-describe('ChatPane title row stacking', () => {
-  it('keeps the pane title row below every shell overlay', () => {
-    const { container } = mount()
-    const row = container.querySelector('.panel-toolbar') as HTMLElement
-    expect(row).not.toBeNull()
-    const z = row.className.match(/\bz-\[?(\d+)\]?/g) ?? []
-    expect(z).toHaveLength(1)
-    const value = Number(z[0].replace(/\D/g, ''))
-    expect(value).toBeGreaterThan(2) // above the pane's z-[1] / z-[2] message chrome
-    expect(value).toBeLessThan(SHELL_OVERLAY_FLOOR)
-  })
-})
-
 /* In split view the single-chat title row is gone, and the shell's sessions
  * toggle keeps standing at the surface's top-left. The pane that owns that
  * corner takes it over through `leading`: on desktop it clears the shell's
@@ -115,15 +98,15 @@ describe('ChatPane focus dim', () => {
     const dim = container.querySelector('[data-pane-dim]') as HTMLElement
     expect(dim).not.toBeNull()
     expect(dim.dataset.paneDim).toBe(focused ? 'off' : 'on')
-    // Above the title row (z-10) and message chrome, below every shell layer.
+    // Above the pane's z-[1] / z-[2] message chrome, below every shell layer.
     const z = Number((dim.className.match(/\bz-(\d+)/) ?? [])[1])
-    expect(z).toBeGreaterThan(10)
+    expect(z).toBeGreaterThan(2)
     expect(z).toBeLessThan(SHELL_OVERLAY_FLOOR)
   })
 })
 
 describe('ChatPane title row leading edge', () => {
-  const row = (container: HTMLElement) => container.querySelector('.panel-toolbar') as HTMLElement
+  const row = (container: HTMLElement) => container.querySelector('[data-pane-title-row]') as HTMLElement
 
   it('starts at its own inset with no leading', () => {
     const { container } = mount()
@@ -133,7 +116,7 @@ describe('ChatPane title row leading edge', () => {
 
   it('reserves the shell toggle column and draws the divider for inset', () => {
     const { container } = mount({ leading: { inset: true } })
-    expect(row(container).className).toContain('pl-[56px]')
+    expect(row(container).className).toContain('pl-[49px]')
     expect(row(container).className).not.toMatch(/\bpl-3\b/)
     expect(row(container).querySelector('[data-pane-leading-divider]')).not.toBeNull()
   })
@@ -142,8 +125,8 @@ describe('ChatPane title row leading edge', () => {
     const { container, getByRole } = mount({ leading: { control: <button type="button" aria-label="toggle sessions" /> } })
     const control = getByRole('button', { name: 'toggle sessions' })
     expect(row(container).contains(control)).toBe(true)
-    // Ahead of the title group, so it reads as the row's first element.
-    expect(control.compareDocumentPosition(row(container).querySelector('.flex-1') as Element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Ahead of the title, so it reads as the row's first element.
+    expect(control.compareDocumentPosition(row(container).querySelector('.truncate') as Element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(row(container).querySelector('[data-pane-leading-divider]')).toBeNull()
   })
 })

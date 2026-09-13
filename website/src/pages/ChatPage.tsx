@@ -1,5 +1,4 @@
-import { WorkspacePanelContext, WorkspaceFullscreenContext } from '../components/WorkspacePanelContext'
-import { useContext, Fragment, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
+import { Fragment, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -335,25 +334,19 @@ import { isNoteRow } from '../lib/noteContract'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
-/** The sidebar toggle's rect while split view is up and the sidebar is
- *  collapsed: the grid's compact toolbar token (32px row, 24px button), centred
- *  on that row. Mirrors the button's split-mode classes below (top-1 left-2
- *  w-6 h-6). The drawer morphs into/out of this rect either way, since it is
- *  where the button stands whenever the drawer is not covering it. */
-const SPLIT_TOGGLE_RECT = { x: 8, y: 4, size: 24 } as const
 import { focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
 import { EyeOff, Loader, Pen, MessageSquare, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, X } from 'lucide-react'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
-import { PanelLeftSolid, PanelLeftLight } from '../components/icons/panels'
+import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
 import SlotTagPopover from '../components/SlotTagPopover'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
 
-import { AnimatePresence, motion, useMotionValue, useTransform, useReducedMotion } from 'framer-motion'
+import { AnimatePresence, motion, useMotionValue, useTransform } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
 import type { ChatMessage } from '../types'
@@ -4118,21 +4111,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Stored width is validated against SIDEBAR_MIN..SIDEBAR_MAX only, never the
   // window; clamp for render but leave the preference for the wide viewport.
   const effectiveSidebarWidth = clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
-  const workspaceFullscreen = useContext(WorkspaceFullscreenContext)?.fullscreen ?? false
-  const reduceWorkspaceMotion = useReducedMotion()
-  const reportWorkspaceSearch = useContext(WorkspacePanelContext)
-  useEffect(() => {
-    reportWorkspaceSearch(search.isOpen)
-    return () => reportWorkspaceSearch(false)
-  }, [search.isOpen, reportWorkspaceSearch])
-  const { isOpen: workspaceSearchIsOpen, close: closeWorkspaceSearch } = search
   const toggleAct = useCallback(() => {
-    if (workspaceSearchIsOpen) { closeWorkspaceSearch(); dispatch(openActivityPanel()); return }
-
     // Opening with no tabs shows the empty-state launcher grid (no seeded
     // default view) -- the user picks what to open.
     dispatch(toggleActivity())
-  }, [dispatch, workspaceSearchIsOpen, closeWorkspaceSearch])
+  }, [dispatch])
   // Header-launched toggle: the top-bar Activity button (App.tsx) dispatches
   // this event so the panel-close coordination above stays in ChatPage.
   useEffect(() => {
@@ -6303,12 +6286,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           aria-expanded={flyoutEligible ? flyout.open : undefined}
           // Geometry mirrored by TOGGLE_RECT (chat/SessionFlyout) — every
           // surface in this interaction grows out of and back into this rect.
-          // While the sidebar is collapsed in split view the toggle sits on
-          // the grid's top-left pane, whose header runs the compact toolbar
-          // token (32px row, 24px buttons), so it takes that size and centres
-          // on that row; the pane reserves its column. With the sidebar open
-          // it sits on the sidebar's own 44px header and keeps its normal rect.
-          className={`pi-morph absolute left-2 z-[61] rounded-md flex items-center justify-center cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none ${splitMode && splitFeatureEnabled && !sidebarOpen ? 'top-1 w-6 h-6' : 'top-[9px] w-7 h-7'}`}
+          // In split view the grid's top-left pane reserves this column
+          // (SessionGridView `leading`); its title row is the same height as
+          // the single-chat row, so the toggle keeps this rect there too.
+          className="pi-morph absolute top-[9px] left-2 z-[61] w-7 h-7 rounded-md flex items-center justify-center cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none"
           title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
           aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
         >
@@ -6374,7 +6355,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // OverlayDrawer applies width and the x slide AFTER this style, so neither
         // can be overridden from here.
         slideStyle={isMobile ? { marginTop: vv.offsetTop, marginBottom: keyboardInset } : undefined}
-        morph={!isMobile} morphTarget={splitMode && splitFeatureEnabled ? SPLIT_TOGGLE_RECT : TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-safe-offset-[42px] bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-safe-offset-[42px] bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}
@@ -6588,8 +6569,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             // The single-chat title row is not rendered in split view, so the
             // grid's top-left pane stands in for it: on desktop it clears the
             // shell's stationary toggle while the sidebar is collapsed (the
-            // same 'pl-[60px]' rule the title row applies, on the compact
-            // token); on mobile it carries the sessions toggle inline.
+            // same columns the title row's 'pl-[60px]' rule reserves, measured
+            // from the pane's own edge); on mobile it carries the sessions
+            // toggle inline.
             leading={
               isMobile
                 ? (embedMode !== 'chat' ? { control: mobileSessionsToggle } : undefined)
@@ -6648,7 +6630,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   values on the same 320ms curve as the panel — an instant
                   class flip here reads as the title jumping sideways at the
                   start of the slide. */}
-              <div className={`panel-toolbar relative pr-0.5 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
+              <div className={`relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
                 {/* Divider between toggle and title — ALWAYS mounted and
                     absolute (zero width, no flex-gap participation) so it can
                     never change the row's layout; it rides the row (title
@@ -6723,10 +6705,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* focus-caption-reserve: this group owns the window's top-trailing
                   corner — where Windows and frameless Linux paint their caption
                   controls — whenever the side panel is not holding that edge, i.e.
-                  while it is closed or docked at the bottom. Right-docked and showing, the
+                  while it is closed (the state that renders the reopen toggle
+                  below) or docked at the bottom. Right-docked and showing, the
                   panel is at that edge instead and carries the reserve itself, so
                   reserving here too would indent these controls for nothing. */}
-              <div data-panel-controls-host="chat" className={`panel-toolbar-actions ml-auto flex shrink-0 items-center gap-1.5 pointer-events-none${!sidePanelWantsMount || sidePanelDock === 'bottom' ? ' focus-caption-reserve' : ''}`}>
+              <div className={`ml-auto flex shrink-0 items-center gap-1.5 pointer-events-none${!sidePanelWantsMount || sidePanelDock === 'bottom' ? ' focus-caption-reserve' : ''}`}>
               {/* Pop-out control, promoted to the title bar (menu items remain for
                   sidebar parity). Mirrors the split-view pattern to its left: a
                   dimmed icon to act, an accent chip when the state is active.
@@ -6744,6 +6727,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <ExternalLink size={15} />
                 </Clickable>
               ))}
+              {/* Activity panel open toggle — relocated here from the top bar
+                  (item 2.4) so opening the panel no longer narrows the now
+                  full-width header. Shown only while the panel is closed; the
+                  panel's own header carries the close button. Never disabled:
+                  below the mobile breakpoint the panel opens full width, at or
+                  above it opens beside the chat. There is no width at which
+                  the button does nothing. */}
+              {!embedMode && !popout && !activityOpen && (
+                <Clickable
+                  className="pi-morph flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                  onClick={toggleAct}
+                  title={i18nT('pages.chatPage.open_activity_panel')}
+                  aria-label={i18nT('pages.chatPage.open_activity_panel')}
+                >
+                  <PanelRightSolid size={15} />
+                </Clickable>
+              )}
               {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
                 <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => enterSplit(splitAnchorForActive)} title={i18nT('pages.chatPage.this_session_is_open_in_a_split_return_to_it')} aria-label={i18nT('pages.chatPage.return_to_split_view')}>
                 <Columns2 size={13} /> {i18nT('pages.chatPage.in_split')}
@@ -7677,7 +7677,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       {search.isOpen && (
           <DetailPanel
             key="search-panel"
-            headerClassName="border-border bg-bg workspace-search-header"
             title={<SearchBar docked term={search.term} setTerm={search.setTerm} matches={search.matches} currentIdx={search.currentIdx} next={search.next} prev={search.prev} close={search.close} caseSensitive={search.caseSensitive} toggleCaseSensitive={search.toggleCaseSensitive} focusNonce={search.focusNonce} goTo={search.goTo} scopeLimited={searchScopeIsLimited({ slotHasMore, cursorIsForActiveSlot })} />}
             onClose={search.close}
             initialWidth={400}
@@ -7720,9 +7719,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && !activitySlot) && (
           <motion.div
             key="side-panel-inline"
-            layout={reduceWorkspaceMotion ? false : "position"}
-            layoutDependency={workspaceFullscreen}
-            data-workspace-panel-host
             ref={isMobile ? sideOverlayPanelRef : undefined}
             initial={isMobile ? false : { width: 0 }}
             animate={isMobile ? undefined : { width: 'auto' }}
@@ -7778,9 +7774,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
-              data-workspace-panel-host
               initial={sidePanelDockAnim.initial}
-              animate={workspaceFullscreen ? { ...sidePanelDockAnim.animate, width: '100%', height: '100%' } : sidePanelDockAnim.animate}
+              animate={sidePanelDockAnim.animate}
               exit={sidePanelDockAnim.exit}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
               className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}

@@ -1,7 +1,6 @@
-import { WorkspaceFullscreenContext } from './WorkspacePanelContext'
 import { safeSetItem } from '../utils/safeStorage'
 import { hasCommandModifier } from '../utils/commandModifier'
-import { memo, useContext, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
+import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, MessageSquare, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Component, FileText, FileDiff, Folders, TriangleAlert, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
@@ -1105,7 +1104,6 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   }, [clearHighlightMarks])
   const [refreshing, setRefreshing] = useState(false)
   const [hintDismissed, setHintDismissed] = useState(() => localStorage.getItem(HINT_KEY) === '1')
-  const workspaceFullscreen = useContext(WorkspaceFullscreenContext)
   const [fullscreen, setFullscreen] = useState(false)
   // Shared IME latch for the full-screen preview's Tab trap: a Tab that lands
   // during an IME composition (or its post-`compositionend` window) is
@@ -1953,12 +1951,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       if (confirmOpen) return
       // An open annotation box owns Escape: the toolbar closes it (and hands the
       // selection back) on its own; the panel must not ALSO close or prompt.
-      if (e.key === 'Escape' && !e.defaultPrevented) { if (composerOpenRef.current) return; if (fullscreen) setFullscreen(false); else if (!workspaceFullscreen?.fullscreen) guardedClose() }
+      if (e.key === 'Escape') { if (composerOpenRef.current) return; if (fullscreen) setFullscreen(false); else guardedClose() }
       if ((e.metaKey || e.ctrlKey) && e.key === 's' && editing && dirty) { e.preventDefault(); handleSaveRef.current() }
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen, workspaceFullscreen?.fullscreen])
+  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen])
 
   const handleChange = useCallback((v: string) => { onContentChange(v); setDirty(true) }, [onContentChange])
 
@@ -2054,7 +2052,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             <OverflowMenu filePath={filePath} content={content} onError={reportActionError}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
-              onFullscreen={workspaceFullscreen ? undefined : () => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
+              onFullscreen={() => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
               onSnapshot={artifactState.existing ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
               wordWrap={wordWrap} onToggleWordWrap={() => setWordWrap(!wordWrap)}
               lineNums={lineNums} onToggleLineNums={() => setLineNums(!lineNums)}

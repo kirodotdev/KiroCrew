@@ -350,82 +350,29 @@ are Tailwind utilities defined in `tailwind.config.js`, and both use
 - Add a new CSS `@keyframes`. Use Framer Motion, or an existing utility.
 
 
-### Chat and panel title actions
-
-The chat title row, workspace tab strip and terminal tab strip share a 44px
-header, 28px action buttons and 16px action icons. The `--panel-toolbar-*`
-tokens in `index.css` own these sizes. Use `panel-toolbar` for the row and
-`panel-toolbar-actions` or `panel-toolbar-action` for its action controls.
-Both panels use the terminal-style 32px pill tabs centered in the row, with
-16px flex-centered icon containers. Their outer frames are square, separated
-from adjacent content by one divider, without a bottom gap or tab-strip seam.
-The terminal's sized inner frame uses `box-border` and owns the separator; the
-outer animation wrapper adds no border, so resizing counts that divider once.
-
-Action groups share a 6px gap and an 8px trailing inset. The fixed toggles are
-the workspace and terminal toggles, and reserve one button width plus one gap
-per rendered control, including the gap from the preceding action. Only the
-header owning the fixed controls reserves that space, and
-`data-panel-controls-host` goes on that header's action group, never on the
-header row itself: on the row the reserved padding replaces the 8px inset
-instead of stacking on it. Where the owning group's own controls include a
-close beside the toggles (a split pane's ×, the workspace and terminal panels'
-⋯ / X) the reservation grows by a hairline with
-`--panel-toolbar-divider-gap` (8px) on each side, drawn as the group's
-`::after`, so the two owners of the row read apart. The single-chat title row
-keeps the plain reservation: its ↗ and split controls are page actions, and the
-row is deliberately bare.
+### Split view: leading edge and focus
 
 The surface's top-left is the sessions-sidebar toggle's. In single chat the
 title row carries it (mobile) or clears the shell's stationary button with a
 60px inset and a hairline at 52px (desktop, sidebar collapsed). Split view does
 not render that row, so `SessionGridLayout` hands `ownsTopLeft` to the one
-geometric top-left leaf, exactly as `ownsTopRight` picks the pane that reserves
-the fixed toggles, and `SessionGridView` gives that pane `leading`: `inset`
-reserves the column on the compact token (`pl-[56px]`, hairline at 48px: the
-toggle spans pane x 16..40 because the pane starts 8px left of the toggle's
-container, then 8px, line, 8px), `control` renders the toggle inline ahead of
-the title. While the
-sidebar is collapsed in split view the shell's toggle itself takes the compact
-rect (24px at `top-1`, `SPLIT_TOGGLE_RECT`) so it centres on the 32px pane row;
-with the sidebar open it stands on the sidebar's 44px header and keeps its
-normal rect. The fixed toggles take both width and height from
-the button token, so the session grid's 24px variant keeps them the same size
-as the pane's own controls. They draw the house panel glyphs from
-`components/icons/panels.tsx`, the family the split-pane controls already use
-through `SplitGlyph`, with `open` following the pressed state; do not swap in
-lucide's `PanelRight` / `PanelBottom`, which puts two renderings of "a panel"
-on one row.
+geometric top-left leaf and `SessionGridView` gives that pane `leading`:
+`inset` reserves the toggle's column on the pane's own row (`ChatPane`:
+`pl-[49px]`, hairline at 41px; the picker card: `pl-[44px]`, hairline at 36px —
+both are container x 52 and 44, the single-chat row's columns, measured from
+where each pane's content starts), `control` renders the toggle inline ahead
+of the title. The shell's toggle keeps its normal rect (`TOGGLE_RECT`) in split
+view: the pane title row is the same height as the single-chat row, so it
+already centres on it.
 
-Split view marks focus by dimming every other pane, not by recolouring it:
-`PaneDim` lays a background-coloured rectangle over the pane at
+Split view marks focus by dimming every other pane as well as by the pane's
+accent border: `PaneDim` lays a background-coloured rectangle over the pane at
 `--pane-dim-opacity` (0.4), the way Ghostty fades an unfocused split, so
 message text, code highlighting and status colours keep their own values
 underneath and only the whole pane reads as "not the one with focus". The
 overlay is always mounted while the pane knows its focus state (opacity 0 when
-focused, so the cue fades both ways), sits at `z-20` between the title row and
-the drop overlay, and takes no pointer events, so the click that claims focus
-lands on the pane. A pane outside split view (`focused` undefined) never mounts
-it. The placeholder pane keeps its accent dot as well.
-
-Title rows are flex-flow chrome, not overlays, and carry no page-level
-z-index. A pane root opens no stacking context, so a z-index on its title row
-competes with the shell: the mobile workspace panel is `z-[47]` and the
-sessions-drawer scrim `z-[46]`, and a `z-50` title row painted the split-pane
-headers over both, hiding the panel's tab strip. `ChatPane` keeps its row at
-`z-10`, above the pane's own `z-[1]` / `z-[2]` message chrome and below every
-shell layer; `ChatPane.headerStacking.test.tsx` pins the ceiling.
-
-Fullscreen is the workspace panel's own action and renders in that panel's
-action group, which holds at most two controls (`max-two-buttons-per-row`): the
-⋯ menu plus either the fullscreen button or the close X. Right-docked,
-fullscreen, and on mobile the fixed toggles sit beside the group and close the
-panel, so the fullscreen button takes the slot; bottom-docked the X keeps it and
-fullscreen enters from the ⋯ menu. The chat row adds 2px to its outer 6px scrollbar clearance to match
-the panels' 8px inset.
-
-A fullscreen workspace panel still begins below the shell's first row. That row
-is 42px normally and the shared 8px edge inset in focus mode. Fullscreen expands
-across the content columns and lower rows, not into that top clearance, so its
-tab strip and trailing controls keep the same vertical position as the chat and
-session title rows. Do not move the fullscreen host or controls to grid row 1.
+focused, so the cue fades both ways), sits at `z-20` above the message chrome
+and below the drop overlay and every shell layer, and takes no pointer events,
+so the click that claims focus lands on the pane. A pane outside split view
+(`focused` undefined) never mounts it. The placeholder pane keeps its accent
+dot as well.
