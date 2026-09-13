@@ -227,8 +227,17 @@ def test_escaped_failed_is_reported_against_its_test_not_as_internalerror(tmp_pa
     bystander_duration = durations["test_escape.py::test_bystander@escape_guard"]
     skipped_nodeid = "test_escape.py::test_skipped_bystander@escape_guard"
     assert skipped_nodeid in durations
-    assert victim_duration >= 3.0, (escape_site, durations)
-    assert victim_duration - bystander_duration < 4.5, (escape_site, durations)
+    # Counted ONCE. The victim sleeps 3.0s, so its recorded duration is 3.0s plus
+    # whatever the runner adds around the phases, while a duration that absorbed
+    # the guard's synthesized report as a second pass is at least 6.0s by
+    # construction. The ceiling therefore sits at the double-count floor itself,
+    # which is what the assertion is about; a tighter one measures the host's
+    # scheduling latency instead. Hosted windows-latest has been observed adding
+    # 1.5-1.9s under load, and the wall-time bracket must not fail on that.
+    # The bystander proves the accounting path with no sleep in it
+    # produces a small value, not that the victim's overhead matches it.
+    assert 3.0 <= victim_duration < 6.0, (escape_site, durations)
+    assert bystander_duration < 3.0, (escape_site, durations)
 
     collect_proc = _run_inner_pytest(
         tmp_path,
