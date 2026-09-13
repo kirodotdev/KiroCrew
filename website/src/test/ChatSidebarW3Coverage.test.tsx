@@ -178,7 +178,7 @@ function renderSidebar(opts: { slots?: TestSlot[]; folders?: ChatFolder[] } = {}
     chat: {
       ...defaults.chat,
       activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {},
-      automations: {}, workflowRuns: {}, subagentQueued: {}, slotHistory: [],
+      goalLoops: {}, workflowRuns: {}, subagentQueued: {}, slotHistory: [],
     } as unknown as RootState['chat'],
   })
   // staleTime + refetchOnMount keep the seeded folder list authoritative. An

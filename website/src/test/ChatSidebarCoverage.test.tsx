@@ -148,7 +148,7 @@ function renderSidebar(opts: {
     chat: {
       ...defaults.chat,
       activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {},
-      automations: {}, workflowRuns: {}, subagentQueued: {}, slotHistory: [],
+      goalLoops: {}, workflowRuns: {}, subagentQueued: {}, slotHistory: [],
       revealRequest: opts.revealRequest ?? null,
       revealNonce: opts.revealRequest?.nonce ?? 0,
     } as unknown as RootState['chat'],

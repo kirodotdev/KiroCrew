@@ -819,9 +819,10 @@ describe('query-string builders', () => {
 })
 
 describe('path encoding', () => {
-  it('uses the legacy slot route for one session automation snapshot', async () => {
-    await api.autonudgeForSlot('chat/1')
-    expect(call().url).toBe('/api/autonudge/slot/chat%2F1')
+  it('clears a stopped monitor through the encoded owner-gated route', async () => {
+    await api.monitorClear('monitor/1')
+    expect(call().url).toBe('/api/monitors/monitor%2F1/clear')
+    expect(call().method).toBe('POST')
   })
 
   it('percent-encodes single-segment ids', async () => {

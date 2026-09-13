@@ -1,6 +1,6 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Goal, X } from 'lucide-react'
+import { Goal, X } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -20,10 +20,6 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onChange: (loop: AutoNudgeLoop | null) => void
-  /** Present only when the legacy form is nested under the bounded monitor picker. */
-  onBackToBoundedMonitor?: () => void
-  /** Disable legacy-loop writes while leaving Stop available for stale state. */
-  writeDisabled?: boolean
   /**
    * True when the slot's last turn ended interrupted (the composer is showing
    * Resume). The chip stops pulsing and turns warn-coloured: the loop is still
@@ -31,10 +27,6 @@ interface Props {
    * cycle fires, and a pulsing chip would claim active work for that whole gap.
    */
   interrupted?: boolean
-  /** Shared composer trigger supplied by the structured-monitor compatibility shell. */
-  trigger?: ReactNode
-  /** Structured body supplied by that shell; omitted to render the legacy editor. */
-  content?: ReactNode
 }
 
 const DEFAULT_MSG = `Your north star is in north_star.md, roadmap in roadmap.md, tasks in tasks.md. Pick the single highest-leverage next step toward the goal and execute it. Update tasks.md. Post a blocker ONCE if genuinely stuck. To halt the loop, create {{STOP_FILE}}`
@@ -47,7 +39,7 @@ interface SlotWatch {
   next_run_ts: number | null
 }
 
-export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange, onBackToBoundedMonitor, writeDisabled = false, interrupted = false, trigger, content }: Props) {
+export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange, interrupted = false }: Props) {
   // `||` (not `??`) is deliberate on the loop tier: it preserves the fallback
   // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
   // the 60 / 0 / default template rather than a bare 0 / "".
@@ -62,8 +54,6 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const [idleInput, setIdleInput] = useState(() => String(loop?.idle_secs || 60))
   const [maxCyclesInput, setMaxCyclesInput] = useState(() => String(loop?.max_cycles || 0))
   const [saving, setSaving] = useState(false)
-  /* Two-step on the clear only. The erase is irreversible and sits beside the
-     primary CTA, so one press asks and the second performs. */
   const [confirmClear, setConfirmClear] = useState(false)
   const [error, setError] = useState('')
   // Watches armed on this slot, read through the SHARED `cron-jobs` query rather
@@ -75,7 +65,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const queryClient = useQueryClient()
   const { data: cronJobs, isError: watchesFailed, refetch: refetchWatches } = useQuery({
     ...cronJobsQuery,
-    enabled: open && content === undefined,
+    enabled: open,
   })
 
   const watches: SlotWatch[] = useMemo(() => {
@@ -152,10 +142,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   useEffect(() => {
     if (!open) return
     hasEdited.current = false
-    setError('')
-    // A pending confirmation must not survive a close: reopening later would
-    // put a primed erase under the next press.
     setConfirmClear(false)
+    setError('')
     if (loop) {
       // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
       // or an empty message shows the 60 / 0 / default template.
@@ -195,7 +183,6 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   }, [open, slotKey, message, idleInput, maxCyclesInput, loop])
 
   async function save() {
-    if (writeDisabled) return
     setSaving(true)
     setError('')
     try {
@@ -332,7 +319,6 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      {trigger ? <PopoverTrigger asChild>{trigger}</PopoverTrigger> : (
       <PopoverTrigger asChild>
         <button
           className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
@@ -353,15 +339,14 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           {loop?.active && loop.cycle_count > 0 ? cycleText : null}
         </button>
       </PopoverTrigger>
-      )}
-      {content ?? <PopoverContent
+      <PopoverContent
         side="top"
         align="start"
         /* Viewport-capped rather than a pinned 420px: at the 320px floor a fixed
            width pushes this panel -- and the right-aligned action below -- past the
            usable viewport. Written as a max so there is no `md:` counterpart to keep
            in sync: 420px is simply the ceiling, and a phone gets the width it has. */
-        className="w-[min(calc(100vw-1rem),26.25rem)] max-h-[min(80vh,42rem)] overflow-y-auto p-4 text-[12px]"
+        className="w-[min(420px,calc(100vw_-_1.5rem))] p-4 text-[12px]"
       >
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2 font-medium text-text">
@@ -373,21 +358,6 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             <X size={14} />
           </button>
         </div>
-        {onBackToBoundedMonitor ? (
-          <>
-            <button
-              type="button"
-              onClick={onBackToBoundedMonitor}
-              className="mb-2 inline-flex items-center gap-1 border-none bg-transparent p-0 text-[11px] text-muted cursor-pointer hover:text-text"
-            >
-              <ArrowLeft size={13} className="lucide-inline" aria-hidden />
-              {i18nT('components.sessionAutomationPopover.back_to_bounded_monitor')}
-            </button>
-            <p role="note" className="mb-2 rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn-fg">
-              {i18nT('components.sessionAutomationPopover.legacy_notice')}
-            </p>
-          </>
-        ) : null}
         <p className="text-muted text-[11px] mb-3 leading-relaxed">{i18nT('components.autoNudgePopover.give_the_agent_a_goal_and_it_will_keep_working_t')}</p>
 
         {watchesFailed && (
@@ -435,14 +405,13 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         <textarea
           aria-label={i18nT('components.autoNudgePopover.goal_description')}
           value={message}
-          disabled={writeDisabled}
           onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
           rows={6}
           className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
           placeholder={i18nT('components.autoNudgePopover.describe_what_you_want_the_agent_to_accomplish')}
         />
 
-        <div className="flex flex-col gap-3 mb-3 sm:flex-row">
+        <div className="flex gap-3 mb-3">
           <div className="flex-1">
             <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.seconds_between_nudges')}</div>
             <input
@@ -451,7 +420,6 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               min={15}
               max={86400}
               value={idleInput}
-              disabled={writeDisabled}
               onChange={e => { hasEdited.current = true; setIdleInput(e.target.value) }}
               onBlur={() => setIdleInput(String(parseIdle(idleInput)))}
               className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
@@ -464,7 +432,6 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               aria-label={i18nT('components.autoNudgePopover.max_cycles_0_infinite')}
               min={0}
               value={maxCyclesInput}
-              disabled={writeDisabled}
               onChange={e => { hasEdited.current = true; setMaxCyclesInput(e.target.value) }}
               onBlur={() => setMaxCyclesInput(String(parseCycles(maxCyclesInput)))}
               className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
@@ -615,7 +582,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           {!confirmClear && (
             <button
               onClick={save}
-              disabled={saving || writeDisabled || !message.trim()}
+              disabled={saving || !message.trim()}
               className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
             >
               {/* A paused loop's way out was invisible: this button silently PATCHes
@@ -630,7 +597,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             </button>
           )}
         </div>
-      </PopoverContent>}
+      </PopoverContent>
     </Popover>
   )
 }
