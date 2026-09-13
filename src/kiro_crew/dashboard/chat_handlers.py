@@ -102,6 +102,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     history_corpus_unreadable,
     slot_history_key,
+    slot_is_channel_backed,
     subagents_attached,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
@@ -4047,7 +4048,9 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return _slot_not_found()
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_stop")
+    denied = _deny_cross_app_slot_access(
+        request, slot, name, "slot_stop", allow_channel_backed=True
+    )
     if denied is not None:
         return denied
     # A peer-bound stop travels over the owner's tunnel and aborts a turn on the
@@ -4349,7 +4352,9 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return _slot_not_found()
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_interrupt")
+    denied = _deny_cross_app_slot_access(
+        request, slot, name, "slot_interrupt", allow_channel_backed=True
+    )
     if denied is not None:
         return denied
     # Before the _stop_state claim and the queue promotion below, both of which
@@ -8463,18 +8468,42 @@ def _redact_followup_item(item: dict) -> dict:
 
 
 def _deny_cross_app_slot_access(
-    request: web.Request, slot, name: str, operation: str
+    request: web.Request, slot, name: str, operation: str, *, allow_channel_backed: bool = False
 ) -> web.Response | None:
     """Deny app tokens acting on slots they don't own (App Kit §5.2).
 
     Returns a 404 response if the caller is an app that doesn't own this slot,
     or None to proceed. Dashboard users (empty request_app) always pass.
     Anti-enumeration: uses 404 not 403 (CWE-204).
+
+    ``allow_channel_backed``: the cancel routes opt out of the
+    channel-backed refusal because they authorize against the TURN's own
+    identity in ``_app_cancel_denied`` -- an app may still stop a turn it
+    started on its own session after a mid-flight rebind, and that guard
+    (not this one) is what refuses a cancel landing on a foreign session.
     """
     request_app = request.get("app", "")
     if not request_app:
         return None  # Dashboard user -- no restriction
     if slot._app and request_app == slot._app:
+        if slot_is_channel_backed(slot) and not allow_channel_backed:
+            # Owning the SLOT is not owning the TRANSCRIPT: a channel-backed
+            # slot resolves reads and writes onto a channel conversation's own
+            # file (``slot_is_channel_backed``), so the whole chokepoint
+            # refuses it for app callers, with the same anti-enumeration 404
+            # as the ownership arms below. The dashboard owner is unaffected.
+            try:
+                sel().log_api_access(
+                    caller=request_app,
+                    operation=operation,
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={name}",
+                    error="app cannot access a channel-backed slot",
+                )
+            except Exception:
+                pass
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
         return None  # App owns this slot
     reason = "app does not own this slot" if slot._app else "app cannot access unscoped slots"
     try:

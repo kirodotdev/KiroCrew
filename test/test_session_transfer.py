@@ -169,7 +169,7 @@ async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
     slot._disk_window_len = 1
     slot.key = "slot-1"
 
-    async def _save(_state, s, best_effort=True):
+    async def _save(_state, s, best_effort=True, **_kw):
         disk["messages"] = list(s.messages)
         s._dirty = False
         s._disk_window_len = len(s.messages)
@@ -667,7 +667,7 @@ async def test_bundle_flushes_a_dirty_slot_so_in_place_edits_travel(monkeypatch)
     slot._disk_window_len = 1  # the edit sits BELOW the boundary
     slot._dirty = True
 
-    async def _save(_state, s, best_effort=True):
+    async def _save(_state, s, best_effort=True, **_kw):
         # A real save rewrites the window and re-stamps the boundary.
         disk["messages"] = list(s.messages)
         s._dirty = False
@@ -730,9 +730,7 @@ async def test_snapshot_retries_when_a_turn_lands_during_assembly():
 
     st.asyncio.to_thread = _append_midway  # type: ignore[assignment]
     try:
-        bundle = await st.build_transfer_bundle_async(
-            _state([persisted]), slot, origin="mac"
-        )
+        bundle = await st.build_transfer_bundle_async(_state([persisted]), slot, origin="mac")
     finally:
         st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
@@ -787,6 +785,205 @@ async def test_send_refuses_an_app_that_does_not_own_the_slot(monkeypatch):
     assert resp.status == 404
     assert json.loads(resp.body)["code"] == "transfer_slot_not_found"
     assert sent == [], "nothing may be delivered for a slot the app does not own"
+
+
+def _send_session_env(monkeypatch, slot, *, app=""):
+    """Wire up the handler's collaborators around *slot* for an app-boundary test.
+
+    Returns ``(request, sent, bundled, audits)``: the request to hand the
+    handler, the bundles the tunnel manager delivered, the slots the (stubbed)
+    bundle builder was called with, and the ``(operation, outcome, error)``
+    audit rows -- so a refusal test can assert the builder was never reached
+    and the denial was recorded.
+    """
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+
+    bundled: list = []
+
+    async def _bundle(_state, _slot, **_kw):
+        bundled.append(_slot)
+        return {"bundle_version": BUNDLE_VERSION, "messages": list(_slot.messages)}
+
+    monkeypatch.setattr(hi, "build_transfer_bundle_async", _bundle)
+
+    audits: list = []
+    monkeypatch.setattr(
+        hi,
+        "_audit",
+        lambda op, outcome, **kw: audits.append((op, outcome, kw.get("error", ""))),
+    )
+
+    sent: list = []
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, bundle):
+            sent.append(bundle)
+            return True, {"key": "remote-1"}
+
+    state = SimpleNamespace(
+        _slots={slot.key: slot},
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+    )
+    request = SimpleNamespace(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        get=lambda k, default="": {"user": "owner", "app": app}.get(k, default),
+        json=_async_value({"slot": slot.key}),
+    )
+    return request, sent, bundled, audits
+
+
+async def _not_owned_send_response(monkeypatch):
+    """The reference refusal: an app naming a slot owned by ANOTHER app."""
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    slot = _slot([{"role": "user", "content": "secret", "ts": ""}])
+    slot.key = "slot-1"
+    slot._app = "owner-app"
+    request, _sent, _bundled, _audits = _send_session_env(monkeypatch, slot, app="other-app")
+    return await hi.api_instances_send_session(request)
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_an_app_owned_slot_with_a_channel_link(monkeypatch):
+    """Owning the SLOT is not owning the TRANSCRIPT.
+
+    ``get_or_create_slot`` auto-binds ``linked_session_key`` from a
+    channel-shaped slot NAME the creating caller supplies, and the bundle
+    builder reads the transcript through ``slot_history_key``, which follows
+    that link first -- so an app could pass the ownership check with a slot
+    whose conversation belongs to a channel it has no claim on. The boundary
+    refuses before the builder runs, mirroring chat_rewind and the export.
+    """
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    slot = _slot([{"role": "user", "content": "channel talk", "ts": ""}])
+    slot.key = "slot-1"
+    slot._app = "my-app"
+    slot.linked_session_key = "slack:1700000000.000100"
+
+    request, sent, bundled, audits = _send_session_env(monkeypatch, slot, app="my-app")
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 404
+    assert json.loads(resp.body)["code"] == "transfer_slot_not_found"
+    assert bundled == [], "the bundle builder must never see a channel-linked slot"
+    assert sent == []
+    assert ("send_session", "denied", "app cannot send a channel-linked slot") in audits
+
+    # The refusal must be byte-identical to the not-owned answer, or the
+    # response itself tells an app which of its slots carry a channel link.
+    reference = await _not_owned_send_response(monkeypatch)
+    assert resp.status == reference.status
+    assert resp.body == reference.body
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_an_app_owned_channel_origin_slot_with_an_empty_link(monkeypatch):
+    """The second way a slot's transcript can be a channel's: an unbound
+    channel-born slot (``channel_origin`` set, link empty) resolves through
+    ``slot_transcript_key`` onto the channel's own transcript."""
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    slot = _slot([{"role": "user", "content": "channel talk", "ts": ""}])
+    slot.key = "slot-1"
+    slot._app = "my-app"
+    slot.channel_origin = True
+
+    request, sent, bundled, audits = _send_session_env(monkeypatch, slot, app="my-app")
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 404
+    assert json.loads(resp.body)["code"] == "transfer_slot_not_found"
+    assert bundled == []
+    assert sent == []
+    assert ("send_session", "denied", "app cannot send a channel-origin slot") in audits
+
+    reference = await _not_owned_send_response(monkeypatch)
+    assert resp.status == reference.status
+    assert resp.body == reference.body
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_when_the_slot_is_bound_during_the_build(monkeypatch):
+    """The guard is re-checked on BOTH sides of the awaited build.
+
+    The pre-build guards read the binding at one instant; a channel/cron
+    injection can set ``linked_session_key`` while the builder is off the
+    loop, redirecting its transcript read. Links are only ever set, never
+    cleared, so the post-build re-check sees the raced bind and discards the
+    bundle instead of delivering it.
+    """
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    slot = _slot([{"role": "user", "content": "app talk", "ts": ""}])
+    slot.key = "slot-1"
+    slot._app = "my-app"
+
+    request, sent, bundled, audits = _send_session_env(monkeypatch, slot, app="my-app")
+
+    async def _binding_bundle(_state, _slot, **_kw):
+        bundled.append(_slot)
+        # The race: a bind lands while the build is suspended off the loop.
+        _slot.linked_session_key = "slack:1700000000.000100"
+        return {"bundle_version": BUNDLE_VERSION, "messages": list(_slot.messages)}
+
+    monkeypatch.setattr(hi, "build_transfer_bundle_async", _binding_bundle)
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 404
+    assert json.loads(resp.body)["code"] == "transfer_slot_not_found"
+    assert sent == [], "a bundle built across a raced bind must never be delivered"
+    assert (
+        "send_session",
+        "denied",
+        "slot bound to a channel during the transfer build",
+    ) in audits
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_owner_can_still_send_a_channel_linked_slot(monkeypatch):
+    """The owner is entitled to both the slot and the channel conversation it
+    displays; the app-boundary refusal must not reach them."""
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    slot = _slot([{"role": "user", "content": "channel talk", "ts": ""}])
+    slot.key = "slot-1"
+    slot.linked_session_key = "slack:1700000000.000100"
+
+    request, sent, bundled, _audits = _send_session_env(monkeypatch, slot, app="")
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 200
+    assert bundled == [slot]
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_app_can_still_send_its_own_unlinked_slot(monkeypatch):
+    """The guard is scoped to the two channel-transcript shapes: a plain
+    app-owned slot keeps transferring."""
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    slot = _slot([{"role": "user", "content": "app talk", "ts": ""}])
+    slot.key = "slot-1"
+    slot._app = "my-app"
+
+    request, sent, bundled, _audits = _send_session_env(monkeypatch, slot, app="my-app")
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 200
+    assert bundled == [slot]
+    assert len(sent) == 1
 
 
 @pytest.mark.asyncio
@@ -866,7 +1063,7 @@ async def test_bundle_refuses_when_the_slot_never_settles(monkeypatch):
     slot._dirty = True
     slot._dirty_gen = 3
 
-    async def _save_then_edit(_state, s, best_effort=True):
+    async def _save_then_edit(_state, s, best_effort=True, **_kw):
         s._disk_window_len = len(s.messages)
         # Never settles: an edit lands inside every save, and a real in-place
         # edit leaves the slot dirty, so the next attempt flushes again.
@@ -898,7 +1095,7 @@ async def test_retry_reflushes_so_it_cannot_serialize_a_superseded_variant(monke
 
     saves = {"n": 0}
 
-    async def _save(_state, s, best_effort=True):
+    async def _save(_state, s, best_effort=True, **_kw):
         saves["n"] += 1
         # Persist whatever is in memory now.
         disk[:] = [dict(m) for m in s.messages]
@@ -925,9 +1122,7 @@ async def test_retry_reflushes_so_it_cannot_serialize_a_superseded_variant(monke
 
     st.asyncio.to_thread = _switch_variant_once  # type: ignore[assignment]
     try:
-        bundle = await st.build_transfer_bundle_async(
-            _state(disk), slot, origin="mac"
-        )
+        bundle = await st.build_transfer_bundle_async(_state(disk), slot, origin="mac")
     finally:
         st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
@@ -1812,9 +2007,7 @@ def test_layer_b_rewrite_tolerates_a_minimal_envelope():
     assert out["session_state"]["agent_name"] is None
 
 
-def test_write_layer_b_files_writes_a_fresh_sid_and_never_touches_the_map(
-    monkeypatch, tmp_path
-):
+def test_write_layer_b_files_writes_a_fresh_sid_and_never_touches_the_map(monkeypatch, tmp_path):
     """File writes run in a worker thread, so they must NOT touch the session
     map: ``SessionMap.set`` mutates a shared dict and serialises the whole file,
     which races the event loop's own map writes."""
@@ -1915,7 +2108,9 @@ def test_bundle_includes_layer_b_when_present():
 def test_bundle_omits_layer_b_when_the_session_has_none():
     from kiro_crew.dashboard import session_transfer as st
 
-    bundle = st._assemble_bundle([{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", None)
+    bundle = st._assemble_bundle(
+        [{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", None
+    )
 
     assert "layer_b" not in bundle
 
@@ -2001,9 +2196,7 @@ async def test_import_still_succeeds_when_layer_b_cannot_be_materialised(monkeyp
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert resp.status == 200
     assert json.loads(resp.body)["ok"] is True
@@ -2035,9 +2228,7 @@ async def test_import_reports_session_load_when_layer_b_landed(monkeypatch):
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert json.loads(resp.body)["resume_mode"] == "session_load"
 
@@ -2048,9 +2239,7 @@ async def test_import_reports_prefix_when_layer_b_failed(monkeypatch):
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert json.loads(resp.body)["resume_mode"] == "prefix"
 
@@ -2226,9 +2415,7 @@ async def test_failed_save_rolls_back_the_layer_b_join(monkeypatch):
     forgotten: list[str] = []
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        st, "_forget_layer_b_join", lambda _s, key: (forgotten.append(key), "")[1]
-    )
+    monkeypatch.setattr(st, "_forget_layer_b_join", lambda _s, key: (forgotten.append(key), "")[1])
 
     async def _boom(*_a, **_k):
         raise OSError("disk full")
@@ -2260,9 +2447,7 @@ def test_forget_layer_b_join_returns_the_sid_for_file_cleanup():
     from kiro_crew.dashboard import session_transfer as st
 
     dropped: list[str] = []
-    live = SimpleNamespace(
-        forget_conversation=lambda key: (dropped.append(key), "old-sid")[1]
-    )
+    live = SimpleNamespace(forget_conversation=lambda key: (dropped.append(key), "old-sid")[1])
 
     assert st._forget_layer_b_join(live, "dashboard:imported-1") == "old-sid"
     assert dropped == ["dashboard:imported-1"]
@@ -2781,9 +2966,7 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     assert got is not None
     assert len(sizes) == 2, f"expected one lockdown per file of the pair: {sizes}"
-    assert sizes == [0, 0], (
-        f"a file already held payload bytes when it was locked down: {sizes}"
-    )
+    assert sizes == [0, 0], f"a file already held payload bytes when it was locked down: {sizes}"
 
 
 def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path):
@@ -2802,9 +2985,9 @@ def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path)
     from kiro_crew.dashboard import session_transfer as st
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-    sig = _THINKING_ENVELOPE["session_state"]["conversation_metadata"][
-        "user_turn_metadatas"
-    ][0]["result"]["Ok"]["content"][0]["data"]["signature"]
+    sig = _THINKING_ENVELOPE["session_state"]["conversation_metadata"]["user_turn_metadatas"][0][
+        "result"
+    ]["Ok"]["content"][0]["data"]["signature"]
 
     new_sid = st._write_layer_b_files(
         {"envelope": _THINKING_ENVELOPE, "events": '{"kind":"Prompt"}\n'}, "target-agent"

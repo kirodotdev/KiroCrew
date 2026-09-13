@@ -759,6 +759,19 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
 
 
+def slot_is_channel_backed(slot: _ChatSlot) -> bool:
+    """True when *slot*'s TRANSCRIPT is a channel conversation's.
+
+    The two shapes, both resolved by :func:`slot_history_key`: a bound link
+    (``linked_session_key``, followed first), and an unbound channel-born slot
+    (``channel_origin`` with an empty link, resolved through
+    :func:`slot_transcript_key`). One predicate so the app-isolation
+    boundaries -- the chokepoint, send, export, fork, rewind -- refuse the
+    same set of slots and cannot drift apart as sites multiply.
+    """
+    return bool(getattr(slot, "linked_session_key", "") or getattr(slot, "channel_origin", False))
+
+
 def subagents_attached(
     state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
 ) -> bool:
