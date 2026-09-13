@@ -39,6 +39,7 @@ import { isEmbeddedPane } from './lib/embedded'
 import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, registerThemeDecorSlot } from './lib/themeDecorLayer'
 import { useHoverIntent } from './hooks/useHoverIntent'
 import { useNativeNotification } from './hooks/useNativeNotification'
+import { useSessionActions } from './hooks/useSessionActions'
 import { useNotificationSound } from './hooks/useNotificationSound'
 import { recordSessionStart, recordEvent } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
@@ -2271,7 +2272,11 @@ export default function App() {
       dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
     }
   }, [dispatch])
+  // Supplied to the shortcuts hook rather than reached for inside it: the funnel is
+  // react-query-backed, and this component is already under the provider.
+  const { close: closeSession } = useSessionActions()
   useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
+    onCloseSession: closeSession,
     onToggleFocusMode: toggleFocusMode,
     onCycleAgent: () => {
       const slots = store.getState().dashboard.slots

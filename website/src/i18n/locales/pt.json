@@ -6388,7 +6388,20 @@
       "scroll_suggestions_left": "Rolar sugestões para a esquerda",
       "scroll_suggestions_right": "Rolar sugestões para a direita",
       "send_now": "Enviar agora",
-      "send_now_2": "Enviar agora: {{option}}"
+      "send_now_2": "Enviar agora: {{option}}",
+      "action_unavailable_while_options_are_selected": "Indisponível enquanto houver opções selecionadas: elas estão preparadas como texto no compositor e seriam descartadas",
+      "action_unavailable_while_the_composer_has_unsent": "Indisponível enquanto o compositor tiver texto ou anexos não enviados — fechar iria descartá-los",
+      "action_unavailable_short_options_selected": "Indisponível — desmarque suas opções",
+      "action_unavailable_short_unsent_draft": "Indisponível: envie ou apague o rascunho",
+      "action_closes_this_session": "Encerra esta sessão — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Indisponível enquanto uma gravação ou envio ainda está em andamento — fechar descartaria",
+      "action_unavailable_short_capture_in_flight": "Indisponível — conclua ou cancele a gravação primeiro",
+      "action_unavailable_short_unsent_draft_elsewhere": "Indisponível: outro painel tem um rascunho",
+      "action_unavailable_short_unsent_draft_window": "Indisponível — rascunho noutra janela",
+      "action_unavailable_short_unsent_draft_unverifiable": "Indisponível — talvez haja rascunho",
+      "action_unavailable_while_unsent_draft_elsewhere": "Esta ação está indisponível enquanto outro painel desta sessão — lateral ou em vista dividida — tiver um rascunho não enviado. Envie-o ou elimine-o aí primeiro.",
+      "action_unavailable_while_unsent_draft_window": "Esta ação fica indisponível enquanto outra janela do navegador desta sessão tiver um rascunho não enviado. Envie ou descarte o rascunho nessa janela primeiro.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Esta ação fica indisponível porque não foi possível verificar o rascunho não enviado de outra janela. O aviso desaparece sozinho, ou envie o rascunho se essa janela ainda estiver aberta."
     },
     "followUpCard": {
       "add_to_this_session": "Adicionar a esta sessão",
@@ -8497,7 +8510,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Painel de conversas",
-      "close_this_session": "Fechar esta sessão?",
       "cycle_agent": "Alternar entre agentes",
       "cycle_approval_mode": "Alternar entre modos de aprovação",
       "cycle_model": "Alternar entre modelos",
@@ -8588,7 +8600,19 @@
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "switch_to_autopilot_mode_future_messages_will_us": "Mudar para o modo Autopilot? As próximas mensagens usarão o comportamento do autopilot (planejar → aprovar → executar).",
-      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat."
+      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat.",
+      "close_unsent_confirm": "{{base}}\n\nEsta sessão tem conteúdo não enviado: um rascunho, um anexo ou uma gravação ainda em curso, talvez num painel lateral ou noutra janela. Será perdido.",
+      "close_unsent_confirm_here": "{{base}}\n\nEsta sessão tem conteúdo não enviado na caixa de texto: um rascunho, um anexo ou uma gravação ainda em curso. Será perdido.",
+      "close_unsent_confirm_window": "{{base}}\n\nOutra janela comunicou recentemente trabalho não enviado nesta sessão: um rascunho, um anexo ou uma gravação em curso. Ao fechar, pode perdê-lo.",
+      "resume_replaces_this_tab": "Abrir esta sessão fecha o separador atual.",
+      "resume_unsent_confirm_here": "{{base}}\n\nA aba atual tem conteúdo não enviado no campo de texto: um rascunho, um anexo ou uma gravação ainda em andamento. Será perdido.",
+      "resume_unsent_confirm_window": "{{base}}\n\nOutra janela comunicou recentemente trabalho não enviado no separador atual: um rascunho, um anexo ou uma gravação em curso. Ao continuar, pode perdê-lo.",
+      "resume_unsent_confirm_unverifiable": "{{base}}\n\nNão foi possível verificar rascunhos não enviados em outras janelas. Continuar pode perder um.",
+      "resume_unsent_confirm": "{{base}}\n\nA aba atual tem conteúdo não enviado: um rascunho, um anexo ou uma gravação ainda em andamento, possivelmente em um painel lateral ou em outra janela. Será perdido.",
+      "close_unsent_confirm_unverifiable": "{{base}}\n\nNão foi possível verificar se outras janelas têm rascunhos não enviados. Ao fechar, pode perder um.",
+      "close_failed": "Não foi possível encerrar esta sessão, então ela continua aberta.",
+      "close_vetoed_unsent": "Não fechada — outra janela ainda mantém um rascunho não enviado.",
+      "close_committed_late_draft": "Fechada — um rascunho chegou durante o fecho e foi guardado."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponível",
@@ -8606,6 +8630,17 @@
       "approval_required": "Aprovação necessária",
       "tool_approval": "Aprovação de ferramenta: {{name}}",
       "unknown": "Desconhecido"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "Um turno está em execução, então a sessão continuou aberta — feche-a novamente quando o turno terminar.",
+      "close_not_recorded": "Não foi possível registrar o encerramento, então a sessão continuou aberta — tente novamente.",
+      "close_confirm": "Fechar esta sessão? Você escolheu “{{label}}”. A transcrição fica em {{section}}.",
+      "close_requested": "Encerramento solicitado — {{label}}",
+      "close_aborted_unsent": "Fecho cancelado: esta sessão tem um rascunho não enviado, talvez num painel lateral ou noutra janela. Envie-o ou elimine-o e tente novamente.",
+      "close_aborted_unsent_here": "Fecho cancelado: esta sessão tem um rascunho não enviado nesta janela. Envie-o ou elimine-o e tente novamente.",
+      "close_aborted_unsent_window": "Fecho cancelado — outra janela comunicou um rascunho não enviado nesta sessão. Envie-o ou elimine-o aí e tente novamente.",
+      "close_unbound_session": "Fechamento cancelado: não foi possível adicionar o clique à transcrição, portanto a sessão não foi fechada. Tente novamente ou use “{{action}}” no menu da sessão.",
+      "close_stale_row": "A conversa avançou, então esta sessão continuou aberta: use “{{action}}” no menu da sessão."
     }
   },
   "lib": {
@@ -10150,7 +10185,9 @@
       "could_not_generate_title": "Não foi possível gerar um título",
       "could_not_open_side_chat": "Não foi possível abrir o chat lateral",
       "side_command_not_run": "O comando /side não foi executado. Sua mensagem continua no editor.",
-      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral"
+      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral",
+      "close_old_session_failed": "Não foi possível encerrar a sessão anterior, então agora você tem duas.",
+      "close_old_session_failed_title": "Sessão antiga ainda aberta"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",
@@ -10398,7 +10435,9 @@
       "board_update_failed": "Falha ao atualizar o quadro",
       "open_crew_members": "Membros da equipe",
       "open_crew_members_desc": "Abre a página Membros da equipe — cada membro é um agente permanente com o próprio tópico.",
-      "open_crew_members_gated_desc": "Abre primeiro as Configurações para ligar esta prévia — a página não está disponível até você fazer isso."
+      "open_crew_members_gated_desc": "Abre primeiro as Configurações para ligar esta prévia — a página não está disponível até você fazer isso.",
+      "cleanup_unsent_confirm": "{{base}}?\n\nO conteúdo não enviado será perdido em: “{{names}}”",
+      "cleanup_vetoed_unsent": "Não arquivado: surgiu trabalho não enviado em “{{names}}”"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

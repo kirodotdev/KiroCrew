@@ -1713,6 +1713,111 @@ class TestNoteEndpoint:
         slot.task = None
 
     @pytest.mark.asyncio
+    async def test_visible_only_note_is_pinned_then_reported_unconditional(
+        self, tmp_path: Path
+    ):
+        """An unbound slot is the ordinary tab, so the binding cannot decide this.
+
+        ``linked_session_key`` is written only for a channel-, cron- or
+        workflow-born slot, so answering from the binding alone reported
+        conditional for every normal dashboard tab and a caller gating on it
+        aborted every time. A visible-only note queues no context half, so the
+        transcript row is its only exposure: pin the row to the transcript it was
+        authorized against and the answer becomes unconditional -- but only once
+        that write COMMITS, which is why each control below still reports
+        conditional. The two-halves case is unchanged and still conditional,
+        because its queued context genuinely does resolve late
+        (``test_a_held_note_reports_its_delivery_as_conditional``).
+        """
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots["s1"] = slot
+        target = "kiro_crew.dashboard.chat_handlers.save_slot_off_loop"
+
+        async with self._make_client(state) as client:
+            assert slot.linked_session_key == ""
+            expected_key = slot_history_key(slot)
+
+            calls: list[dict[str, Any]] = []
+
+            async def _committed(*args: Any, **kwargs: Any) -> bool:
+                calls.append(kwargs)
+                return True
+
+            with patch(target, _committed):
+                resp = await client.post(
+                    "/api/chat/slots/s1/note",
+                    json={"content": "breadcrumb", "visibleOnly": True},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+            assert data["appended"] is True
+            assert data["deliveryConditional"] is False
+            # The pin must name the transcript the row was authorized against; a
+            # save that resolved routing itself could land on another session.
+            assert len(calls) == 1
+            assert calls[0]["expected_history_key"] == expected_key
+            # best_effort=True returns True on a swallowed failure, so it cannot
+            # prove a committed write -- the pin has to raise instead.
+            assert calls[0]["best_effort"] is False
+
+            async def _refused(*args: Any, **kwargs: Any) -> bool:
+                return False
+
+            with patch(target, _refused):
+                resp = await client.post(
+                    "/api/chat/slots/s1/note",
+                    json={"content": "routing moved", "visibleOnly": True},
+                )
+                data = await resp.json()
+            assert data["deliveryConditional"] is True
+
+            async def _raised(*args: Any, **kwargs: Any) -> bool:
+                raise RuntimeError("lock timeout")
+
+            with patch(target, _raised):
+                resp = await client.post(
+                    "/api/chat/slots/s1/note",
+                    json={"content": "unpinnable", "visibleOnly": True},
+                )
+                data = await resp.json()
+            assert data["deliveryConditional"] is True
+            # The row is not lost -- it is re-armed for the periodic flush.
+            assert slot._dirty is True
+
+            # Over-reach guard: a note that DID queue a context half is not pinned
+            # and stays conditional, so the fix cannot silently widen to it.
+            unpinned: list[dict[str, Any]] = []
+
+            async def _record(*args: Any, **kwargs: Any) -> bool:
+                unpinned.append(kwargs)
+                return True
+
+            with patch(target, _record):
+                resp = await client.post(
+                    "/api/chat/slots/s1/note", json={"content": "both halves"}
+                )
+                data = await resp.json()
+            assert data["contextSkipped"] is False
+            assert data["deliveryConditional"] is True
+            assert unpinned == []
+
+            # The per-source cap ALSO leaves no context entry, so gating on the
+            # entry's absence would have pinned this pre-existing path too.
+            slot._pending_context.extend({"source": "capped"} for _ in range(10))
+            with patch(target, _record):
+                resp = await client.post(
+                    "/api/chat/slots/s1/note",
+                    json={"content": "capped away", "source": "capped"},
+                )
+                data = await resp.json()
+            # Same observable shape as a visible-only note -- no entry was built --
+            # which is exactly why the gate must key on the REQUEST, not the result.
+            assert data["contextSkipped"] is True
+            assert data["deliveryConditional"] is True
+            assert unpinned == []
+
+    @pytest.mark.asyncio
     async def test_deferred_note_is_written_when_the_turn_ends(self, tmp_path: Path):
         """flush_deferred_notes writes the held line, redacted and in order."""
         state = _make_state(tmp_path)

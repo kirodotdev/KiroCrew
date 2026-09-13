@@ -6388,7 +6388,20 @@
       "scroll_suggestions_left": "Scorri i suggerimenti a sinistra",
       "scroll_suggestions_right": "Scorri i suggerimenti a destra",
       "send_now": "Invia ora",
-      "send_now_2": "Invia ora: {{option}}"
+      "send_now_2": "Invia ora: {{option}}",
+      "action_unavailable_while_options_are_selected": "Non disponibile finché sono selezionate delle opzioni: sono pronte come testo nell'area di scrittura e verrebbero scartate",
+      "action_unavailable_while_the_composer_has_unsent": "Non disponibile finché l'area di composizione contiene testo o allegati non inviati: chiudendo andrebbero perduti",
+      "action_unavailable_short_options_selected": "Non disponibile — deseleziona le opzioni",
+      "action_unavailable_short_unsent_draft": "Non disponibile: invia o elimina la bozza",
+      "action_closes_this_session": "Chiude questa sessione — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Non disponibile mentre una registrazione o un caricamento è ancora in corso — chiudere lo scarterebbe",
+      "action_unavailable_short_capture_in_flight": "Non disponibile — termina o annulla prima la registrazione",
+      "action_unavailable_short_unsent_draft_elsewhere": "Non disponibile: bozza in un altro riquadro",
+      "action_unavailable_short_unsent_draft_window": "Non disponibile — bozza in altra finestra",
+      "action_unavailable_short_unsent_draft_unverifiable": "Non disponibile — forse una bozza",
+      "action_unavailable_while_unsent_draft_elsewhere": "Questa azione non è disponibile mentre un altro riquadro di questa sessione — un pannello laterale o una vista divisa — contiene una bozza non inviata. Inviala o eliminala prima da lì.",
+      "action_unavailable_while_unsent_draft_window": "Questa azione non è disponibile mentre un'altra finestra del browser di questa sessione contiene una bozza non inviata. Invia o elimina la bozza in quella finestra.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Questa azione non è disponibile perché non è stato possibile verificare la bozza non inviata di un'altra finestra. L'avviso scompare da sé, oppure invia la bozza se quella finestra è ancora aperta."
     },
     "followUpCard": {
       "add_to_this_session": "Aggiungi a questa sessione",
@@ -8497,7 +8510,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Pannello delle chat",
-      "close_this_session": "Chiudere questa sessione?",
       "cycle_agent": "Scorri gli agenti",
       "cycle_approval_mode": "Scorri le modalità di approvazione",
       "cycle_model": "Scorri i modelli",
@@ -8588,7 +8600,19 @@
       "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
       "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passare alla modalità pilota automatico? I messaggi successivi useranno il comportamento del pilota automatico (pianifica → approva → esegui).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat."
+      "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat.",
+      "close_unsent_confirm": "{{base}}\n\nQuesta sessione ha contenuti non inviati: una bozza, un allegato o una registrazione ancora in corso, forse in un pannello laterale o in un'altra finestra. Andranno perduti.",
+      "close_unsent_confirm_here": "{{base}}\n\nQuesta sessione ha contenuti non inviati nell'area di scrittura: una bozza, un allegato o una registrazione ancora in corso. Andranno perduti.",
+      "close_unsent_confirm_window": "{{base}}\n\nUn'altra finestra ha segnalato di recente lavoro non inviato in questa sessione: una bozza, un allegato o una registrazione in corso. Chiudendo potresti perderlo.",
+      "resume_replaces_this_tab": "Aprire questa sessione chiude la scheda attuale.",
+      "resume_unsent_confirm_here": "{{base}}\n\nLa scheda attuale contiene contenuti non inviati nel campo di testo: una bozza, un allegato o una registrazione ancora in corso. Andranno perduti.",
+      "resume_unsent_confirm_window": "{{base}}\n\nUn'altra finestra ha segnalato di recente lavoro non inviato nella scheda corrente: una bozza, un allegato o una registrazione in corso. Continuando potresti perderlo.",
+      "resume_unsent_confirm_unverifiable": "{{base}}\n\nNon è stato possibile controllare altre finestre per bozze non inviate. Continuando potresti perderne una.",
+      "resume_unsent_confirm": "{{base}}\n\nLa scheda attuale contiene contenuti non inviati: una bozza, un allegato o una registrazione ancora in corso, forse in un pannello laterale o in un'altra finestra. Andranno perduti.",
+      "close_unsent_confirm_unverifiable": "{{base}}\n\nNon è stato possibile controllare se altre finestre hanno bozze non inviate. Chiudendo potresti perderne una.",
+      "close_failed": "Non è stato possibile chiudere questa sessione, quindi è ancora aperta.",
+      "close_vetoed_unsent": "Non chiusa: un'altra finestra contiene ancora una bozza non inviata.",
+      "close_committed_late_draft": "Chiusa — una bozza arrivata durante la chiusura è stata salvata."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet non disponibile",
@@ -8606,6 +8630,17 @@
       "approval_required": "Approvazione richiesta",
       "tool_approval": "Approvazione dello strumento: {{name}}",
       "unknown": "Sconosciuto"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "È in corso un turno, quindi la sessione è rimasta aperta — chiudila di nuovo quando il turno termina.",
+      "close_not_recorded": "Non è stato possibile registrare la chiusura, quindi la sessione è rimasta aperta: riprova.",
+      "close_confirm": "Chiudere questa sessione? Hai scelto «{{label}}». La trascrizione resta in {{section}}.",
+      "close_requested": "Chiusura richiesta — {{label}}",
+      "close_aborted_unsent": "Chiusura annullata: questa sessione ha una bozza non inviata, forse in un pannello laterale o in un'altra finestra. Inviala o eliminala, poi riprova.",
+      "close_aborted_unsent_here": "Chiusura annullata: questa sessione ha una bozza non inviata in questa finestra. Inviala o eliminala, poi riprova.",
+      "close_aborted_unsent_window": "Chiusura annullata — un'altra finestra ha segnalato una bozza non inviata in questa sessione. Inviala o eliminala da lì, poi riprova.",
+      "close_unbound_session": "Chiusura annullata: non è stato possibile aggiungere il clic alla trascrizione, quindi la sessione non è stata chiusa. Riprova o usa «{{action}}» nel menu della sessione.",
+      "close_stale_row": "La conversazione è andata avanti, quindi questa sessione è rimasta aperta: usa «{{action}}» nel menu della sessione."
     }
   },
   "lib": {
@@ -10150,7 +10185,9 @@
       "could_not_generate_title": "Impossibile generare un titolo",
       "could_not_open_side_chat": "Impossibile aprire la chat laterale",
       "side_command_not_run": "Il comando /side non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura.",
-      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale"
+      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale",
+      "close_old_session_failed": "Non è stato possibile chiudere la sessione precedente, quindi ora ne hai due.",
+      "close_old_session_failed_title": "Sessione precedente ancora aperta"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",
@@ -10398,7 +10435,9 @@
       "board_update_failed": "Aggiornamento della board non riuscito",
       "open_crew_members": "Membri della crew",
       "open_crew_members_desc": "Apre la pagina Membri della crew: ogni membro è un agente permanente con il proprio thread.",
-      "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai."
+      "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai.",
+      "cleanup_unsent_confirm": "{{base}}?\n\nI contenuti non inviati andranno perduti in: «{{names}}»",
+      "cleanup_vetoed_unsent": "Non archiviato: è comparso lavoro non inviato in «{{names}}»"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Callable, NamedTuple
 
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, strip_action_markers
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
@@ -43,7 +43,31 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     """Extract OPTIONS choices from LLM response and strip the tag.
 
     Returns (cleaned_text, choices). If no OPTIONS found, choices is empty.
+
+    An ``[OPTION-ACTIONS:]`` marker is STRIPPED AND DROPPED here: removed from
+    the cleaned text, contributing nothing to *choices*. That is the whole
+    channel policy, not a shortcut. Those entries name a LOCAL DASHBOARD UI
+    action (closing a tab), so a Slack button built from one could not perform
+    it — it would post a click that no surface can honour, and the honest
+    rendering of an action this channel cannot take is no button at all. It must
+    still be stripped, because Slack posts what it is handed: the head is inert
+    for the OPTIONS parser, and inert means passed through VERBATIM, so skipping
+    the strip publishes the raw marker into the thread.
     """
+    # Strip actions FIRST. Ordering is deliberate: the OPTIONS branch below
+    # returns ``text[:m.start()]``, discarding everything after the content
+    # marker, so an action marker that FOLLOWS one is dropped either way — but
+    # one that PRECEDES it, or appears with no content marker at all, survives
+    # that path untouched. Doing it here covers every arrangement.
+    #
+    # The ``rstrip`` is applied ONLY when a marker was actually removed, so text
+    # carrying no action marker is returned byte-identical to before. An
+    # unconditional ``rstrip`` would quietly start trimming trailing whitespace
+    # off every Slack post that has no OPTIONS marker either — a behaviour change
+    # nobody asked for, on the no-marker path that is the overwhelming majority.
+    without_actions = strip_action_markers(text)
+    if without_actions != text:
+        text = without_actions.rstrip()
     m = _OPTIONS_RE.search(text)
     if not m:
         return text, []

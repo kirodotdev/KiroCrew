@@ -108,5 +108,35 @@ export function useKnowledgeFetch(slotKey?: string | null) {
   const clearPending = useCallback(() => setPendingKnowledge(null), [])
   const clearResults = useCallback(() => { setSearchQuery(null); setQuery('') }, [])
 
-  return { results, query, loading, error, retrySearch, pendingKnowledge, searchKnowledge, inject, clearPending, clearResults }
+  /**
+   * COPY a retiring slot's pending selection onto the slot replacing it.
+   *
+   * A mode switch replaces the slot and deletes the old one, and this selection is not a
+   * draft bucket, so the migration that moves the drafts cannot see it. The map is a BANK,
+   * written only when the slot-change effect retires a slot, and read back without being
+   * cleared — so an entry outlives a later in-place change and goes stale. Live state
+   * therefore WINS whenever it still owns `from`, including when it holds null because the
+   * user cleared the selection; the bank answers only once React has switched away.
+   *
+   * The source is LEFT IN PLACE, matching `copySlotEntry`: the delete can be rejected, and
+   * a slot that survives its own failed deletion must keep the selection it still owns.
+   * `dropCarriedKnowledge` removes it once the deletion has actually succeeded.
+   */
+  const carryPendingKnowledge = useCallback((from: string, to: string): boolean => {
+    if (!from || !to || from === to) return false
+    const liveOwnsFrom = prevSlotRef.current === from
+    const carried = liveOwnsFrom ? pendingKnowledge : slotMapRef.current.get(from) ?? null
+    if (!carried) return false
+    slotMapRef.current.set(to, carried)
+    if ((slotKey ?? null) === to) setPendingKnowledge(carried)
+    return true
+  }, [pendingKnowledge, slotKey])
+
+  /** Drop a retired slot's selection, once its deletion has actually succeeded. */
+  const dropCarriedKnowledge = useCallback((slot: string): void => {
+    if (!slot) return
+    slotMapRef.current.delete(slot)
+  }, [])
+
+  return { results, query, loading, error, retrySearch, pendingKnowledge, searchKnowledge, inject, clearPending, clearResults, carryPendingKnowledge, dropCarriedKnowledge }
 }

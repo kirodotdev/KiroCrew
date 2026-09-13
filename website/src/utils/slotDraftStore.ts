@@ -21,8 +21,11 @@
  *
  * Cross-tab: `persistNow` overwrites the whole key, so two open tabs are
  * last-write-wins on the shared draft. No merge: merging breaks LRU order and
- * resurrects intentionally-deleted drafts. Accepted because the dashboard is
- * effectively single-tab.
+ * resurrects intentionally-deleted drafts. Still accepted for the DRAFT itself,
+ * where the cost is a lost keystroke -- but no longer on the old grounds that the
+ * dashboard is effectively single-tab, which popouts falsify. Unsent-work
+ * DETECTION therefore does NOT live here: it reads per-owner keys, because a lost
+ * claim discards work on close and a shared blob cannot carry another window's.
  */
 import { safeSetItem, safeSetSessionItem } from './safeStorage'
 

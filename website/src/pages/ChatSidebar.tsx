@@ -32,6 +32,8 @@ import { findReport, type ErrorReport } from '../utils/errorReport'
 import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
+import { slotHasUnsentWork } from '../utils/slotComposerRegistry'
+import { awaitCleanupRefusals, type CleanupGuard } from '../utils/slotClosingIntent'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
@@ -3198,11 +3200,18 @@ function ChatSidebar({
   })
   const cleanupPreview = cleanupPreviewData?.keys ?? null
   const activeIsStale = cleanupPreviewData?.active_is_stale ?? false
+  const cleanupGuardRef = useRef<CleanupGuard | null>(null)
   const cleanupMutation = useMutation({
-    mutationFn: () => api.cleanupSessions(cleanupDays, activeSlot || ''),
+    mutationFn: (onlyKeys: string[]) => api.cleanupSessions(cleanupDays, activeSlot || '', false, onlyKeys),
     onSuccess: (res) => {
+      // COMMIT BOUNDARY. Archiving is the server's; the EVICTION here is ours, and it is
+      // what unmounts the composer -- so a window that refused late keeps its draft.
+      const late = cleanupGuardRef.current?.recheck() ?? []
+      if (late.length > 0) {
+        setCleanupError(i18nT('pages.chatSidebar.cleanup_vetoed_unsent', { names: late.join(', ') }))
+      }
       if (res.keys?.length) {
-        for (const key of res.keys) dispatch(deleteSlot(key))
+        for (const key of res.keys) if (!late.includes(key)) dispatch(deleteSlot(key))
         dispatch(fetchHistory(false))
       }
       if (res.failed?.length) {
@@ -6583,10 +6592,52 @@ function ChatSidebar({
             <ErrorNotice message={cleanupError} askAgent className="mb-2" testId="cleanup-error" />
             <div className="flex items-center gap-2 justify-end">
               <Btn className="text-[12px] px-3 py-1" onClick={() => setCleanupOpen(false)}>{i18nT('pages.chatSidebar.cancel')}</Btn>
-              <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={archivable.length === 0 || cleanupMutation.isPending || cleanupPreviewLoading} onClick={() => {
-                setCleanupError('')
-                cleanupMutation.mutate()
-              }}>{cleanupMutation.isPending ? i18nT('pages.chatSidebar.archiving') : i18nT('pages.chatSidebar.archive_session', { count: archivable.length })}</Btn>
+              <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={archivable.length === 0 || cleanupMutation.isPending || cleanupPreviewLoading} onClick={() => { void (async () => {
+                // Asked BEFORE the request, not in onSuccess: by then the server has archived
+                // and the drafts are already gone, so a guard there could only apologise.
+                const dirty = archivable.filter(s => slotHasUnsentWork(s.key))
+                const consented = new Set<string>()
+                if (dirty.length > 0) {
+                  const names = dirty.map(s => (s.title && s.title !== s.key ? s.title : s.key)).join(', ')
+                  const base = i18nT('pages.chatSidebar.archive_session', { count: archivable.length })
+                  if (!confirm(i18nT('pages.chatSidebar.cleanup_unsent_confirm', { base, names }))) return
+                  for (const s of dirty) consented.add(s.key)
+                }
+                // The filter above is point-in-time, so a draft typed after it was invisible.
+                // Announce to every candidate and let a live composer refuse before we ask the server.
+                const guard = await awaitCleanupRefusals(archivable.map(s => s.key), consented, slotHasUnsentWork)
+                const byKey = new Map(archivable.map(s => [s.key, s]))
+                const nameOf = (k: string) => {
+                  const s = byKey.get(k)
+                  return s && s.title && s.title !== k ? s.title : k
+                }
+                // NOT an abort. One draft in another window used to cost the whole batch,
+                // so twenty stale sessions stayed until that window was hunted down.
+                if (guard.refused.length > 0) {
+                  setCleanupError(i18nT('pages.chatSidebar.cleanup_vetoed_unsent',
+                    { names: guard.refused.map(nameOf).join(', ') }))
+                }
+                // COMMIT phase: `refused` answered when the ack window closed, and a veto
+                // recorded since then is read by nothing else -- so ask once more here.
+                cleanupGuardRef.current = guard
+                const refusedNow = new Set([...guard.refused, ...guard.recheck()])
+                const commitKeys = archivable.map(s => s.key).filter(k => !refusedNow.has(k))
+                if (commitKeys.length === 0) {
+                  guard.release()
+                  setCleanupError(i18nT('pages.chatSidebar.cleanup_vetoed_unsent',
+                    { names: [...refusedNow].map(nameOf).join(', ') }))
+                  return
+                }
+                // A refusal costs only its own slot: the server archives the set it is SENT,
+                // so dropping one no longer means abandoning the batch.
+                setCleanupError(refusedNow.size > 0
+                  ? i18nT('pages.chatSidebar.cleanup_vetoed_unsent',
+                    { names: [...refusedNow].map(nameOf).join(', ') })
+                  : '')
+                // Released on SETTLE, not here: the intents must outlive the round-trip so a
+                // composer waking inside it still claims its work before the delete lands.
+                cleanupMutation.mutate(commitKeys, { onSettled: () => guard.release() })
+              })() }}>{cleanupMutation.isPending ? i18nT('pages.chatSidebar.archiving') : i18nT('pages.chatSidebar.archive_session', { count: archivable.length })}</Btn>
             </div>
           </div>
         )

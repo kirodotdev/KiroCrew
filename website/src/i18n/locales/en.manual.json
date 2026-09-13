@@ -1916,7 +1916,20 @@
       "click_to_remove_from_input": "Click to remove from input",
       "click_to_remove_from_input_double_click_to_send": "Click to remove from input (double-click to send)",
       "click_to_send_instantly_shift_click_to_select_mu": "Click to send instantly, Shift+Click to select multiple",
-      "send_now_2": "Send now: {{option}}"
+      "send_now_2": "Send now: {{option}}",
+      "action_unavailable_while_options_are_selected": "Unavailable while options are selected — they are staged as text in the composer and this would discard them",
+      "action_unavailable_while_the_composer_has_unsent": "Unavailable while the composer has unsent text or attachments — closing would discard them",
+      "action_unavailable_short_options_selected": "Unavailable — deselect your options first",
+      "action_unavailable_short_unsent_draft": "Unavailable — send or clear your draft first",
+      "action_unavailable_while_capture_in_flight": "Unavailable while a recording or upload is still in progress — closing would discard it",
+      "action_unavailable_short_capture_in_flight": "Unavailable — finish or cancel the recording first",
+      "action_closes_this_session": "Closes this session — {{label}}",
+      "action_unavailable_short_unsent_draft_elsewhere": "Unavailable — another pane holds a draft",
+      "action_unavailable_short_unsent_draft_window": "Unavailable — another window holds a draft",
+      "action_unavailable_short_unsent_draft_unverifiable": "Unavailable — a draft may be unsent",
+      "action_unavailable_while_unsent_draft_elsewhere": "This action is unavailable while another pane of this session — a side panel or split view — holds an unsent draft. Send or clear it there first.",
+      "action_unavailable_while_unsent_draft_window": "This action is unavailable while another browser window of this session holds an unsent draft. Send or clear it in that window first.",
+      "action_unavailable_while_unsent_draft_unverifiable": "This action is unavailable because another window's unsent draft could not be checked. It clears on its own, or send or clear the draft if that window is still open."
     },
     "followUpCard": {
       "create_worktree_and_open_session": "Create a git worktree from {{path}} and open a new session there",
@@ -3069,7 +3082,6 @@
       "failed_to_run_job": "Failed to run job"
     },
     "useKeyboardShortcuts": {
-      "close_this_session": "Close this session?",
       "chats_panel": "Chats panel",
       "cycle_agent": "Cycle agent",
       "cycle_approval_mode": "Cycle approval mode",
@@ -3132,7 +3144,19 @@
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
-      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
+      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior.",
+      "close_unsent_confirm": "{{base}}\n\nThis session has unsent work — a draft, an attachment, or a recording still resolving — possibly in a side panel or another window. It will be lost.",
+      "close_unsent_confirm_here": "{{base}}\n\nThis session has unsent work in the composer — a draft, an attachment, or a recording still resolving. It will be lost.",
+      "close_unsent_confirm_window": "{{base}}\n\nAnother window recently reported unsent work in this session — a draft, an attachment, or a recording still resolving. Closing may lose it.",
+      "resume_replaces_this_tab": "Opening this session closes the current tab.",
+      "resume_unsent_confirm_here": "{{base}}\n\nThe current tab has unsent work in its composer — a draft, an attachment, or a recording still resolving. It will be lost.",
+      "resume_unsent_confirm_window": "{{base}}\n\nAnother window recently reported unsent work in the current tab — a draft, an attachment, or a recording still resolving. Continuing may lose it.",
+      "resume_unsent_confirm_unverifiable": "{{base}}\n\nCouldn't check other windows for unsent drafts. Continuing may lose one.",
+      "resume_unsent_confirm": "{{base}}\n\nThe current tab has unsent work — a draft, an attachment, or a recording still resolving — possibly in a side panel or another window. It will be lost.",
+      "close_unsent_confirm_unverifiable": "{{base}}\n\nCouldn't check other windows for unsent drafts. Closing may lose one.",
+      "close_failed": "Couldn't close this session, so it's still open.",
+      "close_vetoed_unsent": "Not closed — another window is still holding an unsent draft.",
+      "close_committed_late_draft": "Closed — a draft arrived during the close and was saved."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet unavailable",
@@ -3169,6 +3193,17 @@
       "subagents": "Subagents",
       "summary": "Summary",
       "workflows": "Workflows"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "A turn is running, so the session stayed open — close it again when the turn finishes.",
+      "close_not_recorded": "Couldn't record the close, so the session stayed open — try again.",
+      "close_confirm": "Close this session? You chose “{{label}}”. The transcript stays in {{section}}.",
+      "close_stale_row": "The conversation moved on, so this session stayed open — use “{{action}}” in the session menu.",
+      "close_requested": "Close requested — {{label}}",
+      "close_aborted_unsent": "Close cancelled — this session has an unsent draft, possibly in a side panel or another window. Send or clear it, then try again.",
+      "close_aborted_unsent_here": "Close cancelled — this session has an unsent draft in this window. Send or clear it, then try again.",
+      "close_aborted_unsent_window": "Close cancelled — another window reported an unsent draft in this session. Send or clear it there, then try again.",
+      "close_unbound_session": "Close cancelled — the click couldn’t be added to the transcript, so the session was not closed. Try again, or use “{{action}}” in the session menu."
     }
   },
   "nav": {
@@ -3913,7 +3948,9 @@
       "could_not_generate_title": "Couldn't generate a title",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
-      "could_not_send_to_side_chat": "Couldn't send to the side chat"
+      "could_not_send_to_side_chat": "Couldn't send to the side chat",
+      "close_old_session_failed": "Couldn't close the old session, so you now have two.",
+      "close_old_session_failed_title": "Old session still open"
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",
@@ -4029,7 +4066,9 @@
       "board_update_failed": "Board update failed",
       "open_crew_members": "Crew Members",
       "open_crew_members_desc": "Opens the Crew Members page — each member is a standing agent with its own thread.",
-      "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do."
+      "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do.",
+      "cleanup_unsent_confirm": "{{base}}?\n\nUnsent work will be lost in: “{{names}}”",
+      "cleanup_vetoed_unsent": "Not archived: unsent work appeared in “{{names}}”"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

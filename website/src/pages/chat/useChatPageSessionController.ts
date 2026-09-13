@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import type { NavigateFunction, NavigationType } from 'react-router-dom'
 
 import { i18nT } from '../../i18n/t'
+import { unsentConfirmKey } from '../../hooks/useSessionActions'
 import { useSessionTabs } from '../../hooks/useSessionTabs'
 import { useAppSelector, type AppDispatch } from '../../store'
 import {
@@ -19,6 +20,7 @@ import { isChatPageSurface } from '../../utils/channelOrigin'
 import { writePrefill } from '../../utils/navIntent'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { safeSetItem } from '../../utils/safeStorage'
+import { slotUnsentWorkSource } from '../../utils/slotComposerRegistry'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
@@ -51,6 +53,7 @@ interface UseChatPageSessionControllerArgs {
   prevSlot: MutableRefObject<string | null>
   saveDrafts: () => void
   searchParams: URLSearchParams
+  showActionError: (message: string, title?: string) => void
   slots: ChatSlot[]
   tokenConsumingRef: MutableRefObject<boolean>
 }
@@ -91,6 +94,7 @@ export function useChatPageSessionController({
   prevSlot,
   saveDrafts,
   searchParams,
+  showActionError,
   slots,
   tokenConsumingRef,
 }: UseChatPageSessionControllerArgs) {
@@ -181,6 +185,8 @@ export function useChatPageSessionController({
     dispatch(switchSlot(key))
   }, [dispatch, activeSlotRef])
   const closeSessionTab = useCallback((key: string) => {
+    // No confirm here: `closeTab` only rewrites the tab list, and the draft is in
+    // `chatDrafts` -- reopening the tab restores it, so nothing is lost to consent to.
     const next = sessionTabs.closeTab(key)
     // Only the ACTIVE tab's close moves the user; closing any other tab must
     // leave the transcript they are reading alone (nextActiveAfterClose returns
@@ -695,11 +701,32 @@ export function useChatPageSessionController({
       // returns `surface` at all.
       if (!result.ok || !isChatPageSurface(result.surface)) return
       if (activeSlot && activeSlot !== key) {
-        delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]; prevSlot.current = null; saveDrafts()
-        dispatch(deleteSlot(activeSlot)).unwrap().catch(() => {})
+        // CONFIRMED, not migrated: the resumed session is a DIFFERENT conversation, so
+        // carrying this tab's unsent text into it would file it under the wrong thread.
+        const resumeUnsentAt = slotUnsentWorkSource(activeSlot)
+        if (resumeUnsentAt) {
+          // NOT the close base: the user clicked to OPEN a different session, so "this
+          // session" would name the one they are leaving or the one they asked for.
+          const base = i18nT('hooks.useSessionActions.resume_replaces_this_tab')
+          if (!confirm(i18nT(unsentConfirmKey(resumeUnsentAt, 'resume'), { base }))) return
+        }
+        try {
+          await dispatch(deleteSlot(activeSlot)).unwrap()
+          // Dropped only ONCE THE ARCHIVE SUCCEEDED: dropping first destroyed the draft
+          // whenever cleanup failed, leaving the old tab alive and empty.
+          delete drafts.current[activeSlot]
+          delete fileDrafts.current[activeSlot]
+          delete pasteDrafts.current[activeSlot]
+          prevSlot.current = null
+          saveDrafts()
+        } catch (err: unknown) {
+          // Its own catch, because the outer one swallows to keep the current slot: a
+          // failure here must still reach the user, with their draft intact behind it.
+          showActionError(err instanceof Error && err.message ? err.message : i18nT('pages.chatPage.close_old_session_failed'))
+        }
       }
     } catch { /* resume failed — keep current slot */ }
-  }, [activeSlot, dispatch, drafts, fileDrafts, pasteDrafts, prevSlot, saveDrafts])
+  }, [activeSlot, dispatch, drafts, fileDrafts, pasteDrafts, prevSlot, saveDrafts, showActionError])
 
   return {
     closeSessionTab,

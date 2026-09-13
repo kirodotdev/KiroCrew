@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from kiro_crew.constants import OPTIONS_RE_LINE, strip_control_comments
+from kiro_crew.constants import OPTIONS_RE_LINE, strip_action_markers, strip_control_comments
 
 # Fenced code blocks — ```lang ... ``` (or unterminated, running to the end
 # of the message). Replaced with a short placeholder; the code body would
@@ -33,8 +33,15 @@ _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 # Trailing quick-reply block — rendered as buttons, not text. Reuse the canonical
-# ReDoS-hardened, line-anchored parser (constants.OPTIONS_RE_LINE) so this strip
-# can't drift from the dashboard/Slack copies and handles `]` inside a label.
+# ReDoS-hardened, line-anchored parsers (constants.OPTIONS_RE_LINE and, for
+# actions, the ``strip_action_markers`` helper that wraps its sibling) so this
+# strip can't drift from the dashboard/Slack copies and handles `]` inside a
+# label. Both heads are stripped and neither leaves a trace: a preview is one line
+# of plain text, so a marker that survived here would be the most-seen leak in the
+# product — it sits in the session list of every idle session, not just the open
+# one. Actions go through the helper rather than the raw pattern because a span
+# nested in an UNCLOSED marker is not a marker: excising it would drop the
+# malformed text that is the reader's only cue a marker was meant.
 _OPTIONS_RE = OPTIONS_RE_LINE
 _HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _BLOCKQUOTE_RE = re.compile(r"^\s*>\s?", re.MULTILINE)
@@ -103,6 +110,7 @@ def strip_markdown_preview(text: str) -> str:
     t = _IMAGE_RE.sub(lambda m: m.group(1) or "(image)", t)
     t = _LINK_RE.sub(r"\1", t)
     t = _OPTIONS_RE.sub("", t)
+    t = strip_action_markers(t)
     # Line-anchored markers must go before whitespace collapse.
     t = _HR_RE.sub("", t)
     t = _HEADER_RE.sub("", t)

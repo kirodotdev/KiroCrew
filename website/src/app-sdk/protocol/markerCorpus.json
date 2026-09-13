@@ -1,0 +1,159 @@
+{
+  "$comment": [
+    "Golden corpus for the [OPTIONS:] / [OPTION-ACTIONS:] marker grammar, consumed by BOTH",
+    "the pytest suite (test/test_marker_corpus_parity.py) and the vitest suite",
+    "(website/src/test/markerCorpusParity.test.ts).",
+    "",
+    "WHY this file exists. The grammar is hand-mirrored across two languages: constants.py and",
+    "optionMarker.ts each re-derive the temper, the sibling lookahead and the tail. Nothing made",
+    "them agree. The proof that the pair drifts is already in the tree -- the [OPTIONS:] head is",
+    "case-SENSITIVE on the backend and case-INSENSITIVE on the frontend, a divergence this",
+    "change had to add per-head casing machinery to work around rather than inherit. Parallel",
+    "hand-written tests could not catch that, because each side's suite only ever asked its own",
+    "implementation what it thought.",
+    "",
+    "It lives in the protocol module deliberately: that directory is already the cross-language",
+    "authority the backend reads from (see TestTheTwoLanguagesAgreeOnTheActionEnum, which",
+    "extracts KNOWN_ACTIONS from options.ts rather than restating it).",
+    "",
+    "FIELDS -- every one computable on BOTH sides, so a mismatch is a real disagreement:",
+    "  text     : the input.",
+    "  options   : content choices. backend _parse_options / frontend parseOptions().options.",
+    "  hasAction : would an action chip render. backend _has_option_actions (a bool by design --",
+    "              it never returns the entry) / frontend parseOptions().action !== null.",
+    "  stripped  : both heads removed and trimmed. backend strips with OPTIONS_RE_LINE and",
+    "              OPTION_ACTIONS_RE_LINE (the shape at slack/handler.py) / frontend",
+    "              parseOptions().text.",
+    "",
+    "A case where the two implementations genuinely disagree carries `divergent` instead of the",
+    "three shared fields: `divergent.backend` and `divergent.frontend` each hold the same trio.",
+    "Both suites assert the two halves actually DIFFER, so a resolved divergence fails too and",
+    "forces the case back to a shared expectation rather than leaving a stale claim of drift.",
+    "",
+    "Do NOT add a case whose expectation you have not measured on both sides."
+  ],
+  "cases": [
+    {
+      "name": "content marker only",
+      "text": "Pick one.\n[OPTIONS: Alpha | Bravo]",
+      "options": [
+        "Alpha",
+        "Bravo"
+      ],
+      "hasAction": false,
+      "stripped": "Pick one."
+    },
+    {
+      "name": "action marker only -- the zero-turn row",
+      "text": "All done.\n[OPTION-ACTIONS: close=Nothing else]",
+      "options": [],
+      "hasAction": true,
+      "stripped": "All done."
+    },
+    {
+      "name": "both heads, separate lines",
+      "text": "Choose.\n[OPTIONS: Alpha | Bravo]\n[OPTION-ACTIONS: close=Done]",
+      "options": [
+        "Alpha",
+        "Bravo"
+      ],
+      "hasAction": true,
+      "stripped": "Choose."
+    },
+    {
+      "name": "CASING DIVERGENCE -- the action head is case-insensitive on BOTH sides",
+      "text": "Done.\n[option-actions: close=Shut it]",
+      "options": [],
+      "hasAction": true,
+      "stripped": "Done."
+    },
+    {
+      "name": "CASING DIVERGENCE -- a lowercase OPTIONS head: the two sides DISAGREE",
+      "text": "Pick one.\n[options: Alpha | Bravo]",
+      "$comment": [
+        "MEASURED, not assumed: this corpus disagreed on its first run and this is what it",
+        "found. The backend does not treat a lowercase content head as a marker",
+        "(OPTIONS_RE_LINE carries only re.MULTILINE, and constants.py documents excluding",
+        "OPTIONS: from _CASE_INSENSITIVE_MARKER_HEADS on purpose). The frontend does treat",
+        "it as one, because OPTION_MARKER_RE carries the `i` flag.",
+        "",
+        "Recorded per-side rather than reconciled: making either side match the other",
+        "changes shipped [OPTIONS:] semantics for every existing caller, which is a",
+        "compatibility decision and not one a conformance test should make as a side",
+        "effect. Pinned on BOTH sides so neither can move unnoticed, and the parity suites",
+        "assert the two values genuinely differ -- so if the divergence is ever resolved,",
+        "this case fails and must be collapsed back to a shared expectation."
+      ],
+      "divergent": {
+        "backend": {
+          "options": [],
+          "hasAction": false,
+          "stripped": "Pick one.\n[options: Alpha | Bravo]"
+        },
+        "frontend": {
+          "options": [
+            "Alpha",
+            "Bravo"
+          ],
+          "hasAction": false,
+          "stripped": "Pick one."
+        }
+      }
+    },
+    {
+      "name": "an unknown action renders no chip",
+      "text": "Done.\n[OPTION-ACTIONS: reboot=Restart everything]",
+      "options": [],
+      "hasAction": false,
+      "stripped": "Done."
+    },
+    {
+      "name": "an empty label renders no chip",
+      "text": "Done.\n[OPTION-ACTIONS: close=]",
+      "options": [],
+      "hasAction": false,
+      "stripped": "Done."
+    },
+    {
+      "name": "the label keeps every `=` after the first",
+      "text": "Done.\n[OPTION-ACTIONS: close=Set x=1 and y=2]",
+      "options": [],
+      "hasAction": true,
+      "stripped": "Done."
+    },
+    {
+      "name": "a pipe body is one malformed entry, so no chip renders",
+      "text": "Done.\n[OPTION-ACTIONS: reboot=Nope | close=Yes | exec=Nope]",
+      "options": [],
+      "hasAction": false,
+      "stripped": "Done."
+    },
+    {
+      "name": "a marker mid-sentence is prose, not a marker",
+      "text": "The [OPTIONS: A | B] syntax is documented here.",
+      "options": [],
+      "hasAction": false,
+      "stripped": "The [OPTIONS: A | B] syntax is documented here."
+    },
+    {
+      "name": "same-line sibling markers each parse, and neither leaks",
+      "text": "Done.\n[OPTIONS: Alpha | Bravo] [OPTION-ACTIONS: close=Yes]",
+      "options": [
+        "Alpha",
+        "Bravo"
+      ],
+      "hasAction": true,
+      "stripped": "Done."
+    },
+    {
+      "name": "a citation bracket before the marker does not cancel the head",
+      "text": "See [1] for context.\nPick one.\n[OPTIONS: Alpha | Bravo]",
+      "options": [
+        "Alpha",
+        "Bravo"
+      ],
+      "hasAction": false,
+      "stripped": "See [1] for context.\nPick one."
+    }
+  ]
+}

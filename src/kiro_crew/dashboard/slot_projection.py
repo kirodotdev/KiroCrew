@@ -115,6 +115,7 @@ class SlotProjection:
         prompt_roles: frozenset[str],
         redact: Callable[[str], str],
         parse_options: Callable[[str], list[str]],
+        has_option_actions: Callable[[str], bool],
         strip_options: Callable[[str], str],
         parse_cls_meta: Callable[[str], dict | None],
         is_turn_interrupted: Callable[[list[dict]], bool],
@@ -170,7 +171,12 @@ class SlotProjection:
                         last_conv_role = role
                         if role == "assistant":
                             options = parse_options(text)
-                            has_options = bool(options)
+                            # ``has_options`` is the STATUS fact (choices are on
+                            # screen) and gates ``waiting_for_input``; ``options``
+                            # is the PAYLOAD channel button builders consume. An
+                            # action-only row raises the former alone, or the row
+                            # reads as unattended while it is in fact asking.
+                            has_options = bool(options) or has_option_actions(text)
                             if has_options:
                                 prompt_preview = _options_preview(text)
                             else:

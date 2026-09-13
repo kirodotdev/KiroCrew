@@ -778,26 +778,31 @@ describe('move', () => {
 })
 
 describe('close', () => {
-  it('closes without a prompt when the confirm preference is off', () => {
+  it('closes without a prompt when the confirm preference is off', async () => {
     chatConfig.confirmCloseSession = false
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { result } = harness()
-    act(() => result.current.close(KEY))
+    // `void`, not a bare call: `close` returns a promise now, and handing a
+    // thenable to a SYNCHRONOUS `act` leaves its scope open — which surfaced as
+    // `result.current === null` in the NEXT test, not as a failure here.
+    await act(async () => { await result.current.close(KEY) })
     expect(confirmSpy).not.toHaveBeenCalled()
     expect(deleteSlot).toHaveBeenCalledWith(KEY)
   })
 
-  it('closes after an accepted confirm', () => {
+  it('closes after an accepted confirm', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { result } = harness()
-    act(() => result.current.close(KEY))
+    // No longer synchronous: the DELETE sits behind the closing handshake, which awaits
+    // the veto window so another window can refuse before the slot is destroyed.
+    await act(async () => { await result.current.close(KEY) })
     expect(deleteSlot).toHaveBeenCalledWith(KEY)
   })
 
-  it('keeps the session on a declined confirm', () => {
+  it('keeps the session on a declined confirm', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { result } = harness()
-    act(() => result.current.close(KEY))
+    await act(async () => { await result.current.close(KEY) })
     expect(deleteSlot).not.toHaveBeenCalled()
   })
 })

@@ -1,10 +1,9 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
+import { switchSlot, openActivityToTab, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
 import { inferLane } from '../pages/chat/sessionLane'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
-import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { queryComposerOrExpand, queryPendingApprovalAction, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
 import {
@@ -694,10 +693,21 @@ interface UseKeyboardShortcutsOpts {
    * nav row disappears.
    */
   onToggleTerminal?: () => void
+  /**
+   * The shared close funnel, injected rather than reached for.
+   *
+   * `useSessionActions` is built on react-query, so calling it HERE would make a
+   * QueryClientProvider a precondition of this hook — and every other action
+   * above is already supplied by the caller for exactly that reason. Injecting
+   * keeps this hook renderable on its own, which its own tests rely on.
+   *
+   * Absent, the close chord no-ops, the same way `onToggleTerminal` does.
+   */
+  onCloseSession?: (slotKey: string, opts?: { forceConfirm?: boolean }) => void | Promise<void>
   disabled?: boolean
 }
 
-export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, disabled }: UseKeyboardShortcutsOpts) {
+export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onCloseSession, disabled }: UseKeyboardShortcutsOpts) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const guardedHistoryStep = useGuardedHistoryStep()
@@ -996,9 +1006,9 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // ⌘N / Ctrl+N (alias Option/Alt+Shift+N): new session.
         'new-chat': () => onNewChat(),
         // ⌘W / Ctrl+W (alias Option/Alt+Shift+W): close the current session —
-        // same semantics as the header-menu close (gated by confirmCloseSession,
-        // dispatches deleteSlot). One addition for the NEW chord surface: a
-        // session that is not IDLE always confirms. ⌘W/Ctrl+W is the most
+        // same semantics as the header-menu close, which is to say the same
+        // `useSessionActions().close` funnel. One addition for the NEW chord
+        // surface: a session that is not IDLE always confirms. ⌘W/Ctrl+W is the most
         // habitual chord there is (it closed the WINDOW in the previous desktop
         // release on Windows/Linux), and `confirmCloseSession` defaults off — a
         // default calibrated for the hard-to-mispress ⌥⇧W. An idle session is
@@ -1009,7 +1019,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // "Not idle" is the sidebar's own lane inference, not `slot.running`: that
         // flag covers only the slot's own turn and reads FALSE between the cycles
         // of an armed goal loop, during a dynamic workflow, and while background
-        // sub-agents run — all of which `deleteSlot` retires. Reusing `inferLane`
+        // sub-agents run — all of which closing retires. Reusing `inferLane`
         // with the same extras the sidebar computes keeps this gate and the
         // Working/Waiting/Needs-approval lanes from ever disagreeing.
         'close-chat': () => {
@@ -1024,10 +1034,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
             detailedSubagentsRunning: subagentsRunning > 0,
           }) : 'idle'
           const modChord = e.metaKey || e.ctrlKey
-          const mustConfirm = loadChatConfig().confirmCloseSession || (modChord && lane !== 'idle')
-          if (!mustConfirm || confirm(i18nT('hooks.useKeyboardShortcuts.close_this_session'))) {
-            dispatch(deleteSlot(activeSlot))
-          }
+          // The non-idle rule above is expressed as `forceConfirm`, not as a confirm
+          // spelled here: `close` owns the preference check, the prompt text and the
+          // unsent-work check, and a second `confirm` on this route would ask twice
+          // for one keystroke while still missing the draft the funnel catches.
+          void onCloseSession?.(activeSlot, { forceConfirm: modChord && lane !== 'idle' })
         },
       }
       // Every `registry` entry has an action here (shortcutRegistry.test pins the
@@ -1125,7 +1136,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate(panelMap[code])
       return
     }
-  }, [dispatch, navigate, guardedHistoryStep, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings, bindings])
+  }, [dispatch, navigate, guardedHistoryStep, appStore, onCloseSession, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings, bindings])
 
   // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
   // handler, which stopPropagation()s and would otherwise close the palette while

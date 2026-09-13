@@ -3,12 +3,62 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
-import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
+import { findLastOptionMarker, matchActionMarkers, stripOptionMarkers } from './optionMarker'
 
 // A plan is recognised by BOTH its header and at least one stage line, so ordinary
 // prose that happens to mention a plan is not mistaken for one.
 const PLAN_HEADER_RE = /📋\s*Plan for:/i
 const STAGE_RE = /^Stage\s+\d+\s*:/m
+
+/**
+ * An option whose click runs a LOCAL UI action instead of sending its label as text.
+ *
+ * The action and the label are separate fields on purpose. `[OPTIONS:]` labels are
+ * model-emitted prose, so encoding the action IN the label — a magic word, a prefix —
+ * would mean an agent writing documentation about this feature emits a live control that
+ * tears down the user's tab. Splitting them makes the label inert: it is shown, never
+ * interpreted.
+ */
+export interface OptionAction {
+  /** Strict enum. An unrecognised action is DROPPED at parse time, never dispatched. */
+  action: 'close'
+  /** Free-text, model-authored, arbitrary. Never parsed for meaning. */
+  label: string
+}
+
+/** The whole enum, as the value the parser filters against. Adding a member here is the
+ *  ONLY way to widen what can be dispatched — an unknown action never reaches a caller,
+ *  so a marker from a newer agent than this dashboard degrades to nothing rather than to
+ *  an unpredictable local effect. */
+const KNOWN_ACTIONS = new Set<OptionAction['action']>(['close'])
+
+/**
+ * The ONE dispatchable action in a marker body, or `null`.
+ *
+ * The app-kit protocol specifies `[OPTION-ACTIONS: close=<label>]`, singular, and the
+ * enum has one member, so the body is ONE entry — no `|` list and no drop-and-continue
+ * over sibling entries. A second action member is the commit that widens this, and it
+ * owns the overflow affordance (a menu, not a silent tail-drop).
+ *
+ * The FIELD SPLIT stays, on the FIRST `=` only: the canonical label
+ * `close=Nothing else, close this session` is free text and may contain `=` and `,`,
+ * so the action has to be read positionally rather than tokenised out of the label.
+ * A body with no `=`, an empty label, or an action outside the enum yields `null`
+ * rather than a button whose click does something the agent did not ask for.
+ *
+ * The action name is matched case-INSENSITIVELY, consistent with the head. The label's
+ * own casing is untouched.
+ */
+function parseActionEntries(body: string): OptionAction | null {
+  // ONE entry split on the FIRST `=`, which is what the backend mirror and the shared corpus
+  // both pin: a `|` in the body belongs to the LABEL, so a pipe body names one unknown action.
+  const eq = body.indexOf('=')
+  if (eq < 0) return null
+  const action = body.slice(0, eq).trim().toLowerCase() as OptionAction['action']
+  const label = body.slice(eq + 1).trim()
+  if (!label || !KNOWN_ACTIONS.has(action)) return null
+  return { action, label }
+}
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
@@ -20,6 +70,11 @@ export interface ParsedOptions {
   multi: boolean
   /** The message is a plan (header plus at least one stage line), not a plain question. */
   isPlan: boolean
+  /** The local UI action from the LAST `[OPTION-ACTIONS:]` marker, or `null`.
+   *  Independent of `options`: a row may carry either, both, or neither. Singular
+   *  because the body is ONE `<action>=<label>` entry and a `|` belongs to the label,
+   *  so a marker cannot name a second action at all. */
+  action: OptionAction | null
 }
 
 export function parseOptions(content: string): ParsedOptions {
@@ -29,7 +84,24 @@ export function parseOptions(content: string): ParsedOptions {
   // this cannot be done by halves. It also clones the regex per call, so the g-flag
   // `lastIndex` hazard is no longer a caller's problem to remember.
   const last = findLastOptionMarker(content)
-  if (!last || last.index === undefined) return { text: content, options: [], multi: true, isPlan: false }
+  // Scanned unconditionally and INDEPENDENTLY of the content marker: an action marker is not
+  // required to be accompanied by one, and the whole point of the feature is a row that offers
+  // only the action. `matchActionMarkers` owns the same clone-per-call discipline.
+  let lastAction: RegExpMatchArray | null = null
+  for (const m of matchActionMarkers(content)) lastAction = m
+  const action = lastAction ? parseActionEntries(lastAction[1]) : null
+
+  if (!last || last.index === undefined) {
+    // No content marker. With no action marker either there is nothing to strip, so the
+    // content is returned BYTE-IDENTICAL (not trimmed) — the long-standing behaviour for a
+    // marker-less message, which callers rely on for ordinary prose.
+    if (!lastAction) return { text: content, options: [], multi: true, isPlan: false, action }
+    // An action-only row still has to have its marker stripped, or the raw syntax is what
+    // the user reads. ALL markers go, not just the last, for the same reason the content path
+    // strips all of them: a stray earlier one must not leak as raw text.
+    const stripped = stripOptionMarkers(content).trim()
+    return { text: stripped, options: [], multi: true, isPlan: false, action }
+  }
   // The marker pattern is a two-branch alternation (line-anchored-with-wrappers
   // vs mid-line): groups 1/2 belong to the first branch, 3/4 to the second, and
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
@@ -39,13 +111,13 @@ export function parseOptions(content: string): ParsedOptions {
   const sep = labels.includes('|') ? '|' : ','
   const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
   const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
-  // Strip ALL accepted markers from the displayed text (not just the last) so a stray
-  // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
-  // come from the LAST marker (computed above). A REFUSED candidate is deliberately
-  // left in place — it is prose the user should still see, and removing it is the
-  // defect the check exists to prevent.
+  // Strip ALL accepted markers of BOTH kinds from the displayed text (not just the last of
+  // each) so a stray earlier marker can't leak as raw "[OPTION: …]" / "[OPTION-ACTIONS: …]"
+  // syntax to the user; options and actions still come from the LAST marker of their own kind
+  // (computed above). A REFUSED candidate is deliberately left in place — it is prose the user
+  // should still see, and removing it is the defect the check exists to prevent.
   const text = stripOptionMarkers(content).trim()
-  return { text, options, multi, isPlan }
+  return { text, options, multi, isPlan, action }
 }
 
 export interface FollowUpDerivation {
@@ -53,8 +125,10 @@ export interface FollowUpDerivation {
   followUpIsPlan: boolean
   /**
    * Identity of the row the options were derived from — `meta.mid` when
-   * present, else the row's `ts`, else an index fallback. `null` when no
-   * options are on offer (streaming, question pending, user boundary, none).
+   * present, else the row's `ts`, else an index fallback. `null` when NOTHING is
+   * on offer (streaming, question pending, user boundary, none) — note that
+   * "nothing" counts actions as well as options, so an action-only row still
+   * gets an identity and the bar can re-key on it.
    *
    * Consumers that must know whether the CHIPS THEMSELVES changed — not just
    * their labels — compare this instead of the option labels: consecutive
@@ -64,7 +138,26 @@ export interface FollowUpDerivation {
    * (usePlanActionMutation) is acknowledgement-gated on exactly this value.
    */
   followUpSourceKey: string | null
+  /**
+   * The local UI action on offer from the same row, `null` whenever there is none.
+   *
+   * Suppressed by EVERY branch that suppresses `followUpOptions`, and for the same
+   * reason: an action offered after the user has already answered is the same defect
+   * as a stale pill, and this one is worse than a stale pill because clicking it tears
+   * down the tab rather than sending a message that can be ignored.
+   */
+  followUpAction: OptionAction | null
 }
+
+/** Nothing on offer. A factory rather than a shared frozen const: the arrays are handed
+ *  to callers, and one caller mutating a shared empty array would corrupt every other
+ *  reader of it. */
+const noOffer = (): FollowUpDerivation => ({
+  followUpOptions: [],
+  followUpIsPlan: false,
+  followUpSourceKey: null,
+  followUpAction: null,
+})
 
 /**
  * Identity of the transcript row *m* sits at index *i* of, stable across
@@ -94,8 +187,16 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
   ?? `idx:${i}`
 
 /**
- * Derive the follow-up `[OPTIONS:]` buttons for the current chat by scanning
- * backward for the most recent real assistant turn.
+ * Derive the follow-up `[OPTIONS:]` buttons — and any `[OPTION-ACTIONS:]` local-UI
+ * chips — for the current chat by scanning backward for the most recent real
+ * assistant turn.
+ *
+ * The two are derived TOGETHER from the same row rather than by two scans, because
+ * every suppression rule below is a statement about the ROW's freshness, not about
+ * which marker it carries: an action reached across a boundary is stale for exactly
+ * the reasons an option is. A row may carry either marker, both, or neither — so
+ * "does this row offer anything" is `options.length || action !== null` everywhere,
+ * and a row carrying ONLY an action marker is a first-class offer.
  *
  * Three messages short-circuit the scan:
  *  - a `user` message ends the previous turn, so its options no longer apply →
@@ -162,7 +263,7 @@ export function deriveFollowUpOptions(
   isStreaming: boolean,
   questionPending = false,
 ): FollowUpDerivation {
-  if (isStreaming || questionPending) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  if (isStreaming || questionPending) return noOffer()
   // Errors were already transparent here (no branch matched them); the flag is
   // what makes that transparency mean something.
   let sawError = false
@@ -172,15 +273,15 @@ export function deriveFollowUpOptions(
     const m = messages[i]
     // A deliberate Stop ENDS the turn rather than interrupting it, so the choice is closed
     // by the user's own cancellation — the error licence below must not reach back past it.
-    if (isStopEvent(m)) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (isStopEvent(m)) return noOffer()
     // Only a TERMINAL error licenses a crossing. A retry notice means the recovery is
     // already queued, so re-offering the pill would run the same choice a second time.
     if (m.role === 'error') { if (!isRetryNotice(m)) sawError = true; continue }
     // `queued` is an UNCONDITIONAL stop: its queue entry OUTLIVES the error (only a hard
     // kill clears the queue), so re-offering the pill would run the choice a second time.
-    if (m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (m.role === 'queued') return noOffer()
     if (m.role === 'user') {
-      if (!sawError) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+      if (!sawError) return noOffer()
       // Cross this failed turn and keep looking. Re-armed only by another error,
       // so a SUCCESSFUL turn further back still stops the scan.
       sawError = false
@@ -192,27 +293,61 @@ export function deriveFollowUpOptions(
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {
       const parsed = parseOptions(m.content)
-      if (parsed.options.length) {
+      // Actions count as an offer in their own right: a note carrying ONLY
+      // `[OPTION-ACTIONS:]` is exactly the zero-turn case this exists for, and keying
+      // this on `options.length` alone would silently drop it and scan past the row.
+      if (parsed.options.length || parsed.action) {
         // NEVER isPlan: a note is not the orchestrator's plan turn, and `followUpIsPlan` is read
         // only to dispatch /plan-action — so plan-shaped note text would let `Cancel` kill a plan.
         // A note row still gets an identity: the bar keys its render off it, and a note whose
         // options never re-key would let a later identical note reuse the earlier row's key.
-        return { followUpOptions: parsed.options, followUpIsPlan: false, followUpSourceKey: rowIdentity(m, i) }
+        return {
+          followUpOptions: parsed.options,
+          followUpIsPlan: false,
+          followUpSourceKey: rowIdentity(m, i),
+          followUpAction: parsed.action,
+        }
       }
       continue
     }
     if (m.role === 'assistant' && m.content) {
-      const { options, isPlan } = parseOptions(m.content)
+      const { options, isPlan, action } = parseOptions(m.content)
+      // "Offers something" is options OR actions — every test below that used to read
+      // `options.length` has to consider both, or an action-only row is treated as an
+      // empty one and either crossed or given a null source key.
+      const offers = options.length > 0 || action !== null
       // A failed turn can flush the text it streamed as a real assistant row before the
-      // error, and that option-less row shadowed the question exactly as the `user` row did.
+      // error, and that offer-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
-      if (!options.length && sawError) { crossedFailedTurn = true; continue }
+      if (!offers && sawError) { crossedFailedTurn = true; continue }
       // Offer NOTHING for a plan row reached that way. Demoting to the composer path is not
       // enough: with Quick Send on, one click still sends `Go All` as orchestrator-run text.
-      if (isPlan && crossedFailedTurn) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
-      const followUpSourceKey = options.length > 0 ? rowIdentity(m, i) : null
-      return { followUpOptions: options, followUpIsPlan: isPlan, followUpSourceKey }
+      // Actions are withheld here too — a close chip reached across a failed turn would tear
+      // down the tab on the strength of a turn whose outcome is unknown.
+      if (isPlan && crossedFailedTurn) return noOffer()
+      const followUpSourceKey = offers ? rowIdentity(m, i) : null
+      return { followUpOptions: options, followUpIsPlan: isPlan, followUpSourceKey, followUpAction: action }
     }
   }
-  return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  return noOffer()
+}
+
+/** The content options MINUS any label the action already owns.
+ *
+ * The two markers are parsed INDEPENDENTLY, so a model emitting the same label in both
+ * rendered two chips with identical text — and the content one SENDS A MODEL TURN, which is
+ * the exact cost the action exists to avoid. The action wins: it is the more specific offer,
+ * and its label is what the close confirm quotes back. Folded case and trimmed, because two
+ * chips differing only in case or padding are the same collision to a reader.
+ *
+ * Callers that DROP the action (an embed wiring no `onAction`) must NOT apply this: filtering
+ * there would remove the label with nothing left on screen to render it.
+ */
+export function optionsExcludingAction(
+  options: readonly string[],
+  action: OptionAction | null,
+): string[] {
+  if (!action) return [...options]
+  const owned = action.label.trim().toLowerCase()
+  return options.filter((o) => o.trim().toLowerCase() !== owned)
 }
