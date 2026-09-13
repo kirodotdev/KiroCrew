@@ -41,14 +41,9 @@ dev = [
     "mypy==1.14.1",
     "black==26.3.1",
     "isort==6.0.0",
-    # Not a dev TOOL. kiro_crew.config.validation imports jsonschema behind a
-    # try/except and returns the config unvalidated when the import fails, so a
-    # run without it exercises none of the schema-validation path and silently
-    # SKIPS the 11 tests that cover it (pytest scores a skip as a pass). It is
-    # declared here so those guards actually run. Whether jsonschema should also
-    # be a runtime dependency -- making validation always-on for users rather
-    # than opt-in-by-accident -- is a separate, user-visible call and is
-    # deliberately not made here.
+    # Keep CI on a pinned version of the runtime config validator. The runtime
+    # dependency is declared separately in setup.cfg so packaged installs do
+    # not silently skip schema checks when dev extras are absent.
     "jsonschema==4.26.0",
     # Same shape as jsonschema above, and the same reason. PyJWT ships in the
     # optional `teams` extra, which CI never installs, so `test_teams_client.py`'s

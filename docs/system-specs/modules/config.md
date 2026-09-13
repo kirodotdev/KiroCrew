@@ -813,6 +813,12 @@ prevent. `test_default_emitted_section_keys_are_all_recognized` guards
 Loads config from disk. Merges `config.local.json` overlay if present.
 Returns defaults if file is missing or invalid.
 
+The installed package declares `jsonschema` as a core runtime dependency so
+schema validation runs outside development environments too. The import guard
+still lets an incomplete or manually damaged install load, but that fallback
+must not be treated as the normal packaged behavior. Generated package metadata
+is tested to ensure the validator is required without the `dev` extra.
+
 **Hot-path cache.** `load()` is called per message / per request on several hot
 paths. The expensive work — reading `config.json` (+ `config.local.json`),
 `json.loads`, `_deep_merge`, and the full `jsonschema.validate` — is cached as
