@@ -41,6 +41,22 @@ def _rec(change_id, verdict="PASS", risk="low", blast="SMALL", red=0, yellow=0,
     }
 
 
+def _worker_response(task: str, record: dict) -> str:
+    """The bounded JSON envelope a reviewer returns, echoing its issued capability.
+
+    The driver persists a review from the worker's RESPONSE, not from a file the
+    worker wrote, so a fake that writes a record directly is indistinguishable
+    from a sibling worker planting one and is refused.
+    """
+    capability = re.search(r'"capability": "([^"]+)"', task)
+    assert capability is not None
+    return json.dumps({
+        "schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+        "capability": capability.group(1), "change_id": record["change_id"],
+        "record": record,
+    })
+
+
 class _RootTest(unittest.TestCase):
     """Shared tmpdir root, self-healed to a fresh data layout (like the other
     persistence tests in this package)."""
@@ -251,7 +267,7 @@ class TestRunReviewScoping(unittest.TestCase):
             if m:
                 cid = m.group(0)
                 if "SINGLE thorough pass" in task:
-                    results.write_result({
+                    return {"ok": True, "error": "", "output": _worker_response(task, {
                         "schema": "code-review-sage-result", "version": 1,
                         "change_id": cid, "platform": "github",
                         "repo_identity": "github.com/o/r", "revision": "1",
@@ -265,7 +281,7 @@ class TestRunReviewScoping(unittest.TestCase):
                                       "suggestion": "s"}],
                         "deep_reviewed": True, "title": cid,
                         "files_covered": ["f"], "coverage_complete": True,
-                    }, self.root, run_id=run_id)
+                    })}
                 elif "pre-redacted DRAFT review comments" in task:
                     rec = results.read_result(cid, self.root, run_id=run_id) or {}
                     pending = rec.get("pending_comments", []) or []

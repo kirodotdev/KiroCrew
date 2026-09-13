@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -49,6 +51,14 @@ def _record(cid: str = "CR-1", red: int = 1, yellow: int = 2) -> dict:
         "deep_reviewed": True, "title": cid, "ship_summary": "looks fine",
         "files_covered": ["f.py"], "coverage_complete": True,
     }
+
+
+def _response(task: str, record: dict) -> str:
+    capability = re.search(r'"capability": "([^"]+)"', task)
+    assert capability is not None
+    return json.dumps({"schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+                       "capability": capability.group(1), "change_id": record["change_id"],
+                       "record": record})
 
 
 def await_sync(fn, *a, **kw):
@@ -341,8 +351,7 @@ class TestSelectivePosting(_Base):
 class TestRecordsSurviveForPosting(_Base):
     def _dispatch(self):
         def dispatch(task, timeout=0):
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": _response(task, _record()), "error": ""}
         return dispatch
 
     async def test_records_are_kept_when_the_review_was_not_posted(self):
@@ -364,7 +373,7 @@ class TestRecordsSurviveForPosting(_Base):
 
         def dispatch(task, timeout=0):
             if "SINGLE thorough pass" in task:
-                results.write_result(_record(), self.root)
+                return {"ok": True, "output": _response(task, _record()), "error": ""}
             else:
                 rec = results.read_result("CR-1", self.root, None)
                 if rec:
