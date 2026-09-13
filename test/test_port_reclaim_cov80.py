@@ -8,7 +8,8 @@ default collaborators (the real identity check and the real terminator) that
 production actually uses.
 
 No test here shells out or signals a real process: ``subprocess.check_output``,
-``os.kill``, ``kill_process_tree`` and the liveness check are all patched.
+``platform_compat.kill_pid``, ``kill_process_tree`` and the liveness check are
+all patched.
 """
 
 from __future__ import annotations
@@ -104,7 +105,7 @@ async def test_posix_already_exited_process_counts_as_success(monkeypatch) -> No
         raise ProcessLookupError("no such process")
 
     monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
-    monkeypatch.setattr(pr.os, "kill", _kill)
+    monkeypatch.setattr(pr.platform_compat, "kill_pid", _kill)
     monkeypatch.setattr(cli_server, "_pid_exited", lambda _pid: True)
 
     assert await pr._terminate_pids([4242], term_wait=0.05, kill_wait=0.05, poll=0.01)
@@ -125,7 +126,7 @@ async def test_posix_denied_sigkill_reports_failure(monkeypatch) -> None:
             raise PermissionError("operation not permitted")
 
     monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
-    monkeypatch.setattr(pr.os, "kill", _kill)
+    monkeypatch.setattr(pr.platform_compat, "kill_pid", _kill)
     monkeypatch.setattr(cli_server, "_pid_exited", lambda _pid: False)
 
     ok = await pr._terminate_pids([4242], term_wait=0.02, kill_wait=0.02, poll=0.01)

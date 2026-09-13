@@ -238,11 +238,37 @@ async def test_probe_healthy_false_for_wedged_socket() -> None:
 
 
 @pytest.mark.asyncio
+async def test_terminate_posix_routes_through_kill_pid(monkeypatch) -> None:
+    """The POSIX branch delivers through ``platform_compat.kill_pid``, not a
+    raw ``os.kill`` (platform-compat.md helper-per-call table).
+
+    Single-PID semantics are the right shape here: the gateway's kiro-cli /
+    MCP-server children are spawned ``start_new_session=True`` on POSIX (own
+    process groups), so ``kill_process_tree`` (a ``killpg`` of the gateway's
+    group) has nothing extra to reach -- matching the ``kirocrew stop`` branch.
+    """
+    signals: list[tuple[int, int]] = []
+    import kiro_crew.cli_server as cli_server
+
+    monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        pr.platform_compat, "kill_pid", lambda pid, sig: signals.append((pid, sig))
+    )
+    monkeypatch.setattr(cli_server, "_pid_exited", lambda _pid: True)
+
+    ok = await pr._terminate_pids([1234], term_wait=0.1, kill_wait=0.1, poll=0.01)
+    assert ok is True
+    assert signals == [(1234, pr.platform_compat.SIGTERM)]
+
+
+@pytest.mark.asyncio
 async def test_terminate_returns_true_when_already_gone(monkeypatch) -> None:
     signals: list[tuple[int, int]] = []
     # Patch BOTH delivery primitives so the test is platform agnostic: POSIX
-    # _signal calls os.kill, Windows _signal calls kill_process_tree.
-    monkeypatch.setattr(pr.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    # _signal calls kill_pid, Windows _signal calls kill_process_tree.
+    monkeypatch.setattr(
+        pr.platform_compat, "kill_pid", lambda pid, sig: signals.append((pid, sig))
+    )
     monkeypatch.setattr(
         pr.platform_compat, "kill_process_tree",
         lambda pid, sig: signals.append((pid, sig)),
@@ -274,7 +300,7 @@ async def test_terminate_escalates_to_sigkill(monkeypatch) -> None:
         if sig == pr.platform_compat.SIGKILL:
             state["alive"] = False
 
-    monkeypatch.setattr(pr.os, "kill", _kill)
+    monkeypatch.setattr(pr.platform_compat, "kill_pid", _kill)
     monkeypatch.setattr(pr.platform_compat, "kill_process_tree", _kill)
     monkeypatch.setattr(cli_server, "_pid_exited", _exited)
 
@@ -289,7 +315,7 @@ async def test_terminate_returns_false_on_permission_error(monkeypatch) -> None:
     def _kill(_pid: int, _sig: int) -> None:
         raise PermissionError("not allowed")
 
-    monkeypatch.setattr(pr.os, "kill", _kill)
+    monkeypatch.setattr(pr.platform_compat, "kill_pid", _kill)
     monkeypatch.setattr(pr.platform_compat, "kill_process_tree", _kill)
     ok = await pr._terminate_pids([1], term_wait=0.05, kill_wait=0.05, poll=0.01)
     assert ok is False

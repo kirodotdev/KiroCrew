@@ -12,7 +12,6 @@ import logging
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -581,8 +580,12 @@ def _stop(cli_port: int | None = None) -> None:
                 if platform_compat.pid_exists(pid):
                     denied.append(pid)
             continue
+        # POSIX: single-PID SIGTERM via the platform_compat helper. A tree kill
+        # has nothing extra to reach — the gateway's kiro-cli / MCP-server
+        # children are spawned start_new_session=True (their own process
+        # groups), so killpg of this group is just this process.
         try:
-            os.kill(pid, signal.SIGTERM)
+            platform_compat.kill_pid(pid, platform_compat.SIGTERM)
             sent.add(pid)
         except ProcessLookupError:
             pass

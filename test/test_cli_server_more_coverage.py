@@ -521,6 +521,60 @@ class TestStopOnWindows:
         assert "No permission" not in out
 
 
+class TestStopOnPosix:
+    """The POSIX branch delivers the kill through ``platform_compat.kill_pid``
+    (the platform-compat helper-per-call table), not a raw ``os.kill``.
+
+    A single-PID SIGTERM is the correct semantics here: the gateway's kiro-cli
+    / MCP-server children are spawned ``start_new_session=True`` on POSIX
+    (their own process groups), so the tree helper has nothing to add —
+    merely switching this branch to ``kill_process_tree`` would not reproduce
+    the Windows ``taskkill /T`` descendant-reaping behaviour.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _posix(self, monkeypatch):
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 5476)
+        monkeypatch.setattr(cli_server.service_controller, "stop_service", lambda: False)
+        monkeypatch.setattr(platform_compat, "find_listening_pids", lambda port: [4242])
+        monkeypatch.setattr(cli_server, "_is_kirocrew_process", lambda pid: True)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(cli_server, "_pid_exited", lambda pid: True)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+    def test_kill_goes_through_platform_compat(self, monkeypatch, sel_rec, capsys) -> None:
+        seen: list[tuple[int, int]] = []
+        monkeypatch.setattr(platform_compat, "kill_pid", lambda pid, sig: seen.append((pid, sig)))
+        cli_server._stop(None)
+        out = capsys.readouterr().out
+        assert seen == [(4242, platform_compat.SIGTERM)]
+        assert "Sent SIGTERM to gateway (pid 4242)" in out
+        assert sel_rec.calls[-1]["outcome"] == "allowed"
+
+    def test_posix_already_gone_pid_is_not_reported_as_stopped(self, monkeypatch, capsys) -> None:
+        def gone(pid, sig):
+            raise ProcessLookupError
+
+        monkeypatch.setattr(platform_compat, "kill_pid", gone)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert "process already exited" in capsys.readouterr().out
+
+    def test_posix_permission_error_asks_for_sudo_and_exits(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        def denied(pid, sig):
+            raise PermissionError
+
+        monkeypatch.setattr(platform_compat, "kill_pid", denied)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert "No permission to stop pid 4242" in capsys.readouterr().out
+        assert sel_rec.calls[-1]["outcome"] == "denied"
+
+
 # --------------------------------------------------------------------------
 # _service_cmd / _sandbox_cmd
 # --------------------------------------------------------------------------

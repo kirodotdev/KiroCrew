@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import subprocess
 from collections.abc import Awaitable, Callable
 
@@ -191,8 +190,11 @@ async def _terminate_pids(
                 if platform_compat.pid_exists(pid):
                     return False
             return True
+        # POSIX: single-PID signal via the platform_compat helper. The gateway's
+        # kiro-cli / MCP-server children are spawned start_new_session=True
+        # (own process groups), so a tree kill would reach no more than this pid.
         try:
-            os.kill(pid, sig)
+            platform_compat.kill_pid(pid, sig)
         except ProcessLookupError:
             pass  # already gone — success for our purposes
         except PermissionError:
