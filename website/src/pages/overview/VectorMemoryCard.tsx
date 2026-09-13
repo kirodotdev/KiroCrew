@@ -35,6 +35,9 @@ interface VectorStats {
 interface EmbeddingStatus {
   setup_step?: string
   setup_error?: string
+  // Operator warning from the backend about a usable but degraded setup, such
+  // as custom-model vectors inherited from an identity with no recorded digest.
+  setup_warning?: string
   provider?: string
   model_available?: boolean
   model_id?: string
@@ -368,6 +371,19 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
       <ErrorNotice message={statsRead.error ? extractError(statsRead.error) : undefined} />
       {/* No hand-off: a status retry must not discard the same unsaved memory drafts. */}
       <ErrorNotice message={embeddingRead.error ? extractError(embeddingRead.error) : undefined} />
+      {embStatus?.setup_warning && (
+        <p role="status" data-testid="embedding-setup-warning" className="flex items-start gap-1.5 text-[12px] text-warn">
+          <AlertTriangle className="lucide-inline shrink-0 mt-0.5" />
+          <span>
+            {embStatus.setup_warning}{' '}
+            {/* The Embedding Model card sits below this card on the Memory tab; the
+                fragment moves focus to its path field, so the fix is one Tab away. */}
+            <a href="#embed-model-path" className="underline hover:text-accent transition-colors whitespace-nowrap">
+              {i18nT('pages.overview.vectorMemoryCard.open_embedding_model_settings')}
+            </a>
+          </span>
+        </p>
+      )}
       {summaryError && <Btn disabled={statsRead.isFetching || embeddingRead.isFetching} onClick={() => void load()}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
       {!active && !enabling && !summaryError && (
         <div className="flex flex-col gap-3 items-start">

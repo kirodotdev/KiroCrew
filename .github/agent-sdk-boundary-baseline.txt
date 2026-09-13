@@ -35,7 +35,7 @@
 1 src/kiro_crew/connections/mint.py
 1 src/kiro_crew/cron.py
 3 src/kiro_crew/dashboard/chat_handlers.py
-4 src/kiro_crew/dashboard/chat_runner.py
+3 src/kiro_crew/dashboard/chat_runner.py
 1 src/kiro_crew/dashboard/chat_summary.py
 1 src/kiro_crew/dashboard/chat_utils.py
 2 src/kiro_crew/dashboard/handlers/agents.py

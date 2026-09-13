@@ -838,7 +838,7 @@ class TestReconcileOutcomeIsChecked:
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
         assert -1 not in (check_at, activate_at, write_at)
         assert check_at < activate_at, "must not activate against an unreconciled store"
-        assert check_at < write_at, "must not persist against an unreconciled store"
+        assert write_at < check_at, "persist before clearing stored vectors"
 
     def test_an_unstamped_store_cannot_match_the_active_space(self, tmp_path) -> None:
         """Pin the store-side observable the apply now relies on.
@@ -882,19 +882,14 @@ class TestApplyOrdering:
         assert write_at < activate_at, "activating before persistence exposes the new space"
         assert reconcile_at < activate_at, "activating before reconcile mixes spaces"
 
-    def test_config_is_written_after_reconcile_so_failure_rolls_back(self) -> None:
-        """Config must name the PREVIOUS model while reconcile can still fail.
-
-        Written earlier, a reconcile failure would leave config naming the new
-        model — and the rollback would then rebuild THAT model, ungated, against a
-        store that was never reconciled. Reconcile reads the live backend rather
-        than config, so deferring the write costs nothing.
-        """
+    def test_persistence_precedes_reconcile_and_rollback_precedes_reset(self) -> None:
+        """A write failure preserves vectors; an alignment failure restores config."""
         src = self._src()
         reconcile_at = src.find("reconcile_store_embedding_space(target)")
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
         assert -1 not in (reconcile_at, write_at)
-        assert reconcile_at < write_at
+        assert write_at < reconcile_at
+        assert src.find("restore_config(), loop") < src.rfind("reset_shared_embedder()")
 
     def test_backfill_runs_after_activation(self) -> None:
         src = self._src()
@@ -903,10 +898,9 @@ class TestApplyOrdering:
     def test_every_pre_activation_failure_rolls_back(self) -> None:
         """A gated candidate left installed would serve nobody forever."""
         src = self._src()
-        assert src.count("reset_shared_embedder()") >= 3, (
-            "load failure, config-write failure and the unexpected-exception path "
-            "must each drop the candidate"
-        )
+        assert src.count("reset_shared_embedder()") == 2
+        assert "if restore_config is not None:" in src
+        assert "candidate remains gated" in src
 
     def test_load_wait_is_bounded(self) -> None:
         """Unbounded, a wedged native load pins progress at `applying` forever."""
@@ -958,11 +952,12 @@ class TestConfigWriteHasNoOrphanWindow:
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.memory.config_path", lambda: cfg, raising=False
         )
-        await _write_embed_model_config("/models/bge.gguf", 1024)
+        model = _write_model(tmp_path / "bge.gguf")
+        await _write_embed_model_config(str(model), 1024)
         data = json.loads(cfg.read_text(encoding="utf-8"))
         mem_cfg = data["memory"]
         # Never a path without its width — that pair is what the loader validates.
-        assert mem_cfg["embed_model_path"] == "/models/bge.gguf"
+        assert mem_cfg["embed_model_path"] == str(model)
         assert mem_cfg["embedding_dim"] == 1024
 
 
@@ -995,12 +990,12 @@ class TestStaleModelIdIsCleared:
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.memory.config_path", lambda: cfg, raising=False
         )
-        await _write_embed_model_config("/models/new-same-dim.gguf", 1024)
+        model = _write_model(tmp_path / "new-same-dim.gguf")
+        await _write_embed_model_config(str(model), 1024)
         mem_cfg = json.loads(cfg.read_text(encoding="utf-8"))["memory"]
-        assert mem_cfg["embed_model_path"] == "/models/new-same-dim.gguf"
-        assert "embed_model_id" not in mem_cfg, (
-            "a pinned id would keep the old space signature and retain stale vectors"
-        )
+        assert mem_cfg["embed_model_path"] == str(model)
+        assert mem_cfg["embed_model_id"] == embeddings_mod._custom_model_id(model, "")
+        assert "pinned-to-old-model" not in mem_cfg["embed_model_id"]
 
     @pytest.mark.asyncio
     async def test_reverting_to_bundled_also_drops_the_pinned_id(
@@ -1290,9 +1285,10 @@ class TestConfigWrite:
         cfg.write_text(json.dumps({"memory": {"episodic_max_results": 8}}), encoding="utf-8")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.memory.config_path", lambda: cfg)
 
-        await _write_embed_model_config("/models/m.gguf", 0)
+        model = _write_model(tmp_path / "m.gguf")
+        await _write_embed_model_config(str(model), 0)
         data = json.loads(cfg.read_text(encoding="utf-8"))
-        assert data["memory"]["embed_model_path"] == "/models/m.gguf"
+        assert data["memory"]["embed_model_path"] == str(model)
         assert data["memory"]["episodic_max_results"] == 8, "other keys preserved"
 
     @pytest.mark.asyncio
@@ -1319,8 +1315,9 @@ class TestConfigWrite:
         cfg.write_text("{ this is not json", encoding="utf-8")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.memory.config_path", lambda: cfg)
 
+        model = _write_model(tmp_path / "m.gguf")
         with pytest.raises(ValueError):
-            await _write_embed_model_config("/models/m.gguf", 0)
+            await _write_embed_model_config(str(model), 0)
         assert cfg.read_text(encoding="utf-8") == "{ this is not json"
 
 

@@ -986,3 +986,31 @@ describe('VectorMemoryCard — active header states', () => {
       expect(screen.getByText('Model loaded. Embedding engine is starting up.')).toBeInTheDocument())
   })
 })
+
+describe('VectorMemoryCard — embedding setup warning', () => {
+  beforeEach(() => { vi.clearAllMocks(); setupApi() })
+
+  const WARNING = 'These memory vectors were built before the model file that produced them was recorded.'
+
+  it('renders the backend warning with a link to the embedding model settings', async () => {
+    setupApi({ emb: { ...ACTIVE_EMB, model_source: 'custom', setup_warning: WARNING } })
+    renderWithProviders(<VectorMemoryCard />)
+    await waitForActive()
+
+    const notice = screen.getByTestId('embedding-setup-warning')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice).toHaveTextContent(WARNING)
+    const link = within(notice).getByRole('link', { name: 'Open embedding model settings' })
+    expect(link).toHaveAttribute('href', '#embed-model-path')
+    expect(screen.getByText('active')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('renders no warning when the field is empty or absent', async () => {
+    setupApi({ emb: { ...ACTIVE_EMB, setup_warning: '' } })
+    renderWithProviders(<VectorMemoryCard />)
+    await waitForActive()
+
+    expect(screen.queryByTestId('embedding-setup-warning')).not.toBeInTheDocument()
+  })
+})

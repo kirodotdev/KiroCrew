@@ -11942,6 +11942,7 @@
         "no_matching_entries": "कोई मेल खाती एंट्री नहीं",
         "no_semantic_entries": "कोई सिमेंटिक एंट्री नहीं",
         "of": "में से",
+        "open_embedding_model_settings": "एम्बेडिंग मॉडल सेटिंग खोलें",
         "preview": "पूर्वावलोकन",
         "preview_what_gets_injected_into_prompts_enter_a": "प्रॉम्प्ट में क्या डाला जाता है, उसका प्रीव्यू देखें। एपिसोडिक रिट्रीवल के नतीजे देखने के लिए क्वेरी दर्ज करें।",
         "ready": "तैयार!",

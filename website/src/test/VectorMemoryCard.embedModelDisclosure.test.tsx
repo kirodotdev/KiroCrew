@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { embedModelDisclosure } from '../pages/overview/VectorMemoryCard'
 
-// A custom model's id is either operator-chosen (memory.embed_model_id) or
-// derived as 'custom:<file>:<size>'. Neither reads well through
+// A custom model's id is '<label>:sha256:<digest>' of its weights, with the
+// label from memory.embed_model_id or 'custom'. That does not read well through
 // formatEmbedModel, so the disclosure labels a custom model by FILENAME and puts
 // the full path in the tooltip. The default path must be untouched.
 describe('embedModelDisclosure', () => {

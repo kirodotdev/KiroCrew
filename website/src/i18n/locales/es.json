@@ -12110,6 +12110,7 @@
         "no_matching_entries": "No hay entradas coincidentes",
         "no_semantic_entries": "No hay entradas semánticas",
         "of": "de",
+        "open_embedding_model_settings": "Abrir la configuración del modelo de embeddings",
         "preview": "Vista previa",
         "preview_what_gets_injected_into_prompts_enter_a": "Previsualiza lo que se inyecta en los prompts. Introduce una consulta para ver los resultados de la recuperación episódica.",
         "ready": "¡Listo!",

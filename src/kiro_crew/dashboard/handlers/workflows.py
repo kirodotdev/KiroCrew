@@ -28,7 +28,7 @@ from typing import Any, Optional
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import internal_memory_scope, read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -154,6 +154,22 @@ def _error(message: str, code: str, status: int) -> web.Response:
     if status == 503:
         return web.json_response({"error": message, "code": code}, status=503)
     raise ValueError(f"unsupported workflow error status: {status}")
+
+
+async def _private_memory_refusal(request: web.Request, operation: str) -> web.Response | None:
+    """Authenticate the caller before a workflow can lose its private binding."""
+    store, refusal = await internal_memory_scope(
+        request, operation, claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
+    if store is not None:
+        return _error(
+            "Dynamic workflows do not support private member memory.",
+            "workflow_private_memory_unsupported",
+            409,
+        )
+    return None
 
 
 def _lineage(value: Any) -> Optional[dict[str, Any]]:
@@ -322,6 +338,9 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
     if not isinstance(input_text, str):
         return _error("input must be a string", "workflow_input_invalid", 400)
     session_key = request.headers.get("X-Session-Key", "")
+    refusal = await _private_memory_refusal(request, _OP_DEFINITION_RUN)
+    if refusal is not None:
+        return refusal
     budget_total = body.get("budget_total")
     if isinstance(budget_total, bool) or not isinstance(budget_total, int):
         budget_total = None
@@ -367,6 +386,9 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
     author = request.headers.get("X-Session-Key", "")
+    refusal = await _private_memory_refusal(request, "workflow.author")
+    if refusal is not None:
+        return refusal
     out = await svc.author(intent, author=author)
     return web.json_response(_redact_obj(out))
 
@@ -397,6 +419,9 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     budget_total = body.get("budget_total")
     if not isinstance(budget_total, int):
         budget_total = None
+    refusal = await _private_memory_refusal(request, "workflow.run")
+    if refusal is not None:
+        return refusal
     out = await svc.start(
         source,
         name=body.get("name", "") or "",
@@ -430,6 +455,9 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     budget_total = body.get("budget_total")
     if not isinstance(budget_total, int):
         budget_total = None
+    refusal = await _private_memory_refusal(request, "workflow.run_intent")
+    if refusal is not None:
+        return refusal
     out = await svc.start_from_intent(
         intent,
         name=body.get("name", "") or "",
@@ -544,6 +572,9 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     edited_source = body.get("source")
     if not isinstance(edited_source, str):
         edited_source = None
+    refusal = await _private_memory_refusal(request, "workflow.rerun")
+    if refusal is not None:
+        return refusal
     out = await svc.rerun_subtree(run_id, from_index, source=edited_source)
     # 400 on validation error (bad edited script), 404 when the run is missing.
     if "run_id" in out:

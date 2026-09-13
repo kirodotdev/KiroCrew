@@ -12278,6 +12278,7 @@
         "no_matching_entries": "Нет подходящих записей",
         "no_semantic_entries": "Нет семантических записей",
         "of": "из",
+        "open_embedding_model_settings": "Открыть настройки модели эмбеддингов",
         "preview": "Предпросмотр",
         "preview_what_gets_injected_into_prompts_enter_a": "Посмотри, что попадает в промпты. Введи запрос, чтобы увидеть результаты эпизодического поиска.",
         "ready": "Готово!",

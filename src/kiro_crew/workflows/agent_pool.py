@@ -294,7 +294,14 @@ def build_pooled_agent_fn(
                 cwd=opts.get("cwd") or cwd,
                 extra_env=extra_env,
             )
-            return await _run_step(provider, prompt)
+            try:
+                return await _run_step(provider, prompt)
+            finally:
+                # Release the turn lease, not the named conversation.
+                try:
+                    sessions.release(named, cleanup=False)
+                except Exception:
+                    logger.warning("workflow named session lease release failed", exc_info=True)
         # Ephemeral default path: run on a warm worker from the sub-pool matching
         # this call's (agent, model, cwd) — honoring per-call overrides exactly as
         # the per-call-session model (build_agent_fn) it replaces did.

@@ -161,12 +161,29 @@ def _transport_size(encoded: str, *, mcp_envelope: bool = False) -> int:
     return len(json.dumps(content)) + _MCP_FRAME_RESERVE_BYTES
 
 
+def _model_recall_payload(payload: dict) -> dict:
+    """Keep bodies in trusted context blocks and compact evidence beside them.
+
+    This is a per-call projection, not a second cache or a UI DTO mutation.
+    """
+    result = {key: value for key, value in payload.items() if not key.endswith("_preview")}
+    retrieval = dict(result.get("retrieval") or {})
+    for kind in ("facts", "episodes"):
+        retrieval[kind] = [
+            {key: value for key, value in row.items() if key not in {"snippet", "text"}}
+            for row in retrieval.get(kind, [])
+        ]
+    result["retrieval"] = retrieval
+    return result
+
+
 def bound_recall_payload(
     payload: dict,
     *,
     context_cap: int | None = None,
     ensure_ascii: bool = False,
     mcp_envelope: bool = False,
+    model_facing: bool = False,
 ) -> dict:
     """Account for evidence, previews, metadata and JSON escaping, not just text.
 
@@ -214,8 +231,11 @@ def bound_recall_payload(
     result["semantic_preview"] = result.get("semantic_context", "")[:500]
     result["episodic_preview"] = result.get("episodic_context", "")[:500]
 
+    def output() -> dict:
+        return _model_recall_payload(result) if model_facing else result
+
     while _transport_size(
-        _encoded(result, ensure_ascii=ensure_ascii), mcp_envelope=mcp_envelope
+        _encoded(output(), ensure_ascii=ensure_ascii), mcp_envelope=mcp_envelope
     ) > MAX_RECALL_PAYLOAD_BYTES or (
         context_cap is not None and result["total_chars"] > context_cap
     ):
@@ -269,7 +289,7 @@ def bound_recall_payload(
             episodic_preview=episodic[:500],
         )
         retrieval["omitted_for_payload_budget"] = omitted
-    return result
+    return output()
 
 
 def recall_json(
@@ -278,6 +298,7 @@ def recall_json(
     ensure_ascii: bool = True,
     context_cap: int | None = None,
     mcp_envelope: bool = False,
+    model_facing: bool = False,
 ) -> str:
     """Serialize bounded recall JSON for raw HTTP or an MCP TextContent envelope."""
     output_ascii = ensure_ascii
@@ -292,6 +313,7 @@ def recall_json(
             context_cap=context_cap,
             ensure_ascii=output_ascii,
             mcp_envelope=mcp_envelope,
+            model_facing=model_facing,
         )
     encoded = _encoded(payload, ensure_ascii=output_ascii)
     if _transport_size(encoded, mcp_envelope=mcp_envelope) <= MAX_RECALL_PAYLOAD_BYTES:

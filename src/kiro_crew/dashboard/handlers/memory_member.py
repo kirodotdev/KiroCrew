@@ -28,6 +28,7 @@ from ._shared import (
     vector_memory_for_store,
 )
 from .cron import _is_temporary_transcript, _recognize_session
+from .memory import memory_recall_deadline
 
 MAX_SEED_ITEMS = 50
 MAX_RECALL_QUERY = 2000
@@ -55,6 +56,7 @@ async def _private_tier(request: web.Request, name: str) -> tuple[Any, web.Respo
     return tier, None
 
 
+@memory_recall_deadline
 async def api_memory_recall(request: web.Request) -> web.Response:
     """GET /api/memory/recall: explicit recall from the caller's V1 or V2 store."""
     state = request.app["state"]

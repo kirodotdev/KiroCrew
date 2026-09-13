@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import unicodedata
+from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,9 +30,11 @@ from kiro_crew.cron import get_local_tz
 from kiro_crew.hooks import (
     HOOK_INJECT_CONTEXT,
     HOOK_MODIFY,
+    FileTooLargeError,
     HookManager,
     HookResult,
     safe_read_file,
+    safe_read_file_bytes_nolink,
 )
 from kiro_crew.learn import LessonStore
 from kiro_crew.members import (
@@ -450,61 +453,64 @@ async def _build_store_vectors(name: str) -> "VectorMemoryStore | None":
     with _stores_lock:
         generation = _store_cache_generation
 
-    def _construct() -> VectorMemoryStore:
-        mem = KiroCrewConfig.load().memory
-        return VectorMemoryStore(
-            db_path=resolve_store_path(name),
-            confidence_threshold=mem.semantic_confidence_threshold,
-            extra_prefixes=mem.semantic_keys or None,
-            episodic_limit=mem.episodic_max_results,
-            embedding_dim=mem.embedding_dim,
-            decay_rates=mem.decay_rates or None,
-        )
+    cancelled = threading.Event()
 
-    store = await asyncio.to_thread(_construct)
-    await asyncio.to_thread(store.init)
-    # Every store and lazy rebind uses the same bounded embedding cache/worker.
-    store.embed_fn_factory = make_sync_embed_fn
-    if await asyncio.to_thread(model_file_present):
-        store.embed_fn = await asyncio.to_thread(_shared_embed_fn)
-    # Stamp the store's embedding space. An unstamped store is ASSERTED to hold
-    # bundled-model vectors, which for a store an operator fills under a different
-    # backend is a lie that scores incomparable vectors confidently. The stamp may
-    # refuse when the active backend is not ready; a brand-new store has nothing
-    # to lose by staying unstamped until a later boot.
-    try:
-        await asyncio.to_thread(reconcile_store_embedding_space, store)
-    except Exception:
-        logger.debug("could not stamp the embedding space for store %r", name, exc_info=True)
-    try:
-        await asyncio.to_thread(require_memory_store, name)
-    except BaseException:
-        await asyncio.to_thread(store.close)
-        raise
-    # DECIDE under the lock, CLOSE after it. The lock is a threading.Lock and
-    # ``get_memory_for`` takes it synchronously, so awaiting anything while
-    # holding it blocks the loop thread for every other caller -- the exact stall
-    # this function's contract promises it avoids.
-    with _stores_lock:
-        retired_during_build = generation != _store_cache_generation
-        existing = _vector_stores.get(name)
-        if existing is None and not retired_during_build:
-            _vector_stores[name] = store
-            cached = _memory_stores.get(_STORE_KEY_PREFIX + name)
-            if cached is not None:
-                cached.vector_store = store
-    if retired_during_build:
-        await asyncio.to_thread(store.close)
-        raise UnknownMemoryStore("Memory cache changed during preparation; retry the member turn")
-    if existing is not None:
-        # Lost a race. One instance per db_path is an invariant -- two instances
-        # over one file do not share ``_db_lock`` -- so drop ours.
+    def _prepare() -> VectorMemoryStore | None:
+        # The worker owns the connection until cache publication. Cancellation
+        # cannot close it under init(), or strand its lock FD after init returns.
+        store: VectorMemoryStore | None = None
+        published = False
         try:
-            await asyncio.to_thread(store.close)
-        except Exception:
-            logger.debug("could not close a redundant vector store", exc_info=True)
-        return existing
-    return store
+            mem = KiroCrewConfig.load().memory
+            store = VectorMemoryStore(
+                db_path=resolve_store_path(name),
+                confidence_threshold=mem.semantic_confidence_threshold,
+                extra_prefixes=mem.semantic_keys or None,
+                episodic_limit=mem.episodic_max_results,
+                embedding_dim=mem.embedding_dim,
+                decay_rates=mem.decay_rates or None,
+            )
+            store.init()
+            if cancelled.is_set():
+                return None
+            store.embed_fn_factory = make_sync_embed_fn
+            if model_file_present():
+                store.embed_fn = _shared_embed_fn()
+            try:
+                reconcile_store_embedding_space(store)
+            except Exception:
+                logger.debug(
+                    "could not stamp the embedding space for store %r", name, exc_info=True
+                )
+            require_memory_store(name)
+            with _stores_lock:
+                if cancelled.is_set():
+                    return None
+                if generation != _store_cache_generation:
+                    raise UnknownMemoryStore(
+                        "Memory cache changed during preparation; retry the member turn"
+                    )
+                existing = _vector_stores.get(name)
+                if existing is not None:
+                    return existing
+                _vector_stores[name] = store
+                published = True
+                cached = _memory_stores.get(_STORE_KEY_PREFIX + name)
+                if cached is not None:
+                    cached.vector_store = store
+            return store
+        finally:
+            if store is not None and not published:
+                store.close()
+
+    try:
+        return await asyncio.to_thread(_prepare)
+    except asyncio.CancelledError:
+        # Serialize cancellation against publication; a published instance is
+        # owned by the cache, otherwise the worker's finally owns its cleanup.
+        with _stores_lock:
+            cancelled.set()
+        raise
 
 
 # Per-section budget BASE — the char count each section's percentage cap is
@@ -2319,19 +2325,68 @@ _REPLAY_INJECT_MAX_ROWS = (
 _REPLAY_CONVERSATION_MAX_ROWS = 500
 
 
+def _replay_identity(row: dict) -> tuple | None:
+    """Delivery identity, never a global text-equality deduplication key."""
+    meta = row.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+    for field in ("mid", "sendId"):
+        value = meta.get(field)
+        if isinstance(value, str) and value:
+            return (field, value, row.get("role"))
+    ts = row.get("ts")
+    if ts:
+        return ("legacy", ts, row.get("role"), row.get("content"))
+    return None
+
+
+def _merge_replay_rows(disk: list[dict], pending: list[dict], current: dict | None) -> list[dict]:
+    """Reconcile one snapshot before quota selection, budgeting and formatting."""
+    from kiro_crew.history import transcript_sort_key
+
+    current_id = _replay_identity(current) if current is not None else None
+    rows: list[dict] = []
+    positions: dict[tuple, deque[int]] = defaultdict(deque)
+    for row in disk:
+        identity = _replay_identity(row)
+        if current_id is not None and identity == current_id:
+            continue
+        if identity is not None:
+            positions[identity].append(len(rows))
+        rows.append(row)
+    for row in pending:
+        identity = _replay_identity(row)
+        if row is current or (current_id is not None and identity == current_id):
+            continue
+        matches = positions.get(identity) if identity is not None else None
+        if matches:
+            rows[matches.popleft()] = row
+        else:
+            rows.append(row)
+    # Timestamps from each writer share the transcript ordering contract. Keep
+    # insertion order for legacy fixtures/rows with no timestamp at all.
+    if rows and all(row.get("ts") for row in rows):
+        rows.sort(key=lambda row: transcript_sort_key(row["ts"]))
+    return rows
+
+
 def _replay_rows(
-    conversation_log: "ConversationLog",
+    conversation_log: "ConversationLog | None",
     session_key: str,
     *,
     exclude_last_n: int = 0,
+    pending_messages: list[dict] | None = None,
+    current_message: dict | None = None,
 ) -> list[dict]:
     """Tail of the chain under per-role quotas, in chronological order.
 
     Conversation rows get the full quota whatever the inject volume, which a
     single bounded query cannot guarantee.
     """
-    messages = conversation_log.read_messages_chained(session_key)
-    if exclude_last_n > 0:
+    messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
+    if pending_messages is not None or current_message is not None:
+        messages = _merge_replay_rows(messages, pending_messages or [], current_message)
+    elif exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
     kept: list[dict] = []
     conv = inj = 0
@@ -2402,11 +2457,13 @@ def _recall_rows(
 
 
 def build_session_replay(
-    conversation_log: "ConversationLog",
+    conversation_log: "ConversationLog | None",
     session_key: str,
     *,
     exclude_last_n: int = 0,
     model_window: int | None = None,
+    pending_messages: list[dict] | None = None,
+    current_message: dict | None = None,
 ) -> str | None:
     """Build session replay from KiroCrew's conversation_log.
 
@@ -2417,8 +2474,9 @@ def build_session_replay(
     Same-provider resume uses native ACP session/load instead (full fidelity
     without needing this injection).
 
-    *exclude_last_n* is forwarded to ``conversation_log.recent_chained`` to
-    drop the just-flushed current-turn user message from replay.
+    With *pending_messages*, merge the disk and live window by delivery identity
+    and exclude *current_message* explicitly before applying quotas or budgets.
+    The legacy *exclude_last_n* applies only when no live snapshot is supplied.
 
     *model_window* scales the replay budget to the active model's context
     window (the dashboard's primary history vehicle — it must shrink on a
@@ -2426,7 +2484,13 @@ def build_session_replay(
     window). ``None`` ⇒ the 1M reference (unchanged default). The budget is
     scaled by the same factor as the section caps and floored to one message.
     """
-    messages = _replay_rows(conversation_log, session_key, exclude_last_n=exclude_last_n)
+    messages = _replay_rows(
+        conversation_log,
+        session_key,
+        exclude_last_n=exclude_last_n,
+        pending_messages=pending_messages,
+        current_message=current_message,
+    )
     if not messages:
         return None
 
@@ -2662,11 +2726,15 @@ class ContextBuilder:
         name = await asyncio.to_thread(_resolved_store_name, memory_store)
         if not name:
             return None
-        existing = _vector_stores.get(name)
-        if existing is not None:
-            return existing
+        from kiro_crew.embeddings import align_store_embedding_space
+
         try:
-            return await _build_store_vectors(name)
+            store = _vector_stores.get(name)
+            if store is None:
+                store = await _build_store_vectors(name)
+            if store is not None:
+                await asyncio.to_thread(align_store_embedding_space, store)
+            return store
         except Exception:
             from kiro_crew.memory_stores import memory_store_version
 
@@ -2899,39 +2967,46 @@ class ContextBuilder:
         return prompt.replace("{{WIDGET_BLOCK}}", widget_block)
 
     @staticmethod
-    def _load_agent_prompt(agent: str) -> str:
-        """Read the prompt from a custom agent's config file."""
-        agents_dir = kiro_agents_dir()
-        for f in agents_dir.glob("*.json"):
-            # Skip macOS AppleDouble sidecars ("._foo.json"); not JSON.
-            if f.name.startswith("._"):
-                continue
-            # Resolve and gate on sensitive paths before reading: a symlink
-            # under ~/.kiro/agents/ could otherwise point at a credential
-            # file (e.g. ~/.aws/credentials renamed *.json).
-            try:
-                resolved = f.resolve(strict=True)
-            except OSError:
-                continue
-            if is_sensitive_path(str(resolved)):
-                continue
-            try:
-                # ValueError covers json.JSONDecodeError + UnicodeDecodeError
-                # so a non-UTF-8 sidecar can't break context building.
-                data = json.loads(resolved.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    continue
-                if data.get("name") == agent or f.stem == agent:
-                    prompt = data.get("prompt") or ""
-                    if prompt.startswith("file://"):
-                        try:
-                            return safe_read_file(prompt[7:])
-                        except (OSError, PermissionError):
-                            return ""
-                    return prompt
-            except (OSError, ValueError):
-                continue
-        return ""
+    def _load_agent_prompt(
+        agent: str, project: str | None = None, *, owner_template: str = ""
+    ) -> str:
+        """Read the resolved execution prompt, excluding an owner source in essentials."""
+        from kiro_crew.agent_discovery import _read_agent_spec
+        from kiro_crew.member_essential_context import (
+            resolve_relative_prompt_path,
+            resolve_template_path,
+        )
+
+        try:
+            path = resolve_template_path(agent, project)
+            if path is None:
+                return ""
+            data = _read_agent_spec(path, operation="agent_prompt", source="context")
+            if data is None:
+                return ""
+            prompt = data.get("prompt") or ""
+            if not isinstance(prompt, str):
+                return ""
+            # The product prompt is deliberately omitted from V2 essentials;
+            # even a fork referring to it still needs its session-start copy.
+            if agent == owner_template and prompt != f"file://{_prompt_path()}":
+                return ""
+            if prompt.startswith("file://"):
+                source = Path(prompt[7:]).expanduser()
+                if not source.is_absolute():
+                    resolved_source = resolve_relative_prompt_path(source, path, project)
+                    if resolved_source is None:
+                        return ""
+                    source, root = resolved_source
+                    prompt_bytes = safe_read_file_bytes_nolink(str(source), within_root=str(root))
+                    if prompt_bytes is None:
+                        logger.debug("Skipping relative agent prompt rejected at read time")
+                        return ""
+                    return prompt_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+                return safe_read_file(str(source))
+            return prompt
+        except (OSError, ValueError, FileTooLargeError):
+            return ""
 
     def _build_member_section(
         self, member: str, *, strict: bool = False, include_briefing: bool = True
@@ -3166,8 +3241,9 @@ class ContextBuilder:
         Injected once at session start, not on every message.
 
         When *compressed_history* is provided, it replaces the naive
-        truncation of thread history.  Callers obtain it by awaiting
-        ``compress_thread_history()`` before calling this method.
+        truncation of thread history. An empty string explicitly suppresses the
+        fallback; only None requests a fallback read. build_message uses that
+        suppression when it owns a separately budgeted outer replay.
 
         *model_window* is the active model's context window in tokens; every
         section cap is scaled proportionally to it (see ``_resolve_caps``) so a
@@ -3482,7 +3558,7 @@ class ContextBuilder:
                     len(compressed_history),
                 )
                 parts.append(_history_header + compressed_history + "\n[End of thread history]\n\n")
-            else:
+            elif compressed_history is None:
                 recent = _recall_rows(
                     self.conversation_log,
                     session_key,
@@ -3957,7 +4033,9 @@ class ContextBuilder:
                 except Exception:
                     agent_prompt = ""
             elif is_custom:
-                agent_prompt = self._load_agent_prompt(agent or "")
+                agent_prompt = self._load_agent_prompt(
+                    agent or "", project, owner_template=_private_template
+                )
             else:
 
                 try:
@@ -3978,7 +4056,7 @@ class ContextBuilder:
                 resumed=resumed,
                 workspace=workspace,
                 memory_store=memory_store,
-                compressed_history=None,
+                compressed_history="" if compressed_history is not None else None,
                 mode=mode,
                 blocks_reads=blocks_reads,
                 provider_type=provider_type,

@@ -60,6 +60,15 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Read a Windows system tool's ANSWER (`schtasks /Query`, `tasklist`, `sc query`) | the tool's **exit code**, or a fact the program under test recorded itself | parsing its stdout (column headers AND status words are translated by the UI language, so a match on `"Running"` reports every instance down on a non-English host — the fail-OPEN direction) |
 | strftime no-pad | `strftime(dt, "%-I")` | bare `dt.strftime("%-I")` (`ValueError` on Windows) |
 
+## Embedding threading and cancellation
+
+Embedding cancellation uses `threading.Event` and monotonic deadlines on all
+supported platforms. It cancels queued work, not a running native inference.
+Executor admission follows the underlying future's completion, never the
+cancelled asyncio waiter's lifetime. Cache stripes and dispatch locks never
+cover native inference; store alignment holds only Python locks and performs
+no model load or inference.
+
 ## Verifying a change
 
 CI holds all three platforms at the UNIT layer: the `backend-test` shards cover

@@ -11942,6 +11942,7 @@
         "no_matching_entries": "মিলে যাওয়া কোনো এন্ট্রি নেই",
         "no_semantic_entries": "কোনো সিমান্টিক এন্ট্রি নেই",
         "of": "এর মধ্যে",
+        "open_embedding_model_settings": "এমবেডিং মডেল সেটিংস খুলুন",
         "preview": "প্রিভিউ",
         "preview_what_gets_injected_into_prompts_enter_a": "প্রম্পটে কী ঢোকানো হয় তার প্রিভিউ দেখো। এপিসোডিক রিট্রিভালের ফলাফল দেখতে একটি কোয়েরি লেখো।",
         "ready": "প্রস্তুত!",

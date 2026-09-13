@@ -148,7 +148,9 @@ def memory_recall(name: str, args: dict[str, Any]) -> str:
     result = mcp_core._get(
         "/api/memory/recall?" + urlencode({"q": query.strip()}), session_key=session
     )
-    return recall_json(result, ensure_ascii=False, context_cap=3000, mcp_envelope=True)
+    return recall_json(
+        result, ensure_ascii=False, context_cap=3000, mcp_envelope=True, model_facing=True
+    )
 
 
 def learn_add(name: str, args: dict[str, Any]) -> str:

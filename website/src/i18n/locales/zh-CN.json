@@ -11774,6 +11774,7 @@
         "no_matching_entries": "无匹配记录",
         "no_semantic_entries": "无语义记录",
         "of": "/",
+        "open_embedding_model_settings": "打开嵌入模型设置",
         "preview": "预览",
         "preview_what_gets_injected_into_prompts_enter_a": "预览会注入提示词的内容。输入查询即可查看情景检索结果。",
         "ready": "就绪！",

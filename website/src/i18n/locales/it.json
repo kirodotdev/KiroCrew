@@ -12110,6 +12110,7 @@
         "no_matching_entries": "Nessuna voce corrispondente",
         "no_semantic_entries": "Nessuna voce semantica",
         "of": "di",
+        "open_embedding_model_settings": "Apri le impostazioni del modello di embedding",
         "preview": "Anteprima",
         "preview_what_gets_injected_into_prompts_enter_a": "Anteprima di ciò che viene inserito nei prompt. Inserisci una query per vedere i risultati del recupero episodico.",
         "ready": "Pronto!",

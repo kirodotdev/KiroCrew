@@ -844,6 +844,22 @@ soft-cancel success) gates the one-shot re-injection.
 
 ## Session Lifecycle
 
+Cold-start prompt replay merges the on-disk chained transcript with a frozen
+live-window snapshot before applying role quotas, a tail-first model-window
+budget and redaction. Message identity is `meta.mid`, falling back to a delivery
+`sendId` or an exact legacy timestamp/role/content tuple. Only object-valued
+metadata supplies delivery IDs; scalar and list metadata use the legacy identity
+without changing the persisted row. Cross-source matching
+is one-to-one, so repeated text with distinct IDs and repeated id-less rows are
+retained. The triggering request's captured identity is excluded whether or not
+that row was flushed. Queue drain passes its appended row directly to the runner,
+including `inject` rows with `cron`, `recovery` and `user_replay` kinds. Other
+entry points capture the latest user, nudge, subagent or inject row before any
+await. Same-text older deliveries remain history because exclusion uses the
+captured row's identity. There is no additional whole-slot prefix after this replay.
+An explicit replay, including an empty replay, suppresses `ContextBuilder`'s
+inner JSONL fallback; only an absent replay requests fallback construction.
+
 1. New session → full context injected (memory + skills + lessons + last 20 messages)
 2. Messages saved to JSONL with provenance after each response
 3. Context ≥ configured threshold (`session.autocompact_pct`, default 70%) → compaction via kiro-cli `/compact` (fire-and-forget)

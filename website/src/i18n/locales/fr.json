@@ -12110,6 +12110,7 @@
         "no_matching_entries": "Aucune entrée correspondante",
         "no_semantic_entries": "Aucune entrée sémantique",
         "of": "sur",
+        "open_embedding_model_settings": "Ouvrir les paramètres du modèle d’embedding",
         "preview": "Aperçu",
         "preview_what_gets_injected_into_prompts_enter_a": "Aperçu de ce qui est injecté dans les prompts. Saisis une requête pour voir les résultats de récupération épisodique.",
         "ready": "Prêt !",

@@ -498,9 +498,9 @@ class TestRunConfigWriteCancellation:
             "the config lock was handed to the next writer while the twice-cancelled "
             "one's worker was still writing: %r" % (seen,)
         )
-        assert seen.index("worker-end") < seen.index("second-ran"), (
-            "the second writer entered before the worker finished: %r" % (seen,)
-        )
+        assert seen.index("worker-end") < seen.index(
+            "second-ran"
+        ), "the second writer entered before the worker finished: %r" % (seen,)
         assert cancelled, "the cancellation must propagate, not be swallowed"
 
     def test_an_uncancelled_call_returns_the_worker_result(self):
@@ -861,18 +861,14 @@ class TestSemanticEndpoints:
     @pytest.mark.asyncio
     async def test_write_rejects_invalid_json(self) -> None:
         state = _make_state(vector_store=_store())
-        req = _make_request(
-            state, method="PUT", json_body=_BadJSON(), session_key="dashboard:ui"
-        )
+        req = _make_request(state, method="PUT", json_body=_BadJSON(), session_key="dashboard:ui")
         assert (await mem_mod.api_memory_semantic_write(req)).status == 400
 
     @pytest.mark.asyncio
     async def test_write_requires_key_and_value(self) -> None:
         state = _make_state(vector_store=_store())
         for body in ({"value": "v"}, {"key": "k"}, {}):
-            req = _make_request(
-                state, method="PUT", json_body=body, session_key="dashboard:ui"
-            )
+            req = _make_request(state, method="PUT", json_body=body, session_key="dashboard:ui")
             resp = await mem_mod.api_memory_semantic_write(req)
             assert resp.status == 400
             assert _body(resp)["error"] == "key and value required"
@@ -1913,18 +1909,20 @@ class TestEmbeddingStatusCustomModel:
 class TestWriteEmbedModelConfig:
     @pytest.mark.asyncio
     async def test_writes_path_and_dim_preserving_other_sections(self, tmp_path: Path) -> None:
+        model = tmp_path / "new.gguf"
+        model.write_bytes(b"model weights")
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(
             json.dumps({"agent": {"provider": "acp"}, "memory": {"embed_model_id": "old"}}),
             encoding="utf-8",
         )
         with patch(f"{_MOD}.config_path", return_value=cfg_path):
-            await mem_mod._write_embed_model_config("/m/new.gguf", 1024)
+            await mem_mod._write_embed_model_config(str(model), 1024)
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert data["memory"]["embed_model_path"] == "/m/new.gguf"
+        assert data["memory"]["embed_model_path"] == str(model)
         assert data["memory"]["embedding_dim"] == 1024
-        # The pinned id must be dropped so it is re-derived from the new file.
-        assert "embed_model_id" not in data["memory"]
+        assert data["memory"]["embed_model_id"] == mem_mod._custom_model_id(model, "")
+        assert data["memory"]["embed_model_id"] != "old"
         assert data["agent"]["provider"] == "acp"
 
     @pytest.mark.asyncio
@@ -1942,19 +1940,23 @@ class TestWriteEmbedModelConfig:
 
     @pytest.mark.asyncio
     async def test_missing_config_is_created(self, tmp_path: Path) -> None:
+        model = tmp_path / "new.gguf"
+        model.write_bytes(b"model weights")
         cfg_path = tmp_path / "config.json"
         with patch(f"{_MOD}.config_path", return_value=cfg_path):
-            await mem_mod._write_embed_model_config("/m/new.gguf", 512)
+            await mem_mod._write_embed_model_config(str(model), 512)
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert data["memory"]["embedding_dim"] == 512
 
     @pytest.mark.asyncio
     async def test_unparseable_config_raises_and_is_left_intact(self, tmp_path: Path) -> None:
+        model = tmp_path / "new.gguf"
+        model.write_bytes(b"model weights")
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text("{ broken", encoding="utf-8")
         with patch(f"{_MOD}.config_path", return_value=cfg_path):
             with pytest.raises(ValueError, match="could not be parsed"):
-                await mem_mod._write_embed_model_config("/m/new.gguf", 512)
+                await mem_mod._write_embed_model_config(str(model), 512)
         assert cfg_path.read_text(encoding="utf-8") == "{ broken"
 
 
@@ -2205,7 +2207,8 @@ class _ApplyHarness:
         self.install = MagicMock()
         self.candidate = MagicMock()
         self.bundled = MagicMock()
-        self.write = AsyncMock(side_effect=write_error)
+        self.rollback = AsyncMock(return_value=None)
+        self.write = AsyncMock(side_effect=write_error, return_value=(self.rollback, False))
         self._recorded = recorded
         self._validate = validate
         self._reconcile_error = reconcile_error
@@ -2235,6 +2238,7 @@ class _ApplyHarness:
         enter(patch(f"{_MOD}.active_embedding_space_signature", return_value="sig"))
         enter(patch(f"{_MOD}.embedding_backend_serving", return_value=self._serving))
         enter(patch(f"{_MOD}._write_embed_model_config", self.write))
+        enter(patch(f"{_MOD}._read_memory_config", return_value={"embed_model_id": "m"}))
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -2301,7 +2305,8 @@ class TestApplyEmbeddingModelWorker:
         # Width restored to the model being restored, not left on the new one.
         assert store.set_embedding_dim.call_args_list[-1][0][0] == 512
         assert "could not be removed" in h.prog.fail.call_args[0][0]
-        h.write.assert_not_called()
+        h.write.assert_awaited_once_with("", 1024)
+        h.rollback.assert_awaited_once()
         h.activate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2310,7 +2315,9 @@ class TestApplyEmbeddingModelWorker:
         with _ApplyHarness(write_error=ValueError("config.json could not be parsed")) as h:
             await _run_apply(store, "")
         h.reset.assert_called_once()
-        assert store.set_embedding_dim.call_args_list[-1][0][0] == 512
+        store.set_embedding_dim.assert_not_called()
+        store.backfill_missing_embeddings.assert_not_called()
+        h.rollback.assert_not_awaited()
         h.prog.fail.assert_called_once_with("config.json could not be parsed")
         h.activate.assert_not_called()
 
@@ -2478,12 +2485,14 @@ class TestConfigWritesRunOffTheEventLoop:
         import threading
 
         seen, cfg = self._instrument(monkeypatch, tmp_path)
+        model = tmp_path / "e5.gguf"
+        model.write_bytes(b"model weights")
 
-        await mem_mod._write_embed_model_config("/models/e5.gguf", 768)
+        await mem_mod._write_embed_model_config(str(model), 768)
 
         self._assert_one_worker(seen, threading.get_ident())
         on_disk = json.loads(cfg.read_text(encoding="utf-8"))
-        assert on_disk["memory"]["embed_model_path"] == "/models/e5.gguf"
+        assert on_disk["memory"]["embed_model_path"] == str(model)
         assert on_disk["memory"]["embedding_dim"] == 768
         assert on_disk["existing"] == "kept"
 
@@ -2526,9 +2535,11 @@ class TestConfigWritesRunOffTheEventLoop:
         self, monkeypatch, tmp_path: Path
     ) -> None:
         seen, cfg = self._instrument(monkeypatch, tmp_path, initial="{oops")
+        model = tmp_path / "e5.gguf"
+        model.write_bytes(b"model weights")
 
         with pytest.raises(ValueError, match="could not be parsed"):
-            await mem_mod._write_embed_model_config("/models/e5.gguf", 768)
+            await mem_mod._write_embed_model_config(str(model), 768)
 
         assert seen["write"] == []
         assert cfg.read_text(encoding="utf-8") == "{oops"
@@ -2605,9 +2616,9 @@ class TestConfigWritesRunOffTheEventLoop:
             await first
         await asyncio.wait_for(second, timeout=10)
 
-        assert order.index("worker-end") < order.index("second-ran"), (
-            "the second writer entered before the first worker finished: %r" % (order,)
-        )
+        assert order.index("worker-end") < order.index(
+            "second-ran"
+        ), "the second writer entered before the first worker finished: %r" % (order,)
         assert first.cancelled(), "the cancellation must be re-raised, never swallowed"
 
     @pytest.mark.asyncio
@@ -2633,14 +2644,15 @@ class TestConfigWritesRunOffTheEventLoop:
         req = _make_request(state, method="PUT", json_body={})
         resp = await mem_mod.api_memory_settings(req)
 
-        assert resp.status == 200, (
-            "an empty body against a non-object memory section stopped being a "
-            "no-op: %r" % (resp.body,)
+        assert (
+            resp.status == 200
+        ), "an empty body against a non-object memory section stopped being a " "no-op: %r" % (
+            resp.body,
         )
         assert seen["write"] == [], "a no-op PUT rewrote the config"
-        assert json.loads(cfg.read_text(encoding="utf-8")) == {"memory": []}, (
-            "the malformed section was rewritten"
-        )
+        assert json.loads(cfg.read_text(encoding="utf-8")) == {
+            "memory": []
+        }, "the malformed section was rewritten"
 
 
 class TestNonObjectBodiesAcrossConvertedHandlers:

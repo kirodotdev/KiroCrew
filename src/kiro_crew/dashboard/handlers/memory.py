@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 import json
 import logging
 import os
 import sys
-from typing import Any
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
@@ -25,6 +27,10 @@ from kiro_crew.dashboard.handlers._shared import memory_startup_refusal
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
     DOWNLOAD_ATTEMPTS_INTERACTIVE,
+    LEGACY_EMBEDDING_WARNING,
+    _custom_model_id,
+    _model_file_stamp,
+    _read_memory_config,
     activate_shared_embedder,
     active_embedding_space_signature,
     build_gated_bundled,
@@ -32,6 +38,7 @@ from kiro_crew.embeddings import (
     embedding_backend_serving,
     get_shared_embedder,
     install_shared_embedder,
+    legacy_embedding_ids,
     make_sync_embed_fn,
     model_download_manager,
     model_file_present,
@@ -41,7 +48,7 @@ from kiro_crew.embeddings import (
     resolve_custom_model,
     validate_custom_model_path,
 )
-from kiro_crew.executors import embed_executor, run_in_embed_pool
+from kiro_crew.executors import embed_executor, run_in_embed_pool, run_with_recall_deadline
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.loop_lock import LoopBoundLock
@@ -71,6 +78,25 @@ from ._shared import (
 from .cron import _recognize_session
 
 logger = logging.getLogger(__name__)
+
+
+def memory_recall_deadline(
+    handler: Callable[[web.Request], Awaitable[web.Response]],
+) -> Callable[[web.Request], Awaitable[web.Response]]:
+    """Bound recall even when the HTTP server does not cancel disconnected clients."""
+
+    @functools.wraps(handler)
+    async def bounded(request: web.Request) -> web.Response:
+        try:
+            return await run_with_recall_deadline(handler(request))
+        except asyncio.TimeoutError:
+            return web.json_response(
+                {"error": "Memory recall timed out.", "code": "memory_recall_timeout"},
+                status=504,
+            )
+
+    return bounded
+
 
 # Per-endpoint write serialization for the offloaded markdown saves below.
 # asyncio.to_thread hands each PUT to an executor worker, and workers can
@@ -161,6 +187,7 @@ def _redact_pip_stderr(raw: bytes) -> str:
 def _sel():
     """Late-binding sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
+
     return _pkg.sel()
 
 
@@ -562,12 +589,16 @@ async def api_memory_settings(request: web.Request) -> web.Response:
             try:
                 updates["history_idle_hours"] = max(0.5, float(body["history_idle_hours"]))
             except (ValueError, TypeError):
-                return web.json_response({"error": "history_idle_hours must be numeric"}, status=400)
+                return web.json_response(
+                    {"error": "history_idle_hours must be numeric"}, status=400
+                )
         if "history_max_days" in body:
             try:
                 updates["history_max_days"] = max(7, int(body["history_max_days"]))
             except (ValueError, TypeError):
-                return web.json_response({"error": "history_max_days must be an integer"}, status=400)
+                return web.json_response(
+                    {"error": "history_max_days must be an integer"}, status=400
+                )
         if "migrated" in body:
             updates["migrated"] = bool(body["migrated"])
 
@@ -682,13 +713,9 @@ async def _get_vector_store_async(state: DashboardState):
     # stay per-request.
     task = getattr(state, "_standalone_vector_init_task", None)
     if task is None:
-        task = asyncio.get_running_loop().create_task(
-            asyncio.to_thread(_get_vector_store, state)
-        )
+        task = asyncio.get_running_loop().create_task(asyncio.to_thread(_get_vector_store, state))
         state._standalone_vector_init_task = task  # type: ignore[attr-defined]
-        task.add_done_callback(
-            lambda _t: setattr(state, "_standalone_vector_init_task", None)
-        )
+        task.add_done_callback(lambda _t: setattr(state, "_standalone_vector_init_task", None))
     return await asyncio.shield(task)
 
 
@@ -759,7 +786,11 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     key = body.get("key", "")
     value = body.get("value")
-    confidence = float(body.get("confidence", 1.0)) if isinstance(body.get("confidence"), (int, float)) else 1.0
+    confidence = (
+        float(body.get("confidence", 1.0))
+        if isinstance(body.get("confidence"), (int, float))
+        else 1.0
+    )
     source = body.get("source", "user_explicit")
     if not key or value is None:
         return web.json_response({"error": "key and value required"}, status=400)
@@ -779,8 +810,11 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
 
         sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
-            caller=sk, operation="semantic.write", outcome="rejected",
-            source="dashboard", resources=f"{code.value}:{key}",
+            caller=sk,
+            operation="semantic.write",
+            outcome="rejected",
+            source="dashboard",
+            resources=f"{code.value}:{key}",
         )
         status = 409 if code == SemanticRejectCode.CONFLICT else 422
         msg, _ = redact_exfiltration_urls(message)
@@ -788,8 +822,11 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
         return web.json_response({"error": msg}, status=status)
     sk = request.headers.get("X-Session-Key", "")
     _sel().log_api_access(
-        caller=sk, operation="semantic.write", outcome="success",
-        source="dashboard", resources=key,
+        caller=sk,
+        operation="semantic.write",
+        outcome="success",
+        source="dashboard",
+        resources=key,
     )
     return web.json_response({"ok": True})
 
@@ -948,43 +985,68 @@ _SETUP_STEP_LEGACY = {
 }
 
 
-async def _write_embed_model_config(path: str, dim: int) -> None:
-    """Persist ``memory.embed_model_path`` + ``embedding_dim``.
+async def _write_embed_model_config(
+    path: str, dim: int
+) -> tuple[Callable[[], Awaitable[None]], bool]:
+    """Return a conditional rollback and inheritance from the locked prior settings."""
+    path = str(Path(path).expanduser()) if path else ""
 
-    Same fail-closed contract as :func:`_set_migrated`: an unparseable
-    config.json is left alone rather than clobbered with only these two keys,
-    which would destroy every other recoverable setting.
-    """
+    def _record_model() -> tuple[str, list[int]]:
+        model = Path(path)
+        stamp = _model_file_stamp(model)
+        model_id = _custom_model_id(model, "")
+        if _model_file_stamp(model) != stamp:
+            raise OSError("embedding model changed while recording its identity")
+        return model_id, list(stamp)
+
+    model_id, stamp = await asyncio.to_thread(_record_model) if path else ("", [])
+    keys = (
+        "embed_model_path",
+        "embed_model_id",
+        "embed_model_stamp",
+        "embed_model_legacy_ids",
+        "embedding_dim",
+    )
+    previous: dict[str, Any] = {}
+    written: dict[str, Any] = {}
+
     def _apply(data: dict) -> dict:
         memory = data.setdefault("memory", {})
+        previous.update({key: memory[key] for key in keys if key in memory})
+        memory.pop("embed_model_legacy_ids", None)
         if path:
             memory["embed_model_path"] = path
+            memory["embed_model_id"] = model_id
+            memory["embed_model_stamp"] = stamp
         else:
             memory.pop("embed_model_path", None)
-        # An explicit memory.embed_model_id OVERRIDES the derived (name+size)
-        # identity — _custom_model_id documents that "an explicit id always
-        # wins" — so it is pinned to whichever model the operator set it for.
-        # Carrying it across a model change keeps the OLD vector-space
-        # signature, so a swap to a different model of the SAME dimension
-        # reconciles as "space unchanged": vectors from the previous model are
-        # retained and then compared against new-model vectors, corrupting
-        # semantic results with nothing on screen to explain it. Drop it and let
-        # the id be re-derived from the file actually in use.
-        memory.pop("embed_model_id", None)
+            memory.pop("embed_model_id", None)
+            memory.pop("embed_model_stamp", None)
         if dim > 0:
             memory["embedding_dim"] = dim
+        written.update({key: memory[key] for key in keys if key in memory})
         return data
 
     try:
         await run_config_write(update_config_locked, config_path(), mutate=_apply)
     except ConfigReadError as exc:
-        logger.warning(
-            "config.json is unparseable; refusing to write the embedding "
-            "model path to avoid clobbering other settings"
-        )
         raise ValueError(
-            "config.json could not be parsed — fix it before changing the model"
+            "config.json could not be parsed; fix it before changing the model"
         ) from exc
+
+    async def rollback() -> None:
+        def restore(data: dict) -> dict:
+            memory = data.get("memory", {})
+            if {key: memory[key] for key in keys if key in memory} != written:
+                raise ValueError("Model settings changed during apply; rollback refused")
+            for key in keys:
+                memory.pop(key, None)
+            memory.update(previous)
+            return data
+
+        await run_config_write(update_config_locked, config_path(), mutate=restore)
+
+    return rollback, bool(legacy_embedding_ids(previous.get("embed_model_legacy_ids")))
 
 
 def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEventLoop") -> None:
@@ -999,19 +1061,17 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
     2. Wait for the load, bounded. A timeout is safe here only BECAUSE of the
        gate: the abandoned loader publishes into an embedder we then close, and
        ``close()`` is terminal, so it can never start serving.
-    3. Any failure before activation rolls back — drop the candidate and let the
-       next ``get_shared_embedder()`` rebuild the previous model from config,
-       which is still untouched at that point.
-    4. Persist path + the width the model reported. Only now is the new space the
-       configured one.
-    5. Retarget the store's width, then reconcile (NULLs foreign vectors, drops
-       the stale index).
-    6. ACTIVATE. Everything before this point could still hand a caller a vector
-       from a space the store had not reconciled to.
-    7. Backfill with progress, which is what the dashboard indicator renders.
+    3. Persist the verified path, digest and measured width before clearing any
+       vectors. A failed write leaves the stores intact.
+    4. Retarget and reconcile every store. On failure, conditionally restore the
+       prior model settings before resetting the candidate; refuse rollback if
+       an owner changed those settings meanwhile.
+    5. ACTIVATE only after every store accepts the configured space.
+    6. Backfill with progress, which is what the dashboard indicator renders.
     """
     prog = reembed_progress()
     candidate_installed = False
+    restore_config: Callable[[], Awaitable[None]] | None = None
     # Hoisted above the try: the catch-all handler below calls _restore_dim(), so
     # it must be defined even when the failure lands before the retarget.
     stores = tuple(dict.fromkeys((store, *validated_cached_vector_stores())))
@@ -1040,6 +1100,7 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
             if verr:
                 prog.fail(verr)
                 return
+            raw = str(candidate)
             install_shared_embedder(build_gated_candidate(candidate))
         else:
             # Reverting to the bundled model takes the SAME gated path. Its width
@@ -1077,19 +1138,27 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
             )
             return
 
-        # A member store can be opened while the candidate loads. Include that
-        # late cache entry before activation; _try_embed independently refuses
-        # a stale store across the remaining narrow race window.
+        # Digest and persistence failures must leave stored vectors intact.
+        # The candidate stays gated until every store accepts the new space.
+        fut = asyncio.run_coroutine_threadsafe(_write_embed_model_config(raw, embedder.dim), loop)
+        restore_config, inherited_vectors = fut.result()
+        if raw and _read_memory_config().get("embed_model_id") != embedder.model_id:
+            raise OSError("model weights changed during apply; retry the model change")
+
+        # Include stores opened while loading or persisting the candidate.
         stores = tuple(dict.fromkeys((*stores, *validated_cached_vector_stores())))
         for target in stores:
             previous_dims.setdefault(target, target._embedding_dim)  # type: ignore[attr-defined]
 
         # _restore_dim() reads this from the enclosing scope at call time.
         for target in stores:
-            if target.set_embedding_dim(embedder.dim):  # type: ignore[attr-defined]
-                retargeted.add(target)
             target.embed_fn = make_sync_embed_fn()  # type: ignore[attr-defined]
+            retargeted.add(target)
             reconcile_store_embedding_space(target)  # type: ignore[arg-type]
+            if inherited_vectors:
+                target.reconcile_embedding_space(  # type: ignore[attr-defined]
+                    active_embedding_space_signature(), clear_when_unknown=True, force=True
+                )
 
         # Reconcile DELIBERATELY does not stamp the signature when it could not
         # unlink the stale FAISS pair (read-only memory dir; Windows while the
@@ -1103,37 +1172,10 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
             if target.recorded_embedding_space() != active_embedding_space_signature()  # type: ignore[attr-defined]
         ]
         if unreconciled:
-            # Config still names the PREVIOUS model (the write is below), so
-            # dropping the candidate restores it. The NULLed vectors are refilled
-            # by the next boot's backfill under that model.
-            reset_shared_embedder()
-            _restore_dim()
-            prog.fail(
-                "the old vector index could not be removed, so the model change was "
-                "rolled back — check permissions on the memory directory and retry"
+            raise RuntimeError(
+                "the old vector index could not be removed; check permissions "
+                "on the memory directory and retry"
             )
-            return
-
-        # Persisted LAST, after the model proved it loads AND the store agreed to
-        # its space. Reconcile reads the live backend, not config, so it does not
-        # need the new path on disk first — and deferring the write is what makes
-        # a reconcile failure recoverable: config still names the PREVIOUS model,
-        # so the rollback below rebuilds that model instead of resurrecting the
-        # new one, ungated, against a store that was never reconciled.
-        try:
-            fut = asyncio.run_coroutine_threadsafe(
-                _write_embed_model_config(raw, embedder.dim), loop
-            )
-            fut.result()
-        except ValueError as exc:
-            # Unparseable config.json. The store is already reconciled to the new
-            # space; restoring the previous model re-stamps and re-embeds it on
-            # the next reconcile, which is recoverable. Serving a model config
-            # does not name would not be.
-            reset_shared_embedder()
-            _restore_dim()
-            prog.fail(str(exc))
-            return
 
         # The store now agrees with the candidate's space AND config names it, so
         # it is finally safe for ordinary consumers to get vectors from it.
@@ -1156,10 +1198,13 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
     except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard, never crashes the app
         logger.warning("Applying the embedding model failed", exc_info=True)
         if candidate_installed and not embedding_backend_serving():
-            # Failed before activation: a gated candidate left installed would
-            # serve nobody for the process lifetime. Drop it so the previous
-            # model (still the configured one, unless the write already landed)
-            # is rebuilt on demand.
+            try:
+                if restore_config is not None:
+                    asyncio.run_coroutine_threadsafe(restore_config(), loop).result()
+            except Exception:
+                logger.exception("Model configuration rollback failed; candidate remains gated")
+                prog.fail("Model configuration rollback failed; fix model settings and reapply")
+                return
             reset_shared_embedder()
             _restore_dim()
         prog.fail(str(exc) or exc.__class__.__name__)
@@ -1178,8 +1223,11 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     if _is_restricted_session(state, request):
         sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
-            caller=sk, operation="memory.embedding_model", outcome="denied",
-            source="dashboard", resources="restricted_session_block",
+            caller=sk,
+            operation="memory.embedding_model",
+            outcome="denied",
+            source="dashboard",
+            resources="restricted_session_block",
         )
         return web.json_response(
             {"error": "not available in this session", "code": "restricted_session"},
@@ -1198,9 +1246,7 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     if raw:
         path, error, code = validate_custom_model_path(raw, "The model path")
         if error:
-            return web.json_response(
-                {"ok": False, "error": error, "code": code}, status=400
-            )
+            return web.json_response({"ok": False, "error": error, "code": code}, status=400)
         try:
             size_bytes = path.stat().st_size
         except OSError:
@@ -1221,10 +1267,12 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     # env override in force a config write cannot take effect anyway.
     if os.environ.get("KIROCREW_EMBED_MODEL_PATH", "").strip():
         return web.json_response(
-            {"ok": False,
-             "error": "KIROCREW_EMBED_MODEL_PATH is set, so it overrides the configured "
-                      "path — unset it to change the model from here",
-             "code": "env_override_active"},
+            {
+                "ok": False,
+                "error": "KIROCREW_EMBED_MODEL_PATH is set, so it overrides the configured "
+                "path — unset it to change the model from here",
+                "code": "env_override_active",
+            },
             status=409,
         )
 
@@ -1241,8 +1289,11 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
         # Detail is in the server log above; the client body (rendered verbatim
         # into a localized UI) gets a generic message.
         return web.json_response(
-            {"ok": False, "error": "vector memory is unavailable",
-             "code": "vector_store_unavailable"},
+            {
+                "ok": False,
+                "error": "vector memory is unavailable",
+                "code": "vector_store_unavailable",
+            },
             status=503,
         )
 
@@ -1255,9 +1306,11 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
         # store, so the acquisition above was the free sync fast path. Checked
         # BEFORE the SEL audit so a refused apply is not logged as allowed.
         return web.json_response(
-            {"error": "a model change is already being applied",
-             "code": "model_change_in_progress"},
-            status=409
+            {
+                "error": "a model change is already being applied",
+                "code": "model_change_in_progress",
+            },
+            status=409,
         )
 
     # Audit the ALLOWED decision too, not just the restricted-session denial
@@ -1279,9 +1332,7 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     # bad file never displaces a working configuration.
     prog.begin_apply()
     loop = asyncio.get_running_loop()
-    task = loop.run_in_executor(
-        embed_executor(), _apply_embedding_model, store, raw, loop
-    )
+    task = loop.run_in_executor(embed_executor(), _apply_embedding_model, store, raw, loop)
     # Retain the future so it is not garbage-collected mid-apply.
     state._embed_model_apply_task = task  # type: ignore[attr-defined]
     return web.json_response({"ok": True, "size_bytes": size_bytes, "status": "applying"})
@@ -1337,7 +1388,9 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             # "healthy" = embeddings usable now or ready to lazily activate:
             # the model file being present is what matters — the in-memory
             # load happens automatically on first embed.
-            "server_healthy": model_present or embedder.is_ready(),
+            "server_healthy": bool(
+                (model_present or embedder.is_ready()) and not (custom is not None and custom.error)
+            ),
             "needs_docker": False,
             "docker_available": True,
             "setup_step": setup_step,
@@ -1346,6 +1399,12 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             "bytes_downloaded": mgr.status.get("bytes_downloaded", 0),
             "bytes_total": mgr.status.get("bytes_total", 0),
             "setup_error": setup_error,
+            "setup_warning": (
+                LEGACY_EMBEDDING_WARNING
+                if custom is not None
+                and legacy_embedding_ids(_read_memory_config().get("embed_model_legacy_ids"))
+                else ""
+            ),
             "can_retry": can_retry,
             # Live re-embed progress for the Memory tab indicator. Same
             # in-memory pattern as the download status above, so the card's
@@ -1357,7 +1416,6 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
 
 async def _ensure_pip_available() -> tuple[bool, str]:
     """Ensure pip is importable in the runtime interpreter.
-
     Some packaged or minimal Python runtimes ship without pip, so a bare
     ``sys.executable -m pip install`` fails with "No module named pip" and the
     faiss-cpu install below never runs. Bootstrap pip via ``ensurepip`` (shipped
@@ -1366,6 +1424,7 @@ async def _ensure_pip_available() -> tuple[bool, str]:
     """
     try:
         import pip  # noqa: F401
+
         return True, ""
     except ImportError:
         pass
@@ -1497,8 +1556,15 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                 )
             try:
                 sandboxed_argv, cleanup = await wrap_argv_async(
-                    [sys.executable, "-m", "pip", "install", "-q",
-                     "faiss-cpu", "--only-binary=:all:"],
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "-q",
+                        "faiss-cpu",
+                        "--only-binary=:all:",
+                    ],
                     mode="standard",
                     _prepare=wrap_argv,
                 )
@@ -1524,9 +1590,7 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                 cleanup = None
                 sandboxed_argv = None
             if sandboxed_argv is not None:
-                sandboxed_argv = cgroup_scope_argv(
-                    sandboxed_argv
-                )  # cgroup DoS ceiling
+                sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
                 try:
                     proc = await create_subprocess_limited(
                         *sandboxed_argv,
@@ -1543,12 +1607,11 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                             "error": "faiss-cpu install timed out — click Enable to retry",
                         }
                         return web.json_response(
-                            {"error": "faiss-cpu install timed out."}, status=500,
+                            {"error": "faiss-cpu install timed out."},
+                            status=500,
                         )
                     if proc.returncode != 0:
-                        logger.warning(
-                            "faiss-cpu install failed: %s", _redact_pip_stderr(stderr)
-                        )
+                        logger.warning("faiss-cpu install failed: %s", _redact_pip_stderr(stderr))
                         _embedding_setup_status = {
                             "step": "idle",
                             "error": "faiss-cpu installation failed — click Enable to retry",
@@ -1677,11 +1740,7 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
     # _try_embed runs blocking in-process model inference (and a ~1s model
     # load on first call); offload to keep the dashboard event loop responsive.
-    emb = (
-        await asyncio.to_thread(store._try_embed, query)
-        if store.embed_fn and query
-        else None
-    )
+    emb = await asyncio.to_thread(store._try_embed, query) if store.embed_fn and query else None
     results = []
     # Offload: search_episodic serializes on _db_lock — see
     # api_memory_semantic.
@@ -1950,17 +2009,13 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
         if include_history:
             try:
                 _total = (
-                    await asyncio.to_thread(
-                        state.consolidator._log.consolidation_counts, key
-                    )
+                    await asyncio.to_thread(state.consolidator._log.consolidation_counts, key)
                 )[0]
             except Exception:
                 # No count means the extent test is skipped and the cap stands, which
                 # only ever refuses a turn — never spends one on an unverified premise.
                 logger.warning("Could not read message count for %s", key, exc_info=True)
-        if include_history and not state.consolidator.retry_eligible(
-            key, message_count=_total
-        ):
+        if include_history and not state.consolidator.retry_eligible(key, message_count=_total):
             return web.json_response(
                 {
                     "error": "consolidation is in retry backoff for this session",
@@ -1968,9 +2023,7 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
                 },
                 status=429,
             )
-        task = asyncio.create_task(
-            state.consolidator._consolidate(key, include_history)
-        )
+        task = asyncio.create_task(state.consolidator._consolidate(key, include_history))
         dispatched = True
         state.consolidator._tasks.add(task)
         task.add_done_callback(state.consolidator._tasks.discard)
@@ -2067,9 +2120,7 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
         nid = _id(prefix, label)
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append(
-                {"id": nid, "label": label[:60], "group": group, "title": title or label}
-            )
+            nodes.append({"id": nid, "label": label[:60], "group": group, "title": title or label})
             node_ids[f"{prefix}:{label}"] = nid
         return nid
 
@@ -2078,12 +2129,7 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
         pref_text = mem.read_preferences() or ""
         for line in pref_text.splitlines():
             line = line.strip().removeprefix("- ").strip()
-            if (
-                line
-                and not line.startswith("#")
-                and not line.startswith("<!--")
-                and len(line) > 5
-            ):
+            if line and not line.startswith("#") and not line.startswith("<!--") and len(line) > 5:
                 _add("pref", line[:80], "preference", line)
     except Exception:
         pass
@@ -2193,8 +2239,25 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
     # were literally named after one ("Web", "App", "The …"); excluded so a
     # common short name can't turn the graph back into a hairball.
     edge_stopwords = {
-        "the", "and", "for", "new", "web", "app", "api", "dev", "doc", "docs",
-        "test", "tests", "main", "core", "misc", "todo", "wip", "old", "tmp",
+        "the",
+        "and",
+        "for",
+        "new",
+        "web",
+        "app",
+        "api",
+        "dev",
+        "doc",
+        "docs",
+        "test",
+        "tests",
+        "main",
+        "core",
+        "misc",
+        "todo",
+        "wip",
+        "old",
+        "tmp",
     }
     project_matchers: list[tuple[str, str]] = []
     for k in node_ids:

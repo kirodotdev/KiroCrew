@@ -11774,6 +11774,7 @@
         "no_matching_entries": "一致するエントリなし",
         "no_semantic_entries": "意味的エントリなし",
         "of": "の",
+        "open_embedding_model_settings": "埋め込みモデルの設定を開く",
         "preview": "プレビュー",
         "preview_what_gets_injected_into_prompts_enter_a": "プロンプトに注入される内容をプレビューします。クエリを入力してエピソード的検索結果を確認します。",
         "ready": "準備完了！",
