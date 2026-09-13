@@ -67,6 +67,13 @@ class TestPrepareMirrorMsg:
             # authorization filter, so making it tolerate a slot without the
             # method would silently skip it for every such caller.
             drop_foreign_authorized_notes=lambda: 0,
+            # The drain BUMPS this on consumption, so a slot save that exported
+            # the queue before the drain discards its now-stale copy instead of
+            # persisting entries already given to the model. Supplied here for
+            # the same reason as the filter above: making the drain tolerate a
+            # slot without the counter would silently disable that protection
+            # for every such caller.
+            _pending_context_gen=0,
         )
         context_block = drain_pending_context(slot)
         message = context_block + "\n" + message
