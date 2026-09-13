@@ -2727,6 +2727,18 @@ class TestCgroupScopeArgv:
             available, _ = sb._probe_cgroup_scope()
             if not available:
                 pytest.skip("no cgroup v2 delegation on this host")
+            # Delegated controllers do not prove the user bus is reachable.
+            # Only an unavailable bus is a skip; a broken scope stays a failure.
+            preflight = subprocess.run(
+                sb.cgroup_scope_argv([sys.executable, "-c", ""]),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+            if preflight.returncode != 0 and "Failed to connect to bus" in preflight.stderr:
+                pytest.skip(f"user session bus unavailable: {preflight.stderr.strip()}")
+            assert preflight.returncode == 0, preflight.stderr
             with patch(
                 "kiro_crew.sandbox._cgroup_limits_from_config", return_value=(20, 8192, 50, 0)
             ):

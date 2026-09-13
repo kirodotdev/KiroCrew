@@ -15,10 +15,15 @@ one-report-per-phase rule: ``makereport`` before the call report exists, and
 ``logreport`` after xdist has sent the call or teardown report. The skipped bystander
 proves every collected item still produces a pytest-split durations key, which the CI
 count gate requires.
+
+The subprocess test proves reporting end to end. Deterministic unit tests drive the
+real root ``pytest_runtest_protocol`` generator with an injected clock and ``CallInfo``
+values to pin duration accounting without depending on machine speed.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -27,7 +32,10 @@ import signal
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
 
+import _pytest.outcomes
+import _pytest.runner
 import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -92,7 +100,6 @@ _PLUGIN = textwrap.dedent("""
     """)
 
 _TESTS = textwrap.dedent("""
-    import time
     import pytest
 
     # One worker for the whole module: the bystander must run AFTER the victim
@@ -108,7 +115,6 @@ _TESTS = textwrap.dedent("""
 
     @pytest.mark.timeout(120)
     def test_victim(tracked):
-        time.sleep(3.0)
         assert tracked == "value"
 
 
@@ -223,12 +229,14 @@ def test_escaped_failed_is_reported_against_its_test_not_as_internalerror(tmp_pa
             assert teardown[0]["timer_armed"] is False, (escape_site, test_name, teardown)
 
     durations = json.loads(durations_path.read_text(encoding="utf-8"))
-    victim_duration = durations["test_escape.py::test_victim@escape_guard"]
-    bystander_duration = durations["test_escape.py::test_bystander@escape_guard"]
+    victim_nodeid = "test_escape.py::test_victim@escape_guard"
+    bystander_nodeid = "test_escape.py::test_bystander@escape_guard"
     skipped_nodeid = "test_escape.py::test_skipped_bystander@escape_guard"
-    assert skipped_nodeid in durations
-    assert victim_duration >= 3.0, (escape_site, durations)
-    assert victim_duration - bystander_duration < 4.5, (escape_site, durations)
+    # Integration checks cover duration keys and signs. Exact accounting is
+    # checked below with injected clocks, independently of machine load.
+    for nodeid in (victim_nodeid, bystander_nodeid, skipped_nodeid):
+        assert nodeid in durations, (escape_site, durations)
+        assert durations[nodeid] >= 0.0, (escape_site, durations)
 
     collect_proc = _run_inner_pytest(
         tmp_path,
@@ -245,3 +253,245 @@ def test_escaped_failed_is_reported_against_its_test_not_as_internalerror(tmp_pa
     collected = re.search(r"(\d+) tests? collected", collect_out)
     assert collected is not None, collect_out
     assert len(durations) == int(collected.group(1)), (durations, collect_out)
+
+
+# ── Deterministic unit tests of the real pytest_runtest_protocol accounting ──
+#
+# The subprocess test above exercises the guard through a real xdist+split session but
+# cannot pin the duration arithmetic without a wall clock. These tests drive the SAME
+# guard code -- the root conftest's ``pytest_runtest_protocol`` generator -- directly,
+# with an injected clock and injected ``CallInfo`` values, so the branch taken and the
+# exact duration charged to the synthesized report are pinned with zero timing.
+
+
+def _load_root_conftest():
+    """The ROOTDIR conftest, loaded by path as its own module instance.
+
+    A bare ``import conftest`` from ``test/`` resolves ``test/conftest.py``, which does
+    not own this guard. Loading a fresh instance also gives it its own ``time`` binding
+    and its own ``_escape_logged_reports`` dict, so patching the clock and seeding logged
+    phases here cannot perturb the live session running this test.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_root_conftest_escape_guard", _REPO_ROOT / "conftest.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _FrozenClock:
+    """Deterministic stand-in for the ``time`` module the guard reads.
+
+    ``pytest_runtest_protocol`` consumes exactly two ``perf_counter`` reads (protocol
+    start, then stop) and one ``time`` read; everything else forwards to the real module
+    so no other attribute the guard might touch changes behaviour.
+    """
+
+    def __init__(self, perf_values, wall):
+        self._perf = list(perf_values)
+        self._wall = wall
+
+    def perf_counter(self):
+        assert self._perf, "perf_counter called more times than the guard should"
+        return self._perf.pop(0)
+
+    def time(self):
+        return self._wall
+
+    def __getattr__(self, name):
+        import time as _stdlib_time
+
+        return getattr(_stdlib_time, name)
+
+
+def _failed_escape_excinfo():
+    """A real ``(Failed, value, tb)`` triple, as pytest-timeout's ``pytest.fail`` leaves."""
+    try:
+        pytest.fail("Timeout >120.0s (synthetic escape)")
+    except BaseException:  # noqa: BLE001 - capturing the escape is the whole point
+        return sys.exc_info()
+
+
+def _drive_protocol(root, *, logged_phases, protocol_duration, teardown_duration):
+    """Run the real guard generator once and capture what it emitted.
+
+    ``logged_phases`` is a list of ``(when, duration)`` seeded through the guard's REAL
+    ``pytest_runtest_logreport`` tracker, so the accounting under test does the summing.
+    ``CallInfo.from_call`` is replaced with a deterministic version that still runs the
+    real func (so ``excinfo``/result are genuine) but stamps a fixed duration, letting the
+    teardown branch's ``CallInfo.duration`` be pinned exactly.
+    """
+    nodeid = "deterministic::escape_guard_case"
+    makereport_calls = []
+    logged_reports = []
+    finishes = []
+    interacts = []
+    force_results = []
+
+    def _makereport(item, call):
+        makereport_calls.append(call)
+        return SimpleNamespace(
+            nodeid=item.nodeid,
+            when=call.when,
+            duration=call.duration,
+            outcome="failed" if call.excinfo is not None else "passed",
+        )
+
+    ihook = SimpleNamespace(
+        pytest_runtest_makereport=_makereport,
+        pytest_runtest_logreport=lambda report: logged_reports.append(report),
+        pytest_runtest_teardown=lambda item, nextitem: None,
+        pytest_runtest_logfinish=lambda nodeid, location: finishes.append(nodeid),
+        pytest_exception_interact=lambda node, call, report: interacts.append(report),
+    )
+    item = SimpleNamespace(
+        nodeid=nodeid,
+        ihook=ihook,
+        location=("test_escape.py", 0, "test_victim"),
+        config=SimpleNamespace(getoption=lambda name, default=None: default),
+    )
+    outcome = SimpleNamespace(
+        excinfo=_failed_escape_excinfo(),
+        force_result=lambda value: force_results.append(value),
+    )
+
+    def _fake_from_call(func, when, reraise=None):
+        excinfo = None
+        try:
+            result = func()
+        except BaseException:  # noqa: BLE001 - mirror CallInfo.from_call's own capture
+            excinfo = pytest.ExceptionInfo.from_current()
+            if reraise is not None and isinstance(excinfo.value, reraise):
+                raise
+            result = None
+        stamp = teardown_duration if when == "teardown" else 0.0
+        return _pytest.runner.CallInfo(
+            result=result,
+            excinfo=excinfo,
+            start=500.0,
+            stop=500.0 + stamp,
+            duration=stamp,
+            when=when,
+            _ispytest=True,
+        )
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(
+            root, "time", _FrozenClock([1000.0, 1000.0 + protocol_duration], wall=500.0)
+        )
+        patched.setattr(_pytest.runner.CallInfo, "from_call", staticmethod(_fake_from_call))
+        generator = root.pytest_runtest_protocol(item=item, nextitem=None)
+        next(generator)
+        for when, phase_duration in logged_phases:
+            root.pytest_runtest_logreport(
+                report=SimpleNamespace(nodeid=nodeid, when=when, duration=phase_duration)
+            )
+        with pytest.raises(StopIteration):
+            generator.send(outcome)
+
+    return SimpleNamespace(
+        nodeid=nodeid,
+        makereport_calls=makereport_calls,
+        logged_reports=logged_reports,
+        finishes=finishes,
+        interacts=interacts,
+        force_results=force_results,
+    )
+
+
+def test_missing_call_report_synthesizes_the_earliest_missing_phase_with_untracked_time():
+    """No call report: synthesize the earliest missing phase and charge only untracked time.
+
+    Logged setup=2s inside a protocol that ran 10s means the synthesized call report owns
+    ``max(10 - 2, 0) = 8`` -- the protocol time no logged phase has already accounted for --
+    never the full 10s. Teardown still runs so the worker is left clean.
+    """
+    root = _load_root_conftest()
+    result = _drive_protocol(
+        root,
+        logged_phases=[("setup", 2.0)],
+        protocol_duration=10.0,
+        teardown_duration=0.0,
+    )
+
+    assert [call.when for call in result.makereport_calls] == ["call", "teardown"]
+    synth_call = result.makereport_calls[0]
+    assert synth_call.excinfo is not None
+    assert isinstance(synth_call.excinfo.value, _pytest.outcomes.Failed)
+    assert synth_call.duration == pytest.approx(8.0)
+    assert synth_call.duration >= 0.0
+    assert synth_call.duration != pytest.approx(10.0)
+    assert result.force_results == [True]
+    assert result.finishes == [result.nodeid]
+
+
+def test_logged_call_without_teardown_charges_the_escape_only_the_real_teardown_time():
+    """Call logged, teardown missing: escape rides a teardown report owning only teardown time.
+
+    Setup+call already logged 5s of a 10s protocol, and the replacement teardown's own
+    ``CallInfo`` measured 1.5s. The synthesized teardown report must own exactly that 1.5s
+    -- never the whole protocol (10s) nor the untracked remainder (10 - 5 = 5s).
+    """
+    root = _load_root_conftest()
+    result = _drive_protocol(
+        root,
+        logged_phases=[("setup", 3.0), ("call", 2.0)],
+        protocol_duration=10.0,
+        teardown_duration=1.5,
+    )
+
+    assert [call.when for call in result.makereport_calls] == ["teardown"]
+    synth_teardown = result.makereport_calls[0]
+    assert isinstance(synth_teardown.excinfo.value, _pytest.outcomes.Failed)
+    assert synth_teardown.duration == pytest.approx(1.5)
+    assert synth_teardown.duration != pytest.approx(10.0)
+    assert synth_teardown.duration != pytest.approx(5.0)
+    # A Failed teardown is an interactive exception, reported once against the item.
+    assert len(result.interacts) == 1
+    assert result.force_results == [True]
+    assert result.finishes == [result.nodeid]
+
+
+def test_all_phases_already_logged_emits_no_extra_report():
+    """Every phase already reached the controller: the guard adds nothing, just closes out."""
+    root = _load_root_conftest()
+    result = _drive_protocol(
+        root,
+        logged_phases=[("setup", 1.0), ("call", 1.0), ("teardown", 1.0)],
+        protocol_duration=10.0,
+        teardown_duration=0.0,
+    )
+
+    assert result.makereport_calls == []
+    assert result.interacts == []
+    assert result.force_results == [True]
+    assert result.finishes == [result.nodeid]
+
+
+def test_a_non_failed_outcome_is_left_untouched():
+    """The guard only repairs a ``Failed`` escape: a normal outcome passes straight through."""
+    root = _load_root_conftest()
+    nodeid = "deterministic::escape_guard_passthrough"
+    finishes = []
+    force_results = []
+    makereport_calls = []
+    ihook = SimpleNamespace(
+        pytest_runtest_makereport=lambda item, call: makereport_calls.append(call),
+        pytest_runtest_logreport=lambda report: None,
+        pytest_runtest_logfinish=lambda nodeid, location: finishes.append(nodeid),
+    )
+    item = SimpleNamespace(nodeid=nodeid, ihook=ihook, location=("test_escape.py", 0, "ok"))
+    outcome = SimpleNamespace(excinfo=None, force_result=lambda value: force_results.append(value))
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(root, "time", _FrozenClock([1000.0, 1010.0], wall=500.0))
+        generator = root.pytest_runtest_protocol(item=item, nextitem=None)
+        next(generator)
+        with pytest.raises(StopIteration):
+            generator.send(outcome)
+
+    assert makereport_calls == []
+    assert finishes == []
+    assert force_results == []

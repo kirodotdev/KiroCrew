@@ -25,6 +25,7 @@ import errno
 import logging
 import ntpath
 import os
+import platform
 import posixpath
 import re
 import threading
@@ -1414,16 +1415,30 @@ def test_the_documented_syscall_numbers_come_from_this_host_kernel_headers() -> 
     Without this, the table above would only restate the constant it checks, and both could
     drift together. ``asm/unistd_64.h`` is the authority for x86_64; the aarch64 numbering
     lives in ``asm-generic/unistd.h`` and is cross-checked wherever that header is present.
+
+    ``/usr/include/asm`` is a *host-architecture* uapi tree, so ``asm/unistd_64.h`` only
+    carries the x86_64 numbering on an x86_64 host -- on an aarch64 host the same path is the
+    aarch64 header (which has no ``__NR_stat`` at all). The x86_64 header entry is therefore
+    gated on the host machine, while ``asm-generic/unistd.h`` is architecture-neutral and
+    validated on every host. The sibling
+    ``test_the_syscall_table_matches_the_documented_numbers_on_every_architecture`` still pins
+    the shipped table for BOTH architectures regardless of host, so nothing is left unchecked.
     """
+    host_machine = platform.machine()
     checked = 0
-    for header, arch, indirect in (
-        ("/usr/include/asm/unistd_64.h", "x86_64", {}),
+    for header, arch, indirect, host_specific in (
+        ("/usr/include/asm/unistd_64.h", "x86_64", {}, True),
         (
             "/usr/include/asm-generic/unistd.h",
             "aarch64",
             {"newfstatat": "__NR3264_fstatat", "fstat": "__NR3264_fstat"},
+            False,
         ),
     ):
+        if host_specific and host_machine != arch:  # pragma: no cover - arch-dependent
+            # The host-arch asm/ tree carries a different architecture's numbering here;
+            # cross-checking it against this arch's table would be comparing the wrong header.
+            continue
         if not os.path.exists(header):  # pragma: no cover - header not installed
             continue
         with open(header, encoding="utf-8", errors="replace") as fh:

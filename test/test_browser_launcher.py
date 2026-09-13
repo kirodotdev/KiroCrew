@@ -32,6 +32,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from tmpdir_helpers import short_tmp_base
 
 from kiro_crew.browser_cli import launcher
 
@@ -651,36 +652,44 @@ class TestReveal:
 
     @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets only")
     def test_sends_one_reveal_line_to_the_running_dashboard(self, request: pytest.FixtureRequest):
-        # tempfile's base is the run-scoped short root the conftest redirects to;
-        # pytest's own tmp_path is too long for a sun_path (103 bytes on Linux).
-        root = Path(tempfile.mkdtemp(prefix="pw-"))
+        # An AF_UNIX sun_path is capped at ~104 bytes, so the socket must live
+        # under a SHORT base. short_tmp_base() pins that to /tmp on POSIX
+        # regardless of TMPDIR: the conftest's redirected tempfile base (and
+        # pytest's own tmp_path) can themselves be long enough to overflow
+        # sun_path when the run's TMPDIR is deep, which makes bind() fail.
+        root = Path(tempfile.mkdtemp(prefix="pw-", dir=short_tmp_base()))
         # Strict cleanup, registered the moment the directory exists: a socket
         # file left behind would be a real leak, not one to ignore.
         request.addfinalizer(lambda: shutil.rmtree(root))
         (root / "dashboard").mkdir(parents=True)
         sock_path = str(root / "dashboard" / "app.sock")
         received: list[bytes] = []
+        serve_error: list[BaseException] = []
         ready = threading.Event()
 
         def serve() -> None:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
-                srv.bind(sock_path)
-                srv.listen(1)
-                srv.settimeout(5)
-                ready.set()
-                try:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+                    srv.bind(sock_path)
+                    srv.listen(1)
+                    srv.settimeout(5)
+                    ready.set()
                     conn, _ = srv.accept()
                     with conn:
                         received.append(conn.recv(4096))
                         conn.sendall(b'{"pid": 4242}\n')
-                except (socket.timeout, TimeoutError):
-                    return
+            except (socket.timeout, TimeoutError):
+                return
+            except OSError as exc:
+                # A bind/listen failure (e.g. sun_path too long) must fail the
+                # test by name, not surface as a bare `ready.wait` timeout.
+                serve_error.append(exc)
 
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
         # Joined unconditionally: a failed reveal must not leave the listener blocked in accept().
         request.addfinalizer(lambda: thread.join(6))
-        assert ready.wait(5)
+        assert ready.wait(5), f"listener never became ready: {serve_error}"
         assert REAL_REVEAL("panel-0a1b2c-1234abcd", {launcher.SOCKETS_ENV: str(root)}) is True
         thread.join(5)
         assert json.loads(received[0].decode().strip()) == {"sessionName": "panel-0a1b2c-1234abcd"}

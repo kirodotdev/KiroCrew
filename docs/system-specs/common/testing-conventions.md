@@ -58,6 +58,24 @@ mock_process.returncode = None
 client._process = mock_process
 ```
 
+### Liveness tests with fabricated PIDs
+
+A fabricated PID can identify a real process on the test host. Give a real
+`LivenessOracle` an explicit process backend or a fixture-owned proc tree rather
+than letting it select the host backend. Keep that source isolated across
+`fresh()` and exercise the real cross-tick state transitions. A collision case
+must still detect the fabricated child's exit without reading the host table.
+
+Tests of executable ownership pin only the ancestors above their temporary tree;
+fixture files retain their real ownership and permission bits. Host kernel headers
+must be matched to their architecture before validating syscall numbers. Nested
+pytest processes clear inherited `PYTEST_ADDOPTS`, and Unix-socket fixtures use
+`short_tmp_base()` so a deep `TMPDIR` cannot exceed the socket path limit. A real
+cgroup enforcement test skips an unreachable user bus, not other scope failures.
+Duration-accounting tests use injected clocks and report durations for exact
+arithmetic; subprocess integration tests verify reporting and cleanup without a
+wall-clock ceiling tied to runner speed.
+
 ### Config overrides
 Use `monkeypatch` to override config paths:
 ```python

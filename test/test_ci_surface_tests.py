@@ -447,6 +447,7 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
     bug, so pin it: if a future pytest starts honouring `collect_ignore` for
     explicit arguments, this fails and the selector-side filter can be dropped.
     """
+    import os
     import subprocess
     import sys
 
@@ -459,6 +460,12 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
     (suite / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
     def run(*target: str) -> int:
+        # Strip PYTEST_ADDOPTS so the nested pytest does not inherit the outer
+        # run's options. An inherited `--basetemp` there points at an ancestor of
+        # this child's cwd (its tmp_path), which pytest rejects as a usage error
+        # (exit 4) before it ever evaluates collect_ignore -- turning this
+        # collection-semantics assertion into a spurious failure.
+        child_env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
         return subprocess.run(
             [
                 sys.executable,
@@ -473,6 +480,7 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
                 *target,
             ],
             cwd=tmp_path,
+            env=child_env,
             capture_output=True,
             text=True,
         ).returncode

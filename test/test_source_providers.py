@@ -21,6 +21,27 @@ from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.sandbox import spawn_shim_argv
 
 
+def _trust_ancestors_above(monkeypatch, base):
+    """Pin ancestor owners without changing fixture files or permission bits."""
+    ancestors = set(base.resolve().parents)
+    real_stat = pathlib.Path.stat
+
+    def fake_stat(self, **kwargs):
+        info = real_stat(self, **kwargs)
+        if self not in ancestors:
+            return info
+
+        class AncestorStat:
+            st_uid = 0
+
+            def __getattr__(self, name):
+                return getattr(info, name)
+
+        return AncestorStat()
+
+    monkeypatch.setattr(pathlib.Path, "stat", fake_stat)
+
+
 @pytest.fixture(autouse=True)
 def _mock_source_sel(monkeypatch):
     audit = MagicMock()
@@ -453,6 +474,7 @@ def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
     monkeypatch.setenv("KIROCREW_GH_BIN", str(executable))
+    _trust_ancestors_above(monkeypatch, tmp_path)
 
     assert source._resolve_provider_executable("gh") == str(executable.resolve())
 
@@ -473,6 +495,7 @@ def test_provider_executable_accepts_symlinked_install(monkeypatch, tmp_path) ->
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
     monkeypatch.setenv("KIROCREW_GH_BIN", str(link))
+    _trust_ancestors_above(monkeypatch, tmp_path)
 
     assert source._resolve_provider_executable("gh") == str(target.resolve())
 

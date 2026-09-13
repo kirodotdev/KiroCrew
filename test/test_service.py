@@ -3203,6 +3203,28 @@ posix_only = pytest.mark.skipif(
 )
 
 
+def _trust_ancestors_above(monkeypatch, base, *, extra=None):
+    """Pin ancestor owners while preserving fixture ownership and permission bits."""
+    owners = dict.fromkeys(base.resolve().parents, 0)
+    owners.update(extra or {})
+    real_stat = Path.stat
+
+    def fake_stat(self, **kwargs):
+        info = real_stat(self, **kwargs)
+        if self not in owners:
+            return info
+
+        class AncestorStat:
+            st_uid = owners[self]
+
+            def __getattr__(self, name):
+                return getattr(info, name)
+
+        return AncestorStat()
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+
+
 class TestLauncherExecPathIsSafeToAttach:
     """An attachment is a permission grant keyed on a path.
 
@@ -3476,7 +3498,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
 
         assert aa._substitutable_by_others(stand_in) is not None
 
-    def test_a_file_you_own_under_a_tight_chain_is_accepted(self, tmp_path):
+    def test_a_file_you_own_under_a_tight_chain_is_accepted(self, tmp_path, monkeypatch):
         """Positive control: an AppImage you downloaded is owned by you."""
         from kiro_crew.service import apparmor as aa
 
@@ -3485,7 +3507,11 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         os.chmod(app, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- an executable must be executable; the point of this test is that a user-owned 0755 file under a tight chain is ACCEPTED.  # noqa: E501
         # The ancestor chain of a pytest tmp_path is 0700 on macOS but includes
         # /tmp on Linux, so only assert the ownership half here; the mode walk has
-        # its own tests above.
+        # its own tests above. On an NFS host the mount roots stat as uid 65534
+        # (nobody), which the ownership walk would refuse; simulate the normal
+        # root-owned chain above tmp_path so this positive control is not a
+        # test-environment artifact (the fixture's own file keeps its real stat).
+        _trust_ancestors_above(monkeypatch, tmp_path)
         problem = aa._substitutable_by_others(app)
 
         assert problem is None or "world-writable" in problem, problem
@@ -3536,7 +3562,7 @@ class TestExpectedUidOverride:
     account, not the installer process's own uid — a different account when
     ``kirocrew service install`` itself runs as root or under ``sudo``."""
 
-    def test_a_file_owned_by_the_expected_uid_is_accepted(self, tmp_path):
+    def test_a_file_owned_by_the_expected_uid_is_accepted(self, tmp_path, monkeypatch):
         from kiro_crew.service import apparmor as aa
 
         app = tmp_path / "kirocrew"
@@ -3544,6 +3570,10 @@ class TestExpectedUidOverride:
         os.chmod(app, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
         real_uid = app.stat().st_uid
 
+        # Simulate the normal root-owned ancestor chain above tmp_path; on an
+        # NFS host the real mount roots stat as uid 65534 (nobody) and would
+        # wrongly fail this accept case (see _trust_ancestors_above).
+        _trust_ancestors_above(monkeypatch, tmp_path)
         problem = aa._substitutable_by_others(app, expected_uid=real_uid)
 
         assert problem is None or "world-writable" in problem, problem
@@ -3565,6 +3595,10 @@ class TestExpectedUidOverride:
         os.chmod(app, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
         installer_uid = app.stat().st_uid
         monkeypatch.setattr(os, "getuid", lambda: installer_uid, raising=False)
+        # Simulate the normal root-owned ancestor chain above tmp_path so the
+        # accept-half below is not defeated by this NFS host's nobody-owned
+        # (uid 65534) mount roots; the fixture's own file keeps its real owner.
+        _trust_ancestors_above(monkeypatch, tmp_path)
 
         # Accepted against the installer's own uid (legacy AppImage
         # semantics): the OWNERSHIP rule must not fire. Assert only that half —
@@ -3634,20 +3668,12 @@ class TestExpectedUidOverride:
         os.chmod(parent, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
         real_uid = app.stat().st_uid
         parent_resolved = parent.resolve()
-        real_stat = Path.stat
 
-        def fake_stat(self, **kwargs):
-            info = real_stat(self, **kwargs)
-            if self == parent_resolved:
-
-                class RootStat:
-                    st_uid = 0
-                    st_mode = info.st_mode
-
-                return RootStat()
-            return info
-
-        monkeypatch.setattr(Path, "stat", fake_stat)
+        # Pin the fixture's own parent to root (the property under test: a
+        # root-owned ancestor stays trusted). The same helper also reports the
+        # ancestors ABOVE tmp_path as root-owned, so this host's nobody-owned
+        # (uid 65534) NFS mount roots do not defeat the assertion.
+        _trust_ancestors_above(monkeypatch, tmp_path, extra={parent_resolved: 0})
 
         problem = aa._substitutable_by_others(app, expected_uid=real_uid)
 

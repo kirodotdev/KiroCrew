@@ -1933,8 +1933,10 @@ class TestResetWithPid:
         mock_client._child_pids = {}
         provider._client = mock_client
 
+        # Await points allow unrelated liveness probes in this process. Keep
+        # every mocked probe successful instead of consuming a finite list.
         with (
-            patch("os.kill", side_effect=[None, None]),
+            patch("os.kill", return_value=None),
             patch("os.killpg") as mock_killpg,
             patch("os.getpgid", return_value=12345),
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
