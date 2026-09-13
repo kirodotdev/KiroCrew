@@ -35,6 +35,7 @@
 // the anchor — so the reader lands at the bottom every time and the position is
 // erased on the way. Orphaning those blobs costs nothing (not one of them was
 // resolvable) and spares each session one guaranteed failed restore.
+import { setSessionScopedItem } from '../../utils/storageGc'
 export const ANCHOR_KEY_PREFIX = 'vc_anchor3_'
 import { devLog, keyShape, shortId } from '../../dev/scrollInspector'
 const LEGACY_ANCHOR_KEY_PREFIXES = ['vc_anchor_', 'vc_anchor2_']
@@ -155,7 +156,11 @@ export function anchorWriteChangesState(prev: ScrollAnchor | null, next: ScrollA
   return Math.abs(prev.top - next.top) > ANCHOR_SAVE_EPSILON_PX
 }
 
-export function saveScrollAnchor(sessionId: string, anchor: ScrollAnchor): void {
+export function saveScrollAnchor(
+  sessionId: string,
+  anchor: ScrollAnchor,
+  writerOwner?: string,
+): void {
   const storage = getStorage()
   if (!storage || !sessionId) return
   if (!anchorWriteChangesState(peekStoredAnchor(storage, sessionId), anchor)) {
@@ -163,7 +168,7 @@ export function saveScrollAnchor(sessionId: string, anchor: ScrollAnchor): void 
     return
   }
   try {
-    storage.setItem(`${ANCHOR_KEY_PREFIX}${sessionId}`, JSON.stringify(anchor))
+    setSessionScopedItem(storage, `${ANCHOR_KEY_PREFIX}${sessionId}`, JSON.stringify(anchor), writerOwner)
     devLog('STORE.save', `${shortId(sessionId)} ${keyShape(anchor.key)}@${Math.round(anchor.top)}`)
   } catch {
     // Quota exceeded or transient failure — losing a reading position is

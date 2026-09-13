@@ -86,6 +86,8 @@ class _Stream:
 
 
 class _Req:
+    query: dict[str, str] = {}
+
     """Minimal stand-in for the aiohttp request the handlers read.
 
     The race tests drive the handlers directly rather than through a client: the

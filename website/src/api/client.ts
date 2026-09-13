@@ -3564,7 +3564,23 @@ export const api = {
   fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
   /** Top contributors to an app's source repo (GitHub only). Owner-gated. */
   appContributors: (url: string, refresh = false) => post('/api/source/contributors', { url, refresh }).then(j) as Promise<{ contributors: AppContributor[] }>,
-  chatSlots: () => fetch('/api/chat/slots').then(j),
+  /** The slots list plus the server's monotonic `X-Slots-Generation` stamp, which lets a
+   *  caller tell how old a snapshot is. The stamp rides a HEADER because this reply is a
+   *  bare list with consumers outside the SPA (kirocrew_client, mcp_dashboard), so the
+   *  body itself cannot become an object. */
+  chatSlots: async (): Promise<{ slots: ChatSlot[]; generation?: number; epoch?: string }> => {
+    const r = await fetch('/api/chat/slots')
+    const stamp = r.headers.get('X-Slots-Generation')
+    // The counter is only comparable within one gateway process, so the epoch rides with it.
+    const epoch = r.headers.get('X-Slots-Epoch')
+    const slots = (await j(r)) as ChatSlot[]
+    const parsed = stamp === null ? NaN : Number(stamp)
+    return {
+      slots,
+      generation: Number.isFinite(parsed) ? parsed : undefined,
+      epoch: epoch ?? undefined,
+    }
+  },
   /** All goal loops across sessions — every record the service holds, ACTIVE
    *  OR STOPPED (a stopped loop keeps `active: false` + `stopped_reason`, which
    *  is how a surface can say WHY a patrol went quiet). Returns
@@ -3631,7 +3647,9 @@ export const api = {
    * message. Used by the artifact companion chat to name the bound artifact so
    * the user's first message needs no slug boilerplate. */
   chatSlotContext: (slot: string, content: string, opts?: { source?: string; ephemeral?: boolean; maxAge?: number }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/context', { content, ...(opts?.source ? { source: opts.source } : {}), ...(opts?.ephemeral !== undefined ? { ephemeral: opts.ephemeral } : {}), ...(opts?.maxAge !== undefined ? { maxAge: opts.maxAge } : {}) }).then(j),
-  deleteChatSlot: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot)).then(j),
+  deleteChatSlot: (slot: string, incarnation?: string) =>
+    del('/api/chat/slots/' + encodeURIComponent(slot)
+      + (incarnation ? '?incarnation=' + encodeURIComponent(incarnation) : '')).then(j),
   cleanupSessions: (maxInactiveDays: number, activeSlot?: string, dryRun?: boolean) => post('/api/chat/slots/cleanup', { max_inactive_days: maxInactiveDays, active_slot: activeSlot || '', dry_run: !!dryRun }).then(j) as Promise<{ ok: boolean; archived: number; keys: string[]; failed: string[]; dry_run?: boolean; count?: number; active_is_stale?: boolean }>,
   stopChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop').then(j),
   stopChatSlotForce: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop?force=true').then(j),

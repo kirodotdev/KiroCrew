@@ -89,6 +89,11 @@ async function waitForLoaded() {
   await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
 }
 
+/** Measured: an uninterpolated title renders the raw `{{title}}`; an empty one renders bare quotes. */
+const UNRESOLVED_TITLE = /\{\{|[“"]\s*[”"]/
+const titleOf = (): string =>
+  document.querySelector('[role="alert"] , .text-danger')?.textContent ?? ''
+
 describe('ArtifactDetailPage companion chat', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -355,12 +360,10 @@ describe('ArtifactDetailPage companion chat', () => {
   })
 
   it('aborts "New chat" when archiving fails for any reason other than 404', async () => {
-    // A 500 leaves the old session live server-side. Creating anyway would give
-    // the slug TWO bound sessions, and since the resolver breaks ties on
-    // last_activity_ts the OLD one keeps winning — "New chat" would look like a
-    // no-op forever. Abort and surface the error instead.
+    // A DEFINITIVE refusal means the server rolled the close back, so the old session is live and
+    // creating anyway would leave the slug two, with the resolver preferring the older one.
     vi.mocked(api).deleteChatSlot = vi.fn().mockRejectedValue(
-      Object.assign(new Error('Internal Server Error'), { status: 500 }),
+      Object.assign(new Error('Internal Server Error'), { status: 500, definitive: true }),
     )
     const store = createTestStore()
     seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
@@ -369,10 +372,50 @@ describe('ArtifactDetailPage companion chat', () => {
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('New chat'))
-    await waitFor(() => expect(screen.getByText(/internal server error/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/try .new chat. again/i)).toBeInTheDocument())
+    expect(screen.queryByText(/internal server error/i)).toBeNull()
+    expect(screen.queryByText(/from the session list/i)).toBeNull()
+    expect(titleOf()).not.toMatch(UNRESOLVED_TITLE)
     expect(vi.mocked(api).createChatSlot).not.toHaveBeenCalled()
     // The old session must stay bound, so the panel keeps working.
     expect(store.getState().dashboard.slots.some(s => s.key === 'chat-bound')).toBe(true)
+  })
+
+  it('aborts creation without restoring the row when the DELETE reply is lost', async () => {
+    vi.mocked(api).deleteChatSlot = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('New chat'))
+    await waitFor(() => expect(screen.getByText(/don[’']t start another chat yet/i)).toBeInTheDocument())
+    expect(screen.queryByText(/failed to fetch/i)).toBeNull()
+    expect(titleOf()).not.toMatch(UNRESOLVED_TITLE)
+
+    expect(vi.mocked(api).createChatSlot).not.toHaveBeenCalled()
+    expect(store.getState().dashboard.slots.some(s => s.key === 'chat-bound')).toBe(false)
+  })
+
+  it('aborts creation without restoring the row for a 5xx never called definitive', async () => {
+    vi.mocked(api).deleteChatSlot = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Bad Gateway'), { status: 502 }),
+    )
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('New chat'))
+    await waitFor(() => expect(screen.getByText(/don[’']t start another chat yet/i)).toBeInTheDocument())
+    expect(screen.queryByText(/bad gateway/i)).toBeNull()
+    expect(titleOf()).not.toMatch(UNRESOLVED_TITLE)
+    expect(titleOf()).not.toMatch(UNRESOLVED_TITLE)
+
+    expect(vi.mocked(api).createChatSlot).not.toHaveBeenCalled()
+    expect(store.getState().dashboard.slots.some(s => s.key === 'chat-bound')).toBe(false)
   })
 
   // ── re-entrancy: at most one active bound session per slug ──────────────────
@@ -445,7 +488,9 @@ describe('ArtifactDetailPage companion chat', () => {
 
   it('releases the guard after a failed archive', async () => {
     vi.mocked(api).deleteChatSlot = vi.fn()
-      .mockRejectedValueOnce(Object.assign(new Error('Internal Server Error'), { status: 500 }))
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Internal Server Error'), { status: 500, definitive: true }),
+      )
       .mockResolvedValue({ ok: true })
     const store = createTestStore()
     seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
@@ -454,7 +499,10 @@ describe('ArtifactDetailPage companion chat', () => {
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('New chat'))
-    await waitFor(() => expect(screen.getByText(/internal server error/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/try .new chat. again/i)).toBeInTheDocument())
+    expect(screen.queryByText(/internal server error/i)).toBeNull()
+    expect(screen.queryByText(/from the session list/i)).toBeNull()
+    expect(titleOf()).not.toMatch(UNRESOLVED_TITLE)
     // The abort path returns from inside the try — `finally` must still clear it.
     fireEvent.click(screen.getByLabelText('New chat'))
     await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))

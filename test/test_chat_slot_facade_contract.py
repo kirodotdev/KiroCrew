@@ -47,6 +47,8 @@ _TO_DICT_KEYS = (
     "stop_state",
     "wait_state",
     "created",
+    "incarnation",
+    "closing",
     "last_ts",
     "last_turn_ts",
     "last_message",

@@ -1093,6 +1093,7 @@ def test_ws_frame_serialization_failure_names_the_offender():
             folders=[],
             folders_gen=0,
             governance_gen=0,
+            slots_gen=0,
         )
 
     notes = "\n".join(getattr(excinfo.value, "__notes__", []))
@@ -1114,6 +1115,7 @@ def test_ws_frame_failure_outside_slots_exonerates_the_slot_list():
             folders=object(),  # the actual offender, outside the slot list
             folders_gen=0,
             governance_gen=0,
+            slots_gen=0,
         )
 
     notes = "\n".join(getattr(excinfo.value, "__notes__", []))
@@ -1123,7 +1125,7 @@ def test_ws_frame_failure_outside_slots_exonerates_the_slot_list():
 
 def test_ws_frame_healthy_roundtrip_unchanged():
     """Benign control: the wrapped dump produces the same frame."""
-    from kiro_crew.dashboard.state import _slots_ws_frame
+    from kiro_crew.dashboard.state import SLOTS_EPOCH, _slots_ws_frame
 
     frame = json.loads(
         _slots_ws_frame(
@@ -1134,12 +1136,16 @@ def test_ws_frame_healthy_roundtrip_unchanged():
             folders=[{"id": "f1"}],
             folders_gen=7,
             governance_gen=9,
+            slots_gen=4,
         )
     )
 
     assert frame == {
         "type": "slots",
         "data": [{"key": "chat-1"}],
+        # The pair the client orders snapshots by; the epoch is per-process.
+        "slotsGeneration": 4,
+        "slotsEpoch": SLOTS_EPOCH,
         "yolo": True,
         "channelTrusted": False,
         "gitlabHostsGeneration": 3,
@@ -1210,6 +1216,9 @@ async def test_ws_connect_snapshot_failure_is_logged_with_the_offender(
     state = MagicMock()
     state.owner_id = "U_OWNER"
     state.serialize_slots = lambda **kw: _poisoned_slots()
+    # The connect path draws stamp and rows through ONE seam, so the double returns the
+    # pair: a bare MagicMock raises on the unpack, which the block below would swallow.
+    state.stamped_slots = lambda **kw: (1, _poisoned_slots())
     state._yolo = False
     state._folders = [{"id": "f1", "name": "Work", "order": 0}]
     state.folders_generation = MagicMock(return_value=7)

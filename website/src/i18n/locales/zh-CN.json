@@ -118,7 +118,10 @@
     "focus_mode": "专注模式",
     "focus_mode_title": "专注模式 · Alt+Shift+M",
     "focus_mode_title_mac": "专注模式 · ⌥⇧M",
-    "connect_your_phone": "连接手机"
+    "connect_your_phone": "连接手机",
+    "boot_slots_failed_title": "无法加载会话",
+    "boot_slots_failed": "如果持续失败，请重新加载页面。",
+    "boot_slots_retry": "重新加载会话"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8354,11 +8357,19 @@
       "working": "工作中"
     },
     "useSessionActions": {
+      "close_failed_refused": "请在会话列表中再次关闭。如果它仍然打开，请刷新页面查看当前状态。",
+      "close_failed_unknown": "请暂时不要再次关闭。如果会话仍在运行，状态确认后它会自行回来。",
       "close_this_session": "关闭此会话？",
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
-      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
+      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。",
+      "close_failed_refused_title": "无法关闭“{{title}}”，它仍然开着",
+      "close_failed_unknown_title": "无法确认“{{title}}”是否已关闭",
+      "close_failed_replaced": "你关闭的会话已不存在；列表中仍显示的行是一个新会话。",
+      "close_failed_replaced_title": "“{{title}}”已经关闭",
+      "close_failed_confirmed": "会话已按请求关闭。",
+      "close_failed_confirmed_title": "“{{title}}”已关闭"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet 不可用",
@@ -8908,7 +8919,11 @@
       "comments_failed_to_load": "评论加载失败",
       "comment_action_failed": "评论操作失败",
       "activity_failed_to_load": "活动记录加载失败",
-      "sync_status_unavailable": "同步状态不可用"
+      "sync_status_unavailable": "同步状态不可用",
+      "close_failed_refused": "请重试“新建聊天”，或重新加载页面查看当前状态。",
+      "close_failed_unknown": "暂时不要再开始新的聊天。如果会话仍在运行，它会自行回来。",
+      "close_failed_replaced": "该名称现由新会话使用，已没有需要关闭的内容。 再次点击“新建聊天”即可重新开始。",
+      "close_failed_confirmed": "会话已按请求关闭。"
     },
     "artifactPopoutFrame": {
       "artifact": "产物",

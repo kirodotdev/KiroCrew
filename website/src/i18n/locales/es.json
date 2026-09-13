@@ -124,7 +124,10 @@
     "focus_mode": "Modo de concentración",
     "focus_mode_title": "Modo de concentración · Alt+Mayús+M",
     "focus_mode_title_mac": "Modo de concentración · ⌥⇧M",
-    "connect_your_phone": "Conectar tu teléfono"
+    "connect_your_phone": "Conectar tu teléfono",
+    "boot_slots_failed_title": "No se pudieron cargar tus sesiones",
+    "boot_slots_failed": "Recarga la página si sigue fallando.",
+    "boot_slots_retry": "Reintentar cargar sesiones"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8584,11 +8587,19 @@
       "working": "Trabajando"
     },
     "useSessionActions": {
+      "close_failed_refused": "Vuelve a cerrarla desde la lista de sesiones. Si sigue abierta, recarga la página para ver su estado actual.",
+      "close_failed_unknown": "No la cierres otra vez todavía. Si la sesión sigue activa, volverá por su cuenta en cuanto se confirme su estado.",
       "close_this_session": "¿Cerrar esta sesión?",
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
-      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar."
+      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar.",
+      "close_failed_refused_title": "No se pudo cerrar «{{title}}»: sigue abierta",
+      "close_failed_unknown_title": "No se pudo confirmar si «{{title}}» se cerró",
+      "close_failed_replaced": "La sesión que cerraste ya no existe; la fila que sigue en la lista es una sesión nueva.",
+      "close_failed_replaced_title": "«{{title}}» ya estaba cerrada",
+      "close_failed_confirmed": "La sesión se cerró como pediste.",
+      "close_failed_confirmed_title": "“{{title}}” cerrada"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet no disponible",
@@ -9160,7 +9171,11 @@
       "comments_failed_to_load": "No se pudieron cargar los comentarios",
       "comment_action_failed": "La acción sobre el comentario falló",
       "activity_failed_to_load": "No se pudo cargar la actividad",
-      "sync_status_unavailable": "Estado de sincronización no disponible"
+      "sync_status_unavailable": "Estado de sincronización no disponible",
+      "close_failed_refused": "Vuelve a intentar «Nuevo chat» o recarga la página para ver su estado actual.",
+      "close_failed_unknown": "No inicies otro chat todavía. Si la sesión sigue en marcha, volverá por sí sola.",
+      "close_failed_replaced": "Una sesión nueva usa ese nombre, así que no queda nada por cerrar. Vuelve a hacer clic en «Nuevo chat» para empezar de nuevo.",
+      "close_failed_confirmed": "La sesión se cerró como pediste."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefacto",

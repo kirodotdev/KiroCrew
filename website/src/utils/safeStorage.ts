@@ -26,6 +26,8 @@
  * adopt a single, well-tested helper.
  */
 
+import { setSessionScopedItem } from './storageGc'
+
 /** Prefix of the per-session virtualizer height caches. These hold pure
  *  derived pixel measurements and are safe to drop under storage pressure;
  *  the virtualizer re-measures from the DOM and repopulates them. */
@@ -151,10 +153,10 @@ export function safeGetItem(key: string): string | null {
   }
 }
 
-export function safeSetItem(key: string, value: string): boolean {
+export function safeSetItem(key: string, value: string, writerOwner?: string): boolean {
   try {
     if (typeof localStorage === 'undefined') return false
-    localStorage.setItem(key, value)
+    setSessionScopedItem(localStorage, key, value, writerOwner)
     return true
   } catch (err) {
     // Only attempt reclaim+retry for genuine quota errors — a SecurityError
@@ -174,7 +176,7 @@ export function safeSetItem(key: string, value: string): boolean {
     let lastErr: unknown = err
     for (let i = 0; i < RECLAIM_TIERS.length && reclaimSpace(); i++) {
       try {
-        localStorage.setItem(key, value)
+        setSessionScopedItem(localStorage, key, value, writerOwner)
         return true
       } catch (retryErr) {
         lastErr = retryErr

@@ -3,14 +3,16 @@ import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from './store'
-import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot } from './store/dashboardSlice'
+import ErrorNotice from './components/ErrorNotice'
+import { CLOSE_FAILURE_COPY_KEY, CLOSE_FAILURE_TITLE_KEY, RESOLVED_CLOSE_KINDS } from './utils/sessionCloseFailure'
+import { sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot, fetchSlotsIfApplied } from './store/dashboardSlice'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from './lib/slotSwitch'
 import { performAgentSlotSwitch } from './lib/agentSwitch'
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSessionCloseFailure, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { queryComposerOrExpand } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
@@ -45,14 +47,13 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
-import { gcOrphanedStorage } from './utils/storageGc'
+import { gcOrphanedStorage, noteLiveSessionInstances } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
 import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
-import ErrorNotice from './components/ErrorNotice'
 import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
@@ -2253,11 +2254,16 @@ export default function App() {
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
   const provider = useProvider()
   const agentSwitchNotice = useAppSelector(s => s.chat.agentSwitchNotice)
+  const appliedGeneration = useAppSelector(s => s.dashboard.lastSlotsGeneration)
+  const generationAtMount = useRef(appliedGeneration)
+  const slotsEverApplied = useAppSelector(s => s.dashboard.slots.length > 0)
+  const [bootSlotsRecovered, setBootSlotsRecovered] = useState(false)
   useEffect(() => {
-    if (!agentSwitchNotice) return
-    const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
-    return () => window.clearTimeout(timer)
-  }, [agentSwitchNotice, dispatch])
+    if (slotsEverApplied || appliedGeneration !== generationAtMount.current) {
+      setBootSlotsRecovered(true)
+    }
+  }, [slotsEverApplied, appliedGeneration])
+  const sessionCloseFailure = useAppSelector(s => s.chat.sessionCloseFailure)
   const switchActiveSlotAgent = useCallback(async (slot: string, agent: string) => {
     dispatch(setAgentSwitchNotice(null))
     try {
@@ -2725,14 +2731,53 @@ export default function App() {
     if (location.pathname === '/developer') setDevPageSeen(true)
   }, [location.pathname])
 
-  useEffect(() => {
-    dispatch(fetchSlots()).then(action => {
-      // Run localStorage GC after we know which sessions are alive
-      if (fetchSlots.fulfilled.match(action)) {
-        const liveIds = new Set((action.payload as Array<{ key: string }>).map(s => s.key))
-        gcOrphanedStorage(liveIds)
+  // Boot slot list as a QUERY, not a hand-rolled fetch (`use-react-query`). `null`
+  // means REFUSED, and a refused list omits a session created mid-read.
+  const { data: appliedBootSlots, error: bootSlotsError, refetch: refetchBootSlots } = useQuery({
+    queryKey: ['boot-slots-gc'],
+    queryFn: async () => {
+      const slots = await fetchSlotsIfApplied(dispatch, () => store.getState())
+      if (!slots) return null
+      // Read the ordering with the reply, not from a later effect: a same-key replacement
+      // landing in between would stamp these rows with a frame they do not belong to.
+      const d = store.getState().dashboard
+      return {
+        slots,
+        order: { generation: d.lastSlotsGeneration, epoch: d.lastSlotsEpoch ?? undefined },
       }
+    },
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const [bootSlotsErrorDismissed, setBootSlotsErrorDismissed] = useState(false)
+  const showBootSlotsError = Boolean(bootSlotsError) && !bootSlotsErrorDismissed && !bootSlotsRecovered
+
+  useEffect(() => {
+    // Accepted data only. The sweep deletes on the WRITER's recorded stamp being
+    // superseded, so it needs no age or absence heuristic.
+    if (appliedBootSlots) gcOrphanedStorage(appliedBootSlots.slots, appliedBootSlots.order)
+  }, [appliedBootSlots])
+
+  useEffect(() => {
+    // Keep the writer-stamp registry current WITHOUT subscribing the root to the slots
+    // array: a selector here re-renders the whole app on every slots frame.
+    const order = (): { generation?: number; epoch?: string } => {
+      const d = store.getState().dashboard
+      return { generation: d.lastSlotsGeneration, epoch: d.lastSlotsEpoch ?? undefined }
+    }
+    let last = store.getState().dashboard.slots
+    noteLiveSessionInstances(last, order())
+    return store.subscribe(() => {
+      const next = store.getState().dashboard.slots
+      if (next === last) return
+      last = next
+      noteLiveSessionInstances(next, order())
     })
+  }, [])
+
+  useEffect(() => {
     // The boot notifications fetch is owned by the WebSocket first-connect
     // handler (its snapshot is taken after socket registration, so nothing
     // can fall between snapshot and push -- see notificationsSlice). This
@@ -3783,10 +3828,67 @@ export default function App() {
         </div>
       </header>
 
-      {agentSwitchNotice && (
-        <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-          <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
-          <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
+      {/* ONE positioned slot for both notices, stacked. They previously carried
+       *  byte-identical `fixed` classes, so a close failing under a live agent-switch
+       *  notice put them exactly on top of each other and hid a dismiss control. */}
+      {(agentSwitchNotice || sessionCloseFailure || showBootSlotsError) && (
+        <div className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] flex flex-col gap-2" data-testid="notice-stack">
+          {agentSwitchNotice && (
+            <div className="animate-rise rounded-lg bg-bg-elevated shadow-xl overflow-hidden">
+              {/* Hand-off ON: an agent-switch rejection holds nothing unsaved — the pick is
+               *  server-side and the composer's drafts are localStorage-persisted. */}
+              <ErrorNotice
+                message={agentSwitchNotice.message}
+                onDismiss={() => dispatch(setAgentSwitchNotice(null))}
+                askAgent
+                testId="agent-switch-failed"
+              />
+            </div>
+          )}
+
+          {/* The list also arrives over the socket, so a banner saying it could not be
+             *  loaded while the sidebar fills with rows is wrong on its face. */}
+          {showBootSlotsError && (
+            <div className="animate-rise rounded-lg bg-bg-elevated shadow-xl overflow-hidden">
+              {/* Hand-off ON: a failed LIST read holds nothing unsaved — the sessions are
+               *  server-side and the composer's drafts are localStorage-persisted. */}
+              <ErrorNotice
+                title={i18nT('app.boot_slots_failed_title')}
+                message={i18nT('app.boot_slots_failed')}
+                onDismiss={() => setBootSlotsErrorDismissed(true)}
+                askAgent
+                testId="boot-slots-failed"
+                action={(
+                  <button
+                    type="button"
+                    className="underline text-text bg-transparent border-none cursor-pointer p-0"
+                    onClick={() => { void refetchBootSlots() }}
+                    data-testid="boot-slots-retry"
+                  >
+                    {i18nT('app.boot_slots_retry')}
+                  </button>
+                )}
+              />
+              </div>
+          )}
+
+          {sessionCloseFailure && (
+            <div className="animate-rise rounded-lg bg-bg-elevated shadow-xl overflow-hidden">
+              {/* Hand-off ON: nothing here is unsaved. The close is an action failure whose
+               *  session is server-side, and the composer's drafts are localStorage-persisted. */}
+              <ErrorNotice
+                title={i18nT(CLOSE_FAILURE_TITLE_KEY[sessionCloseFailure.kind], {
+                  // The key is what the sidebar shows for an untitled row.
+                  title: sessionCloseFailure.title || sessionCloseFailure.key || '',
+                })}
+                message={i18nT(CLOSE_FAILURE_COPY_KEY[sessionCloseFailure.kind])}
+                onDismiss={() => dispatch(setSessionCloseFailure(null))}
+                tone={RESOLVED_CLOSE_KINDS.has(sessionCloseFailure.kind) ? 'success' : 'danger'}
+                askAgent={!RESOLVED_CLOSE_KINDS.has(sessionCloseFailure.kind)}
+                testId="session-close-failed"
+              />
+            </div>
+          )}
         </div>
       )}
 

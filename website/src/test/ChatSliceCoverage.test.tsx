@@ -1391,7 +1391,7 @@ describe('chatSlice thunks', () => {
     const store = makeStore()
     const result = await store.dispatch(createSlot({ activate: false, project: '/tmp/wt' }))
     expect(result.type).toBe('chat/createSlot/rejected')
-    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('bg-slot')
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('bg-slot', undefined)
     expect(chat(store).creatingSlot).toBe(false)
   })
 
@@ -1420,7 +1420,7 @@ describe('chatSlice thunks', () => {
     const store = makeStore()
     const result = await store.dispatch(createSlot({ project: '/tmp/wt' }))
     expect(result.type).toBe('chat/createSlot/rejected')
-    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fg-slot')
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fg-slot', undefined)
     expect(root(store).dashboard.slots.map(s => s.key)).not.toContain('fg-slot')
     expect(chat(store).creatingSlot).toBe(false)
   })
@@ -1468,6 +1468,8 @@ describe('chatSlice thunks', () => {
     apiMock.deleteChatSlot.mockRejectedValue(new Error('500'))
     const store = makeStore()
     await store.dispatch(switchSlot('front'))
+    // A statusless failure leaves the outcome UNKNOWN, so the row stays hidden and
+    // a read DATED after the close decides it — issued at once, not on a clock.
     const outcome = await store.dispatch(deleteSlot('front'))
     expect(outcome.type).toBe('chat/deleteSlot/rejected')
     expect(apiMock.chatSlots).toHaveBeenCalled()

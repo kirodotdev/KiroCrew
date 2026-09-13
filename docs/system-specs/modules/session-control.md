@@ -506,6 +506,27 @@ teardown. Its three failure modes surface as their own codes at HTTP 500
 (`nudge_retire_failed`, `app_close_hook_failed`, `history_save_failed`), which is
 why the routes now forward a 500 rather than degrading it to 400.
 
+Each of those response bodies carries `definitive` beside `error` and `code`, and the
+value is COMPUTED per arm rather than fixed. The pre-pop arms report
+`_slot_present_and_ours` — the key is still registered AND still holds this slot
+object — and the save-failure arm reports whether its own rollback re-inserted the
+slot. So the flag answers "is the session the caller meant provably still there", which
+is what lets a client tell the two outcomes apart without a copy of the code list
+above:
+
+- **refused** (`definitive: true`) — the gateway considered the close and did not
+  take it, every partial step unwound. The session is still open, and closing it
+  again is a well-defined retry.
+- **unknown** (`definitive: false`, or the flag absent when the failure never reached
+  this handler at all, e.g. a transport error) — the key may already have been popped
+  and handed to a replacement, so the close may yet have taken and a second close
+  could reach a DIFFERENT session under the same key. The honest reading is that the
+  outcome is not knowable from the client, so the list must be allowed to settle
+  rather than the close being reissued.
+
+The serializer emits the key unconditionally, so a body from this handler always
+carries the flag; absence is a fact about the transport, not about the close.
+
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
 takes the AutoNudge lock, and the app hook awaits external work — and a target
@@ -530,6 +551,115 @@ guard's own status. This is the same "re-gate adjacent to the mutation, comparin
 identity not presence" discipline `create_session` uses for its slot allocation,
 and the same theme as the queued-drain re-check (#5911). The human ✕ path passes
 no check — the person owns the tab and closes it unconditionally.
+
+### Dating a slots snapshot: the server-stamped generation
+
+The pop above happens only after the nudge-lock and app-close-hook awaits, so a read
+issued before the close can be serialized while the closing slot is still listed and
+arrive after it is gone. Applying that reply reinstates the row. Nothing else on the
+wire orders two list replies: `api_chat_slot_resume` restores `slot.created_at`, so
+`created` cannot tell a resumed replacement from the original.
+
+Both transports therefore date every snapshot. `_slots_ws_frame` stamps
+`slotsGeneration` on the push and `api_chat_slots` returns the same counter in an
+`X-Slots-Generation` header — a header rather than an envelope key, because that reply
+is a bare list with consumers outside the SPA. Each also carries a per-process
+`slotsEpoch` / `X-Slots-Epoch`: the counter restarts at 0 in a new gateway, so a
+generation is comparable only WITHIN an epoch, and a client holding a high count would
+otherwise refuse every snapshot a restarted gateway sent. The epoch is keyed into the
+comparison rather than reset on reconnect, which would reopen the in-window race the
+stamp exists to close. `applySlots` records the newest `(epoch, generation)` applied and
+refuses a snapshot at or below it within the same epoch, on either transport.
+
+The stamp is drawn BEFORE the rows are read, through `DashboardState.stamped_slots`,
+which is why both emitting paths take it from there rather than calling
+`next_slots_generation` themselves. Serializing first and stamping after leaves a window
+in which a close pops a slot between the two, so the frame carries pre-pop rows under a
+number drawn later than the post-pop read's — the resurrection restated, not fixed.
+
+The client still carries the reconstruction it needed before the wire could date a
+reply: `closeSeq`, `pendingSlotReads`, `CloseTombstone.retireReadId` with the confirming
+post-DELETE read it names, plus `membershipMoved` and the wholesale refusal in
+`fetchSlots.fulfilled` that discards a refused reply's content (titles, previews, running
+state) along with its membership. The refusal costs freshness rather than correctness,
+because live pushes keep applying content to the rows that remain.
+
+What the stamp subsumes is exactly the ordering of one SERVER emission against another,
+and the deletion scope is only that much. Two parts of the reconstruction sit outside it
+and are NOT deletable on the stamp's authority.
+
+The first is the LOCAL OPTIMISTIC CREATE. `addSlotOptimistic` bumps `closeSeq`
+unconditionally, so a read issued before that create is refused for omitting the new key.
+No server-drawn `(slotsEpoch, slotsGeneration)` can date that race, because at the moment
+of the bump the row exists in no server snapshot at all — there is nothing for a server
+number to be newer or older than. The client-side sequence is the only clock that orders a
+purely local insertion against a reply already in flight.
+
+The second is the close tombstone hold in `closingSlots`, which an earlier revision of
+this section wrongly listed as deletable. The stamp refuses an OUT-OF-ORDER snapshot; it
+cannot refuse a push coalesced mid-close, which is genuinely the newest emission and
+truthfully still lists the slot the DELETE has not yet removed. Applying it is correct by
+ordering and still repaints the row, so the withhold is what suppresses the mid-close
+flicker this module exists to fix — load-bearing for that symptom, not an optimistic
+nicety.
+
+So the honest scope is: the stamp subsumes the SERVER-ordering half of the question, while
+the local-create sequence, the per-read binding and the tombstone hold answer questions it
+cannot reach. The two mechanisms coexisting is a real cost, and the section below decides
+that cost rather than deferring it.
+
+### Decision: both ordering mechanisms stay
+
+**Decided, not deferred.** An earlier revision of this section scoped a deletion and set a
+trigger for it. That framing was wrong, and recording a decision underneath it left the
+document answering the same question twice. The deletion is not owed, so there is no trigger
+and no follow-up.
+
+The reason is that the two mechanisms answer different questions.
+`(slotsEpoch, slotsGeneration)` orders one SERVER EMISSION against another.
+`CloseTombstone.retireReadId` binds a tombstone to *which of this tab's own reads* postdates
+the DELETE, and `pendingSlotReads` is what dates that read — a per-client fact no
+server-drawn number carries. `membershipMoved` likewise reports a change in the list this tab
+has applied, not a change in what the server sent. `closeSeq`'s optimistic-create bump and the
+`closingSlots` hold are not orderable by a server-drawn number at all, as the two subsections
+above establish.
+
+So `dashboardSlice.ts`'s "redundant now the wire stamps a generation" comment is true only of
+the server-versus-server half of the question, and that half is not separable from the rest
+without losing the per-read binding. Both mechanisms are kept deliberately, and the cost of
+carrying both is accepted here rather than deferred again.
+
+**What a future maintainer of `fetchSlots.fulfilled` should take from this:** the ordering
+reconstruction is load-bearing, not leftovers awaiting cleanup. Removing `retireReadId` or
+`pendingSlotReads` re-opens the stranded-tombstone defect that
+`chatSlice.tombstoneNeverStranded.test.ts` exists to pin.
+
+**Tombstone liveness: a failed retirement read RETRIES, it does not release.**
+`retireCloseTombstone`'s `.catch(again)` keeps withholding the row and re-reads with capped
+backoff. Releasing on a failed read would let a list frame restore a row whose session is
+gone; releasing on an attempt count would do the same on a slower network. Three signals
+release the tombstone — the key omitted from an applied list, a different incarnation under
+that key, and a published terminal `closing === false` — and none of them is a clock, a
+counter or a failure.
+
+**Storage-ownership coupling.** `gcSessionStorage`'s removal is the part strictly coupled to
+the close fix. The per-key writer-identity ledger that replaces it is coupled through the same
+key lifecycle — a reusable key is exactly why absence stopped being proof — but it does also
+fix cross-tab loss that predates this change, so shipping them together means a revert of the
+flicker fix reverts that too. The owner accepted that coupling on 2026-08-29.
+
+**Notices that carry an action do not auto-expire.** The agent-switch notice's 6-second
+timer is gone, and the refused-close notice's 12-second timer with it. Both now carry a
+hand-off or a follow-up instruction, and a notice that offers a repair must not vanish
+while the reader is reaching for it; the reader retires it instead. `noticeLifecycle.test.ts`
+pins the absence of both timers.
+
+**What the boot sweep deletes.** Closed-session keys are not removed merely for being
+closed, and not on a timer: the sweep deletes a key only on PROOF that a later instance
+superseded it — proof carried by the durable `created` stamp, not by the process-local
+incarnation the close tombstone uses — and only where the key is rebuildable. Absence alone
+is not proof, because a tab resuming a session would otherwise lose state to another tab's
+boot sweep.
 
 ## Configuration
 

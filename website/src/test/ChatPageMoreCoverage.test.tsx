@@ -377,7 +377,7 @@ describe('Welcome recreation preserves remote execution', () => {
 
     await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
     expect(apiMocks.createChatSlot.mock.calls.at(-1)?.[8]).toBe('crew-remote-1')
-    expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1')
+    expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined)
   })
 })
 
@@ -755,6 +755,9 @@ describe('ChatPage welcome-state history suggestions', () => {
     const list = await screen.findByRole('listbox', { name: 'Previous chats' }, { timeout: 5_000 })
     const options = within(list).getAllByRole('option')
     expect(options).toHaveLength(1)
+    // Resuming into the welcome tab CLOSES `chat-1`, and the close re-reads the
+    // list: answer with what it produced, or the resumed session is evicted.
+    apiMocks.chatSlots.mockResolvedValue([{ ...SLOT, key: 'sess-a', title: 'sess-a' }])
     await act(async () => { fireEvent.mouseDown(options[0]) })
     await waitFor(() => expect(apiMocks.resumeChatSlot).toHaveBeenCalledWith('sess-a', 'rate limiter rollout'))
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('sess-a'))

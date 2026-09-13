@@ -121,7 +121,10 @@
     "focus_mode": "ফোকাস মোড",
     "focus_mode_title": "ফোকাস মোড · Alt+Shift+M",
     "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M",
-    "connect_your_phone": "ফোন সংযুক্ত করুন"
+    "connect_your_phone": "ফোন সংযুক্ত করুন",
+    "boot_slots_failed_title": "আপনার সেশনগুলি লোড করা যায়নি",
+    "boot_slots_failed": "যদি বারবার ব্যর্থ হয়, তবে পেজটি রিলোড করুন।",
+    "boot_slots_retry": "সেশন আবার লোড করুন"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8469,11 +8472,19 @@
       "working": "কাজ করছে"
     },
     "useSessionActions": {
+      "close_failed_refused": "সেশন তালিকা থেকে আবার বন্ধ করুন। যদি এটি খোলা থাকে, বর্তমান অবস্থা দেখতে পেজটি রিলোড করুন।",
+      "close_failed_unknown": "এখনই এটি আবার বন্ধ করবেন না। সেশনটি চললে অবস্থা নিশ্চিত হওয়ামাত্র নিজেই ফিরে আসবে।",
       "close_this_session": "এই সেশন বন্ধ করবে?",
       "reload_failed": "সেশন পুনরায় লোড ব্যর্থ হয়েছে। এজেন্ট ব্যস্ত থাকতে পারে বা গেটওয়ে পৌঁছানো যাচ্ছে না; সেশন নিষ্ক্রিয় হলে আবার চেষ্টা করুন।",
       "reload_failed_subagents": "এই সেশনে সাব-এজেন্টরা এখনও কাজ করছে। তারা শেষ করলে আবার চেষ্টা করুন।",
       "switch_to_autopilot_mode_future_messages_will_us": "Autopilot মোডে যাবে? পরের মেসেজগুলো Autopilot আচরণ অনুসরণ করবে (প্ল্যান → অনুমোদন → এক্সিকিউট)।",
-      "switch_to_normal_chat_mode_future_messages_will": "সাধারণ চ্যাট মোডে যাবে? পরের মেসেজগুলো সাধারণ চ্যাট আচরণ অনুসরণ করবে।"
+      "switch_to_normal_chat_mode_future_messages_will": "সাধারণ চ্যাট মোডে যাবে? পরের মেসেজগুলো সাধারণ চ্যাট আচরণ অনুসরণ করবে।",
+      "close_failed_refused_title": "“{{title}}” বন্ধ করা যায়নি — এটি এখনও খোলা",
+      "close_failed_unknown_title": "“{{title}}” বন্ধ হয়েছে কিনা তা নিশ্চিত করা যায়নি",
+      "close_failed_replaced": "আপনি যে সেশন বন্ধ করেছেন তা আর নেই; তালিকায় থাকা সারিটি একটি নতুন সেশন।",
+      "close_failed_replaced_title": "«{{title}}» ইতিমধ্যেই বন্ধ হয়েছিল",
+      "close_failed_confirmed": "অনুরোধ অনুযায়ী সেশনটি বন্ধ হয়েছে।",
+      "close_failed_confirmed_title": "“{{title}}” বন্ধ হয়েছে"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "অডিও ওয়ার্কলেট পাওয়া যাচ্ছে না",
@@ -9034,7 +9045,11 @@
       "comments_failed_to_load": "মন্তব্য লোড করা যায়নি",
       "comment_action_failed": "মন্তব্যের কাজ ব্যর্থ",
       "activity_failed_to_load": "কার্যকলাপ লোড করা যায়নি",
-      "sync_status_unavailable": "সিঙ্ক অবস্থা অনুপলব্ধ"
+      "sync_status_unavailable": "সিঙ্ক অবস্থা অনুপলব্ধ",
+      "close_failed_refused": "আবার «নতুন চ্যাট» চেষ্টা করুন, বা বর্তমান অবস্থা দেখতে পেজটি রিলোড করুন।",
+      "close_failed_unknown": "এখনই আরেকটি চ্যাট শুরু করবেন না। সেশনটি চলতে থাকলে সেটি নিজেই ফিরে আসবে।",
+      "close_failed_replaced": "এখন একটি নতুন সেশন সেই নাম ব্যবহার করছে, তাই বন্ধ করার কিছু নেই। নতুন করে শুরু করতে «নতুন চ্যাট»-এ আবার ক্লিক করুন।",
+      "close_failed_confirmed": "অনুরোধ অনুযায়ী সেশনটি বন্ধ হয়েছে।"
     },
     "artifactPopoutFrame": {
       "artifact": "আর্টিফ্যাক্ট",

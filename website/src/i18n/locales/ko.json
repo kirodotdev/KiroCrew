@@ -118,7 +118,10 @@
     "focus_mode": "집중 모드",
     "focus_mode_title": "집중 모드 · Alt+Shift+M",
     "focus_mode_title_mac": "집중 모드 · ⌥⇧M",
-    "connect_your_phone": "휴대폰 연결"
+    "connect_your_phone": "휴대폰 연결",
+    "boot_slots_failed_title": "세션을 불러오지 못했습니다",
+    "boot_slots_failed": "계속 실패하면 페이지를 새로 고치세요.",
+    "boot_slots_retry": "세션 다시 불러오기"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8354,11 +8357,19 @@
       "working": "작업 중"
     },
     "useSessionActions": {
+      "close_failed_refused": "세션 목록에서 다시 닫으십시오. 계속 열려 있으면 페이지를 새로 고쳐 현재 상태를 확인하세요.",
+      "close_failed_unknown": "아직 다시 닫지 마세요. 세션이 실행 중이면 상태가 확인되는 대로 저절로 돌아옵니다.",
       "close_this_session": "이 세션을 닫으시겠습니까?",
       "reload_failed": "세션 다시 로드에 실패했습니다. 에이전트가 응답 중이거나 게이트웨이에 연결할 수 없습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
       "reload_failed_subagents": "이 세션의 하위 에이전트가 아직 작업 중입니다. 완료된 후 다시 시도하세요.",
       "switch_to_autopilot_mode_future_messages_will_us": "오토파일럿 모드로 전환할까요? 이후 메시지는 오토파일럿 동작(계획 → 승인 → 실행)을 사용합니다.",
-      "switch_to_normal_chat_mode_future_messages_will": "일반 채팅 모드로 전환할까요? 이후 메시지는 표준 채팅 동작을 사용합니다."
+      "switch_to_normal_chat_mode_future_messages_will": "일반 채팅 모드로 전환할까요? 이후 메시지는 표준 채팅 동작을 사용합니다.",
+      "close_failed_refused_title": "‘{{title}}’을 닫지 못했습니다. 아직 열려 있습니다",
+      "close_failed_unknown_title": "‘{{title}}’이(가) 닫혔는지 확인할 수 없습니다",
+      "close_failed_replaced": "닫은 세션은 사라졌습니다. 목록에 남아 있는 행은 새 세션입니다.",
+      "close_failed_replaced_title": "‘{{title}}’은 이미 닫혔습니다",
+      "close_failed_confirmed": "요청한 대로 세션이 닫혔습니다.",
+      "close_failed_confirmed_title": "‘{{title}}’이 닫혔습니다"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "오디오 워크릿을 사용할 수 없습니다",
@@ -8908,7 +8919,11 @@
       "comments_failed_to_load": "댓글을 불러오지 못했습니다",
       "comment_action_failed": "댓글 작업 실패",
       "activity_failed_to_load": "활동을 불러오지 못했습니다",
-      "sync_status_unavailable": "동기화 상태를 확인할 수 없습니다"
+      "sync_status_unavailable": "동기화 상태를 확인할 수 없습니다",
+      "close_failed_refused": "“새 채팅”을 다시 시도하거나 페이지를 새로 고쳐 현재 상태를 확인하세요.",
+      "close_failed_unknown": "아직 다른 채팅을 시작하지 마세요. 세션이 계속 실행 중이면 저절로 돌아옵니다.",
+      "close_failed_replaced": "이제 새 세션이 그 이름을 사용하므로 닫을 것이 없습니다. 새로 시작하려면 “새 채팅”을 다시 클릭하세요.",
+      "close_failed_confirmed": "요청한 대로 세션이 닫혔습니다."
     },
     "artifactPopoutFrame": {
       "artifact": "아티팩트",
