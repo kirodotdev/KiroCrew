@@ -6181,6 +6181,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "클릭하여 입력에 추가 (더블클릭하면 선택 후 전송)",
       "click_to_add_to_input_editable_before_sending": "클릭하여 입력에 추가 (전송 전에 수정 가능)",
+      "tooltip_arrow_sends_now": "↑ 지금 전송",
       "click_to_add_to_selection": "클릭하여 선택에 추가",
       "click_to_remove_from_input": "클릭하여 입력에서 제거",
       "click_to_remove_from_input_double_click_to_send": "클릭하여 입력에서 제거 (더블클릭하면 전송)",

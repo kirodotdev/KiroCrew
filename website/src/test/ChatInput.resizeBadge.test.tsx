@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { PREVIEW_STRIP_H, setStripHeight, stubStripHeights } from './stripHeights'
@@ -61,16 +61,24 @@ describe('ChatInput attachment resize badge', () => {
   })
 
   it('opens a tooltip with the dimensions on hover and closes on leave', () => {
-    renderWithProviders(
-      <ChatInput {...defaultProps} pendingFiles={[IMG]} resizedInfo={{ [IMG]: RESIZE }} />,
-    )
-    const badge = screen.getByText('RESIZED')
-    fireEvent.mouseEnter(badge)
-    const tip = screen.getByRole('tooltip')
-    expect(tip).toHaveTextContent('Resized to fit model limits')
-    expect(tip).toHaveTextContent('2400×3200 → 1176×1568')
-    fireEvent.mouseLeave(badge)
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    // Pointer open sits behind InstantTip's ~100ms hover-intent (a transit
+    // paints nothing); keyboard focus stays synchronous — see the next test.
+    vi.useFakeTimers()
+    try {
+      renderWithProviders(
+        <ChatInput {...defaultProps} pendingFiles={[IMG]} resizedInfo={{ [IMG]: RESIZE }} />,
+      )
+      const badge = screen.getByText('RESIZED')
+      fireEvent.mouseEnter(badge)
+      act(() => { vi.advanceTimersByTime(100) })
+      const tip = screen.getByRole('tooltip')
+      expect(tip).toHaveTextContent('Resized to fit model limits')
+      expect(tip).toHaveTextContent('2400×3200 → 1176×1568')
+      fireEvent.mouseLeave(badge)
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('opens the tooltip on keyboard focus too', () => {

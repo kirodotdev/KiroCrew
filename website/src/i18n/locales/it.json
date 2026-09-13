@@ -6379,6 +6379,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "Clicca per aggiungere all'input (doppio clic per selezionare e inviare)",
       "click_to_add_to_input_editable_before_sending": "Clicca per aggiungere all'input (modificabile prima dell'invio)",
+      "tooltip_arrow_sends_now": "↑ invia subito",
       "click_to_add_to_selection": "Clicca per aggiungere alla selezione",
       "click_to_remove_from_input": "Clicca per rimuovere dall'input",
       "click_to_remove_from_input_double_click_to_send": "Clicca per rimuovere dall'input (doppio clic per inviare)",

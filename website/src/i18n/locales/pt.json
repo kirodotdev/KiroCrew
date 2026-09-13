@@ -6379,6 +6379,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "Clique para adicionar ao campo de mensagem (clique duplo para selecionar e enviar)",
       "click_to_add_to_input_editable_before_sending": "Clique para adicionar ao campo de mensagem (editável antes de enviar)",
+      "tooltip_arrow_sends_now": "↑ envia agora",
       "click_to_add_to_selection": "Clique para adicionar à seleção",
       "click_to_remove_from_input": "Clique para remover do campo de mensagem",
       "click_to_remove_from_input_double_click_to_send": "Clique para remover do campo de mensagem (clique duplo para enviar)",

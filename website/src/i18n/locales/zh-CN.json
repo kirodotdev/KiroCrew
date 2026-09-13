@@ -6181,6 +6181,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "点击添加到输入框（双击以选择并发送）",
       "click_to_add_to_input_editable_before_sending": "点击添加到输入框（发送前可编辑）",
+      "tooltip_arrow_sends_now": "↑ 立即发送",
       "click_to_add_to_selection": "点击添加到所选内容",
       "click_to_remove_from_input": "点击从输入框移除",
       "click_to_remove_from_input_double_click_to_send": "点击从输入框移除（双击以发送）",

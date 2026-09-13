@@ -6181,6 +6181,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "クリックして入力に追加（ダブルクリックして選択して送信）",
       "click_to_add_to_input_editable_before_sending": "クリックして入力に追加（送信前に編集可能）",
+      "tooltip_arrow_sends_now": "↑ は今すぐ送信",
       "click_to_add_to_selection": "クリックして選択に追加",
       "click_to_remove_from_input": "クリックして入力から削除",
       "click_to_remove_from_input_double_click_to_send": "クリックして入力から削除（ダブルクリックして送信）",

@@ -6280,6 +6280,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "इनपुट में जोड़ने के लिए क्लिक करें (चुनने और भेजने के लिए डबल-क्लिक करें)",
       "click_to_add_to_input_editable_before_sending": "इनपुट में जोड़ने के लिए क्लिक करें (भेजने से पहले संपादन योग्य)",
+      "tooltip_arrow_sends_now": "↑ अभी भेजता है",
       "click_to_add_to_selection": "चयन में जोड़ने के लिए क्लिक करें",
       "click_to_remove_from_input": "इनपुट से हटाने के लिए क्लिक करें",
       "click_to_remove_from_input_double_click_to_send": "इनपुट से हटाने के लिए क्लिक करें (भेजने के लिए डबल-क्लिक करें)",

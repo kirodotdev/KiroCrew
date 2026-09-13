@@ -6280,6 +6280,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "Klicken, um zur Eingabe hinzuzufügen (Doppelklick zum Auswählen und Senden)",
       "click_to_add_to_input_editable_before_sending": "Klicken, um zur Eingabe hinzuzufügen (vor dem Senden bearbeitbar)",
+      "tooltip_arrow_sends_now": "↑ sendet sofort",
       "click_to_add_to_selection": "Klicken, um zur Auswahl hinzuzufügen",
       "click_to_remove_from_input": "Klicken, um aus der Eingabe zu entfernen",
       "click_to_remove_from_input_double_click_to_send": "Klicken, um aus der Eingabe zu entfernen (Doppelklick zum Senden)",
