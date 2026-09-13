@@ -292,6 +292,10 @@ describe('RemoteArtifactDetailPage', async () => {
       // an empty box. Dropping the property looks harmless in Chromium and in
       // this DOM, so the assertion is the whole guard.
       expect((frame as HTMLIFrameElement).style.transform).toBe('translateZ(0)')
+      // A delegated write permission lets an on-load script overwrite the
+      // clipboard without a Copy action. The injected shim still lets a real
+      // button press fall back to execCommand without widening frame permissions.
+      expect(frame).not.toHaveAttribute('allow')
     })
 
     it('flattens a nested "artifact" payload so content_type still selects the html renderer', async () => {

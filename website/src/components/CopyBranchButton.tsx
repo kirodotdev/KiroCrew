@@ -41,13 +41,8 @@ export default function CopyBranchButton({
     [],
   )
   const handleCopy = async () => {
-    try {
-      await copyToClipboard(branch)
-    } catch {
-      // Both clipboard paths failed (no clipboard API and execCommand denied):
-      // leave the label as-is rather than announcing a copy that did not happen.
-      return
-    }
+    const didCopy = await copyToClipboard(branch)
+    if (!didCopy) return
     setCopied(true)
     if (resetTimer.current) clearTimeout(resetTimer.current)
     resetTimer.current = setTimeout(() => setCopied(false), 1500)

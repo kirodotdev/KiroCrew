@@ -60,6 +60,7 @@ import {
 import { i18nT } from '../../i18n/t'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { fmtDateFields, fmtUnit } from '../../i18n/format'
+import { copyToClipboard } from '../../utils/clipboard'
 /** Poll fast while work is live, slowly when idle — no SSE (it clobbers state on connect). */
 const POLL_ACTIVE_MS = 5000
 const POLL_IDLE_MS = 30000
@@ -231,16 +232,11 @@ function ClosedPostmortem({ incidentId }: { incidentId: string }) {
   const logPath = query.data?.log_path ?? ''
 
   const copy = async () => {
-    // Same handling as the handover digest's copy button, including the silent failure
-    // branch: a blocked clipboard (insecure context, denied permission) needs no error,
-    // because the text it would have copied is already on screen to select by hand.
-    if (!log || typeof navigator === 'undefined' || !navigator.clipboard) return
-    try {
-      await navigator.clipboard.writeText(log)
+    if (!log) return
+    const ok = await copyToClipboard(log)
+    if (ok) {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
-    } catch {
-      /* clipboard blocked — the text is on screen */
     }
   }
 

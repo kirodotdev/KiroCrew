@@ -64,15 +64,12 @@ export const CodeBlock = memo(function CodeBlock(
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   // Await and check the result -- copyCode resolves false on the legacy
-  // execCommand fallback reporting failure, and can still reject outright.
-  // Flipping to the "Copied" tick unconditionally would confirm a copy that
-  // never happened; mirrors the established pattern in TailnetMobileCard.
+  // execCommand fallback reporting failure and never rejects, so the boolean is
+  // the only failure signal. Flipping to the "Copied" tick unconditionally
+  // would confirm a copy that never happened; mirrors the established pattern
+  // in TailnetMobileCard.
   const copy = async () => {
-    try {
-      if ((await copyCode(code)) === false) return
-    } catch {
-      return
-    }
+    if ((await copyCode(code)) === false) return
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }

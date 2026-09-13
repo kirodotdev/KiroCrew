@@ -194,6 +194,30 @@ describe('ArtifactDeployPage — navigation, disclosure, and copy affordances', 
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('aws configure sso'))
   })
 
+  it('shows a check confirmation once a setup-command copy actually lands', async () => {
+    installFetch()
+    installClipboard()
+    renderPage()
+    const copyButtons = await screen.findAllByRole('button', { name: 'Copy' })
+    fireEvent.click(copyButtons[0])
+    await waitFor(() => expect(copyButtons[0].querySelector('.lucide-check')).not.toBeNull())
+  })
+
+  it('renders no check confirmation when a setup-command copy fails outright', async () => {
+    installFetch()
+    // Both clipboard layers fail: writeText rejects, and execCommand (jsdom has
+    // no real implementation) returns false via the shared helper's fallback.
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      configurable: true,
+    })
+    renderPage()
+    const copyButtons = await screen.findAllByRole('button', { name: 'Copy' })
+    fireEvent.click(copyButtons[0])
+    await waitFor(() => expect(copyButtons[0]).toBeInTheDocument())
+    expect(copyButtons[0].querySelector('.lucide-check')).toBeNull()
+  })
+
   it('states the empty case for both the registry and the deployment list', async () => {
     installFetch({ profiles: [], defaultProfile: '' })
     renderPage()
@@ -385,8 +409,25 @@ describe('ArtifactDeployPage — IAM policy loader', () => {
     expect(await screen.findByText('STATIC-POLICY-JSON')).toBeInTheDocument()
     expect(calls.some((c) => c.url.includes('/iam-policy?tier=static'))).toBe(true)
     expect(screen.queryByRole('button', { name: /Copy boundary policy/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Copy policy/ }))
+    const copyPolicyBtn = screen.getByRole('button', { name: /Copy policy/ })
+    fireEvent.click(copyPolicyBtn)
     expect(writeText).toHaveBeenCalledWith('STATIC-POLICY-JSON')
+    await waitFor(() => expect(copyPolicyBtn.querySelector('.lucide-check')).not.toBeNull())
+  })
+
+  it('renders no confirmation when copying the IAM policy fails', async () => {
+    installFetch()
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      configurable: true,
+    })
+    renderPage()
+    await profilesLoaded()
+    fireEvent.click(screen.getByRole('button', { name: 'Get IAM policy' }))
+    const copyPolicyBtn = await screen.findByRole('button', { name: /Copy policy/ })
+    fireEvent.click(copyPolicyBtn)
+    await waitFor(() => expect(copyPolicyBtn).toBeInTheDocument())
+    expect(copyPolicyBtn.querySelector('.lucide-check')).toBeNull()
   })
 
   it('loads the fullstack tier with its permissions-boundary policy and note', async () => {

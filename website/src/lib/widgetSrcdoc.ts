@@ -305,6 +305,101 @@ const SAFE_CENTER_GUARD_BODY = `(function(){
   window.addEventListener('resize', apply);
 })();`
 
+/** Clipboard write-fallback shim, injected into every document buildSrcdoc()
+ * builds. Widget and artifact bodies routinely carry a copy button, and
+ * without this every one of them is dead.
+ *
+ * These frames deliberately do NOT receive a delegated `clipboard-write`
+ * permission. Delegation would let agent-authored script write during load,
+ * without a Copy action. The null-origin frame's native writeText therefore
+ * rejects, while a user-initiated copy can still use the execCommand fallback
+ * below. On plain-HTTP deployments navigator.clipboard is absent entirely, so
+ * the same fallback supplies the only writeText implementation there too.
+ * Gesture-less load-time calls remain rejected when execCommand lacks user
+ * activation; the shim does not turn them into successful clipboard writes.
+ *
+ * Shadows ONLY `writeText` on the existing `navigator.clipboard` (an own
+ * property beats the prototype method for every caller), leaving
+ * `readText`/`write`/`read` and its EventTarget nature untouched — this is
+ * not a wholesale replacement, since `writeText` is the one method on the
+ * sensitive path. When `navigator.clipboard` is absent entirely a minimal
+ * object carrying just `writeText` is defined on `navigator` itself. Each
+ * `defineProperty` is wrapped in try/catch so an unusual engine cannot break
+ * widget rendering.
+ *
+ * The wrapped `writeText` tries the native implementation first (when one
+ * exists and is allowed); only on rejection — or when there is no native
+ * implementation at all — does it fall back to a textarea +
+ * `execCommand('copy')`, which works inside the sandbox during user activation.
+ * The fallback restores focus and the document selection exactly as
+ * `utils/clipboard.ts` does, for the same reason: widget bodies contain
+ * focusable controls, so a copy must not silently move focus or clobber a
+ * selection the caller means to keep. Static trusted JS string — never
+ * carries LLM/user content — assigned via script.textContent, never
+ * interpolated into the template literal. Lives in a template literal, so it
+ * must contain no backtick and no dollar-brace opener. */
+const CLIPBOARD_FALLBACK_SHIM_BODY = `(function(){
+  function execCommandCopy(text){
+    if (typeof document.execCommand !== 'function') return false;
+    var previouslyFocused = document.activeElement;
+    var selection = document.getSelection();
+    var savedRanges = [];
+    if (selection) { for (var i = 0; i < selection.rangeCount; i++) savedRanges.push(selection.getRangeAt(i)); }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.readOnly = true;
+    ta.setAttribute('aria-hidden', 'true');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0';
+    document.body.appendChild(ta);
+    try {
+      ta.select();
+      return document.execCommand('copy');
+    } catch (e) {
+      return false;
+    } finally {
+      document.body.removeChild(ta);
+      if (selection) {
+        selection.removeAllRanges();
+        for (var j = 0; j < savedRanges.length; j++) selection.addRange(savedRanges[j]);
+      }
+      if (previouslyFocused && previouslyFocused.focus) {
+        try { previouslyFocused.focus({ preventScroll: true }); } catch (e) {}
+      }
+    }
+  }
+  function wrappedWriteText(nativeWriteText, text){
+    if (nativeWriteText) {
+      return nativeWriteText(text).then(function(){ return undefined; }, function(err){
+        if (execCommandCopy(text)) return undefined;
+        throw err;
+      });
+    }
+    return execCommandCopy(text)
+      ? Promise.resolve(undefined)
+      : Promise.reject(new Error('copy failed'));
+  }
+  try {
+    if (navigator.clipboard) {
+      var native = navigator.clipboard.writeText
+        ? navigator.clipboard.writeText.bind(navigator.clipboard)
+        : null;
+      try {
+        Object.defineProperty(navigator.clipboard, 'writeText', {
+          configurable: true,
+          value: function(text){ return wrappedWriteText(native, text); },
+        });
+      } catch (e) {}
+    } else {
+      try {
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: { writeText: function(text){ return wrappedWriteText(null, text); } },
+        });
+      } catch (e) {}
+    }
+  } catch (e) {}
+})();`
+
 const COMMENT_BRIDGE_BODY = `(function(){
   var PFX = 32;
   function selectionContext(){
@@ -686,6 +781,14 @@ export function buildSrcdoc({
   // <body class="dark|light">
   body.className = mode
 
+  // Clipboard write-fallback shim. Installed BEFORE the LLM html below so an
+  // on-load attempt sees the wrapper too; without user activation its fallback
+  // still fails rather than gaining an ambient clipboard-write path.
+  // textContent assignment only — no LLM/user content interpolated.
+  const clipboardShim = doc.createElement('script')
+  clipboardShim.textContent = CLIPBOARD_FALLBACK_SHIM_BODY
+  body.appendChild(clipboardShim)
+
   // Parse LLM html into a document fragment via the typed DOM API. The
   // `html` argument flows through createContextualFragment() — NOT through
   // string concatenation — so it never enters a template-literal HTML build.
@@ -829,6 +932,12 @@ function buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter }: BuildS
     `<script src="${TAILWIND_RUNTIME_PATH}" crossorigin="anonymous" onerror="${TW_ERROR_INLINE_HANDLER}"><\/script>` +
     `</head><body class="${mode}">` +
     `<!-- SSR fallback: LLM body omitted -->` +
+    // NO clipboard shim here. This SSR builder is unreachable in production
+    // (buildSrcdoc only enters it when there is no DOM — i.e. pre-jsdom unit
+    // tests) AND it does not embed the LLM body at all, so a copy button never
+    // renders in its output. Injecting the write-fallback shim into it would be
+    // scope with no reachable effect; the real fix lives in the DOM path above
+    // (buildSrcdoc), which is what every production surface renders.
     reporter +
     `</body></html>`
   )

@@ -57,9 +57,9 @@ vi.mock('../pages/chat/McpOAuthBanner', () => ({
   renderMcpOAuthMessage: (m: ChatMessage, hide: boolean) =>
     hide && m.meta?.card_owned ? null : <div data-testid="oauth" />,
 }))
-// The real helper resolves FALSE on a refused write and rejects only on a genuine
-// throw, so the mock is driven both ways below — a resolved false read as success
-// is how a copy button claims to have filled an empty clipboard.
+// The real helper resolves FALSE on a refused write and never rejects, so the
+// mock is driven with false below — a resolved false read as success is how a
+// copy button claims to have filled an empty clipboard.
 vi.mock('../utils/clipboard', () => ({
   copyToClipboard: vi.fn(async () => true),
 }))
@@ -627,14 +627,6 @@ describe('ToolCallPill expanded output panel', () => {
     await waitFor(() => expect(screen.getByTestId('tool-panel-copy-error')).toBeInTheDocument())
     expect(screen.getByTestId('tool-panel-copy-error')).toHaveTextContent('Copy failed')
     expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull()
-  })
-
-  it('reports a THROWN clipboard write as a failure', async () => {
-    mockedCopy.mockRejectedValue(new Error('zzq-denied'))
-    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
-    await expandPanel()
-    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
-    await waitFor(() => expect(screen.getByTestId('tool-panel-copy-error')).toBeInTheDocument())
   })
 
   it('offers the agent hand-off on a copy failure, and the notice is dismissible', async () => {

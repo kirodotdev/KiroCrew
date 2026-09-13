@@ -37,6 +37,13 @@ import { awsControlApi } from './api'
 import { api } from '../../api/client'
 import UsagePane, { ReconnectAction, ConnectionsSection, SetupCard } from './ConsoleView'
 
+vi.mock('../../utils/clipboard', () => ({
+  copyToClipboard: vi.fn().mockResolvedValue(true),
+  copyCode: vi.fn().mockResolvedValue(true),
+}))
+
+import { copyCode } from '../../utils/clipboard'
+
 const ACCOUNT: AwsAccount = {
   account: '111122223333',
   name: 'personal',
@@ -434,6 +441,55 @@ describe('ReconnectAction', () => {
     expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
     // The retry stays: it is the reader's own recovery and navigates nowhere.
     expect(screen.getByTestId('reconnect-error-retry')).toBeTruthy()
+  })
+})
+
+describe('ReconnectAction copy command', () => {
+  // The command is a shell command meant to be pasted at a prompt, so the copy
+  // routes through `copyCode` (trims whitespace) rather than `copyToClipboard`.
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.mocked(copyCode).mockResolvedValue(true)
+    vi.mocked(awsControlApi.reconnectPlan).mockResolvedValue({
+      method: 'terminal', kind: 'credential-process', command: 'aws sso login --profile work',
+    })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('copies the exact command through copyCode and confirms, then reverts', async () => {
+    renderWithProviders(<ReconnectAction profile={DEGRADED.profiles[0]} askAgent />)
+
+    fireEvent.click(await screen.findByTestId('reconnect-toggle'))
+    await screen.findByTestId('reconnect-command')
+
+    fireEvent.click(screen.getByTestId('reconnect-copy'))
+    await waitFor(() => expect(copyCode).toHaveBeenCalledWith('aws sso login --profile work'))
+    await waitFor(() =>
+      expect(screen.getByTestId('reconnect-copy')).toHaveTextContent(i18nT('apps.awsControl.page.copied')),
+    )
+
+    vi.advanceTimersByTime(1600)
+    await waitFor(() =>
+      expect(screen.getByTestId('reconnect-copy')).toHaveTextContent(i18nT('apps.awsControl.page.copy')),
+    )
+  })
+
+  it('renders no confirmation when the copy fails', async () => {
+    vi.mocked(copyCode).mockResolvedValueOnce(false)
+    renderWithProviders(<ReconnectAction profile={DEGRADED.profiles[0]} askAgent />)
+
+    fireEvent.click(await screen.findByTestId('reconnect-toggle'))
+    await screen.findByTestId('reconnect-command')
+
+    const btn = screen.getByTestId('reconnect-copy')
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(copyCode).toHaveBeenCalled())
+    expect(btn).toHaveTextContent(i18nT('apps.awsControl.page.copy'))
+    expect(btn).not.toHaveTextContent(i18nT('apps.awsControl.page.copied'))
   })
 })
 

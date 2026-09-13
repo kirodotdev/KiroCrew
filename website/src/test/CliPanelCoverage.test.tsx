@@ -584,6 +584,23 @@ describe('CliPanel selection toolbar', () => {
 /* ── copy ─────────────────────────────────────────────────────────────────── */
 
 describe('CliPanel copy action', () => {
+  // copyToClipboard's execCommand fallback gets a genuine chance to run now
+  // that Copy routes through it, so any test asserting a residual failure (or
+  // a successful fallback) must stub execCommand itself — happy-dom's own
+  // implementation is unmocked and unreliable, same as every other clipboard
+  // test in this suite (clipboard.test.ts, clipboardCov80.test.ts).
+  const origExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+  function stubExecCommand(result: boolean) {
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: vi.fn(() => result),
+    })
+  }
+  afterEach(() => {
+    if (origExecCommand) Object.defineProperty(document, 'execCommand', origExecCommand)
+    else delete (document as unknown as Record<string, unknown>).execCommand
+  })
+
   it('copies the captured text, confirms, then dismisses the toolbar', async () => {
     // Only the timer is faked: vitest's default fake set includes
     // requestAnimationFrame, which would displace the synchronous stub the
@@ -607,24 +624,88 @@ describe('CliPanel copy action', () => {
     }
   })
 
-  it('reports failure and keeps the selection when the clipboard is unavailable', () => {
+  /**
+   * Routed through the shared helper: a missing clipboard API alone no
+   * longer ends the attempt, since the execCommand fallback still gets a
+   * real chance to land the text — confirm only when that also fails.
+   */
+  it('reports failure and keeps the selection when the clipboard is unavailable and the fallback also fails', async () => {
     setClipboard(undefined)
+    stubExecCommand(false)
     const { term, container } = mount()
     term.selection = 'secret-free output'
     endDrag(container, { x: 200, y: 100 })
-    act(() => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
     expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
     expect(term.clearCalls).toBe(0)
   })
 
-  it('reports failure when the clipboard write is rejected', async () => {
+  /**
+   * The residual-failure case pairs with its opposite: when the fallback
+   * DOES land the text despite no async API, the key must confirm success
+   * rather than name a remedy nothing actually needed.
+   */
+  it('confirms success when the clipboard is unavailable but the execCommand fallback lands the text', async () => {
+    setClipboard(undefined)
+    stubExecCommand(true)
+    const { term, container } = mount()
+    term.selection = 'secret-free output'
+    endDrag(container, { x: 200, y: 100 })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+    expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+  })
+
+  /**
+   * A permission-denied writeText no longer ends the attempt either: the
+   * fallback still gets a real chance, and a working fallback means success,
+   * not failure.
+   */
+  it('confirms success when the clipboard write is rejected but the execCommand fallback lands the text', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+      stubExecCommand(true)
+      const { term, container } = mount()
+      term.selection = 'output'
+      endDrag(container, { x: 200, y: 100 })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+      expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+      expect(term.clearCalls).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports failure when the clipboard write is rejected and the fallback also fails', async () => {
     setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+    stubExecCommand(false)
     const { term, container } = mount()
     term.selection = 'output'
     endDrag(container, { x: 200, y: 100 })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
     expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
     expect(term.clearCalls).toBe(0)
+  })
+
+  /**
+   * The reason the fallback was once unusable here: its textarea `select()`
+   * moved focus off whatever the user was working in. The helper now restores
+   * the previously focused element with `{preventScroll:true}`, so the click
+   * target (the Copy button itself) must still hold focus once a
+   * fallback-routed copy completes, and no scratch textarea is left behind.
+   */
+  it('keeps the clicked Copy button focused after a copy that falls back to execCommand', async () => {
+    setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+    stubExecCommand(true)
+    const { term, container } = mount()
+    term.selection = 'output'
+    endDrag(container, { x: 200, y: 100 })
+    const copyBtn = screen.getByRole('button', { name: COPY_LABEL })
+    copyBtn.focus()
+    await act(async () => { fireEvent.click(copyBtn) })
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(document.activeElement).toBe(copyBtn)
   })
 })
 

@@ -57,4 +57,13 @@ describe('mochi WidgetFrame paint contract', () => {
     expect(srcdoc).not.toBe('<p>handoff</p>')
     expect(srcdoc).toContain('<p>handoff</p>')
   })
+
+  it('does not delegate clipboard-write to agent-authored HTML', () => {
+    // A delegated write permission lets an on-load script overwrite the
+    // clipboard without a Copy action. The injected shim still lets a real
+    // button press fall back to execCommand without widening frame permissions.
+    const { container } = render(<WidgetFrame html="<p>allow</p>" title="T" />)
+    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    expect(iframe.hasAttribute('allow')).toBe(false)
+  })
 })

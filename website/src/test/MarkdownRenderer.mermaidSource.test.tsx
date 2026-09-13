@@ -208,18 +208,6 @@ describe('MermaidBlock source view and copy', () => {
     }
   })
 
-  it('reports a THROWN clipboard failure the same way', async () => {
-    // The second arm: the fallback itself throwing must not become an unhandled
-    // rejection, and must not leave the control claiming success either.
-    vi.mocked(copyCode).mockRejectedValue(new Error('denied'))
-    const toggle = await renderDiagram()
-    fireEvent.click(toggle)
-    const copy = screen.getByTestId('mermaid-copy-source')
-    fireEvent.click(copy)
-    const notice = await waitFor(() => screen.getByTestId('mermaid-copy-error'))
-    expect(notice.textContent).toMatch(/failed/i)
-  })
-
   it('still offers copy when the diagram fails to render, but no toggle', async () => {
     vi.mocked(mermaid.render).mockRejectedValueOnce(new Error('parse error'))
     render(<MarkdownRenderer content={MERMAID_MD} />)

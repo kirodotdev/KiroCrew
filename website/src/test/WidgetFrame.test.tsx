@@ -205,6 +205,15 @@ describe('WidgetFrame theme passthrough', () => {
     expect(iframe.className).not.toMatch(/\bbg-white\b/)
   })
 
+  it('does not delegate clipboard-write to agent-authored HTML', async () => {
+    // A delegated write permission lets an on-load script overwrite the
+    // clipboard without a Copy action. The injected shim still lets a real
+    // button press fall back to execCommand without widening frame permissions.
+    const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+    const iframe = await frameIn(container)
+    expect(iframe.hasAttribute('allow')).toBe(false)
+  })
+
   it('preserves the CSP meta and loads the Tailwind runtime same-origin', () => {
     const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
     const srcdoc = getSrcdoc(container)

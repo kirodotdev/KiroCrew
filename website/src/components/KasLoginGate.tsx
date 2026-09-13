@@ -210,12 +210,8 @@ function CopyField({ value }: { value: string }) {
     [],
   )
   const onCopy = async () => {
-    try {
-      await copyToClipboard(value)
-    } catch {
-      // Both clipboard paths failed: do not announce a copy that did not happen.
-      return
-    }
+    // Both clipboard paths failed: do not announce a copy that did not happen.
+    if (!(await copyToClipboard(value))) return
     setCopied(true)
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => setCopied(false), 1500)

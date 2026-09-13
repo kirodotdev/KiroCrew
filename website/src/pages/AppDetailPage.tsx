@@ -26,6 +26,7 @@ import { useTheme } from '../hooks/useTheme'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../hooks/usePinchZoom'
 import ErrorNotice from '../components/ErrorNotice'
 import { findReport, recordError } from '../utils/errorReport'
+import { copyCode } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
 import type { AppContributor } from '../types'
@@ -1476,10 +1477,13 @@ export default function AppDetailPage() {
                   <button
                     className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-elevated border border-border text-muted hover:text-text hover:border-accent/40 transition-all opacity-0 group-hover/cmd:opacity-100"
                     aria-label={i18nT('pages.appDetailPage.copy_command')}
-                    onClick={() => {
-                      navigator.clipboard.writeText(resolvedShell)
-                      setCopied(true)
-                      setTimeout(() => setCopied(false), 2000)
+                    onClick={async () => {
+                      // Gate the confirmation on the boolean: a tick over an
+                      // unchanged clipboard is worse than no affordance.
+                      if (await copyCode(resolvedShell)) {
+                        setCopied(true)
+                        setTimeout(() => setCopied(false), 2000)
+                      }
                     }}
                   >
                     {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}

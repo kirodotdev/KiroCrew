@@ -500,6 +500,30 @@ describe('AppDetailPage — uncovered surfaces', () => {
     }
   })
 
+  it('shows no checkmark when the resolved-shell copy fails outright', async () => {
+    // Both clipboard layers fail: writeText rejects, and jsdom's execCommand
+    // (no real backing implementation) reports false via the shared helper's
+    // fallback — the boolean-gated confirmation must never fire.
+    listRegistry.mockResolvedValue({ apps: [registryRow()], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+    installFromRegistryStream.mockResolvedValue({
+      needsClientInstall: true,
+      clientInstall: { shell: 'brew install lens' },
+    })
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      configurable: true,
+    })
+    renderDetail()
+    await loaded()
+
+    fireEvent.click(screen.getByRole('button', { name: /install/i }))
+    const copy = await screen.findByRole('button', { name: 'Copy command' })
+
+    fireEvent.click(copy)
+    await waitFor(() => expect(copy).toBeInTheDocument())
+    expect(copy.querySelector('.lucide-check')).toBeNull()
+  })
+
   // --- Trust consent retry -------------------------------------------------
 
   it('opens the consent modal when the install REJECTS with the denial code', async () => {

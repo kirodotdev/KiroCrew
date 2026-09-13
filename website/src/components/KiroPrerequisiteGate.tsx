@@ -299,13 +299,9 @@ function CopyCommand({ children }: { children: ReactNode }) {
   const handleCopy = async () => {
     const text = hostRef.current?.textContent?.trim() ?? ''
     if (!text) return
-    try {
-      await copyToClipboard(text)
-    } catch {
-      // Both clipboard paths failed (no clipboard API, execCommand denied):
-      // leave the glyph alone rather than announcing a copy that did not happen.
-      return
-    }
+    // Both clipboard paths failed (no clipboard API, execCommand denied):
+    // leave the glyph alone rather than announcing a copy that did not happen.
+    if (!(await copyToClipboard(text))) return
     setCopied(true)
     if (resetTimer.current) clearTimeout(resetTimer.current)
     resetTimer.current = setTimeout(() => setCopied(false), 1500)

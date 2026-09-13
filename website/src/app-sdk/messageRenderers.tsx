@@ -208,9 +208,9 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
     || measuredOverflow
 
   const copyPanel = React.useCallback(() => {
-    // `copyToClipboard` RESOLVES false on a refused write and only rejects on a
-    // genuine throw, so both arms must land on 'failed' — a resolved false read
-    // as success is how a copy button lies about an empty clipboard.
+    // `copyToClipboard` resolves false on a refused write and never rejects, so
+    // a resolved false must land on 'failed' — read as success it is how a copy
+    // button lies about an empty clipboard.
     const settle = (ok: boolean) => {
       setCopyOutcome(ok ? 'copied' : 'failed')
       if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
@@ -219,7 +219,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
       // a banner that erases itself after 1.5s is not a report.
       if (ok) copyResetTimer.current = setTimeout(() => setCopyOutcome('idle'), 1500)
     }
-    copyToClipboard(panelText).then(settle, () => settle(false))
+    copyToClipboard(panelText).then(settle)
   }, [panelText])
   const copyTitle = copyOutcome === 'copied'
     ? i18nT('appSdk.chatMessageList.copied')

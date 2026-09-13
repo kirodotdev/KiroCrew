@@ -2,7 +2,7 @@ import { useState } from 'react'
 import Clickable from '../components/Clickable'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, Rocket, Plus, Star } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Globe, Copy, Check, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, Rocket, Plus, Star } from 'lucide-react'
 import type { Artifact } from '../types'
 import { PageHeader, Card, CardTitle, StatCard, Btn, Input, Toggle , Badge} from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
@@ -11,12 +11,48 @@ import { useConfirm } from '../components/ConfirmDialog'
 import PublicPublishAckModal from '../components/PublicPublishAckModal'
 import InfoTip from '../components/InfoTip'
 import { safeHttpUrl } from '../lib/safeUrl'
+import { copyToClipboard, copyCode } from '../utils/clipboard'
 import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
 import { toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
+
+// Shared copy affordance for this page's three copy sites. `code` routes a
+// pasted-at-a-prompt shell command through copyCode (trims incidental
+// whitespace); the two JSON/text sites use copyToClipboard verbatim. The check
+// glyph is gated on the resolved boolean — never shown for a copy that did not
+// actually land. Hoisted to module scope (rather than defined inside the page
+// component) so its own `copied` state survives the page's re-renders instead
+// of being torn down and rebuilt as a fresh component identity every time.
+function CopyBtn({ text, code, size, children }: { text: string; code?: boolean; size: number; children: React.ReactNode }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <Btn onClick={async () => {
+      const ok = await (code ? copyCode(text) : copyToClipboard(text))
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }
+    }}>
+      {copied ? <Check size={size} className="text-ok" /> : <Copy size={size} />} {children}
+    </Btn>
+  )
+}
+
+// A one-line shell command with its own copy button — hoisted alongside
+// CopyBtn for the same reason: kept inside the page component, a fresh
+// function identity on every render would unmount/remount CopyBtn's `copied`
+// state before the user ever saw the confirmation.
+function CmdRow({ text }: { text: string }) {
+  return (
+    <div style={cmd}>
+      <code style={{ overflow: 'auto', whiteSpace: 'nowrap' }}>{text}</code>
+      <CopyBtn text={text} code size={11}>{i18nT('pages.artifactDeployPage.copy')}</CopyBtn>
+    </div>
+  )
+}
 
 interface ProfileEntry { name: string; region: string; account: string; verified_at: string; note: string }
 interface ProfilesResp { profiles: ProfileEntry[]; default: string; available: string[] }
@@ -269,13 +305,6 @@ export default function ArtifactDeployPage() {
     // Confirmation happens inside the mutation using LIVE previewed resources.
     destroyMut.mutate(s)
   }
-
-  const CmdRow = ({ text }: { text: string }) => (
-    <div style={cmd}>
-      <code style={{ overflow: 'auto', whiteSpace: 'nowrap' }}>{text}</code>
-      <Btn onClick={() => navigator.clipboard.writeText(text)}><Copy size={11} /> {i18nT('pages.artifactDeployPage.copy')}</Btn>
-    </div>
-  )
 
   // Computed stats for the StatCard row
   const totalDeployments = sites.length + deployedWebapps.length
@@ -567,14 +596,14 @@ export default function ArtifactDeployPage() {
               {policyTier === 'fullstack' && <span style={{ color: 'var(--accent)' }}> {i18nT('pages.artifactDeployPage.fullstack_tier_includes_lambda_api_gateway_dynam')}</span>}
             </div>
             <pre style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, fontSize: 11, maxHeight: 240, overflow: 'auto' }}>{policy}</pre>
-            <Btn onClick={() => navigator.clipboard.writeText(policy)}><Copy size={12} /> {i18nT('pages.artifactDeployPage.copy_policy')}</Btn>
+            <CopyBtn text={policy} size={12}>{i18nT('pages.artifactDeployPage.copy_policy')}</CopyBtn>
             {boundaryPolicy && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 4 }}>
                   {boundaryNote || i18nT('pages.artifactDeployPage.fullstack_also_requires_the_permissions_boundary')}
                 </div>
                 <pre style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, fontSize: 11, maxHeight: 200, overflow: 'auto' }}>{boundaryPolicy}</pre>
-                <Btn onClick={() => navigator.clipboard.writeText(boundaryPolicy)}><Copy size={12} /> {i18nT('pages.artifactDeployPage.copy_boundary_policy')}</Btn>
+                <CopyBtn text={boundaryPolicy} size={12}>{i18nT('pages.artifactDeployPage.copy_boundary_policy')}</CopyBtn>
               </div>
             )}
           </div>

@@ -9,7 +9,7 @@ import KiroPrerequisiteGate, {
 import { renderWithProviders } from './helpers'
 
 vi.mock('../utils/clipboard', () => ({
-  copyToClipboard: vi.fn().mockResolvedValue(undefined),
+  copyToClipboard: vi.fn().mockResolvedValue(true),
   copyCode: vi.fn(),
 }))
 

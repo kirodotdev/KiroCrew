@@ -768,8 +768,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // composer renders it; the plain row simply shows no checkmark). A void
       // action keeps the optimistic flash it always had.
       if (outcome && typeof (outcome as Promise<boolean>).then === 'function') {
-        // `copyToClipboard` REJECTS when the execCommand fallback throws (its
-        // documented contract), so a rejection is a failure too, not a crash.
+        // `outcome` is the copy action's own return, not the shared copy helper
+        // (which never rejects), so a rejection here is a failed action, not a
+        // crash.
         void (outcome as Promise<boolean>).then(
           ok => { if (ok) flashCopied(); else setCopyFailed(true) },
           () => setCopyFailed(true),
@@ -874,8 +875,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     const text = selectedTextRef.current
     if (!text) return false
     setCopyFailed(false)
-    // A rejection (execCommand fallback threw) is a failed copy, not a crash.
-    const ok = await copyToClipboard(text).catch(() => false)
+    const ok = await copyToClipboard(text)
     if (ok) flashCopied(); else setCopyFailed(true)
     return ok
   }, [flashCopied])

@@ -1418,17 +1418,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const attempt = ++copyAttemptRef.current
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
     setCopyStatus('idle')
+    // `copyToClipboard` resolves a boolean and never rejects: `true` only once
+    // the text actually reached the clipboard. Gate the confirmation on it so a
+    // `false` shows the failure glyph instead of a tick over an unchanged
+    // clipboard. (A `.catch` here would be unreachable dead code.)
     copyToClipboard(artifact?.content ?? '')
-      .then(() => {
+      .then((ok) => {
         if (attempt !== copyAttemptRef.current) return
-        setCopyStatus('copied')
-        copiedTimerRef.current = setTimeout(() => {
-          if (attempt === copyAttemptRef.current) setCopyStatus('idle')
-        }, 1500)
-      })
-      .catch(() => {
-        if (attempt !== copyAttemptRef.current) return
-        setCopyStatus('failed')
+        setCopyStatus(ok ? 'copied' : 'failed')
         copiedTimerRef.current = setTimeout(() => {
           if (attempt === copyAttemptRef.current) setCopyStatus('idle')
         }, 1500)

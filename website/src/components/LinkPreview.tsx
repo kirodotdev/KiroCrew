@@ -278,7 +278,7 @@ function CopyUrlButton({ href, name, compact = false }: {
     // reaches that handler, so one click both copies and navigates.
     e.preventDefault()
     e.stopPropagation()
-    await copyToClipboard(href)
+    if (!(await copyToClipboard(href))) return
     setCopied(true)
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS)

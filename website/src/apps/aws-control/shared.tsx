@@ -14,6 +14,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import Clickable from '../../components/Clickable'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
+import { copyToClipboard } from '../../utils/clipboard'
 import { errorReportOf } from './api'
 import type { DriveSection, DriveUsage } from './types'
 
@@ -103,11 +104,11 @@ export function AwsErrorNotice({ error, message, title, variant = 'block', class
 export function CopyBtn({ text, testId, ariaLabel }: { text: string; testId?: string; ariaLabel?: string }) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text)
+    const ok = await copyToClipboard(text)
+    if (ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch { /* clipboard unavailable — the text is still selectable by hand */ }
+    }
   }
   return (
     <Btn onClick={copy} data-testid={testId} aria-label={ariaLabel}>

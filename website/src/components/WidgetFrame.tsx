@@ -615,6 +615,12 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
           src={blobUrl}
           onLoad={() => setIframeLoaded(true)}
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+          // NO clipboard-write delegation here, deliberately. These frames host
+          // agent-generated HTML whose scripts run on load, so a delegated
+          // permission would let one overwrite the user's clipboard with no Copy
+          // action at all. Copying still works: lib/widgetSrcdoc.ts injects an
+          // execCommand fallback that a real button press satisfies and a
+          // gesture-less on-load script does not.
           className="w-full border-none bg-card transition-opacity duration-200 ease-out motion-reduce:transition-none"
           style={{
             height: expanded ? '100%' : height,

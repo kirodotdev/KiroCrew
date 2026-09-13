@@ -3,6 +3,8 @@ import type { Terminal } from '@xterm/xterm'
 import { ClipboardPaste, Copy, TextSelect } from 'lucide-react'
 import { SOFT_KEYS, pressTerminalKey } from '../utils/terminalKeys'
 import { logicalLineBounds, logicalLineTop } from '../utils/terminalLogicalLine'
+import { copyWithOutcome, type CopyOutcome } from '../utils/clipboard'
+import { isTouchDevice } from '../utils/isTouchDevice'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -86,6 +88,31 @@ function selectStageShortLabel(k: SelectStage): string {
   switch (k) {
     case 'select_all': return i18nT('components.terminalKeyBar.select_all_short')
     default: return i18nT('components.terminalKeyBar.select_line_short')
+  }
+}
+
+/** Touch-only copy: attempt the async Clipboard API ALONE and never the
+ *  execCommand fallback in utils/clipboard.ts. That fallback stages a
+ *  <textarea> and calls select(), which moves focus off the terminal — on a
+ *  coarse-pointer device that dismisses the on-screen keyboard and collapses
+ *  the layout mid-interaction, the exact regression this key was built to
+ *  avoid. The helper's post-copy focus restore does NOT reliably re-open the
+ *  iOS soft keyboard (a programmatic focus() generally cannot), so it is no
+ *  substitute for not staging the textarea at all on touch.
+ *
+ *  Returns copyWithOutcome's CopyOutcome shape so handleCopy's residual-failure
+ *  split is identical for both pointer types: no async API → hadAsyncApi:false
+ *  (→ copy_needs_https, accurate because the async API genuinely needs a secure
+ *  origin), a rejection → hadAsyncApi:true + asyncError (→ copy_permission_needed
+ *  for a NotAllowedError, else copy_failed). Never rejects. */
+async function copyAsyncOnly(text: string): Promise<CopyOutcome> {
+  const write = navigator.clipboard?.writeText
+  if (!write) return { ok: false, hadAsyncApi: false }
+  try {
+    await navigator.clipboard.writeText(text)
+    return { ok: true, hadAsyncApi: true }
+  } catch (asyncError) {
+    return { ok: false, hadAsyncApi: true, asyncError }
   }
 }
 
@@ -264,37 +291,60 @@ export default function TerminalKeyBar({ term }: { term: Terminal }) {
     // "select text first" instead.
     const selection = term.getSelection?.() ?? ''
     if (!selection) { show('copy_no_selection'); return }
-    // Optional-chain the whole path: `navigator.clipboard` is undefined in
-    // non-secure contexts, and `writeText` is missing on engines that ship
-    // read-only clipboard support. This failure is PERMANENT for this key
-    // (plain-HTTP LAN access), so name the HTTPS remedy rather than a generic
-    // "Copy failed" that auto-reverts and reads as a transient glitch.
-    //
-    // Deliberately NOT utils/clipboard.ts's copyToClipboard: its execCommand
-    // fallback creates a textarea and calls ta.select(), which moves focus off
-    // the terminal — on the touch devices this bar exists for, that dismisses
-    // the on-screen keyboard and collapses the layout mid-interaction, a worse
-    // outcome than the named remedy. The fallback would also fold the
-    // permission-denied and needs-HTTPS states into one generic failure,
-    // losing exactly the actionable remedies this key's review rounds added.
-    // (Same reasoning as CliPanel's own direct writeText at its copy path.)
-    const write = navigator.clipboard?.writeText?.bind(navigator.clipboard)
-    if (!write) { show('copy_needs_https'); return }
+    // Copy splits by pointer type around utils/clipboard.ts's execCommand
+    // fallback, which stages a <textarea> and calls select():
+    //   • Non-touch: copyWithOutcome — the fallback is wanted. Dropping the
+    //     terminal's keyboard focus is harmless with a physical keyboard, and
+    //     the helper restores the previously focused element (with
+    //     {preventScroll:true}) and the document selection afterwards. A
+    //     residual failure here followed a REAL fallback attempt, so
+    //     copy_failed reads honestly.
+    //   • Touch: copyAsyncOnly — the async Clipboard API alone, never the
+    //     fallback. On the coarse-pointer devices this bar exists for, select()
+    //     dismisses the on-screen keyboard and collapses the layout
+    //     mid-interaction — the exact regression this key was built to avoid —
+    //     and a programmatic focus() does not reliably re-open the iOS soft
+    //     keyboard, so the helper's restore cannot stand in for not staging the
+    //     textarea in the first place. On a plain-HTTP phone the async API is
+    //     absent, so every touch Copy takes the no-API path and names
+    //     copy_needs_https — accurate again, because HTTPS is exactly what that
+    //     API needs (this repairs the stale-premise the retrospective flagged).
+    // Both paths yield copyWithOutcome's CopyOutcome, so the residual-failure
+    // split below is identical: !hadAsyncApi → copy_needs_https, a
+    // NotAllowedError → copy_permission_needed, anything else → copy_failed.
+    // What survives from the original design is unchanged: don't let a fallback
+    // attempt erase the cause-specific remedy, which is why this reads the
+    // outcome rather than a plain boolean.
     copyBusyRef.current = true
-    write(selection)
-      .then(() => {
-        // Staleness gate mirrors Paste's: a writeText can be held open by an
-        // iOS permission callout, and a copy that resolves after the pane
-        // went invisible (tab switch, instance switch, pane closed) should
-        // not flip the key's status behind the user's back. A missing element
-        // (never opened, disposed mid-write) fails closed the same way. No PTY
-        // side effect here — copy only touches the clipboard — so this gate
-        // governs the visible status, not data safety.
+    ;(isTouchDevice() ? copyAsyncOnly(selection) : copyWithOutcome(selection))
+      .then(({ ok, hadAsyncApi, asyncError }) => {
+        // Staleness gate mirrors Paste's: a copy can be held open by an iOS
+        // permission callout, and a copy that resolves after the pane went
+        // invisible (tab switch, instance switch, pane closed) should not
+        // flip the key's status behind the user's back. A missing element
+        // (never opened, disposed mid-write) fails closed the same way. No
+        // PTY side effect here — copy only touches the clipboard — so this
+        // gate governs the visible status, not data safety.
         if (!aliveRef.current || !term.element?.offsetParent) {
           copyBusyRef.current = false
           return
         }
         copyBusyRef.current = false
+        if (!ok) {
+          // Residual failure: neither the async API (if present) nor the
+          // execCommand fallback landed the text. Each cause keeps its own
+          // remedy, because they are three different things the user can do
+          // (the UX review's point — folding every cause into one generic
+          // string leaves the deny-path user with no visible remedy):
+          //   • no async API at all → a non-secure origin, permanent for this
+          //     page however many times they retry, so name the HTTPS remedy;
+          //   • the async layer refused permission → recoverable, so ask for
+          //     the grant rather than reporting a dead end;
+          //   • anything else → a genuine generic failure.
+          const denied = asyncError instanceof DOMException && asyncError.name === 'NotAllowedError'
+          show(!hadAsyncApi ? 'copy_needs_https' : denied ? 'copy_permission_needed' : 'copy_failed')
+          return
+        }
         // Clear the selection now that its text is safely on the clipboard.
         // Placed AFTER the staleness gate so a copy that resolved on a pane
         // the user has since left never mutates that pane's selection. This is
@@ -303,7 +353,7 @@ export default function TerminalKeyBar({ term }: { term: Terminal }) {
         // so a repeat Select→Copy cycle grabs current scrollback, not stale
         // text from the prior copy.
         // SECOND gate: only if the selection is still the one we copied. A
-        // writeText can resolve late (iOS permission callout), and the user
+        // write can resolve late (iOS permission callout), and the user
         // may have built a NEW selection via Select in the meantime — that
         // newer selection was never copied, so erasing it (and its stage)
         // would silently destroy work the clipboard does not hold. Leave the
@@ -324,11 +374,6 @@ export default function TerminalKeyBar({ term }: { term: Terminal }) {
         // states use — visible on the key and announced from the sibling
         // status region — then auto-revert to idle.
         showBar({ kind: 'copy', key: 'copy_done' })
-      })
-      // A NotAllowedError is the permission prompt saying no; name the remedy.
-      .catch((err: unknown) => {
-        const denied = err instanceof DOMException && err.name === 'NotAllowedError'
-        show(denied ? 'copy_permission_needed' : 'copy_failed')
       })
   }
 

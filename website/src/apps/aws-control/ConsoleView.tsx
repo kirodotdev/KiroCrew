@@ -18,6 +18,7 @@ import {
 import { Btn, Badge, Card, CardTitle, StatCard, Skeleton } from '../../components/ui'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
+import { copyCode } from '../../utils/clipboard'
 import { CopyBtn, PaneHeader, AwsErrorNotice } from './shared'
 import { StorageMeter } from './DrivePage'
 import { fmtBytes, fmtCurrency, fmtDate, fmtNumber } from '../../i18n/format'
@@ -63,11 +64,11 @@ export function ReconnectAction({ profile, askAgent }: { profile: AwsProfile; as
 
   const copy = async () => {
     if (!planQ.data) return
-    try {
-      await navigator.clipboard.writeText(planQ.data.command)
+    const ok = await copyCode(planQ.data.command)
+    if (ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch { /* clipboard unavailable — the command is still visible to copy by hand */ }
+    }
   }
 
   return (

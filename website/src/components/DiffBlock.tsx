@@ -191,7 +191,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
     [sideBySide],
   )
 
-  const copy = () => { copyToClipboard(code); setCopied(true); setTimeout(() => setCopied(false), 1500) }
+  const copy = async () => { if (await copyToClipboard(code)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
 
   // Patch-level controls, slotted into Pierre's header metadata area (light
   // DOM, so outer-tree styling and the group-hover reveal both apply).

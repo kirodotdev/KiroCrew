@@ -808,8 +808,14 @@ describe('the Board renders the artifact a colleague gets handed', () => {
   })
 
   it('offers a copy control for the postmortem text', () => {
+    // Routed through the shared helper, NOT the bare async Clipboard API. That API
+    // needs a secure context, so on a plain-HTTP dashboard `navigator.clipboard` is
+    // undefined and a bare call copies nothing; the helper's execCommand fallback
+    // still works there. Both directions are asserted, because the bare form is
+    // what this control shipped with and reads as the obvious way to write it.
     expect(page).toMatch(/Copy postmortem/)
-    expect(page).toMatch(/navigator\.clipboard\.writeText\(log\)/)
+    expect(page).toMatch(/copyToClipboard\(log\)/)
+    expect(page).not.toMatch(/navigator\.clipboard/)
   })
 
   it('distinguishes "no artifact" from an empty one', () => {

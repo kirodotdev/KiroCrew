@@ -14,6 +14,7 @@ import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles,
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { copyToClipboard } from '../../utils/clipboard'
 
 /** The thrown value's own sentence — the api client rejects with an `ApiError`,
  *  so this is the backend's message; anything else is stringified rather than
@@ -544,8 +545,9 @@ function splitReportSections(md: string): string[] {
 function ReportSections({ report }: { report: string }) {
   const [copied, setCopied] = useState<number | null>(null)
   const sections = splitReportSections(report)
-  const copy = (text: string, i: number) => {
-    navigator.clipboard?.writeText(text)
+  const copy = async (text: string, i: number) => {
+    const ok = await copyToClipboard(text)
+    if (!ok) return
     setCopied(i)
     setTimeout(() => setCopied(c => (c === i ? null : c)), 1500)
   }

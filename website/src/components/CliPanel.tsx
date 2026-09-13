@@ -14,6 +14,7 @@ import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
 import ErrorNotice from './ErrorNotice'
 import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
+import { copyToClipboard } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
 /* ── Per-session xterm instance cache ──
@@ -472,17 +473,16 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
     if (!sel?.text) return
     // Confirm only after the write actually lands; a denied/unavailable
     // clipboard shows "Copy failed" and keeps the selection so the user can
-    // fall back to the native copy shortcut.
-    const write = navigator.clipboard?.writeText(sel.text)
-    if (!write) { setCopied('failed'); return }
-    write.then(
-      () => {
-        setCopied('done')
-        // Keep the toolbar up briefly so the confirmation is visible.
-        setTimeout(dismissSelection, 900)
-      },
-      () => setCopied('failed'),
-    )
+    // fall back to the native copy shortcut. Routed through the shared
+    // helper, which falls back to execCommand('copy') on a plain-HTTP origin
+    // or a permission refusal — its fallback restores focus and the document
+    // selection afterwards, so it no longer costs this pane anything.
+    copyToClipboard(sel.text).then(ok => {
+      if (!ok) { setCopied('failed'); return }
+      setCopied('done')
+      // Keep the toolbar up briefly so the confirmation is visible.
+      setTimeout(dismissSelection, 900)
+    })
   }, [sel, dismissSelection])
 
   return (

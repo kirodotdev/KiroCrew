@@ -575,7 +575,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   const [showSource, setShowSource] = useState(false)
   // Outcome of the last copy press. `failed` is a refused clipboard write --
   // `copyCode` RESOLVES false when the textarea fallback reports failure and
-  // REJECTS if that fallback throws, so both arms are handled; confirming
+  // never rejects, so the boolean is the only failure signal; confirming
   // unconditionally would announce "Copied" for a write that never landed.
   //
   // The two outcomes are NOT symmetric, and that asymmetry is the design:
@@ -596,14 +596,11 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   type CopyOutcome = 'idle' | 'ok' | 'failed'
   const [copyState, setCopyState] = useState<CopyOutcome>('idle')
   const copySource = () => {
-    copyCode(code).then(
-      ok => {
-        setCopyState(ok ? 'ok' : 'failed')
-        // Only the confirmation is on a timer. See above.
-        if (ok) setTimeout(() => setCopyState('idle'), 1500)
-      },
-      () => setCopyState('failed'),
-    )
+    copyCode(code).then(ok => {
+      setCopyState(ok ? 'ok' : 'failed')
+      // Only the confirmation is on a timer. See above.
+      if (ok) setTimeout(() => setCopyState('idle'), 1500)
+    })
   }
   const copyLabel = copyState === 'ok' ? i18nT('components.markdownRenderer.copied')
     : i18nT('components.markdownRenderer.copy_diagram_source')

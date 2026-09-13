@@ -1042,13 +1042,12 @@ function TailnetOriginCard() {
               onClick={() => {
                 setCopyFailed(false)
                 // The shared helper guards a missing Clipboard API and falls back
-                // to `execCommand`, resolving `false` (or rejecting) when both
+                // to `execCommand`, resolving `false` (never rejecting) when both
                 // fail — so a plain-HTTP dashboard still copies where a direct
                 // `navigator.clipboard.writeText` would not exist at all.
-                copyToClipboard(data.origin).then(
-                  ok => { if (ok) setCopied(true); else setCopyFailed(true) },
-                  () => { setCopied(false); setCopyFailed(true) },
-                )
+                copyToClipboard(data.origin).then(ok => {
+                  if (ok) setCopied(true); else setCopyFailed(true)
+                })
               }}
               aria-label={i18nT('pages.settings.securityPanel.tailnet_copy_origin')}
             >
