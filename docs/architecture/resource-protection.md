@@ -11,8 +11,8 @@ anything that survived a gateway crash. No single mechanism is a single point of
 
 | Mechanism | Module | Scope | Timeout / threshold | Independent watchdog? | What happens when it fires |
 |-----------|--------|-------|--------------------|-----------------------|---------------------------|
-| `asyncio.wait_for` on `_run_inner` | `subagent.py` | Subagent tasks | 3 h (`agent.subagent_timeout_secs`, `_TIMEOUT_SECS` fallback) | No (see reaper below) | Raises `TimeoutError`, marks subagent failed, resets session |
-| Periodic reaper loop | `subagent.py` | Subagent tasks | 60s sweep (`_REAPER_INTERVAL`), kills at the same deadline | Yes, runs independently of the spawning session | `_force_reap`: reset, SIGKILL fallback, mark done, SEL audit, announce |
+| `asyncio.wait_for` on `_run_inner` | `subagent.py` | Subagent tasks | Captured per-run deadline: `agent.subagent_timeout_secs` (3 h default), optionally raised toward a 6 h default ceiling (`agent.subagent_timeout_max_secs`) when `agent.subagent_timeout_auto` is enabled | No (see reaper below) | Raises `TimeoutError`, marks subagent failed, learns a higher future deadline only when the run had activity and was not already stalled/suspected stalled, then resets session |
+| Periodic reaper loop | `subagent.py` | Subagent tasks | 60s sweep (`_REAPER_INTERVAL`), kills at the run's captured deadline | Yes, runs independently of the spawning session | `_force_reap`: reset, SIGKILL fallback, mark done, optionally learn a higher future deadline, SEL audit, announce |
 | Startup watchdog | `subagent.py` | Pre-first-turn subagents | 120s with no runtime (`_STARTUP_TIMEOUT_SECS`) | Yes | Reaps a subagent that never got a runtime |
 | Reset timeout in `_run` finally | `subagent.py` | Subagent cleanup | 30s (`_RESET_TIMEOUT`) | No | SIGKILL fallback plus SEL audit if `reset()` hangs |
 | Turn limit | `subagent.py` | Subagent tool calls | 100 turns (`_TURN_LIMIT`, configurable) | No | Stops execution, returns partial output |
@@ -23,7 +23,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Global task timeout | `taskrunner.py` | Entire task run | User-configurable (`--timeout`) | Checked in the watchdog loop | Stops the task run, marks failed |
 | ACP process death detection | `acp/client.py` | All sessions | 5 consecutive empty reads (`_MAX_CONSECUTIVE_EMPTY`) | No | Raises `AcpProcessDied`, triggers session recovery |
 | ACP init timeout | `acp/client.py` | Session creation | 4 min (`_INIT_TIMEOUT`; MCP servers can be slow to initialize) | No | Raises `AcpTimeoutError`, retries once |
-| ACP prompt timeout | `acp/client.py` | Per prompt | 2 hr (`_DEFAULT_PROMPT_TIMEOUT`) | No | Raises `AcpTimeoutError` |
+| ACP prompt timeout | `acp/client.py` | Per prompt | 4 h floor (`_DEFAULT_PROMPT_TIMEOUT`); follows the largest configured chat-turn/subagent deadline and, when enabled, the full adaptive subagent ceiling, with a 60s outer margin | No | Raises `AcpTimeoutError`; the transport remains outside any captured adaptive manager deadline |
 | ACP read timeout | `acp/client.py` | Per readline | 20s (`_READ_TIMEOUT`) | No | Allows `CancelledError` delivery at each yield point |
 | Cooperative-cancel grace | `acp/client.py` | Per cancel | `max(_CANCEL_GRACE_SECS, caller budget)`, floor 10s | No | Read loop abandons the turn as unresponsive once the grace elapses |
 | Process group kill | `acp/client.py` | Process cleanup | Immediate | No | `killpg(SIGTERM)`, `killpg(SIGKILL)`, then `_kill_escaped_children` for descendants that changed PGID |
@@ -46,13 +46,13 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Context compaction | `session.py` | Chat sessions | `session.autocompact_pct` | No | Sends `/compact` to kiro-cli to free context window |
 | Background session recycle | `session.py` | Background sessions (cron, subagent) | 70% context usage (`_BG_RECYCLE_PCT`) | No | Recycles the session before context overflow |
 | Watchdog process liveness | `taskrunner.py` | Task runner steps | 2 consecutive dead checks (`_DEAD_THRESHOLD`) at 30s intervals | Yes, part of the watchdog loop | Resets the session to trigger crash recovery |
-| Config bound clamp | `config/loader.py` | Subagent count, turns, timeouts and pool size at load time | `subagent_auto_max` and `max_subagents` to 64 (`SUBAGENT_AUTO_MAX_CEILING`), `subagent_max_turns` 1..1000, `subagent_timeout_secs` 60..86400 (0 preserved as its "use the default" sentinel), `chat_turn_timeout_secs` 300..86400 (`CHAT_TURN_TIMEOUT_MAX`; 14400 is the default, not the ceiling), `session_start_timeout_secs`, `tool_approval_timeout_secs` 30..7200 and cross-field to 60s under the turn ceiling (`APPROVAL_TURN_MARGIN_SECS`), `loop_stall_exit_after_secs` 10..300, `pool_size` 0..10 (`_SECURITY_BOUNDED_FIELDS`) | No | `_clamp_security_bounds` clamps out-of-range ints, logs a WARNING, emits SEL `config_bounds_clamped` (`outcome=clamped`) |
+| Config bound clamp | `config/loader.py` | Subagent count, turns, timeouts and pool size at load time | `subagent_auto_max` and `max_subagents` to 64 (`SUBAGENT_AUTO_MAX_CEILING`), `subagent_max_turns` 1..1000, `subagent_timeout_secs` 60..86400 (0 preserved as its "use the default" sentinel), `subagent_timeout_max_secs` 1800..86400, `chat_turn_timeout_secs` 300..86400 (`CHAT_TURN_TIMEOUT_MAX`; 14400 is the default, not the ceiling), `session_start_timeout_secs`, `tool_approval_timeout_secs` 30..7200 and cross-field to 60s under the turn ceiling (`APPROVAL_TURN_MARGIN_SECS`), `loop_stall_exit_after_secs` 10..300, `pool_size` 0..10 (`_SECURITY_BOUNDED_FIELDS`) | No | `_clamp_security_bounds` clamps out-of-range ints, logs a WARNING, emits SEL `config_bounds_clamped` (`outcome=clamped`) |
 
 ## Per-workflow coverage matrix
 
 |  | Primary timeout | Watchdog / reaper | Process cleanup | Context management |
 |--|----------------|-------------------|-----------------|-------------------|
-| **Chat subagents** | `wait_for` 3 h | Reaper (60s sweep) | `reset()` plus SIGKILL fallback | `_BG_RECYCLE_PCT` 70% recycle |
+| **Chat subagents** | `wait_for` on a captured deadline (3 h default, optional adaptive growth to a 6 h default ceiling) | Reaper (60s sweep, same captured deadline) | `reset()` plus SIGKILL fallback | `_BG_RECYCLE_PCT` 70% recycle |
 | **Cron jobs** | `wait_for` 30 min | Reaper (60s sweep) | `reset()` plus SIGKILL fallback | `_BG_RECYCLE_PCT` 70% recycle |
 | **Task runner** | Global timeout plus stall detection | Watchdog (30s heartbeat) | `_cleanup_run_sessions` plus `asyncio.shield` | Compaction at `autocompact_pct` |
 | **Background sessions** (shared: cron, heartbeat, lessons) | Idle expiry only | Periodic sweep (~5 min) | `cleanup_orphaned_sessions` at startup | `_BG_RECYCLE_PCT` 70% recycle |
@@ -371,18 +371,13 @@ itself and the injection works as described above.
 
 ## Known gaps
 
-1. **`agent.subagent_timeout_secs` is not settable from the dashboard.** The knob is
-   clamped at load like the other resource dimensions, but the config PUT allowlist
-   still covers only the turn budget and the concurrency caps, so raising the subagent
-   deadline needs the CLI or a `config.json` edit.
-
-2. **`cleanup_orphaned_sessions` only runs at startup and shutdown.** If a session's process
+1. **`cleanup_orphaned_sessions` only runs at startup and shutdown.** If a session's process
    dies mid-run without triggering `AcpProcessDied` (an OOM kill, for instance), the PID
    stays in `kiro_pids.txt` until the next gateway restart. The periodic
    `_cleanup_orphaned_mcp_servers` sweep catches MCP children but not the root kiro-cli
    process.
 
-3. **cgroup enforcement depends on cgroup v2 delegation being present.** Where it is
+2. **cgroup enforcement depends on cgroup v2 delegation being present.** Where it is
    missing (older Linux, no systemd user session, macOS), neither the per-scope ceilings
    nor the aggregate slice throttle and hard cap apply. The load-time config clamp bounds process
    *counts* (subagent count, turn budget, pool size), not memory or CPU. The slice's
@@ -391,7 +386,7 @@ itself and the injection works as described above.
    re-applies it, so the unprotected window is at most one sample interval — but only
    on hosts where the gateway applied it in the first place.
 
-4. **The xdist auto-cap is snapshotted at session spawn, not at test-run time.** Agent
+3. **The xdist auto-cap is snapshotted at session spawn, not at test-run time.** Agent
    sessions are long-lived: a session spawned while memory was ample carries its generous
    `PYTEST_XDIST_AUTO_NUM_WORKERS` for its whole lifetime, so a suite launched hours later
    under pressure still gets the stale cap — and conversely, a session spawned under

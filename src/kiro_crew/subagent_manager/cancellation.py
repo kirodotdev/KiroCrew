@@ -454,3 +454,11 @@ class CancellationCoordinator(ManagerComponent):
                             owner.id,
                             exc_info=True,
                         )
+        # Drain in-flight learned-timeout writes LAST — every run task that
+        # could schedule one (via `_observe_timeout_usage`) has been gathered
+        # above, so nothing new is queued after this point. Awaiting them here
+        # is what keeps a healthy adaptive raise durable across the reexec that
+        # follows shutdown; abandoning them would let the next start restore the
+        # stale lower level. Bounded: each is an atomic-record write on the
+        # maintenance executor.
+        await self._manager._drain_timeout_persist()

@@ -63,6 +63,8 @@
         "subagent_spawn_stagger_secs": 2.0,
         "subagent_max_turns": 100,
         "subagent_timeout_secs": 10800,
+        "subagent_timeout_auto": false,
+        "subagent_timeout_max_secs": 21600,
         "subagent_stall_idle_secs": 120,
         "completion_keep": "head",
         "completion_keep_chars": 3000,
@@ -863,6 +865,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 10800
+    },
+    {
+      "path": "agent.subagent_timeout_auto",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Adaptive SubAgent Timeout",
+      "help": "When enabled, raise future subagent deadlines after a timeout or a successful near-limit run. Learned levels contain no task text and persist across restarts.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.subagent_timeout_max_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Adaptive SubAgent Timeout Max (seconds)",
+      "help": "Maximum automatically learned subagent deadline. A manually configured initial timeout above this value is still honored.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 21600
     },
     {
       "path": "agent.subagent_stall_idle_secs",

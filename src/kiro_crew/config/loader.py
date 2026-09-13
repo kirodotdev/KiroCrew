@@ -338,6 +338,8 @@ from kiro_crew.config.validation import (  # noqa: F401
 from kiro_crew.config.validation import validate_config_data as _validate_config_data  # noqa: F401
 from kiro_crew.constants import (
     SUBAGENT_TIMEOUT_MAX,
+    SUBAGENT_TIMEOUT_MAX_MAX,
+    SUBAGENT_TIMEOUT_MAX_MIN,
     SUBAGENT_TIMEOUT_MIN,
     SUBAGENT_TIMEOUT_SECS,
 )
@@ -2180,6 +2182,12 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
     ("agent", "subagent_timeout_secs", 0, SUBAGENT_TIMEOUT_MAX),
+    (
+        "agent",
+        "subagent_timeout_max_secs",
+        SUBAGENT_TIMEOUT_MAX_MIN,
+        SUBAGENT_TIMEOUT_MAX_MAX,
+    ),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
     (
         "agent",
@@ -2591,6 +2599,13 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         ),
         subagent_timeout_secs=_subagent_timeout_from(
             agent_data.get("subagent_timeout_secs", SUBAGENT_TIMEOUT_SECS)
+        ),
+        subagent_timeout_auto=_safe_bool(agent_data.get("subagent_timeout_auto", False), False),
+        subagent_timeout_max_secs=_safe_int(
+            agent_data.get("subagent_timeout_max_secs", 21600),
+            21600,
+            SUBAGENT_TIMEOUT_MAX_MIN,
+            SUBAGENT_TIMEOUT_MAX_MAX,
         ),
         subagent_stall_idle_secs=_safe_int(agent_data.get("subagent_stall_idle_secs", 120), 120),
         completion_keep=_validated_completion_keep(agent_data.get("completion_keep", "head")),
