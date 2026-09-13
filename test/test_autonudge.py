@@ -4245,7 +4245,9 @@ class TestAutonudgeDisabledSettingLink:
 
         app = self._app(monkeypatch)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": "x"})
+            resp = await client.patch(
+                "/api/autonudge/loop-1", json={"message": "x", "expect_fingerprint": "fp-test"}
+            )
             assert resp.status == 503
             data = await resp.json()
             assert data["code"] == "autonudge_disabled"
@@ -4408,7 +4410,8 @@ class TestAutonudgeUpdateChokepoint:
         secret = "AKIAIOSFODNN7EXAMPLE"
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(
-                "/api/autonudge/loop-1", json={"message": f"poll with key {secret}"}
+                "/api/autonudge/loop-1",
+                json={"message": f"poll with key {secret}", "expect_fingerprint": "fp-test"},
             )
             assert resp.status == 200
         stored = svc.update.await_args.kwargs["message"]
@@ -4424,7 +4427,9 @@ class TestAutonudgeUpdateChokepoint:
         svc = self._fake_svc()
         app = self._client_app(monkeypatch, svc)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": probe})
+            resp = await client.patch(
+                "/api/autonudge/loop-1", json={"message": probe, "expect_fingerprint": "fp-test"}
+            )
             assert resp.status == 200
         stored = svc.update.await_args.kwargs["message"]
         assert "evil.example.com/collect" not in stored
@@ -4437,7 +4442,10 @@ class TestAutonudgeUpdateChokepoint:
         svc = self._fake_svc()
         app = self._client_app(monkeypatch, svc)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": "x" * 8001})
+            resp = await client.patch(
+                "/api/autonudge/loop-1",
+                json={"message": "x" * 8001, "expect_fingerprint": "fp-test"},
+            )
             assert resp.status == 400
         svc.update.assert_not_awaited()
 
@@ -4450,7 +4458,9 @@ class TestAutonudgeUpdateChokepoint:
         app = self._client_app(monkeypatch, svc)
         async with TestClient(TestServer(app)) as client:
             for bad in (123, ["x"], {"a": 1}):
-                resp = await client.patch("/api/autonudge/loop-1", json={"message": bad})
+                resp = await client.patch(
+                    "/api/autonudge/loop-1", json={"message": bad, "expect_fingerprint": "fp-test"}
+                )
                 assert resp.status == 400, f"message={bad!r} gave {resp.status}"
         svc.update.assert_not_awaited()
 
@@ -4541,7 +4551,9 @@ class TestAutonudgeUpdateChokepoint:
         fake_sel.log_tool_invocation = lambda **kw: events.append(kw)
         monkeypatch.setattr(_authz, "sel", lambda: fake_sel)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/nope", json={"message": "x"})
+            resp = await client.patch(
+                "/api/autonudge/nope", json={"message": "x", "expect_fingerprint": "fp-test"}
+            )
             assert resp.status == 404
         assert [e for e in events if e.get("outcome") == "denied"], events
 
@@ -4569,7 +4581,10 @@ class TestAutonudgeUpdateChokepoint:
         fake_sel.log_tool_invocation = _boom
         monkeypatch.setattr(_authz, "sel", lambda: fake_sel)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": "revised"})
+            resp = await client.patch(
+                "/api/autonudge/loop-1",
+                json={"message": "revised", "expect_fingerprint": "fp-test"},
+            )
             assert resp.status == 503
             assert "audit" in (await resp.json())["error"].lower()
         svc.update.assert_not_awaited()
@@ -5067,6 +5082,9 @@ class TestSentinelPathRepair:
                             "cycle_count": 3,
                             "active": True,
                             "stop_sentinel_path": sentinel,
+                            # Generator-shaped, so this store needs NO repair: a row
+                            # missing one is re-minted at load, which is a real rewrite.
+                            "goal_token": "0123456789abcdef0123456789abcdef",
                         }
                     ],
                 }
@@ -5737,3 +5755,642 @@ def test_every_nudge_able_channel_has_a_fire_adapter():
     for prefix in ("slack:", "discord:", "webex:"):
         channel = prefix.rstrip(":")
         assert hasattr(GatewayOrchestrator, f"_fire_{channel}_nudge"), channel
+
+
+@pytest.mark.asyncio
+async def test_the_delivered_terminal_commits_in_one_snapshot(tmp_path, monkeypatch):
+    """No snapshot may record a spent cycle while the terminal turn is still owed."""
+    import copy as _copy
+
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _still_merged(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _still_merged)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor45",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    started = loop.cycle_count
+
+    snapshots: list[dict] = []
+    write_state = service._write_state
+
+    def _record(payload):
+        snapshots.append(_copy.deepcopy(payload))
+        return write_state(payload)
+
+    monkeypatch.setattr(service, "_write_state", _record)
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert snapshots, "precondition: nothing was persisted, so nothing was under test"
+        assert loop.cycle_count > started, "precondition: the delivered cycle was not charged"
+        stranded = [
+            row
+            for snap in snapshots
+            for row in snap.get("loops", [])
+            if row.get("id") == loop.id
+            and row.get("cycle_count", 0) > started
+            and (row.get("monitor") or {}).get("terminal_pending")
+        ]
+        assert not stranded, (
+            "a snapshot spends the cycle while the terminal turn is still owed on disk, so "
+            f"a crash there delivers that turn again ({len(stranded)} of {len(snapshots)})"
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_rival_snapshot_spends_the_cycle_while_the_terminal_is_owed(tmp_path, monkeypatch):
+    """A persist landing inside the settlement's await must not split the delivered turn."""
+    import copy as _copy
+
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _still_merged(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _still_merged)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor46",
+        slot_key="slack:C123:1700000000.2",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    started = loop.cycle_count
+
+    snapshots: list[dict] = []
+    write_state = service._write_state
+
+    def _record(payload):
+        snapshots.append(_copy.deepcopy(payload))
+        return write_state(payload)
+
+    monkeypatch.setattr(service, "_write_state", _record)
+
+    # The rival lands in the settlement's own await window, where `_lock` is free: this is
+    # the shape of a dashboard update() or a _persist_soon drain arriving mid-settlement.
+    still_holds = service._terminal_still_holds
+    rivals: list[int] = []
+
+    async def _rival_then_check(*args, **kwargs):
+        rivals.append(1)
+        await service._persist_locked()
+        return await still_holds(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_terminal_still_holds", _rival_then_check)
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert rivals, "precondition: the rival never ran, so no window was exercised"
+        assert snapshots, "precondition: nothing was persisted, so nothing was under test"
+        assert loop.cycle_count > started, "precondition: the delivered cycle was not charged"
+        split = [
+            row
+            for snap in snapshots
+            for row in snap.get("loops", [])
+            if row.get("id") == loop.id
+            and row.get("cycle_count", 0) > started
+            and (row.get("monitor") or {}).get("terminal_pending")
+        ]
+        assert not split, (
+            "a rival snapshot spent the cycle while the terminal turn was still owed, so a "
+            f"restart delivers it twice ({len(split)} of {len(snapshots)})"
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_settlement_write_leaves_the_claim_and_counters_intact(
+    tmp_path, monkeypatch
+):
+    """A refused settlement write must not leave memory spent while the store owes the cycle."""
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _still_merged(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _still_merged)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor47",
+        slot_key="slack:C123:1700000000.3",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    started = loop.cycle_count
+
+    write_state = service._write_state
+    attempts = {"n": 0}
+
+    def _fail_after_the_claim(payload):
+        # The CLAIM write must land -- that is what makes the cycle owed on disk. Every
+        # later write is refused, which is the I/O failure the finding describes.
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return write_state(payload)
+        raise OSError("settlement write refused")
+
+    monkeypatch.setattr(service, "_write_state", _fail_after_the_claim)
+
+    try:
+        with pytest.raises(OSError):
+            await service._run_fire_cycle(loop)
+        assert attempts["n"] >= 2, "precondition: no settlement write was ever attempted"
+        assert loop.cycle_count == started, (
+            "the delivered cycle was spent in memory while the refused write left it owed "
+            f"on disk, so a restart re-fires it (count {loop.cycle_count} vs {started})"
+        )
+        assert loop.id in service._delivering_claim, (
+            "the claim was dropped from memory while it is still on disk, so the two "
+            "surfaces disagree about whether the cycle was delivered"
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_terminal_settlement_never_lands_a_spent_cycle_with_the_debt_owed(
+    tmp_path, monkeypatch
+):
+    """The settlement never lands, the NEXT write succeeds, and it must not settle the debt.
+
+    Only the settlement snapshot is refused -- by its own method, so the refusal holds for
+    every retry attempt -- because it is the write AFTER it that lands ``cycle spent +
+    claim cleared + terminal_pending still set``. A control that refuses every write can
+    never observe that snapshot at all.
+    """
+    import copy as _copy
+
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    def _still_merged(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _still_merged)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor48",
+        slot_key="slack:C123:1700000000.4",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    started = loop.cycle_count
+
+    write_state = service._write_state
+    snapshots: list[dict] = []
+    attempts = {"n": 0}
+
+    def _record(payload):
+        snapshots.append(_copy.deepcopy(payload))
+        return write_state(payload)
+
+    async def _refuse_the_settlement():
+        attempts["n"] += 1
+        raise OSError("settlement write refused")
+
+    monkeypatch.setattr(service, "_write_state", _record)
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _refuse_the_settlement)
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert attempts["n"] >= 1, "precondition: no settlement write was ever attempted"
+        rows = [
+            row for snap in snapshots for row in snap.get("loops", []) if row.get("id") == loop.id
+        ]
+        assert rows, "precondition: the loop was never persisted, so nothing was under test"
+        corrupt = [
+            row
+            for row in rows
+            if row.get("cycle_count", 0) > started
+            and not row.get("inflight_cycle")
+            and (row.get("monitor") or {}).get("terminal_pending")
+        ]
+        assert not corrupt, (
+            "a snapshot landed the cycle spent and the claim cleared while the terminal "
+            "turn is still owed, so nothing settles the debt and the next tick redelivers "
+            "it: " + repr(corrupt[:1])
+        )
+        assert loop.id in service._delivering_claim, (
+            "the claim was released after a refused settlement, so the retry that was "
+            "supposed to settle the debt has nothing to find"
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_that_never_lands_leaves_the_loop_unarmed_and_never_refires(
+    tmp_path, monkeypatch
+):
+    """A refused settlement must be retried as a WRITE, never by re-arming the fire path.
+
+    Re-arming re-enters ``_on_fire`` and re-delivers the terminal turn the user already
+    received, without advancing ``cycle_count``. Only the settlement snapshot is refused
+    here, so the fall-through persist still succeeds -- the condition that makes the
+    duplicate reachable.
+    """
+    import kiro_crew.autonudge as _an
+
+    fired = {"n": 0}
+
+    async def on_fire(loop):
+        fired["n"] += 1
+        return True
+
+    def _still_merged(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _still_merged)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor49",
+        slot_key="slack:C123:1700000000.5",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    snap = {"n": 0}
+
+    async def _refuse_the_settlement():
+        snap["n"] += 1
+        raise OSError("settlement write refused")
+
+    armed: list[str] = []
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _refuse_the_settlement)
+    monkeypatch.setattr(service, "_arm_from_deadline", lambda lp: armed.append(lp.id))
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert snap["n"] >= 2, (
+            "the refused settlement was attempted once and abandoned, so an ordinary "
+            f"transient fault costs the settlement outright (attempts {snap['n']})"
+        )
+        assert armed == [], (
+            "the loop was re-armed after a settlement that never landed, so the next tick "
+            "re-enters _on_fire and re-delivers the terminal turn: " + repr(armed)
+        )
+        assert fired["n"] == 1, "precondition: the turn was not delivered exactly once"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_that_never_lands_is_not_rescued_back_into_the_fire_path(
+    tmp_path, monkeypatch
+):
+    """The reconciler rescues any ACTIVE record with no live timer, and that rescue fires.
+
+    So leaving it unarmed is not enough by itself: the backstop re-arms two passes later
+    and re-enters ``_on_fire``, re-delivering the terminal turn.
+    """
+    import kiro_crew.autonudge as _an
+
+    fired = {"n": 0}
+
+    async def on_fire(loop):
+        fired["n"] += 1
+        return True
+
+    def _still_merged(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+
+    monkeypatch.setattr(_an.irq, "poll", _still_merged)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    loop = NudgeLoop(
+        id="monitor50",
+        slot_key="slack:C123:1700000000.6",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    async def _refuse_the_settlement():
+        raise OSError("settlement write refused")
+
+    armed: list[str] = []
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _refuse_the_settlement)
+    monkeypatch.setattr(service, "_arm_from_deadline", lambda lp: armed.append(lp.id))
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert armed == [], "precondition: the fire path itself re-armed"
+        service._reconcile_once()
+        service._reconcile_once()
+        assert armed == [], (
+            "the reconciler rescued a loop whose settlement never landed, so its next tick "
+            "re-enters _on_fire and re-delivers the terminal turn: " + repr(armed)
+        )
+        assert fired["n"] == 1, "precondition: the turn was not delivered exactly once"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_but_unsettled_terminal_turn_settles_on_load_without_firing(tmp_path):
+    """A restart must SETTLE a delivered-but-unsettled terminal turn, not repeat it.
+
+    The claim stays on disk because the settlement write failed, and ``_load`` reads an
+    owed claim as one to run again -- re-sending a turn the user already received.
+    """
+    store = {
+        "version": 1,
+        "loops": [
+            {
+                "id": "monitor51",
+                "slot_key": "slack:C123:1700000000.7",
+                "message": "Babysit https://github.com/acme/widgets/pull/42",
+                "idle_secs": 30,
+                "active": True,
+                "gate": True,
+                "cycle_count": 4,
+                "inflight_cycle": 5,
+                "monitor": {
+                    "kind": "gh-pr",
+                    "target": "acme/widgets#42",
+                    "objective": "review_ready",
+                    "created_ts": 1_000.0,
+                    "terminal_pending": "success",
+                    "terminal_delivered": True,
+                },
+            }
+        ],
+    }
+    (tmp_path / "autonudge.json").write_text(json.dumps(store), encoding="utf-8")
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await service.start()
+    try:
+        restored = service._loops.get("monitor51")
+        assert restored is not None, "precondition: the row did not load at all"
+        assert restored.monitor is not None
+        assert fired == [], "the recovery delivered a turn instead of settling the debt"
+        assert restored.monitor.terminal_pending == "", (
+            "the debt is still owed after a restart, so the next tick re-delivers the "
+            "terminal turn the user already received"
+        )
+        assert restored.monitor.outcome is not None, "the outcome was never recorded"
+        assert restored.active is False, "a settled watch must not stay armed"
+        assert (
+            restored.cycle_count == 5
+        ), "the delivered cycle is still owed on disk, so it can be spent twice: " + str(
+            restored.cycle_count
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delivered_persist_keeps_every_arming_path_out_until_it_settles(
+    tmp_path, monkeypatch
+):
+    """A refused delivered-path persist leaves the cycle uncharged, so nothing may re-arm.
+
+    ``notify_turn_complete`` is the dashboard slot's own re-arm hook and consulted neither
+    guard, so a fire ran again on the restored count -- past ``max_cycles``.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="loop-persist-1",
+        slot_key="chat-7-777",
+        message="go",
+        idle_secs=30,
+        max_cycles=4,
+    )
+    service._loops[loop.id] = loop
+
+    real = service._write_state
+    attempts = {"n": 0}
+
+    def _refuse_after_the_claim(payload):
+        # The CLAIM must land: refusing it refuses the fire itself, and then no delivered
+        # turn exists to be repeated.
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return real(payload)
+        raise OSError("delivered-path persist refused")
+
+    monkeypatch.setattr(service, "_write_state", _refuse_after_the_claim)
+
+    try:
+        with pytest.raises(OSError):
+            await service._run_fire_cycle(loop)
+        assert attempts["n"] >= 2, "precondition: the delivered persist was never attempted"
+        assert (
+            loop.id in service._settlement_owed
+        ), "the refused persist was not retained, so nothing keeps the arming paths out"
+        service._timers.pop(loop.id, None)
+
+        service.notify_turn_complete("chat-7-777")
+
+        assert loop.id not in service._timers, (
+            "notify_turn_complete re-armed a loop whose delivered cycle was never charged, "
+            "so it repeats past max_cycles"
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_stored_terminal_delivered_string_does_not_settle_an_undelivered_turn(tmp_path):
+    """A persisted ``"false"`` string is truthy, and must not settle an undelivered turn."""
+    store = {
+        "version": 1,
+        "loops": [
+            {
+                "id": "monitor52",
+                "slot_key": "slack:C123:1700000000.8",
+                "message": "Babysit https://github.com/acme/widgets/pull/42",
+                "idle_secs": 30,
+                "active": True,
+                "gate": True,
+                "cycle_count": 4,
+                "inflight_cycle": 5,
+                "monitor": {
+                    "kind": "gh-pr",
+                    "target": "acme/widgets#42",
+                    "objective": "review_ready",
+                    "created_ts": 1_000.0,
+                    "terminal_pending": "success",
+                    "terminal_delivered": "false",
+                },
+            }
+        ],
+    }
+    (tmp_path / "autonudge.json").write_text(json.dumps(store), encoding="utf-8")
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await service.start()
+    try:
+        restored = service._loops.get("monitor52")
+        assert restored is not None and restored.monitor is not None
+        assert restored.monitor.terminal_pending == "success", (
+            'a stored "false" string settled a turn that was never delivered, so the user '
+            "never hears the outcome"
+        )
+        assert restored.monitor.outcome is None, "an undelivered turn recorded an outcome"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_retry_backoff_still_records_the_settlement_debt(tmp_path, monkeypatch):
+    """A shutdown during the retry BACKOFF must not lose the delivered turn.
+
+    The backoff sleep sits inside the ``except Exception`` handler, so the clause that
+    guards the write body never sees its cancellation: it propagated past both
+    settlement branches, leaving the delivery committed in memory, nothing on disk and
+    no debt recorded -- so the restart re-fired a turn the reader already got.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor-backoff-cancel",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    monkeypatch.setattr(service, "_emit", lambda event, _loop: None)
+
+    real_writer = service._write_monitor_snapshot_locked
+
+    async def _fail_the_settlement_write(payload=None):
+        # Isolated the way the sibling test isolates it: only the settlement write
+        # runs after this record is already deactivated.
+        if not loop.active:
+            raise OSError("disk full")
+        await real_writer(payload)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _fail_the_settlement_write)
+
+    real_sleep = asyncio.sleep
+
+    async def _cancel_the_backoff(delay, *args, **kwargs):
+        if delay == _an._SETTLEMENT_RETRY_SECS:
+            raise asyncio.CancelledError()
+        return await real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _cancel_the_backoff)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await service._timer(loop, delay=0)
+
+        assert loop.id in service._settlement_owed, (
+            "the cancellation propagated without recording the settlement debt, so no "
+            "guard stops the delivered turn from being fired again"
+        )
+        assert loop.monitor is not None
+        assert loop.monitor.terminal_delivered is True, (
+            "load-time recovery keys on terminal_delivered, so an unset flag re-fires "
+            "the already-delivered terminal turn"
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_manual_fire_refuses_a_loop_that_owes_a_settlement(tmp_path):
+    """``/fire`` arms through ``_arm_timer`` directly, so it reached no debt guard.
+
+    ``_arm_from_deadline`` and ``_reconcile_once`` both refuse an owed loop, but this
+    route consults neither, so a manual press re-delivered a turn already delivered --
+    past ``max_cycles``. The refusal has to reach the caller, not fail silently.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="loop-owes-settlement",
+        slot_key="chat-1-123",
+        message="keep an eye on the shards",
+        idle_secs=300,
+        active=True,
+    )
+    service._loops[loop.id] = loop
+    service._settlement_owed.add(loop.id)
+
+    try:
+        armed, reason, status = await service.fire_now(loop.id)
+        assert armed is None, "an owed loop was armed by hand and will re-deliver"
+        assert status == 409, f"expected a 409 refusal, got {status}"
+        assert (
+            "settlement" in reason.lower()
+        ), f"the refusal must name why it was refused, got {reason!r}"
+    finally:
+        service.stop()

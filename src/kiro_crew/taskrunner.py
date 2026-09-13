@@ -20,6 +20,7 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.llm_helpers import stream_and_collect_json
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -359,7 +360,7 @@ class TaskRunner:
         # Deliberately in memory only and deliberately not on ``Project``: it is
         # a routing hint for the lifetime of one process, and a persisted channel
         # key would outlive the binding it names and send a restart's first
-        # notice into a conversation that may no longer resolve.
+        # notice into a conversation that may not resolve.
         self._run_session_keys: dict[str, str] = {}
         # Optional publication port into the shared workflow history. TaskRunner
         # remains the owner of planning/execution semantics; this port only
@@ -1883,7 +1884,7 @@ class TaskRunner:
             # two independent append_off_loop dispatches could interleave on the
             # default executor and reorder the transcript — and take the patient
             # off-loop cross-process lock acquire path.
-            log.append(history_key, "user", user_msg)
+            log.append(history_key, "user", redact_row_via_context(user_msg))
             log.append(history_key, "assistant", result_summary)
 
         # _log_task is invoked from async task_executor code running ON the

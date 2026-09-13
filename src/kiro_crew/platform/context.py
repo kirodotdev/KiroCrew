@@ -944,3 +944,22 @@ def redact_log_via_context(text: str) -> str:
         return redact_via_context(text)
     except PlatformCompositionError:
         return LOG_WITHHELD_PLACEHOLDER
+
+
+def redact_row_via_context(text: str) -> str:
+    """A persisted conversation row: the same contract as :func:`redact_log_via_context`.
+
+    A row and a log line answer both no-companion states alike, so this is that function
+    under the name its call sites read by, not a second implementation of it.
+
+    Warns when the row CHANGED, giving the ten persisters the visibility the write
+    boundary has. Safe to log -- no stdio MCP server calls this. No text is logged.
+    """
+    out = redact_log_via_context(text)
+    if out != text:
+        _logger.warning(
+            "conversation row rewritten at the write boundary: %d chars in, %d out",
+            len(text),
+            len(out),
+        )
+    return out

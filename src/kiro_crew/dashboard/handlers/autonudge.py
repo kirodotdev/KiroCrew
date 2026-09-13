@@ -9,8 +9,16 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.autonudge import scrub_loop_text  # noqa: F401 - re-exported
+from kiro_crew.autonudge import (
+    ADDRESSING_FIELDS,
+    AutoNudgeStoreUnvetted,
+)
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop, structured_monitor_binding_key_for
+from kiro_crew.autonudge import (
+    is_structured_monitor_loop,
+    structured_monitor_binding_key_for,
+)
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
@@ -54,7 +62,7 @@ from kiro_crew.monitoring.registry import (
     kind_supports_objective,
     publicly_armable_kinds,
 )
-from kiro_crew.platform import redact_via_context
+from kiro_crew.platform import PlatformCompositionError, redact_via_context
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import ledger_key, render_snapshot
 
@@ -114,14 +122,94 @@ def _redact_monitor_value(value: Any) -> Any:
     return value
 
 
+def _scrub_serialized_field(key: str, value: Any) -> Any:
+    """The ONE per-field projection rule, shared by every reader of a loop.
+
+    Two arms project a loop: ``_serialize`` and the reducing arm of
+    ``_serialize_for_legacy_reader``. Both call HERE rather than assembling a payload of
+    their own, because a second independent assembly serves raw whatever this rule
+    scrubs -- and ``stopped_reason`` is the field that exposes: agent-supplied free
+    text, neither withheld nor mapped out of the reduced row, on a route with no owner
+    gate.
+
+    Three exemptions. ADDRESSING_FIELDS is the SERVICE's set rather than a local copy:
+    ``_load`` enforces the invariant that makes the exemption safe, and two copies could
+    drift the hole open. ``monitor`` is settled by the caller from the typed record
+    rather than from ``asdict``'s raw mapping, so the legacy pop stays authoritative.
+    ``goal_token`` is republished as ``message_fingerprint``, so the raw field would be
+    duplicate wire surface.
+    """
+    if key in ADDRESSING_FIELDS or key in ("monitor", "goal_token"):
+        return value
+    return scrub_loop_text(value, field=key)
+
+
 def _serialize(loop: Any) -> dict[str, Any]:
-    payload = asdict(loop)
+    """Serialize a loop for the REST surface, credential-scrubbing its text.
+
+    ``asdict`` alone served ``message`` verbatim to every dashboard client. That is
+    the same exposure ``_load`` and the transcript row already close, and this was
+    the third surface. Three producers reach ``svc.add`` without the authorizer --
+    the goal loop (``dashboard/chat_runner.py``), auto-research, and issue-radar,
+    the last composing its message from external issue text -- and a hand-edited
+    ``autonudge.json`` bypasses it too, so ``loop.message`` can hold text nothing
+    has ever scanned.
+
+    DENYLIST, not allowlist: every field is scrubbed unless named in
+    ``ADDRESSING_FIELDS``. An allowlist would silently miss the next free-text
+    field added to ``NudgeLoop`` -- ``stopped_reason`` is agent-supplied free text and is
+    covered here by this same loop rather than by a scrub of its own. So this is ONE rule
+    serving every text
+    field: ``message`` cannot be lifted out of it without either dropping the denylist,
+    which un-scrubs ``stopped_reason`` too, or re-exempting ``message`` and restoring the
+    verbatim
+    leak. Redaction is shape-based and idempotent, so a value written through
+    the authorizer, and any value with nothing credential-shaped in it, round-trips
+    unchanged.
+
+    NON-STRING VALUES ARE NOT SKIPPED. An ``not isinstance(value, str)`` early-out
+    would emit an agent-written ``message: ["AKIA..."]`` verbatim to
+    every dashboard client -- measured: the loop loaded and the payload carried the
+    list intact. A store an agent writes directly has no type discipline, and the
+    dataclass annotation is not enforced on ``NudgeLoop(**raw)``.
+
+    ``monitor`` is the one field routed to a DIFFERENT redactor. It is structured
+    nested state, so ``scrub_loop_text`` would take its non-scalar arm and
+    ``str()``-flatten the whole mapping into one redacted string -- closing the same
+    hole, but destroying the shape the dashboard parses. ``_redact_monitor_value``
+    walks it instead, redacting every nested string key and value in place. So the
+    denylist still covers every field; only the tool differs, chosen by the value's
+    shape. Naming ``monitor`` in ``ADDRESSING_FIELDS`` would have been the smaller
+    edit and is wrong: that set is for fields ``_load`` REFUSES rather than scrubs,
+    and monitor evidence is provider-controlled text with no such guard.
+
+    The per-value rule lives in ``scrub_loop_text`` because the websocket broadcast
+    needs the identical rule; see its docstring for why a declared scalar passes
+    through untouched while anything else is redact-coerced. The ADDRESSING fields
+    get the other half of that rule: ``_load`` REFUSES a non-string one rather than
+    coercing it, because coercing the identity would leave a row the client cannot
+    act on.
+    """
+    out = asdict(loop)
+    for key, value in out.items():
+        out[key] = _scrub_serialized_field(key, value)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
-        payload.pop("monitor", None)
+        out.pop("monitor", None)
     else:
-        payload["monitor"] = _redact_monitor_value(monitor_state_public_dict(loop.monitor))
-    return payload
+        out["monitor"] = _redact_monitor_value(monitor_state_public_dict(loop.monitor))
+    # Tell the client when what it is being served DIFFERS from what is stored, so it can
+    # know that echoing `message` back in a PATCH would destroy the original. Without it
+    # the API's only answer to a read-modify-write was a silent server-side drop and a
+    # 200, which no client can detect.
+    out["message_redacted"] = out.get("message") != getattr(loop, "message", None)
+    # Opaque and RANDOM, so serving it beside the goal's own redaction reveals nothing
+    # about the masked span. Its sole use is equality against a later PATCH's baseline.
+    out["message_fingerprint"] = getattr(loop, "goal_token", "") or ""
+    # DROPPED, not scrubbed: the same value ships as `message_fingerprint` above, and a
+    # second spelling of a write-authorising token is wire surface with no reader.
+    out.pop("goal_token", None)
+    return out
 
 
 def _serialize_monitor(loop: Any) -> dict[str, Any]:
@@ -169,11 +257,14 @@ def _serialize_monitor(loop: Any) -> dict[str, Any]:
 #: A GATED prompt loop is in NEITHER case: it carries probe state but still
 #: delivers down the legacy path, so its message and its cycle accounting are
 #: real, and ``is_structured_monitor_loop`` already excludes it.
+#: * ``goal_token`` -- the fingerprint OF the withheld ``message``, so serving it
+#:   would let a caller detect edits to text this route refuses to publish.
 _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
     {
         "monitor",
         "message",
         "banner",
+        "goal_token",
         "stop_sentinel_path",
         "max_cycles",
         "cycle_count",
@@ -246,7 +337,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
     # field on the dataclass is ``monitor``, and it is withheld. A test pins the
     # surviving key set so a new field cannot silently join or skip this route.
     payload = {
-        field.name: getattr(loop, field.name)
+        field.name: _scrub_serialized_field(field.name, getattr(loop, field.name))
         for field in fields(loop)
         if field.name not in _MONITOR_WITHHELD_LEGACY_FIELDS
     }
@@ -255,7 +346,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
         value: Any = monitor
         for attr in path:
             value = getattr(value, attr)
-        payload[name] = value
+        payload[name] = _scrub_serialized_field(name, value)
     return payload
 
 
@@ -282,7 +373,7 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         "last_fire_ts": loop.last_fire_ts,
         "created_ts": loop.created_ts,
         "next_due_ts": loop.next_due_ts,
-        "stopped_reason": loop.stopped_reason,
+        "stopped_reason": _scrub_serialized_field("stopped_reason", loop.stopped_reason),
         "has_banner": bool(loop.banner),
     }
 
@@ -466,6 +557,27 @@ def _monitor_config(
     )
 
 
+def _read_scrub_unavailable() -> web.Response:
+    """A READ that cannot scrub refuses, matching the write paths' audited 503.
+
+    ``_serialize_for_legacy_reader`` runs every served field through the fail-closed
+    redaction shim, so a host that declares a credential policy it cannot compose made
+    these routes raise while rendering -- a 500 with a traceback, where the same
+    condition on a write is a deliberate 503. Answering alike keeps "the projection
+    cannot scrub" one diagnosable state instead of two.
+    """
+    return web.json_response(
+        {
+            "error": (
+                "Safety checks are temporarily unavailable, so loops cannot be listed. "
+                "If this keeps happening, restart Kiro Crew."
+            ),
+            "code": "scrub_policy_unavailable",
+        },
+        status=503,
+    )
+
+
 async def api_autonudge_list(request: web.Request) -> web.Response:
     """GET /api/autonudge — list every loop, structured monitors included.
 
@@ -479,7 +591,12 @@ async def api_autonudge_list(request: web.Request) -> web.Response:
     svc = _autonudge_get()
     if svc is None:
         return web.json_response({"enabled": False, "loops": []})
-    loops = [_serialize_for_legacy_reader(lp) for lp in svc.list_all()]
+    try:
+        loops = [_serialize_for_legacy_reader(lp) for lp in svc.list_all()]
+    except PlatformCompositionError:
+        # The write paths answer this exact condition with a 503; without it the
+        # projection's fail-closed raise surfaced here as an unaudited 500.
+        return _read_scrub_unavailable()
     return web.json_response({"enabled": True, "loops": loops})
 
 
@@ -496,12 +613,11 @@ async def api_autonudge_get(request: web.Request) -> web.Response:
     if svc is None:
         return web.json_response({"enabled": False, "loop": None})
     loop = svc.get_by_slot(slot_key)
-    return web.json_response(
-        {
-            "enabled": True,
-            "loop": _serialize_for_legacy_reader(loop) if loop is not None else None,
-        }
-    )
+    try:
+        served = _serialize_for_legacy_reader(loop) if loop is not None else None
+    except PlatformCompositionError:
+        return _read_scrub_unavailable()
+    return web.json_response({"enabled": True, "loop": served})
 
 
 async def api_session_monitor_get(request: web.Request) -> web.Response:
@@ -940,6 +1056,12 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    # ENFORCED WHEN PRESENT, not required: a sent baseline gets the stale compare, none
+    # writes unconditionally. Requiring it broke every documented external script.
+    fingerprint = body.get("expect_fingerprint")
+    # One decision, made where the write is made. The row read above for the monitor
+    # guard is handed down, so no second read can see a value the write never considered.
+    echo_decision: dict[str, bool] = {}
     loop, error, status = await authorize_and_update_nudge(
         svc=svc,
         loop_id=loop_id,
@@ -949,12 +1071,25 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         active=body.get("active"),
         max_runtime_secs=body.get("max_runtime_secs"),
         banner=body.get("banner"),
+        expect_fingerprint=fingerprint,
         source="dashboard",
         caller=request.remote or "",
+        echo_decision=echo_decision,
+        row=existing,
     )
     if error is not None:
-        return web.json_response({"error": error}, status=status)
-    return web.json_response({"ok": True, "loop": _serialize(loop)})
+        # The 503 is the fail-closed credential-policy refusal, which a client may retry;
+        # a 400 it must not. The sibling POST names its code, so this one does too.
+        code = "autonudge_policy_unavailable" if status == 503 else "autonudge_update_refused"
+        if status == 409:
+            code = "autonudge_stale_baseline"
+        return web.json_response({"error": error, "code": code}, status=status)
+    # A 200 that silently discarded a field is a success-that-isn't, so name it. Read from
+    # the authorizer's own decision, so the claim and the write can never disagree.
+    payload: dict[str, Any] = {"ok": True, "loop": _serialize(loop)}
+    if echo_decision.get("ignored"):
+        payload["message_ignored"] = True
+    return web.json_response(payload)
 
 
 async def api_autonudge_delete(request: web.Request) -> web.Response:
@@ -978,6 +1113,35 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
     # Resolved through the shared ``svc.get_by_id`` -- the same accessor the
     # update-path channel refusal uses -- rather than a second inline id-scan.
     existing = svc.get_by_id(loop_id)
+
+    async def _store_unvetted() -> web.Response:
+        # Fail-closed and retryable, so 503 not the old 500. Reporting it is the point:
+        # silence implies a removal that never happened. Resolved in a worker because a
+        # FAILED startup warm makes the accessor retry blocking init on this thread.
+        await asyncio.to_thread(
+            lambda: sel().log_tool_invocation(
+                session_key=existing.slot_key if existing else "",
+                source="dashboard",
+                tool_name="autonudge_delete",
+                outcome="denied",
+                metadata={
+                    "loop_id": loop_id,
+                    "caller": request.remote or "",
+                    "reason": "store_unvetted",
+                },
+            )
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "Safety checks are temporarily unavailable, so this goal could not be "
+                    "removed and is still active. If this keeps happening, restart Kiro Crew."
+                ),
+                "code": "autonudge_store_unvetted",
+            },
+            status=503,
+        )
+
     if existing is not None and is_structured_monitor_loop(existing):
         monitor = existing.monitor
         # Two different operations share this verb, split by whether the record
@@ -1017,33 +1181,44 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
         if clearing:
-            _cleared, error, status = await authorize_and_clear_monitor(
+            try:
+                _cleared, error, status = await authorize_and_clear_monitor(
+                    svc=svc,
+                    loop_id=loop_id,
+                    session_key=existing.slot_key,
+                    source="dashboard",
+                    caller=request.remote or "",
+                )
+            except AutoNudgeStoreUnvetted:
+                return await _store_unvetted()
+            if error is not None:
+                return _monitor_error(error, "monitor_clear_denied", status=status)
+            return web.json_response({"ok": True})
+        try:
+            _stopped, error, status = await authorize_and_stop_monitor(
                 svc=svc,
                 loop_id=loop_id,
                 session_key=existing.slot_key,
                 source="dashboard",
                 caller=request.remote or "",
             )
-            if error is not None:
-                return _monitor_error(error, "monitor_clear_denied", status=status)
-            return web.json_response({"ok": True})
-        _stopped, error, status = await authorize_and_stop_monitor(
-            svc=svc,
-            loop_id=loop_id,
-            session_key=existing.slot_key,
-            source="dashboard",
-            caller=request.remote or "",
-        )
+        except AutoNudgeStoreUnvetted:
+            return await _store_unvetted()
         if error is not None:
             return _monitor_error(error, "monitor_stop_denied", status=status)
         return web.json_response({"ok": True})
-    await svc.remove(loop_id)
-    sel().log_tool_invocation(
-        session_key=existing.slot_key if existing else "",
-        source="dashboard",
-        tool_name="autonudge_delete",
-        outcome="success" if existing else "noop",
-        metadata={"loop_id": loop_id, "caller": request.remote or ""},
+    try:
+        await svc.remove(loop_id)
+    except AutoNudgeStoreUnvetted:
+        return await _store_unvetted()
+    await asyncio.to_thread(
+        lambda: sel().log_tool_invocation(
+            session_key=existing.slot_key if existing else "",
+            source="dashboard",
+            tool_name="autonudge_delete",
+            outcome="success" if existing else "noop",
+            metadata={"loop_id": loop_id, "caller": request.remote or ""},
+        )
     )
     return web.json_response({"ok": True})
 

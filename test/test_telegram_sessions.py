@@ -1331,6 +1331,39 @@ class TestTelegramColdResume:
 
         assert broadcasts == [True]
 
+    @pytest.mark.asyncio
+    async def test_the_live_projection_receives_scrubbed_text_not_raw(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """GPT 5.6 (BLOCKING): Telegram redacted AFTER the live dashboard egress.
+
+        The scrub sat inside ``_persist_turn``, but ``project_channel_turn_live`` runs
+        first, broadcasts the row and marks the slot dirty -- so a credential in a
+        Telegram message reached a connected, non-restricted dashboard raw, and the
+        dirty-slot flush persisted it. Discord already fed both sinks the scrubbed body.
+        """
+        from kiro_crew.dashboard import channel_slots
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        dispatcher, _, _, _ = _dispatcher(tmp_path)
+        dispatcher._session_resume.route = AsyncMock(
+            return_value=RoutingDecision(resumed_key="dashboard:chat-1")
+        )
+        projected: list[str] = []
+
+        def _project(*args: Any, **kwargs: Any) -> None:
+            projected.append(str(args[2]) if len(args) > 2 else "")
+
+        monkeypatch.setattr(channel_slots, "project_channel_turn_live", _project)
+
+        await dispatcher.handle_message(_dm(f"my key is {secret} ok"))
+
+        assert projected, "the projection never ran, so this test proved nothing"
+        assert secret not in projected[0], (
+            "the live projection received the RAW body, so a credential reached the "
+            f"dashboard before the persist-side scrub: {projected[0]!r}"
+        )
+
 
 class TestTelegramResumeIntegration:
     def test_dashboard_state_injection_reaches_the_resume_controller(self, tmp_path: Any) -> None:

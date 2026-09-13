@@ -299,6 +299,7 @@ const PATROL_STOPPED_REASON: Record<string, string> = {
   cycle_cap: 'pages.membersPage.patrol_stopped_cycle_cap',
   runtime_budget: 'pages.membersPage.patrol_stopped_runtime_budget',
   approval_stalled: 'pages.membersPage.patrol_stopped_approval_stalled',
+  interrupted_cycle: 'pages.membersPage.patrol_stopped_interrupted_cycle',
 }
 /** Floor under the websocket-driven invalidation of the loop registry: frames
  *  fire only on change, so a frame lost to a dropped socket would otherwise

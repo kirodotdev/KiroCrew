@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
 from kiro_crew.history import append_rows_if_absent_off_loop
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -551,8 +552,7 @@ def inject_cron_result_to_dashboard(
             # run boundary and the user/assistant alternation hold whichever body
             # it gets. Redacted BEFORE the comparison, because the redacted form
             # is what a previous run stored.
-            safe_prompt, _ = redact_exfiltration_urls(prompt)
-            safe_prompt, _ = redact_credentials(safe_prompt)
+            safe_prompt = redact_row_via_context(prompt)
             if _prompt_already_recorded(slot, safe_prompt, marker):
                 # Mark the row a reference STRUCTURALLY: the invisible
                 # _REFERENCE_MARKER rides in the header's protected block right
@@ -570,8 +570,7 @@ def inject_cron_result_to_dashboard(
                 f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
                 "msg msg-u",
             )
-        safe_result, _ = redact_exfiltration_urls(result_text)
-        safe_result, _ = redact_credentials(safe_result)
+        safe_result = redact_row_via_context(result_text)
         _reflect(
             "assistant",
             f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
@@ -669,8 +668,7 @@ def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None
         content = msg.get("content", "")
         if not content:
             continue
-        content, _ = redact_exfiltration_urls(content)
-        content, _ = redact_credentials(content)
+        content = redact_row_via_context(content)
         if any(m.get("content") == content for m in slot.messages):
             continue
         slot.append(
