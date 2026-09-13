@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import npm_preflight, sync_runner
 
 _BACKUP = sync_runner._BACKUP_SUFFIX
@@ -292,6 +294,50 @@ class TestRunSteps:
         steps = [_echo_step("Verify dependencies", code, tmp_path)]
         rc = sync_runner.run_steps(steps, str(tmp_path), reserved, "Verify dependencies", 47)
         assert rc == code
+
+
+# --- gone() ------------------------------------------------------------------
+
+
+class TestGone:
+    def test_a_linked_tree_is_unlinked_and_its_target_survives(self, tmp_path):
+        """A junction is the Windows spelling of the shared-store layout.
+
+        ``os.path.islink`` reports False for one, so it fell through to
+        ``rmtree``, which refuses a junction exactly as it refuses a symlink --
+        the refusal is swallowed by ``ignore_errors``, ``gone`` reports False,
+        and the transaction that reads it stops with a backup it can never
+        clear. Every later Pull + Build then sees both paths and refuses as
+        ambiguous.
+
+        ``make_dir_link`` gives a junction on Windows and a symlink elsewhere, so
+        the POSIX run is a no-regression check on the branch that already worked.
+        """
+        store = tmp_path / "store"
+        _tree(store, "store")
+        link = tmp_path / "node_modules"
+        make_dir_link(link, store)
+
+        # Guard the guard, through an oracle OUTSIDE the module under test, so
+        # the first thing to fail here is the behaviour and not a missing name.
+        if platform_compat.IS_WINDOWS:
+            assert not os.path.islink(link)
+            assert os.path.isdir(link)
+        else:
+            assert os.path.islink(link)
+        assert platform_compat.is_link_or_junction(link)
+
+        assert sync_runner.gone(str(link)) is True
+        assert not os.path.lexists(link)
+        # Removed as a LINK: the shared store behind it is untouched.
+        assert (store / "sentinel").read_text(encoding="utf-8") == "store"
+
+    def test_a_real_tree_is_still_removed(self, tmp_path):
+        # The junction branch must not shadow the ordinary case.
+        tree = tmp_path / "node_modules"
+        _tree(tree)
+        assert sync_runner.gone(str(tree)) is True
+        assert not os.path.lexists(tree)
 
 
 # --- the snapshot-not-import invariant ---------------------------------------

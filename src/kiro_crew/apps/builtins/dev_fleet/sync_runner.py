@@ -52,6 +52,37 @@ import sys
 #: aside for the duration of a step lands at ``<stash>`` + this.
 _BACKUP_SUFFIX = ".kirocrew-sync-backup"
 
+#: Reparse tag identifying a Windows directory junction, from ``winnt.h``.
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+
+
+def is_junction(path: str) -> bool:
+    """True for a Windows directory junction, on every interpreter this runs on.
+
+    ``platform_compat`` owns this predicate for the rest of the package, and this
+    module cannot import it -- the stdlib-only rule at the top of this file is an
+    invariant, so the check is spelled out here instead. ``os.path.isjunction``
+    is 3.12+, and the runner is executed by whatever interpreter the gateway is
+    installed under, which the project still floors at 3.10; without the reparse
+    fallback the guard below would be a silent no-op on exactly the older Windows
+    installs most likely to be carrying a junction.
+
+    ``follow_symlinks=False``: the question is what THIS name is, not what it
+    points at. False off Windows, where the attributes do not exist and junctions
+    do not either.
+    """
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            return bool(isjunction(path))
+        except (OSError, ValueError):
+            return False
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except (OSError, ValueError):
+        return False
+    return getattr(info, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+
 
 def gone(path: str) -> bool:
     """Remove *path* and report whether it is now absent.
@@ -71,6 +102,15 @@ def gone(path: str) -> bool:
     and every Pull + Build from then on refused as ambiguous: a permanent wedge
     escapable only by hand. So unlink the link, and ``rmtree`` only real trees.
 
+    A Windows JUNCTION reaches that same wedge and needs the same treatment.
+    ``os.path.islink`` reports False for one, so it fell through to ``rmtree``,
+    which refuses a junction exactly as it refuses a symlink -- the refusal is
+    swallowed, the backup survives, and every later Pull + Build sees both paths
+    and stops as ambiguous. A junction is the ordinary Windows spelling of the
+    shared-store layout the paragraph above describes, because a directory
+    symlink there needs a privilege a junction does not. It is removed with
+    ``rmdir``, which unlinks the reparse point and never the target.
+
     ``lexists``, not ``exists``: a DANGLING symlink is still something at this
     path, and reporting it as gone would let the runner proceed as though the
     slot were clear.
@@ -78,6 +118,11 @@ def gone(path: str) -> bool:
     if os.path.islink(path):
         try:
             os.unlink(path)
+        except OSError:
+            pass
+    elif is_junction(path):
+        try:
+            os.rmdir(path)
         except OSError:
             pass
     else:
