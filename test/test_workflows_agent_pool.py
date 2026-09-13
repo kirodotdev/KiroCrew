@@ -65,7 +65,8 @@ class _FakeSessions:
 
     def release(self, key, *, cleanup=False):
         self.releases += 1
-        self.live.pop(key, None)
+        if cleanup:
+            self.live.pop(key, None)
 
     async def reset(self, key):
         self.resets += 1
@@ -193,8 +194,15 @@ async def test_stateful_session_bypasses_pool():
         out = await agent_fn("hi", {"session": "chain-A"})
         assert "[chain-A]" in out
         assert "chain-A" in sessions.live  # named session created directly
+        provider = sessions.live["chain-A"]
+        assert sessions.releases == 1  # lease returned, conversation retained
+        assert "[chain-A]" in await agent_fn("again", {"session": "chain-A"})
+        assert sessions.live["chain-A"] is provider
+        assert sessions.cold_starts == 1
+        assert sessions.releases == 2
     finally:
         await pool.shutdown()
+        await sessions.destroy("chain-A")
 
 
 @pytest.mark.asyncio
@@ -524,9 +532,9 @@ async def test_extra_env_pin_reaches_all_three_pool_call_sites():
         sessions, run_id="renv", max_workers=1, max_identities=1, extra_env=env
     )
 
-    await agent_fn("pooled default", {})                 # warm pooled worker
+    await agent_fn("pooled default", {})  # warm pooled worker
     await agent_fn("named chain", {"session": "chain-A"})  # named-session bypass
-    await agent_fn("overflow", {"model": "other-model"})   # unpooled overflow valve
+    await agent_fn("overflow", {"model": "other-model"})  # unpooled overflow valve
 
     # All three cold starts carried the run-level env pin.
     assert sessions.created_extra_env, "no sessions were created"

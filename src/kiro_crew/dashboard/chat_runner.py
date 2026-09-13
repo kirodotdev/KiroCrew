@@ -77,7 +77,7 @@ from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     find_written_steer_row,
 )
-from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
@@ -115,7 +115,6 @@ from kiro_crew.dashboard.chat_utils import (
     parse_workflow_command,
     remember_slack_options,
     slack_mirror_is_paused,
-    slot_history_key,
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import (
@@ -6078,7 +6077,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         if is_cron:
             _inject_meta["cronLabel"] = cron_label
         _drained_meta.update(_inject_meta)
-    slot.append(
+    current_row = slot.append(
         row_role,
         next_msg,
         row_cls,
@@ -6132,6 +6131,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
                 await result
 
     _run_kwargs: dict[str, Any] = {
+        "_current_message": current_row,
         "_synthetic_payload": synthetic_payload,
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,
@@ -6387,6 +6387,7 @@ async def _run_chat(
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
     monitor_completion: MonitorCompletionHook | None = None,
+    _current_message: dict | None = None,
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
@@ -6421,6 +6422,23 @@ async def _run_chat(
     # suspended and reset _stop_state to idle before continuation processing.
     # The monotonic generation preserves that user intent across the whole call.
     _stop_gen_at_entry = slot._stop_generation
+    # Dispatch appends the triggering row before entering this runner. Freeze
+    # that row now, before await points, prompt expansion or new deliveries.
+    _current_replay_message = _current_message
+    if _current_replay_message is None:
+        _current_replay_message = next(
+            (
+                m
+                for m in reversed(slot.messages)
+                if m.get("role") in ("user", "nudge", "subagent", "inject")
+            ),
+            None,
+        )
+        if (
+            _current_replay_message is not None
+            and _current_replay_message.get("content") != message
+        ):
+            _current_replay_message = None
 
     session_key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
@@ -7851,6 +7869,13 @@ async def _run_chat(
         # are added. Final prefix scrubbing can then preserve this trusted tail
         # (including its sole minted reply-format marker) byte-for-byte.
         _trusted_prompt_tail: str | None = None
+        _provider_has_history = resumed
+        if not _provider_has_history:
+            # An ACP provider exposes its native client; ``resumed`` is True only
+            # after a successful session/load. ``is True`` keeps a mock's truthy
+            # attribute from counting as a resume.
+            if getattr(getattr(client, "client", None), "resumed", None) is True:
+                _provider_has_history = True
         if is_slash:
             full_message = message
             sel().log_tool_invocation(
@@ -7870,20 +7895,12 @@ async def _run_chat(
             # far the user's text was pushed down — its offset for split_blocks.
             _core_msg_len = len(message)
 
-            compressed: str | None = None
+            compressed: str | None = ""
             # Provider-agnostic session replay: KiroCrew's conversation_log
             # is the canonical history source. Skip only when the provider
             # successfully resumed its own native session (same provider,
             # full-fidelity history already loaded via ACP session/load).
-            _provider_has_history = resumed
-            if not _provider_has_history:
-                from kiro_crew.providers.acp import (
-                    AcpProvider,  # circular: providers -> session -> chat_runner
-                )
-
-                if isinstance(client, AcpProvider) and client.client.resumed:
-                    _provider_has_history = True
-            if is_new and not _provider_has_history and state.context_builder.conversation_log:
+            if is_new and not _provider_has_history:
                 # Consumed HERE rather than before the branch, so only a real cold
                 # start can spend the flag: a warm turn that never rebuilds history
                 # must not burn the one chance the reset asked for.
@@ -7892,29 +7909,26 @@ async def _run_chat(
                         "Session replay suppressed by an explicit conversation reset: %s",
                         session_key,
                     )
-                    compressed = None
+                    compressed = ""
                 else:
                     from kiro_crew.context import (  # circular: context -> chat
                         build_session_replay,
                         window_for_provider_client,
                     )
 
-                    # drop the just-flushed current-turn user message
-                    # from replay. chat_handlers.py:146 (or queue dequeue at L1898)
-                    # always appended exactly one message before _run_chat fires,
-                    # and the periodic flush_loop may have already written it to
-                    # disk during the kiro-cli cold spawn (~5s flush vs ≥15s spawn).
-                    # Scale the replay budget to the model window (client is live here).
-                    # Offloaded: resolving this chat's tab id globs and opens every
-                    # session file sharing it to rebuild an index, then reads each
-                    # chained file in full — unbounded file IO on the hottest path in
-                    # the gateway, where it would block every other request.
-                    compressed = await asyncio.to_thread(
-                        build_session_replay,
-                        state.context_builder.conversation_log,
-                        session_key,
-                        exclude_last_n=1,
-                        model_window=window_for_provider_client(client),
+                    # Merge the disk transcript and a frozen live-window tail
+                    # before one budget pass. Exclude this request by identity,
+                    # whether or not the periodic flush has persisted it yet.
+                    compressed = (
+                        await asyncio.to_thread(
+                            build_session_replay,
+                            state.context_builder.conversation_log,
+                            session_key,
+                            pending_messages=list(slot.messages),
+                            current_message=_current_replay_message,
+                            model_window=window_for_provider_client(client),
+                        )
+                        or ""
                     )
                     logger.info(
                         "Session replay: key=%s result=%s",
@@ -8050,7 +8064,7 @@ async def _run_chat(
                 is_new,
                 session_key,
                 agent=kiro_agent or slot.agent or None,
-                resumed=resumed,
+                resumed=_provider_has_history,
                 workspace=slot.workspace or None,
                 project=slot.project or None,
                 memory_store=memory_store,
@@ -8093,46 +8107,20 @@ async def _run_chat(
             _trusted_prompt_tail = full_message
         else:
             full_message = _request_prefix_context + message
+            if (
+                is_new
+                and not _provider_has_history
+                and not state.sessions.consume_replay_suppression(session_key)
+            ):
+                from kiro_crew.dashboard.chat_persistence import _build_history_prefix
 
-        # Re-inject history if session was reset but messages haven't been
-        # saved to JSONL yet (e.g. stop button killed the process mid-chat).
-        # build_session_context already injects recent() from JSONL, so this
-        # only adds value when in-memory messages are newer than disk.
-        # Skip for soft stops — session is preserved, no re-injection needed.
-        if is_new and slot.messages:
-            # Check if last stop was soft (session preserved, no re-injection).
-            # cls is a JSON-encoded dict (see api_chat_slot_stop); parse it.
-            _last_stop_soft = False
-            for m in reversed(slot.messages):
-                cls_val = m.get("cls", "")
-                if not isinstance(cls_val, str) or not cls_val.startswith("{"):
-                    continue
-                try:
-                    _cls = json.loads(cls_val)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                if not isinstance(_cls, dict) or _cls.get("kind") != "stop_event":
-                    continue
-                if _cls.get("outcome") == "soft":
-                    _last_stop_soft = True
-                break
-            if not _last_stop_soft:
-                history_key = slot_history_key(slot)
-                disk_count = 0
-                if state.conversation_log:
-                    # Off the loop: read_messages parses the whole transcript
-                    # (100-300 ms on a large store), and this runs on the
-                    # prompt-submit path where a stalled loop delays every other
-                    # session's frames. ``mem_count`` is counted AFTER the hop so
-                    # both sides of the comparison reflect post-await state.
-                    disk_count = len(
-                        await asyncio.to_thread(state.conversation_log.read_messages, history_key)
-                    )
-                mem_count = sum(1 for m in slot.messages if m.get("role") in ("user", "assistant"))
-                if mem_count > disk_count:
-                    history = _build_history_prefix(slot)
-                    if history:
-                        full_message = history + full_message
+                history = await asyncio.to_thread(
+                    _build_history_prefix,
+                    slot,
+                    conversation_log=state.conversation_log,
+                    current_message=_current_replay_message,
+                )
+                full_message = history + full_message
 
         if is_new:
             spawn_injected = await _fire(HOOK_EVENT_AGENT_SPAWN, session_key)

@@ -737,6 +737,16 @@ host lifecycle (`begin_host_run`, `bind_task`, `phase`, `log`, `step`, `pause`,
 `timeout_secs` property. Every trusted host lifecycle mutation is async when it can
 produce a durable checkpoint, so host drivers await the off-loop persistence path.
 
+Dynamic workflows do not yet support private member memory propagation. Service
+admission resolves the protected parent binding before authoring or creating a
+run, including source, intent, saved-definition and restored or edited
+subtree-rerun entry points. Both the author session and result-routing session
+are checked when supplied. Private identity refuses with
+`workflow_private_memory_unsupported`; unreadable identity refuses with
+`workflow_memory_unavailable`. Refusal creates no author, worker or run and
+preserves the parent's binding. Global V1 execution is unchanged. A saved
+task-plan started through this façade takes the same check before its driver.
+
 Host-driven runs carry `driver`, `source_format`, `task_id`, `capabilities`, and
 saved-definition provenance in every compact and full snapshot. `paused` is an
 active, durable workflow status. A restored paused host run, or a host run
@@ -844,6 +854,12 @@ never spawns `kiro-cli` in tests. Two production adapters:
   `_MAX_TURNS_PER_STEP` is imported from `agent_exec` rather than duplicated, so
   one edit retunes both paths; `test_workflows_agent_pool.py` pins them equal.
 
+Named workflow sessions retain their provider and conversation, not their turn
+lease. Both adapters release every successfully acquired named lease in a
+`finally` block with `cleanup=False`, on success, exception and cancellation.
+A failed or cancelled acquisition must not release a lease held by another
+caller. A later call on that same name reuses the retained history.
+
 Pool init failure is caught and falls back to `build_agent_fn`, so pooling can
 never break a run start. The runner's `on_complete` hook fires on every exit path
 (success, failure, cancellation) to shut the pool down, so warm sessions are always
@@ -862,6 +878,15 @@ Registered in `dashboard/server.py`, handled in
 `dashboard/handlers/workflows.py`. These back both the chat `workflow_*` MCP tools
 (which call them with `X-Internal-Secret`) and the Workflows dashboard tab; the
 caller's `X-Session-Key` header becomes the run's `author` and `session_key`.
+
+Before author, source run, intent run, saved-definition run or subtree rerun
+calls the service, `internal_memory_scope` verifies the request's protected
+caller against its claimed session. Verification refusals pass through unchanged;
+a verified private store returns HTTP 409 with
+`workflow_private_memory_unsupported` before service dispatch. Omitting or
+replacing the session header cannot turn a private process into an unbound
+caller, and rerunning a Global V1 record still checks the current caller.
+Owner-browser and verified unbound V1 dispatch retain their existing behavior.
 
 | Route | Body / params | Response |
 |-------|---------------|----------|

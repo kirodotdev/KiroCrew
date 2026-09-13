@@ -72,7 +72,7 @@ import atexit
 import functools
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 _T = TypeVar("_T")
 
@@ -95,6 +95,8 @@ __all__ = [
     "run_in_cron_gate_pool",
     "cron_gate_budget",
     "run_in_embed_pool",
+    "run_with_recall_deadline",
+    "recall_executor",
     "shutdown_maintenance_executor",
 ]
 
@@ -266,6 +268,7 @@ _subprocess_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
+_recall_pool: ThreadPoolExecutor | None = None
 _image_pool: ThreadPoolExecutor | None = None
 _stt_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
@@ -791,6 +794,38 @@ async def run_in_cron_gate_pool(func: Callable[..., _T], /, *args: Any, timeout:
         raise CronGateTimeout(asyncio.get_running_loop().time() - queued_at) from exc
 
 
+RECALL_TIMEOUT_SECS = 9.0  # Finish before the MCP HTTP client's ten-second timeout.
+
+
+def recall_executor() -> ThreadPoolExecutor:
+    """Retrieval cannot occupy the workers needed for prompt preparation."""
+    global _recall_pool
+    with _lock:
+        if _recall_pool is None:
+            _recall_pool = ThreadPoolExecutor(
+                max_workers=_MAX_EMBED_WORKERS, thread_name_prefix="mc-recall"
+            )
+            atexit.register(shutdown_maintenance_executor)
+        return _recall_pool
+
+
+async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:
+    """Bound an entire recall, including cold store opening and pool admission."""
+    import time
+
+    from kiro_crew.embeddings import EmbeddingWork, embedding_work
+
+    inherited = embedding_work.get()
+    work = inherited or EmbeddingWork(time.monotonic() + RECALL_TIMEOUT_SECS)
+    token = embedding_work.set(work)
+    try:
+        return await asyncio.wait_for(awaitable, timeout=max(0.0, work.deadline - time.monotonic()))
+    finally:
+        if inherited is None:
+            work.cancelled.set()
+        embedding_work.reset(token)
+
+
 async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
     """Offload bounded memory work, waiting without rejecting ordinary prompts.
 
@@ -798,14 +833,21 @@ async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: An
     cancelled caller releases a slot only when its underlying thread actually
     finishes (or the queued future is successfully cancelled).
     """
+    from contextvars import copy_context
+
+    from kiro_crew.embeddings import embedding_work
+
     loop = asyncio.get_running_loop()
-    admission = getattr(loop, "_kirocrew_memory_admission", None)
+    recall = embedding_work.get() is not None
+    admission_key = "_kirocrew_recall_admission" if recall else "_kirocrew_memory_admission"
+    admission = getattr(loop, admission_key, None)
     if admission is None:
         admission = asyncio.Semaphore(_MAX_EMBED_WORKERS)
-        setattr(loop, "_kirocrew_memory_admission", admission)
+        setattr(loop, admission_key, admission)
     await admission.acquire()
     try:
-        future = embed_executor().submit(functools.partial(func, *args, **kwargs))
+        executor = recall_executor() if recall else embed_executor()
+        future = executor.submit(copy_context().run, functools.partial(func, *args, **kwargs))
     except BaseException:
         admission.release()
         raise
@@ -827,7 +869,7 @@ def shutdown_maintenance_executor() -> None:
     The default executor pool is NOT included here -- it is owned by each event
     loop and shut down by asyncio when the loop closes.
     """
-    global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool
+    global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
     with _lock:
         pool, _pool = _pool, None
@@ -835,6 +877,7 @@ def shutdown_maintenance_executor() -> None:
         cron_pool, _cron_pool = _cron_pool, None
         discovery_pool, _discovery_pool = _discovery_pool, None
         embed_pool, _embed_pool = _embed_pool, None
+        recall_pool, _recall_pool = _recall_pool, None
         governance_pool, _governance_pool = _governance_pool, None
         image_pool, _image_pool = _image_pool, None
         cron_gate_pool, _cron_gate_pool = _cron_gate_pool, None
@@ -850,6 +893,8 @@ def shutdown_maintenance_executor() -> None:
         discovery_pool.shutdown(wait=False, cancel_futures=True)
     if embed_pool is not None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
+    if recall_pool is not None:
+        recall_pool.shutdown(wait=False, cancel_futures=True)
     if governance_pool is not None:
         governance_pool.shutdown(wait=False, cancel_futures=True)
     if image_pool is not None:

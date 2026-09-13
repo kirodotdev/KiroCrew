@@ -35,6 +35,7 @@ from kiro_crew.llm_helpers import (
     acp_error_is_transient,
     stream_and_collect,
 )
+from kiro_crew.member_memory_auth import private_memory_store_for_session
 from kiro_crew.task_planner import decompose_yaml
 
 from .agent_exec import build_agent_fn
@@ -156,6 +157,37 @@ Author the workflow for this task:
 
 {references}
 """
+
+
+async def _memory_admission_error(*session_keys: str) -> Optional[dict[str, Any]]:
+    """Refuse private parents until every workflow worker can retain their binding.
+
+    This is the gateway's protected session resolver, never an agent-template or
+    environment lookup. Check before allocating authors, pools or run records;
+    unreadable identity is a refusal rather than permission to use Global V1.
+    """
+    for session_key in dict.fromkeys(key for key in session_keys if key):
+        try:
+            private_store = await asyncio.to_thread(private_memory_store_for_session, session_key)
+        except Exception:
+            message = "The workflow's memory binding could not be verified. No agents were started."
+            code = "workflow_memory_unavailable"
+        else:
+            if not private_store:
+                continue
+            message = (
+                "Workflows cannot yet retain a member's private memory. "
+                "Run this work in the member's chat instead."
+            )
+            code = "workflow_private_memory_unsupported"
+        return {
+            "ok": False,
+            "error": message,
+            "errors": [message],
+            "code": code,
+            "admission_rejected": True,
+        }
+    return None
 
 
 class WorkflowService:
@@ -686,6 +718,9 @@ class WorkflowService:
         ``on_progress(msg)`` streams human-readable authoring progress (each
         attempt, retries) so author-in-run can surface it live in the sidebar/chat.
         """
+        refused = await _memory_admission_error(author)
+        if refused is not None:
+            return refused
 
         def _say(msg: str) -> None:
             if on_progress is not None:
@@ -828,6 +863,9 @@ class WorkflowService:
         """
         if not intent.strip():
             return {"error": "intent is required"}
+        refused = await _memory_admission_error(session_key, author)
+        if refused is not None:
+            return refused
         run_id = self._new_run_id()
 
         async def _author_fn(
@@ -872,6 +910,9 @@ class WorkflowService:
         vr = validate(source)
         if not vr.ok:
             return {"error": "; ".join(vr.errors), "errors": vr.errors}
+        refused = await _memory_admission_error(session_key, author)
+        if refused is not None:
+            return refused
         run_id = self._new_run_id()
         await self._runner(run_id, timeout_secs=timeout_secs).run_background(
             source,
@@ -1090,6 +1131,9 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
     ) -> dict[str, Any]:
         """Run the exact current revision of a named saved workflow."""
+        refused = await _memory_admission_error(session_key, author)
+        if refused is not None:
+            return refused
         definition = await asyncio.to_thread(self.get_definition, workflow_ref)
         if definition is None:
             return {"error": f"no such saved workflow: {workflow_ref}", "not_found": True}
@@ -1178,6 +1222,9 @@ class WorkflowService:
         prior = self.registry.get(run_id)
         if prior is None:
             return {"error": f"no such run: {run_id}"}
+        refused = await _memory_admission_error(prior.session_key, prior.author)
+        if refused is not None:
+            return refused
         stripped = (source or "").strip()
         edited = bool(stripped and stripped != (prior.source or "").strip())
         run_source = source if stripped else prior.source

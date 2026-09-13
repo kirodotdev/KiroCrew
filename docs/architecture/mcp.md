@@ -781,11 +781,13 @@ answers `tools/list` from):
   It accepts a task query,
   never a store selector. The gateway resolves the caller's bound V1 or private V2 memory
   and returns bounded context with evidence; unavailable identity or memory
-  refuses the call. Evidence contains selected snippets and stable references,
-  not full source rows. A shared final serializer enforces the 3,000-character
-  context limit and 16 KiB memory-result budget after redaction, including
-  nested JSON escaping and TextContent overhead with a 1 KiB reserve for normal
-  RPC framing/IDs. Arbitrarily large caller-supplied IDs are outside that bound.
+  refuses the call. The MCP response keeps each selected body once in a trusted
+  reference context, with body-free evidence carrying stable references, scores,
+  provenance and truncation flags. UI previews are not model output. A call-local
+  projection and final serializer enforce the 3,000-character context limit and
+  16 KiB memory-result budget after redaction, including nested JSON escaping and
+  TextContent overhead with a 1 KiB reserve for normal RPC framing/IDs. This
+  projection retains no caller or session state in the MCP process. Arbitrarily large caller-supplied IDs are outside that bound.
   Prompt construction does not perform embedding search;
   the tool is called when earlier facts or experiences are needed. Owner-selected copying is a dashboard action, not an MCP
   capability. The full contract is in
