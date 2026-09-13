@@ -1406,6 +1406,18 @@ forge its verdict. A maintainer who has reviewed a legitimate workflow change ap
 the `allow-fork-workflow-change` label and the guard re-evaluates green; the label is
 stripped on a new revision, so the override cannot carry over.
 
+One class of file under `.github/**` is exempt: the ratchet baselines
+(`.github/coverage-baselines/*.txt` and `.github/*-baseline.txt`). They are plain
+data consumed by gates that run from the trusted base workflow, so a fork editing one
+cannot run code or forge a check-run -- the worst it can do is loosen its own ratchet,
+which is a visible line in the diff that CODEOWNERS review already covers. A fork PR
+that adds a file, or shrinks a baselined one, has to edit these to pass the coverage
+and lint gates, so guarding them blocked every such contribution for nothing. The
+exemption is an exact-shape allowlist (a `.txt` leaf directly under
+`coverage-baselines/`, or a top-level `*-baseline.txt`), not a directory prefix, so
+`.github/coverage-baselines/x/evil.yml` or `.github/workflows/foo-baseline.txt` are
+still caught.
+
 ## `dependency-vulnerability.yml`: the production npm gate
 
 Every publication runs one blocking production-dependency control in

@@ -15,6 +15,16 @@ name: Fork Workflow-Change Guard
 # NEVER checks out or executes fork code — it only reads the authentic
 # changed-file list from GitHub's compare API and posts a check-run.
 #
+# EXEMPT: ratchet BASELINE data files (`.github/coverage-baselines/*.txt` and
+# `.github/*-baseline.txt`) are not guarded. They are plain text consumed by
+# gates that run from the trusted base workflow; a fork editing one cannot run
+# code or forge a check-run -- it can only loosen its own ratchet, and that is
+# a visible line in the diff that CODEOWNERS review already covers. A fork PR
+# that adds a new file, or shrinks a baselined file, MUST edit these to pass
+# the coverage/lint gates, so guarding them blocked every such contribution
+# for nothing. Workflows, scripts, prompts, CODEOWNERS and everything else
+# under `.github/**` stay guarded.
+#
 # OVERRIDE: a maintainer who has reviewed a legitimate workflow change applies
 # the `allow-fork-workflow-change` label; the guard then re-evaluates green.
 # ENFORCEMENT (what actually stops a malicious fork workflow change): this
@@ -129,7 +139,13 @@ jobs:
             fail_closed "too many files to verify (>= 3000)" \
               "This PR changes ${nfiles}+ files, at the API listing cap, so a hidden .github/** edit cannot be ruled out. Blocked; split the PR or a maintainer must review and apply the '$OVERRIDE_LABEL' label."
           fi
-          touched="$(printf '%s\n' "$files" | grep -E '^\.github/' || true)"
+          # Baseline data files are exempt (see EXEMPT in the header). The
+          # exemption is an exact-shape allowlist, not a directory prefix: only
+          # `.txt` leaves directly under coverage-baselines/, or a top-level
+          # `*-baseline.txt`, so a `.github/coverage-baselines/x/evil.yml` or a
+          # `.github/workflows/foo-baseline.txt` is still caught.
+          touched="$(printf '%s\n' "$files" | grep -E '^\.github/' \
+            | grep -vE '^\.github/(coverage-baselines/[^/]+\.txt|[^/]+-baseline\.txt)$' || true)"
 
           has_override=no
           if gh api "repos/$REPO/issues/$pr/labels" --paginate --jq '.[].name' 2>/dev/null \
@@ -146,7 +162,7 @@ jobs:
           else
             concl="failure"; title="fork PR modifies .github/** — blocked"
             changed_list="$(printf '%s ' $touched)"
-            summary="This fork PR changes CI/workflow files ($changed_list). A fork could use this to fake CI results, so it is blocked. A maintainer must review the change and apply the '$OVERRIDE_LABEL' label to proceed."
+            summary="This fork PR changes CI/workflow files ($changed_list). A fork could use this to fake CI results, so it is blocked. A maintainer must review the change and apply the '$OVERRIDE_LABEL' label to proceed. (Baseline data files under .github/coverage-baselines/ and .github/*-baseline.txt are exempt and never trigger this guard.)"
           fi
 
           gh api --method POST "repos/$REPO/check-runs" \
