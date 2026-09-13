@@ -11647,11 +11647,9 @@
         "default_agent": "agente padrão",
         "description": "Descrição",
         "directory": "Diretório",
-        "disabled": "Desativado",
         "embedding": "Embedding",
         "embedding_provider": "Provedor de embedding",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Ativa a descoberta dinâmica de ferramentas MCP via kiro-cli. Aplica-se na próxima sessão.",
-        "enabled": "Ativado",
         "immediate_auto_approves_all_tools_interactive_as": "Imediato. 'auto' aprova todas as ferramentas; 'interactive' pergunta antes de cada uma.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Imediato. 'auto' ativa o sandbox para ferramentas não confiáveis.",
         "inherited_provider": "herdado ({{provider}})",
@@ -11671,7 +11669,6 @@
         "next_update_check_cycle": "No próximo ciclo de verificação de atualizações.",
         "no_agents_defined": "Nenhum agente definido",
         "no_memory_stores": "Nenhum armazenamento de memória",
-        "orchestrator_mode": "Modo orquestrador",
         "pool_agent": "Agente do pool",
         "pool_size": "Tamanho do pool",
         "pool_ttl": "TTL do pool",
@@ -11693,8 +11690,7 @@
         "number_of_pre_spawned_processes_0_disables": "Número de processos pré-iniciados. 0 desativa.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agente para os processos do pool. Vazio usa o agente padrão.",
         "warm_pool_description": "Pré-inicia processos da ACP CLI para um arranque de sessão instantâneo.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração.",
-        "enable_conductor_skill_for_multi_agent_orchestration": "Ativa a skill conductor para orquestração multiagente."
+        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração."
       },
       "mcpTab": {
         "actions": "Ações",

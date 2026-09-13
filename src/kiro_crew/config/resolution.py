@@ -139,7 +139,11 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     # turns the canonical grant OFF could still have an old `yolo: true` sitting
     # beside it — a contradiction in the one key that controls standing,
     # unattended auto-approval. See sections._read_dangerously_skip_permissions.
-    "agent": frozenset({"dangerouslySkipPermissions", "yolo"}),
+    # RETIRED: agent.conductor_skill toggled a generated always-on
+    # `conductor/SKILL.md` delegation guide (the dashboard "Orchestrator Mode"
+    # switch). Crew routing goes through the `select_crew` / `route_crew` MCP
+    # tools, so the flag has nothing behind it and is dropped on save.
+    "agent": frozenset({"dangerouslySkipPermissions", "yolo", "conductor_skill"}),
     # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
     # sections._read_auto_add_documents still reads the old spelling.
     "knowledge": frozenset({"auto_ingest_doc_links"}),

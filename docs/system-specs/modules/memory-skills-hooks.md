@@ -3084,6 +3084,17 @@ Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill n
 
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
+**Retired generated skill cleanup.** `skills.remove_retired_conductor_skill()`
+removes `skills/conductor/SKILL.md` only when a descriptor-pinned, capped read has
+a CRLF-normalized SHA-256 matching one of the static generator outputs. Linked
+conductor directories, linked final names, oversized files, and identity changes
+return false. Read and unlink errors reach its best-effort callers to log or print;
+empty-directory prune errors are ignored. Platforms without descriptor-relative
+opens keep the final-name and size checks while the
+ancestor and unlink identity checks degrade to by-name checks. Setup and gateway
+startup both invoke it; startup runs it on every boot so a package upgrade needs
+no separate setup command.
+
 **Project skills (`<project>/.kiro/skills`) — a different source from the one above.**
 `$KIROCREW_PROJECT_DIR/skills/` is a *sync* source: its contents are copied into
 `~/.kiro/crew/skills/` and thereafter are ordinary local skills. `<project>/.kiro/skills`

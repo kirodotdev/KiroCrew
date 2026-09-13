@@ -11317,11 +11317,9 @@
         "default_agent": "默认代理",
         "description": "描述",
         "directory": "目录路径",
-        "disabled": "已禁用",
         "embedding": "嵌入",
         "embedding_provider": "嵌入提供方",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "通过 kiro-cli 启用动态 MCP 工具发现。下次会话生效。",
-        "enabled": "已启用",
         "immediate_auto_approves_all_tools_interactive_as": "立即生效。“auto”批准所有工具；“interactive”每次询问。",
         "immediate_auto_enables_sandbox_for_untrusted_too": "立即生效。“auto”为不受信任的工具启用沙箱。",
         "inherited_provider": "继承 ({{provider}})",
@@ -11341,7 +11339,6 @@
         "next_update_check_cycle": "下一个更新检查周期生效。",
         "no_agents_defined": "未定义代理",
         "no_memory_stores": "无记忆存储",
-        "orchestrator_mode": "编排模式",
         "pool_agent": "池代理",
         "pool_size": "池大小",
         "pool_ttl": "池 TTL",
@@ -11363,8 +11360,7 @@
         "number_of_pre_spawned_processes_0_disables": "预启动进程数量。0 表示禁用。",
         "agent_for_pool_processes_empty_uses_default_agent": "用于池化进程的代理。留空则使用默认代理。",
         "warm_pool_description": "预先启动 ACP CLI 进程，让会话即时开始。",
-        "max_age_for_pooled_processes_0_disables_expiry": "池化进程的最大存活时间。0 表示不过期。",
-        "enable_conductor_skill_for_multi_agent_orchestration": "为多代理编排启用 conductor 技能。"
+        "max_age_for_pooled_processes_0_disables_expiry": "池化进程的最大存活时间。0 表示不过期。"
       },
       "mcpTab": {
         "actions": "操作",

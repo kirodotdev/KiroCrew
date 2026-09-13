@@ -5756,23 +5756,6 @@ async def api_kirocrew_agent_avatar_upload(request: web.Request) -> web.Response
     return web.json_response({"ok": True, "staged": True, "token": _staging_token(bytes(data))})
 
 
-# ── Conductor skill regeneration ────────────────────────────────────
-
-
-def _regen_conductor() -> None:
-    """Regenerate conductor skill after metadata or agent roster changes."""
-    try:
-        cfg = KiroCrewConfig.load()
-        if not cfg.agent.conductor_skill:
-            return
-        from kiro_crew.conductor_skill import generate_conductor_skill  # noqa: F811
-        from kiro_crew.skills import SkillsLoader  # noqa: F811
-
-        generate_conductor_skill(SkillsLoader())
-    except Exception:
-        logger.exception("Failed to regenerate conductor skill")
-
-
 async def api_agent_reset(request: web.Request) -> web.Response:
     """POST /api/agents/detail/{name}/reset — discard a crew's private copy.
 

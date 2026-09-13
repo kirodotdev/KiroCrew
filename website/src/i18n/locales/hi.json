@@ -11482,11 +11482,9 @@
         "default_agent": "डिफ़ॉल्ट एजेंट",
         "description": "विवरण",
         "directory": "डायरेक्टरी",
-        "disabled": "बंद",
         "embedding": "एम्बेडिंग",
         "embedding_provider": "एम्बेडिंग प्रोवाइडर",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli के ज़रिए डायनामिक MCP टूल डिस्कवरी चालू करें। अगले सत्र से लागू होगा।",
-        "enabled": "चालू",
         "immediate_auto_approves_all_tools_interactive_as": "तुरंत लागू। 'auto' सभी टूल स्वीकृत करता है; 'interactive' हर बार पूछता है।",
         "immediate_auto_enables_sandbox_for_untrusted_too": "तुरंत लागू। 'auto' अविश्वसनीय टूल के लिए सैंडबॉक्स चालू करता है।",
         "inherited_provider": "इनहेरिटेड ({{provider}})",
@@ -11506,7 +11504,6 @@
         "next_update_check_cycle": "अगले अपडेट जाँच चक्र में।",
         "no_agents_defined": "कोई एजेंट परिभाषित नहीं",
         "no_memory_stores": "कोई मेमोरी स्टोर नहीं",
-        "orchestrator_mode": "ऑर्केस्ट्रेटर मोड",
         "pool_agent": "पूल एजेंट",
         "pool_size": "पूल आकार",
         "pool_ttl": "पूल TTL",
@@ -11528,8 +11525,7 @@
         "number_of_pre_spawned_processes_0_disables": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद।",
         "agent_for_pool_processes_empty_uses_default_agent": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है।",
         "warm_pool_description": "सत्र तुरंत शुरू करने के लिए ACP CLI प्रक्रियाएँ पहले से चालू करें।",
-        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।",
-        "enable_conductor_skill_for_multi_agent_orchestration": "मल्टी-एजेंट ऑर्केस्ट्रेशन के लिए conductor स्किल चालू करें।"
+        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।"
       },
       "mcpTab": {
         "actions": "कार्रवाइयाँ",

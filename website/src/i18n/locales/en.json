@@ -7202,7 +7202,6 @@
         "next_update_check_cycle": "Next update check cycle.",
         "no_agents_defined": "No agents defined",
         "no_memory_stores": "No memory stores",
-        "orchestrator_mode": "Orchestrator Mode",
         "pool_agent": "Pool Agent",
         "pool_size": "Pool Size",
         "pool_ttl": "Pool TTL",

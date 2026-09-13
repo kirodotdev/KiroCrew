@@ -153,7 +153,6 @@ Set via `kirocrew config set agent.acp_backend kas`.
     "reasoning_effort": "",
     "sandbox": "auto",
     "bot_name": "",
-    "conductor_skill": false,
     "max_channels": 1,
     "max_channel_agents": 3,
     "max_subagents": 0,
@@ -226,7 +225,6 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `agent.sandbox` | `"auto"` (use Kiro Crew OS-level sandbox, or defer to the kiro-cli internal sandbox on macOS) or `"off"` (skip the Kiro Crew sandbox) | `"auto"` |
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
-| `agent.conductor_skill` | Enable agent delegation conductor | `false` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |
 | `agent.tool_search` | On the kiro-cli backend, defer MCP tool definitions when either threshold below is exceeded; alternate ACP backends ignore it | `true` |
 | `agent.tool_search_min_pct` | Tool-definition context threshold as a percentage; `0` with the token threshold also `0` always defers | `5` |

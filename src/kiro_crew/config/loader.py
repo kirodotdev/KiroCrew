@@ -3403,7 +3403,6 @@ class KiroCrewConfig:
                 dangerously_skip_permissions=_read_skip_permissions(agent_data),
                 yolo_duration=_normalize_yolo_duration(agent_data.get("yolo_duration")),
                 notify_override_expiry=agent_data.get("notify_override_expiry", True),
-                conductor_skill=agent_data.get("conductor_skill", False),
                 tool_search=bool(agent_data.get("tool_search", True)),
                 tool_search_min_pct=_safe_int(agent_data.get("tool_search_min_pct", 5), 5),
                 tool_search_min_tokens=_safe_int(

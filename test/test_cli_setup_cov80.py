@@ -23,12 +23,16 @@ from pathlib import Path
 
 import pytest
 
+import kiro_crew.skills as skills_module
+from kiro_crew import pinned_fs
 from kiro_crew.cli_setup import (
     _find_electron_dir,
     _fix_shell_profiles,
+    _remove_retired_conductor_skill,
     _setup_slash_command,
     _setup_whatsapp,
 )
+from kiro_crew.skills import RETIRED_CONDUCTOR_SKILL_SHA256
 
 _STALE = 'export PATH="$HOME/.kirocrew-app/bin:$PATH"\n'
 
@@ -347,3 +351,228 @@ class TestSetupWhatsApp:
         _setup_whatsapp()
 
         assert json.loads(cfg_file.read_text(encoding="utf-8"))["whatsapp"]["enabled"] is True
+
+
+class TestRemoveRetiredConductorSkill:
+    """``agent.conductor_skill`` (the dashboard's "Orchestrator Mode" toggle) used
+    to generate an always-on ``<skills>/conductor/SKILL.md``. The flag is retired
+    — crew routing goes through the ``select_crew`` MCP tool — so setup removes
+    the generated file on old installs. Only bytes the retired generator itself
+    wrote are recognised, by exact SHA-256 of the two static revisions. Anything
+    else under that path — a user's own skill, an edited copy of ours, or the
+    oldest roster-inlining revision that has no byte-exact identity — is never
+    touched: a wrongly kept file costs one stale skill, a wrongly deleted one
+    costs the user's work.
+    """
+
+    _FIXTURES = Path(__file__).parent / "fixtures" / "retired_conductor_skill"
+
+    # The fixed text the oldest (roster-inlining) generator wrote before the
+    # per-install roster; it has no byte-exact identity, so it must NOT be a
+    # deletion trigger even when the whole prefix matches.
+    _LEGACY_HEAD = (
+        "---\nalways: true\n---\n# Agent Delegation\n\n"
+        'You have access to specialist agents via `spawn_run(agent="<name>", '
+        'task="<description>")`.\n\n## Default behavior\n\n'
+    )
+
+    @pytest.fixture()
+    def skills_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        root = tmp_path / "skills"
+        root.mkdir()
+        monkeypatch.setattr("kiro_crew.skills.skills_dir", lambda: root)
+        return root
+
+    @pytest.mark.parametrize("fixture", ["select-crew-v2.md", "select-crew-v1.md"])
+    def test_each_static_generated_revision_is_removed_with_its_empty_directory(
+        self, skills_root: Path, fixture: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        skill.write_bytes((self._FIXTURES / fixture).read_bytes())
+
+        _remove_retired_conductor_skill()
+
+        assert not skill.exists()
+        assert not skill.parent.exists()
+        assert "Removed retired conductor skill" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("fixture", ["select-crew-v2.md", "select-crew-v1.md"])
+    def test_each_windows_generated_revision_is_removed(
+        self, skills_root: Path, fixture: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        data = (self._FIXTURES / fixture).read_bytes()
+        skill.write_bytes(data.replace(b"\n", b"\r\n"))
+
+        _remove_retired_conductor_skill()
+
+        assert not skill.exists()
+        assert not skill.parent.exists()
+        assert "Removed retired conductor skill" in capsys.readouterr().out
+
+    def test_a_user_skill_borrowing_the_heading_is_left_alone(
+        self, skills_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The heading alone must not be the trigger: a user who titled their own
+        delegation notes `# Agent Delegation` would otherwise lose them on setup."""
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        body = "---\nalways: true\n---\n# Agent Delegation\n\nMy own routing notes.\n"
+        skill.write_text(body, encoding="utf-8")
+
+        _remove_retired_conductor_skill()
+
+        assert skill.read_text(encoding="utf-8") == body
+        assert capsys.readouterr().out == ""
+
+    def test_an_edited_copy_of_the_generated_skill_is_left_alone(self, skills_root: Path) -> None:
+        """One changed byte means the user has made it theirs."""
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        data = (self._FIXTURES / "select-crew-v2.md").read_bytes()
+        skill.write_bytes(data + b"\n- Also route billing questions to finance.\n")
+
+        _remove_retired_conductor_skill()
+
+        assert skill.read_bytes() == data + b"\n- Also route billing questions to finance.\n"
+
+    def test_the_roster_inlining_revision_is_left_alone_even_with_our_exact_prefix(
+        self, skills_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A prefix match cannot tell the untouched legacy file from one the user
+        extended below the roster, so neither is deleted."""
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        body = (
+            self._LEGACY_HEAD + "## Available Agents\n\n### pr-reviewer\n\nReviews.\n\nMy notes.\n"
+        )
+        skill.write_text(body, encoding="utf-8")
+
+        _remove_retired_conductor_skill()
+
+        assert skill.read_text(encoding="utf-8") == body
+        assert capsys.readouterr().out == ""
+
+    def test_a_sibling_file_keeps_the_directory(self, skills_root: Path) -> None:
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        skill.write_bytes((self._FIXTURES / "select-crew-v2.md").read_bytes())
+        keep = skill.parent / "notes.md"
+        keep.write_text("mine\n", encoding="utf-8")
+
+        _remove_retired_conductor_skill()
+
+        assert not skill.exists()
+        assert keep.exists()
+
+    def test_a_missing_file_is_a_silent_no_op(
+        self, skills_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _remove_retired_conductor_skill()
+
+        assert capsys.readouterr().out == ""
+
+    def test_a_symlinked_skill_file_is_not_followed(self, skills_root: Path) -> None:
+        target = skills_root.parent / "generated.md"
+        target.write_bytes((self._FIXTURES / "select-crew-v2.md").read_bytes())
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        try:
+            skill.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        assert skills_module.remove_retired_conductor_skill() is False
+        assert skill.is_symlink()
+        assert target.exists()
+
+    def test_a_symlinked_conductor_directory_is_not_followed(self, skills_root: Path) -> None:
+        target_dir = skills_root.parent / "external-conductor"
+        target_dir.mkdir()
+        target = target_dir / "SKILL.md"
+        target.write_bytes((self._FIXTURES / "select-crew-v2.md").read_bytes())
+        parent = skills_root / "conductor"
+        try:
+            parent.symlink_to(target_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        assert skills_module.remove_retired_conductor_skill() is False
+        assert parent.is_symlink()
+        assert target.exists()
+
+    def test_an_oversized_skill_is_not_read_or_removed(
+        self, skills_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        skill.write_bytes(b"x" * (skills_module._RETIRED_CONDUCTOR_SKILL_MAX_BYTES + 1))
+
+        real_open = skills_module.os.open
+
+        def _refuse_skill_open(path: str | Path, *args, **kwargs):
+            if Path(path).name == "SKILL.md":
+                pytest.fail("oversized skill was opened")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(skills_module.os, "open", _refuse_skill_open)
+
+        assert skills_module.remove_retired_conductor_skill() is False
+        assert skill.exists()
+
+    def test_a_replaced_inode_is_not_unlinked(
+        self, skills_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The identity-checked unlink only runs on the pinned-descriptor path."""
+        if not pinned_fs.supports_pinned_walk():
+            pytest.skip("no descriptor-relative opens on this platform")
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        skill.write_bytes((self._FIXTURES / "select-crew-v2.md").read_bytes())
+        replacement_data = b"user-owned replacement\n"
+        original_unlink = pinned_fs.unlink_verified
+
+        def _replace_before_unlink(holder_fd: int, name: str, expect: tuple[int, int]) -> bool:
+            replacement = skill.with_name("replacement.md")
+            replacement.write_bytes(replacement_data)
+            replacement.replace(skill)
+            return original_unlink(holder_fd, name, expect)
+
+        monkeypatch.setattr(pinned_fs, "unlink_verified", _replace_before_unlink)
+
+        assert skills_module.remove_retired_conductor_skill() is False
+        assert skill.read_bytes() == replacement_data
+
+    def test_the_conductor_directory_is_never_re_resolved_by_name(
+        self, skills_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-resolving the name would follow a link swapped in after the check."""
+        if not pinned_fs.supports_pinned_walk():
+            pytest.skip("no descriptor-relative opens on this platform")
+        skill = skills_root / "conductor" / "SKILL.md"
+        skill.parent.mkdir()
+        skill.write_bytes((self._FIXTURES / "select-crew-v2.md").read_bytes())
+        real_realpath = skills_module.os.path.realpath
+
+        def _no_conductor_realpath(path, *args, **kwargs):
+            if str(path).endswith("conductor"):
+                pytest.fail("the conductor path was re-resolved by name")
+            return real_realpath(path, *args, **kwargs)
+
+        monkeypatch.setattr(skills_module.os.path, "realpath", _no_conductor_realpath)
+
+        assert skills_module.remove_retired_conductor_skill() is True
+        assert not skill.exists()
+
+    def test_the_pinned_hashes_match_the_fixtures(self) -> None:
+        """The fixtures are the byte-exact outputs of the deleted generator's two
+        static revisions; the hash set in skills must name exactly those."""
+        import hashlib
+
+        digests = {
+            hashlib.sha256((self._FIXTURES / name).read_bytes()).hexdigest()
+            for name in ("select-crew-v1.md", "select-crew-v2.md")
+        }
+        assert digests == set(RETIRED_CONDUCTOR_SKILL_SHA256)

@@ -11812,11 +11812,9 @@
         "default_agent": "агент по умолчанию",
         "description": "Описание",
         "directory": "Каталог",
-        "disabled": "Отключено",
         "embedding": "Эмбеддинги",
         "embedding_provider": "Провайдер эмбеддингов",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Включить динамическое обнаружение инструментов MCP через kiro-cli. Применится в следующей сессии.",
-        "enabled": "Включено",
         "immediate_auto_approves_all_tools_interactive_as": "Применяется сразу. 'auto' — подтверждает все инструменты; 'interactive' — спрашивает перед каждым.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Применяется сразу. 'auto' — включает песочницу для недоверенных инструментов.",
         "inherited_provider": "наследуется ({{provider}})",
@@ -11836,7 +11834,6 @@
         "next_update_check_cycle": "В следующем цикле проверки обновлений.",
         "no_agents_defined": "Агенты не заданы",
         "no_memory_stores": "Нет хранилищ памяти",
-        "orchestrator_mode": "Режим оркестратора",
         "pool_agent": "Агент пула",
         "pool_size": "Размер пула",
         "pool_ttl": "TTL пула",
@@ -11858,8 +11855,7 @@
         "number_of_pre_spawned_processes_0_disables": "Количество заранее запущенных процессов. 0 отключает.",
         "agent_for_pool_processes_empty_uses_default_agent": "Агент для процессов пула. Пусто — используется агент по умолчанию.",
         "warm_pool_description": "Заранее запускает процессы ACP CLI для мгновенного старта сессии.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение.",
-        "enable_conductor_skill_for_multi_agent_orchestration": "Включает навык conductor для оркестрации нескольких агентов."
+        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение."
       },
       "mcpTab": {
         "actions": "Действия",

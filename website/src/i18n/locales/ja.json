@@ -11317,11 +11317,9 @@
         "default_agent": "デフォルトエージェント",
         "description": "説明",
         "directory": "ディレクトリ",
-        "disabled": "無効",
         "embedding": "埋め込み",
         "embedding_provider": "埋め込みプロバイダー",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli 経由の動的 MCP ツール検出を有効にします。次のセッションで有効になります。",
-        "enabled": "有効",
         "immediate_auto_approves_all_tools_interactive_as": "即座に実行。「auto」がすべてのツールを承認、「interactive」は各ツール前に確認。",
         "immediate_auto_enables_sandbox_for_untrusted_too": "即座に実行。「auto」は信頼できないツールのサンドボックスを有効化。",
         "inherited_provider": "継承（{{provider}}）",
@@ -11341,7 +11339,6 @@
         "next_update_check_cycle": "次の更新確認サイクル。",
         "no_agents_defined": "定義されたエージェントがありません",
         "no_memory_stores": "メモリストアなし",
-        "orchestrator_mode": "オーケストレーターモード",
         "pool_agent": "プールエージェント",
         "pool_size": "プールサイズ",
         "pool_ttl": "プール TTL",
@@ -11363,8 +11360,7 @@
         "number_of_pre_spawned_processes_0_disables": "事前スポーンされたプロセス数。0 で無効化します。",
         "agent_for_pool_processes_empty_uses_default_agent": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。",
         "warm_pool_description": "ACP CLI プロセスを事前起動し、セッションを即時に開始します。",
-        "max_age_for_pooled_processes_0_disables_expiry": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。",
-        "enable_conductor_skill_for_multi_agent_orchestration": "マルチエージェントオーケストレーション用のコンダクタースキルを有効にします。"
+        "max_age_for_pooled_processes_0_disables_expiry": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。"
       },
       "mcpTab": {
         "actions": "アクション",

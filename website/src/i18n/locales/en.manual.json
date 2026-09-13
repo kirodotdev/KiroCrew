@@ -4675,8 +4675,6 @@
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Ceiling on the auto-sized concurrent subagent count (only applies when Max Concurrent Subagents = 0). The host memory/CPU formula never exceeds this. Range 1–64. Default: 16.",
         "controls_how_many_subagents_can_run_concurrently": "Controls how many subagents can run concurrently and how many tool calls each subagent is allowed. Changes take effect on the next subagent spawn.",
         "default_agent": "default agent",
-        "disabled": "Disabled",
-        "enabled": "Enabled",
         "maximum_subagents_running_at_once": "Maximum subagents running at once. 0 = auto-size from host memory/CPU (capped at {{cap}}). Default: 3.",
         "named_agent_definitions": "Named agent definitions that bind a {{label}}, workspace, and memory store together. Edit config.json to add or modify agents.",
         "named_memory_stores_with_optional_per_store_embe": "Named memory stores with optional per-store embedding overrides. Unset fields inherit from the top-level memory section.",
@@ -4687,8 +4685,7 @@
         "max_age_for_pooled_processes_0_disables_expiry": "Max age for pooled processes. 0 disables expiry.",
         "number_of_pre_spawned_processes_0_disables": "Number of pre-spawned processes. 0 disables.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agent for pool processes. Empty uses default agent.",
-        "warm_pool_description": "Pre-spawn ACP CLI processes for instant session start.",
-        "enable_conductor_skill_for_multi_agent_orchestration": "Enable conductor skill for multi-agent orchestration."
+        "warm_pool_description": "Pre-spawn ACP CLI processes for instant session start."
       },
       "mcpTab": {
         "applied_change_one": "Applied {{count}} change",

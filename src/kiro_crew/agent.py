@@ -1453,6 +1453,10 @@ def run_first_run_setup() -> None:
       app's FIRST registration, so a builtin promoted to default-on later never
       reaches installs that already registered it. Runs ONCE, guarded by its own
       marker file, because re-running it would override a user's own disable.
+    * **Retired conductor skill cleanup** — removes only byte-exact generated
+      revisions of the always-on conductor skill. It runs on every start so a
+      package upgrade takes effect without requiring a terminal setup command;
+      user-authored and edited files remain untouched.
     * **Stale predecessor MCP purge** — ``clean_stale_managed_mcp()`` mutates
       the user's *global* ``~/.kiro/settings/mcp.json``, so it runs ONCE,
       guarded by a marker file, to honor the "KiroCrew owns only the agent
@@ -1498,7 +1502,16 @@ def run_first_run_setup() -> None:
     except Exception:
         logger.warning("First-run: default-on builtin backfill failed", exc_info=True)
 
-    # 4. Stale managed-MCP purge — one-time, marker-guarded.
+    # 4. Retired conductor skill cleanup — safe and idempotent on every start.
+    try:
+        from kiro_crew.skills import remove_retired_conductor_skill  # noqa: PLC0415
+
+        if remove_retired_conductor_skill():
+            logger.info("First-run: removed retired conductor skill")
+    except Exception:
+        logger.warning("First-run: retired conductor skill cleanup failed", exc_info=True)
+
+    # 5. Stale managed-MCP purge — one-time, marker-guarded.
     stale_marker = _stale_mcp_purge_marker()
     if stale_marker.exists():
         return
@@ -1520,7 +1533,6 @@ def _prompt_path(mode: str = "") -> Path:
     """Return user prompt if it exists, otherwise shipped prompt.
 
     When mode="orchestrator", uses the orchestrator prompt.
-    The conductor_skill config is independent — it controls agent routing, not the prompt.
     """
     if mode == "orchestrator":
         user_orch = _user_dir() / "prompt-orchestrator.md"
@@ -6624,12 +6636,11 @@ def _conductor_spec(*, name: str, description: str, filename: str, source: str) 
     per-tool form of the MCP one.
 
     The operating procedure ships as the ``goal-conductor`` builtin skill, NOT
-    ``conductor``: that skill name is owned by the generated delegation skill
-    (``conductor_skill.generate_conductor_skill``), and two existing code paths
-    delete ``<skills>/conductor/SKILL.md`` when ``agent.conductor_skill`` is
-    false — the default. Sharing the name would let ``kirocrew setup`` erase the
-    packaged skill on a stock install, and quarantine the user's delegation
-    skill when the flag is on.
+    ``conductor``: that directory name belonged to the delegation skill the
+    retired ``agent.conductor_skill`` flag generated, and install cleanup still
+    removes a ``<skills>/conductor/SKILL.md`` whose bytes the generator wrote on
+    old installs. Sharing the name would let that cleanup erase the packaged
+    skill.
     """
     config = build_agent_config()
     config["name"] = name

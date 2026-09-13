@@ -270,6 +270,23 @@ def test_retired_keys_are_purged_not_preserved(cfg_home):
     assert written["language_code"] == "fr-FR"
 
 
+def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
+    """agent.conductor_skill (the dashboard's old "Orchestrator Mode" toggle)
+    generated an always-on delegation skill; crew routing now goes through the
+    `select_crew` MCP tool, so the flag has nothing behind it. A config that still
+    carries it must load undegraded, not grow an attribute for it, and drop it on
+    save rather than keep advertising a dead setting."""
+    _write(cfg_home, {"agent": {"conductor_skill": True, "subagent_max_turns": 42}})
+    cfg = KiroCrewConfig.load()
+    assert "agent" not in cfg._extra_keys
+    assert cfg.degraded_sections == frozenset()
+    assert not hasattr(cfg.agent, "conductor_skill")
+
+    written = cfg.to_dict()["agent"]
+    assert "conductor_skill" not in written
+    assert written["subagent_max_turns"] == 42
+
+
 def test_an_unknown_nested_key_is_not_shipped_to_the_browser(cfg_home):
     """The browser-facing config response drops captured keys.
 

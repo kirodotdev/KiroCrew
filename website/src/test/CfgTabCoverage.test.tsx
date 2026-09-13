@@ -74,7 +74,6 @@ const CFG = {
     subagent_max_turns: 100,
     max_subagents: 3,
     subagent_auto_max: 16,
-    conductor_skill: false,
     tool_search: true,
     max_channels: 7,
     max_channel_agents: 5,
@@ -430,7 +429,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     await renderTab()
 
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Orchestrator Mode' }))
     fireEvent.click(saveBtn())
 
     expect(await screen.findByText('Saved')).toBeInTheDocument()
@@ -438,7 +436,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
       subagent_max_turns: 150,
       max_subagents: 3,
       subagent_auto_max: 16,
-      conductor_skill: true,
     })
     // onSaved invalidates the config query.
     await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
@@ -516,7 +513,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
   it('resyncs local edits when a fresh config arrives', async () => {
     const updated = clone()
     updated.agent.subagent_max_turns = 42
-    updated.agent.conductor_skill = true
     seed(CFG, updated)
 
     await renderTab()
@@ -527,7 +523,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     // block must follow the server, discarding the uncommitted 150.
     fireEvent.click(toggleFor('Auto Update'))
     await waitFor(() => expect(num('Max Turns per Subagent').value).toBe('42'))
-    expect(screen.getByRole('button', { name: 'Orchestrator Mode' })).toHaveTextContent('Enabled')
     expect(saveBtn()).toBeDisabled()
   })
 
@@ -537,13 +532,11 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     delete agent.subagent_max_turns
     delete agent.max_subagents
     delete agent.subagent_auto_max
-    delete agent.conductor_skill
     seed(sparse)
 
     await renderTab()
     expect(num('Max Turns per Subagent').value).toBe('100')
     expect(num('Max Concurrent Subagents').value).toBe('3')
-    expect(screen.getByRole('button', { name: 'Orchestrator Mode' })).toHaveTextContent('Disabled')
     expect(saveBtn()).toBeDisabled()
   })
 })

@@ -9,6 +9,9 @@
 # file non-text disables newline conversion entirely.
 *.pem -text
 
+# Retired generated-skill fixtures pin exact bytes across checkout platforms.
+test/fixtures/retired_conductor_skill/*.md -text
+
 # Screenshots and other image assets are binary even when their compressed prefix
 # happens not to contain a NUL byte. Git's heuristic otherwise renders some images
 # as text and applies whitespace/newline checks to compressed image bytes.

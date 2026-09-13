@@ -11482,11 +11482,9 @@
         "default_agent": "ডিফল্ট এজেন্ট",
         "description": "বিবরণ",
         "directory": "ডিরেক্টরি",
-        "disabled": "নিষ্ক্রিয়",
         "embedding": "এমবেডিং",
         "embedding_provider": "এমবেডিং প্রোভাইডার",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli-এর মাধ্যমে ডাইনামিক MCP টুল ডিসকভারি সক্রিয় করুন। পরের সেশনে কার্যকর হবে।",
-        "enabled": "সক্রিয়",
         "immediate_auto_approves_all_tools_interactive_as": "তাৎক্ষণিক। 'auto' সব টুল অনুমোদন করে; 'interactive' প্রতিটির আগে জিজ্ঞাসা করে।",
         "immediate_auto_enables_sandbox_for_untrusted_too": "তাৎক্ষণিক। 'auto' অবিশ্বস্ত টুলের জন্য স্যান্ডবক্স সক্রিয় করে।",
         "inherited_provider": "উত্তরাধিকৃত ({{provider}})",
@@ -11506,7 +11504,6 @@
         "next_update_check_cycle": "পরবর্তী আপডেট চেক চক্রে কার্যকর।",
         "no_agents_defined": "কোনো এজেন্ট নির্ধারিত নেই",
         "no_memory_stores": "কোনো মেমরি স্টোর নেই",
-        "orchestrator_mode": "অর্কেস্ট্রেটর মোড",
         "pool_agent": "পুল এজেন্ট",
         "pool_size": "পুল সাইজ",
         "pool_ttl": "পুল TTL",
@@ -11528,8 +11525,7 @@
         "number_of_pre_spawned_processes_0_disables": "আগে থেকে চালু করা প্রসেসের সংখ্যা। 0 দিলে নিষ্ক্রিয় থাকে।",
         "agent_for_pool_processes_empty_uses_default_agent": "পুল প্রসেসের জন্য এজেন্ট। খালি রাখলে ডিফল্ট এজেন্ট ব্যবহার হয়।",
         "warm_pool_description": "সেশন তাৎক্ষণিক শুরু করতে ACP CLI প্রসেস আগে থেকে চালু রাখুন।",
-        "max_age_for_pooled_processes_0_disables_expiry": "পুল করা প্রসেসের সর্বোচ্চ বয়স। 0 দিলে মেয়াদ শেষ হওয়া বন্ধ থাকে।",
-        "enable_conductor_skill_for_multi_agent_orchestration": "মাল্টি-এজেন্ট অর্কেস্ট্রেশনের জন্য কনডাক্টর স্কিল সক্রিয় করো।"
+        "max_age_for_pooled_processes_0_disables_expiry": "পুল করা প্রসেসের সর্বোচ্চ বয়স। 0 দিলে মেয়াদ শেষ হওয়া বন্ধ থাকে।"
       },
       "mcpTab": {
         "actions": "অ্যাকশন",

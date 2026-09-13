@@ -823,11 +823,10 @@ class TestConductorInstaller:
     def test_builtin_skill_does_not_collide_with_the_delegation_skill(self):
         """The packaged skill must NOT be named ``conductor``.
 
-        ``conductor_skill.generate_conductor_skill`` owns
-        ``<skills>/conductor/SKILL.md``, and two paths DELETE that file when
-        ``agent.conductor_skill`` is false (the default): ``cli_setup`` on every
-        setup run and the dashboard config handler on toggle-off. A packaged
-        skill sharing the name would be erased on a stock install.
+        ``<skills>/conductor/SKILL.md`` was the delegation skill the retired
+        ``agent.conductor_skill`` flag generated, and ``kirocrew setup`` still
+        removes a file there whose bytes it wrote on old installs. A packaged
+        skill sharing the name would be erased on an upgraded install.
         """
         assert SKILL_DIR.is_dir()
         assert not (_BUILTIN_SKILLS_DIR / "conductor").exists()

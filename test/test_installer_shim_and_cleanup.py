@@ -323,6 +323,26 @@ def test_first_run_delivers_shim_and_purge(tmp_path, monkeypatch):
     assert marker.exists()
 
 
+def test_first_run_removes_a_generated_conductor_skill(tmp_path, monkeypatch):
+    exe = _fake_bundle_launcher(tmp_path)
+    _sandbox_first_run(tmp_path, monkeypatch, exe)
+    skills_root = tmp_path / "skills"
+    monkeypatch.setattr("kiro_crew.skills.skills_dir", lambda: skills_root)
+    skill = skills_root / "conductor" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "retired_conductor_skill"
+        / "select-crew-v2.md"
+    )
+    skill.write_bytes(fixture.read_bytes())
+
+    agent.run_first_run_setup()
+
+    assert not skill.parent.exists()
+
+
 def test_first_run_purge_is_one_time(tmp_path, monkeypatch):
     exe = _fake_bundle_launcher(tmp_path)
     marker, mcp = _sandbox_first_run(tmp_path, monkeypatch, exe)

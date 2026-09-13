@@ -1110,13 +1110,6 @@ class AgentConfig:
             "Custom name the bot identifies as in conversations. Leave empty for default.",
         ),
     )
-    conductor_skill: bool = field(
-        default=False,
-        metadata=_meta(
-            "Conductor Skill",
-            "Enable agent delegation — loads conductor skill with agent roster.",
-        ),
-    )
     tool_search: bool = field(
         default=True,
         metadata=_meta(

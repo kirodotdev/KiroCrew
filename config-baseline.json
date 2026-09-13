@@ -40,7 +40,6 @@
         "yolo_duration": "6h",
         "notify_override_expiry": true,
         "bot_name": "",
-        "conductor_skill": false,
         "tool_search": true,
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
@@ -542,20 +541,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
-    },
-    {
-      "path": "agent.conductor_skill",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Conductor Skill",
-      "help": "Enable agent delegation — loads conductor skill with agent roster.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
     },
     {
       "path": "agent.tool_search",

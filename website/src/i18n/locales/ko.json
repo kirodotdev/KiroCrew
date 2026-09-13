@@ -11317,11 +11317,9 @@
         "default_agent": "기본 에이전트",
         "description": "설명",
         "directory": "디렉터리",
-        "disabled": "비활성화됨",
         "embedding": "임베딩",
         "embedding_provider": "임베딩 제공자",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli를 통한 동적 MCP 도구 검색을 활성화합니다. 다음 세션부터 적용됩니다.",
-        "enabled": "활성화됨",
         "immediate_auto_approves_all_tools_interactive_as": "즉시 적용됩니다. ‘auto’는 모든 도구를 승인하고, ‘interactive’는 도구마다 확인합니다.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "즉시 적용됩니다. ‘auto’는 신뢰할 수 없는 도구에 샌드박스를 활성화합니다.",
         "inherited_provider": "상속됨 ({{provider}})",
@@ -11341,7 +11339,6 @@
         "next_update_check_cycle": "다음 업데이트 확인 주기.",
         "no_agents_defined": "정의된 에이전트 없음",
         "no_memory_stores": "메모리 저장소 없음",
-        "orchestrator_mode": "오케스트레이터 모드",
         "pool_agent": "풀 에이전트",
         "pool_size": "풀 크기",
         "pool_ttl": "풀 TTL",
@@ -11363,8 +11360,7 @@
         "number_of_pre_spawned_processes_0_disables": "미리 생성할 프로세스 수. 0이면 비활성화됩니다.",
         "agent_for_pool_processes_empty_uses_default_agent": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다.",
         "warm_pool_description": "세션을 즉시 시작할 수 있도록 ACP CLI 프로세스를 미리 실행합니다.",
-        "max_age_for_pooled_processes_0_disables_expiry": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다.",
-        "enable_conductor_skill_for_multi_agent_orchestration": "멀티 에이전트 오케스트레이션을 위한 컨덕터 스킬을 활성화합니다."
+        "max_age_for_pooled_processes_0_disables_expiry": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다."
       },
       "mcpTab": {
         "actions": "동작",
