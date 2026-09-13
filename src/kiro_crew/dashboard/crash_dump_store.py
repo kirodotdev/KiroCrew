@@ -281,21 +281,17 @@ def _pid_start_id(pid: int) -> str | None:
     A PID probing alive is necessary but not sufficient for ownership: the
     recorded gateway may have exited and the kernel may have handed its PID to
     an unrelated process. A start identity is fixed for a process's lifetime,
-    so a recorded value that no longer matches means the owner is GONE even
-    though the PID is live.
+    so a recorded value that differs from the live probe means the owner is
+    GONE even though the PID is live.
 
     The identity comes from :func:`platform_compat.get_process_start_id`, the
     routine this repository already uses wherever a start identity is WRITTEN
     DOWN and compared back later (``mcp_gateway.claim``, ``session_pid``,
     ``metrics.sessions``). It answers in-process on every platform it covers —
-    procfs field 22 on Linux, ``libproc`` microsecond start on macOS — and
+    procfs field 22 on Linux, ``libproc`` microsecond start on macOS, and the
+    process creation ``FILETIME`` through a query-only handle on Windows — and
     never emits whitespace or ``:``, so the recorded value stays one ``# PID:``
     header token.
-
-    It declines on Windows, and there :func:`platform_compat.process_start_time`
-    still answers: the process creation ``FILETIME`` read through a query-only
-    handle — a machine integer at 100-ns resolution with no locale or timezone
-    in it. That leg is kept exactly as it is.
 
     What is NOT consulted is that routine's remaining POSIX leg, ``ps
     -o lstart=``: 1-second, locale- and TZ-rendered, and documented as safe
@@ -310,23 +306,13 @@ def _pid_start_id(pid: int) -> str | None:
     instant differently, and 1-second granularity cannot separate two processes
     that started in the same second.
 
-    Returns ``None`` where the identity is unknown — a platform neither leg
-    covers, or a process this one may not introspect. Per those routines' own
-    contract a ``None`` must NOT be read as a mismatch: callers fall back to
-    plain PID liveness (conservative — protects a possibly-reused PID's file
-    rather than risking deletion of a live owner's fd target).
+    Returns ``None`` where the identity is unknown — a platform the routine
+    does not cover, or a process this one may not introspect. Per that
+    routine's own contract a ``None`` must NOT be read as a mismatch: callers
+    fall back to plain PID liveness (conservative — protects a possibly-reused
+    PID's file rather than risking deletion of a live owner's fd target).
     """
-    start_id = platform_compat.get_process_start_id(pid)
-    if start_id is not None:
-        return start_id
-    if not platform_compat.IS_WINDOWS:
-        return None  # every remaining POSIX leg below is the ``ps`` render
-    try:
-        started = platform_compat.process_start_time(pid)
-    except Exception:
-        return None
-    # One whitespace-free token: the header line is parsed by token.
-    return re.sub(r"\s+", "_", started) if started else None
+    return platform_compat.get_process_start_id(pid)
 
 
 #: Shape of a start identity in the CURRENT representation: the digits of a

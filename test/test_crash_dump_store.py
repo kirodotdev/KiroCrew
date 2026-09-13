@@ -1154,29 +1154,33 @@ def test_posix_start_id_is_none_rather_than_the_ps_render(
     assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) is None
 
 
-def test_windows_keeps_the_creation_filetime_fallback(
+def test_windows_start_id_comes_from_the_persisted_identity_routine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The other half of the platform split, and the coverage that must NOT be
-    # lost: get_process_start_id declines on Windows, and process_start_time's
-    # Windows leg is the creation FILETIME through a query-only handle — a
+    # Windows coverage comes from get_process_start_id itself: its win32 arm
+    # reads the process creation FILETIME through a query-only handle — a
     # machine integer at 100-ns resolution with no locale or timezone in it.
-    # Nothing about the reasoning above applies to it, so it stays.
-    _stub_identity_sources(monkeypatch, stable=None, coarse="133700000000000000", windows=True)
+    # The kill-guard routine must not be consulted even on Windows: give it a
+    # different answer and assert the recorded identity names the persisted-
+    # identity routine as its source.
+    _stub_identity_sources(
+        monkeypatch, stable="133700000000000000", coarse="unrelated-value", windows=True
+    )
     assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) == "133700000000000000"
 
 
-def test_windows_fallback_value_stays_one_header_token(
+def test_windows_unknown_identity_is_none_not_a_fallback_render(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The header line is parsed by whitespace-delimited token, so the Windows
-    # leg keeps its sanitiser: a value that split into two tokens would read
-    # back as "no attributable owner", which drops a LIVE session's dump out of
-    # rotation's never-a-victim set while faulthandler still holds the fd.
-    _stub_identity_sources(monkeypatch, stable=None, coarse="13370 000", windows=True)
-    recorded = crash_dump_store._pid_start_id(_UNREACHABLE_PID)
-    assert recorded is not None
-    assert recorded.split() == [recorded]
+    # None means "identity unknown" on Windows exactly as on POSIX: the header
+    # omits the token and readers fall back to plain PID liveness. Consulting
+    # process_start_time here would make a second identity source feed the same
+    # header, and two sources for one recorded value is what lets a reader
+    # compare values that were produced by different representations.
+    _stub_identity_sources(
+        monkeypatch, stable=None, coarse="133700000000000000", windows=True
+    )
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) is None
 
 
 def test_real_start_id_round_trips_through_the_header(dumps_dir: Path) -> None:
@@ -1194,6 +1198,14 @@ def test_real_start_id_round_trips_through_the_header(dumps_dir: Path) -> None:
     assert start_id == expected
     if expected is not None:
         assert expected.split() == [expected], "recorded start id must be a single token"
+        # Bind _CURRENT_START_ID_RE to the routine's real output on this host:
+        # a platform_compat value outside the allowlist would silently degrade
+        # reuse detection to plain liveness, and this is the assertion that
+        # turns that drift into a red test on every CI platform.
+        assert crash_dump_store._CURRENT_START_ID_RE.fullmatch(expected), (
+            "get_process_start_id emitted a shape outside _CURRENT_START_ID_RE: "
+            f"{expected!r}"
+        )
     if not platform_compat.IS_WINDOWS:
         # And on every platform the identity routine covers, it IS the source
         # this host used — the assertion above alone would also pass on a
@@ -1217,7 +1229,7 @@ def test_header_records_start_id_on_a_non_procfs_platform(
 def test_pid_reuse_detected_without_procfs(
     dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # End-to-end consequence. When the recorded start id no longer matches the
+    # End-to-end consequence. When the recorded start id differs from the
     # one the PID reports now, the owner is dead and its header-only dump is
     # stale — even though the PID probes alive. Without a working probe the
     # live PID protects the file forever.
@@ -1329,10 +1341,11 @@ def test_legacy_ps_header_is_not_a_rotation_victim(
 
 
 def test_legacy_cron_marker_is_not_reported_abandoned(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The second destructive reader, which #8282 added. A cron in-flight marker
-    # written before this build carries the same legacy token; reading it as a
-    # mismatch reports a run that is STILL EXECUTING as abandoned, and the
-    # breaker parks the job. Patching only the dump path would leave this open.
+    # The second destructive reader of the recorded identity. A cron in-flight
+    # marker written before this build carries the same legacy token; reading
+    # it as a mismatch reports a run that is STILL EXECUTING as abandoned, and
+    # the breaker parks the job. Patching only the dump path would leave this
+    # open.
     _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
     alive = crash_dump_store.pid_identity_alive(
         os.getpid(), crash_dump_store._pid_domain(), _LEGACY_PS_TOKEN
@@ -1398,11 +1411,11 @@ def test_legacy_token_does_not_resurrect_a_dead_owner(
 def test_windows_filetime_is_a_comparable_current_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The Windows leg this PR preserves must stay on the comparable side of the
-    # guard: a creation FILETIME is a machine integer, so PID-reuse detection
-    # there is unaffected. The allowlist would be wrong if it excluded it.
+    # A Windows creation FILETIME must stay on the comparable side of the
+    # guard: it is a machine integer, so PID-reuse detection there is
+    # unaffected. The allowlist would be wrong if it excluded it.
     assert crash_dump_store._start_ids_comparable("133700000000000000", "133700000000000001")
-    _stub_identity_sources(monkeypatch, stable=None, coarse="133700000000000000", windows=True)
+    _stub_identity_sources(monkeypatch, stable="133700000000000000", coarse=None, windows=True)
     assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) == "133700000000000000"
 
 
