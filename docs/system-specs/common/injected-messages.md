@@ -477,6 +477,8 @@ speech rather than as the user.
 | `[RESOURCES]` | `resource_status.py` advisory builder | Host memory crossed the tight/critical threshold; take the lighter path this turn. |
 | `[Relevant skills for this message]` | `skills.py` pointer renderer | Skill candidates named by path instead of by injected body. The body must be read before use unless that skill already appears earlier in the conversation, where native history still carries its instructions. |
 | `[INCOGNITO SESSION]` / `[TEMPORARY SESSION]` | `dashboard/chat_utils.py` ephemeral-session prefixes | An instruction, not a tool-level gate: it forbids memory tools (writes in incognito, reads as well in temporary) and keeps nothing of the chat, its history or its lessons. `learn_remove` and the cron tools stay permitted as active user actions, and a cron change persists outside the ephemeral transcript. |
+| `[Advisor]` | `advisor/delivery.py` advisory steer (`_ADVISORY_PREFIX`) | A cross-model reviewer's blocker, steered into the running turn. Evidence to weigh against the model's own, never an instruction; it is not user speech and is never requeued as a user turn ([advisor](../modules/advisor.md)). |
+| `[Advisor context]` … `[End advisor context]` | `dashboard/chat_runner.py` next-turn prefix (`_peek_advisor_context`) | Reviewer advice preserved from earlier turns of this session, prepended once to the next primary turn with the same weigh-not-obey framing. |
 
 ## Adding a new envelope
 

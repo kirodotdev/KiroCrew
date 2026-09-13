@@ -2936,6 +2936,61 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
     app.on_cleanup.append(_instances_shutdown)
 
 
+def _register_advisor_hooks(app: web.Application) -> None:
+    """Advisor lifecycle: dispose at cleanup.
+
+    Configuration is NOT an ``on_startup`` hook: aiohttp runs those inside
+    ``runner.setup()``, before the listener binds, so even creating the
+    task there would put the advisor import in front of the bind. Both
+    entrypoints call ``_kick_advisor_configure`` strictly after
+    ``_start_site`` returns (the connections-warm scavenge precedent).
+    """
+
+    async def _advisor_shutdown(_app: web.Application) -> None:
+        # Drop every advisor observer at gateway shutdown/recycle: observers
+        # are in-memory session state and must not appear to survive a restart.
+        # Total and synchronous; never blocks the cleanup chain.
+        from kiro_crew.advisor.service import get_advisor_service
+
+        get_advisor_service().dispose_all()
+
+    app.on_cleanup.append(_advisor_shutdown)
+
+
+def _kick_advisor_configure(app: web.Application) -> None:
+    """Configure the advisor as a tracked background task, post-bind.
+
+    Called by both gateway entrypoints only after ``_start_site`` has
+    returned. The advisor import and the config read (file IO) happen off
+    the bind path; until the task lands the service stays disabled-inert --
+    schedule_pump's enabled check makes an early turn skip review rather
+    than fail. A default-disabled advisor constructs nothing.
+    """
+
+    async def _configure() -> None:
+        from kiro_crew.advisor.service import configure_from_config, get_advisor_service
+
+        # Snapshot-discard ordering guard: a live settings PATCH can apply a
+        # NEWER configuration while this task's disk read is still in the
+        # thread pool. Applying the stale startup snapshot after it would
+        # silently revert the user's change.
+        epoch_before = get_advisor_service()._config_epoch
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        # Whether the strict sandbox can mask credentials here: the reviewer's
+        # read boundary (kiro-cli auto-approves builtin reads). Probed once,
+        # off-loop; a later reconfigure reuses the answer.
+        from kiro_crew.sandbox import credential_mask_applies
+
+        get_advisor_service().sandbox_available = await asyncio.to_thread(
+            functools.partial(credential_mask_applies, "strict", is_kiro_cli=True)
+        )
+        if get_advisor_service()._config_epoch != epoch_before:
+            return  # a newer live configuration already applied
+        configure_from_config(cfg)
+
+    app["_advisor_configure_task"] = asyncio.create_task(_configure())
+
+
 def build_host_canonical_redirect(canonical_host: str) -> Any:
     """Build the loopback-host-canonicalization middleware.
 
@@ -3252,8 +3307,23 @@ def _register_config_watch(
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
+    def _apply_advisor(change: ConfigChange) -> None:
+        # The advisor reads config at startup only; a settings toggle, the
+        # reviewer role pin, or a backend switch re-applies the section here so
+        # the toggle governs the live service (a non-kiro backend disables it).
+        from kiro_crew.advisor.service import configure_from_config
+
+        configure_from_config(change.new)
+
     subs = [
         live.subscribe("agent.provider", callback=_apply_provider, name="agent.provider"),
+        live.subscribe(
+            "advisor",
+            "agent.role_models.advisor",
+            "agent.acp_backend",
+            callback=_apply_advisor,
+            name="advisor",
+        ),
         live.subscribe(
             "agent.role_models.background",
             callback=_apply_background_model,
@@ -4374,6 +4444,7 @@ async def start_dashboard(
     # ``runner.setup()`` freezes the app's signal lists. See
     # ``_register_instances_hooks`` for why ordering matters.
     _register_instances_hooks(app, state, port)
+    _register_advisor_hooks(app)
     _register_browser_view_cleanup(app, state)
     _register_connections_warm_lifecycle(app, state)
 
@@ -4423,6 +4494,7 @@ async def start_dashboard(
     # import must never sit in front of the listener
     # (no-new-work-on-gateway-boot-path).
     _kick_connections_warm_scavenge(state)
+    _kick_advisor_configure(app)
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
     # Same shape for the knowledge store's writer-locked orphan sweep: it left
@@ -5172,6 +5244,7 @@ async def start_api_server(
     # is what makes headless --slack-only keep the host awake during a long
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
+    _register_advisor_hooks(app)
     _register_connections_warm_lifecycle(app, state)
 
     # Unix-socket cleanup hook — same holder pattern as start_dashboard,
@@ -5222,6 +5295,7 @@ async def start_api_server(
     # start_dashboard: never an on_startup hook, which would run the deferred
     # import before the bind).
     _kick_connections_warm_scavenge(state)
+    _kick_advisor_configure(app)
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
 

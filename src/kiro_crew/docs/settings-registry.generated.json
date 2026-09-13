@@ -427,6 +427,12 @@
       "route": "/settings/channels/weixin?highlight=channels.who-can-message-the-bot-wechat"
     },
     {
+      "id": "chat.advisor-model",
+      "label": "Advisor model",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.advisor-model"
+    },
+    {
       "id": "chat.auto-compact-threshold",
       "label": "Auto-Compact Threshold",
       "tab": "chat",
@@ -522,6 +528,14 @@
       "tab": "chat",
       "route": "/settings/chat?highlight=chat.describe-your-role",
       "description": "Kiro uses this description to adapt vocabulary and examples to your role."
+    },
+    {
+      "id": "chat.enable-advisor",
+      "label": "Enable Advisor",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Aadvisor.enabled",
+      "description": "A separate reviewer session reviews your dashboard chat sessions as the agent works and flags issues. Off by default; override it per session in the model picker. Task-runner, cron and channel turns are not reviewed yet.",
+      "configKey": "advisor.enabled"
     },
     {
       "id": "chat.fallback-model",

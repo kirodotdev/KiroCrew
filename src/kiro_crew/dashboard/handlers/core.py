@@ -24,6 +24,7 @@ import kiro_crew
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import beacon, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -1781,6 +1782,40 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
     return None
 
 
+def _validate_advisor_enabled(value: object, request: web.Request) -> str | None:
+    """Enabling the advisor needs the kiro-cli agent backend: the packaged
+    reviewer spec is a kiro-cli agent definition. Refuse visibly here rather
+    than failing every review in the log; disabling is always allowed."""
+    if not value:
+        return None
+    # On the event loop: read the config watcher's in-memory snapshot (the
+    # value the rest of the gateway has adopted), never the disk. Before the
+    # watcher has started there is nothing to check against, so fail closed.
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is None:
+        return "The Advisor cannot be enabled before the configuration has loaded; retry shortly"
+    backend = getattr(cfg.agent, "acp_backend", ACP_BACKEND_KIRO)
+    if backend == ACP_BACKEND_KIRO:
+        from kiro_crew.advisor.service import get_advisor_service
+
+        if get_advisor_service().sandbox_available is False:
+            # kiro-cli auto-approves builtin reads, so the strict sandbox's
+            # credential mask is the reviewer's read boundary; refuse here
+            # with the reason rather than degrade silently at the first review.
+            return (
+                "The Advisor's reviewer needs the strict sandbox's credential mask and this "
+                "host cannot apply it (no sandbox backend, sandboxing off, or Kiro's own sandbox "
+                "takes over the child on macOS and Windows)"
+            )
+        return None
+    return (
+        "The Advisor's reviewer runs on the kiro-cli agent backend only; "
+        f"agent.acp_backend is {backend!r}"
+    )
+
+
 def _validate_role_model(
     value: str, request: web.Request, provider: str | None = None
 ) -> str | None:
@@ -1879,6 +1914,14 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
         "validate_fn": _validate_role_model,
     },
+    # The advisor's reviewer model (docs/system-specs/modules/advisor.md) is
+    # a role like any other: same grammar, same entitlement validation.
+    "agent.role_models.advisor": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "validate_fn": _validate_role_model,
+    },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
     # to the backend's availability-aware routing; a concrete id is tried first
     # with "auto" as the final fallthrough; "" disables the feature. Same
@@ -1920,6 +1963,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": SOFT_STOP_BUDGET_MIN,
         "max": SOFT_STOP_BUDGET_MAX,
     },
+    # Advisor (opt-in cross-model session reviewer): dashboard-editable so the
+    # feature needs no hand edit of config.json; the live re-apply is the
+    # "advisor" applier the server registers on the config watcher. The
+    # reviewer MODEL is not an advisor.* key: it is agent.role_models.advisor.
+    "advisor.enabled": {"type": "bool", "validate_fn": _validate_advisor_enabled},
     "session.timeout_secs": {"type": "int", "min": SESSION_TIMEOUT_MIN, "max": SESSION_TIMEOUT_MAX},
     # Range shared with the load-time clamp in config/loader.py — one constant
     # pair, so the write gate and the load path cannot drift.
@@ -2206,6 +2254,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     elif spec["type"] == "bool":
         if not isinstance(value, bool):
             return _deny("must be a boolean", f"{path_key}={value}")
+        validate_fn = spec.get("validate_fn")
+        if validate_fn:
+            reason = validate_fn(value, request)
+            if reason:
+                return _deny(reason, f"{path_key}={value}")
     elif spec["type"] == "float":
         try:
             value = float(value)

@@ -873,6 +873,22 @@ def _apply_marker_spans(
     return "".join(out)
 
 
+def neutralize_structural_markers(text: str) -> str:
+    """Public entry for :func:`_neutralize_structural_markers`: strip every
+    forgeable primary boundary marker (``[CURRENT USER REQUEST ...]``,
+    ``[END OF SESSION CONTEXT]``, ...) from untrusted text that will be sent
+    to the primary. Span-local; every other byte is preserved."""
+    return _neutralize_structural_markers(text)
+
+
+def neutralize_markers(text: str, pattern: re.Pattern[str], replacement: str) -> str:
+    """Public entry for another module's forgeable marker: rewrite every
+    *pattern* match in *text* (confusable- and zero-width-tolerant, see
+    :func:`_marker_spans`) with *replacement*, leaving every other byte intact.
+    The advisor uses it for its frame delimiter."""
+    return _apply_marker_spans(text, _marker_spans(text, (pattern,)), replacement)
+
+
 def _map_offset_through_spans(off: int, spans: list[tuple[int, int]]) -> int:
     """Map an offset in the ORIGINAL text to its offset after neutralization.
 

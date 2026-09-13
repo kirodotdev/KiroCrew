@@ -4075,7 +4075,6 @@
         "typesetting_hints_one": "{{count}} टाइपसेटिंग सुझाव",
         "typesetting_hints_other": "{{count}} टाइपसेटिंग सुझाव"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} हटाएँ",
         "files": "फ़ाइलें",
@@ -8361,6 +8360,22 @@
       "label": "बदलाव के लिए पुनः आरंभ ज़रूरी",
       "tooltip": "{{productName}} चलते समय यह सेटिंग बदली नहीं जा सकती। सहेजा गया मान बना रहता है और {{productName}} के अगले पुनः आरंभ पर लागू होगा (सेटिंग्स → परिचय, या वह टर्मिनल जहाँ से तुमने इसे चलाया)।",
       "schema_unavailable": "यह जाँच नहीं हो सकी कि इस सेटिंग के लिए पुनः आरंभ आवश्यक है या नहीं।"
+    },
+    "advisorOverrideControl": {
+      "advisor": "सलाहकार",
+      "advisor_mode": "सलाहकार मोड",
+      "helper": "एक अलग समीक्षक सत्र इस सेशन की समीक्षा करता है और काम के दौरान समस्याएँ बताता है।",
+      "on": "चालू",
+      "off": "बंद",
+      "update_failed": "सलाहकार सेटिंग अपडेट नहीं हो सकी।",
+      "inherit_on": "इनहेरिट (चालू)",
+      "inherit_off": "इनहेरिट (बंद)",
+      "helper_off": "समीक्षा नहीं चल रही है।",
+      "inherit": "इनहेरिट",
+      "config_load_failed": "वैश्विक सलाहकार सेटिंग लोड नहीं हो सकी।",
+      "unavailable_backend": "सलाहकार को kiro-cli एजेंट बैकएंड चाहिए। सेटिंग्स → डेवलपर → एजेंट बैकएंड को kiro-cli पर बदलें, या सलाहकार को बंद रहने दें।",
+      "helper_inherit_off": "एक अलग समीक्षक सत्र इस सत्र की समीक्षा कर सकता है और समस्याएँ चिह्नित कर सकता है।",
+      "unavailable_sandbox": "सलाहकार को एक ऐसा सैंडबॉक्स चाहिए जो क्रेडेंशियल छिपा सके, और यह कंप्यूटर वह उपलब्ध नहीं करा सकता।"
     }
   },
   "hooks": {
@@ -9892,6 +9907,16 @@
         "copy_text_failed": "कॉपी नहीं हो सका",
         "copy_text_unavailable": "यहाँ क्लिपबोर्ड ब्लॉक है। तुम्हारे पोस्ट का टेक्स्ट चुना हुआ है — Ctrl+C / ⌘C दबाओ। कार्ड का जो टेक्स्ट तुमने बदला है, उसे कार्ड से ही कॉपी कर लो।",
         "export_failed": "शेयर कार्ड नहीं बनाया जा सका"
+      },
+      "advisorMessage": {
+        "advisor": "सलाहकार",
+        "nit": "छोटा सुझाव",
+        "concern": "चिंता",
+        "blocker": "अवरोधक",
+        "saved_for_next_turn": "अगले टर्न के लिए सहेजा गया",
+        "evidence": "साक्ष्य",
+        "sent_mid_turn": "टर्न के बीच में एजेंट को भेजा गया",
+        "dropped_by_stop": "टर्न रोकने पर हटा दिया गया"
       }
     },
     "chatPage": {
@@ -12464,7 +12489,6 @@
       "unknown_agent": "सब-एजेंट",
       "unknown_model": "अज्ञात"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_one": "{{days}} दिन से पुराने — {{count}} सत्र · {{size}}",
       "age_option_other": "{{days}} दिन से पुराने — {{count}} सत्र · {{size}}",
@@ -13044,7 +13068,12 @@
         "feature_videos_downloads_disabled": "वीडियो डाउनलोड बंद हैं। केवल पहले से सहेजे गए क्लिप चलेंगे।",
         "feature_videos_download_all": "सभी अभी डाउनलोड करें",
         "failed_to_load_feature_video_status": "फ़ीचर वीडियो कैश स्थिति लोड नहीं हो सकी",
-        "failed_to_start_feature_video_download": "डाउनलोड शुरू नहीं हो सका"
+        "failed_to_start_feature_video_download": "डाउनलोड शुरू नहीं हो सका",
+        "advisor": "सलाहकार",
+        "enable_advisor": "सलाहकार चालू करें",
+        "enable_advisor_description": "एजेंट के काम करते समय एक अलग समीक्षक सत्र डैशबोर्ड चैट सत्रों की समीक्षा करता है और समस्याएँ चिह्नित करता है। डिफ़ॉल्ट रूप से बंद; मॉडल चयनकर्ता में प्रति सत्र बदला जा सकता है। टास्क रनर, cron और चैनल टर्न की समीक्षा अभी नहीं होती।",
+        "reviewer_model": "सलाहकार मॉडल",
+        "failed_to_save_advisor_setting": "सलाहकार सेटिंग सहेजी नहीं जा सकी"
       },
       "computerUsePanel": {
         "accessibility": "सुगम्यता",

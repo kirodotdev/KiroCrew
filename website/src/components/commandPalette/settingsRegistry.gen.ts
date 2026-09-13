@@ -795,6 +795,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.advisor-model",
+    "label": "Advisor model",
+    "labelKey": "pages.settings.chatPanel.reviewer_model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "labelKey": "pages.settings.chatPanel.auto_compact_threshold",
@@ -918,6 +926,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "chat",
     "type": "input",
     "occurrence": 1
+  },
+  {
+    "id": "chat.enable-advisor",
+    "label": "Enable Advisor",
+    "labelKey": "pages.settings.chatPanel.enable_advisor",
+    "description": "A separate reviewer session reviews your dashboard chat sessions as the agent works and flags issues. Off by default; override it per session in the model picker. Task-runner, cron and channel turns are not reviewed yet.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "advisor.enabled"
   },
   {
     "id": "chat.fallback-model",

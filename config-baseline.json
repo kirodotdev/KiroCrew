@@ -1290,6 +1290,36 @@
       "defaultValue": 7200
     },
     {
+      "path": "advisor",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Advisor",
+      "help": "Opt-in cross-model session reviewer.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false
+      }
+    },
+    {
+      "path": "advisor.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Advisor Enabled",
+      "help": "Global default for the session advisor. Off by default; per-session override wins.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "messaging",
       "kind": "core",
       "type": "object",

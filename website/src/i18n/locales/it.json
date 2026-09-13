@@ -4146,7 +4146,6 @@
         "typesetting_hints_one": "{{count}} nota di impaginazione",
         "typesetting_hints_other": "{{count}} note di impaginazione"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Elimina {{file}}",
         "files": "File",
@@ -8476,6 +8475,22 @@
       "label": "le modifiche richiedono un riavvio",
       "tooltip": "Questa impostazione non può cambiare mentre {{productName}} è in esecuzione. Il valore salvato viene conservato e applicato al prossimo riavvio di {{productName}} (Impostazioni → Informazioni, oppure il terminale da cui lo hai avviato).",
       "schema_unavailable": "Impossibile verificare se questa impostazione richiede un riavvio."
+    },
+    "advisorOverrideControl": {
+      "advisor": "Consulente",
+      "advisor_mode": "Modalità consulente",
+      "helper": "Una sessione di revisione separata esamina questa sessione e segnala i problemi mentre lavori.",
+      "on": "Attivo",
+      "off": "Disattivo",
+      "update_failed": "Impossibile aggiornare il consulente.",
+      "inherit_on": "Eredita (Attivo)",
+      "inherit_off": "Eredita (Disattivo)",
+      "helper_off": "Nessuna revisione attiva.",
+      "inherit": "Eredita",
+      "config_load_failed": "Impossibile caricare l'impostazione globale del consulente.",
+      "unavailable_backend": "Il consulente richiede il backend agente kiro-cli. Imposta Impostazioni → Sviluppatore → Backend dell’agente su kiro-cli oppure lascia il consulente disattivato.",
+      "helper_inherit_off": "Una sessione di revisione separata può revisionare questa sessione e segnalare problemi.",
+      "unavailable_sandbox": "Il consulente richiede una sandbox che nasconda le tue credenziali, e questo computer non può fornirla."
     }
   },
   "hooks": {
@@ -10034,6 +10049,16 @@
         "copy_text_failed": "Copia non riuscita",
         "copy_text_unavailable": "Gli appunti sono bloccati qui. Il testo del tuo post è selezionato: premi Ctrl+C / ⌘C. Il testo della card che hai modificato va copiato dalla card stessa.",
         "export_failed": "Impossibile generare la scheda di condivisione"
+      },
+      "advisorMessage": {
+        "advisor": "Consulente",
+        "nit": "Suggerimento",
+        "concern": "Segnalazione",
+        "blocker": "Bloccante",
+        "saved_for_next_turn": "Salvato per il turno successivo",
+        "evidence": "Evidenza",
+        "sent_mid_turn": "Inviato all'agente a metà turno",
+        "dropped_by_stop": "Scartato quando hai fermato il turno"
       }
     },
     "chatPage": {
@@ -13221,7 +13246,12 @@
         "feature_videos_downloads_disabled": "I download dei video sono disattivati. Verranno riprodotti solo i clip già salvati.",
         "feature_videos_download_all": "Scarica tutto ora",
         "failed_to_load_feature_video_status": "Impossibile caricare lo stato della cache dei video sulle funzionalità",
-        "failed_to_start_feature_video_download": "Impossibile avviare il download"
+        "failed_to_start_feature_video_download": "Impossibile avviare il download",
+        "advisor": "Consulente",
+        "enable_advisor": "Attiva il consulente",
+        "enable_advisor_description": "Una sessione di revisione separata revisiona le tue sessioni di chat della dashboard mentre l'agente lavora e segnala i problemi. Disattivato per impostazione predefinita; sovrascrivibile per sessione nel selettore dei modelli. I turni del task runner, di cron e dei canali non sono ancora revisionati.",
+        "reviewer_model": "Modello del consulente",
+        "failed_to_save_advisor_setting": "Impossibile salvare l’impostazione del consulente"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

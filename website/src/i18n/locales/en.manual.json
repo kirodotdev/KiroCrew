@@ -161,9 +161,6 @@
         "state_working": "Working"
       }
     },
-    "codeReviewSage": {
-      "codeReviewSagePage": {}
-    },
     "designTweak": {
       "comments": {
         "an_earlier_comment": "an earlier comment",
@@ -2603,7 +2600,6 @@
       "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting..."
     },
-    "voiceDisabledModal": {},
     "voiceStatusBar": {
       "default_microphone": "Default microphone"
     },
@@ -3052,6 +3048,22 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "advisorOverrideControl": {
+      "advisor": "Advisor",
+      "advisor_mode": "Advisor mode",
+      "helper": "A separate reviewer session reviews this session and flags issues while you work.",
+      "on": "Enabled",
+      "off": "Disabled",
+      "update_failed": "Could not update Advisor.",
+      "inherit_on": "Inherit (Enabled)",
+      "inherit_off": "Inherit (Disabled)",
+      "helper_off": "Not reviewing.",
+      "inherit": "Inherit",
+      "config_load_failed": "Couldn't load the global Advisor setting.",
+      "unavailable_backend": "The Advisor needs the kiro-cli agent backend. Switch Settings → Developer → Agent Backend to kiro-cli, or leave the Advisor off.",
+      "helper_inherit_off": "A separate reviewer session can review this session and flag issues.",
+      "unavailable_sandbox": "The Advisor needs a sandbox that hides your credentials, and this computer cannot provide one."
     }
   },
   "hooks": {
@@ -3847,6 +3859,16 @@
       "errorCard": {
         "sign_in": "Sign in to Kiro",
         "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again."
+      },
+      "advisorMessage": {
+        "advisor": "Advisor",
+        "nit": "Minor",
+        "concern": "Concern",
+        "blocker": "Blocker",
+        "saved_for_next_turn": "Saved for next turn",
+        "evidence": "Evidence",
+        "sent_mid_turn": "Sent to the agent mid-turn",
+        "dropped_by_stop": "Dropped when you stopped the turn"
       }
     },
     "chatPage": {
@@ -5345,7 +5367,12 @@
         "feature_videos_downloads_disabled": "Video downloads are turned off. Only clips already saved will play.",
         "feature_videos_download_all": "Download all now",
         "failed_to_load_feature_video_status": "Failed to load feature-video cache status",
-        "failed_to_start_feature_video_download": "Failed to start the download"
+        "failed_to_start_feature_video_download": "Failed to start the download",
+        "advisor": "Advisor",
+        "enable_advisor": "Enable Advisor",
+        "enable_advisor_description": "A separate reviewer session reviews your dashboard chat sessions as the agent works and flags issues. Off by default; override it per session in the model picker. Task-runner, cron and channel turns are not reviewed yet.",
+        "reviewer_model": "Advisor model",
+        "failed_to_save_advisor_setting": "Failed to save Advisor setting"
       },
       "displayPanel": {
         "color": "Color {{n}}",
@@ -6013,7 +6040,6 @@
         "token_save_failed": "Could not save the extension token."
       }
     },
-    "systemPage": {},
     "worldsPage": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"

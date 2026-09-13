@@ -4146,7 +4146,6 @@
         "typesetting_hints_one": "{{count}} aviso de composición",
         "typesetting_hints_other": "{{count}} avisos de composición"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Eliminar {{file}}",
         "files": "Archivos",
@@ -8476,6 +8475,22 @@
       "label": "los cambios requieren reinicio",
       "tooltip": "Este ajuste no puede cambiar mientras {{productName}} se está ejecutando. El valor guardado se conserva y se aplica la próxima vez que {{productName}} se reinicie (Ajustes → Acerca de, o la terminal desde la que lo iniciaste).",
       "schema_unavailable": "No se pudo comprobar si este ajuste requiere reiniciar."
+    },
+    "advisorOverrideControl": {
+      "advisor": "Asesor",
+      "advisor_mode": "Modo del asesor",
+      "helper": "Una sesión revisora independiente revisa esta sesión y señala problemas mientras trabajas.",
+      "on": "Activado",
+      "off": "Desactivado",
+      "update_failed": "No se pudo actualizar el asesor.",
+      "inherit_on": "Heredar (Activado)",
+      "inherit_off": "Heredar (Desactivado)",
+      "helper_off": "Sin revisión activa.",
+      "inherit": "Heredar",
+      "config_load_failed": "No se pudo cargar la configuración global del asesor.",
+      "unavailable_backend": "El asesor necesita el backend de agente kiro-cli. Cambia Ajustes → Desarrollador → Backend del agente a kiro-cli o deja el asesor desactivado.",
+      "helper_inherit_off": "Una sesión revisora independiente puede revisar esta sesión y señalar problemas.",
+      "unavailable_sandbox": "El asesor necesita un entorno aislado que oculte tus credenciales, y este equipo no puede proporcionarlo."
     }
   },
   "hooks": {
@@ -10034,6 +10049,16 @@
         "copy_text_failed": "No se pudo copiar",
         "copy_text_unavailable": "El portapapeles está bloqueado aquí. El texto de tu publicación está seleccionado: pulsa Ctrl+C / ⌘C. El texto de la tarjeta que hayas editado, cópialo desde la propia tarjeta.",
         "export_failed": "No se pudo generar la tarjeta para compartir"
+      },
+      "advisorMessage": {
+        "advisor": "Asesor",
+        "nit": "Sugerencia",
+        "concern": "Advertencia",
+        "blocker": "Bloqueador",
+        "saved_for_next_turn": "Guardado para el próximo turno",
+        "evidence": "Evidencia",
+        "sent_mid_turn": "Enviado al agente a mitad del turno",
+        "dropped_by_stop": "Descartado cuando detuviste el turno"
       }
     },
     "chatPage": {
@@ -12638,7 +12663,6 @@
       "unknown_agent": "subagente",
       "unknown_model": "desconocido"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_many": "Más de {{days}} días — {{count}} sesiones · {{size}}",
       "age_option_one": "Más de {{days}} días — {{count}} sesión · {{size}}",
@@ -13222,7 +13246,12 @@
         "feature_videos_downloads_disabled": "Las descargas de vídeo están desactivadas. Solo se reproducirán los clips ya guardados.",
         "feature_videos_download_all": "Descargar todo ahora",
         "failed_to_load_feature_video_status": "No se pudo cargar el estado de la caché de vídeos de funciones",
-        "failed_to_start_feature_video_download": "No se pudo iniciar la descarga"
+        "failed_to_start_feature_video_download": "No se pudo iniciar la descarga",
+        "advisor": "Asesor",
+        "enable_advisor": "Activar el asesor",
+        "enable_advisor_description": "Una sesión revisora independiente revisa tus sesiones de chat del panel mientras el agente trabaja y señala problemas. Desactivado por defecto; anúlalo por sesión en el selector de modelos. Los turnos del ejecutor de tareas, de cron y de canales aún no se revisan.",
+        "reviewer_model": "Modelo del asesor",
+        "failed_to_save_advisor_setting": "No se pudo guardar la configuración del asesor"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

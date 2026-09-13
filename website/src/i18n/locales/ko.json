@@ -4055,7 +4055,6 @@
         "no_messages": "컴파일러가 보고한 내용이 없습니다.",
         "typesetting_hints_other": "조판 힌트 {{count}}건"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} 삭제",
         "files": "파일",
@@ -8246,6 +8245,22 @@
       "label": "변경 시 다시 시작 필요",
       "tooltip": "이 설정은 {{productName}}이(가) 실행 중인 동안에는 변경할 수 없습니다. 저장된 값은 유지되며 {{productName}}을(를) 다음에 다시 시작할 때 적용됩니다(설정 → 정보, 또는 실행한 터미널에서).",
       "schema_unavailable": "이 설정에 다시 시작이 필요한지 확인할 수 없습니다."
+    },
+    "advisorOverrideControl": {
+      "advisor": "어드바이저",
+      "advisor_mode": "어드바이저 모드",
+      "helper": "별도의 검토 세션이 이 세션을 검토하고 작업 중 문제를 표시합니다.",
+      "on": "켜기",
+      "off": "끄기",
+      "update_failed": "어드바이저를 업데이트하지 못했습니다.",
+      "inherit_on": "상속 (켜기)",
+      "inherit_off": "상속 (끄기)",
+      "helper_off": "검토가 실행되고 있지 않습니다.",
+      "inherit": "상속",
+      "config_load_failed": "전역 어드바이저 설정을 불러오지 못했습니다.",
+      "unavailable_backend": "어드바이저는 kiro-cli 에이전트 백엔드가 필요합니다. 설정 → 개발자 → 에이전트 백엔드를 kiro-cli로 바꾸거나 어드바이저를 꺼 두세요.",
+      "helper_inherit_off": "별도의 검토 세션이 이 세션을 검토하고 문제를 표시할 수 있습니다.",
+      "unavailable_sandbox": "어드바이저는 자격 증명을 숨기는 샌드박스가 필요하지만 이 컴퓨터에서는 제공할 수 없습니다."
     }
   },
   "hooks": {
@@ -9750,6 +9765,16 @@
         "copy_text_failed": "복사하지 못했습니다",
         "copy_text_unavailable": "이 환경에서는 클립보드가 차단되어 있습니다. 게시글 텍스트가 선택되어 있으니 Ctrl+C / ⌘C를 누르세요. 편집한 카드 텍스트는 카드에서 직접 복사하세요.",
         "export_failed": "공유 카드를 만들 수 없습니다"
+      },
+      "advisorMessage": {
+        "advisor": "어드바이저",
+        "nit": "사소한 제안",
+        "concern": "우려",
+        "blocker": "차단 항목",
+        "saved_for_next_turn": "다음 턴을 위해 저장됨",
+        "evidence": "근거",
+        "sent_mid_turn": "턴 도중 에이전트에 전달됨",
+        "dropped_by_stop": "턴을 중지해 폐기됨"
       }
     },
     "chatPage": {
@@ -12865,7 +12890,12 @@
         "feature_videos_downloads_disabled": "동영상 다운로드가 꺼져 있습니다. 이미 저장된 클립만 재생됩니다.",
         "feature_videos_download_all": "지금 모두 다운로드",
         "failed_to_load_feature_video_status": "기능 소개 영상 캐시 상태를 불러오지 못했습니다",
-        "failed_to_start_feature_video_download": "다운로드를 시작할 수 없습니다"
+        "failed_to_start_feature_video_download": "다운로드를 시작할 수 없습니다",
+        "advisor": "어드바이저",
+        "enable_advisor": "어드바이저 사용",
+        "enable_advisor_description": "에이전트가 작업하는 동안 별도의 검토 세션이 대시보드 채팅 세션을 검토하고 문제를 표시합니다. 기본값은 꺼짐이며 모델 선택기에서 세션별로 재정의할 수 있습니다. 태스크 러너, cron, 채널 턴은 아직 검토되지 않습니다.",
+        "reviewer_model": "어드바이저 모델",
+        "failed_to_save_advisor_setting": "어드바이저 설정을 저장하지 못했습니다"
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

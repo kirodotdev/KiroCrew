@@ -7496,6 +7496,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
+                currentAdvisorOverride={currentSlot?.advisor_override || 'inherit'}
                 defaultEffort={defaultEffort}
                 effortLevelsOverride={remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined}
                 onSetDefault={() => {

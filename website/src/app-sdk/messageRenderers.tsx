@@ -24,6 +24,7 @@ import { extractToolFilePath } from '../utils/toolFilePath'
 import { isSafePath } from '../utils/safePath'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import AssistantMessage, { type TurnStats } from '../pages/chat/AssistantMessage'
+import AdvisorMessage from '../pages/chat/AdvisorMessage'
 import { type FileChangeEntry } from '../components/FileChangeChips'
 import UserMessage from '../pages/chat/UserMessage'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
@@ -386,6 +387,11 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['assistant'],
     match: isSystemNoticeRow,
     render: (m, ctx) => ctx.row(<SystemNoticeRow message={m} disclosureKey={ctx.key} />),
+  },
+  {
+    id: 'advisor',
+    roles: ['advisor'],
+    render: (m, ctx) => ctx.row(<AdvisorMessage message={m} disclosureKey={ctx.key} />),
   },
   {
     id: 'assistant',

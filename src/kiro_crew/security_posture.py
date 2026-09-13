@@ -126,6 +126,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "through the shared credential + exfiltration-URL chain before serialization.",
     ),
     (
+        "Advisor advisory delivery",
+        "advisor/delivery.py",
+        "The cross-model reviewer's advisory text, redacted before it is "
+        "injected into the primary turn or persisted as a transcript card. "
+        "Reviewer output is model output: its evidence tools read the "
+        "observed workspace, so an echoed credential or exfiltration URL "
+        "would otherwise reach the primary provider and the transcript.",
+    ),
+    (
         "CLI wheel-update failures",
         "cli_server.py",
         "The failure text `kirocrew update` prints when a managed-venv shadow "
@@ -1319,6 +1328,20 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # gateway log and to the app backend's own log file. Defensive
         # scrubbing at the point of capture, not an output boundary.
         "apps/backend.py",
+        # Capture-side, not egress: every observation record arrives ALREADY
+        # redacted at the call site -- tool results via _redact_tool_field,
+        # segments as the same redacted form _flush_segment persists,
+        # reasoning as the dashboard's redacted thinking wire -- and the
+        # observer's optional redactor hook is a second pass, not the
+        # boundary. What SHOWS advisor output (the transcript row via the
+        # chat delivery seam, the gateway log) are the registered sinks.
+        "advisor/observation.py",
+        # Capture-side, not egress: the one-shot boundary scrubs a reviewer
+        # tool invocation's name/args AS IT RECORDS the bounded SEL
+        # `tool_invocation` event, so a credential the reviewer's evidence
+        # tools read never enters the audit record at all. The SEL store and
+        # the surfaces that SHOW audit events are the registered sinks.
+        "agent_sdk/oneshot.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier

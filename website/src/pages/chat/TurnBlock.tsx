@@ -62,8 +62,9 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * "Always visible" items — must render inline regardless of TurnBlock collapse state.
  * mcp_oauth: user must always see the Authorize button to act on it.
  * error: errors should never be hidden behind a "Worked through N steps" toggle.
+ * advisor: findings must stay visible beside the response they can steer or preserve.
  */
-const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'mcp_oauth' || it.msg.role === 'error')
+const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'advisor')
 
 /**
  * Assistant text containing render-significant payloads must stay visible

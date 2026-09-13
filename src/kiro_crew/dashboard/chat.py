@@ -48,6 +48,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     MAX_COLOR_INDEX,
     api_chat,
     api_chat_mode,
+    api_chat_slot_advisor_override,
     api_chat_slot_agent,
     api_chat_slot_approve,
     api_chat_slot_autocompact,

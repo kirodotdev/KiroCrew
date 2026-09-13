@@ -23,6 +23,7 @@ _TO_DICT_KEYS = (
     "model_withheld",
     "served_model",
     "reasoning_effort",
+    "advisor_override",
     "mode",
     "surface",
     "workspace",

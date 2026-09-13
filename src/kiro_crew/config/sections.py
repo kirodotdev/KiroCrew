@@ -142,7 +142,11 @@ def normalize_agent_model(model: object) -> str:
 # entitlement-safe on every subscription tier (the provider picks a served
 # model). An operator who deliberately wants a cheaper model for background /
 # sub-agent work pins it here without changing the interactive chat default.
-ROLE_MODEL_KEYS: tuple[str, ...] = ("background", "subagent")
+# "advisor" is the opt-in cross-model session reviewer's model
+# (docs/system-specs/modules/advisor.md): pinning it here is what makes the
+# reviewer CROSS-model, and the pin goes through the same entitlement
+# validation as every other role.
+ROLE_MODEL_KEYS: tuple[str, ...] = ("background", "subagent", "advisor")
 
 # The kiro agents that run the "background" role: auto-titles, memory
 # consolidation, heartbeat polls. Named here rather than inline at the one place
@@ -1589,6 +1593,19 @@ class TaskRunnerConfig:
             "every execution operates in this folder instead of a per-run scratch "
             "directory, so the task runner works on the intended target location. "
             "Empty = use the default per-run workspace directory.",
+        ),
+    )
+
+
+@dataclass
+class AdvisorConfig:
+    """The opt-in cross-model session reviewer (docs/system-specs/modules/advisor.md)."""
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Advisor Enabled",
+            "Global default for the session advisor. Off by default; per-session override wins.",
         ),
     )
 

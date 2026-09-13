@@ -3146,6 +3146,8 @@ export const api = {
     post('/api/chat/slots/model', { model, skip_running }).then(j) as Promise<{ ok: boolean; model: string; switched: string[]; skipped_running: string[]; unchanged: string[]; failed: string[] }>,
   chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; deferred?: boolean }>,
+  chatSlotAdvisorOverride: (slot: string, advisor_override: 'inherit' | 'on' | 'off') =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/advisor-override', { advisor_override }).then(j) as Promise<{ ok: boolean; advisor_override: 'inherit' | 'on' | 'off' }>,
   chatSlotWorkspace: (slot: string, workspace: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
   // Relaunch the slot's agent process in place (fresh agent spec, env, and MCP

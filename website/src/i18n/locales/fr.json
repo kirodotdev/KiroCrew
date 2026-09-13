@@ -4197,7 +4197,6 @@
         "typesetting_hints_one": "{{count}} remarque de composition",
         "typesetting_hints_other": "{{count}} remarques de composition"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Supprimer {{file}}",
         "files": "Fichiers",
@@ -8476,6 +8475,22 @@
       "label": "modifications : redémarrage requis",
       "tooltip": "Ce réglage ne peut pas changer pendant que {{productName}} est en cours d'exécution. La valeur enregistrée est conservée et s'applique au prochain redémarrage de {{productName}} (Réglages → À propos, ou le terminal depuis lequel vous l'avez lancé).",
       "schema_unavailable": "Impossible de vérifier si ce réglage nécessite un redémarrage."
+    },
+    "advisorOverrideControl": {
+      "advisor": "Conseiller",
+      "advisor_mode": "Mode du conseiller",
+      "helper": "Une session de relecture distincte examine cette session et signale les problèmes pendant que vous travaillez.",
+      "on": "Activé",
+      "off": "Désactivé",
+      "update_failed": "Impossible de mettre à jour le conseiller.",
+      "inherit_on": "Hériter (Activé)",
+      "inherit_off": "Hériter (Désactivé)",
+      "helper_off": "Aucune revue active.",
+      "inherit": "Hériter",
+      "config_load_failed": "Impossible de charger le réglage global du conseiller.",
+      "unavailable_backend": "Le conseiller nécessite le backend d'agent kiro-cli. Passez Paramètres → Développeur → Backend de l’agent sur kiro-cli, ou laissez le conseiller désactivé.",
+      "helper_inherit_off": "Une session de relecture distincte peut relire cette session et signaler les problèmes.",
+      "unavailable_sandbox": "Le conseiller a besoin d'un bac à sable qui masque vos identifiants, et cet ordinateur ne peut pas en fournir."
     }
   },
   "hooks": {
@@ -10034,6 +10049,16 @@
         "copy_text_failed": "Échec de la copie",
         "copy_text_unavailable": "Le presse-papiers est bloqué ici. Le texte de ta publication est sélectionné — appuie sur Ctrl+C / ⌘C. Le texte de la carte que tu as modifié se copie depuis la carte elle-même.",
         "export_failed": "Impossible de générer la carte de partage"
+      },
+      "advisorMessage": {
+        "advisor": "Conseiller",
+        "nit": "Conseil mineur",
+        "concern": "Point d’attention",
+        "blocker": "Bloquant",
+        "saved_for_next_turn": "Enregistré pour le prochain tour",
+        "evidence": "Preuves",
+        "sent_mid_turn": "Envoyé à l'agent en cours de tour",
+        "dropped_by_stop": "Abandonné quand vous avez arrêté le tour"
       }
     },
     "chatPage": {
@@ -12638,7 +12663,6 @@
       "unknown_agent": "sous-agent",
       "unknown_model": "inconnu"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_many": "Plus de {{days}} jours — {{count}} sessions · {{size}}",
       "age_option_one": "Plus de {{days}} jours — {{count}} session · {{size}}",
@@ -13222,7 +13246,12 @@
         "feature_videos_downloads_disabled": "Le téléchargement des vidéos est désactivé. Seuls les clips déjà enregistrés seront lus.",
         "feature_videos_download_all": "Tout télécharger maintenant",
         "failed_to_load_feature_video_status": "Impossible de charger l’état du cache des vidéos de fonctionnalités",
-        "failed_to_start_feature_video_download": "Impossible de démarrer le téléchargement"
+        "failed_to_start_feature_video_download": "Impossible de démarrer le téléchargement",
+        "advisor": "Conseiller",
+        "enable_advisor": "Activer le conseiller",
+        "enable_advisor_description": "Une session de relecture distincte relit vos sessions de chat du tableau de bord pendant que l'agent travaille et signale les problèmes. Désactivé par défaut ; remplaçable par session dans le sélecteur de modèle. Les tours du lanceur de tâches, de cron et des canaux ne sont pas encore relus.",
+        "reviewer_model": "Modèle du conseiller",
+        "failed_to_save_advisor_setting": "Impossible d’enregistrer le réglage du conseiller"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

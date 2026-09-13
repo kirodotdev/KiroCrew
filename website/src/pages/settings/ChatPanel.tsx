@@ -137,7 +137,7 @@ type KirocrewConfigShape = {
   session_summary?: { enabled?: boolean }
   agent?: {
     model?: string
-    role_models?: { background?: string; subagent?: string }
+    role_models?: { background?: string; subagent?: string; advisor?: string }
     role_efforts?: { background?: string; subagent?: string }
     reasoning_effort?: string
     soft_stop_budget_secs?: number
@@ -146,6 +146,9 @@ type KirocrewConfigShape = {
     fallback_model?: string
   }
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean }
+  advisor?: {
+    enabled?: boolean
+  }
 }
 
 function invalidRegex(pattern: string): boolean {
@@ -608,10 +611,10 @@ export function ChatPanel() {
    * the newer pick owns the display, and a stale "failed to save" beside a
    * value that did persist is exactly the co-render this prevents.
    */
-  const optimisticConfigOpts = (path: string, errMsg: (err: unknown) => string) =>
-    overlay.mutationOpts<string>({
+  const optimisticConfigOpts = <T,>(path: string, errMsg: (err: unknown) => string) =>
+    overlay.mutationOpts<T>({
       queryKey: ['kirocrewConfig'],
-      mutationFn: (v: string) => api.patchConfig(path, v),
+      mutationFn: (v: T) => api.patchConfig(path, v),
       path: () => path,
       displayValue: v => v,
       applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, path, v),
@@ -648,6 +651,22 @@ export function ChatPanel() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_summaries')),
   })
+
+  // ── Advisor (server-side; live-applied by the config PATCH) ──
+  // The reviewer MODEL is not here: it is the `advisor` role pin
+  // (agent.role_models.advisor), declared with the other role pickers below.
+  const advisorEnabled = mcCfg?.advisor?.enabled ?? false
+  const shownAdvisorEnabled = overlay.shown('advisor.enabled', advisorEnabled)
+  const advisorSaveError = (err: unknown) => {
+    // Surface the backend's deny reason (e.g. the reviewer runs on the
+    // kiro-cli backend only) so the user does not retry a toggle that can
+    // never stick -- same shape as the fallback-model line below.
+    const reason = err instanceof Error && err.message ? `: ${err.message}` : ''
+    return i18nT('pages.settings.chatPanel.failed_to_save_advisor_setting') + reason
+  }
+  const advisorEnabledMut = useMutation(
+    optimisticConfigOpts<boolean>('advisor.enabled', advisorSaveError),
+  )
 
   // "Other" reveals a free-text role. Typed locally and committed on blur /
   // Enter so a PATCH does not fire per keystroke; seeded from the server once
@@ -803,8 +822,12 @@ export function ChatPanel() {
   // these rows label it differently from the chat row's Default (auto).
   const backgroundModel = mcCfg?.agent?.role_models?.background || 'auto'
   const subagentModel = mcCfg?.agent?.role_models?.subagent || 'auto'
+  // The Advisor's reviewer model is a role pin too (rendered in the Advisor
+  // card below): pinning it is what makes the reviewer cross-model.
+  const advisorModel = mcCfg?.agent?.role_models?.advisor || 'auto'
   const shownBackgroundModel = overlay.shown('agent.role_models.background', backgroundModel)
   const shownSubagentModel = overlay.shown('agent.role_models.subagent', subagentModel)
+  const shownAdvisorModel = overlay.shown('agent.role_models.advisor', advisorModel)
   // A pinned model the live backend no longer advertises must stay selectable
   // (same reasoning as the chat-default picker), so prepend what is missing —
   // both the shown value and the persisted one, so neither vanishes while a
@@ -822,12 +845,16 @@ export function ChatPanel() {
   // pairs a label to a value by INDEX, so both props must read the same list.
   const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel)
   const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel)
+  const advisorModelOpts = roleModelOptions(shownAdvisorModel, advisorModel)
   const fallbackOpts = fallbackModelOptions(shownFallbackModel, fallbackModel)
   const backgroundModelMut = useMutation(
     optimisticConfigOpts('agent.role_models.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
   )
   const subagentModelMut = useMutation(
     optimisticConfigOpts('agent.role_models.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
+  )
+  const advisorModelMut = useMutation(
+    optimisticConfigOpts('agent.role_models.advisor', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
   )
 
   // Per-role reasoning effort, paired with each role's model. Empty inherits the
@@ -877,16 +904,18 @@ export function ChatPanel() {
 
   return (
     <>
-      {/* No hand-off: `localRoleOther`, `localBudget` and `localKeepChars` are
-          this panel's live drafts. A hand-off click blurs the field, which STARTS
-          a save — and if that save fails after the navigation has unmounted the
-          panel, the typed value is gone with nothing left on screen to say so. */}
+      {/* No hand-off: the Advisor text/number drafts plus `localRoleOther`,
+          `localBudget` and `localKeepChars` are this panel's live drafts. A
+          hand-off click blurs the field, which STARTS a save — and if that save
+          fails after the navigation has unmounted the panel, the typed value is
+          gone with nothing left on screen to say so. */}
       <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" />
       {dashQ.isError && (
         <div className="mb-4 flex flex-wrap items-center gap-3">
-          {/* No hand-off: the rest of the panel — and its `localRoleOther` /
-              `localBudget` / `localKeepChars` drafts — stays mounted under this
-              banner, so the navigation would discard them. Retry is the path. */}
+          {/* No hand-off: the rest of the panel — including the Advisor drafts
+              and its `localRoleOther` / `localBudget` / `localKeepChars` drafts —
+              stays mounted under this banner, so the navigation would discard
+              them. Retry is the path. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
             message={i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}
@@ -996,6 +1025,28 @@ export function ChatPanel() {
             onChange={v => fallbackMut.mutate(v)}
             disabled={!mcQ.isSuccess}
             configKey="agent.fallback_model"
+          />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={i18nT('pages.settings.chatPanel.advisor')}>
+        <SettingsCard index={3}>
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.enable_advisor')}
+            description={i18nT('pages.settings.chatPanel.enable_advisor_description')}
+            checked={shownAdvisorEnabled}
+            onChange={v => advisorEnabledMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="advisor.enabled"
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.reviewer_model')}
+            hint={i18nT('pages.settings.chatPanel.role_model_auto_hint')}
+            value={shownAdvisorModel}
+            options={advisorModelOpts}
+            optionLabels={roleModelLabels(advisorModelOpts)}
+            onChange={v => advisorModelMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
           />
         </SettingsCard>
       </SettingsSection>
@@ -1131,8 +1182,9 @@ export function ChatPanel() {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.feature_tips')} description={tipsConfigOff ? i18nT('pages.settings.chatPanel.disabled_by_instance_config_tips_enabled_false') : i18nT('pages.settings.chatPanel.show_occasional_feature_discovery_tips_above_the')} checked={!!tipsQ.data && tipsQ.data.enabled_config && !shownOptedOut} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
           {/* A failed status read used to only grey the toggle out, which is
               indistinguishable from the instance-config gate above. Say why.
-              No hand-off: this panel's `localRoleOther` / `localBudget` /
-              `localKeepChars` drafts would be unmounted by the navigation. */}
+              No hand-off: this panel's Advisor drafts plus `localRoleOther` /
+              `localBudget` / `localKeepChars` would be unmounted by the
+              navigation. */}
           <ErrorNotice
             variant="inline"
             message={tipsQ.isError ? i18nT('pages.settings.chatPanel.failed_to_load_tips_preference') : null}
