@@ -6715,3 +6715,44 @@ def is_readonly_filesystem(path: Path) -> bool:
         return bool(os.statvfs(path).f_flag & os.ST_RDONLY)
     except OSError:
         return False
+
+
+def ensure_owner_rwx_dirs(root: str | os.PathLike) -> None:
+    """OR owner read/write/execute onto *root* and every directory below it.
+
+    ``shutil.copytree`` preserves source modes verbatim. A copy made from a
+    hardened install source can therefore lack owner write or execute (for
+    example, mode ``0o455``). Creating a file needs a writable AND searchable
+    parent, so callers that write a marker into a fresh copy run this first.
+
+    Only directories are touched, and only by adding ``S_IRWXU``. Copied files
+    remain exactly as shipped, so a file-mode customization still diverges
+    skill fingerprints. On Windows ``os.chmod`` honours only the read-only
+    flag: adding owner write clears it, while the extra owner bits are a no-op.
+    Never raises: a directory this cannot repair surfaces as the original
+    ``PermissionError`` at the caller's write site, which every caller handles.
+    """
+
+    def _add_owner_rwx(entry: str) -> None:
+        try:
+            mode = os.lstat(entry).st_mode
+            if stat.S_ISDIR(mode) and mode & stat.S_IRWXU != stat.S_IRWXU:
+                os.chmod(entry, stat.S_IMODE(mode) | stat.S_IRWXU)
+        except OSError:
+            logger.debug("could not add owner rwx to %s", entry, exc_info=True)
+
+    top = os.fspath(root)
+    if is_link_or_junction(top):
+        return
+    _add_owner_rwx(top)
+    for dirpath, dirnames, _filenames in os.walk(top):
+        for dname in list(dirnames):
+            entry = os.path.join(dirpath, dname)
+            if is_link_or_junction(entry):
+                # os.walk(followlinks=False) skips POSIX symlinks, but a
+                # Windows junction lstats as a plain directory and WOULD be
+                # descended -- and chmodded THROUGH, touching its target
+                # tree. Prune both so the walk never leaves *root*.
+                dirnames.remove(dname)
+                continue
+            _add_owner_rwx(entry)
