@@ -39,6 +39,18 @@ export function packSlotUrl(id: string, slot: string): string {
   return `/api/appearances/${encodeURIComponent(id)}/slot/${encodeURIComponent(slot)}`
 }
 
+/**
+ * One state's CUE — the pack's own audio, the counterpart of `packSlotUrl`.
+ *
+ * There is no fallback chain and no `idle` cue: a cue fires on a TRANSITION, so
+ * a state the pack does not declare answers 404 rather than resolving to a
+ * neighbour's sound. Which states a pack declares is what `PackDetail.sounds`
+ * reports, so a caller asks the detail before it asks for bytes.
+ */
+export function packSoundUrl(id: string, state: string): string {
+  return `/api/appearances/${encodeURIComponent(id)}/sound/${encodeURIComponent(state)}`
+}
+
 /** Total byte ceiling the server applies to a bundle (`bundle_too_large`).
  *  Checked client-side too so a mis-picked archive is refused before it is
  *  uploaded, with a message naming the limit. */

@@ -1911,11 +1911,12 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   silently clear a pack set through the API. `PUT /api/agents/{name}` therefore
   keeps the current pack id when the record is a pack and the save names no face
   (`handlers/agents._carry_pack_through_faceless_save`), and rides the save's
-  `expressions` and `sounds` onto the kept pack: both are legal on every tier, a
-  faceless save is the one way the shipped editor can change them on a pack crew,
-  and a pack's own cue answers a different route (`/sound/{state}`) than a
-  crew-record cue does, so the two do not collide. Only `motions` is left
-  behind, because it is the ghost's alone. It is narrow: ghost and picture keep
+  `expressions` and `sounds` onto the kept pack: both are still legal on every
+  tier here, and a pack's own cue answers a different route (`/sound/{state}`)
+  than a crew-record cue does, so the two do not collide. Only `motions` is left
+  behind, because it is the ghost's alone. Both carried keys are now vestigial —
+  the shipped editor authors reactions on the ghost tier alone and submits
+  neither on a pack — and they retire with the validator change that drops them. It is narrow: ghost and picture keep
   their reset semantics; `avatar: null` (which the editor never sends) is
   still an explicit reset that takes the pack off; a real face — a ghost with
   traits, a picture, another pack — replaces it. The carve-out exists until the
@@ -1966,12 +1967,11 @@ silently and never refused: the same forgiveness traits get, so a malformed
 reaction costs that reaction and never the crew's whole avatar. `expressions`
 (a per-state `eyes`/`mouth` pick, which `motions` supersedes) round-trips on
 EVERY tier — `{"<state>": {"eyes"?: str, "mouth"?: str}}`, only those two
-axes, 32-char truncation, empty strings dropped — because the shipped renderer
-still draws it on a ghost and the shipped builder still SUBMITS it on a picture
-or a pack, so stripping it there would erase a pick a ghost → picture → ghost
-round-trip then cannot restore; a value a user can see is not dropped ahead of
-the renderer that shows it, and the frontend change that removes the picker is
-where it retires. `sounds` stays for the same reason on every tier, and only
+axes, 32-char truncation, empty strings dropped — but that round-trip is now the
+last of it: the picker is gone and no renderer draws it, so the key is carried
+only so a record written by the previous release survives the gap until the
+validator change that drops it. `sounds` on a picture or a pack is vestigial in
+the same way, for the same window. `sounds` stays for the same reason on every tier, and only
 `motions` is tier-gated. The roster leaves all three keys intact rather than masking them
 (`_roster_avatar`), for the same reason it leaves `file` intact — a value pinned
 to a closed vocabulary is not user-authored text, and masking it would break the

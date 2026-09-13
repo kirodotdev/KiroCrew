@@ -272,18 +272,28 @@ console.log('captured library-broken-art-dark.png')
 delete DETAIL.glitch
 listing = PACKS
 
-// The Expressions tab for a pack crew: the Sounds half stays, the eyes/mouth
-// pickers are gone, and the note says why.
+// A pack crew has NO Reactions tab: a pack brings its own art and its own audio,
+// so there is nothing on the crew record to author. The strip is three tabs and
+// the pane says why in one line, where the user is looking. (This block used to
+// open an "Expressions" tab that no longer exists; a capture that clicks a
+// removed control times out rather than failing by name, so the absence is
+// asserted outright.)
 await page.goto(`${BASE}/capture/crew-pack-avatars.html?scene=library&theme=dark`)
-await page.getByRole('button', { name: 'Expressions' }).click()
-await page.getByTestId('avatar-expressions-pane').waitFor()
-await page.getByTestId('avatar-expressions-pack-note').waitFor()
-await page.getByTestId('avatar-state-sound-done').waitFor()
-if (await page.getByTestId('avatar-expr-done-eyes').count()) {
-  throw new Error('the eyes picker is rendering for a pack — a pack has no face to repaint')
+await page.getByTestId('avatar-library-pane').waitFor()
+if (await page.getByRole('button', { name: 'Reactions', exact: true }).count()) {
+  throw new Error('the Library tier is offering a Reactions tab — a pack plays its own art and sound')
 }
-await page.screenshot({ path: join(OUT, 'expressions-pack-dark.png') })
-console.log('captured expressions-pack-dark.png')
+if (await page.getByRole('button', { name: 'Expressions', exact: true }).count()) {
+  throw new Error('an Expressions tab is rendering — that layer is retired')
+}
+const packNote = page.getByTestId('avatar-reactions-absent-pack')
+await packNote.waitFor()
+const packNoteText = (await packNote.innerText()).trim()
+if (!packNoteText || packNoteText.includes('components.avatarBuilder')) {
+  throw new Error(`the pack pane's reactions note is not rendering its copy: "${packNoteText}"`)
+}
+await page.screenshot({ path: join(OUT, 'reactions-absent-pack-dark.png') })
+console.log(`captured reactions-absent-pack-dark.png (${packNoteText})`)
 
 // The faces scene: one served frame per state, plus the two local fallbacks.
 for (const theme of ['dark', 'light']) {
@@ -408,8 +418,8 @@ listing = [
 
 // Narrow width: the cards reflow rather than overflowing sideways.
 //
-// The grid is a 380px-tall scroll region (the same cap the trait grid and the
-// Expressions pane use), so at phone width its rows genuinely do not all fit —
+// The grid is a 380px-tall scroll region (the same cap the trait grid uses),
+// so at phone width its rows genuinely do not all fit —
 // and a card cut at the container's BOTTOM edge photographs as clipped even
 // though it is only scrolled. So the frame is taken with the list scrolled to
 // its end: the last card is whole, and the partial card at the TOP reads as

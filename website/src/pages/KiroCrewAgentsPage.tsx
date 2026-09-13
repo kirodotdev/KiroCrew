@@ -23,7 +23,13 @@ import SimpleSelect from '../components/SimpleSelect'
 import CrewAvatar, { ghostTraitsFrom, imageAvatarFrom, packAvatarFrom, unclaimedAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
 import CrewStateAvatar from '../components/CrewStateAvatar'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
-import { expressionsFrom, soundsFrom } from '../lib/crewAvatarState'
+import {
+  motionsFrom,
+  retiredCarryFrom,
+  retiredCueFrom,
+  soundsFrom,
+  type RetiredCarry,
+} from '../lib/crewAvatarState'
 import CrewAvatarButton from '../components/crew/CrewAvatarButton'
 import CrewWakeSection from '../components/CrewWakeSection'
 import CrewWebhookSection from '../components/CrewWebhookSection'
@@ -931,6 +937,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    * the user deciding this crew's avatar.
    */
   const [avatarPassthrough, setAvatarPassthrough] = useState<Record<string, unknown> | null>(null)
+  /** The open crew's retired reaction keys, re-attached at save time so an edit
+   *  that never touched the face cannot delete them. Sibling of
+   *  `avatarPassthrough`: that one preserves a whole record no reader claimed,
+   *  this one preserves the dead keys ON a record the readers DID claim. */
+  const [retiredCarry, setRetiredCarry] = useState<RetiredCarry | null>(null)
   /** The builder committed an explicit RESET — the user pressed "Reset to default"
    *  and then Apply — as opposed to never having opened it. Both leave
    *  `editAvatar` null, and the two must not send the same thing: `{}` is the
@@ -1033,13 +1044,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     const storedTraits = ghostTraitsFrom(a.avatar)
     const storedImage = imageAvatarFrom(a.avatar)
     const storedPack = packAvatarFrom(a.avatar)
-    // The reaction layer rides on every tier, and on none: a record that pins no
-    // face, no picture and no pack but carries expressions or sounds is still an
-    // override ("the name-derived face, plus these reactions").
-    const storedExpressions = expressionsFrom(a.avatar)
+    // The reaction layer is the ghost's, and rides on a ghost that pins nothing:
+    // a record with no traits that carries motions or sounds is still an
+    // override ("the name-derived face, plus these reactions"). Both readers are
+    // ghost-gated, so a picture or a pack record yields no reactions here.
+    const storedMotions = motionsFrom(a.avatar)
     const storedSounds = soundsFrom(a.avatar)
     const reactions = {
-      ...(storedExpressions ? { expressions: storedExpressions } : {}),
+      ...(storedMotions ? { motions: storedMotions } : {}),
       ...(storedSounds ? { sounds: storedSounds } : {}),
     }
     // A record NO reader claimed is owned WHOLE by the passthrough, reactions
@@ -1056,18 +1068,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         : storedTraits
           ? { kind: 'ghost', traits: storedTraits, ...reactions }
           : storedImage
-            ? { kind: 'image', v: storedImage.v, ...reactions }
+            ? { kind: 'image', v: storedImage.v }
             : storedPack
               ? // Loaded so Save writes the pack back verbatim. Without this the
                 // draft was null for a pack crew, and `avatarPayload`'s
                 // `editAvatar ?? {}` reset the record to "no override" — so
                 // changing only the model undressed the crew.
-                { kind: 'pack', id: storedPack.id, ...reactions }
+                { kind: 'pack', id: storedPack.id }
               : Object.keys(reactions).length
                 ? { kind: 'ghost', ...reactions }
                 : null,
     )
     setAvatarPassthrough(storedUnclaimed)
+    setRetiredCarry(retiredCarryFrom(a.avatar))
     setAvatarReset(false)
     setAvatarBuilderOpen(false)
     setSheet({ mode: 'edit', name: a.name })
@@ -1458,16 +1471,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       // committed by this one, and a plain {kind:'image'} keeps the current
       // picture while the server discards any stale staging. The server
       // stamps the cache-buster `v` at the commit.
-      // Rebuilt rather than spread from the draft (the staging token and
-      // `promote` are wire-only), so the reaction layer must be carried over
-      // by hand — without this, saving a picture silently drops it.
-      const reactions = {
-        ...(editAvatar.expressions ? { expressions: editAvatar.expressions } : {}),
-        ...(editAvatar.sounds ? { sounds: editAvatar.sounds } : {}),
-      }
+      // Rebuilt rather than spread from the draft, because the staging token and
+      // `promote` are wire-only. Nothing else on a picture record needs carrying
+      // over: a picture is static and silent, so it holds no reaction keys.
       avatarPayload = stagedToken
-        ? { kind: 'image', promote: true, token: stagedToken, ...reactions }
-        : { kind: 'image', ...reactions }
+        ? { kind: 'image', promote: true, token: stagedToken }
+        : { kind: 'image' }
+    }
+    // Put the retired keys back. AFTER the picture branch on purpose: that
+    // branch REBUILDS the record from scratch for the staging token, so a carry
+    // spliced in earlier would be the thing it dropped. Gated on the tier still
+    // matching the one they were read from, and skipped entirely for an explicit
+    // reset, which is the user asking for the record to be gone.
+    if (retiredCarry && !avatarReset && avatarPayload && typeof avatarPayload === 'object') {
+      const outgoing = avatarPayload as { kind?: unknown }
+      if (outgoing.kind === retiredCarry.kind) {
+        avatarPayload = { ...avatarPayload, ...retiredCarry.keys }
+      }
     }
     // A discard question raised WHILE this save was staging owns the outcome,
     // so wait for the answer instead of racing it: a PUT fired mid-question
@@ -1660,22 +1680,21 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // Compared separately from the face, and BOTH sides go through the same
     // coercion — which is what makes the comparison sound rather than merely
     // convenient. `JSON.stringify` is order-sensitive: the draft's map is in
-    // the order the user touched the states (and, inside one state, the order
-    // they picked eyes vs mouth), while the coercion always emits
-    // working/done/error with eyes before mouth. Comparing the raw draft
-    // against a coerced record would report two identical sets of overrides as
-    // a change, and the rail would show an unsaved dot on a freshly saved crew.
+    // the order the user touched the states, while the coercion always emits
+    // them in its own fixed order. Comparing the raw draft against a coerced
+    // record would report two identical sets of reactions as a change, and the
+    // rail would show an unsaved dot on a freshly saved crew.
     //
-    // Both readers are kind-AGNOSTIC, so on a record no reader claimed they
-    // still report its reaction map — while `openEdit` deliberately holds that
-    // record whole in the passthrough and seeds NO draft. Comparing the two
-    // would put an unsaved dot on a crew that was only just opened, so the
-    // saved side reads as "no draft either", which is what it is.
+    // A record no reader claimed is held WHOLE in the passthrough by `openEdit`,
+    // which seeds NO draft for it. Reading its reactions on the saved side would
+    // then compare a map against nothing and put an unsaved dot on a crew that
+    // was only just opened, so the saved side reads as "no draft either", which
+    // is what it is.
     const unclaimed = unclaimedAvatarFrom(editingAgent.avatar) !== null
     const savedReactions = unclaimed
       ? [null, null]
-      : [expressionsFrom(editingAgent.avatar), soundsFrom(editingAgent.avatar)]
-    const draftReactions = [expressionsFrom(editAvatar), soundsFrom(editAvatar)]
+      : [motionsFrom(editingAgent.avatar), soundsFrom(editingAgent.avatar)]
+    const draftReactions = [motionsFrom(editAvatar), soundsFrom(editAvatar)]
     if (JSON.stringify(draftReactions) !== JSON.stringify(savedReactions)) out.add('routing')
     // An open inline schedule-create form is pending work too: it gets the
     // rail's unsaved dot and the note, so closing the editor cannot silently
@@ -2639,6 +2658,21 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               open={avatarBuilderOpen}
               name={editing}
               value={editAvatar}
+              // Read off the SAVED record, which is the only place a served
+              // tier's retired cue still exists: the draft cannot carry one,
+              // because the readers that build it are ghost-gated.
+              retiredCue={retiredCueFrom(editingAgent?.avatar)}
+              // The STORED tier, not the drafted one: a faceless ghost result is
+              // read as "this client cannot see packs" by the backend's carry, so
+              // the builder has to know when that would swallow a tier change.
+              savedPack={packAvatarFrom(editingAgent?.avatar) !== null}
+              // Also the STORED record: an emptied reaction map has to be NAMED
+              // on the wire when the record carries one, and the draft forgets
+              // that after the first Apply lands the empty map.
+              savedReactions={{
+                motions: motionsFrom(editingAgent?.avatar) !== null,
+                sounds: soundsFrom(editingAgent?.avatar) !== null,
+              }}
               onCancel={() => setAvatarBuilderOpen(false)}
               onSave={next => {
                 setEditAvatar(next)

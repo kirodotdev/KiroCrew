@@ -173,6 +173,55 @@ export function playPreset(preset: SoundPreset, volume: number): void {
 }
 
 /**
+ * Play an audio FILE the gateway serves — an appearance pack's own cue.
+ *
+ * A separate path from `playPreset` on purpose, and not a shortcoming of it: a
+ * preset is synthesized from oscillators this module owns, while a pack's cue is
+ * third-party bytes behind an authenticated route. Nothing in the AudioContext
+ * graph helps with those, and decoding them through it would mean fetching and
+ * holding every cue in memory; an `<audio>` element streams it and sends the
+ * same-origin session cookie the route requires.
+ *
+ * Failure is SILENCE, never a substitute sound: a 404 (the pack declares a state
+ * it cannot serve), an undecodable file, and a browser that refuses to play
+ * without a user gesture all end here with nothing played. Substituting a preset
+ * would report the pack's own cue with a sound its author never chose.
+ *
+ * The element is released as soon as it finishes or fails, so a long session does
+ * not accumulate one per cue. Callers debounce per crew and state, so this needs
+ * no queue of its own.
+ */
+export function playSoundFile(url: string, volume: number): void {
+  if (!url || volume <= 0) return
+  if (typeof Audio === 'undefined') return
+  let el: HTMLAudioElement
+  try {
+    el = new Audio(url)
+  } catch {
+    return
+  }
+  // The stored volume is a 0..1 setting, but it arrives from localStorage and
+  // `HTMLMediaElement.volume` THROWS outside that range rather than clamping —
+  // so a hand-edited setting would take the cue down with it.
+  el.volume = Math.min(1, Math.max(0, volume))
+  // Stopping is the whole of the release: dropping the handlers leaves nothing
+  // holding the element, so it is collectable, and `pause()` ends a play that is
+  // still buffering — the case a refused `play()` leaves behind. Assigning to
+  // `src` would release the same resource and is a dynamic media-source
+  // assignment, which is a shape worth not writing when it buys nothing.
+  const release = () => {
+    el.onended = null
+    el.onerror = null
+    el.pause()
+  }
+  el.onended = release
+  el.onerror = release
+  // `play()` rejects on the autoplay policy and on a decode failure alike; both
+  // are silence, and neither is an error the user can act on.
+  void el.play().catch(release)
+}
+
+/**
  * Schedule a preset's oscillators on a running context.
  * Disconnects nodes via `onended` so the audio graph doesn't leak over long
  * sessions — without this, every call leaks one osc + one gain node permanently.

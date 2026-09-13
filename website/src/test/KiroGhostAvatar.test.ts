@@ -17,7 +17,13 @@ import { createAvatar } from '@dicebear/core'
 import {
   kiroGhost,
   compose,
+  ghostDataUri,
   markPaths,
+  MOTIONS,
+  MOTION_NAMES,
+  MOTION_STATES,
+  motionDrop,
+  motionStyle,
   BODY,
   EYE_A,
   EYE_B,
@@ -33,6 +39,9 @@ import {
 } from '../lib/kiroGhostAvatar'
 
 const MARK = join(__dirname, '..', 'assets', 'kiro-ghost-mark.svg')
+
+/** The fill every piece floating on the tile uses — see the module header. */
+const WHITE_FILL = 'fill="#ffffff"'
 
 /** All traits off: the neutral reference that must reproduce the mark. */
 const BARE: KiroGhostTraits = {
@@ -312,7 +321,7 @@ describe('working (animated) variant', () => {
     // The antenna ball is the highest artwork: circle cy=104 r=44 → top y=60.
     // At each tier's peak excursion (fit, then max stretch about y=985, then
     // full rise) that point must stay inside the tile with real margin, or a
-    // member wearing it gets decapitated mid-bounce. Numbers mirror MOTION;
+    // member wearing it gets decapitated mid-bounce. Numbers mirror BODY_MOTION;
     // if an amplitude bump fails this, grow fitDrop / shrink rise.
     const TOP_Y = 60
     for (const svg of [compose(BARE, 'subtle'), compose(BARE, 'full')]) {
@@ -328,5 +337,215 @@ describe('working (animated) variant', () => {
       const peak = afterStretch - rise
       expect(peak).toBeGreaterThan(30)
     }
+  })
+})
+
+describe('reaction motions', () => {
+  /** The tile rect, which every composition opens with after its style block. */
+  const tileRect = (tile: string) => `<rect width="1200" height="1200" fill="${tile}"/>`
+
+  it('mirrors the backend vocabulary name for name', () => {
+    // `_AVATAR_MOTIONS` in `config/sections.py` validates against exactly these
+    // names, and a name only one side knows is a choice that cannot round-trip:
+    // the backend would drop it, or this module would draw nothing for it.
+    expect(MOTION_NAMES).toEqual({
+      done: ['none', 'bounce', 'nod', 'sparkle'],
+      error: ['none', 'shake', 'cross-eyes', 'droop'],
+    })
+    for (const state of MOTION_STATES) {
+      expect(Object.keys(MOTIONS[state]).sort()).toEqual([...MOTION_NAMES[state]].sort())
+    }
+  })
+
+  it('pins the vocabulary to the backend literal it must match', () => {
+    // A cross-LANGUAGE contract, so no type can hold it — the same shape the
+    // pack importer's `PACK_BUNDLE_KIND` pin uses. Two independently hardcoded
+    // literals drift silently: a name added on one side is dropped by the other
+    // with no test going red, and the user sees a motion that never plays.
+    const sections = readFileSync(
+      join(__dirname, '../../../src/kiro_crew/config/sections.py'),
+      'utf8',
+    )
+    const block = /_AVATAR_MOTIONS: dict\[str, tuple\[str, \.\.\.\]\] = \{([\s\S]*?)\n\}/.exec(sections)
+    expect(block, '_AVATAR_MOTIONS literal not found in sections.py').not.toBeNull()
+    const backend: Record<string, string[]> = {}
+    for (const m of block![1].matchAll(/"(\w+)":\s*\(([^)]*)\)/g)) {
+      backend[m[1]] = [...m[2].matchAll(/"([^"]+)"/g)].map(x => x[1])
+    }
+    expect(backend).toEqual(MOTION_NAMES)
+  })
+
+  it('draws the still frame for `none`, byte for byte', () => {
+    // `none` is a stored choice — deliberate stillness — so it must be exactly
+    // what an unreacting avatar renders, not a reaction with zero amplitude.
+    for (const state of MOTION_STATES) {
+      expect(compose(BARE, null, { state, name: 'none' })).toBe(compose(BARE))
+    }
+  })
+
+  it('draws the still frame for a name from a newer vocabulary', () => {
+    expect(compose(BARE, null, { state: 'done', name: 'backflip' })).toBe(compose(BARE))
+    // A cross-state name is refused the same way: a bounce is not an error
+    // reaction, and the backend drops it for the same reason.
+    expect(compose(BARE, null, { state: 'error', name: 'bounce' })).toBe(compose(BARE))
+  })
+
+  it('moves the ghost and its eyes, and touches no other axis', () => {
+    // The whole safety contract of the layer, asserted CONSTRUCTIVELY: a
+    // reaction's output must be exactly its style block, then the same drawing
+    // the still frame produces (with only the eyes swapped) inside its wrapper
+    // groups, then its own decoration. Anything else it did to an identity axis
+    // — a recolored tile, a dropped hat — fails here.
+    const rich: KiroGhostTraits = {
+      eyes: 'canon',
+      brows: 'angry',
+      mouth: 'grin',
+      accessory: 'crown',
+      prop: 'mug',
+      blush: true,
+      flip: false,
+      tile: '#25679d',
+    }
+    const tile = tileRect(rich.tile)
+    for (const state of MOTION_STATES) {
+      for (const [name, m] of Object.entries(MOTIONS[state])) {
+        const still = compose(m.eyes ? { ...rich, eyes: m.eyes } : rich)
+        const drawing = still.slice(tile.length)
+        const wrapped = m.cls
+          ? `<g class="kg-mfit"><g class="${m.cls}">${drawing}</g></g>`
+          : drawing
+        expect(compose(rich, null, { state, name }), `${state}/${name}`).toBe(
+          motionStyle(m) + tile + wrapped + m.art,
+        )
+      }
+    }
+  })
+
+  it('keeps the reaction inside the flip group so its origins stay unmirrored', () => {
+    // Same rule the working variant follows: a transform origin measured in the
+    // unmirrored space has to be applied there, or a mirrored ghost nods the
+    // wrong way. The decoration stays OUTSIDE, because it is placed in absolute
+    // tile coordinates and mirroring would move it for half the roster.
+    const flipped = compose({ ...BARE, flip: true }, null, { state: 'done', name: 'sparkle' })
+    const mirror = flipped.indexOf('<g transform="translate(1200,0) scale(-1,1)">')
+    expect(mirror).toBeGreaterThan(-1)
+    expect(flipped.indexOf('<g class="kg-mfit">')).toBeGreaterThan(mirror)
+    expect(flipped.indexOf(MOTIONS.done.sparkle.art)).toBeGreaterThan(mirror)
+    expect(flipped.endsWith(MOTIONS.done.sparkle.art)).toBe(true)
+  })
+
+  it('a reaction outranks the working animation when both are asked for', () => {
+    // Exclusive by construction — a crew is either at work or reacting to a
+    // turn that ended — so the more specific statement wins rather than the two
+    // layering into a face doing both.
+    const reacting = compose(BARE, 'full', { state: 'done', name: 'bounce' })
+    expect(reacting).toBe(compose(BARE, null, { state: 'done', name: 'bounce' }))
+    expect(reacting).not.toContain('kg-bob')
+  })
+
+  it('makes its own headroom, so a tall accessory cannot leave the tile', () => {
+    // The antenna ball tops out at y=60, which is the whole margin above the
+    // artwork. A motion that rises further has to lower the drawing first, and
+    // the declared `rise` is what the drop is computed from — so a keyframe
+    // amplitude raised without updating it would silently decapitate the ghost.
+    const ACCESSORY_TOP = 60
+    for (const state of MOTION_STATES) {
+      for (const [name, m] of Object.entries(MOTIONS[state])) {
+        const lifts = [...m.css.matchAll(/transform:translateY\(-([\d.]+)px\)/g)].map(x =>
+          Number(x[1]),
+        )
+        // A swell about the body's centre lifts the topmost art too.
+        const swells = [...m.css.matchAll(/transform:scale\(([\d.]+)\)\}/g)].map(
+          x => (620 - ACCESSORY_TOP) * (Number(x[1]) - 1),
+        )
+        const lift = Math.max(0, ...lifts, ...swells)
+        expect(m.rise, `${state}/${name} declares less rise than it uses`).toBeGreaterThanOrEqual(
+          lift,
+        )
+        expect(
+          ACCESSORY_TOP + motionDrop(m.rise) - m.rise,
+          `${state}/${name} peaks off the tile`,
+        ).toBeGreaterThanOrEqual(8)
+      }
+    }
+  })
+
+  it('emits the drop it computed, and only when there is one', () => {
+    const bounce = MOTIONS.done.bounce
+    expect(motionStyle(bounce)).toContain(
+      `.kg-mfit{transform:translateY(${motionDrop(bounce.rise)}px)`,
+    )
+    // Nod never rises, so lowering it would shrink its place on the tile for no
+    // reason — the same defect the working variant's reduced-motion note warns
+    // about, one layer up. (The reduced-motion reset still names the class, so
+    // this asserts the absence of the DROP rule rather than of the selector.)
+    expect(motionDrop(MOTIONS.done.nod.rise)).toBe(0)
+    expect(motionStyle(MOTIONS.done.nod)).not.toContain('.kg-mfit{transform:translateY')
+  })
+
+  it('falls back to a still frame under prefers-reduced-motion', () => {
+    for (const state of MOTION_STATES) {
+      for (const [name, m] of Object.entries(MOTIONS[state])) {
+        if (!m.css) continue
+        const style = motionStyle(m)
+        expect(style, `${state}/${name}`).toMatch(
+          /@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none[^}]*\}\.kg-mfit\{transform:none\}/,
+        )
+      }
+    }
+    // The one reaction that is a FRAME rather than a movement needs no style at
+    // all, and so reads identically for a reduced-motion user.
+    expect(motionStyle(MOTIONS.error['cross-eyes'])).toBe('')
+  })
+
+  it('hides an animated decoration when its animation is off', () => {
+    // The reduced-motion fallback is `animation:none!important`, which does NOT
+    // apply a keyframe's 0% stop — so any decoration whose ONLY hidden state
+    // lives inside its keyframes paints at the SVG default instead. Sparkle's
+    // glints are the movement half of that reaction, so a reduced-motion user
+    // would see three permanent white stars rather than a still ghost.
+    for (const state of MOTION_STATES) {
+      for (const [name, m] of Object.entries(MOTIONS[state])) {
+        if (!m.css || !m.art) continue
+        // Every class the decoration's markup animates must declare its resting
+        // visibility in a RULE, outside `@keyframes`.
+        const animated = [...m.art.matchAll(/class="(kg-[a-z-]+)"/g)].map(x => x[1])
+        for (const cls of new Set(animated)) {
+          const rule = new RegExp(`\\.${cls}\\{([^}]*)\\}`).exec(m.css)
+          expect(rule, `${state}/${name}: .${cls} has no rule of its own`).not.toBeNull()
+          if (!/opacity:/.test(m.css.slice(0, m.css.indexOf(`.${cls}{`)) + (rule?.[1] ?? ''))) {
+            expect(rule?.[1], `${state}/${name}: .${cls} animates opacity with no base`).toContain(
+              'opacity:',
+            )
+          }
+        }
+      }
+    }
+    // The case this exists for, named outright.
+    expect(MOTIONS.done.sparkle.css).toContain('.kg-pop{opacity:0;')
+  })
+
+  it('draws its glints on the tile, where white is legible', () => {
+    // Ink is for pieces that sit on the white body; a glint floats beside it, so
+    // it is white — which is invisible unless it stays in the margin (the
+    // silhouette spans x 272.9..926.9).
+    const sparkle = MOTIONS.done.sparkle
+    const xs = [...sparkle.art.matchAll(/translate\((\d+),/g)].map(m => Number(m[1]))
+    expect(xs.length).toBeGreaterThan(1)
+    for (const x of xs) expect(x < 272 || x > 927).toBe(true)
+    expect(sparkle.art).toContain(WHITE_FILL)
+  })
+
+  it('is a render option, not a trait: the prng stream is untouched', () => {
+    const traits = createAvatar(kiroGhost, { seed: 'oncall' }).toJson().extra
+    expect(createAvatar(kiroGhost, { seed: 'oncall' }).toJson().extra).toEqual(traits)
+    // The style exposes no motion option at all — a reaction is composed
+    // directly, so it cannot reach the draw order.
+    expect(Object.keys(kiroGhost.schema.properties ?? {})).not.toContain('motion')
+  })
+
+  it('ghostDataUri forwards the reaction into the same composition', () => {
+    const uri = ghostDataUri(BARE, undefined, { state: 'error', name: 'droop' })
+    expect(decodeURIComponent(uri)).toContain(compose(BARE, null, { state: 'error', name: 'droop' }))
   })
 })
