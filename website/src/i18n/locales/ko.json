@@ -7048,7 +7048,8 @@
       "save": "저장",
       "save_edit": "편집 내용 저장",
       "send_now": "지금 보내기",
-      "sub_agent_result_other": "서브 에이전트 결과 {{count}}개"
+      "sub_agent_result_other": "서브 에이전트 결과 {{count}}개",
+      "edit_failed": "편집 내용 저장 실패: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "전",
@@ -9832,7 +9833,6 @@
       "return_to_split_view": "분할 보기로 되돌리기",
       "scroll_to_bottom": "맨 아래로 스크롤",
       "send_failed": "전송 실패",
-      "send_failed_connection": "보내지 못했습니다 — 연결 상태를 확인한 뒤 다시 시도하세요.",
       "session_not_found": "세션 ‘{{name}}’을(를) 찾을 수 없습니다",
       "session_options": "세션 옵션",
       "show_sessions": "세션 표시",
@@ -9866,7 +9866,7 @@
       "loading_earlier_messages": "이전 메시지를 불러오는 중…",
       "send_failed_with_error": "전송 실패: {{error}}",
       "send_failed_with_error_restored": "이 메시지를 보낼 수 없습니다: {{error}}. 입력한 텍스트를 입력창에 되돌려 두었습니다.",
-      "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
+      "delivery_unconfirmed": "전송 미확인 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
       "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -9874,7 +9874,15 @@
       "could_not_generate_title": "제목을 생성할 수 없습니다",
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
-      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다"
+      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
+      "delivery_delivered": "메시지가 전달되었습니다. 다시 보내면 중복 전송됩니다.",
+      "delivery_discard": "메시지를 버리고 입력창의 텍스트도 지우기",
+      "delivery_remove": "메시지 제거, 텍스트는 유지",
+      "delivery_unconfirmed_short": "전송 미확인",
+      "send_no_response": "이 메시지에 대한 확인이 돌아오지 않았습니다.",
+      "delivery_unconfirmed_resend": "전송 미확인 — 텍스트가 입력창에 돌아와 있습니다. 다시 보내면 중복 전송될 수 있습니다.",
+      "delivery_unconfirmed_dismiss_note": "이 메시지가 서버에 도달하지 않은 경우, 제거하면 이 대화에서 빠지고 텍스트는 입력창으로 돌아갑니다.",
+      "delivery_clear": "입력창 비우기"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

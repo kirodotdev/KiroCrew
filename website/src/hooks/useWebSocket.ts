@@ -15,9 +15,10 @@ import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../lib/slotRead
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../lib/voicePlayback'
 import { reportVoiceFailure } from '../lib/voiceFailure'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, sseMcpAppRender, setAutomations, sseAutomation, removeAutomation, sseSideQueue, reconcileWorkflowRuns,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, reorderQueuedMessages, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, sseMcpAppRender, setAutomations, sseAutomation, removeAutomation, sseSideQueue, reconcileWorkflowRuns, applyQueueEdit,
 } from '../store/chatSlice'
 import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
+import { adoptPreSendStash } from './useQueuedMessageActions'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
@@ -1614,6 +1615,9 @@ export function useWebSocket() {
             dispatch(removeQueuedMessage(data))
             break
           case 'queue_push':
+            // `queue_id` is the WIRE spelling the server broadcasts; the camelCase form the
+            // reducer takes is produced by its own prepare, so reading that here yields nothing.
+            adoptPreSendStash((data as { sendId?: string }).sendId, (data as { queue_id?: string }).queue_id, (data as { content?: string }).content)
             dispatch(appendQueuedMessage(data))
             // A send that lands behind a busy turn is still user input, so it
             // settles the session's rank now rather than only when the queue pops
@@ -1676,7 +1680,7 @@ export function useWebSocket() {
             syncPendingQuestions()
             break
           case 'queue_edit':
-            dispatch(editQueuedMessage(data))
+            dispatch(applyQueueEdit(data))
             break
           case 'queue_reorder':
             dispatch(reorderQueuedMessages(data))

@@ -101,6 +101,7 @@ from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     effective_session_key,
     history_corpus_unreadable,
+    queue_entry_for_detail,
     slot_history_key,
     subagents_attached,
 )
@@ -716,15 +717,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
         _redacted = _redact_for_display(_c)
-        state.broadcast_ws(
-            "queue_push",
-            {
-                "slot": slot.key,
-                "content": _redacted,
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "queue_id": qid,
-            },
-        )
+        _hold_payload: dict[str, object] = {
+            "slot": slot.key,
+            "content": _redacted,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "queue_id": qid,
+        }
+        if _hold_sid:
+            _hold_payload["sendId"] = _hold_sid
+        state.broadcast_ws("queue_push", _hold_payload)
         # Same receipt contract as the busy-slot queue branch: `queue_id`
         # binds the sender's pre-send composer state to this exact entry.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
@@ -2289,7 +2290,19 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     running = slot.running
     stopping = slot._stopping
     display_title = slot.display_title
-    queue_snapshot = [{"id": q["id"], "content": q["content"]} for q in slot._queue]
+    # Stripping `meta.sendId`/`edited` left slot-detail hydration unable to adopt after a missed
+    # queue_push. Copied, not aliased, to keep the render thread's snapshot discipline.
+    queue_snapshot = [
+        {
+            "id": q["id"],
+            "content": q["content"],
+            **({"meta": dict(q["meta"])} if isinstance(q.get("meta"), dict) else {}),
+            **({"edited": True} if q.get("edited") else {}),
+            **({"editId": q["edit_id"]} if q.get("edit_id") else {}),
+            **({"editRev": q["edit_rev"]} if isinstance(q.get("edit_rev"), int) else {}),
+        }
+        for q in slot._queue
+    ]
     context_fields = await _context_snapshot_fields(state, slot)
 
     def _render(live_child: str) -> str:
@@ -2310,10 +2323,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 "running": running,
                 "stopping": stopping,
                 "messages": prepared,
-                "queue": [
-                    {"id": q["id"], "content": _redact_for_display(q["content"])}
-                    for q in queue_snapshot
-                ],
+                "queue": [queue_entry_for_detail(q) for q in queue_snapshot],
                 "total": total,
                 "has_more": has_more,
                 "next_before": next_before,
@@ -4571,10 +4581,14 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     content = body.get("content")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content must be a non-empty string"}, status=400)
+    # Correlation id for the echo: a client settles its record only on the frame naming ITS request.
+    # Same deny-by-default gate as the send path, so an unusable value is absent, never rewritten.
+    edit_id = normalize_send_id(body.get("editId"))
     if not slot.queue_edit_by_id(
         queue_id,
         content,
         directive_user_origin=not bool(request.get("app", "")),
+        edit_id=edit_id,
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
     # The stored text is what the edit normalized to (attachment markers are
@@ -4586,7 +4600,16 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     _edit_queued_by_id(slot.messages, queue_id, content)
     slot.invalidate_source_links()
     _redacted = _redact_for_display(content)
-    state.broadcast_ws("queue_edit", {"slot": name, "queue_id": queue_id, "content": _redacted})
+    # The revision this edit produced. A client ignores its own success only when a STRICTLY NEWER
+    # revision has landed, which an id cannot express because ids do not order.
+    edit_rev = next((i.get("edit_rev") for i in slot._queue if i["id"] == queue_id), None)
+    _echo: dict[str, object] = {"slot": name, "queue_id": queue_id, "content": _redacted}
+    # Additive: a request that carried no usable id broadcasts the byte-identical prior shape.
+    if edit_id:
+        _echo["editId"] = edit_id
+    if isinstance(edit_rev, int):
+        _echo["editRev"] = edit_rev
+    state.broadcast_ws("queue_edit", _echo)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",
@@ -4597,7 +4620,13 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         outcome="allowed",
         metadata={"queue_id": queue_id, "slot": name},
     )
-    return web.json_response({"ok": True, "content": _redacted})
+    return web.json_response(
+        {
+            "ok": True,
+            "content": _redacted,
+            **({"editRev": edit_rev} if isinstance(edit_rev, int) else {}),
+        }
+    )
 
 
 async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
@@ -8926,10 +8955,7 @@ async def _live_slot_resume_response(
                 "ok": True,
                 "key": existing.key,
                 "messages": prepared,
-                "queue": [
-                    {"id": q["id"], "content": _redact_for_display(q["content"])}
-                    for q in existing._queue
-                ],
+                "queue": [queue_entry_for_detail(q) for q in existing._queue],
                 "total": total,
                 "has_more": next_before > 0,
                 "next_before": next_before,
@@ -9527,9 +9553,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             "messages": _prepare_messages(
                 recent, slot.running, live_child=_live_child_instance(state, slot)
             ),
-            "queue": [
-                {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
-            ],
+            "queue": [queue_entry_for_detail(q) for q in slot._queue],
             "total": total,
             "has_more": total > len(recent),
             "memory_mode": slot.memory_mode,

@@ -74,6 +74,9 @@ export function toolDisclosureKey(m: ChatMessage, key: string): string {
 }
 
 export interface TranscriptRendererOptions {
+  /** Drop a row whose delivery was never confirmed. Absent = no exit is drawn, which is right for a
+   *  host with no store: the composer strip is then the only place this action lives. */
+  onRemoveUnconfirmed?: (sendId: string) => void
   /** Slot these rows belong to. The tool line keys its per-slot log off it;
    *  omitted (the single-chat surface) it reads the active slot's. */
   slot?: string
@@ -396,6 +399,7 @@ export function createTranscriptRenderers(
               timestamp={formatTs(m.ts)}
               timestampTitle={fmtMessageTimeFull(m.ts)}
               renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
+              onRemoveUnconfirmed={o.onRemoveUnconfirmed}
               hideSteerBadge
             />,
             true,

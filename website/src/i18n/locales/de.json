@@ -7158,7 +7158,8 @@
       "save_edit": "Änderung speichern",
       "send_now": "Jetzt senden",
       "sub_agent_result_one": "{{count}} Subagenten-Ergebnis",
-      "sub_agent_result_other": "{{count}} Subagenten-Ergebnisse"
+      "sub_agent_result_other": "{{count}} Subagenten-Ergebnisse",
+      "edit_failed": "Änderung speichern fehlgeschlagen: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "V",
@@ -9975,7 +9976,6 @@
       "return_to_split_view": "Zur geteilten Ansicht zurückkehren",
       "scroll_to_bottom": "Nach unten scrollen",
       "send_failed": "Senden fehlgeschlagen",
-      "send_failed_connection": "Senden fehlgeschlagen — prüfe deine Verbindung und versuche es erneut.",
       "session_not_found": "Sitzung „{{name}}“ nicht gefunden",
       "session_options": "Sitzungsoptionen",
       "show_sessions": "Sitzungen anzeigen",
@@ -10009,7 +10009,7 @@
       "loading_earlier_messages": "Frühere Nachrichten werden geladen…",
       "send_failed_with_error": "Senden fehlgeschlagen: {{error}}",
       "send_failed_with_error_restored": "Diese Nachricht konnte nicht gesendet werden: {{error}}. Dein Text steht wieder im Eingabefeld.",
-      "delivery_unconfirmed": "Zustellung nicht bestätigt — dein Text steht wieder im Eingabefeld; prüfe den Verlauf, bevor du erneut sendest.",
+      "delivery_unconfirmed": "Zustellung unbestätigt — dein Text steht wieder im Eingabefeld; prüfe den Verlauf, bevor du erneut sendest.",
       "could_not_read_file_reason": "{{path}} konnte nicht gelesen werden ({{reason}})",
       "screenshot_failed_reason": "Screenshot fehlgeschlagen: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -10017,7 +10017,15 @@
       "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
       "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
-      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen"
+      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
+      "delivery_delivered": "Nachricht zugestellt — erneutes Senden sendet sie doppelt.",
+      "delivery_discard": "Nachricht und Eingabefeld verwerfen",
+      "delivery_remove": "Nachricht entfernen, Text behalten",
+      "delivery_unconfirmed_short": "Zustellung unbestätigt",
+      "send_no_response": "Für diese Nachricht kam keine Bestätigung zurück.",
+      "delivery_unconfirmed_resend": "Zustellung unbestätigt — dein Text steht wieder im Eingabefeld; erneutes Senden kann ihn doppelt senden.",
+      "delivery_unconfirmed_dismiss_note": "Wenn diese Nachricht den Server nie erreicht hat, nimmt das Entfernen sie aus diesem Verlauf; ihr Text steht wieder im Eingabefeld.",
+      "delivery_clear": "Eingabefeld leeren"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

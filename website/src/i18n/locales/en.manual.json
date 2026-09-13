@@ -3900,7 +3900,6 @@
       "open_folder": "Open folder {{path}}",
       "plan_from_here_failed_error": "Plan from here failed: {{error}}",
       "send_failed": "Send failed",
-      "send_failed_connection": "Couldn't send — check your connection and try again.",
       "session_not_found": "Session \"{{name}}\" not found",
       "show_sessions": "Show sessions",
       "show_sessions_sidebar": "Show sessions sidebar",
@@ -3921,7 +3920,7 @@
       "loading_earlier_messages": "Loading earlier messages…",
       "send_failed_with_error": "Send failed: {{error}}",
       "send_failed_with_error_restored": "Couldn't send this message: {{error}}. Your text is back in the composer.",
-      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the conversation above before sending it again.",
+      "delivery_unconfirmed": "Delivery unconfirmed — your text is back in the composer; check the conversation above before sending it again.",
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot failed: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -3929,7 +3928,15 @@
       "could_not_generate_title": "Couldn't generate a title",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
-      "could_not_send_to_side_chat": "Couldn't send to the side chat"
+      "could_not_send_to_side_chat": "Couldn't send to the side chat",
+      "delivery_delivered": "Message delivered — resending will send it twice.",
+      "delivery_discard": "Discard message and clear the composer",
+      "delivery_remove": "Remove message, keep the text",
+      "delivery_unconfirmed_short": "Delivery unconfirmed",
+      "send_no_response": "No confirmation came back for this message.",
+      "delivery_clear": "Clear the composer",
+      "delivery_unconfirmed_resend": "Delivery unconfirmed — your text is back in the composer; resending may send it twice.",
+      "delivery_unconfirmed_dismiss_note": "If this message never reached the server, removing it takes it out of this conversation; its text returns to the composer."
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",

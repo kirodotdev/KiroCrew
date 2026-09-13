@@ -7048,7 +7048,8 @@
       "save": "保存",
       "save_edit": "編集を保存",
       "send_now": "今すぐ送信",
-      "sub_agent_result_other": "{{count}} 個のサブエージェント結果"
+      "sub_agent_result_other": "{{count}} 個のサブエージェント結果",
+      "edit_failed": "編集を保存できませんでした: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "F",
@@ -9832,7 +9833,6 @@
       "return_to_split_view": "分割表示に戻す",
       "scroll_to_bottom": "一番下へスクロール",
       "send_failed": "送信に失敗しました",
-      "send_failed_connection": "送信できませんでした — 接続を確認してから、もう一度お試しください。",
       "session_not_found": "セッション「{{name}}」が見つかりません",
       "session_options": "セッションのオプション",
       "show_sessions": "セッションを表示",
@@ -9866,7 +9866,7 @@
       "loading_earlier_messages": "以前のメッセージを読み込み中…",
       "send_failed_with_error": "送信に失敗しました: {{error}}",
       "send_failed_with_error_restored": "このメッセージを送信できませんでした: {{error}}。入力欄にテキストを戻しました。",
-      "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
+      "delivery_unconfirmed": "送信未確認 — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
@@ -9874,7 +9874,15 @@
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
-      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "delivery_delivered": "メッセージは配信済みです。再送信すると二重送信になります。",
+      "delivery_discard": "メッセージを破棄し、入力欄のテキストも消す",
+      "delivery_remove": "メッセージを削除（テキストは残ります）",
+      "delivery_unconfirmed_short": "配信未確認",
+      "send_no_response": "このメッセージの確認は返ってきませんでした。",
+      "delivery_unconfirmed_resend": "送信未確認 — テキストは入力欄に戻っています。再送信すると二重送信になる可能性があります。",
+      "delivery_unconfirmed_dismiss_note": "このメッセージがサーバーに届いていない場合、削除するとこの会話から取り除かれ、テキストは入力欄に戻ります。",
+      "delivery_clear": "入力欄をクリア"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

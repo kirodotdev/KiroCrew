@@ -552,6 +552,9 @@ def queue_for_next_turn(
     a send whose POST carried no usable id stores nothing here and the entry
     meta keeps the exact prior shape.
 
+    Echoed on the ``queue_push`` broadcast too: the POST receipt also reports
+    ``queued``, but a 2xx whose body will not parse leaves that unreadable.
+
     *attachments* is the client's ordered attachment lists (``files``, ``dirs``),
     already reduced to lists of strings by ``attachment_meta``. Same reasoning
     as the id: a dispatched send persists ``meta.files`` on its row, and the
@@ -574,15 +577,17 @@ def queue_for_next_turn(
         meta=meta,
         directive_user_origin=directive_user_origin,
     )
-    state.broadcast_ws(
-        "queue_push",
-        {
-            "slot": slot.key,
-            "content": _redact_for_display(sanitize_outbound(message)),
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "queue_id": qid,
-        },
-    )
+    push_payload: dict[str, object] = {
+        "slot": slot.key,
+        "content": _redact_for_display(sanitize_outbound(message)),
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "queue_id": qid,
+    }
+    if send_id:
+        # Omitted when absent so the payload shape is unchanged for a send that
+        # never minted one; the client treats absence as "no release".
+        push_payload["sendId"] = send_id
+    state.broadcast_ws("queue_push", push_payload)
     return qid
 
 
