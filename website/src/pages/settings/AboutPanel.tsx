@@ -306,6 +306,23 @@ export function resolveUnarmedPhase(deadlineMs: number, now: number): 'expired' 
   return now >= deadlineMs ? 'expired' : 'applying'
 }
 
+/**
+ * Did the gateway refuse this arm because the offer it was made against is gone?
+ *
+ * Read off the structured `code`, not the message: the message is human copy that
+ * gets reworded, and matching it would silently stop working the next time it is.
+ * The body is the raw response, so a non-JSON body (a proxy error page) must not
+ * throw here — an unreadable body simply is not this refusal.
+ */
+function armRefusedAsStale(e: ApiError): boolean {
+  if (e.status !== 409) return false
+  try {
+    return (JSON.parse(e.body) as { code?: string })?.code === 'arm_no_longer_offered'
+  } catch {
+    return false
+  }
+}
+
 function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
   /**
    * DISPLAY ONLY — the label on the Arm button. `armUpdate()` sends no version
@@ -328,6 +345,14 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
   const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired'>('idle')
   const [armed, setArmed] = useState<{
     approveCommand: string
+    /**
+     * What the gateway ACTUALLY armed, folded for display. Not the same as the
+     * `version` prop: the gateway re-checks the feed before arming, so a panel
+     * whose verdict is hours old can offer v1 and arm the newer v2. The armed
+     * copy names this one, or the approval installs a version the UI never
+     * mentioned. Empty for a gateway that predates the field.
+     */
+    versionDisplay: string
     expiresIn: number
     // Absolute wall-clock deadline. The decremented counter is display-only:
     // a throttled background tab fires the 1s tick rarely, so the counter can
@@ -341,9 +366,24 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
   useEffect(() => {
     armedRef.current = armed
   }, [armed])
+  // The armed version differs from the one the button offered, so the panel owes
+  // the user an explanation rather than a bare second number. Declared once
+  // because it decides BOTH armed lines: the explanatory note renders on it, and
+  // the plain "Update to v…" line renders on its negation — the note's own copy
+  // already opens by naming the armed version.
+  const armedVersionChanged = Boolean(
+    armed?.versionDisplay && version && armed.versionDisplay !== version,
+  )
   const [cmdCopied, setCmdCopied] = useState(false)
   const [cmdCopyFailed, setCmdCopyFailed] = useState(false)
   const [armError, setArmError] = useState('')
+  // The gateway refused to arm because the offer this panel is showing is gone.
+  // Local, not derived from the status push: the refusal is a FRESHER fact than the
+  // frame that produced the offer, and waiting for the push to catch up is exactly
+  // the window where the panel contradicts itself. Reset when a new version is
+  // offered (below) so one refusal cannot latch the control away for the session.
+  const [offerVoid, setOfferVoid] = useState(false)
+  useEffect(() => { setOfferVoid(false) }, [version])
   // The gateway's apply narrates over the shared update-progress push; render
   // it inline so the armed copy's "progress appears here" is literally true.
   const progress = useAppSelector(st => st.dashboard.updateProgress)
@@ -361,6 +401,7 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
         const expiresIn = res.expires_in ?? 600
         setArmed({
           approveCommand: res.approve_command,
+          versionDisplay: res.version_display || '',
           expiresIn,
           deadlineMs: Date.now() + expiresIn * 1000,
         })
@@ -369,7 +410,27 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
         setArmError(res.error || i18nT('pages.settings.aboutPanel.update_failed'))
       }
     },
-    onError: (e: unknown) => setArmError(e instanceof ApiError ? e.message : String(e)),
+    onError: (e: unknown) => {
+      setArmError(e instanceof ApiError ? e.message : String(e))
+      // "You're already up to date" under a live "Update to v0.4.7" button is two
+      // contradictory statements on one screen, and a blind reader shown it could
+      // not tell which to believe — the dangerous half being the button, which is
+      // an action that can only fail again. The refusal is itself proof the offer
+      // is void: the gateway sends this code only when its own verdict says nothing
+      // is available. So stop presenting the offer immediately rather than leaving
+      // it up until a later status frame happens to unmount it.
+      if (e instanceof ApiError && armRefusedAsStale(e)) setOfferVoid(true)
+      // NOT ALSO refetching the status here, though that would clear the page
+      // heading and the "Update available" badge in the same beat. It was tried:
+      // `api.status()` + `dispatch(sseStatus(...))` makes the gateway's own verdict
+      // arrive early (it already says nothing is available — that is why this
+      // refusal fired), the whole offer unmounts, and the refusal NOTICE unmounts
+      // with it, because the notice lives inside the offer. The user's click then
+      // removes the button and explains nothing, which is the report-as-a-bug
+      // failure; a heading that lags one status frame is not. Fixing both at once
+      // means hoisting the explanation above the offer's mount condition, which is
+      // a page-level change rather than a panel one.
+    },
   })
   // Countdown + liveness poll while ARMED. The count is cosmetic (the server
   // enforces the TTL); the poll is what notices the request being consumed —
@@ -471,6 +532,13 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
             {i18nT('pages.settings.aboutPanel.approval_window_expired')}
           </p>
         )}
+        {/* Once the gateway has said this offer no longer exists, the intro and the
+            button are both describing something that cannot happen, so both stand
+            down and the notice below is the only claim left. What this component
+            CANNOT reach is the "Update available" badge in the header and the
+            heading above this panel: those are rendered from the status push, so
+            they clear on its next frame rather than instantly. */}
+        {!offerVoid && (<>
         <p className="text-[13px] text-muted">
           {i18nT(isChannelMove
             ? 'pages.settings.aboutPanel.in_app_channel_move_intro'
@@ -478,19 +546,30 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
         </p>
         <div>
           <Btn primary onClick={() => arm.mutate()} disabled={arm.isPending}>
-            {/* A lane move rolls the version BACK, so the primary action that
-                performs it must not wear an upgrade arrow. */}
-            {isChannelMove
-              ? <GitBranch size={13} className="lucide-inline" />
-              : <ArrowUp size={13} className="lucide-inline" />} {version
-              ? i18nT(isChannelMove
-                ? 'pages.settings.aboutPanel.switch_to_version'
-                : 'pages.settings.aboutPanel.update_to_version', { version })
-              : i18nT('pages.settings.aboutPanel.update_now')}
+            {/* Arming re-checks the feed before it answers, so this click can wait on
+                a network round trip. Disabled alone reads as a dead button, so say
+                what the wait is for -- the same spinner+label pair the status line
+                and the Download button already use. */}
+            {arm.isPending
+              ? (<><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.checking_for_updates')}</>)
+              : (<>
+                {/* A lane move rolls the version BACK, so the primary action that
+                    performs it must not wear an upgrade arrow. */}
+                {isChannelMove
+                  ? <GitBranch size={13} className="lucide-inline" />
+                  : <ArrowUp size={13} className="lucide-inline" />} {version
+                  ? i18nT(isChannelMove
+                    ? 'pages.settings.aboutPanel.switch_to_version'
+                    : 'pages.settings.aboutPanel.update_to_version', { version })
+                  : i18nT('pages.settings.aboutPanel.update_now')}
+              </>)}
           </Btn>
         </div>
-        {/* askAgent on: arming persists nothing client-side; the button above
-            is still there for a retry. */}
+        </>)}
+        {/* askAgent on: arming persists nothing client-side. The button above is
+            still there for a retry EXCEPT on a void offer, where retrying is the
+            one thing that cannot help — hence the manual command below, which is
+            the honest way out of that state. */}
         <ErrorNotice message={armError} askAgent testId="arm-error" />
         <details className="text-[12px] text-muted">
           <summary className="cursor-pointer">{i18nT('pages.settings.aboutPanel.or_update_manually')}</summary>
@@ -503,6 +582,52 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
   }
   return (
     <div className="flex flex-col gap-2" data-testid="in-app-update-armed">
+      {/* The two lines below are mutually exclusive BY CONSTRUCTION, off one
+          boolean, because the note's own copy opens by naming the armed version
+          ("This installs v0.4.8…"). Rendering both would say the same number
+          twice, and keeping two independent conditions in sync is how they drift
+          into saying it twice again later.
+          Note this is NOT `armed.versionDisplay === version`: when nothing was
+          offered (`version` empty) there is no difference to explain, so the note
+          stays away AND the plain line has to render — that is the one case where
+          suppressing it would leave the panel naming no version at all. */}
+      {/* WHAT was armed, not what the button offered. The gateway re-checks the
+          feed as it arms, so on a panel whose verdict has gone stale these
+          differ — and the approval below installs this one.
+          DECLARATIVE, not the button's own `update_to_version` / `switch_to_version`
+          copy: reusing those saved two strings but made the identical words a
+          control in one state and inert text in the next, and a blind reader asked
+          to say what the label meant answered "a guess". These open the same way
+          the changed-version note does, so the armed panel speaks one vocabulary
+          whether or not the number moved. */}
+      {armed.versionDisplay && !armedVersionChanged && (
+        <p className="text-[13px] text-text" data-testid="armed-version">
+          {i18nT(isChannelMove
+            ? 'pages.settings.aboutPanel.armed_switches_to_version'
+            : 'pages.settings.aboutPanel.armed_installs_version', { version: armed.versionDisplay })}
+        </p>
+      )}
+      {/* The number CHANGING is the whole point of the re-check, and it is the
+          one thing a plain "Update to v…" line cannot say. Without this, the user
+          reads "Update to v0.4.7" on the button and "Update to v0.4.8" here and
+          has to guess whether these are two updates or one of them is wrong —
+          seconds before running an approval command on another machine. Worth the
+          new string: only the difference needs explaining, so it is rendered only
+          when there is one, and it REPLACES the plain line rather than joining it.
+          BRANCHED on the lane move, because a channel move is a downgrade by
+          construction (see the `isChannelMove` prop): telling that user "a newer
+          version was found just now" would be false every time, about a number
+          that just went DOWN, seconds before they run a host command. The move
+          variant says what actually happened — the chosen channel serves this one
+          now — which is true whichever direction the version went. */}
+      {armedVersionChanged && (
+        <p className="text-[13px] text-text" data-testid="armed-version-changed">
+          {i18nT(isChannelMove
+            ? 'pages.settings.aboutPanel.armed_version_changed_channel_move'
+            : 'pages.settings.aboutPanel.armed_version_changed',
+          { version: armed.versionDisplay, offered: version })}
+        </p>
+      )}
       <p className="text-[13px] text-muted">
         {i18nT('pages.settings.aboutPanel.armed_run_on_host')}
       </p>
