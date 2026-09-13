@@ -3869,6 +3869,10 @@ class KiroCrewConfig:
                         # must not become a truthy star, so only a real bool
                         # is honoured and anything else reads as un-starred.
                         starred=_safe_bool(entry.get("starred", False), False),
+                        # Same rule; a junk value reads as "named" -- the
+                        # default state of every pre-existing row -- so a
+                        # hand edit can never resurrect the just-hired hint.
+                        named_by_user=_safe_bool(entry.get("named_by_user", True), True),
                         # Same guard family as model/triggers: config.json is
                         # hand-editable, so a junk value must collapse to 0
                         # (inherit the global window), never crash the load.

@@ -7610,6 +7610,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.named_by_user",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Named By User",
+      "help": "False while the member still carries the display name its hire defaulted (the template's role): the thread header then says so and offers the rename. Set true by a hire that took a typed name, by the first rename, and for every member created with a name of its own.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "agents.*.starred",
       "kind": "core",
       "type": "boolean",

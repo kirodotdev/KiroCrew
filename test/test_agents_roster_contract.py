@@ -67,8 +67,10 @@ ROSTER_ROW_KEYS = frozenset(
 # ``website/src``: the two watchdog windows are backend scheduling knobs the
 # roster does not render, ``telegram_account`` is deprecated and inert, and
 # ``starred`` is a Crew Members roster preference that only ``GET /api/members``
-# renders (the crew manager has no star affordance), and ``legacy_key`` is the
-# loader's own bookkeeping (the pre-migration key an overlay row is read under).
+# renders (the crew manager has no star affordance), ``legacy_key`` is the
+# loader's own bookkeeping (the pre-migration key an overlay row is read under),
+# and ``named_by_user`` is the Crew Members thread header's just-hired hint,
+# again read only from ``GET /api/members``.
 WITHHELD_RECORD_FIELDS = frozenset(
     {
         "watchdog_tool_stall_suspect_secs",
@@ -76,6 +78,7 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "telegram_account",
         "starred",
         "legacy_key",
+        "named_by_user",
     }
 )
 
@@ -115,6 +118,7 @@ def _seed_config_with_every_field_set() -> dict:
                 "watchdog_tool_stall_suspect_secs": 111.0,
                 "watchdog_tool_stall_hard_cap_secs": 222.0,
                 "telegram_account": "probe-telegram-binding",
+                "named_by_user": False,
             },
         },
         "default_agent": "roster-probe",

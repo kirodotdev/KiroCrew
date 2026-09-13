@@ -494,6 +494,19 @@ class TestCreateMintsTheId:
             # BOTH the typed name and the id it shortened to.
             assert "Case Competition" in data["error"]
             assert "Case-Competition" in data["error"]
+            # The duplicate guard is not the client's to switch off: only a hire
+            # (a copy of a template) may default the name; the plain create
+            # ignores ``named_by_user: false`` and still refuses.
+            resp = await client.post(
+                "/api/agents",
+                json={"name": "Case Competition", "kiro_agent": "kirocrew", "named_by_user": False},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "agent_exists"
+            roster = await (await client.get("/api/agents")).json()
+            assert [a["name"] for a in roster["agents"] if a["name"].startswith("Case")] == [
+                "Case-Competition"
+            ]
 
     @pytest.mark.asyncio
     async def test_collision_on_the_typed_id_keeps_the_classic_message(self, seeded_cfg: Path):

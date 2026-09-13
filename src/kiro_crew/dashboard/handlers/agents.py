@@ -15,6 +15,7 @@ import re
 import stat
 import subprocess
 import uuid
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,7 @@ from kiro_crew.config.sections import _AVATAR_IMAGE_EXTS as _LOADER_AVATAR_IMAGE
 from kiro_crew.config.sections import (
     _safe_avatar,
 )
+from kiro_crew.context import release_cached_memory_store
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
@@ -107,6 +109,7 @@ from kiro_crew.dashboard.handlers._shared import (
     agent_skill_views,
     apply_skill_mapping,
     read_bounded_json,
+    release_markdown_memory_store,
 )
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
@@ -124,6 +127,7 @@ from kiro_crew.member_identity import (
 from kiro_crew.member_memory_auth import require_member_memory_creation
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
+    MemberAdmissionRefused,
     MemberAlreadyExists,
     UnknownMemoryStore,
     archive_member_memory_store,
@@ -2469,6 +2473,156 @@ class _AmbiguousTemplateName(Exception):
     """More than one spec file resolves to the requested name."""
 
 
+def _unwind_private_copy(dest: Path, copy_name: str, *, doc: dict | None = None) -> None:
+    """Remove a just-created private copy and its lineage -- unless a row took it.
+
+    Reference check and unlink are ONE critical section under the config
+    advisory lock: a binder in another process (a create that resolves the
+    copy's name) cannot land between the read and the unlink. *doc* is the
+    locked document when the caller is already inside a ``update_config_locked``
+    mutation holding the config and spec locks (the fork and hire writers); a
+    caller outside any lock passes nothing and the check re-reads the file
+    under a fresh hold of both. The in-lock caller's document is what every
+    locked writer sees, so it is the binding record; the file is read as well
+    -- under the caller's hold -- as a best effort against a writer that skips
+    the lock (a hand edit). An unreadable config keeps the file -- deleting on
+    a guess is the failure this guards against.
+    """
+    targets = {copy_name, dest.stem}
+
+    def _bound_in(data: dict) -> bool:
+        return any(
+            isinstance(entry, dict) and entry.get("kiro_agent") in targets
+            for entry in data.get("agents", {}).values()
+        )
+
+    def _check_then_unlink(data: dict) -> None:
+        records = [data]
+        if doc is not None:
+            try:
+                records.append(json.loads(config_path().read_text(encoding="utf-8")))
+            except Exception:
+                logger.warning(
+                    "config unreadable while unwinding private copy %r; keeping it", copy_name
+                )
+                return None
+        for record in records:
+            if _bound_in(record):
+                # The file stays, so its lineage stays with it: a copy whose
+                # ``private_to`` was pruned reads as a SHARED template to every
+                # ownership check, and the crew that bound it would lose the
+                # private-copy fence the record exists to provide.
+                logger.warning(
+                    "a crew bound private copy %r mid-fork; leaving it in place", copy_name
+                )
+                return None
+        try:
+            if doc is None:
+                with agents_spec_lock(dest.parent):
+                    dest.unlink(missing_ok=True)
+            else:
+                dest.unlink(missing_ok=True)
+        except OSError:
+            # Same rule: lineage is pruned only after the file is confirmed gone.
+            logger.warning("could not remove private copy %r; keeping its lineage", copy_name)
+            return None
+        with contextlib.suppress(Exception):
+            agent_state.prune(copy_name)
+        # None: nothing in the document changed -- the lock isolates the
+        # check from binding writers, it is not held for a config write.
+        return None
+
+    if doc is not None:
+        _check_then_unlink(doc)
+        return
+    try:
+        update_config_locked(mutate=_check_then_unlink)
+    except Exception:
+        logger.warning(
+            "config unreadable while unwinding private copy %r; keeping it",
+            copy_name,
+            exc_info=True,
+        )
+
+
+def _write_private_copy(
+    agents_dir: Path,
+    source_name: str,
+    source_path: Path | None,
+    crew: str,
+    *,
+    taken: set[str],
+    bound: set[str],
+    operation: str,
+    doc: dict,
+) -> tuple[str, Path]:
+    """Create crew *crew*'s private copy of template *source_name*; return its name and path.
+
+    The one writer of a private copy, shared by the fork route (the editor's
+    first edit) and the hire (which copies BEFORE the member row exists, so a
+    source-bound row is never published). Caller holds the config lock AND the
+    spec lock, in that order.
+
+    The copy is named after the crew -- the fork is invisible, so there is no
+    naming step, and the crew's name is the one the user already knows.
+    Sanitized because crew names are free text and this becomes a filename (a
+    template's permanent identity; there is no rename); bounded to keep the
+    filename plus a collision suffix inside the 63-char template-name rule and
+    every filesystem's component limit. The declared ``name`` is set equal to
+    the stem, which is what keeps discovery's package-filename guess from
+    misreading a dashed copy name. *taken* is the caller's pre-scan and can go
+    stale; the in-lock ``exists()`` probe asks the filesystem with its own case
+    semantics, and the exclusive create refuses whatever both still missed
+    rather than truncating it. Reserved Windows basenames are suffixed past like
+    collisions, every current binding (*bound*) is reserved -- a crew bound to
+    a MISSING name would otherwise capture the new copy -- and so are the stems
+    Kiro Crew itself rebuilds on boot (kirocrew.json, ...), whether or not the
+    file exists right now, since the rebuild would overwrite a copy landing
+    there. The SOURCE is re-read here, in-lock: a pre-lock snapshot can miss a
+    concurrent refresh's writes. Lineage is recorded inside the same hold; the
+    prune is NOT suppressed, since a stale sidecar entry from a failed earlier
+    delete must not ship on the new copy. Raises ``FileNotFoundError`` when the
+    source is gone and ``_ForkBookkeepingFailed`` (copy already unwound) when
+    the sidecar could not be written. *doc* is the caller's locked config
+    document: the unwind checks it for a binding instead of re-reading the file
+    outside the lock the caller holds.
+    """
+    if source_path is None:
+        raise FileNotFoundError(source_name)
+    fresh_source = _read_agent_spec(source_path, operation=operation, source="dashboard")
+    if fresh_source is None:
+        raise FileNotFoundError(source_path)
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "-", crew)[:48].strip("-.") or "agent"
+    managed_stems = {Path(f).stem.lower() for f in OWNED_KIRO_AGENT_FILES}
+    copy_name, suffix = base, 2
+    while (
+        copy_name.lower() in taken
+        or copy_name.lower() in bound
+        or copy_name.lower() in managed_stems
+        or _is_reserved_basename(copy_name)
+        or (agents_dir / f"{copy_name}.json").exists()
+    ):
+        copy_name = f"{base}-{suffix}"
+        suffix += 1
+    data = dict(fresh_source)
+    data["name"] = copy_name
+    # Same rule as every other spec writer: bookkeeping keys never reach a kiro spec.
+    agent_state.lift_and_strip_bookkeeping(data, copy_name)
+    dest = agents_dir / f"{copy_name}.json"
+    _write_spec_file(dest, data)
+    try:
+        agent_state.prune(copy_name)
+        agent_state.set_fork_info(copy_name, forked_from=source_name, private_to=crew)
+        managed = agent_state.get_model_managed(source_name)
+        if managed is not None:
+            agent_state.set_model_managed(copy_name, managed)
+    except Exception:
+        logger.exception("fork bookkeeping failed for %r", copy_name)
+        _unwind_private_copy(dest, copy_name, doc=doc)
+        raise _ForkBookkeepingFailed() from None
+    return copy_name, dest
+
+
 def _load_template_specs(
     agents_dir: Path, name: str, operation: str
 ) -> tuple[dict[str, Any] | None, str, set[str], Path | None]:
@@ -2707,8 +2861,28 @@ async def api_agent_fork(request: web.Request) -> web.Response:
     crew = body.get("crew")
     if not isinstance(crew, str) or not crew.strip():
         return web.json_response({"error": "crew is required", "code": "crew_required"}, status=400)
-    crew = crew.strip()
+    return await _fork_template_for_crew(request, name, crew.strip())
 
+
+async def _fork_template_for_crew(
+    request: web.Request, name: str, crew: str, *, expected_memory_store: str | None = None
+) -> web.Response:
+    """The fork proper: give *crew* a private copy of template *name*.
+
+    The fork endpoint's core (``POST /api/agents/detail/{name}/fork``). Its
+    file-creation half, ``_write_private_copy``, is also what the hire
+    (``POST /api/members``, via ``_create_crew(copy_source=...)``) calls --
+    there BEFORE the row exists, so a member is published already bound to its
+    copy. Owner-gated and body-validated by the CALLER; everything below runs
+    under the config lock.
+
+    *expected_memory_store* pins the GENERATION of the crew the caller means:
+    the hire created a row whose private store name is minted fresh, so a row
+    of the same id bound to the same source but carrying a different store is
+    a different member -- one deleted and recreated while no lock was held --
+    and forking it would rebind someone else's row. Checked before and inside
+    the locked mutation like the binding itself; a mismatch is ``stale_binding``.
+    """
     state: DashboardState = request.app["state"]
     async with _get_config_lock():
         agents_dir = kiro_agents_dir_path()
@@ -2738,7 +2912,9 @@ async def api_agent_fork(request: web.Request) -> web.Response:
         agent = cfg.agents[crew]
         # A stale or racing request must not clobber a newer binding: the fork
         # was issued against the crew's current template, so require it still is.
-        if agent.kiro_agent not in (name, source_name):
+        if agent.kiro_agent not in (name, source_name) or (
+            expected_memory_store is not None and agent.memory_store != expected_memory_store
+        ):
             return web.json_response(
                 {
                     "error": f"'{crew}' is no longer bound to '{source_name}'",
@@ -2752,22 +2928,6 @@ async def api_agent_fork(request: web.Request) -> web.Response:
         fork = agent_state.get_fork_info(source_name)
         if fork and fork["private_to"] == crew:
             return web.json_response({"ok": True, "template": source_name, "already_private": True})
-
-        # The copy is named after the crew — the fork is invisible, so there is
-        # no naming step, and the crew's name is the one the user already knows.
-        # Sanitized because crew names are free text and this becomes a filename
-        # (a template's permanent identity; there is no rename). The declared
-        # "name" is set equal to the stem below, which is what keeps discovery's
-        # package-filename guess from misreading a dashed copy name.
-        # Bounded to keep the filename (plus a collision suffix) inside the
-        # 63-char template-name rule and every filesystem's component limit.
-        base = re.sub(r"[^A-Za-z0-9_.-]+", "-", crew)[:48].strip("-.") or "agent"
-        # The specs Kiro Crew itself generates (kirocrew.json, kirocrew-lite.json,
-        # ...) are rebuilt on boot; a copy landing on one of those stems while
-        # the managed file is absent would be overwritten by that rebuild, so
-        # they count as taken whether or not the file exists right now. Same
-        # rule the publish handler applies to a user-chosen name.
-        managed_stems = {Path(f).stem.lower() for f in OWNED_KIRO_AGENT_FILES}
 
         def _create_record_bind() -> tuple[str, Path]:
             """Create the file, record lineage, and rebind in ONE config-lock
@@ -2791,30 +2951,6 @@ async def api_agent_fork(request: web.Request) -> web.Response:
             """
             chosen: list[tuple[str, Path]] = []
 
-            def _unwind(dest: Path, copy_name: str) -> None:
-                # Locked writers cannot have bound the copy — we hold the
-                # config lock — but a writer outside it (a hand-edited file,
-                # a process that skips the sidecar lock) can, so the reference
-                # check re-reads the FILE before unlinking.
-                try:
-                    raw = json.loads(config_path().read_text(encoding="utf-8"))
-                except Exception:
-                    raw = {}
-                targets = {copy_name, dest.stem}
-                for entry in raw.get("agents", {}).values():
-                    if isinstance(entry, dict) and entry.get("kiro_agent") in targets:
-                        logger.warning(
-                            "a crew bound private copy %r mid-fork; leaving it in place",
-                            copy_name,
-                        )
-                        with contextlib.suppress(Exception):
-                            agent_state.prune(copy_name)
-                        return
-                with contextlib.suppress(OSError):
-                    dest.unlink(missing_ok=True)
-                with contextlib.suppress(Exception):
-                    agent_state.prune(copy_name)
-
             def _mutate(cfg_data: dict) -> dict:
                 # Staleness FIRST: nothing is created for a bind that moved.
                 entry = cfg_data.get("agents", {}).get(crew)
@@ -2823,47 +2959,23 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                     source_name,
                 ):
                     raise _StaleBinding()
+                if (
+                    expected_memory_store is not None
+                    and entry.get("memory_store") != expected_memory_store
+                ):
+                    raise _StaleBinding()
                 bound = _reserved_binding_names(cfg_data)
                 with agents_spec_lock(agents_dir):
-                    if source_path is None:
-                        raise FileNotFoundError(source_name)
-                    fresh_source = _read_agent_spec(
-                        source_path, operation="api_agent_fork", source="dashboard"
+                    copy_name, dest = _write_private_copy(
+                        agents_dir,
+                        source_name,
+                        source_path,
+                        crew,
+                        taken=taken,
+                        bound=bound,
+                        operation="api_agent_fork",
+                        doc=cfg_data,
                     )
-                    if fresh_source is None:
-                        raise FileNotFoundError(source_path)
-                    copy_name, suffix = base, 2
-                    while (
-                        copy_name.lower() in taken
-                        or copy_name.lower() in bound
-                        or copy_name.lower() in managed_stems
-                        or _is_reserved_basename(copy_name)
-                        or (agents_dir / f"{copy_name}.json").exists()
-                    ):
-                        copy_name = f"{base}-{suffix}"
-                        suffix += 1
-                    data = dict(fresh_source)
-                    data["name"] = copy_name
-                    # Same rule as every other spec writer: bookkeeping keys
-                    # never reach a kiro spec.
-                    agent_state.lift_and_strip_bookkeeping(data, copy_name)
-                    dest = agents_dir / f"{copy_name}.json"
-                    _write_spec_file(dest, data)
-                    # Lineage inside the SAME hold. The prune is NOT
-                    # suppressed: a stale sidecar entry from a failed earlier
-                    # delete must not ship on the new copy.
-                    try:
-                        agent_state.prune(copy_name)
-                        agent_state.set_fork_info(
-                            copy_name, forked_from=source_name, private_to=crew
-                        )
-                        managed = agent_state.get_model_managed(source_name)
-                        if managed is not None:
-                            agent_state.set_model_managed(copy_name, managed)
-                    except Exception:
-                        logger.exception("fork bookkeeping failed for %r", copy_name)
-                        _unwind(dest, copy_name)
-                        raise _ForkBookkeepingFailed() from None
                     entry["kiro_agent"] = copy_name
                     chosen.append((copy_name, dest))
                 return cfg_data
@@ -4158,8 +4270,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                                     exc_info=True,
                                 )
                         raise
-                from kiro_crew.context import release_cached_memory_store
-
                 for store_name, owner in skipped_allocations:
                     retire_unpublished_member_memory_store(store_name, owner)
                 for store_name in retired_stores:
@@ -4168,8 +4278,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
 
             retired_stores = await _drained_to_thread(_write_sync)
             if (state := request.app.get("state")) is not None:
-                from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
-
                 for store_name in retired_stores:
                     await release_markdown_memory_store(state, store_name)
         except BaseException as exc:
@@ -4456,6 +4564,44 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
+    return await _create_crew(request, body)
+
+
+async def _create_crew(
+    request: web.Request,
+    body: dict,
+    *,
+    copy_source: str | None = None,
+    admit: Callable[[Collection[str], str], web.Response | None] | None = None,
+) -> web.Response:
+    """Validate *body* and create the crew row it describes.
+
+    The whole create contract lives here, so ``POST /api/agents`` and the hire
+    route (``POST /api/members``) cannot drift apart on validation,
+    minting or persistence. Owner-gated and body-shape-checked by the CALLER.
+
+    With *copy_source* (the hire), ``body["kiro_agent"]`` names the SOURCE the
+    member is hired from, and the row is published bound to a fresh private
+    copy of it -- created inside this same config-lock hold, before the row
+    exists -- never to the source. A row bound to the shared source, even for
+    the moment between a create and a fork, is a row a concurrent thread open
+    can resolve and run a session against; that session would keep using the
+    shared template after the hire completed, which is the exact hazard the
+    hire's copy exists to remove. A copy whose row then fails to persist is
+    unwound (file and lineage). The answer carries ``kiro_agent`` -- the copy's
+    name -- beside the id.
+
+    *admit*, when given, takes the member ids the document holds and the
+    minted id and runs TWICE: inside the config-lock hold against the loaded
+    config, after the id itself is known to be free and before anything is
+    written (so a refusal is answered before a copy or a store exists), and
+    again inside ``persist_member_config``'s cross-process locked mutation
+    against the document's ``agents`` map as it is on disk at the write --
+    the in-process lock does not hold a second gateway or the CLI, and two
+    processes' pre-lock checks can both pass for ``Triage`` and ``triage`` and
+    then serialize into two rows on one slug. A refusal inside the write is
+    answered with the hook's own code and nothing is written.
+    """
     # What the user typed is only ever the DISPLAY name (member_identity.py):
     # the row's key -- its id -- is minted from it below, inside the config
     # lock. ``display_name`` is the new spelling; ``name`` is kept for every
@@ -4483,6 +4629,22 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     display_name = normalize_display_name(raw_display)
     if not display_name:
         return web.json_response({"error": "Agent name is required"}, status=400)
+    # ``named_by_user: false`` is the zero-config hire's word: the display name
+    # was DEFAULTED (to the template's role), nobody typed it. Such a name is
+    # allowed to collide -- the id is suffixed the way the migration suffixes
+    # (``role-2``) and the label follows (``Role #2``) -- because there is no
+    # user to hand a 409 to, and the thread header offers the rename instead.
+    raw_named = body.get("named_by_user", True)
+    if not isinstance(raw_named, bool):
+        return web.json_response(
+            {"error": "named_by_user must be a boolean", "code": "invalid_named_by_user"},
+            status=400,
+        )
+    # Only a HIRE (a copy of a template, ``copy_source`` set) can default the
+    # name: the plain create has a user, who typed the name, and its
+    # duplicate-name guard is not the client's to switch off -- a public
+    # ``POST /api/agents`` sending ``named_by_user: false`` still gets the 409.
+    named_by_user = raw_named if copy_source is not None else True
     # The variable the rest of this route keys on. Until the lock below mints
     # the id it is the display name, which is what every pre-lock check (the
     # credential-shaped rule, the lineage probe's log lines) should see anyway.
@@ -4558,7 +4720,12 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # This is the one shared agent-name grammar every other boundary uses, so a
     # value that cannot name an agent (path separators, traversal, wildcards,
     # over-length) is refused here rather than stored as a dangling pointer.
-    if not _AGENT_NAME_RE.match(kiro_agent):
+    # With a copy_source the value is the SOURCE, a template name (dots allowed:
+    # ``reviewer.v2`` is a file the listing offers), and the row is bound to the
+    # copy, whose stem the copy writer mints from the member id. Otherwise it is
+    # the binding itself and must satisfy the agent-name grammar.
+    name_grammar = _TEMPLATE_NAME_RE if copy_source is not None else _AGENT_NAME_RE
+    if not name_grammar.match(kiro_agent):
         return web.json_response(
             {"error": "invalid kiro_agent name", "code": "invalid_kiro_agent_name"},
             status=400,
@@ -4660,10 +4827,76 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         # flows, which have no user to ask.
         name = mint_member_id(display_name, ())
         if name in cfg.agents:
-            return web.json_response(
-                {"error": _member_exists_message(name, display_name), "code": "agent_exists"},
-                status=409,
-            )
+            if named_by_user:
+                return web.json_response(
+                    {"error": _member_exists_message(name, display_name), "code": "agent_exists"},
+                    status=409,
+                )
+            name = mint_member_id(display_name, set(cfg.agents))
+            # ``role-2`` -> ``Role #2``: the label carries the same ordinal as the
+            # id, so two members hired from one template are told apart on
+            # every surface until one of them is renamed. The ordinal is read
+            # off the minted id's tail, not sliced at the candidate's length:
+            # a candidate at the id cap has its stem TRIMMED to make room for
+            # the suffix, so a length-based slice would be empty. The label
+            # is kept inside its own cap the same way.
+            ordinal = re.search(r"-(\d+)$", name)
+            tag = f" #{ordinal.group(1) if ordinal else '2'}"
+            display_name = f"{display_name[: DISPLAY_NAME_MAX_LEN - len(tag)].rstrip()}{tag}"
+        if admit is not None:
+            refused = admit(cfg.agents, name)
+            if refused is not None:
+                return refused
+
+        def _admit_doc(agents_doc: dict) -> None:
+            # LINEAGE, re-checked inside the cross-process locked publication
+            # against the sidecar and the document as they are at the write.
+            # The pre-lock check below runs under the in-process lock only: a
+            # hire in ANOTHER gateway can copy a template to exactly the name
+            # this create validated as "missing template, tolerated" and record
+            # its member as the copy's owner between that check and this write,
+            # and a row published anyway would bind a second member to one
+            # private definition (publish/reset cleanup then deletes a live
+            # template from under one of them). `kiro_agent` is read late on
+            # purpose: a hire rebinds it to its own copy before publishing.
+            try:
+                foreign = _foreign_private_copy_owner(name, kiro_agent)
+            except _UnverifiableLineage:
+                raise MemberAdmissionRefused(
+                    f"Cannot verify whether '{kiro_agent}' is a private copy; retry.",
+                    code="lineage_unverifiable",
+                ) from None
+            if foreign is not None:
+                raise MemberAdmissionRefused(
+                    f"Template '{kiro_agent}' is crew '{foreign}'s private copy; "
+                    "bind to the shared template instead",
+                    code="foreign_private_copy",
+                )
+            # And the DOCUMENT: no other row may already be bound to a private
+            # copy this member is about to bind (the sidecar names one owner;
+            # a row is the other half of the same fact).
+            rows = agents_doc if isinstance(agents_doc, dict) else {}
+            if agent_state.get_fork_info(kiro_agent) is not None:
+                for other, entry in rows.items():
+                    if (
+                        other != name
+                        and isinstance(entry, dict)
+                        and entry.get("kiro_agent") == kiro_agent
+                    ):
+                        raise MemberAdmissionRefused(
+                            f"Template '{kiro_agent}' is already bound by crew '{other}'",
+                            code="foreign_private_copy",
+                        )
+            if admit is None:
+                return
+            again = admit(agents_doc, name)
+            if again is not None:
+                payload = json.loads(again.text or "{}") if again.text else {}
+                raise MemberAdmissionRefused(
+                    str(payload.get("error") or "the member cannot be created"),
+                    code=str(payload.get("code") or "admission_refused"),
+                )
+
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
@@ -4690,6 +4923,75 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+        copied: tuple[str, Path] | None = None
+        if copy_source is not None:
+            agents_dir = kiro_agents_dir_path()
+
+            def _copy_first() -> tuple[str, Path]:
+                try:
+                    source, source_name, taken, source_path = _load_template_specs(
+                        agents_dir, copy_source, "member.hire"
+                    )
+                except _AmbiguousTemplateName:
+                    raise _AmbiguousTemplateName() from None
+                if source is None:
+                    raise FileNotFoundError(copy_source)
+                chosen: list[tuple[str, Path]] = []
+
+                def _reserve_then_copy(cfg_data: dict) -> None:
+                    # Every current binding is reserved and the copy is created
+                    # while the config FILE lock is held (the fork and publish
+                    # paths do the same): a writer in another process cannot
+                    # bind the destination between this read and the file's
+                    # first byte, after which the copy carries this member's
+                    # lineage and every binder refuses it. The read mutates
+                    # nothing (None: no write-back).
+                    bound = _reserved_binding_names(cfg_data)
+                    with agents_spec_lock(agents_dir):
+                        chosen.append(
+                            _write_private_copy(
+                                agents_dir,
+                                source_name,
+                                source_path,
+                                name,
+                                taken=taken,
+                                bound=bound,
+                                operation="member.hire",
+                                doc=cfg_data,
+                            )
+                        )
+                    return None
+
+                update_config_locked(mutate=_reserve_then_copy)
+                return chosen[0]
+
+            try:
+                copied = await asyncio.to_thread(_copy_first)
+            except _AmbiguousTemplateName:
+                return web.json_response(
+                    {
+                        "error": f"'{copy_source}' matches more than one template file; "
+                        "rename one first.",
+                        "code": "ambiguous_template_name",
+                    },
+                    status=409,
+                )
+            except FileNotFoundError:
+                return web.json_response(
+                    {"error": f"Template '{copy_source}' not found", "code": "template_not_found"},
+                    status=404,
+                )
+            except _ForkBookkeepingFailed:
+                return web.json_response(
+                    {"error": "Could not record the copy's lineage", "code": "bookkeeping_failed"},
+                    status=500,
+                )
+            except Exception:
+                logger.exception("hire %r: the copy of %r failed", name, copy_source)
+                return web.json_response(
+                    {"error": "Could not create the copy", "code": "fork_failed"}, status=500
+                )
+            kiro_agent = copied[0]
         new_agent = KiroCrewAgentConfig(
             kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),
@@ -4705,6 +5007,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             role=role,
             session_color=session_color,
             avatar=avatar,
+            named_by_user=named_by_user,
         )
         # Provision against this snapshot; publish the agent and owned store
         # together through persist_member_config's flocked delta and create guard.
@@ -4713,15 +5016,25 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             try:
                 await _drained_to_thread(require_member_memory_creation, name)
                 await _drained_to_thread(provision_member_memory, cfg, name)
-                await _drained_to_thread(lambda: persist_member_config(cfg, name, create=True))
+                await _drained_to_thread(
+                    lambda: persist_member_config(cfg, name, create=True, admit=_admit_doc)
+                )
             except BaseException:
                 await _retire_failed_member_allocations(cfg, {name: memory_store})
+                if copied is not None:
+                    # The copy has no row: take it back, lineage included, so a
+                    # retry does not find a stranded file already claiming the
+                    # id. No lock is held here, so the unwind takes the config
+                    # lock itself for its reference check and unlink.
+                    await asyncio.to_thread(_unwind_private_copy, copied[1], copied[0])
                 raise
         except MemberAlreadyExists:
             return web.json_response(
                 {"error": _member_exists_message(name, display_name), "code": "agent_exists"},
                 status=409,
             )
+        except MemberAdmissionRefused as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         except (OSError, UnknownMemoryStore) as exc:
             return web.json_response(
                 {"error": str(exc), "code": "member_memory_unavailable"}, status=409
@@ -4732,6 +5045,20 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # session naming that crew would take the chat default instead. Creation is
     # therefore always a change by `_effort_inputs` (None -> a tuple).
     await _refresh_session_defaults(request, name)
+    if copied is not None:
+        # The same re-corroboration the fork endpoint runs after ITS rebind: a
+        # refresh pass that interleaved between the copy's lineage record and
+        # the row's persist saw a fork with no binding, recorded it as failed,
+        # and the spawn gate would block the member the user just hired.
+        # Re-running the pass now, with the row on disk, re-corroborates the
+        # copy and rebuilds the failure set. Outside the config lock (the pass
+        # takes the spec lock per fork); best-effort for the response only --
+        # the member is committed, and a refresh failure leaves the gate
+        # fail-closed rather than turning a committed hire into a 500.
+        try:
+            await asyncio.to_thread(_refresh_forked_templates)
+        except Exception:
+            logger.warning("post-hire governance refresh failed", exc_info=True)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="agent.create",
@@ -4748,6 +5075,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             "name": name,
             "display_name": display_name,
             "memory_store": cfg.agents[name].memory_store,
+            "kiro_agent": cfg.agents[name].kiro_agent,
         }
     )
 
@@ -5210,9 +5538,16 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "display_name" in body:
             # Rename = this field, nothing else. The key never moves, so a
             # rename has zero blast radius on member dir, DM binding, slots,
-            # crons or governance. Already validated above.
+            # crons or governance. Already validated above. A rename is the
+            # user naming the member: the just-hired hint retires for good --
+            # but only a rename is. An ordinary save echoes the current name
+            # back, and that must not spend the zero-config hire's flag.
+            _renamed = effective_display_name(name, agent.display_name) != _display_name
             agent.display_name = "" if _display_name == name else _display_name
             changed.append("display_name")
+            if _renamed and not agent.named_by_user:
+                agent.named_by_user = True
+                changed.append("named_by_user")
         if "role" in body:
             agent.role = _role
             changed.append("role")
@@ -5307,66 +5642,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 {"error": f"Cannot delete default agent '{name}'. Change default_agent first."},
                 status=409,
             )
-        created_archive = False
-        retired_store = ""
-
-        @memory_store_namespace_lock()
-        def _delete_member() -> tuple[str, bool]:
-            nonlocal created_archive, retired_store
-
-            def mutate(doc: dict) -> dict:
-                nonlocal created_archive, retired_store
-                agents = coerce_dict_section(doc, "agents")
-                if name not in agents:
-                    raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
-                agent_section = doc.get("agent")
-                if doc.get("default_agent") == name or (
-                    isinstance(agent_section, dict) and agent_section.get("default_agent") == name
-                ):
-                    raise UnknownMemoryStore(f"Crew Member {name!r} became the default")
-                entry = agents[name]
-                stores = coerce_dict_section(doc, "memory_stores")
-                store_name = entry.get("memory_store", "") if isinstance(entry, dict) else ""
-                record = stores.get(store_name)
-                if isinstance(record, dict) and record.get("memory_version") == 2:
-                    if record.get("owner_member") != name:
-                        raise UnknownMemoryStore(
-                            f"memory store {store_name!r} ownership changed concurrently"
-                        )
-                    created_archive = archive_member_memory_store(store_name, name)
-                    retired_store = store_name
-                del agents[name]
-                return doc
-
-            try:
-                update_config_locked(mutate=mutate)
-            except BaseException:
-                if created_archive:
-                    try:
-                        rollback_member_memory_archive_if_active(retired_store, name)
-                    except Exception:
-                        logger.error(
-                            "failed to roll back member memory retirement for %s",
-                            retired_store,
-                            exc_info=True,
-                        )
-                raise
-            return retired_store, created_archive
-
-        retired_store, _created_archive = await _drained_to_thread(_delete_member)
-        if retired_store:
-            from kiro_crew.context import release_cached_memory_store
-
-            await _drained_to_thread(release_cached_memory_store, retired_store)
-            if (state := request.app.get("state")) is not None:
-                from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
-
-                await release_markdown_memory_store(state, retired_store)
-        # The crew is gone; its uploaded picture must not outlive it. Inside
-        # the same lock so the cleanup cannot run AFTER a concurrent
-        # same-name recreation has already uploaded and committed a new
-        # picture under the same digest stem.
-        await _drained_to_thread(_remove_avatar_files, name)
+        await _delete_crew_record(request, name)
     # A crew DISAPPEARING is the other half of the same invariant: the captured
     # config still holds the record, so a cron or messaging job still naming the
     # crew would keep resolving its old pin and binding.
@@ -5379,6 +5655,77 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         resources=name,
     )
     return web.json_response({"ok": True})
+
+
+async def _delete_crew_record(request: web.Request, name: str) -> None:
+    """Remove crew *name*: its ``agents`` row, its private memory (archived, not
+    erased), its cached store handles and its uploaded picture.
+
+    The mutation the delete route and the hire route's roll-back share. The
+    CALLER holds the config lock and has already decided the crew may go (it
+    exists, it is not the default). The row is removed inside a locked
+    read-modify-write that re-checks both, so a concurrent promotion or removal
+    raises ``UnknownMemoryStore`` instead of deleting the wrong thing. A V2
+    private store owned by the crew is archived under the ordinary retirement
+    marker -- never unlinked -- in the same hold, and the archive is rolled back
+    if the config write then fails, so config and store never disagree.
+    """
+    created_archive = False
+    retired_store = ""
+
+    @memory_store_namespace_lock()
+    def _delete_member() -> tuple[str, bool]:
+        nonlocal created_archive, retired_store
+
+        def mutate(doc: dict) -> dict:
+            nonlocal created_archive, retired_store
+            agents = coerce_dict_section(doc, "agents")
+            if name not in agents:
+                raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
+            agent_section = doc.get("agent")
+            if doc.get("default_agent") == name or (
+                isinstance(agent_section, dict) and agent_section.get("default_agent") == name
+            ):
+                raise UnknownMemoryStore(f"Crew Member {name!r} became the default")
+            entry = agents[name]
+            stores = coerce_dict_section(doc, "memory_stores")
+            store_name = entry.get("memory_store", "") if isinstance(entry, dict) else ""
+            record = stores.get(store_name)
+            if isinstance(record, dict) and record.get("memory_version") == 2:
+                if record.get("owner_member") != name:
+                    raise UnknownMemoryStore(
+                        f"memory store {store_name!r} ownership changed concurrently"
+                    )
+                created_archive = archive_member_memory_store(store_name, name)
+                retired_store = store_name
+            del agents[name]
+            return doc
+
+        try:
+            update_config_locked(mutate=mutate)
+        except BaseException:
+            if created_archive:
+                try:
+                    rollback_member_memory_archive_if_active(retired_store, name)
+                except Exception:
+                    logger.error(
+                        "failed to roll back member memory retirement for %s",
+                        retired_store,
+                        exc_info=True,
+                    )
+            raise
+        return retired_store, created_archive
+
+    retired_store, _created_archive = await _drained_to_thread(_delete_member)
+    if retired_store:
+        await _drained_to_thread(release_cached_memory_store, retired_store)
+        if (state := request.app.get("state")) is not None:
+            await release_markdown_memory_store(state, retired_store)
+    # The crew is gone; its uploaded picture must not outlive it. Inside
+    # the same lock so the cleanup cannot run AFTER a concurrent
+    # same-name recreation has already uploaded and committed a new
+    # picture under the same digest stem.
+    await _drained_to_thread(_remove_avatar_files, name)
 
 
 # ── Per-crew uploaded avatars ────────────────────────────────────────

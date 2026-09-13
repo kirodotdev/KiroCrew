@@ -14531,7 +14531,8 @@
       "filter_source_builtin_description": "{{productName}} に同梱されているクルー",
       "filter_source_package_description": "ケイパビリティパッケージによってインストールされたクルー",
       "member_count_filtered": "{{count}} 人中 {{shown}} 人のメンバー",
-      "setup_in_crew_manager": "プライベートメモリを設定"
+      "setup_in_crew_manager": "プライベートメモリを設定",
+      "own_copy_of": "{{template}} — カスタマイズ済みコピー"
     }
   },
   "privacyDisclosure": {

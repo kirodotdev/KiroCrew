@@ -3390,6 +3390,16 @@ class KiroCrewAgentConfig:
             "through renames. Empty for every row created with a well-formed id.",
         ),
     )
+    named_by_user: bool = field(
+        default=True,
+        metadata=_meta(
+            "Named By User",
+            "False while the member still carries the display name its hire "
+            "defaulted (the template's role): the thread header then says so and "
+            "offers the rename. Set true by a hire that took a typed name, by the "
+            "first rename, and for every member created with a name of its own.",
+        ),
+    )
     starred: bool = field(
         default=False,
         metadata=_meta(

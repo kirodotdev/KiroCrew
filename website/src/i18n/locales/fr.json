@@ -14918,7 +14918,8 @@
       "filter_source_builtin_description": "Crews fournis avec {{productName}}",
       "filter_source_package_description": "Crews installés par des packages de capacités",
       "member_count_filtered": "{{shown}} membres sur {{count}}",
-      "setup_in_crew_manager": "Configurer la mémoire privée"
+      "setup_in_crew_manager": "Configurer la mémoire privée",
+      "own_copy_of": "{{template}} — copie personnalisée"
     }
   },
   "privacyDisclosure": {

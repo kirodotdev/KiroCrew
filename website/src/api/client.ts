@@ -2268,6 +2268,18 @@ export interface WebhookTestResult {
   error?: string
 }
 
+/** Answer of POST /api/members. */
+export interface HireMemberResult {
+  ok?: boolean
+  error?: string
+  code?: string
+  /** The minted member id — what `/members?member=` resolves. A hire is
+   *  atomic (the copy exists before the row, the row is published bound to
+   *  it), so a 200 always means the member owns its copy; the roster row is
+   *  the read path for the binding, the label and `named_by_user`. */
+  id?: string
+}
+
 /** One row of GET /api/members — a global crew as a Crew Members roster entry.
  *  Crew-record fields (kiro_agent, workspace, memory_store, model, …) are
  *  spread verbatim from the backend dataclass; only the fields the page reads
@@ -2284,6 +2296,16 @@ export interface MemberRosterRow {
   display_name?: string
   /** Job title, e.g. "Oncall Triage Engineer". Optional for a hand-made member. */
   role?: string
+  /** When `kiro_agent` is this member's OWN copy (copy-on-hire, or the editor's
+   *  first-edit fork), the template that copy was made from; '' when the member
+   *  is bound to a shared template directly. Lets the drawer say
+   *  "reviewer — customized copy" instead of presenting the copy's stem as a template. */
+  template_origin?: string
+  /** False while the member still carries the display name its hire defaulted
+   *  (the template's role): the thread header says "Just hired · named after its
+   *  role" and offers the rename. True after the first rename, for a hire that
+   *  took a typed name, and for every member created with a name of its own. */
+  named_by_user?: boolean
   /** Stable path-safe slug deriving the member dir and the slot key. */
   slug: string
   /** The pinned DM thread's slot key ('' until first open / unbound). */
@@ -3052,6 +3074,12 @@ export const api = {
     fetch('/api/agents/resolved-model?agent=' + encodeURIComponent(agent)).then(j),
   syncKirocrewAgents: () => post('/api/agents/sync', {}).then(j),
   createKirocrewAgent: (body: object) => post('/api/agents', body).then(j),
+  /** Hire a crew member from a local Custom Agent file (zero-config: only the
+   *  source is required; a missing display_name defaults to the role and the
+   *  row records named_by_user: false): creates the wrapper row (id minted
+   *  from the name) and copies the source definition into a member-owned agent
+   *  file, atomically. */
+  hireMember: (body: object) => post('/api/members', body).then(j) as Promise<HireMemberResult>,
   // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
   // cheap live-status fields the backend can answer without IO (richer live
   // detail rides the already-subscribed WS `slots` frames).

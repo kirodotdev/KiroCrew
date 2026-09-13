@@ -14531,7 +14531,8 @@
       "filter_source_builtin_description": "{{productName}} 自带的成员",
       "filter_source_package_description": "由能力安装包安装的成员",
       "member_count_filtered": "显示 {{shown}} / {{count}} 位成员",
-      "setup_in_crew_manager": "设置私有记忆"
+      "setup_in_crew_manager": "设置私有记忆",
+      "own_copy_of": "{{template}}——自定义副本"
     }
   },
   "privacyDisclosure": {

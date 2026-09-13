@@ -156,6 +156,21 @@ describe('MembersPage renders identity', () => {
     await renderPage([MIGRATED, HIRED, SHIPPED], '?member=default')
     expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('Built-in')
   })
+
+  it('drawer: a member bound to its own copy names the template it came from', async () => {
+    // Copy-on-hire binds `kiro_agent` to the copy's stem (= the id). Read as a
+    // template name that is one answer; the editor's "reviewer (Customized)" is
+    // another. The drawer therefore says what the copy is OF.
+    const hired = row('triage', { display_name: 'Checkout triage', kiro_agent: 'triage', template_origin: 'reviewer' })
+    await renderPage([hired, SHIPPED], '?member=triage')
+    expect(await screen.findByTestId('member-config-template')).toHaveTextContent('reviewer — customized copy')
+    expect(screen.getByTestId('member-config-template')).not.toHaveTextContent(/^triage$/)
+  })
+
+  it('drawer: a member bound to a shared template shows the template itself', async () => {
+    await renderPage([MIGRATED, SHIPPED], '?member=case-competition')
+    expect(await screen.findByTestId('member-config-template')).toHaveTextContent('case-competition')
+  })
 })
 
 describe('MembersPage Source row reads the normalized source', () => {

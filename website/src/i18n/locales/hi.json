@@ -14725,7 +14725,8 @@
       "filter_source_builtin_description": "{{productName}} के साथ आने वाले क्रू",
       "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
       "member_count_filtered": "{{count}} में से {{shown}} सदस्य",
-      "setup_in_crew_manager": "निजी मेमोरी सेट अप करें"
+      "setup_in_crew_manager": "निजी मेमोरी सेट अप करें",
+      "own_copy_of": "{{template}} — अनुकूलित कॉपी"
     }
   },
   "privacyDisclosure": {

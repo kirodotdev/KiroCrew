@@ -2505,7 +2505,15 @@ export default function MembersPage() {
               <dt className="w-24 shrink-0 text-muted">
                 {t('pages.membersPage.agent_template')}
               </dt>
-              <dd className="min-w-0 truncate">{active.kiro_agent || t('pages.membersPage.inherited')}</dd>
+              {/* A member bound to its OWN copy names the template the copy came
+                  from ("reviewer — own copy"), not the copy's stem: the stem is
+                  the member id, and reading it here beside the editor's
+                  "reviewer (Customized)" made two answers to one question. */}
+              <dd className="min-w-0 truncate" data-testid="member-config-template">
+                {active.template_origin
+                  ? t('pages.membersPage.own_copy_of', { template: active.template_origin })
+                  : active.kiro_agent || t('pages.membersPage.inherited')}
+              </dd>
             </div>
             <div className="flex gap-2">
               <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.model')}</dt>

@@ -174,6 +174,34 @@ async def drained_to_thread(fn, /, *args):
     return result
 
 
+async def drained(coro):
+    """Run *coro* to completion even if the awaiting handler is cancelled.
+
+    The coroutine-level twin of :func:`drained_to_thread`: for a multi-step
+    mutation whose steps are themselves awaits (a hire is copy → publish the
+    row → link it to its template, with an unwind on failure), a cancellation
+    landing between two steps -- a gateway shutdown, a client that closed the
+    request -- would leave the first step committed and the rest never run: a
+    copy with no row, or a row whose link never landed. Shielding the
+    whole transaction lets it reach its own end (success or roll-back) before
+    the cancellation is re-raised. Every cancellation is absorbed until the
+    task is done, then the first one is raised once.
+    """
+    task = asyncio.ensure_future(coro)
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
 # Per-turn compaction-failure backoff. See
 # _broadcast_compaction_result for the full rationale. Kept small: this is a
 # UX/spam guard, not a correctness gate — the underlying compaction attempt

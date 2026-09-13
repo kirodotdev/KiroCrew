@@ -1695,8 +1695,11 @@ inside the member-id grammar (`member_identity.MEMBER_ID_RE`, pinned byte-equal 
 `validation._AGENT_NAME_RE`, the grammar every keyed subsystem -- member dir, DM
 binding, slot `agent`, cron `agent`, governance identity -- already enforces). What
 a person reads and renames is `display_name` (free text, `""` = same as the id) plus
-`role` (job title). `member_identity.py` is a leaf module (no `kiro_crew.config`
-import) because the loader calls it during `load()`.
+`role` (job title); `named_by_user` (bool, default `true`) is `false` only while the
+member still carries the display name its hire defaulted from the role -- set by
+the hire, cleared by the first rename, and read as `true` for any non-boolean
+value (see `crew-mode.md`, Hire). `member_identity.py` is a leaf module (no
+`kiro_crew.config` import) because the loader calls it during `load()`.
 
 - **Create** (`POST /api/agents`): the typed name is only ever the display name; the
   id is minted from it inside the config lock (`mint_member_id`). For a name inside

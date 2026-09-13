@@ -7089,7 +7089,8 @@
       "filter_source_mine_description": "Crews you created in the crew manager",
       "filter_source_builtin_description": "Crews that ship with {{productName}}",
       "filter_source_package_description": "Crews installed by capability packages",
-      "member_count_filtered": "{{shown}} of {{count}} members"
+      "member_count_filtered": "{{shown}} of {{count}} members",
+      "own_copy_of": "{{template}} — customized copy"
     },
     "migrationPage": {
       "app_migration": "App Migration",
