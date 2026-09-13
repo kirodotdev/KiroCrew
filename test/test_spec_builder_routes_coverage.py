@@ -2000,6 +2000,42 @@ class TestEnsureWorkerSlot:
         assert slot is not None
 
     @pytest.mark.asyncio
+    async def test_re_scoping_a_cleared_slot_hands_the_turn_the_spec_directory(self, tmp_path):
+        """A slot cleared EARLIER must not run its spec turn in the default workspace.
+
+        `claim_cwd` reads the cleared MARKER before the project, so assigning a directory
+        without retiring the marker leaves the accessor answering CWD_CLEARED -- and
+        `chat_runner` passes exactly that accessor as the turn's cwd. The marker survives a
+        restart (persistence writes it unconditionally and four restore sites read it back),
+        so a cleared-then-re-scoped worker writes every relative path into the wrong tree.
+
+        Driven through the REAL slot: the double in this module has neither the marker nor
+        the accessor, so it could not tell the fixed code from the broken code.
+        """
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        spec_dir = tmp_path / "spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        slot = _ChatSlot("spec-builder-demo")
+        slot._app = r.APP_NAME
+        # Cleared before this spec was opened, then restored from persisted meta.
+        slot.project = ""
+        slot.project_cleared = True
+        state = _State()
+        state._slots["spec-builder-demo"] = slot
+
+        with _no_rehydrate():
+            got = await r._ensure_worker_slot(state, "demo", _entry(spec_dir))
+
+        assert got is not None, "the slot was refused, so this test proves nothing"
+        # `_entry` scopes the worker to the spec's WORKING dir, which is `spec_dir.parent`.
+        assert got.project == str(tmp_path), f"project not re-scoped; got {got.project!r}"
+        assert got.claim_cwd == str(tmp_path), (
+            "the turn would run in the default workspace and misplace every relative write; "
+            f"claim_cwd={got.claim_cwd!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_a_slot_owned_by_another_app_is_refused_not_taken_over(self, tmp_path):
         state = _State(**{"spec-builder-demo": _Slot("spec-builder-demo", app="issue-radar")})
         with _no_rehydrate():

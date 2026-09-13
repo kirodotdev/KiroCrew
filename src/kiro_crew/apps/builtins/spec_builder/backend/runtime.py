@@ -650,12 +650,15 @@ async def _ensure_worker_slot(
         return None
     try:
         slot._app = APP_NAME
-        # cwd for the worker's CLI process (chat_runner: cwd=slot.project).
+        # cwd for the worker's CLI process (chat_runner: cwd=slot.claim_cwd).
         # Without it the agent must `cd <project>` before every command, which
         # turns every tool pill in the chat into identical cd-noise -- and for a
         # discovered spec it would edit files outside the project entirely.
         if safe_wd is not None:
             slot.project = str(safe_wd)
+            # The MARKER too: `claim_cwd` reads it before the project, so a slot cleared
+            # earlier would hand the turn the default workspace and misplace every write.
+            slot.project_cleared = False
         # '' = inherit: the session layer's resolution chain applies unchanged.
         # A concrete pick rides slot.model, which chat_runner already resolves
         # first — and if the pick stops being served, its withhold keeps the pin

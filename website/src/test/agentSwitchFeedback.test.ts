@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import { ApiError } from '../api/client'
-import { agentSwitchFailureMessage, isTurnInFlightError } from '../utils/agentSwitchFeedback'
+import {
+  agentSwitchFailureMessage,
+  isTurnInFlightError,
+  isWorkspaceUnavailableError,
+} from '../utils/agentSwitchFeedback'
 import chatReducer, { setAgentSwitchNotice } from '../store/chatSlice'
 
 /** The gateway's real refusal shape for a mid-turn switch (chat_handlers.py). */
@@ -40,6 +44,22 @@ describe('agent switch failure feedback', () => {
     expect(agentSwitchFailureMessage(turnInFlight409()))
       .toBe('A turn is running — try again when it finishes.')
     expect(isTurnInFlightError(turnInFlight409())).toBe(true)
+  })
+
+  it('maps a 503 workspace_unavailable to localized copy, not the backend prose', () => {
+    // Without this the generic path prefers the API layer's message, which for this
+    // refusal is the gateway's own English -- unlocalized, on a localized page.
+    const error = new ApiError(
+      503,
+      'the configured workspace directory is unavailable',
+      JSON.stringify({
+        error: 'the configured workspace directory is unavailable',
+        code: 'workspace_unavailable',
+      }),
+    )
+    expect(isWorkspaceUnavailableError(error)).toBe(true)
+    expect(agentSwitchFailureMessage(error))
+      .toBe("The configured project folder isn't available — check that it exists, then try again.")
   })
 
   it('detects the refusal structurally, without the ApiError class', () => {

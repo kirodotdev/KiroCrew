@@ -37,6 +37,7 @@ from kiro_crew.cron_script import (
     resolve_script_path,
     validate_secret_env_grant,
 )
+from kiro_crew.dashboard.chat_utils import bind_linked_session_key
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
@@ -1707,7 +1708,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
         if history:
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
             if not slot.linked_session_key:
-                slot.linked_session_key = session_key
+                bind_linked_session_key(slot, session_key)
                 hydrate_slot_from_history(slot, history)
         else:
             # No session log — fall back to notification body.
