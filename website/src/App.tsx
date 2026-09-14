@@ -137,6 +137,7 @@ import AppDetailPage from './pages/AppDetailPage'
 import MigrationPage from './pages/MigrationPage'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
+import ActionFailureNotice from './components/ActionFailureNotice'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
@@ -3427,6 +3428,7 @@ export default function App() {
       <div className="h-screen supports-[height:100dvh]:h-dvh w-screen overflow-hidden bg-bg flex flex-col">
         <KiroCrewNavBridge />
         <EmbedTabStrip />
+        <ActionFailureNotice className="mx-3 mt-2 mb-0 animate-rise" />
         <div className="flex-1 min-h-0">
           <Routes>
             <Route path="/embed/chat/:slug?" element={<ErrorBoundary><ChatPage embedded embedMode="chat" /></ErrorBoundary>} />
@@ -4785,6 +4787,14 @@ export default function App() {
               the app, not of the page, and the launch after a crash rarely lands
               on the page the user was on when it happened. */}
           <CrashReportNotice />
+          {/* Inside the LOCAL pane on purpose, beside CrashReportNotice, not above
+              the pane stack: a remote tab fills the window with another crew's
+              whole dashboard, which mounts its own copy of this sink, so a local
+              failure painted over it would read as that crew's. The pane is
+              hidden, not unmounted, while a remote tab is active, and the store
+              never auto-clears, so a rejection that lands mid-switch is deferred
+              to the return to Local rather than lost. */}
+          <ActionFailureNotice />
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

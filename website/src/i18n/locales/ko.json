@@ -7551,9 +7551,10 @@
       "quote_hint": "선택한 부분을 이 대화의 입력창에 인용합니다 — 답장은 메인 채팅으로 전송됩니다"
     },
     "sendToInstanceSubmenu": {
-      "failed": "실패",
       "not_connected": "연결되지 않음",
       "send_a_copy_to": "복사본 보내기",
+      "send_failed": "사본이 전달되지 않았습니다. 이 세션은 변경되지 않았습니다.",
+      "send_failed_heading": "‘{{name}}’의 사본을 보내지 못했습니다",
       "sent": "전송됨",
       "sent_transcript_only": "전송됨(대화 기록만)",
       "transcript_only_hint": "해당 인스턴스가 전체 대화 컨텍스트를 복원할 수 없어 이 사본은 대화 기록만으로 이어집니다.",
@@ -7582,6 +7583,7 @@
       "unpin": "고정 해제"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "색상 변경이 취소되었습니다.",
       "custom_color": "사용자 지정 색상",
       "hex_color_code": "16진수 색상 코드",
       "no_color": "색 없음"
@@ -8730,7 +8732,15 @@
     },
     "useSessionActions": {
       "close_this_session": "이 세션을 닫으시겠습니까?",
-      "reload_failed": "세션 다시 로드에 실패했습니다. 에이전트가 응답 중이거나 게이트웨이에 연결할 수 없습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
+      "fork_failed": "새 세션이 생성되지 않았습니다.",
+      "fork_failed_heading": "‘{{name}}’를 복제하지 못했습니다",
+      "mode_change_failed": "모드 변경이 취소되었습니다.",
+      "pin_change_failed": "고정 변경이 취소되었습니다.",
+      "pin_change_failed_heading_other": "{{count}}개 세션을 업데이트하지 못했습니다",
+      "pin_change_failed_named": "{{names}}의 고정 변경이 취소되었습니다.",
+      "reload_failed": "세션 다시 로드에 실패했습니다. 게이트웨이에 연결할 수 없습니다. 다시 연결한 후 시도하세요.",
+      "reload_failed_busy": "세션 다시 로드에 실패했습니다. 에이전트가 진행 중일 수 있습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
+      "reload_failed_rejected": "세션 다시 로드에 실패했습니다. 게이트웨이가 오류로 응답했습니다. 에이전트 프로세스가 다시 시작되지 않았습니다.",
       "reload_failed_subagents": "이 세션의 하위 에이전트가 아직 작업 중입니다. 완료된 후 다시 시도하세요.",
       "switch_to_autopilot_mode_future_messages_will_us": "오토파일럿 모드로 전환할까요? 이후 메시지는 오토파일럿 동작(계획 → 승인 → 실행)을 사용합니다.",
       "switch_to_normal_chat_mode_future_messages_will": "일반 채팅 모드로 전환할까요? 이후 메시지는 표준 채팅 동작을 사용합니다."
@@ -8753,6 +8763,9 @@
       "approval_wait_expired": "승인 대기 시간이 만료되어 요청이 거부되었습니다.",
       "approval_rejected": "승인이 거절되어 요청이 거부되었습니다.",
       "unknown": "알 수 없음"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "이동이 취소되었습니다."
     }
   },
   "lib": {
@@ -10369,6 +10382,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "‘{{name}}’를 업데이트하지 못했습니다",
       "turn_minimap": "대화 턴 탐색",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "대화 턴",

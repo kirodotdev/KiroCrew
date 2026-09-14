@@ -96,6 +96,7 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as never
 
 import ChatPage from '../pages/ChatPage'
+import { reportActionFailure, __resetActionFailureForTests } from '../utils/actionFailure'
 
 const SLOTS = [
   { key: 'chat-1', title: 'First', messages: 1, running: false, mode: '', created: '', last_ts: '' },
@@ -243,6 +244,13 @@ describe('ChatPage – session tab strip', () => {
     localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
     renderChatPage({ embedded: true })
     expect(screen.queryByTestId('session-tab-strip')).toBeNull()
+  })
+
+  it('renders no failure notice of its own — a second sink here would double on /chat', async () => {
+    renderChatPage()
+    act(() => { reportActionFailure('Session reload failed.') })
+    await Promise.resolve()
+    expect(screen.queryByTestId('session-action-error')).toBeNull()
   })
 
   it('leaves the persisted set untouched from an embedded host', () => {

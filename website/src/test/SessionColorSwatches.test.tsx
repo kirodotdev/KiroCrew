@@ -6,7 +6,7 @@
  * through the mocked api; onPicked fires so a controlled menu can close).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import type { ReactNode } from 'react'
@@ -30,6 +30,7 @@ vi.mock('../hooks/useSessionPalette', () => ({
 
 import { store } from '../store'
 import SessionColorSwatches from '../components/SessionColorSwatches'
+import { useActionFailure, __resetActionFailureForTests } from '../utils/actionFailure'
 
 const SLOT = 'chat-color-1'
 // SessionColorSwatches writes via useMutation, so it needs a QueryClientProvider.
@@ -209,5 +210,41 @@ describe('SessionColorSwatches', () => {
     const after = store.getState().dashboard.slots.find(s => s.key === SLOT)
     expect(after?.color_hex).toBe('#a1b2c3')
     expect(after?.color_index ?? null).toBe(null)
+  })
+
+  it('a swatch that lands takes down the reverted pick reported before it', async () => {
+    const { sseSlots } = await import('../store/dashboardSlice')
+    store.dispatch(sseSlots([{ key: SLOT, color_index: null, color_hex: null } as never]))
+    __resetActionFailureForTests()
+    const probe = renderHook(() => useActionFailure())
+    mocks.setSlotColor.mockRejectedValueOnce(new Error('boom')).mockResolvedValue({})
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getAllByRole('button')[1]) // first palette colour = index 0
+    await waitFor(() => expect(probe.result.current.failure?.message).toMatch(/colou?r/i))
+    fireEvent.click(screen.getAllByRole('button')[2]) // second palette colour = index 1
+    await waitFor(() => expect(mocks.setSlotColor).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(probe.result.current.failure).toBeNull())
+  })
+
+  it('a superseded write landing late leaves the newer write’s failure up', async () => {
+    // Only the latest write may clear, for the reason only it may roll back: the
+    // banner is about the write that owns the state now, and an older write's
+    // success says nothing about it.
+    const { sseSlots } = await import('../store/dashboardSlice')
+    store.dispatch(sseSlots([{ key: SLOT, color_index: null, color_hex: null } as never]))
+    __resetActionFailureForTests()
+    const probe = renderHook(() => useActionFailure())
+    let resolveFirst: (v: unknown) => void = () => {}
+    mocks.setSlotColor
+      .mockImplementationOnce(() => new Promise(res => { resolveFirst = res }))
+      .mockRejectedValue(new Error('boom'))
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getAllByRole('button')[1]) // first palette colour = index 0
+    fireEvent.click(screen.getAllByRole('button')[2]) // second palette colour = index 1
+    await waitFor(() => expect(probe.result.current.failure?.message).toMatch(/colou?r/i))
+    const shown = probe.result.current.failure
+    resolveFirst({})
+    await new Promise(r => setTimeout(r, 30))
+    expect(probe.result.current.failure).toBe(shown)
   })
 })

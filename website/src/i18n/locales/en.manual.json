@@ -3374,6 +3374,13 @@
       "unexpected_response": "Unexpected response",
       "deploy_failed": "Deploy failed",
       "stale_preview_retry": "The app changed since it was checked — try again."
+    },
+    "sessionColorSwatches": {
+      "color_change_failed": "The color change was undone."
+    },
+    "sendToInstanceSubmenu": {
+      "send_failed": "The copy was not delivered — this session is unchanged.",
+      "send_failed_heading": "Couldn’t send a copy of “{{name}}”"
     }
   },
   "hooks": {
@@ -3451,7 +3458,16 @@
     },
     "useSessionActions": {
       "close_this_session": "Close this session?",
-      "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
+      "fork_failed": "No new session was created.",
+      "fork_failed_heading": "Couldn’t duplicate “{{name}}”",
+      "mode_change_failed": "The mode change was undone.",
+      "pin_change_failed": "The pin change was undone.",
+      "pin_change_failed_heading_one": "Couldn’t update {{count}} session",
+      "pin_change_failed_heading_other": "Couldn’t update {{count}} sessions",
+      "pin_change_failed_named": "The pin change was undone for {{names}}.",
+      "reload_failed": "Session reload failed — the gateway is unreachable. Reconnect and try again.",
+      "reload_failed_busy": "Session reload failed — the agent may be mid-turn. Try again when the session is idle.",
+      "reload_failed_rejected": "Session reload failed — the gateway answered with an error. The agent process was not restarted.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
       "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
@@ -3494,6 +3510,9 @@
       "summary": "Summary",
       "workflows": "Workflows",
       "crewlog": "Crew log"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "The move was undone."
     }
   },
   "nav": {
@@ -4404,6 +4423,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Couldn’t update “{{name}}”",
       "turn_minimap": "Navigate conversation turns",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "Conversation turns",

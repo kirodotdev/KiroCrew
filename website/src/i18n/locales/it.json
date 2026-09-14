@@ -7775,9 +7775,10 @@
       "quote_hint": "Cita la selezione nel compositore di questa conversazione: la tua risposta va nella chat principale"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Non riuscito",
       "not_connected": "non connesso",
       "send_a_copy_to": "Invia una copia a",
+      "send_failed": "La copia non è stata consegnata: questa sessione è rimasta invariata.",
+      "send_failed_heading": "Impossibile inviare una copia di “{{name}}”",
       "sent": "Inviato",
       "sent_transcript_only": "Inviato (solo trascrizione)",
       "transcript_only_hint": "Quell'istanza non ha potuto ripristinare il contesto completo della conversazione, quindi questa copia riprende solo dalla trascrizione.",
@@ -7806,6 +7807,7 @@
       "unpin": "Non fissare"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "La modifica del colore è stata annullata.",
       "custom_color": "Colore personalizzato",
       "hex_color_code": "Codice colore esadecimale",
       "no_color": "Nessun colore"
@@ -8964,7 +8966,17 @@
     },
     "useSessionActions": {
       "close_this_session": "Chiudere questa sessione?",
-      "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
+      "fork_failed": "Non è stata creata nessuna nuova sessione.",
+      "fork_failed_heading": "Impossibile duplicare “{{name}}”",
+      "mode_change_failed": "Il cambio di modalità è stato annullato.",
+      "pin_change_failed": "La modifica del fissaggio è stata annullata.",
+      "pin_change_failed_heading_many": "Impossibile aggiornare {{count}} sessioni",
+      "pin_change_failed_heading_one": "Impossibile aggiornare {{count}} sessione",
+      "pin_change_failed_heading_other": "Impossibile aggiornare {{count}} sessioni",
+      "pin_change_failed_named": "La modifica del fissaggio è stata annullata per {{names}}.",
+      "reload_failed": "Ricaricamento della sessione non riuscito: il gateway non è raggiungibile. Riconnettiti e riprova.",
+      "reload_failed_busy": "Ricaricamento della sessione non riuscito: l’agente potrebbe essere a metà di un turno. Riprova quando la sessione è inattiva.",
+      "reload_failed_rejected": "Ricaricamento della sessione non riuscito: il gateway ha risposto con un errore. Il processo dell’agente non è stato riavviato.",
       "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passare alla modalità pilota automatico? I messaggi successivi useranno il comportamento del pilota automatico (pianifica → approva → esegui).",
       "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat."
@@ -8987,6 +8999,9 @@
       "approval_wait_expired": "L'attesa dell'approvazione è scaduta, quindi la richiesta è stata rifiutata.",
       "approval_rejected": "L'approvazione è stata respinta, quindi la richiesta è stata rifiutata.",
       "unknown": "Sconosciuto"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Lo spostamento è stato annullato."
     }
   },
   "lib": {
@@ -10657,6 +10672,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Impossibile aggiornare “{{name}}”",
       "turn_minimap": "Naviga tra i turni della conversazione",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "Turni della conversazione",

@@ -7663,9 +7663,10 @@
       "quote_hint": "Zitiert die Auswahl in den Verfasser dieses Gesprächs — deine Antwort geht in den Hauptchat"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Fehlgeschlagen",
       "not_connected": "nicht verbunden",
       "send_a_copy_to": "Kopie senden an",
+      "send_failed": "Die Kopie wurde nicht zugestellt – diese Sitzung ist unverändert.",
+      "send_failed_heading": "Kopie von „{{name}}“ konnte nicht gesendet werden",
       "sent": "Gesendet",
       "sent_transcript_only": "Gesendet (nur Transkript)",
       "transcript_only_hint": "Diese Instanz konnte den vollständigen Gesprächskontext nicht wiederherstellen; diese Kopie setzt nur auf dem Transkript fort.",
@@ -7694,6 +7695,7 @@
       "unpin": "Entpinnen"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "Die Farbänderung wurde zurückgenommen.",
       "custom_color": "Benutzerdefinierte Farbe",
       "hex_color_code": "Hex-Farbcode",
       "no_color": "Keine Farbe"
@@ -8847,7 +8849,16 @@
     },
     "useSessionActions": {
       "close_this_session": "Diese Sitzung schließen?",
-      "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
+      "fork_failed": "Es wurde keine neue Sitzung erstellt.",
+      "fork_failed_heading": "„{{name}}“ konnte nicht dupliziert werden",
+      "mode_change_failed": "Der Moduswechsel wurde zurückgenommen.",
+      "pin_change_failed": "Die Anheft-Änderung wurde zurückgenommen.",
+      "pin_change_failed_heading_one": "{{count}} Sitzung konnte nicht aktualisiert werden",
+      "pin_change_failed_heading_other": "{{count}} Sitzungen konnten nicht aktualisiert werden",
+      "pin_change_failed_named": "Die Anheft-Änderung wurde für {{names}} zurückgenommen.",
+      "reload_failed": "Sitzung konnte nicht neu geladen werden — das Gateway ist nicht erreichbar. Stelle die Verbindung wieder her und versuche es erneut.",
+      "reload_failed_busy": "Sitzung konnte nicht neu geladen werden — der Agent ist möglicherweise mitten in einem Zug. Versuche es erneut, wenn die Sitzung inaktiv ist.",
+      "reload_failed_rejected": "Sitzung konnte nicht neu geladen werden — das Gateway hat mit einem Fehler geantwortet. Der Agentenprozess wurde nicht neu gestartet.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
       "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
@@ -8870,6 +8881,9 @@
       "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",
       "approval_rejected": "Die Genehmigung wurde verweigert, deshalb wurde die Anfrage abgelehnt.",
       "unknown": "Unbekannt"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Das Verschieben wurde zurückgenommen."
     }
   },
   "lib": {
@@ -10513,6 +10527,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "„{{name}}“ konnte nicht aktualisiert werden",
       "turn_minimap": "Zwischen Gesprächsrunden navigieren",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "Gesprächsrunden",

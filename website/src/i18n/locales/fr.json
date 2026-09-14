@@ -7775,9 +7775,10 @@
       "quote_hint": "Cite la sélection dans le composeur de cette discussion — ta réponse part dans la discussion principale"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Échec",
       "not_connected": "non connecté",
       "send_a_copy_to": "Envoyer une copie à",
+      "send_failed": "La copie n’a pas été livrée — cette session est inchangée.",
+      "send_failed_heading": "Impossible d’envoyer une copie de « {{name}} »",
       "sent": "Envoyé",
       "sent_transcript_only": "Envoyé (transcription seule)",
       "transcript_only_hint": "Cette instance n'a pas pu restaurer le contexte complet de la conversation ; cette copie reprend uniquement à partir de la transcription.",
@@ -7806,6 +7807,7 @@
       "unpin": "Désépingler"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "Le changement de couleur a été annulé.",
       "custom_color": "Couleur personnalisée",
       "hex_color_code": "Code couleur hexadécimal",
       "no_color": "Aucune couleur"
@@ -8964,7 +8966,17 @@
     },
     "useSessionActions": {
       "close_this_session": "Fermer cette session ?",
-      "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
+      "fork_failed": "Aucune nouvelle session n’a été créée.",
+      "fork_failed_heading": "Impossible de dupliquer « {{name}} »",
+      "mode_change_failed": "Le changement de mode a été annulé.",
+      "pin_change_failed": "La modification de l’épinglage a été annulée.",
+      "pin_change_failed_heading_many": "Impossible de mettre à jour {{count}} sessions",
+      "pin_change_failed_heading_one": "Impossible de mettre à jour {{count}} session",
+      "pin_change_failed_heading_other": "Impossible de mettre à jour {{count}} sessions",
+      "pin_change_failed_named": "La modification de l’épinglage a été annulée pour {{names}}.",
+      "reload_failed": "Le rechargement de la session a échoué : la passerelle est injoignable. Reconnecte-toi, puis réessaie.",
+      "reload_failed_busy": "Le rechargement de la session a échoué : l’agent est peut-être en cours de tour. Réessaie lorsque la session est inactive.",
+      "reload_failed_rejected": "Le rechargement de la session a échoué : la passerelle a répondu par une erreur. Le processus de l’agent n’a pas été redémarré.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passer en mode autopilote ? Les prochains messages utiliseront le comportement autopilote (planifier → approuver → exécuter).",
       "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard."
@@ -8987,6 +8999,9 @@
       "approval_wait_expired": "L’attente d’approbation a expiré, la demande a donc été refusée.",
       "approval_rejected": "L’approbation a été rejetée, la demande a donc été refusée.",
       "unknown": "Inconnu"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Le déplacement a été annulé."
     }
   },
   "lib": {
@@ -10657,6 +10672,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Impossible de mettre à jour « {{name}} »",
       "turn_minimap": "Parcourir les tours de la conversation",
       "turn_minimap_active": "{{position}} : {{prompt}}",
       "turn_minimap_landmark": "Tours de la conversation",

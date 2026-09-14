@@ -1,8 +1,8 @@
-import type React from 'react'
-import { useState } from 'react'
+import { Fragment, useId, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { AlertCircle, Check, ChevronRight, Loader2, Send, Server } from 'lucide-react'
-import { api, type InstanceView } from '../api/client'
+import { api, ApiError, type InstanceView } from '../api/client'
+import { store } from '../store'
 import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
@@ -10,7 +10,13 @@ import {
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem,
 } from './ui/context-menu'
 
+import ErrorNotice, {
+  ErrorNoticeMenuItem,
+  type ErrorNoticeMenuItemComponent,
+} from './ErrorNotice'
 import { i18nT } from '../i18n/t'
+import { clearActionFailure, reportActionFailure } from '../utils/actionFailure'
+import { findReport } from '../utils/errorReport'
 
 /** Per-instance outcome of the most recent send attempt in this open menu. */
 type SendState =
@@ -46,10 +52,11 @@ interface SendToInstanceSubmenuProps {
  * this menu produces a visible local change, so closing on click is its own
  * confirmation; a transfer's only effect happens on ANOTHER machine, so a
  * close-and-say-nothing would leave the user with no way to tell a completed
- * copy from a silently dropped one. There is no toast primitive in this app —
- * the sibling convention is an inline note next to the control
- * (InstancesPanel's `actionErr` / `connectedNote`), and the row IS the control
- * here.
+ * copy from a silently dropped one. A FAILURE renders the peer's own words on the
+ * row through `errors-use-error-notice`'s sanctioned in-menu pair — a passive
+ * inline `ErrorNotice` plus a sibling `ErrorNoticeMenuItem` carrying the hand-off,
+ * never a hand-written danger span — AND reports to the page notice, which is what
+ * survives the menu closing.
  *
  * Copy semantics: the local session is untouched and the peer allocates its own
  * key, so a repeat click is harmless and sends a second copy. That is also why
@@ -68,22 +75,19 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
   readonly instances: readonly InstanceView[]
   readonly states: Readonly<Record<string, SendState>>
   readonly onSend: (instanceId: string) => void
-  readonly Item: React.ComponentType<{
-    title?: string
-    disabled?: boolean
-    onSelect?: (event: Event) => void
-    children?: React.ReactNode
-  }>
+  readonly Item: ErrorNoticeMenuItemComponent
 }) {
   const notConnected = i18nT('components.sendToInstanceSubmenu.not_connected')
+  const errorIdBase = useId()
   return (
     <>
       {instances.map(inst => {
         const connected = inst.status?.state === 'connected'
         const st = states[inst.id] ?? { kind: 'idle' }
+        const errorId = `${errorIdBase}-${inst.id}`
         return (
+          <Fragment key={inst.id}>
           <Item
-            key={inst.id}
             title={connected ? inst.name : `${inst.name} — ${notConnected}`}
             disabled={!connected || st.kind === 'sending'}
             onSelect={connected
@@ -121,15 +125,24 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
               </span>
             )}
             {st.kind === 'error' && (
+              // role="presentation" and the blocked handlers: a click reaching the
+              // row would replace this error with a fresh spinner. Capped so a
+              // long peer sentence wraps here instead of widening the flyout to
+              // hold it on one line.
               <span
-                className="ml-auto flex items-center gap-1 text-[10px] text-danger shrink-0"
-                title={st.message}
+                className="ml-auto max-w-[240px]"
+                role="presentation"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
               >
-                <AlertCircle size={12} />
-                {i18nT('components.sendToInstanceSubmenu.failed')}
+                <ErrorNotice id={errorId} message={st.message} variant="inline" />
               </span>
             )}
           </Item>
+          {st.kind === 'error' && (
+            <ErrorNoticeMenuItem Item={Item} message={st.message} describedBy={errorId} />
+          )}
+          </Fragment>
         )
       })}
     </>
@@ -152,6 +165,9 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
     mutationFn: ({ id }: { id: string }) => api.sendSessionToInstance(id, slotKey),
     onMutate: ({ id }) => { setStates(s => ({ ...s, [id]: { kind: 'sending' } })) },
     onSuccess: (res, { id }) => {
+      // A copy that landed is the retry a still-showing failure for this same
+      // peer was waiting on; a failure about ANOTHER peer or action stays.
+      clearActionFailure(`send:${slotKey}:${id}`)
       // A peer that materialised Layer B reports 'session_load'; 'prefix' means
       // the copy landed but only as a transcript, so it must NOT read as a plain
       // "Sent" -- that is the silent degradation this feature removes. '' (an
@@ -162,18 +178,25 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
       }))
     },
     onError: (e, { id }) => {
-      setStates(s => ({
-        ...s,
-        [id]: {
-          kind: 'error',
-          // The API client throws ApiError (an Error subclass) carrying the
-          // peer's own message, so this surfaces "peer refused the transfer"
-          // rather than a generic failure.
-          message: e instanceof Error && e.message
-            ? e.message
-            : i18nT('components.sendToInstanceSubmenu.unknown_error'),
-        },
-      }))
+      const detail = e instanceof Error && e.message
+        ? e.message
+        : i18nT('components.sendToInstanceSubmenu.unknown_error')
+      // The page notice survives the menu closing, so it carries the peer's own
+      // words too — but only when the gateway answered: a transport exception's
+      // message ("Failed to fetch") is not a sentence written for the reader,
+      // and the store keeps that text out of the notice. Its own heading: a copy
+      // that never left changed nothing here, so the shared "Couldn't update"
+      // would assert a change that did not happen.
+      const name = store.getState().dashboard.slots.find(s => s.key === slotKey)?.title ?? ''
+      const sendFailed = i18nT('components.sendToInstanceSubmenu.send_failed')
+      reportActionFailure(
+        e instanceof ApiError ? `${sendFailed} ${detail}` : sendFailed,
+        name,
+        findReport(detail),
+        i18nT('components.sendToInstanceSubmenu.send_failed_heading', { name }),
+        { actionKey: `send:${slotKey}:${id}` },
+      )
+      setStates(s => ({ ...s, [id]: { kind: 'error', message: detail } }))
     },
   })
 
