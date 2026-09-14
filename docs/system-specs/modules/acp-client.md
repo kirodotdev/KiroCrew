@@ -90,6 +90,15 @@ cancelled caller still lets the worker settle).
 
 ## Tool Permission Protocol
 
+Private organization members use a gateway-authored, explicit role tool list
+from `organization_policy.py`. A direct `AcpClient` compiles it in the existing
+off-loop workspace preparation step. The unified runtime receives the already
+compiled agent from provider preparation; its spawn has no caller session key.
+This is a role ceiling in addition to existing governance, not a new approval
+mode. The first prototype supports the Kiro backend only. No inherited MCP
+globals, blanket tool grants, shell hooks or project spec overrides can widen
+the compiled role.
+
 `session/request_permission` is the single inbound channel. The agent sends:
 
 ```jsonc

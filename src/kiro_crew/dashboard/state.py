@@ -240,6 +240,7 @@ MAX_SLOTS_PER_CREATOR = 50
 # Structured monitor wakeups are automation, not user speech. The controller
 # owns the complete envelope; every delivery surface passes it through unchanged.
 MONITOR_WAKE_PREFIX = "[Monitor wake]"
+ORGANIZATION_WAKE_PREFIX = "[Organization work notice]"
 
 #: Return type of a mutate_folders callback.
 _T = TypeVar("_T")
@@ -3602,6 +3603,7 @@ class _ChatSlot:
         "remote_slot",
         "_relay_in_flight",
         "_active_turn_session_key",
+        "_organization_owner_request",
         "_side",
         "_acp_client",
         "_last_turn_awaiting_permission",
@@ -4238,6 +4240,9 @@ class _ChatSlot:
         # lifecycle owner (installed once the turn is committed, cleared after
         # its session is released).
         self._active_turn_session_key: str = ""
+        # Trusted owner-chat admission, bound to this live turn only. Never
+        # persisted or supplied by the model; _run_chat revokes it in finally.
+        self._organization_owner_request: tuple[str, str] | None = None
         # True only when this slot was created to DISPLAY a conversation that
         # already lives in a channel transcript (the reconciler surfacing a
         # thread, a restore, a History resume). It is what separates such a tab
@@ -4836,6 +4841,7 @@ class _ChatSlot:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        organization_owner_origin: bool = False,
     ) -> str:
         return self._queue_repository.queue_append(
             self,
@@ -4844,6 +4850,7 @@ class _ChatSlot:
             meta,
             directive_user_origin=directive_user_origin,
             directive_channel_origin=directive_channel_origin,
+            organization_owner_origin=organization_owner_origin,
         )
 
     def _note_enqueue(self) -> None:
@@ -4860,6 +4867,7 @@ class _ChatSlot:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        organization_owner_origin: bool = False,
     ) -> str:
         return self._queue_repository.queue_insert(
             self,
@@ -4872,6 +4880,7 @@ class _ChatSlot:
             on_irreversibly_consumed,
             directive_user_origin,
             directive_channel_origin,
+            organization_owner_origin,
         )
 
     def queue_pop(self, index: int = 0) -> dict[str, Any]:
@@ -4896,6 +4905,7 @@ class _ChatSlot:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        organization_owner_origin: bool = False,
     ) -> bool:
         return self._queue_repository.queue_edit_by_id(
             self,
@@ -4903,6 +4913,7 @@ class _ChatSlot:
             content,
             directive_user_origin=directive_user_origin,
             directive_channel_origin=directive_channel_origin,
+            organization_owner_origin=organization_owner_origin,
         )
 
     def queue_promote_by_id(self, queue_id: str) -> bool:

@@ -4,6 +4,7 @@ import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
 import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
 import { memberThreadQueryKey } from '../../api/membersQuery'
+import { organizationQuery, type OrganizationSnapshot } from '../../api/organization'
 import {
   __resetErrorJournalForTests,
   __resetNavSeamForTests,
@@ -36,6 +37,24 @@ vi.mock('../../api/client', () => ({
     sessionSummary: vi.fn(() => Promise.resolve({ enabled: false })),
   },
 }))
+
+vi.mock('../../api/organization', () => ({
+  organizationQuery: {
+    queryKey: ['organization'],
+    queryFn: vi.fn(),
+  },
+}))
+
+function emptyOrganization(): OrganizationSnapshot {
+  return {
+    members: [], tasks: [], messages: [], runs: [],
+    settings: {
+      revision: 1, enabled: true, concurrency: 3,
+      staffing: { conductor: {}, manager: {}, engineer: {}, researcher: {} },
+    },
+    runtime: { ready: true, backend: '', reason: '' },
+  }
+}
 
 /* The page now hosts the chat page's SidePanel. Its strip and + menu are what
  * these cases drive; the heavy tab BODIES (editors, terminals, previews) are
@@ -199,6 +218,7 @@ const rosterRow = async (name: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(organizationQuery.queryFn).mockResolvedValue(emptyOrganization())
   __resetErrorJournalForTests()
   __resetNavSeamForTests()
   // clearAllMocks keeps implementations, so a case that made the drawer's
@@ -1101,6 +1121,44 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(list).not.toHaveTextContent('other-crew-job')
     expect(list).not.toHaveTextContent('script-job')
     expect(list).not.toHaveTextContent('unbound-hook')
+  })
+
+  it('shows org delegation and inbox wakes instead of asserting there are no sessions', async () => {
+    const snapshot = emptyOrganization()
+    snapshot.settings.enabled = false
+    snapshot.members = [
+      { id: 'manager', name: 'oncall', role: 'manager', manager_id: null, state: 'active', permissions: [] },
+      { id: 'engineer', name: 'Engineer one', role: 'engineer', manager_id: 'manager', state: 'active', permissions: [] },
+    ]
+    snapshot.runs = [
+      { id: 'coalesced', member_id: 'engineer', state: 'coalesced', error: '' },
+      { id: 'queued', member_id: 'engineer', state: 'queued', error: '' },
+      { id: 'run', member_id: 'engineer', state: 'running', error: '' },
+    ]
+    snapshot.tasks = [{
+      id: 'task', parent_id: 'root', sender: 'manager', recipient: 'engineer',
+      title: 'Implement legal moves', acceptance: 'Perft passes', state: 'working', report: '', decision: '',
+    }]
+    vi.mocked(organizationQuery.queryFn).mockResolvedValue(snapshot)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const work = await screen.findByTestId('member-organization-work')
+    expect(work).toHaveTextContent('Implement legal moves')
+    expect(within(work).getByRole('link', { name: /Engineer one.*Working/ }))
+      .toHaveAttribute('href', '/members?member=Engineer%20one')
+    expect(await screen.findByTestId('member-wake-organization')).toHaveTextContent(/Assignments.*paused/i)
+    expect(screen.queryByTestId('member-driving-empty')).toBeNull()
+    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+  })
+
+  it('does not report no work when organization activity could not load', async () => {
+    vi.mocked(organizationQuery.queryFn).mockRejectedValue(new Error('unavailable'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByText('Organization activity is unavailable.')).toBeInTheDocument()
+    expect(screen.getByText('Organization activity is unavailable.').closest('[role="alert"]')).not.toBeNull()
+    expect(screen.queryByTestId('member-driving-empty')).toBeNull()
+    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
   })
 
   it('a failed wake-sources fetch renders the error state, never the affirmative empty state', async () => {

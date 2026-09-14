@@ -130,6 +130,33 @@ def _make_app(state):
 
 class TestQueueEditEndpoint:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("caller", ["owner", "guest"])
+    async def test_editor_replaces_owner_task_authority(self, caller):
+        state = _make_state()
+        state.owner_id = "owner"
+        slot = state.get_or_create_slot("chat-1")
+        qid = slot.queue_append(
+            "owner request", directive_user_origin=True, organization_owner_origin=True
+        )
+
+        @web.middleware
+        async def identify(request, handler):
+            request["user"] = caller
+            request["app"] = ""
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, identify)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.patch(
+                f"/api/chat/slots/chat-1/queue/{qid}",
+                json={"content": "Replacement", "_organization_owner_origin": True},
+            )
+            assert response.status == 200
+        assert (slot._queue[0].get("_organization_owner_origin") is True) is (caller == "owner")
+        assert slot._queue[0]["_directive_user_origin"] is True
+
+    @pytest.mark.asyncio
     async def test_edit_updates_queue_and_messages(self):
         state = _make_state()
         slot = state.get_or_create_slot("chat-1")

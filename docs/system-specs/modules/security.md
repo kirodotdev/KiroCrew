@@ -12,6 +12,13 @@ read-only and likewise precreated. Sandboxed cron metadata lookup can read an
 identity, but shell commands cannot rewrite it. The writable `trust/` tree carries
 no authoritative member memory binding.
 
+The organization prototype's policy, member identities and delegation records
+live in top-level `organizations/`. Only trusted gateway code opens this store.
+It is a `HIDDEN` sandbox leaf, also covered by the file-tool sensitive-path gate,
+and is precreated before any agent starts so late enablement cannot expose it
+inside an already-running namespace. No in-sandbox policy reader depends on
+these bytes; authenticated organization tools mediate access.
+
 The trusted V2 Markdown reader validates the named store's exclusive ownership
 before reading its retained files. It checks the opened descriptor's exact path
 and containment, rejects links, hardlinks and non-regular inodes, and bounds the
@@ -2280,6 +2287,12 @@ one place a count is computed. Controls split into two classes:
     package — each module must be a registered sink or an explicitly-reasoned
     entry in `NON_EGRESS_REDACTION_MODULES` (with a companion test rejecting stale
     allowlist entries), so a new output path cannot be added without classifying it.
+    `organization_tools.py` is classified with the other MCP result handlers:
+    it redacts through the active policy before returning to `mcp_work`, whose
+    downstream transport owns the output boundary.
+    `dashboard/handlers/organization.py` registers the organization HTTP boundary:
+    assignments, reports, messages and refusal text pass through the shared
+    credential and exfiltration-URL chain before serialization.
     The detector regex must stay broad enough to see **every wrapper**
     (`redact_and_truncate`, `redact_via_context`, qualified `security.redact(...)`,
     `StreamRedactor`), because a form missing from it is the same omission hole one

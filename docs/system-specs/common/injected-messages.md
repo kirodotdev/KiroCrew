@@ -12,6 +12,21 @@ Every prefix is defined once, in `src/kiro_crew/dashboard/state.py`, so the
 frontend has one list to mirror and no second copy can drift. Classification is by
 `str.startswith` on the resolved prefix, never by a loose regex.
 
+## Organization work notice
+
+Organization notices do not carry owner-chat authority. Only a live, structurally
+owner-originated chat turn enables `org_start_task`; synthetic payloads and
+self-wakes never enable it, even when they quote the owner's earlier request.
+The grant is cleared on every turn exit and is not restored from history.
+
+`ORGANIZATION_WAKE_PREFIX = '[Organization work notice]'` identifies a durable
+organization wake. The scheduler stores it as role `inject` with member/run
+metadata and asks the member to read `org_inbox`. Its static envelope contains no
+raw assignment, report or message promoted into human authority. Inbox records
+retain their sender and remain task data. A member should handle the work, report
+through organization tools and end its turn when waiting for reports. Ending a
+model turn does not accept an assignment.
+
 ## Cron notification
 
 A cron job called `send_message(session="origin")` and the origin dashboard slot

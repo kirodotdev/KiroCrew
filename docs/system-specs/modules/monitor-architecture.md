@@ -376,6 +376,19 @@ duration, which callers must size for.
 
 ### 7. Delivery and turn injection
 
+**Current delivery contract:** `monitoring.completion.MonitorCompletionHook`
+retains whether a closing gate refused a wake before provider dispatch. The
+dashboard records `SessionClosingError` from both allocation and the final
+`begin_turn` gate on that hook; authorization callbacks can record the same
+refusal. The observation survives asynchronous cleanup and admission reopening.
+Acceptance takes precedence: a dispatched turn cannot subsequently claim a safe
+admission refusal. An unstarted monitored admission refusal does not increment
+the provider failure counter or reset a warm session. Ordinary human error
+handling, genuine preparation failures and failures after acceptance retain
+their existing accounting. Refusal does not report a completion or charge a
+completed turn; each delivery owner consumes the outcome through its existing
+dispatch policy.
+
 A verdict becomes at most one agent turn, through a fixed sequence:
 
 1. Spill the evidence to a file.

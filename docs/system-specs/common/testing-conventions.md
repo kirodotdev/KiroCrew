@@ -119,6 +119,12 @@ say), and then still pair it with a Windows counterpart.
 
 ### Patch the defining module, not a re-export
 
+Synthetic process trees must fix the gateway PID as well as the worker PIDs.
+Mixing `os.getpid()` with hardcoded fixture PIDs can overwrite the gateway's
+namespace record when a container's test worker has the same PID. Give each
+synthetic role a distinct identity, and replace the tested module's `os`
+reference rather than patching the process-wide `os.getpid`.
+
 `monkeypatch.setattr`/`patch` rebind a NAME in one module namespace. Code
 reads its globals from its **defining** module, so patching a package
 re-export (e.g. `kiro_crew.dashboard.handlers.X`, imported there from
@@ -875,6 +881,10 @@ found these further classes. Each one passed on the host that wrote it.
   three fallback pushes, but `model_registry._ADVERTISED_MODELS` is a module global another
   test on the worker had warmed, so the id folded to the served spelling and one push went
   out. Pin the premise (`monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})`).
+  The `test/` isolation fixture gives each test a fresh advertised-model cache and
+  restores the inherited object at teardown. Tests that capture a provider's model list
+  exercise the real cache update without changing later tests' wire-model selection;
+  tests that need a warm cache seed it explicitly.
 - **A probe that depends on the venv's own packaging.** `_pip_install_channel_available()`
   reads `importlib.util.find_spec("pip")`; a uv-created venv ships no `pip` module, so two
   tests that meant to exercise the PEP 668 branch failed on every uv host. Pin every probe

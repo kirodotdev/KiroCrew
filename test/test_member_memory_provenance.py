@@ -20,8 +20,10 @@ from kiro_crew import platform_compat as pc
 
 @pytest.fixture
 def provenance(tmp_path, monkeypatch):
+    gateway_pid = 41
+    monkeypatch.setattr(auth, "os", SimpleNamespace(**(vars(os) | {"getpid": lambda: gateway_pid})))
     parent = {42: 1, 45: 42}
-    namespaces = {os.getpid(): "host", 42: "runtime", 45: "runtime"}
+    namespaces = {gateway_pid: "host", 42: "runtime", 45: "runtime"}
     monkeypatch.setattr(auth, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(auth, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(auth, "private_memory_boundaries_active", lambda: True)

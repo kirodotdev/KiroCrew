@@ -24,6 +24,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import userEvent from '@testing-library/user-event'
+import { organizationQuery } from '../api/organization'
 
 globalThis.ResizeObserver = class {
   observe() {}
@@ -55,6 +57,10 @@ const mockApi = vi.hoisted(() => ({
 }))
 
 vi.mock('../api/client', () => ({ api: mockApi }))
+vi.mock('../api/organization', () => ({
+  organizationQuery: { queryKey: ['organization'], queryFn: vi.fn() },
+  organizationAction: vi.fn(),
+}))
 
 /**
  * The real avatar builder decodes a picked file through a canvas, which jsdom
@@ -120,6 +126,15 @@ const confirmBox = (name = GENERIC) => screen.getByRole('dialog', { name })
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(organizationQuery.queryFn).mockResolvedValue({
+    settings: {
+      revision: 1, enabled: false, concurrency: 3,
+      staffing: { conductor: { manager: 2 }, manager: { engineer: 3 }, engineer: {}, researcher: {} },
+    },
+    runtime: { ready: true, backend: '', reason: '' },
+    members: [{ id: 'oncall', name: 'oncall', role: 'conductor', manager_id: null, state: 'active', permissions: [] }],
+    tasks: [], messages: [], runs: [],
+  })
   mockApi.kirocrewAgents.mockResolvedValue({
     agents: [{
       name: 'oncall',
@@ -146,6 +161,30 @@ beforeEach(() => {
 })
 
 describe('crew editor — dirty dismissal is guarded on every pane', () => {
+  it('keeps an organization task draft across a declined rail switch and close', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      const sheet = await openEditor()
+      fireEvent.click(within(sheet).getByTestId('crew-rail-organization'))
+      await userEvent.click(await within(sheet).findByRole('tab', { name: 'Work and messages' }))
+      fireEvent.change(within(sheet).getByLabelText('Task'), { target: { value: 'A task in progress' } })
+      expect(within(sheet).getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled()
+      fireEvent.click(within(sheet).getByTestId('crew-rail-overview'))
+      expect(confirm).toHaveBeenCalledWith('Discard unsaved changes?')
+      expect(within(sheet).getByLabelText('Task')).toHaveValue('A task in progress')
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel', exact: true }))
+      await waitFor(() => expect(confirmBox()).toBeInTheDocument())
+      fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-keep'))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument())
+      expect(within(sheet).getByLabelText('Task')).toHaveValue('A task in progress')
+      confirm.mockReturnValue(true)
+      fireEvent.click(within(sheet).getByTestId('crew-rail-overview'))
+      expect(within(sheet).queryByLabelText('Task')).toBeNull()
+    } finally {
+      confirm.mockRestore()
+    }
+  })
+
   it('footer Cancel while dirty prompts, and backing out keeps the sheet and the edit', async () => {
     const sheet = await openEditor()
     makeDirty(sheet)

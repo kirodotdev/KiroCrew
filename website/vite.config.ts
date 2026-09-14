@@ -957,6 +957,14 @@ export default defineConfig({
               test: /[\\/]node_modules[\\/](katex|highlight\.js|lowlight|refractor|react-markdown|remark-[^\\/]+|rehype-[^\\/]+|mdast-[^\\/]+|hast-[^\\/]+|micromark[^\\/]*|unified|unist-[^\\/]+)[\\/]/,
             },
             {
+              // Keep the eager translation library cacheable across catalog
+              // edits. English data and our initialization stay together in
+              // `t`; this group owns only the stable third-party runtime.
+              name: 'vendor-i18next',
+              priority: 30,
+              test: /[\\/]node_modules[\\/]i18next[\\/]/,
+            },
+            {
               // The YAML document parser, reached only by the skill editor's
               // frontmatter round-trip (`SkillForm.tsx`). Bucketed like every other
               // vendor library here because the App chunk is meant to hold FIRST-PARTY

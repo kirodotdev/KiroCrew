@@ -57,6 +57,23 @@ def _project_agents_dir(root: Path) -> Path:
     return d
 
 
+def test_compiled_organization_roles_do_not_become_roster_templates(fake_home):
+    d = _agents_dir(fake_home)
+    runtime_name = "kirocrew-org-2b727c49161946139f881d4559e83dd2"
+    templates = {
+        "research-helper",
+        "kirocrew-org-chart-helper",
+        "kirocrew-org-deadbeef",
+        "kirocrew-org-" + "C" * 32,
+        runtime_name + "-helper",
+    }
+    for name in (runtime_name, *templates):
+        (d / f"{name}.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+
+    clear_list_agents_cache()
+    assert {a.name for a in list_agents(agents_dir=d)} == templates
+
+
 class TestProjectScopeDiscovery:
     """Project-local ``<project>/.kiro`` agents, mirroring kiro-cli's workspace scope."""
 

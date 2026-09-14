@@ -76,7 +76,7 @@ from kiro_crew.agent_sdk.capabilities import (
     capabilities_for,
     capabilities_of,
 )
-from kiro_crew.agent_sdk.drivers.acp import finish_suspended_spawn
+from kiro_crew.agent_sdk.drivers.acp import agent_spec_matches, finish_suspended_spawn
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
     AgentAuthDeclaration,
@@ -100,6 +100,7 @@ class AgentTurnUsage(Protocol):
 
 __all__ = [
     "AgentTurnUsage",
+    "agent_spec_matches",
     "MODEL_NAMESPACE_ACP",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",

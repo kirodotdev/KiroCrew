@@ -259,6 +259,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         _reauthorize_after_await,
         _subagents_attached_response,
     )
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
     # Destructive: this truncates and PERSISTS history before the background
     # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
@@ -270,6 +271,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     request_app = request.get("app", "")
+    organization_owner_origin = request.get(
+        "internal_auth"
+    ) is not True and is_owner_dashboard_request(request)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
@@ -502,6 +506,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     slot,
                     _bc,
                     _directive_user_origin=not bool(request_app),
+                    _organization_owner_origin=organization_owner_origin,
                 )
                 return
             # Edit rejected. A send diverted to the queue by this reservation

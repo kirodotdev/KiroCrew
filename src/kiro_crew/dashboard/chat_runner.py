@@ -9,6 +9,7 @@ import logging
 import re
 import stat as stat_module
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -5926,6 +5927,9 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     directive_user_origin = bool(consumed) and all(
         item.get("_directive_user_origin") is True for item in consumed
     )
+    organization_owner_origin = bool(consumed) and all(
+        item.get("_organization_owner_origin") is True for item in consumed
+    )
     # Channel authority is the narrower credential boundary. If batching combines
     # channel and dashboard entries, the whole turn must retain that boundary so a
     # directive derived from either message cannot inherit dashboard-owner secrets.
@@ -6135,6 +6139,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         "_current_message": current_row,
         "_synthetic_payload": synthetic_payload,
         "_directive_user_origin": directive_user_origin,
+        "_organization_owner_origin": organization_owner_origin,
         "_directive_channel_origin": directive_channel_origin,
     }
     if _settleable or _delivery_callbacks:
@@ -6375,6 +6380,7 @@ async def _run_chat(
     _prompt_depth: int = 0,
     _synthetic_payload: bool = False,
     _directive_user_origin: bool = False,
+    _organization_owner_origin: bool = False,
     # This turn is the delivered wake of a nudge/monitor loop bound to THIS slot
     # (set only by ``GatewayOrchestrator._fire_dashboard_nudge``). It is the
     # second producer the session-directive consumer admits as "the session's
@@ -6812,6 +6818,7 @@ async def _run_chat(
                 _on_irreversibly_consumed if not _irreversible_consumption_reported else None
             ),
             directive_user_origin=_directive_user_origin,
+            organization_owner_origin=_organization_owner_origin,
             directive_channel_origin=_directive_channel_origin,
         )
 
@@ -7087,6 +7094,7 @@ async def _run_chat(
                     expanded,
                     _prompt_depth=1,
                     _directive_user_origin=_directive_user_origin,
+                    _organization_owner_origin=_organization_owner_origin,
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
                 )
@@ -7504,6 +7512,17 @@ async def _run_chat(
                 session_key,
                 {"memory_store": memory_store, "agent": crew_alias},
             )
+            if private_member:
+                # First publish the admitted binding into fresh history, then
+                # use the shared strict resolver. A warm provider must not
+                # outlive a retired organization's identity either.
+                from kiro_crew.organization_policy import member_for_session
+
+                try:
+                    await asyncio.to_thread(member_for_session, session_key)
+                except Exception as exc:
+                    raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
+                _require_current_binding()
             await prepare_store_vectors(
                 state.context_builder, memory_store, session_key=session_key
             )
@@ -7793,6 +7812,14 @@ async def _run_chat(
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(state.sessions, session_key)
+
+        # Reuse admission provenance, never message text or mutable history, to
+        # let a member register the owner's request without leaving this chat.
+        slot._organization_owner_request = (
+            (session_key, uuid.uuid4().hex)
+            if _organization_owner_origin and not _synthetic_payload and not _directive_self_wake
+            else None
+        )
 
         # ── @prompt expansion: resolve @name to SOP/prompt content ──
         # Captured BEFORE any expansion: `@prompt` replaces `message` and
@@ -8384,6 +8411,8 @@ async def _run_chat(
                     return
             state.sessions.begin_turn(session_key)
         except SessionClosingError:
+            if monitor_completion is not None:
+                monitor_completion.mark_admission_refused()
             logger.info("Aborting dispatch for %s — gateway is shutting down", session_key)
             return
         # Stop-before-dispatch gate: a Stop pressed during the async prep above
@@ -13325,6 +13354,8 @@ async def _run_chat(
         logger.warning("App agent not loaded for slot %s: %s", slot.key, exc)
         slot.append("error", str(exc), "msg msg-err")
     except Exception as exc:
+        if isinstance(exc, SessionClosingError) and monitor_completion is not None:
+            monitor_completion.mark_admission_refused()
         logger.exception("Dashboard chat error in slot %s", slot.key)
         _err_text, _ = redact_exfiltration_urls(str(exc))
         _err_text, _ = redact_credentials(_err_text)
@@ -13335,9 +13366,17 @@ async def _run_chat(
         if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
             _err_meta = {"code": "memory_unavailable"}
         slot.append("error", _err_text, "msg msg-err", meta=_err_meta)
-        if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
+        if not (
+            (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted)
+            or (
+                isinstance(exc, SessionClosingError)
+                and monitor_completion is not None
+                and monitor_completion.admission_refused
+            )
+        ):
             await state.sessions.record_failure(session_key)
     finally:
+        slot._organization_owner_request = None
         # Poisoned-conversation streak break — in the FINALLY on purpose (fork
         # GPT review): several recovery paths (stale-turn, tool-stall,
         # pipe-death) `return` before the main completion block, and a turn

@@ -18,6 +18,197 @@ an Issue Radar *crew*, which is that app's own repository work crew
 
 ## Components
 
+### Runtime components
+
+The organization prototype uses `organization.py` for its durable records. Its
+gateway-owned SQLite store lives under `<data home>/organizations/`, hidden
+from every agent sandbox and created before the first sandbox starts. It
+records immutable member IDs bound to private memory generations, reporting
+relationships, staffing reservations, assignments, messages and execution
+attempts. It starts paused. A member's name and role are presentation and policy
+properties; a caller cannot select an identity by supplying either.
+
+The store schema identity is SQLite `PRAGMA user_version = 1`, independent of
+governance's contract version. Version 0 explicitly denotes the current
+unversioned prototype shape: initialization adopts those existing tables and
+records in place, preserving member/private-memory bindings, relationships,
+settings, assignments, owner-chat request mappings, messages, hiring
+reservations, runs and audit sequence. It also creates that shape for a new
+store. The writer acquires `BEGIN IMMEDIATE` before reading the version, so
+concurrent initializers recheck it after the preceding writer commits. Table
+creation, the version stamp and the requested operation share one transaction;
+DDL or operation failure rolls them back together. Version 1 reopens without
+schema DDL. Any other version refuses with `unsupported_schema_version` before
+table or data writes; the owner must use a compatible build. There is no
+recreate policy or migration for another unversioned shape.
+
+The `events` table is a transactional audit journal: state mutations and their
+actor/action/target entries commit or roll back together. It is retained as
+durable evidence; no application reader consumes it today.
+
+Communication follows the direct manager/report relationship; the owner can
+contact any member. Delegation goes to direct reports under an assignment the
+manager owns. A worker's `done` report enters review; only the assigning party
+accepts it. Coordinators cannot finish an assignment without accepted delegated
+work. Cancellation closes open descendants. Structural moves and retirement
+refuse while the affected member has open work or a running organization turn;
+retirement cancels queued wakes and retains identity and history. A manager
+cannot retire while a report is active or still being provisioned, including
+the interval between identity enrollment and config publication.
+
+Staffing limits apply independently to each manager. Hiring reuses an idle
+report before reserving another place, and reservation plus capacity check is
+atomic. A pending message turn also makes a report busy. Team headcount and
+simultaneous execution are separate controls. There
+is at most one running turn per member. Interrupted turns remain visible after
+restart and require a deliberate retry because their side effects are unknown.
+Recovery starts in a tracked task after the dashboard listener binds; it never
+holds up route registration or listener startup. A recovery failure leaves the
+dashboard available. Shutdown drains initialization before closing the runner,
+and the runner admits no work until recovery succeeds.
+`organization_runtime.py` admits queued work into the existing private member
+thread, waits for an owner conversation to finish, and receives authoritative
+provider completion separately from assignment acceptance. Completion is
+acknowledged only after its durable write succeeds. If the chat runner catches
+a completion-write error, the delivery fallback still attempts to record the
+failure and release admission. Persistent storage failure has no completion
+guarantee. Before claiming queued work, the scheduler synchronously reserves an
+inbound callback through `SessionManager`. Update or shutdown admission refusal
+leaves queued wakes untouched. The reservation counts as updater-busy throughout
+claiming, private-thread preparation and durable completion, including before
+`slot.task` exists. Empty claims, errors and cancellation release it; cancellation
+drains pending claim and result writes first. Delivery preserves shutdown
+cancellation even if its chat child catches it, and drains that child before
+returning a claim or releasing the reservation. A claim cancelled or refused by
+closing admission before provider dispatch returns to the queue.
+The completion hook retains an observed allocation, authorization or dispatch
+refusal even if update admission reopens before chat cleanup finishes. A later
+admission-state read cannot substitute for that observation. Genuine preparation
+failures remain failed.
+The completion hook's acceptance boundary distinguishes these safe returns from
+dispatched turns, whose unknown effects require inspection and deliberate retry.
+The concurrency limit governs these delegated turns; direct owner conversations
+use the existing chat lifecycle. Pausing prevents new admissions. Cancelling an
+assignment closes its open descendants but does not roll back side effects or
+stop an already running model turn; the member conversation retains the existing
+stop control.
+Failed delegated turns wake the manager, whose inbox exposes direct-report run
+status without their private conversation or memory. Agent-requested retries
+stop after three unsuccessful attempts; the owner can inspect and retry.
+Every assignment report, including intermediate progress, wakes its assigning
+member. Repeated reports coalesce into one queued turn, which reads the newest
+evidence. A progress report keeps the assignment working; it does not accept
+the work or require the owner to manually wake a waiting conductor.
+Snapshots retain every unresolved assignment plus the latest 200 terminal
+assignments within the caller's visibility. Old open work remains reviewable
+and cancellable. HTTP responses recursively redact credentials and exfiltration
+URLs in reports, messages and other text without rewriting stored evidence.
+Error envelopes retain their explicit stable code and HTTP status while
+redacting the advisory error text.
+
+The member summary shows organization assignments, direct-report conversation
+links and their latest delegated turn states. These turns use each member's
+canonical conversation, so they do not produce `session_create` worker slots
+or `created_by` attribution. The summary lists the organization inbox as a wake
+source, including when new turns are paused. A missing organization response
+remains loading or unavailable rather than asserting that no work exists.
+The chart and member summary share literal catalog keys for role, action and
+status labels, so catalog checks can verify their references. An unknown status
+remains visible as its server code.
+
+`organization_policy.py` compiles fixed role tool ceilings. Coordinators have
+read, private-memory and organization tools; engineers additionally have file
+write and shell tools; researchers additionally have web search and fetch.
+Generic spawning, unrelated MCP servers, inherited hooks and blanket approvals
+are absent. Organization execution requires the Kiro member backend and the
+existing private-memory OS boundary. Unsupported runtimes refuse. Session context
+withholds the generic member `session_create` dispatch instructions for a
+verified organization identity; its fixed role prompt defines delegation through
+`org_hire` and `org_assign`, or execution by an engineer or researcher.
+The provider compiles the role before the unified runtime loses its original session key;
+direct private `AcpClient` starts also compile before spawn. The SDK's
+`agent_spec_matches` checks the backend's own project-first resolver against
+the compiled definition; a different or unreadable project override refuses.
+Existing governance remains the ceiling.
+Compiled `kirocrew-org-<32 lowercase hex characters>` agent specifications are
+reserved runtime artifacts;
+agent discovery excludes them from selectable templates and automatic member
+sync, so one persistent member does not acquire a second roster identity.
+Other templates sharing only the `kirocrew-org-` prefix remain selectable.
+
+`organization.py`'s `ROLE_PERMISSIONS` supplies capability summaries on the
+authenticated `org_inbox` response (and owner snapshots). It is retained to
+describe the member's available work, not used as a runtime grant.
+`organization_policy.role_spec` remains the tool-ceiling compiler used at
+provider startup; gateway action checks and existing governance enforce their
+own boundaries independently of the summary.
+
+`organization_service.py` provisions a new, uniquely bound private member for
+each identity; arbitrary existing members are not enrolled by this prototype.
+Roles are fixed at creation. The owner can move idle members, set staffing
+limits, assign work, message any member and review direct assignments from
+Capabilities → Org Chart and Guardrails. The member editor has the same surface
+focused on its member. Its four views use the shared tab control, including
+arrow-key navigation and named panels. Member names outside this organization are identified
+explicitly. Unsaved staffing, task, message, member-creation and review drafts
+guard navigation away, including the member editor's pane changes and dismissal.
+The embedded view labels run, pause and staffing as team-wide controls.
+Save staffing applies team limits immediately without a restart; Save changes
+saves the member's settings after organization drafts are finished or discarded.
+Reporting relationships use "Reports to"; Manager remains a role. The Task input
+fills its form column. Work/activity labels describe concurrency and execution
+status. The work view shows its empty card only when there are no assignments
+and no displayed failed or interrupted runs. An enabled team whose runtime is
+not ready shows Unavailable while retaining the pause control. Runtime failures
+retain their specific reason in `ErrorNotice`, with agent handoff disabled
+beside those unsaved drafts.
+Successful submissions clear the submitted draft; newer edits typed while the
+request was pending remain in the form. Pause and Run team change only the
+persisted execution setting; they neither submit nor clear staffing drafts.
+Review keeps Accept beside an overflow menu for Request changes and Cancel task;
+its decision field has a visible required label. Member maintenance actions also
+live in an overflow menu. Retirement requires a confirmation naming the member
+and stating that it preserves memory/history but cannot be undone; dismissing
+the dialog leaves the member and form drafts intact.
+`organization_tools.py` adds stateless `org_*` tools to
+`kirocrew-work`. The member API derives identity from the verified private caller
+proof; the owner API does not accept internal callers.
+The existing `work_*` tools retain their separate child-session contract:
+one dispatch per session, ownership through `session_create`, and no automatic
+report wake. Organization assignments belong to reusable private members and
+commit with their wakes in one store. The
+[proposal's comparison](../../request-for-change/rfc-org-chart-and-guardrails.md#relationship-to-the-existing-work-ledger)
+records the four contracts that prevent direct reuse of the current ledger APIs.
+
+An owner can also start work in any member's conversation. `org_start_task`
+records that request as a top-level owner assignment to the calling member and
+returns the ID immediately, so coordinators can delegate without a page change.
+The tool accepts only a title and acceptance conditions. The gateway admits it
+only during a live turn with trusted owner provenance, bound to the verified
+private session. Chat ingress verifies the authenticated owner identity
+separately from general human-message provenance. Queues carry that server-only
+fact, never merge owner and non-owner requests, and replace it with the editor's
+authority when text changes. Automated wakes, authenticated guests, app messages
+and self-wakes cannot originate owner assignments.
+Repeated calls in one turn return the same durable task;
+later owner requests are separate turns. Members should continue an existing
+assignment when the request is already tracked. Registration does not change
+roles, reporting relationships or acceptance rules. A queued wake preserves
+continuation if the initiating turn ends before the work does.
+
+For an isolated preview, use the existing
+[`kirocrew pod` lifecycle](../../../src/kiro_crew/pod/README.md):
+`kirocrew pod up <worktree> --provision --seed minimal`, followed by
+`kirocrew pod token <worktree>` to open its dashboard. Configure the Kiro member
+backend and enable private member provisioning in that isolated gateway.
+Create and select a project subdirectory in a member conversation before asking
+it to create files.
+Private-memory execution seals configured workspace roots as administrative
+directories, while existing project subdirectories remain writable. Do not
+configure a flat project repository itself as the workspace root.
+Owner approval settings govern organization turns; the role ceilings still
+apply when automatic tool approval is selected for the isolated pod.
+
 Legacy topic respawn requires its original run identity or surviving legacy
 run state. If pruning removed both, continuation refuses with a named memory
 error and leaves the queued request retryable; the owner must start a new topic.

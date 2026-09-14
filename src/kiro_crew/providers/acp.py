@@ -1499,6 +1499,20 @@ class AcpProvider(LLMProvider):
         private_memory = self._private_memory or bool(store)
         if private_memory:
             require_private_memory_mcp_backend(self._client.backend)
+            # The unified Kiro runtime replaces this placeholder client and
+            # spawns with no session key. Compile while this provider still
+            # holds its protected caller identity, before passing the agent
+            # specification into that runtime.
+            from kiro_crew.organization_policy import prepare_agent
+
+            organization_agent = await asyncio.to_thread(
+                prepare_agent,
+                self._private_memory_session_key,
+                self._client.backend,
+                self._client._work_dir,
+            )
+            if organization_agent:
+                self._client._agent = organization_agent
         # The worker only reads. Publish flags and routing together on the loop,
         # after validation, so cancellation cannot leave a partly prepared client.
         self._private_memory = private_memory

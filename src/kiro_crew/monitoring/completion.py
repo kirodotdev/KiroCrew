@@ -59,6 +59,7 @@ class MonitorCompletionHook:
     authorization_callback: MonitorAuthorizationCallback | None = None
     acceptance_callback: MonitorAcceptanceCallback | None = None
     _accepted: bool = field(default=False, init=False, repr=False)
+    _admission_refused: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         for name in ("monitor_id", "fingerprint"):
@@ -103,6 +104,16 @@ class MonitorCompletionHook:
     def accepted(self) -> bool:
         """Whether a surface attached this correlation to a starting turn."""
         return self._accepted
+
+    @property
+    def admission_refused(self) -> bool:
+        """Whether a closing gate refused this wake without an accepted dispatch."""
+        return self._admission_refused and not self._accepted
+
+    def mark_admission_refused(self) -> None:
+        """Retain an observed closing refusal across asynchronous cleanup/resume."""
+        if not self._accepted:
+            self._admission_refused = True
 
     def mark_accepted(self) -> None:
         """Record the boundary after which completion evidence owns recovery."""

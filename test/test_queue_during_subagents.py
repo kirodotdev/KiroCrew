@@ -164,8 +164,9 @@ class TestApiChatSubagentQueueGate:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         ran = {"called": False}
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin, _organization_owner_origin):
             assert _directive_user_origin is True
+            assert _organization_owner_origin is True
             ran["called"] = True
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -188,8 +189,9 @@ class TestApiChatSubagentQueueGate:
     async def test_not_queued_when_no_subagents_running(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin, _organization_owner_origin):
             assert _directive_user_origin is True
+            assert _organization_owner_origin is True
             return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)

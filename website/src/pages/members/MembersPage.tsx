@@ -45,6 +45,8 @@ import {
   type MemberThreadOutcome,
 } from '../../api/membersQuery'
 import { defaultAgentQuery } from '../../api/defaultAgentQuery'
+import { organizationQuery } from '../../api/organization'
+import OrganizationMemberWork from './OrganizationMemberWork'
 import { cronJobsQuery } from '../../api/cronJobsQuery'
 import { crewWebhooksQueryKey, wakesCrew, webhookBoundToCrew } from '../../components/crew/wakesCrew'
 import {
@@ -916,6 +918,8 @@ export default function MembersPage() {
   // the summary shows the cached pointers and refreshes them behind.
   const activeSlug = active?.slug ?? ''
   const activeMemberName = active?.name ?? ''
+  const organization = useQuery({ ...organizationQuery, enabled: summaryVisible })
+  const organizationMember = organization.data?.members.find(member => member.name === activeMemberName)
   const activityQuery = useQuery({
     queryKey: memberActivityQueryKey(activeSlug, activeMemberName),
     queryFn: () => api.memberActivity(activeSlug, activeMemberName),
@@ -947,7 +951,7 @@ export default function MembersPage() {
     enabled: summaryVisible,
   })
   const defaultAgentQ = useQuery({ ...defaultAgentQuery, enabled: summaryVisible })
-  const wakeSources = [cronsQuery, hooksQuery, defaultAgentQ]
+  const wakeSources = [cronsQuery, hooksQuery, defaultAgentQ, organization]
   const wakeFailed = wakeSources.some((q) => q.data === undefined && q.isError)
   const wakeLoaded = wakeFailed || wakeSources.every((q) => q.data !== undefined)
   const wakeJobsAll = cronsQuery.data
@@ -2019,6 +2023,14 @@ export default function MembersPage() {
               <div className="text-[11px] text-muted">{t('pages.membersPage.stat_week')}</div>
             </div>
           </div>
+          {organizationMember && organization.data ? (
+            <OrganizationMemberWork member={organizationMember} data={organization.data} />
+          ) : organization.data === undefined ? (
+            organization.isError ? (
+              /* No hand-off: the member's side conversation may contain an unsent message draft. */
+              <ErrorNotice message={t('organization.activityUnavailable')} />
+            ) : <div className="mb-4 text-[11px] text-muted">{t('organization.loading')}</div>
+          ) : <>
           {/* Sessions this member is driving — the worker sessions it opened
               and steers. Live rows off the WS slots frames (see the
               drivingSessions memo); each row is a jump into that session.
@@ -2093,6 +2105,7 @@ export default function MembersPage() {
               )}
             </div>
           )}
+          </>}
           {/* Auto patrol — the auto-nudge loop on this member's own thread,
               beside the sessions it drives: together they answer "is this
               member alive, and what is it doing". Three verdicts, never
@@ -2405,10 +2418,18 @@ export default function MembersPage() {
                 testId="member-wake-error"
               />
             </div>
-          ) : wakeJobs.length === 0 && wakeHooks.length === 0 && patrolState !== 'active' ? (
+          ) : wakeJobs.length === 0 && wakeHooks.length === 0 && patrolState !== 'active' && organizationMember?.state !== 'active' ? (
             <div className="text-[11px] text-muted mb-4">{t('pages.membersPage.wake_none')}</div>
           ) : (
             <ul className="list-none m-0 p-0 mb-4 space-y-1.5" data-testid="member-wake-sources">
+              {organizationMember?.state === 'active' && <li
+                className="flex items-center gap-2 text-[11px]" data-testid="member-wake-organization">
+                <Users size={12} className="lucide-inline text-muted shrink-0" aria-hidden />
+                <span className="min-w-0 flex-1">{t('organization.inboxWake')}</span>
+                {!organization.data?.settings.enabled && <span className="text-muted">
+                  {t('pages.membersPage.wake_paused')}
+                </span>}
+              </li>}
               {/* An active patrol IS a wake source — the one this member set
                   for itself. Listing it here keeps the card from saying
                   "Last wake 6m ago" above "Nothing wakes this member". */}

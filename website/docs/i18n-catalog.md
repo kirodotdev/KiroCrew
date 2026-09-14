@@ -60,6 +60,13 @@ Catalogs live in `src/i18n/locales/`:
 | `<tag>.json` | one per translation. Its key set must match the English key set exactly. |
 | `en-XA.json` | generated pseudolocale, dev-only. Not a language. |
 
+The production build keeps the i18next library in an eager `vendor-i18next`
+chunk so catalog edits can reuse the cached library. English data and runtime
+initialization share the `t` chunk; the other shipped catalogs are registered
+through `all` before the first render. This adds one eager chunk request without
+deferring any translations. The bundle size and chunk cycle gates cover this
+split.
+
 Shipped languages, ordered by global speaker count (which is also the picker
 order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`.
 

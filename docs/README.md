@@ -8,6 +8,9 @@ docs live in [`../website/docs/`](../website/docs/README.md).
 New here? Start with [guides/install.md](guides/install.md), then
 [architecture/overview.md](architecture/overview.md).
 
+For the persistent-team proposal, see
+[Org Chart and Guardrails](request-for-change/rfc-org-chart-and-guardrails.md).
+
 ## Where things live
 
 | Directory | What it is for |

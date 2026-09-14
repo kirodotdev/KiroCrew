@@ -441,6 +441,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # the tools' internal-secret calls fall through to cookie auth and are
         # refused before the handler's own session recognition can run.
         "/api/work-ledger",
+        "/api/organization-agent",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.
@@ -1463,8 +1464,47 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
     return _route
 
 
+def _deferred_organization(handler_name: str) -> Callable:
+    """Resolve organization handlers when their owner or member calls them."""
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard.handlers import organization
+
+        return await getattr(organization, handler_name)(request)
+
+    _route.__name__ = handler_name
+    return _route
+
+
+async def _organization_lifecycle(app: web.Application):
+    """Own deferred initialization and turns without doing work before bind."""
+    yield
+    startup = app.get("organization_startup_task")
+    if startup is not None:
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
+    runner = app.get("organization_runner")
+    if runner is not None:
+        await runner.close()
+
+
+def _kick_organization(app: web.Application) -> None:
+    """Recover existing organization work after the listener accepts requests."""
+
+    async def start() -> None:
+        try:
+            from kiro_crew.organization_runtime import start_if_present
+
+            await start_if_present(app)
+        except Exception:
+            logger.exception("Organization recovery failed; dashboard remains available")
+
+    app["organization_startup_task"] = asyncio.create_task(start(), name="organization-startup")
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
+    app.cleanup_ctx.append(_organization_lifecycle)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
@@ -1484,6 +1524,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))
+    app.router.add_get("/api/organization", _deferred_organization("api_organization"))
+    app.router.add_post("/api/organization", _deferred_organization("api_organization"))
+    app.router.add_get("/api/organization-agent", _deferred_organization("api_organization_agent"))
+    app.router.add_post("/api/organization-agent", _deferred_organization("api_organization_agent"))
     app.router.add_post("/api/work-ledger/record", _deferred_work_ledger("api_work_ledger_record"))
     app.router.add_get("/api/work-ledger/brief", _deferred_work_ledger("api_work_brief"))
     app.router.add_post("/api/work-ledger/report", _deferred_work_ledger("api_work_report"))
@@ -4466,6 +4510,7 @@ async def start_dashboard(
     _kick_connections_warm_scavenge(state)
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
+    _kick_organization(app)
     # Same shape for the knowledge store's writer-locked orphan sweep: it left
     # the constructor (which runs pre-bind, on the loop) and runs here on a
     # worker thread once requests are already being served.
@@ -5272,6 +5317,7 @@ async def start_api_server(
     _kick_connections_warm_scavenge(state)
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
+    _kick_organization(app)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

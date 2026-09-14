@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library } from 'lucide-react'
+import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, GitBranch } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
 import RestartButton from '../components/RestartButton'
@@ -13,6 +13,7 @@ import ConnectionsPage from './connections/ConnectionsPage'
 import KnowledgePage from './KnowledgePage'
 import { SkillsTab, PromptsTab, SteeringTab } from './overview'
 import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
+import OrganizationPage from './OrganizationPage'
 
 
 /**
@@ -46,6 +47,7 @@ export default function CapabilitiesPage() {
     const groupAutomation = t('pages.capabilitiesPage.group_automation')
     return [
       { key: 'crews', label: t('pages.capabilitiesPage.crews_label'), icon: <Users size={16} />, description: t('pages.capabilitiesPage.crews_description'), group: groupAgent },
+      { key: 'organization', label: t('organization.title'), icon: <GitBranch className="lucide-inline" />, description: t('organization.description'), group: groupAgent },
       { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent },
       // The label and description are deliberately unchanged. Substituting the
       // pre-gallery "MCP Servers" strings was tried and reverted: those keys were
@@ -76,6 +78,7 @@ export default function CapabilitiesPage() {
     <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<div className="flex items-center gap-2"><PinSurfaceButton defaultTab={tabs[0]?.key} /><RestartButton /></div>}>
       {tab => <>
         {tab === 'crews' && <KiroCrewAgentsPage embedded />}
+        {tab === 'organization' && <OrganizationPage embedded />}
         {tab === 'mcp' && <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
         {tab === 'skills' && <SkillsTab />}
         {/* ErrorBoundary preserves the crash isolation the /knowledge route

@@ -31,6 +31,16 @@ Private sessions bypass the global warm/shared runtime inventory. Dedicated
 private consolidation uses the same preparation boundary; V1 factory call shapes
 and background/pool behavior remain unchanged.
 
+Organization members also compile their fixed role specification at this
+preparation boundary. It must precede `_start_kiro_runtime_impl`: that method
+transfers the selected agent into a dedicated runtime whose spawn client has no
+original session key. Deferring role selection to that spawn silently loses the
+organization identity. Compilation requires the Kiro backend and private
+execution support, rejects project shadowing, and leaves non-organization
+providers unchanged. `agent_sdk.agent_spec_matches` checks the compiled role
+through the spawn resolver, returning only the equality verdict to organization
+policy. Role admission failure prevents provider allocation.
+
 ```
 ┌─────────────────────────────────────────────┐
 │  Consumers (handler, gateway, cli, session) │

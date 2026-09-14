@@ -80,6 +80,8 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     edited prompt against it. Slot key, title, folder, sidebar position, and
     color are unchanged.
     """
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
     # Destructive: this truncates and PERSISTS history before the background
     # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
     # readiness latch must be honored BEFORE the mutation.
@@ -90,6 +92,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     request_app = request.get("app", "")
+    organization_owner_origin = request.get(
+        "internal_auth"
+    ) is not True and is_owner_dashboard_request(request)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
@@ -345,6 +350,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     slot,
                     redacted_content,
                     _directive_user_origin=not bool(request_app),
+                    _organization_owner_origin=organization_owner_origin,
                 )
                 return
             # Rewind rejected. A send diverted to the queue by this

@@ -2780,14 +2780,17 @@ def carries_attachments(item: dict) -> bool:
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
-    A merge run stops at a system injection and at an attachment-bearing entry
-    (see :func:`carries_attachments`); an attachment-bearing entry at the head
-    of the queue pops alone.
+    A merge run stops at a system injection, an attachment-bearing entry, or a
+    change in owner provenance. A guest's message cannot borrow an adjacent
+    owner's task authority, nor suppress it by joining the owner's turn.
     """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
+        owner_origin = slot._queue[0].get("_organization_owner_origin") is True
         for item in list(slot._queue):
             if is_system_injection_item(item) or carries_attachments(item):
+                break
+            if (item.get("_organization_owner_origin") is True) != owner_origin:
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

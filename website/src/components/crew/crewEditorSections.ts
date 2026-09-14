@@ -22,13 +22,13 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Boxes, Clock, Cpu, FolderOpen, LayoutDashboard, Trash2, Waypoints, Webhook,
+  Boxes, Clock, Cpu, FolderOpen, GitBranch, LayoutDashboard, Trash2, Waypoints, Webhook,
   type LucideIcon,
 } from 'lucide-react'
 
 /** Which pane the editor body is showing. */
 export type CrewPaneKey =
-  | 'overview' | 'template' | 'model' | 'place' | 'schedules' | 'routing' | 'webhook' | 'danger'
+  | 'overview' | 'template' | 'model' | 'place' | 'schedules' | 'routing' | 'webhook' | 'organization' | 'danger'
 
 export interface CrewEditorSection {
   key: CrewPaneKey
@@ -120,6 +120,12 @@ export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection
         group: t('components.crewEditor.group_what_it_can_do'),
         icon: Boxes,
         label: templateLabel,
+      },
+      {
+        key: 'organization',
+        group: t('components.crewEditor.group_what_it_can_do'),
+        icon: GitBranch,
+        label: t('organization.title'),
       },
       {
         key: 'model',

@@ -217,6 +217,9 @@ _MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
 
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
+    # Reporting relationships and role ceilings are gateway-owned authority.
+    # Message/task records must not be writable through a worker's shell.
+    "organizations",
     # Channel credentials. Already file-masked in cc/strict via ``_CC_FILES``; listing
     # it here extends the same treatment to standard, where a spawned command could
     # otherwise read every Slack/Discord token off disk.
@@ -815,6 +818,7 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: existing empty root as usable, and proves the root writable before certifying
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
+    "organizations",
     "aws-control-staging",
     "appearance-library",
     "quarantined-clones",

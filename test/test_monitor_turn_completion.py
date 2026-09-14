@@ -2,16 +2,132 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 from copy import deepcopy
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
+from chat_test_helpers import _make_state
 
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.monitoring import models
 from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome, MonitorState
+
+
+@pytest.mark.parametrize("acceptance", ["none", "before-refusal", "after-refusal"])
+def test_observed_admission_refusal_never_overrides_dispatch_acceptance(acceptance):
+    from kiro_crew.monitoring.completion import MonitorCompletionHook
+
+    completed, accepted = AsyncMock(), Mock()
+    hook = MonitorCompletionHook("monitor1", "failure-a", completed, acceptance_callback=accepted)
+    assert not hook.admission_refused
+    if acceptance == "before-refusal":
+        hook.mark_accepted()
+    hook.mark_admission_refused()
+    hook.mark_admission_refused()
+    if acceptance == "after-refusal":
+        hook.mark_accepted()
+    assert hook.admission_refused is (acceptance == "none")
+    assert hook.accepted is (acceptance != "none")
+    completed.assert_not_called()
+    assert accepted.call_count == int(acceptance != "none")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage,monitored,closing,refused,failure_count",
+    [
+        ("allocation", True, True, True, 0),
+        ("allocation", False, True, False, 1),
+        ("allocation", True, False, False, 1),
+        ("authorization", True, True, True, 0),
+        ("authorization", True, False, False, 1),
+        ("begin-turn", True, True, True, 0),
+        ("begin-turn", False, True, False, 0),
+        ("dispatched", True, True, False, 1),
+        ("dispatched", True, False, False, 1),
+    ],
+)
+async def test_real_chat_retains_refusal_without_charging_an_unstarted_monitor(
+    tmp_path, monkeypatch, stage, monitored, closing, refused, failure_count
+):
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.monitoring.completion import MonitorCompletionHook
+    from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+    from kiro_crew.session import SessionClosingError
+
+    state = _make_state(tmp_path)
+    state.broadcast_ws = Mock()
+    state.push_slots_update = Mock()
+    state.context_builder = None
+    state.consolidator = None
+    state._hook_store = None
+    state._yolo = False
+    state.slack_client = None
+    slot = state.get_or_create_slot("monitor-refusal")
+    slot._titled = True
+    state.sessions.admission_closed = False
+    state.sessions.record_failure = AsyncMock()
+    error = (
+        SessionClosingError("admission paused") if closing else RuntimeError("preparation failed")
+    )
+
+    def fail(*_args, **_kwargs):
+        state.sessions.admission_closed = True
+        raise error
+
+    streams = []
+
+    async def stream(_message):
+        streams.append(True)
+        fail()
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    client = MagicMock(client=None)
+    client.context_usage_pct.return_value = 0.0
+    client.context_used_tokens.return_value = 0
+    client.context_window_tokens.return_value = 0
+    client.stream = stream
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    authorize = AsyncMock(return_value=True)
+    completion = AsyncMock()
+    hook = (
+        MonitorCompletionHook("monitor1", "failure-a", completion, authorization_callback=authorize)
+        if monitored
+        else None
+    )
+    if stage == "allocation":
+        state.sessions.get_or_create.side_effect = fail
+    elif stage == "authorization":
+        authorize.side_effect = fail
+    elif stage == "begin-turn":
+        state.sessions.begin_turn.side_effect = fail
+    consume = chat_runner._consume_pending_reset
+    cleanup = []
+
+    async def resume_during_cleanup(*args, allow_discard=False, **kwargs):
+        if allow_discard:
+            cleanup.append(True)
+            state.sessions.admission_closed = False
+        return await consume(*args, allow_discard=allow_discard, **kwargs)
+
+    monkeypatch.setattr(chat_runner, "_consume_pending_reset", resume_during_cleanup)
+    await asyncio.wait_for(
+        chat_runner._run_chat(state, slot, "Inspect the work", monitor_completion=hook), timeout=5
+    )
+    assert cleanup == [True]
+    assert not state.sessions.admission_closed
+    assert state.sessions.record_failure.await_count == failure_count
+    assert streams == ([True] if stage == "dispatched" else [])
+    completion.assert_not_awaited()
+    if hook is not None:
+        assert hook.admission_refused is refused
+        assert hook.accepted is (stage == "dispatched")
+    if failure_count:
+        assert any(row["role"] == "error" and str(error) in row["content"] for row in slot.messages)
 
 
 def _structured_loop() -> NudgeLoop:

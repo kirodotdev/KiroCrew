@@ -133,6 +133,22 @@ regressions are in `test/test_platform_compat.py`, `TestProcessDescendants`.
 
 ## Verifying a change
 
+Atomic no-replace rename uses the platform wrapper where available. On Linux
+with an older C library, it uses the same kernel operation through `syscall`
+for the supported x86_64 and aarch64 architectures; other architectures still
+refuse when the wrapper is absent.
+The fallback retains the occupied-destination error and never degrades to a
+check-then-rename sequence. Private-member binding uses this operation to publish
+its identity without replacing an existing record. Real organization member
+conversations have exercised that path on x86_64 Amazon Linux 2 with glibc 2.26,
+whose C library does not export `renameat2`.
+
+Process-parent snapshots request PID and PPID with separate `ps -o` arguments.
+With procps-ng 3.3.10 on that host, `ps -p <pid> -o pid=,ppid=` prints a
+`,ppid=` header and only the PID column; `-o pid= -o ppid=` returns both numeric
+columns. The split preserves the parent map used by private process identity
+checks and process-tree handling.
+
 CI holds all three platforms at the UNIT layer: the `backend-test` shards cover
 Linux, `backend-test-windows` covers Windows, and `backend-test-macos` covers
 macOS. All three run the whole suite, so a POSIX call that only works on Linux

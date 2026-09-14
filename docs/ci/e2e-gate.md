@@ -4,9 +4,11 @@
 python setup.py test_e2e
 ```
 
-One command is the whole offline browser gate. It boots a real gateway wired to a
-packaged fake model backend, then shells the in-tree Playwright suite at it. No
-model, no credentials, no network, no cost.
+One command is the whole browser gate. It boots a real gateway wired to a
+packaged fake model backend, then shells the in-tree Playwright suite at it.
+Agent turns require no model credentials or model calls. The gateway's normal
+update check can contact its upstream; a failed check does not prevent the
+browser scenarios from running.
 
 The member-creation scenarios require a supported OS sandbox even with the fake
 model backend. The Linux CI job enables unprivileged user namespaces and requires
@@ -19,6 +21,13 @@ setup enables `agent.sandbox=auto` through the owner API and reapplies the same
 factory that captured the minimal fixture's sandbox-off setting at startup.
 Both writes must succeed before scenarios run; the model backend remains the
 packaged fake executable and the shared minimal seed is unchanged.
+The same disposable setup waits for the gateway's update check and records the
+normal per-version dismissal of any optional update. Otherwise, a tracked
+checkout falling behind its upstream opens an update dialog over unrelated
+browser scenarios. Mandatory updates are not dismissed, and this setup never
+changes a non-ephemeral gateway's update preference.
+The Settings About tab retains its accessible update badge after dismissal.
+Settings navigation assertions accept the tab name with or without that badge.
 
 `setup.py::E2eTestCommand` is the entry point (registered under `cmdclass` as
 `test_e2e`). It runs exactly two pytest files:

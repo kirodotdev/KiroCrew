@@ -105,6 +105,13 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Organization responses",
+        "dashboard/handlers/organization.py",
+        "Assignments, reports, messages and refusal text returned to the dashboard "
+        "or organization tool caller. Nested text passes through the shared "
+        "credential and exfiltration-URL chain before serialization.",
+    ),
+    (
         "Memory recovery responses",
         "dashboard/handlers/memory_admin.py",
         "Retired episode text and supersession references, plus backup and restore "
@@ -1637,6 +1644,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # worker-authored prose before returning it, but the egress boundary is
         # the transport the result crosses, not this module.
         "mcp_work.py",
+        # Organization handlers return redacted data to mcp_work's transport;
+        # they do not introduce a separate human or external-service boundary.
+        "organization_tools.py",
         "mcp_gateway/backend.py",
         # The kirocrew-core tool handlers, moved out of mcp_core.py into their
         # domain modules. Same classification as mcp_core.py above for the same

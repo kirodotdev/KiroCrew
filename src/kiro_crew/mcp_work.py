@@ -302,11 +302,17 @@ def _list_tools() -> list[dict[str, Any]]:
     by identity would make a worker's missing conductor tools look like a broken
     install rather than a refusal it can read.
     """
-    return _tool_definitions()
+    from kiro_crew.organization_tools import definitions
+
+    return _tool_definitions() + definitions()
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Validate tool arguments against schema. Returns cleaned args."""
+    from kiro_crew.organization_tools import ORGANIZATION_SCHEMAS, validate
+
+    if name in ORGANIZATION_SCHEMAS:
+        return validate(name, args)
     schema = MCP_WORK_SCHEMAS.get(name)
     if schema:
         return validate_tool_args(args, schema)
@@ -333,12 +339,17 @@ def _strict_caller() -> tuple[str, str]:
 
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     """Dispatch one validated tool call."""
-    if name not in WORK_TOOLS:
+    from kiro_crew.organization_tools import ORGANIZATION_TOOLS, dispatch
+
+    if name not in WORK_TOOLS + ORGANIZATION_TOOLS:
         return f"Error: unknown tool '{name}'"
 
     caller_key, strict_err = _strict_caller()
     if not caller_key:
         return strict_err
+
+    if name in ORGANIZATION_TOOLS:
+        return dispatch(name, args, session_key=caller_key)
 
     if name == "work_brief":
         resp = _get(_BRIEF_PATH, session_key=caller_key)

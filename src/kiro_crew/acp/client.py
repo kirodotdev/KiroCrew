@@ -4310,6 +4310,12 @@ class AcpClient:
         diagnostic to report.
         """
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        if self._private_memory:
+            from kiro_crew.organization_policy import prepare_agent
+
+            organization_agent = prepare_agent(self._session_key, self.backend, self._work_dir)
+            if organization_agent:
+                self._agent = organization_agent
         self._mcp_ref_spec = self._read_mcp_ref_spec()
 
     def _read_mcp_ref_spec(self) -> dict[str, Any] | None:

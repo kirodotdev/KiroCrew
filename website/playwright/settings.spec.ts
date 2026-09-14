@@ -33,7 +33,7 @@ test.describe('Settings Page', () => {
     await expect(page.getByRole('button', { name: 'Display', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Chat', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Remote Instances', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'About', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^About(?: update available)?$/ })).toBeVisible()
   })
 
   test('defaults to the overview tab at the bare /settings path', async ({ page }) => {
@@ -62,7 +62,7 @@ test.describe('Settings Page', () => {
     await expect(page).toHaveURL(/\/settings\/display(?:[?#]|$)/)
 
     // Click About tab button
-    await page.getByRole('button', { name: 'About', exact: true }).click()
+    await page.getByRole('button', { name: /^About(?: update available)?$/ }).click()
     await expect(page).toHaveURL(/\/settings\/about(?:[?#]|$)/)
   })
 

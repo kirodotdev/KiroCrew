@@ -533,6 +533,7 @@ def queue_for_next_turn(
     message: str,
     *,
     directive_user_origin: bool = False,
+    organization_owner_origin: bool = False,
     send_id: str | None = None,
     attachments: dict[str, list[str]] | None = None,
 ) -> str:
@@ -573,6 +574,7 @@ def queue_for_next_turn(
         message,
         meta=meta,
         directive_user_origin=directive_user_origin,
+        organization_owner_origin=organization_owner_origin,
     )
     state.broadcast_ws(
         "queue_push",

@@ -11,10 +11,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
-from kiro_crew.dashboard import chat_persistence
+from kiro_crew.dashboard import chat_persistence, chat_regenerate, chat_rewind
 from kiro_crew.dashboard.state import append_and_surface
 
 
@@ -37,6 +38,131 @@ def _populate_slot(state, key="src"):
     slot.append("assistant", "second answer", "msg msg-a", ts="2026-05-21T16:00:03Z")
     slot.drain()
     return slot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["rewind", "edit-resend"])
+@pytest.mark.parametrize("spoof_owner", [False, True])
+@pytest.mark.parametrize(
+    "owner_id,claims,slot_app,expected_status,expected_owner",
+    [
+        pytest.param("owner", {"user": "owner", "app": ""}, "", 200, True, id="owner"),
+        pytest.param("", {"user": "local-app", "app": ""}, "", 200, True, id="local-owner"),
+        pytest.param("owner", {"user": "guest", "app": ""}, "", 200, False, id="guest"),
+        pytest.param("", {"user": "guest", "app": ""}, "", 200, False, id="local-guest"),
+        pytest.param("owner", {"internal_auth": True}, "", 200, False, id="internal"),
+        pytest.param(
+            "owner",
+            {"user": "owner", "app": "", "internal_auth": True},
+            "",
+            200,
+            False,
+            id="internal-owner-context",
+        ),
+        pytest.param(
+            "owner", {"user": "owner", "app": "some-app"}, "some-app", 200, False, id="own-app"
+        ),
+        pytest.param(
+            "owner", {"user": "owner", "app": "some-app"}, "", 404, False, id="foreign-app"
+        ),
+    ],
+)
+async def test_replacement_text_owner_provenance(
+    tmp_path,
+    monkeypatch,
+    _mock_run_chat,
+    route,
+    spoof_owner,
+    owner_id,
+    claims,
+    slot_app,
+    expected_status,
+    expected_owner,
+):
+    """Only authenticated owner edits carry intake authority through the reservation."""
+    state = _make_state(tmp_path)
+    state.owner_id = owner_id
+    slot = _populate_slot(state)
+    slot._app = slot_app
+    before = list(slot.messages)
+    state.sessions._session_map.get.return_value = ""
+    preparing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def discard(*_args, **_kwargs):
+        preparing.set()
+        await asyncio.wait_for(release.wait(), timeout=5)
+        return True
+
+    state.sessions.discard_conversation = AsyncMock(side_effect=discard)
+    module = chat_rewind if route == "rewind" else chat_regenerate
+    monkeypatch.setattr(module, "_run_chat", _mock_run_chat)
+
+    @web.middleware
+    async def authenticated_claims(request, handler):
+        # Middleware-owned claims, independent of JSON and headers. Internal
+        # auth normally has no dashboard claims; owner-like claims cannot widen it.
+        request.update(claims)
+        return await handler(request)
+
+    app = web.Application(middlewares=[authenticated_claims])
+    app["state"] = state
+    handler = (
+        chat_rewind.api_chat_slot_rewind
+        if route == "rewind"
+        else chat_regenerate.api_chat_slot_edit_resend
+    )
+    app.router.add_post(f"/api/chat/slots/{{slot}}/{route}", handler)
+    pending = None
+    async with TestClient(TestServer(app)) as client:
+        try:
+            pending = asyncio.create_task(
+                client.post(
+                    f"/api/chat/slots/src/{route}",
+                    json={
+                        "ts": before[0]["ts"],
+                        "content": "Build the task we discussed",
+                        "_organization_owner_origin": spoof_owner,
+                        "meta": {"_organization_owner_origin": spoof_owner},
+                        "user": "owner",
+                        "app": "",
+                        "internal_auth": False,
+                    },
+                    headers={"X-Organization-Owner-Origin": str(spoof_owner).lower()},
+                )
+            )
+            if expected_status == 200:
+                await asyncio.wait_for(preparing.wait(), timeout=5)
+                assert slot.running
+                assert slot.messages == before
+                _mock_run_chat.assert_not_awaited()
+                release.set()
+            response = await asyncio.wait_for(pending, timeout=5)
+            assert response.status == expected_status
+            if expected_status != 200:
+                assert slot.messages == before
+                assert slot.task is None
+                state.sessions.discard_conversation.assert_not_awaited()
+                _mock_run_chat.assert_not_awaited()
+                return
+            await asyncio.wait_for(slot.task, timeout=5)
+            _mock_run_chat.assert_awaited_once()
+            assert _mock_run_chat.await_args.args == (
+                state,
+                slot,
+                "Build the task we discussed",
+            )
+            kwargs = _mock_run_chat.await_args.kwargs
+            assert kwargs.get("_organization_owner_origin", False) is expected_owner
+            assert kwargs["_directive_user_origin"] is (not bool(claims.get("app")))
+            assert [row["content"] for row in slot.messages] == ["Build the task we discussed"]
+        finally:
+            release.set()
+            tasks = [task for task in (pending, slot.task) if task is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
 
 
 class TestRewindSlot:

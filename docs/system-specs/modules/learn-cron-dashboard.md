@@ -935,6 +935,11 @@ boolean through `PATCH /api/config/kirocrew`. The config watcher refreshes the
 defaults used by new sessions.
 
 Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
+- `handlers/organization.py` — owner and verified-member organization APIs,
+  registered through deferred route handlers. Both server entrypoints start
+  optional organization recovery after the listener binds. The cleanup context
+  does no pre-bind imports or storage work; it drains initialization and member
+  turns during shutdown. Recovery errors are isolated from dashboard startup.
 - `folder_repository.py` — chat-folder load, serialized read-modify-write, rollback,
   full-value write confirmation, and breadcrumb traversal. `DashboardState` keeps
   its existing folder methods as compatibility facades; request handlers continue

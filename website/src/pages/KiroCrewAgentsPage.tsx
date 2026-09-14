@@ -31,6 +31,7 @@ import CrewEditorRail from '../components/crew/CrewEditorRail'
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
 import AgentTemplateDetail from '../components/crew/AgentTemplateDetail'
 import { useCrewEditorSections, type CrewPaneKey } from '../components/crew/crewEditorSections'
+import OrganizationPage from './OrganizationPage'
 import { wakesCrew, crewWakeQueryKey, crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn } from '../components/crew/wakesCrew'
 import type { CronJob } from '../types'
 import type { KiroCrewAgent } from '../components/AgentSelector'
@@ -1566,6 +1567,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  happened to be left on. */
   const [pane, setPane] = useState<CrewPaneKey>('overview')
   const [schedDraft, setSchedDraft] = useState(false)
+  const [organizationDraft, setOrganizationDraft] = useState(false)
   /** True while the schedule draft's create request is in flight. Discarding
    *  then would unmount the form WITHOUT cancelling the POST, so the schedule
    *  the user watched being "discarded" persists — the confirm's destructive
@@ -1655,8 +1657,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // rail's unsaved dot and the note, so closing the editor cannot silently
     // eat a half-typed schedule the way an untracked surface would.
     if (schedDraft) out.add('schedules')
+    if (organizationDraft) out.add('organization')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, organizationDraft, editAvatar])
 
   /** Rail-driven pane changes route through here: leaving the schedules pane
    *  while a schedule draft is open asks before destroying the typed work
@@ -1664,9 +1667,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  other panes' edits live in this component's state and survive a pane
    *  switch, so only the draft is at stake here. */
   const requestPane = useCallback((key: CrewPaneKey) => {
+    if (organizationDraft && key !== pane && !window.confirm(i18nT('organization.discardChanges'))) return
     if (schedDraft && key !== pane) { setDiscardAsk(key); return }
     setPane(key)
-  }, [schedDraft, pane])
+  }, [schedDraft, organizationDraft, pane])
 
   /**
    * Editor dismissal (footer Cancel, Escape, overlay click) routes through
@@ -1708,7 +1712,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       void instantSaveInflight.current.catch(() => undefined).then(() => requestCloseRef.current())
       return
     }
-    if (committing || dirtyPanes.size === 0) { closeSheet(); return }
+    if ((committing && !organizationDraft) || dirtyPanes.size === 0) { closeSheet(); return }
     // Published BEFORE the question goes up so a save still staging an upload
     // sees it and holds its PUT until the answer arrives. Only this leg arms
     // it: the schedule draft disables Save, so no staging save can be in
@@ -1717,7 +1721,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     const answered = new Promise<boolean>(resolve => { settle = resolve })
     discardAnswer.current = { answered, settle }
     setDiscardAsk('close')
-  }, [schedDraft, committing, dirtyPanes, closeSheet])
+  }, [schedDraft, organizationDraft, committing, dirtyPanes, closeSheet])
 
   /** Latest requestClose, for the deferred re-invocation above — the settle
    *  callback must not capture a stale closure's dirty state. */
@@ -1728,9 +1732,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  chat slot, closes the sheet and navigates -- three steps that would
    *  destroy an open schedule draft as silently as an unguarded Escape. */
   const requestChat = useCallback(() => {
+    if (organizationDraft && !window.confirm(i18nT('organization.discardChanges'))) return
     if (schedDraft) { setDiscardAsk('chat'); return }
     void chatWith(editing)
-  }, [schedDraft, editing]) // eslint-disable-line react-hooks/exhaustive-deps -- chatWith is re-created per render; depping it would make this callback churn for no behavioural gain
+  }, [schedDraft, organizationDraft, editing]) // eslint-disable-line react-hooks/exhaustive-deps -- chatWith is re-created per render; depping it would make this callback churn for no behavioural gain
 
   /** The wake section's own cancel toggle asks here before collapsing a
    *  dirty draft -- the one destruction path the page cannot intercept
@@ -2383,6 +2388,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'webhook' && <CrewWebhookSection crew={editing} />}
+                  {pane === 'organization' && <OrganizationPage memberName={editing} onDirtyChange={setOrganizationDraft} />}
 
                   {pane === 'routing' && (
                     <>
@@ -2487,7 +2493,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             ) : (
               <SendBtn
                 onClick={saveEdit}
-                disabled={sheetBusy || dirtyPanes.size === 0 || schedDraft}
+                disabled={sheetBusy || dirtyPanes.size === 0 || schedDraft || organizationDraft}
                 title={schedDraft ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first') : undefined}
               >{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
             )}

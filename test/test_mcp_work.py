@@ -31,8 +31,15 @@ def test_all_four_tools_are_advertised_to_every_caller():
     reaches all four, and a list that varied by caller would make a worker's
     missing conductor tools look like a broken install rather than a refusal."""
     names = [t["name"] for t in mcp_work._list_tools()]
-    assert names == list(mcp_work.WORK_TOOLS)
-    assert set(names) == {"work_brief", "work_report", "work_ledger_read", "work_ledger_record"}
+    from kiro_crew.organization_tools import ORGANIZATION_TOOLS
+
+    assert names == list(mcp_work.WORK_TOOLS + ORGANIZATION_TOOLS)
+    assert set(mcp_work.WORK_TOOLS) == {
+        "work_brief",
+        "work_report",
+        "work_ledger_read",
+        "work_ledger_record",
+    }
 
 
 def test_every_tool_has_a_registered_schema():

@@ -316,7 +316,23 @@ async def api_member_thread(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "dashboard state unavailable", "code": "state_unavailable"}, status=503
         )
-    slug = request.match_info["slug"]
+    return await ensure_member_thread(
+        state,
+        request.match_info["slug"],
+        origin=request_slot_origin(request.get("app", "")),
+        audit_caller=request.remote or "",
+    )
+
+
+async def ensure_member_thread(
+    state: DashboardState, slug: str, *, origin: str, audit_caller: str = "organization-runner"
+) -> web.Response:
+    """Trusted thread opener shared with gateway organization delivery.
+
+    The HTTP caller must pass the owner gate above. Internal callers must first
+    verify their durable member assignment and pass SYSTEM origin; this helper
+    does not turn an agent-supplied name into an authorization grant.
+    """
     try:
         members_mod.validate_slug(slug)
     except MemberSlugError:
@@ -369,7 +385,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
             # refused the same way rather than reaching the 404 below.
             try:
                 _sel().log_api_access(
-                    caller=request.remote or "",
+                    caller=audit_caller,
                     operation="member_thread_open",
                     outcome="denied",
                     source="member_pin",
@@ -405,7 +421,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
             if _history_exists:
                 try:
                     _sel().log_api_access(
-                        caller=request.remote or "",
+                        caller=audit_caller,
                         operation="member_thread_open",
                         outcome="denied",
                         source="member_pin",
@@ -452,7 +468,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
                     agent=member_name,
                     workspace=member_workspace,
                     mode=members_mod.DM_SLOT_MODE,
-                    origin=request_slot_origin(request.get("app", "")),
+                    origin=origin,
                 )
                 slot.project = project
     if slot.mode != members_mod.DM_SLOT_MODE:
@@ -480,7 +496,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
         # thread), and until then the thread refuses to speak as anyone else.
         try:
             _sel().log_api_access(
-                caller=request.remote or "",
+                caller=audit_caller,
                 operation="member_thread_open",
                 outcome="denied",
                 source="member_pin",

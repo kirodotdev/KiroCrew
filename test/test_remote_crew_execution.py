@@ -58,7 +58,7 @@ def _remote_slot(key: str = "chat-1") -> _ChatSlot:
 
 
 class _FakeRequest(dict):
-    """The two things the owner gate reads off a request, and nothing else.
+    """The middleware authentication claims the owner gate reads.
 
     A ``dict`` subclass rather than a namespace because the gate distinguishes an
     ``app`` claim of ``""`` from an ABSENT one (``"app" not in request`` means the
@@ -66,8 +66,12 @@ class _FakeRequest(dict):
     like the real mapping.
     """
 
-    def __init__(self, state, *, app_name: str = "", user: str = "local-app") -> None:
+    def __init__(
+        self, state, *, app_name: str = "", user: str = "local-app", internal_auth: bool = False
+    ) -> None:
         super().__init__({"app": app_name, "user": user})
+        if internal_auth:
+            self["internal_auth"] = True
         self.app = {"state": state}
 
 
@@ -2550,8 +2554,8 @@ class TestRelayedTurnDoesNotDrainLocally:
         started.assert_not_awaited()
 
 
-def _send_app(state, *, app_name: str = "", user: str = "local-app"):
-    """The real ``api_chat`` handler behind a TestServer, owner-authenticated.
+def _send_app(state, *, app_name: str = "", user: str = "local-app", internal_auth: bool = False):
+    """The real ``api_chat`` handler behind a TestServer with explicit auth claims.
 
     Same shape as :func:`_create_app`: middleware sets ``request["app"]`` and
     ``request["user"]`` in production, so a wrapper sets them here and leaves the
@@ -2567,6 +2571,8 @@ def _send_app(state, *, app_name: str = "", user: str = "local-app"):
     async def handler(request: web.Request) -> web.StreamResponse:
         request["app"] = app_name
         request["user"] = user
+        if internal_auth:
+            request["internal_auth"] = True
         return await api_chat(request)
 
     app = web.Application()
@@ -2832,24 +2838,72 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
             assert isinstance(first, ast.Name) and first.id == "request", name
 
     @pytest.mark.asyncio
-    async def test_a_non_owner_cannot_send_to_a_bound_crew(self, tmp_path, monkeypatch):
-        """403 before the relay, so the tunnel is never spent."""
+    @pytest.mark.parametrize(
+        "user,internal_auth",
+        [("local-app", False), ("slack:U123", False), ("", True), ("local-app", True)],
+    )
+    @pytest.mark.parametrize("busy", [False, True])
+    async def test_bound_send_requires_owner_before_relay_or_slot_changes(
+        self, tmp_path, monkeypatch, user, internal_auth, busy
+    ):
+        """Internal claims cannot become an owner turn on an adopted peer member."""
         from aiohttp.test_utils import TestClient, TestServer
 
-        relay = MagicMock()
+        relay = AsyncMock(wraps=relay_remote_turn)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.relay_remote_turn", relay)
         state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        manager = _mgr_returning(200, b"")
+        manager.status.return_value = SimpleNamespace(state=SimpleNamespace(value="connected"))
+        manager.proxy_request.return_value.content.iter_any = lambda: _stream(b"data: [DONE]\n\n")
+        state.instances_manager = manager
         slot = _remote_slot()
+        slot.remote_slot = "member-alice"
+        slot._titled = True
+        slot._auto_tagged = True
+        human_seen = slot._human_seen
         state._slots[slot.key] = slot
-
-        app = _send_app(state, user="slack:U123")
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post("/api/chat/send", json={"slot": slot.key, "message": "hi"})
-            assert resp.status == 403
-        relay.assert_not_called()
+        held_turn = asyncio.create_task(asyncio.Event().wait()) if busy else None
+        slot.task = held_turn
+        denied = internal_auth or user != "local-app"
+        try:
+            app = _send_app(state, user=user, internal_auth=internal_auth)
+            async with TestClient(TestServer(app)) as client:
+                resp = await asyncio.wait_for(
+                    client.post(
+                        "/api/chat/send?ws=1",
+                        json={"slot": slot.key, "message": "hi"},
+                    ),
+                    timeout=5,
+                )
+                payload = await asyncio.wait_for(resp.json(), timeout=5)
+                if slot.task is not None and slot.task is not held_turn:
+                    await asyncio.wait_for(slot.task, timeout=5)
+                assert resp.status == (403 if denied else 409 if busy else 200)
+            if denied:
+                assert payload["code"] == "owner_only"
+                assert slot.task is held_turn
+                assert slot._human_seen == human_seen
+            if denied or busy:
+                relay.assert_not_called()
+                manager.proxy_request.assert_not_called()
+                assert slot.messages == []
+                assert slot._queue == []
+            else:
+                relay.assert_awaited_once_with(state, slot, "hi")
+                args, kwargs = manager.proxy_request.call_args
+                assert args == (slot.instance_id, "POST", "api/chat")
+                assert json.loads(kwargs["data"]) == {"slot": "member-alice", "message": "hi"}
+                assert slot.messages[0]["content"] == "hi"
+        finally:
+            if held_turn is not None:
+                held_turn.cancel()
+                await asyncio.gather(held_turn, return_exceptions=True)
 
     @pytest.mark.asyncio
-    async def test_a_non_owner_keeps_its_reach_on_a_LOCAL_slot(self, tmp_path):
+    @pytest.mark.parametrize("internal_auth", [False, True])
+    async def test_a_non_owner_keeps_its_reach_on_a_LOCAL_slot(self, tmp_path, internal_auth):
         """The gate is scoped to the BINDING, exactly like the create path's.
 
         A dashboard link is meant to let an allow-listed identity chat; refusing
@@ -2860,16 +2914,31 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
         state = _make_state(tmp_path)
         slot = _ChatSlot("chat-local-1")
         state._slots[slot.key] = slot
-
-        app = _send_app(state, user="slack:U123")
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/chat/send", json={"slot": slot.key, "message": "hi", "stream": False}
-            )
-            assert resp.status != 403
+        slot.task = asyncio.create_task(asyncio.Event().wait())
+        try:
+            app = _send_app(state, user="slack:U123", internal_auth=internal_auth)
+            async with TestClient(TestServer(app)) as client:
+                resp = await asyncio.wait_for(
+                    client.post(
+                        "/api/chat/send?ws=1",
+                        json={"slot": slot.key, "message": "hi"},
+                    ),
+                    timeout=5,
+                )
+                assert resp.status == 200
+                assert (await asyncio.wait_for(resp.json(), timeout=5))["queued"] is True
+            assert [item["content"] for item in slot._queue] == ["hi"]
+        finally:
+            slot.task.cancel()
+            await asyncio.gather(slot.task, return_exceptions=True)
 
     @pytest.mark.asyncio
-    async def test_a_non_owner_cannot_stop_a_bound_crew(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "user,internal_auth", [("slack:U123", False), ("", True), ("local-app", True)]
+    )
+    async def test_a_non_owner_cannot_stop_a_bound_crew(
+        self, tmp_path, monkeypatch, user, internal_auth
+    ):
         """The stop travels over the owner's tunnel and aborts the owner's turn."""
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
@@ -2884,19 +2953,28 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
 
         async def handler(request: web.Request) -> web.Response:
             request["app"] = ""
-            request["user"] = "slack:U123"
+            request["user"] = user
+            if internal_auth:
+                request["internal_auth"] = True
             return await api_chat_slot_stop(request)
 
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/chat/slots/{slot}/stop", handler)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post(f"/api/chat/slots/{slot.key}/stop")
+            resp = await asyncio.wait_for(
+                client.post(f"/api/chat/slots/{slot.key}/stop"), timeout=5
+            )
             assert resp.status == 403
         forwarded.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_non_owner_cannot_reconfigure_a_bound_crew(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "user,internal_auth", [("slack:U123", False), ("", True), ("local-app", True)]
+    )
+    async def test_a_non_owner_cannot_reconfigure_a_bound_crew(
+        self, tmp_path, monkeypatch, user, internal_auth
+    ):
         """Reconfiguring is the same credential spend as sending.
 
         Driven through the chokepoint itself: all four routes reach the peer here,
@@ -2911,8 +2989,15 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
         slot = _remote_slot()
         slot.model = "kept"
 
-        resp = await _apply_remote_pick(
-            _FakeRequest(state, user="slack:U123"), state, slot, "model", {"model": "theirs"}
+        resp = await asyncio.wait_for(
+            _apply_remote_pick(
+                _FakeRequest(state, user=user, internal_auth=internal_auth),
+                state,
+                slot,
+                "model",
+                {"model": "theirs"},
+            ),
+            timeout=5,
         )
 
         assert resp.status == 403

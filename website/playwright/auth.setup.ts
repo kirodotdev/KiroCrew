@@ -25,6 +25,7 @@ setup('authenticate', async ({ page }) => {
   await page.goto(`/?token=${encodeURIComponent(token)}`, { waitUntil: 'domcontentloaded', timeout: 30000 })
   await page.waitForLoadState('load', { timeout: 30000 })
   if (process.env.KIROCREW_E2E_EPHEMERAL === '1') {
+    setup.setTimeout(60000)
     const configResponse = await page.request.get('/api/config/kirocrew')
     expect(configResponse.ok(), await configResponse.text()).toBeTruthy()
     const config = await configResponse.json()
@@ -39,6 +40,32 @@ setup('authenticate', async ({ page }) => {
       { path: 'agent.acp_backend', value: backend },
     ]) {
       const response = await page.request.patch('/api/config/kirocrew', { data: change })
+      expect(response.ok(), await response.text()).toBeTruthy()
+    }
+    // A tracked checkout can fall behind while the suite runs. Persist the
+    // normal per-version dismissal in this disposable gateway, so its update
+    // dialog cannot intercept unrelated tests' clicks in fresh contexts.
+    // Boot may already be checking; wait for that single-flight result.
+    let update: {
+      update_check_status?: string
+      update_available?: boolean
+      update_required?: boolean
+      update_latest_version?: string
+    } = {}
+    await expect.poll(async () => {
+      const response = await page.request.get('/api/status')
+      expect(response.ok(), await response.text()).toBeTruthy()
+      update = await response.json()
+      return update.update_check_status
+    }, { timeout: 40000 }).toMatch(/^(succeeded|failed|deferred)$/)
+    if (update.update_available && !update.update_required) {
+      expect(update.update_latest_version).toBeTruthy()
+      const response = await page.request.patch('/api/config/kirocrew', {
+        data: {
+          path: 'dashboard.update_nudge',
+          value: { version: update.update_latest_version, snoozed_until: 0, skipped: true },
+        },
+      })
       expect(response.ok(), await response.text()).toBeTruthy()
     }
   }

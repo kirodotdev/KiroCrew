@@ -16,6 +16,7 @@ import functools
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,10 +31,12 @@ from kiro_crew.agent_files import (
 from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.organization import ORGANIZATION_AGENT_PREFIX
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel as _sel
 
 logger = logging.getLogger(__name__)
+_ORGANIZATION_AGENT_NAME_RE = re.compile(re.escape(ORGANIZATION_AGENT_PREFIX) + r"[0-9a-f]{32}")
 
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
@@ -1039,6 +1042,10 @@ def list_agents(
         user_candidates = 0
         user_parsed = 0
         for f in sorted(d.glob("*.json")):
+            # Compiled role policies belong to existing private members. They
+            # are runtime artifacts, not templates to sync into new members.
+            if _ORGANIZATION_AGENT_NAME_RE.fullmatch(f.stem):
+                continue
             # AppleDouble sidecars are rejected by design, not by failure — a
             # directory holding only sidecars is empty of specs, not broken.
             if not f.name.startswith("._"):

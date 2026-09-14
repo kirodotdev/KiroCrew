@@ -36,7 +36,11 @@ sandbox posture at their defining modules.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 __all__ = [
+    "agent_spec_matches",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_install_command",
@@ -47,6 +51,13 @@ __all__ = [
     "resolve_pin_spelling",
     "run_kiro_native_commands",
 ]
+
+
+def agent_spec_matches(agent: str, expected: dict[str, Any], *, work_dir: Path) -> bool:
+    """Whether the spawn resolver sees the exact guarded agent definition."""
+    from kiro_crew.acp.session_mcp import agent_spec_snapshot
+
+    return agent_spec_snapshot(agent, work_dir=work_dir) == expected
 
 
 def finish_suspended_spawn(process: object, pid: int, *, label: str) -> bool:

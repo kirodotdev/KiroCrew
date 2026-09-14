@@ -79,6 +79,52 @@ async def _busy(slot) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("spoof_owner", [False, True])
+async def test_regenerate_history_cannot_grant_owner_intake(state, monkeypatch, spoof_owner):
+    """An owner's regenerate press carries no new replacement-text authority."""
+    state.owner_id = "owner"
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "Stored request", meta={"_organization_owner_origin": True})
+    slot.append("assistant", "Stored answer")
+    slot.drain()
+    run_chat = AsyncMock()
+    monkeypatch.setattr(chat_regenerate, "_run_chat", run_chat)
+
+    @web.middleware
+    async def authenticated_owner(request, handler):
+        request["user"] = "owner"
+        request["app"] = ""
+        return await handler(request)
+
+    app = _make_regen_app(state)
+    app.middlewares.append(authenticated_owner)
+    async with TestClient(TestServer(app)) as client:
+        try:
+            response = await asyncio.wait_for(
+                client.post(
+                    "/api/chat/slots/s1/regenerate",
+                    json={
+                        "content": "Client-supplied replacement",
+                        "_organization_owner_origin": spoof_owner,
+                        "meta": {"_organization_owner_origin": spoof_owner},
+                    },
+                ),
+                timeout=5,
+            )
+            assert response.status == 200
+            await asyncio.wait_for(slot.task, timeout=5)
+            run_chat.assert_awaited_once()
+            assert run_chat.await_args.args == (state, slot, "Stored request")
+            assert run_chat.await_args.kwargs.get("_organization_owner_origin", False) is False
+            assert run_chat.await_args.kwargs["_directive_user_origin"] is True
+        finally:
+            if slot.task is not None:
+                if not slot.task.done():
+                    slot.task.cancel()
+                await asyncio.wait_for(asyncio.gather(slot.task, return_exceptions=True), timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_regenerate_unknown_slot_is_404(state) -> None:
     async with _client(state) as client:
         resp = await client.post("/api/chat/slots/nope/regenerate")

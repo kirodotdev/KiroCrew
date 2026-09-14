@@ -41,6 +41,13 @@ the peer's `POST /api/chat/slots` payload, while agent and model remain sparse
 explicit picks. Omitting the mode would let a local Incognito or Temporary row
 execute as Persistent on the peer and read or write memory the user disabled.
 
+Sending, stopping and changing header selections on a peer-bound slot require
+the authenticated dashboard owner. Internal callers are refused before relay,
+busy handling or local slot mutation, even if their other request claims match
+the owner: the relay spends the owner's peer credential and cannot promote an
+internal instruction into an owner request. Local internal chat and
+`suggest_followup` callbacks retain their existing authorization.
+
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
 call-time functions. Persistence remains owned by the existing `SessionMap`
@@ -54,6 +61,41 @@ retired in follow-up changes after repository-wide callers and characterization
 tests have moved off the corresponding legacy seam.
 
 ## Private member session ownership
+
+The organization scheduler opens a verified member's existing canonical DM
+through `ensure_member_thread`, the same trusted implementation as the
+owner-gated HTTP endpoint. Its synthetic wake has system origin and cannot
+choose a different private store. Busy owner conversations retain their slot;
+the scheduler returns admission and lets other members run. Every private
+dashboard turn rechecks organization membership after binding, including a warm
+owner conversation, so a retired identity cannot continue using a cached
+provider.
+
+During a trusted owner chat turn, `_run_chat` installs a runtime-only
+`_organization_owner_request` on the slot after publishing the turn identity.
+It binds that exact session key to a fresh request ID. `org_start_task` requires
+both this grant and the live turn after authenticating the private caller.
+The runner clears the grant at the start of its outer `finally`, including
+failure and cancellation. Restored slots have no grant; transcript text cannot
+restore one. Synthetic payloads and self-wakes cannot obtain it.
+The grant requires `_organization_owner_origin`, derived from the authenticated
+owner identity at dashboard chat ingress. `_directive_user_origin` denotes any
+authenticated human and is not owner authority. The owner fact travels outside
+client metadata through queued sends, drain and retries of the original request.
+Queue batches stop at an owner/non-owner boundary; a queue edit replaces the
+fact with the editor's verified authority. Transcript metadata and restored
+slots cannot mint it.
+
+Rewind and edit-resend carry new replacement text, so their committed dispatch
+uses the same owner predicate as a primary send:
+`request.get("internal_auth") is not True` and
+`is_owner_dashboard_request(request)`. The fact is captured from authenticated
+request claims, kept through the dispatch reservation, and forwarded only when
+the replacement commits. Guests, internal callers (even with owner-like claims),
+and app callers receive no owner grant; body fields, headers and metadata cannot
+override that decision. Regenerate reuses stored history and carries no new owner
+authority. Retries retain the original request's provenance, while synthetic
+recovery payloads and automated wakes remain excluded by the runner.
 
 An ordinary dashboard chat that has already used private member memory keeps
 that ownership for its lifetime. The agent-switch endpoint reads the protected

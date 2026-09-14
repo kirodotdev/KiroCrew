@@ -28,6 +28,20 @@ from kiro_crew.dashboard.state import (
 class TestDequeueNextMessage:
     """Tests for the extracted _dequeue_next_message helper."""
 
+    @pytest.mark.parametrize("first_owner", [True, False])
+    def test_merging_preserves_separate_owner_and_guest_turns(self, first_owner):
+        slot = _ChatSlot("owner-boundary")
+        for index, owner in enumerate((first_owner, first_owner, not first_owner)):
+            slot.queue_append(
+                f"message {index}", directive_user_origin=True, organization_owner_origin=owner
+            )
+        _, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert [item["content"] for item in consumed] == ["message 0", "message 1"]
+        assert all(
+            (item.get("_organization_owner_origin") is True) is first_owner for item in consumed
+        )
+        assert [item["content"] for item in slot._queue] == ["message 2"]
+
     def test_merge_two_plus_messages_when_enabled(self):
         """When enabled and 2+ messages queued, they are joined with \\n\\n."""
         slot = _ChatSlot("s1")

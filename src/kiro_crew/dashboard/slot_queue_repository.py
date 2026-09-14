@@ -140,6 +140,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        organization_owner_origin: bool = False,
     ) -> str:
         """Append an entry and return its process-local queue ID."""
         queue_id = self._id_provider()
@@ -156,6 +157,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if organization_owner_origin:
+            item["_organization_owner_origin"] = True
         owner._queue.append(item)
         owner._note_enqueue()
         return queue_id
@@ -178,6 +181,7 @@ class SlotQueueRepository:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        organization_owner_origin: bool = False,
     ) -> str:
         """Insert one entry while preserving retry callbacks and provenance."""
         queue_id = self._id_provider()
@@ -199,6 +203,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if organization_owner_origin:
+            item["_organization_owner_origin"] = True
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -254,6 +260,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        organization_owner_origin: bool = False,
     ) -> bool:
         """Edit a user-owned entry without changing its identity or position."""
         for item in owner._queue:
@@ -279,6 +286,10 @@ class SlotQueueRepository:
                 item["_directive_channel_origin"] = True
             else:
                 item.pop("_directive_channel_origin", None)
+            if organization_owner_origin:
+                item["_organization_owner_origin"] = True
+            else:
+                item.pop("_organization_owner_origin", None)
             return True
         return False
 

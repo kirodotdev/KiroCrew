@@ -97,21 +97,85 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
 # can advertise the capability honestly and fail closed everywhere else.
 _RENAME_NOREPLACE_FN: Any = None
 _RENAME_NOREPLACE_FLAG = 0
+
+#: ``SYS_renameat2`` numbers per ``platform.machine()``. The syscall has existed
+#: in Linux since 3.15 (2014), but the glibc *wrapper* symbol was only added in
+#: glibc 2.28. On glibc 2.26/2.27 (e.g. Amazon Linux 2) the kernel supports the
+#: call yet ``getattr(libc, "renameat2")`` raises ``AttributeError`` — so we
+#: reach the kernel directly through the generic ``syscall()`` entry point,
+#: which every glibc exposes, keyed by this table. Numbers are arch-stable ABI.
+_SYS_RENAMEAT2_BY_MACHINE: dict[str, int] = {
+    "x86_64": 316,
+    "aarch64": 276,
+}
+
+
+def _build_renameat2_via_syscall(libc: "ctypes.CDLL") -> Any:
+    """Return a renameat2(2) callable via the raw ``syscall()`` seam, or None.
+
+    Used only when the glibc ``renameat2`` wrapper symbol is absent but the
+    running kernel supports the syscall (glibc 2.26/2.27 on a modern kernel).
+    The returned callable matches the wrapper's 5-argument shape
+    ``(olddirfd, oldpath, newdirfd, newpath, flags)`` and preserves errno so
+    :func:`rename_noreplace`'s EEXIST / ENOSYS handling is unchanged. Returns
+    ``None`` when the architecture's syscall number is unknown, so the caller
+    still fails closed rather than issuing a wrong-numbered syscall.
+    """
+    nr = _SYS_RENAMEAT2_BY_MACHINE.get(platform.machine())
+    if nr is None:
+        return None
+    try:
+        _syscall = libc.syscall
+    except AttributeError:
+        return None
+    _syscall.restype = ctypes.c_long
+    # syscall() is variadic; ctypes needs the long syscall number typed, and the
+    # trailing args are passed positionally with the same ctypes types the
+    # wrapper used. c_long for the number, then int/char_p/int/char_p/uint.
+    _syscall.argtypes = [
+        ctypes.c_long,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+
+    def _renameat2(
+        olddirfd: int,
+        oldpath: bytes,
+        newdirfd: int,
+        newpath: bytes,
+        flags: int,
+    ) -> int:
+        return _syscall(nr, olddirfd, oldpath, newdirfd, newpath, flags)
+
+    return _renameat2
+
+
 if IS_LINUX or IS_MACOS:
     try:
         _rename_libc = ctypes.CDLL(None, use_errno=True)
         _rename_symbol = "renameat2" if IS_LINUX else "renameatx_np"
-        _RENAME_NOREPLACE_FN = getattr(_rename_libc, _rename_symbol)
-        _RENAME_NOREPLACE_FN.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        _RENAME_NOREPLACE_FN.restype = ctypes.c_int
-        _RENAME_NOREPLACE_FLAG = 1 if IS_LINUX else 4
-    except (AttributeError, OSError):
+        try:
+            _RENAME_NOREPLACE_FN = getattr(_rename_libc, _rename_symbol)
+            _RENAME_NOREPLACE_FN.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            _RENAME_NOREPLACE_FN.restype = ctypes.c_int
+        except AttributeError:
+            # glibc < 2.28 lacks the renameat2 wrapper symbol. On Linux the
+            # syscall itself is available on any kernel >= 3.15, so reach it
+            # directly; macOS has no such fallback (renameatx_np is the only
+            # path), so it stays None and fails closed there.
+            _RENAME_NOREPLACE_FN = _build_renameat2_via_syscall(_rename_libc) if IS_LINUX else None
+        if _RENAME_NOREPLACE_FN is not None:
+            _RENAME_NOREPLACE_FLAG = 1 if IS_LINUX else 4
+    except OSError:
         _RENAME_NOREPLACE_FN = None
 
 RENAME_NOREPLACE_AVAILABLE: bool = _RENAME_NOREPLACE_FN is not None
@@ -2216,7 +2280,9 @@ def _posix_process_parent_map() -> dict[int, int]:
         return {}
     try:
         out = subprocess.check_output(
-            [ps_bin, "-Ao", "pid=,ppid="], timeout=5, stderr=subprocess.DEVNULL
+            [ps_bin, "-A", "-o", "pid=", "-o", "ppid="],
+            timeout=5,
+            stderr=subprocess.DEVNULL,
         ).decode(errors="replace")
     except (OSError, subprocess.SubprocessError):
         return {}

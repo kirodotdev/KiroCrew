@@ -362,6 +362,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # path directly (as keystone writers must), so it would have followed the link.
     "trust",
     "member-memory-bindings",
+    # Gateway-owned organization policy, assignments and caller identities.
+    # No in-sandbox reader: members use the authenticated organization tools.
+    "organizations",
     "security_events.jsonl",
     # Rotated SEL segments. sel.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
