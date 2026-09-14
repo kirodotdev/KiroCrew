@@ -8,6 +8,10 @@ import {
 import {
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem,
 } from './ui/context-menu'
+import { offlineProps } from '../utils/offline'
+import { useConnected } from '../hooks/useConnected'
+import OfflineMenuReason from './OfflineMenuReason'
+import { i18nT } from '../i18n/t'
 
 interface FolderMoveSubmenuProps {
   readonly folders: readonly ChatFolder[]
@@ -17,6 +21,9 @@ interface FolderMoveSubmenuProps {
   readonly currentFolderId?: string | null
   /** Which menu family this submenu nests inside — chooses Radix Dropdown vs Context primitives. */
   readonly variant: 'dropdown' | 'context'
+  /** Offline tooltip verb, when the caller's write is not "move folders" — the
+   *  accessible name comes from `label`, so there is nothing else to pass. */
+  readonly offlineVerb?: string
   /** Trigger label (defaults to "Move to folder"). */
   readonly label?: string
   /** Label for the "no folder (root)" entry. */
@@ -45,24 +52,26 @@ interface FolderMoveSubmenuProps {
  *). `Item` is the Radix menu-item primitive of the hosting menu
  * family — items must match their parent menu's family.
  */
-export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel = 'No folder (root)', Item }: {
+export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel = 'No folder (root)', Item, connected = true }: {
   readonly folders: readonly ChatFolder[]
   readonly onPick: (folderId: string | null) => void
   readonly currentFolderId?: string | null
   readonly rootLabel?: string
-  readonly Item: React.ComponentType<{ title?: string; style?: React.CSSProperties; onSelect?: (event: Event) => void; children?: React.ReactNode }>
+  /** False dims every destination: the move is a gateway write. */
+  readonly connected?: boolean
+  readonly Item: React.ComponentType<{ title?: string; className?: string; style?: React.CSSProperties; onSelect?: (event: Event) => void; children?: React.ReactNode }>
 }) {
   const atRoot = currentFolderId == null || currentFolderId === ''
   const ordered = orderFoldersWithPaths(folders)
   return (
     <>
-      <Item title={rootLabel} onSelect={() => onPick(null)}>
+      <Item title={rootLabel} className={connected ? undefined : 'opacity-40'} onSelect={() => onPick(null)}>
         <Folder size={13} className="text-muted shrink-0" />
         <span className="truncate">{rootLabel}</span>
         {atRoot && <Check size={13} className="ml-auto text-accent shrink-0" />}
       </Item>
       {ordered.map(({ folder: f, depth, path }) => (
-        <Item key={f.id} title={path} style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined} onSelect={() => onPick(f.id)}>
+        <Item key={f.id} title={path} className={connected ? undefined : 'opacity-40'} style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined} onSelect={() => onPick(f.id)}>
           <Folder size={13} className="text-accent shrink-0" />
           <span className="truncate">{f.name}</span>
           {currentFolderId === f.id && <Check size={13} className="ml-auto text-accent shrink-0" />}
@@ -79,7 +88,11 @@ export default function FolderMoveSubmenu({
   variant,
   label = 'Move to folder',
   rootLabel = 'No folder (root)',
+  offlineVerb,
 }: FolderMoveSubmenuProps) {
+  // Read here rather than taken as a prop: every caller wants the same gate, and
+  // an optional one left a caller ungated.
+  const connected = useConnected()
   // Pick the primitive family for this surface. Both families share the same
   // props shape, so the body below is identical regardless of variant.
   const Sub = variant === 'context' ? ContextMenuSub : DropdownMenuSub
@@ -87,15 +100,21 @@ export default function FolderMoveSubmenu({
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
 
+  // Neither held closed nor `disabled`: Radix drops a disabled trigger from
+  // roving focus, and closing the flyout mid-browse yanks it from the pointer.
   return (
     <Sub>
-      <SubTrigger>
+      <SubTrigger
+        {...offlineProps(connected, offlineVerb ?? i18nT('utils.offline.move_folders'), label)}
+        className={connected ? undefined : 'opacity-40 text-muted'}
+      >
         <Folder size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{label}</span>
         <ChevronRight size={12} className="text-muted" />
       </SubTrigger>
       <SubContent className="min-w-[170px] max-h-[280px] overflow-y-auto">
-        <FolderPickerItems folders={folders} onPick={onPick} currentFolderId={currentFolderId} rootLabel={rootLabel} Item={Item} />
+        {!connected && <OfflineMenuReason testId="folder-move-offline-reason" />}
+        <FolderPickerItems folders={folders} onPick={(id) => { if (!connected) return; onPick(id) }} currentFolderId={currentFolderId} rootLabel={rootLabel} Item={Item} connected={connected} />
       </SubContent>
     </Sub>
   )

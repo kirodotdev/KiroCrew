@@ -7352,6 +7352,7 @@
       "mark_as_read": "পড়া হিসেবে চিহ্নিত করো",
       "mark_as_unread": "অপঠিত হিসেবে চিহ্নিত করো",
       "move_to_folder": "ফোল্ডারে সরান…",
+      "offline_reason": "গেটওয়ে অফলাইন — ম্লান করা কাজগুলোর জন্য সংযোগ দরকার",
       "open_in_new_tab": "সেশন ট্যাবে খুলুন",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
@@ -7587,6 +7588,7 @@
       "close_tag_picker": "ট্যাগ পিকার বন্ধ করুন",
       "new_tag": "নতুন ট্যাগ…",
       "no_tags_yet_create_one_below": "এখনও কোনো ট্যাগ নেই। নিচে একটি তৈরি করুন।",
+      "tag_create_failed": "সেই ট্যাগ তৈরি করা যায়নি। আপনি যে নামটি লিখেছেন তা ফিল্ডে রয়ে গেছে।",
       "tags": "ট্যাগ"
     },
     "snipOverlay": {
@@ -14912,9 +14914,22 @@
       "saving": "সংরক্ষণ হচ্ছে..."
     },
     "offline": {
+      "change_tags": "ট্যাগ পরিবর্তন",
+      "close_sessions": "সেশন বন্ধ",
       "disabled_gateway_offline": "{{label}} নিষ্ক্রিয় — গেটওয়ে অফলাইন",
+      "export_sessions": "সেশন এক্সপোর্ট",
       "gateway_offline_reconnect": "গেটওয়ে অফলাইন — {{action}} করতে আবার সংযুক্ত হও",
-      "submit_comments": "মন্তব্য জমা দেওয়া"
+      "move_folders": "ফোল্ডার সরানো",
+      "move_sessions": "সেশন সরানো",
+      "optimize": "প্রম্পট অপ্টিমাইজ",
+      "pin_sessions": "সেশন পিন",
+      "reload_sessions": "সেশন পুনরায় লোড",
+      "rename_sessions": "সেশনের নাম পরিবর্তন",
+      "resume_sessions": "সেশন পুনরায় শুরু",
+      "send": "পাঠানো",
+      "submit_comments": "মন্তব্য জমা দেওয়া",
+      "switch_session_modes": "সেশন মোড পরিবর্তন",
+      "switch_sessions": "সেশন পরিবর্তন"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "তোমার ব্রাউজার পপ-আউট উইন্ডো ব্লক করেছে। এই সাইটের জন্য পপ-আপ চালু করো, তারপর আবার চেষ্টা করো।"

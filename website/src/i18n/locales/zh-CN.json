@@ -7242,6 +7242,7 @@
       "mark_as_read": "标记为已读",
       "mark_as_unread": "标记为未读",
       "move_to_folder": "移动到文件夹…",
+      "offline_reason": "网关离线 — 变暗的操作需要连接",
       "open_in_new_tab": "在会话标签页中打开",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
@@ -7476,6 +7477,7 @@
       "close_tag_picker": "关闭标签选择器",
       "new_tag": "新标签…",
       "no_tags_yet_create_one_below": "暂无标签。请在下方创建。",
+      "tag_create_failed": "无法创建该标签。输入的名称仍在输入框中。",
       "tags": "标签"
     },
     "snipOverlay": {
@@ -14718,9 +14720,22 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_tags": "更改标签",
+      "close_sessions": "关闭会话",
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
+      "export_sessions": "导出会话",
       "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
-      "submit_comments": "提交评论"
+      "move_folders": "移动文件夹",
+      "move_sessions": "移动会话",
+      "optimize": "优化提示词",
+      "pin_sessions": "置顶会话",
+      "reload_sessions": "重新加载会话",
+      "rename_sessions": "重命名会话",
+      "resume_sessions": "恢复会话",
+      "send": "发送",
+      "submit_comments": "提交评论",
+      "switch_session_modes": "切换会话模式",
+      "switch_sessions": "切换会话"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "浏览器阻止了弹出窗口。允许此站点的弹出窗口后重试。"

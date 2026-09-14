@@ -33,30 +33,45 @@ export interface PhoneSubTriggerDivProps extends React.HTMLAttributes<HTMLDivEle
   inset?: boolean
   expanded: boolean
   onToggle: () => void
+  /**
+   * Honoured here rather than passed through. Radix's own SubTrigger implements
+   * `disabled`, but this touch branch replaces it with a plain div, where the
+   * attribute is inert — so a caller's `disabled` silently opened the submenu on
+   * every touch device. Kept off `pointer-events` on purpose: removing them would
+   * also remove hover, and hover is what renders the offline `title`.
+   */
+  disabled?: boolean
 }
 
 /** Inline trigger row: a `role="button"` div composing caller handlers with the toggle. */
 export const PhoneSubTriggerDiv = React.forwardRef<HTMLDivElement, PhoneSubTriggerDivProps>(
   function PhoneSubTriggerDiv(
-    { className, inset, expanded, onToggle, onClick, onKeyDown, children, ...rest },
+    { className, inset, expanded, onToggle, onClick, onKeyDown, children, disabled, 'aria-disabled': ariaDisabled, ...rest },
     ref,
   ) {
+    // Either signal gates it. Focus is NOT removed: a gated row the user can
+    // reach is how the offline reason gets announced rather than skipped.
+    const gated = disabled === true || ariaDisabled === true || ariaDisabled === 'true'
     return (
       <div
       {...rest}
       ref={ref}
       role="button"
       tabIndex={0}
+      aria-disabled={gated || undefined}
+      data-disabled={gated ? '' : undefined}
       aria-expanded={expanded}
       onClick={(e) => {
         ;(onClick as unknown as React.MouseEventHandler<HTMLDivElement> | undefined)?.(e)
         e.preventDefault()
+        if (gated) return
         onToggle()
       }}
       onKeyDown={(e) => {
         ;(onKeyDown as unknown as React.KeyboardEventHandler<HTMLDivElement> | undefined)?.(e)
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
+          if (gated) return
           onToggle()
         }
       }}
