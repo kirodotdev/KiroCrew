@@ -172,6 +172,47 @@ async def test_get_all_history_no_index(store: CronHistoryStore) -> None:
     assert total == 0
 
 
+@pytest.mark.asyncio
+async def test_non_object_jsonl_rows_do_not_break_history_reads_or_delete(
+    store: CronHistoryStore, tmp_path: Path
+) -> None:
+    await store.append(_record(job_id="job1", run_id="r1", trace="private"))
+    await store.append(_record(job_id="keep", run_id="r2"))
+    history_dir = tmp_path / "cron-history"
+    job_file = history_dir / "job1.jsonl"
+    index_file = history_dir / "_index.jsonl"
+    invalid = 'null\n[]\n123\n"foo"\ntrue\n{broken\n'
+    retained = index_file.read_text(encoding="utf-8").splitlines()[1]
+    job_file.write_text(job_file.read_text(encoding="utf-8") + invalid, encoding="utf-8")
+    index_file.write_text(invalid + index_file.read_text(encoding="utf-8"), encoding="utf-8")
+
+    job_rows, job_total = await store.get_job_history("job1")
+    assert job_total == 1
+    assert [row["run_id"] for row in job_rows] == ["r1"]
+    assert "trace" not in job_rows[0]
+    assert (await store.get_run_detail("job1", "r1"))["trace"] == "private"
+    assert await store.get_run_detail("job1", "missing") is None
+
+    all_rows, all_total = await store.get_all_history()
+    assert all_total == 2
+    assert [row["run_id"] for row in all_rows] == ["r2", "r1"]
+    page, page_total = await store.get_all_history(offset=1, limit=1)
+    assert page_total == 2
+    assert [row["run_id"] for row in page] == ["r1"]
+    empty_page, job_total = await store.get_job_history("job1", offset=1, limit=1)
+    assert job_total == 1
+    assert empty_page == []
+    filtered_rows, filtered_total = await store.get_all_history(job_id="job1")
+    assert filtered_total == 1
+    assert [row["run_id"] for row in filtered_rows] == ["r1"]
+
+    assert await store.delete_job_history("job1") is True
+    remaining, total = await store.get_all_history()
+    assert total == 1
+    assert [row["run_id"] for row in remaining] == ["r2"]
+    assert index_file.read_text(encoding="utf-8") == retained + "\n"
+
+
 # ── rotate ───────────────────────────────────────────────────────────────
 
 
