@@ -10106,7 +10106,6 @@
       "sessions_from_instance_unavailable": "{{names}} のセッションは現在利用できません。",
       "checking_remote_instances": "リモートインスタンスを確認しています…",
       "adopt_failed": "このセッションをここで開けませんでした。",
-      "adopt_remote_bind_failed": "{{name}} に接続できず、このセッションを開けませんでした。",
       "adopt_target_unknown": "このセッションは {{name}} では開かれていません。",
       "not_open_here_yet": "{{name}} 上 — クリックするとここで開きます",
       "on_instance": "{{name}} 上",

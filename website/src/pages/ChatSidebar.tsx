@@ -1559,19 +1559,26 @@ interface SessionRowProps {
  * journals the status and the code keyed by the message that DOES survive, which
  * is what `findReport` looks back up. See `utils/thunkError`'s module doc.
  *
- * The two named codes get copy that says what the user can do about it; anything
- * else shows the backend's own sentence (`apiFailure` already unwrapped it out of
- * the `{error, code}` envelope), and a fixed sentence is the floor — a failed
- * click must never render nothing, which is the defect this exists to fix. */
+ * `adopt_target_unknown` gets copy that names the crew, because its backend
+ * sentence does not; anything else shows the backend's own sentence (`apiFailure`
+ * already unwrapped it out of the `{error, code}` envelope), and a fixed sentence
+ * is the floor — a failed click must never render nothing, which is the defect
+ * this exists to fix.
+ *
+ * `remote_bind_failed` deliberately has NO case of its own. The backend collapses
+ * every refusal on the bind leg to that one code — a dead tunnel, but also a
+ * version-parity refusal ("This crew runs Kiro Crew 0.6.0 but this machine runs
+ * 0.7.0 …") — and only its sentence tells them apart. A fixed "could not reach"
+ * string here would render a healthy, reachable crew as unreachable and hide the
+ * one line that tells the user which end to update. The sentence is always present
+ * for a journaled code: `findReport` matches on a non-empty message, so a code
+ * with no message is unreachable and a fallback for it would be dead code. */
 function adoptFailureText(err: unknown, crewName: string): string {
   const message = errMessage(err)
   switch (findReport(message)?.code) {
     // The peer no longer lists that session (closed there, or never adoptable).
     case 'adopt_target_unknown':
       return i18nT('pages.chatSidebar.adopt_target_unknown', { name: crewName })
-    // The tunnel died between listing the row and binding it.
-    case 'remote_bind_failed':
-      return i18nT('pages.chatSidebar.adopt_remote_bind_failed', { name: crewName })
     default:
       return message || i18nT('pages.chatSidebar.adopt_failed')
   }
@@ -1939,7 +1946,11 @@ const SessionRow = memo(function SessionRow({
         // the same `session-row-fixed-height` rule, reached from the other side.
         // Truncating rather than dropping the component: `errors-use-error-notice`
         // requires an error to BE an `ErrorNotice`, so the two rules together
-        // leave exactly this shape.
+        // leave exactly this shape. `messageTooltip` carries the whole sentence:
+        // the row is one line wide, and the server's reason ("This crew runs Kiro
+        // Crew 0.6.0 but this machine runs 0.7.0 …") puts the actionable half past
+        // the clip. `truncate` + `title` is the shape `session-row-fixed-height`
+        // itself prescribes for a field that does not fit.
         key: 'peer_adopt_error',
         when: !!peerId && !adoptPending && !!adoptError,
         build: () => (
@@ -1947,6 +1958,7 @@ const SessionRow = memo(function SessionRow({
             {/* No hand-off: the adjacent composer may contain an unsaved draft. */}
             <ErrorNotice
               message={adoptError || ''}
+              messageTooltip={adoptError || undefined}
               variant="inline"
               messageClassName="truncate"
               testId="session-peer-adopt-error"

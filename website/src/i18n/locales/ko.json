@@ -10106,7 +10106,6 @@
       "sessions_from_instance_unavailable": "{{names}}의 세션을 현재 사용할 수 없습니다.",
       "checking_remote_instances": "원격 인스턴스 확인 중…",
       "adopt_failed": "이 세션을 여기서 열 수 없습니다.",
-      "adopt_remote_bind_failed": "{{name}}에 연결할 수 없어 이 세션을 열지 못했습니다.",
       "adopt_target_unknown": "이 세션은 {{name}}에서 더 이상 열려 있지 않습니다.",
       "not_open_here_yet": "{{name}}에 있음 — 클릭하면 여기서 엽니다",
       "on_instance": "{{name}}에 있음",

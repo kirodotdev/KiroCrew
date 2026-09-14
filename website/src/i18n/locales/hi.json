@@ -10261,7 +10261,6 @@
       "sessions_from_instance_unavailable": "{{names}} के सत्र इस समय अनुपलब्ध हैं।",
       "checking_remote_instances": "रिमोट इंस्टैंस जाँचे जा रहे हैं…",
       "adopt_failed": "इस सत्र को यहाँ नहीं खोला जा सका।",
-      "adopt_remote_bind_failed": "इस सत्र को खोलने के लिए {{name}} तक नहीं पहुँचा जा सका।",
       "adopt_target_unknown": "यह सत्र अब {{name}} पर खुला नहीं है।",
       "not_open_here_yet": "{{name}} पर — यहाँ खोलने के लिए क्लिक करें",
       "on_instance": "{{name}} पर",

@@ -10261,7 +10261,6 @@
       "sessions_from_instance_unavailable": "{{names}} থেকে সেশনগুলি এই মুহূর্তে অনুপলব্ধ।",
       "checking_remote_instances": "রিমোট ইনস্ট্যান্স যাচাই করা হচ্ছে…",
       "adopt_failed": "এই সেশনটি এখানে খোলা যায়নি।",
-      "adopt_remote_bind_failed": "এই সেশনটি খুলতে {{name}}-এ পৌঁছানো যায়নি।",
       "adopt_target_unknown": "এই সেশনটি আর {{name}}-এ খোলা নেই।",
       "not_open_here_yet": "{{name}} এ — এখানে খুলতে ক্লিক করুন",
       "on_instance": "{{name}} এ",

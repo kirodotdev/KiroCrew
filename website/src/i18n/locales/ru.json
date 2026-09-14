@@ -10571,7 +10571,6 @@
       "sessions_from_instance_unavailable": "Сеансы с {{names}} сейчас недоступны.",
       "checking_remote_instances": "Проверка удалённых экземпляров…",
       "adopt_failed": "Не удалось открыть этот сеанс здесь.",
-      "adopt_remote_bind_failed": "Не удалось связаться с {{name}}, чтобы открыть этот сеанс.",
       "adopt_target_unknown": "Этот сеанс больше не открыт на {{name}}.",
       "not_open_here_yet": "На {{name}} — нажмите, чтобы открыть здесь",
       "on_instance": "На {{name}}",

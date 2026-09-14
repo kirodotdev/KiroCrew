@@ -10416,7 +10416,6 @@
       "sessions_from_instance_unavailable": "Les sessions de {{names}} sont indisponibles pour le moment.",
       "checking_remote_instances": "Vérification des instances distantes…",
       "adopt_failed": "Impossible d'ouvrir cette session ici.",
-      "adopt_remote_bind_failed": "Impossible de joindre {{name}} pour ouvrir cette session.",
       "adopt_target_unknown": "Cette session n'est plus ouverte sur {{name}}.",
       "not_open_here_yet": "Sur {{name}} — cliquez pour l'ouvrir ici",
       "on_instance": "Sur {{name}}",

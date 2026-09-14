@@ -119,6 +119,8 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
+import { recordError } from '../utils/errorReport'
 import type { ChatSlot, ChatHistoryItem } from '../types'
 import type { RootState } from '../store'
 
@@ -706,6 +708,43 @@ describe('ChatSidebar – remote instance sessions merge into the list', () => {
     await waitFor(() =>
       expect(remoteRow!.querySelector('[data-testid="session-peer-adopt-pending"]')).not.toBeNull())
     expect(remoteRow!.querySelectorAll('.animate-spin')).toHaveLength(1)
+  })
+
+  it('renders the crew\'s OWN refusal on a failed adopt, not a fixed "could not reach"', async () => {
+    // `remote_bind_failed` is ONE code for every refusal on the bind leg: a dead
+    // tunnel, but also a version-parity refusal from a crew that is up and answering.
+    // Only the backend's sentence tells them apart, so the row must show that
+    // sentence. A fixed "Could not reach astro" here told the user to reconnect a
+    // crew that was reachable, and hid the line naming which end to update.
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    const reason = 'This crew runs Kiro Crew 0.6.0 but this machine runs 0.7.0. '
+      + 'A session only runs on a crew at the same major.minor version — update whichever end is behind.'
+    // What `client.ts::apiFailure` does for a real 502 before it throws: journal the
+    // status and code keyed by the message, which is the only field that survives
+    // the thunk boundary (see `adoptFailureText`'s doc).
+    recordError({
+      source: 'api', message: reason, status: 502, code: 'remote_bind_failed',
+      endpoint: '/api/chat/slots', detail: JSON.stringify({ error: reason, code: 'remote_bind_failed' }),
+    })
+    vi.mocked(api.createChatSlot).mockRejectedValueOnce(new ApiError(502, reason))
+    const { container } = renderSidebar()
+
+    await waitFor(() => expect(container.textContent).toContain('REMOTE middle row'))
+    const remoteRow = Array.from(container.querySelectorAll('[data-session-row]'))
+      .find(row => row.textContent?.includes('REMOTE middle row'))
+    fireEvent.click(remoteRow!)
+
+    await waitFor(() =>
+      expect(remoteRow!.querySelector('[data-testid="session-peer-adopt-error"]')).not.toBeNull())
+    const noticeEl = remoteRow!.querySelector('[data-testid="session-peer-adopt-error"]')!
+    const shown = noticeEl.textContent ?? ''
+    expect(shown).toContain('0.6.0')
+    expect(shown).toContain('0.7.0')
+    expect(shown).not.toMatch(/could not reach/i)
+    // The row is one line wide and clips the sentence (`session-row-fixed-height`),
+    // so the whole reason must also ride a `title` tooltip -- the clipped half is
+    // the one that says what to do.
+    expect(noticeEl.querySelector('[title]')?.getAttribute('title')).toBe(reason)
   })
 
   it('keeps the PEER identity on the adopted row, so it is one row and not two', async () => {

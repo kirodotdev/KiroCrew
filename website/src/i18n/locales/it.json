@@ -10416,7 +10416,6 @@
       "sessions_from_instance_unavailable": "Le sessioni di {{names}} non sono disponibili al momento.",
       "checking_remote_instances": "Controllo delle istanze remote…",
       "adopt_failed": "Non è stato possibile aprire questa sessione qui.",
-      "adopt_remote_bind_failed": "Non è stato possibile raggiungere {{name}} per aprire questa sessione.",
       "adopt_target_unknown": "Questa sessione non è più aperta su {{name}}.",
       "not_open_here_yet": "Su {{name}} — fai clic per aprirla qui",
       "on_instance": "Su {{name}}",

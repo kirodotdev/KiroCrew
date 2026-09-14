@@ -3929,7 +3929,6 @@
     },
     "chatSidebar": {
       "adopt_failed": "Could not open this session here.",
-      "adopt_remote_bind_failed": "Could not reach {{name}} to open this session.",
       "adopt_target_unknown": "This session is no longer open on {{name}}.",
       "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
