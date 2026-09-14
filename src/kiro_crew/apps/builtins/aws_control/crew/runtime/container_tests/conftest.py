@@ -151,6 +151,49 @@ if _declined is not None:  # pragma: no cover - decided by the host, not by a br
     collect_ignore_glob = ["test_*.py"]
 
 
+class _DeclinedModule(pytest.Module):
+    """A module stand-in that reports the decline as a skip instead of importing.
+
+    Collecting (importing) the real module in a declined environment is exactly
+    what must not happen -- four modules here ``import httpx`` at top level, and
+    the rest import ``container.*`` code that does. So the decline has to land
+    BEFORE import, and a collector whose ``collect()`` raises the module-level
+    skip is the pytest shape for that.
+    """
+
+    def collect(self):  # pragma: no cover - exercised via the pin tests' subprocess
+        raise pytest.skip.Exception(
+            f"crew container suite is not collectable here: {_declined}",
+            allow_module_level=True,
+        )
+
+
+def pytest_pycollect_makemodule(
+    module_path: Path, parent: pytest.Collector
+) -> pytest.Module | None:
+    """The direct-argument twin of ``collect_ignore_glob`` above.
+
+    ``collect_ignore_glob`` only filters files pytest DISCOVERS by walking this
+    directory. A file named explicitly on the command line skips that walk --
+    pytest treats direct arguments as overriding every ignore mechanism,
+    including a ``pytest_ignore_collect`` hook -- and CI's reduced cross-surface
+    path does exactly that: on a single-surface diff, ``ci.yml`` passes the
+    cross-surface file list as explicit pytest arguments, several of which live
+    in this tree. Every frontend-only PR then failed ``Backend Tests`` with
+    ``ModuleNotFoundError: No module named 'httpx'`` from an environment whose
+    missing deps are deliberate (see the decline rationale above).
+
+    Module construction is the one step every path to a test module shares --
+    directory walk, explicit file argument, ``file.py::test`` node id -- so
+    substituting the declining collector here holds however the file is
+    reached. Returning ``None`` when the suite runs (or for a path outside this
+    directory) hands construction back to pytest unchanged.
+    """
+    if _declined is None or module_path.parent != _HERE:
+        return None
+    return _DeclinedModule.from_parent(parent, path=module_path)
+
+
 def _modules_that_define_tests() -> set[str]:
     """Names of the ``test_*.py`` files beside this one that define a test function.
 

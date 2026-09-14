@@ -681,3 +681,73 @@ def test_boto3_is_not_a_collect_time_gate() -> None:
     """
     ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})  # no boto3
     assert getattr(ns, "collect_ignore_glob", None) is None
+
+
+# --- container image test suite: the direct-argument twin of the glob guard -----
+#
+# ``collect_ignore_glob`` only filters files pytest discovers by WALKING the
+# directory. A file named explicitly on the command line skips that walk, and
+# pytest treats direct arguments as overriding every ignore mechanism (including
+# a ``pytest_ignore_collect`` hook) -- so the conftest also substitutes a
+# declining Module collector in ``pytest_pycollect_makemodule``, the one
+# construction step every path to a test module shares. CI's reduced
+# cross-surface path passes several of this suite's files as explicit arguments
+# on every single-surface diff, which is how a frontend-only PR came to fail
+# ``Backend Tests`` with ``ModuleNotFoundError: No module named 'httpx'``.
+# These pin the hook's decision; the collector construction
+# itself is pytest plumbing, replaced with a sentinel so no live Session is
+# needed.
+
+
+class _SentinelDeclined:
+    """Stands in for ``_DeclinedModule`` so the hook's choice is observable."""
+
+    @classmethod
+    def from_parent(cls, parent, path):
+        return ("declined", parent, path)
+
+
+def test_direct_argument_collection_is_declined_when_a_dep_is_missing() -> None:
+    ns = _run_container_conftest(present={"fastapi", "uvicorn"})  # httpx missing
+    ns._DeclinedModule = _SentinelDeclined
+    made = ns.pytest_pycollect_makemodule(
+        module_path=_CONTAINER_CONFTEST.parent / "test_review_findings.py",
+        parent="parent-token",
+    )
+    assert made == (
+        "declined",
+        "parent-token",
+        _CONTAINER_CONFTEST.parent / "test_review_findings.py",
+    ), (
+        "a file named directly on the command line bypasses collect_ignore_glob, "
+        "so the makemodule hook must substitute the declining collector or every "
+        "frontend-only PR fails the backend shard on the image-only deps"
+    )
+
+
+def test_direct_argument_collection_runs_when_all_deps_present() -> None:
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
+    ns._DeclinedModule = _SentinelDeclined
+    made = ns.pytest_pycollect_makemodule(
+        module_path=_CONTAINER_CONFTEST.parent / "test_review_findings.py",
+        parent="parent-token",
+    )
+    assert made is None, (
+        "with every collection-time dep importable the hook must hand module "
+        "construction back to pytest, or the suite stops running where its "
+        "subject can run"
+    )
+
+
+def test_the_makemodule_hook_leaves_other_directories_alone() -> None:
+    ns = _run_container_conftest(present={"fastapi", "uvicorn"})  # declined
+    ns._DeclinedModule = _SentinelDeclined
+    made = ns.pytest_pycollect_makemodule(
+        module_path=_REPO_ROOT / "test" / "test_widget_slug.py",
+        parent="parent-token",
+    )
+    assert made is None, (
+        "the decline is scoped to the container suite's own directory; a "
+        "conftest hook runs for every module under it in the tree, so an "
+        "unscoped decline would skip unrelated suites"
+    )
