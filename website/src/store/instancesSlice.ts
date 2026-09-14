@@ -55,6 +55,10 @@ export interface HostModel {
   /** True when the parent is a macOS Electron window not in fullscreen, so the
    *  embedded header must inset its content clear of the native traffic lights. */
   macInset: boolean
+  /** True when the parent is a Windows Electron frameless window, so the
+   *  embedded header must inset its RIGHT side clear of the native caption
+   *  buttons (the transparent titleBarOverlay's min/max/close cluster). */
+  winInset: boolean
   /** The parent window's focus mode, relayed so the pane hides its own chrome to
    *  match instead of landing fully-framed inside a focused window. `null` means
    *  the host SENT NO OPINION — an older host whose model predates the field —

@@ -43,7 +43,7 @@ import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigi
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
 import { connectInstanceInto } from '../lib/connectInstance'
-import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH, WIN_CAPTION_RESERVE_PX } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
@@ -105,6 +105,20 @@ function ttlToSeconds(ttl: string): number {
 }
 
 export default function InstancesViewport({ macInset = false }: { macInset?: boolean } = {}) {
+  // Windows counterpart of `macInset`: the caption overlay is a shell property,
+  // not a window state, so it derives straight from the platform flag rather
+  // than arriving as a prop.
+  const winInset = isWinElectron
+  // Inset for the HOST-rendered InstanceTabBar strips atop the loading/error
+  // overlays: clear of the macOS traffic lights on the left, and of the
+  // Windows titleBarOverlay caption buttons on the right — those strips are
+  // the topmost header while an overlay is up, exactly like the pane header.
+  const stripInsetStyle = macInset || winInset
+    ? {
+        ...(macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : null),
+        ...(winInset ? { paddingRight: WIN_CAPTION_RESERVE_PX } : null),
+      }
+    : undefined
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
@@ -807,7 +821,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
 
   // Build the switcher model relayed to the embedded pane `id`: the full tab
   // list (same rule as the local inline bar), which tab is active, this pane's
-  // OWN tunnel status (for its readout capsule), and the macOS inset.
+  // OWN tunnel status (for its readout capsule), and the platform insets.
   const buildModelFor = useCallback(
     (id: string) => {
       const insts = instancesQuery.data?.instances ?? []
@@ -827,7 +841,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           }
         : null
       return {
-        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, focusMode,
+        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, winInset, focusMode,
         electron: isElectron,
         // Array, not the Set itself: structured clone rejects a Set across this
         // boundary in some engines and the receiver validates element-wise anyway.
@@ -835,7 +849,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         stableOrder,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, focusMode, pinnedCrews, stableOrder],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, focusMode, pinnedCrews, stableOrder],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -892,7 +906,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
+  }, [warm, activeId, unread, macInset, winInset, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
@@ -1065,7 +1079,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               strip is the user's sole way to reach Local or another instance. */}
           <InstanceTabBar
             variant="strip"
-            style={macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : undefined}
+            style={stripInsetStyle}
           />
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="flex flex-col items-center gap-3 text-center">
@@ -1087,7 +1101,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               clear of the macOS traffic lights when this strip is topmost. */}
           <InstanceTabBar
             variant="strip"
-            style={macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : undefined}
+            style={stripInsetStyle}
           />
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="max-w-md w-full flex flex-col items-center gap-3 text-center">

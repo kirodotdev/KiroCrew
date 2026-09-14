@@ -49,6 +49,7 @@ const hostModel = (over: Partial<HostModel> = {}): HostModel => ({
   activeId: 'cd-1',
   self: null,
   macInset: false,
+  winInset: false,
   electron: true,
   expanded: false,
   ...over,

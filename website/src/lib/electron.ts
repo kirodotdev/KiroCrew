@@ -114,6 +114,16 @@ export async function openFileInEditor(
 export const WIN_CAPTION_OVERLAY_WIDTH = 138
 
 /**
+ * Content reserve for that overlay: its raw width plus a small clearance so
+ * the rightmost control never sits flush against the caption buttons. This is
+ * the value the `.win-electron` and `.embedded-win-inset` header rules in
+ * index.css hard-code as 142px — keep them in sync (pinned by the stylesheet
+ * assertions in EmbeddedSwitcher.test.tsx). `WIN_CAPTION_OVERLAY_WIDTH` above
+ * stays the raw geometry, used for drag-strip clipping.
+ */
+export const WIN_CAPTION_RESERVE_PX = WIN_CAPTION_OVERLAY_WIDTH + 4
+
+/**
  * True when an app declares `platform.requiresDesktopApp` but we are in a
  * browser tab — i.e. its UI needs capabilities only the Electron shell can
  * provide (native always-on-top windows, global shortcuts, tray, capture).

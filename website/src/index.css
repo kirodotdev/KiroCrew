@@ -2043,7 +2043,8 @@ file-tree-container{
    and mark the header as a drag region so the integrated menu row still moves
    the window — with an explicit no-drag opt-out for every interactive control,
    including the titlebar app-menu triggers below.
-   Keep 142px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
+   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts
+   (the 138px overlay plus 4px clearance). */
 .win-electron header.topbar-glass{
   padding-right:142px;
   -webkit-app-region:drag;
@@ -2088,6 +2089,23 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
    of the parent window's native traffic lights.
    Keep 84px in sync with TRAFFIC_LIGHT_INSET_PX in src/lib/electron.ts. */
 .embedded-mac-inset header.topbar-glass{padding-left:84px}
+/* Windows counterpart: the parent relays whether it is a Windows Electron
+   frameless window (`winInset` in mc-host-model); the bridge toggles
+   `.embedded-win-inset` on <html> so the pane's now-topmost header insets its
+   RIGHT side clear of the parent window's native caption buttons.
+   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts and
+   with the `.win-electron` rule above. Deliberately NO -webkit-app-region:drag
+   here: draggable regions are only collected from the host document, never
+   from a cross-origin iframe (see InstancesViewport), and the host's drag
+   strips already clip at the caption zone. */
+.embedded-win-inset header.topbar-glass{padding-right:142px}
+/* Focus mode inside an embedded pane under a Windows frameless host: same
+   caption reserve as the local `.win-electron` rule further up — focus mode
+   takes the pane's header out of flow, so the peeked surface at that corner
+   must clear the caption band too. `.mc-focus-mode` (the body class) instead
+   of `body.mc-focus-mode` because `.embedded-win-inset` sits on <html>, the
+   body's parent. Keep 142px in sync as above. */
+.embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:142px}
 /* The injected #electron-drag-bar (electron/main.js) marks the top 42px as a
    window drag region and only exempts native controls (button/a/input/
    [role="button"]/[tabindex]). The side panel's tab strip lives in that zone
