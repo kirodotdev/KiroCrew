@@ -7107,9 +7107,16 @@
       "searching_enter_held": "Pesquisando… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
       "type_2_chars_to_search_files_ctrl_enter_held": "Digite 2+ caracteres para pesquisar arquivos e pastas… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
       "type_2_chars_to_search_files_enter_held": "Digite 2+ caracteres para pesquisar arquivos e pastas… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
-      "search_failed": "Não foi possível pesquisar arquivos. Tente novamente.",
       "outside_project_enter_sends": "Este caminho termina fora do projeto, então não há nada a completar — Enter envia a mensagem",
-      "outside_project_ctrl_enter_sends": "Este caminho termina fora do projeto, então não há nada a completar — Ctrl+Enter envia a mensagem"
+      "outside_project_ctrl_enter_sends": "Este caminho termina fora do projeto, então não há nada a completar — Ctrl+Enter envia a mensagem",
+      "search_denied": "Sem acesso à pasta do projeto",
+      "search_root_missing": "Pasta do projeto não encontrada",
+      "retry": "Tentar novamente",
+      "check_project_folder": "Clique no nome da pasta abaixo da caixa de mensagem para alterá-la",
+      "search_denied_path": "Sem acesso a este caminho",
+      "check_path_inside_project": "Escolha outro caminho",
+      "enter_sends": "Enter envia a mensagem",
+      "ctrl_enter_sends": "Ctrl+Enter envia a mensagem"
     },
     "fileRenderers": {
       "binary_file_download_hint": "Não é texto, então não há nada para mostrar aqui. Baixe uma cópia para abri-lo em outro aplicativo.",

@@ -6863,9 +6863,16 @@
       "searching_enter_held": "검색 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "type_2_chars_to_search_files_ctrl_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "type_2_chars_to_search_files_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
-      "search_failed": "파일을 검색할 수 없습니다. 다시 시도하세요.",
       "outside_project_enter_sends": "이 경로는 결국 프로젝트 밖으로 나가므로 완성할 것이 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
-      "outside_project_ctrl_enter_sends": "이 경로는 결국 프로젝트 밖으로 나가므로 완성할 것이 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다"
+      "outside_project_ctrl_enter_sends": "이 경로는 결국 프로젝트 밖으로 나가므로 완성할 것이 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "search_denied": "프로젝트 폴더에 접근할 수 없습니다",
+      "search_root_missing": "프로젝트 폴더를 찾을 수 없습니다",
+      "retry": "다시 시도",
+      "check_project_folder": "프로젝트 폴더를 변경하려면 메시지 상자 아래의 폴더 이름을 클릭하세요",
+      "search_denied_path": "이 경로에 접근할 수 없습니다",
+      "check_path_inside_project": "다른 경로를 선택하세요",
+      "enter_sends": "Enter 키를 누르면 메시지가 전송됩니다",
+      "ctrl_enter_sends": "Ctrl+Enter 키를 누르면 메시지가 전송됩니다"
     },
     "fileRenderers": {
       "binary_file_download_hint": "텍스트가 아니어서 여기에 표시할 내용이 없습니다. 사본을 다운로드하여 다른 앱에서 여세요.",

@@ -7107,9 +7107,16 @@
       "searching_enter_held": "Recherche… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "type_2_chars_to_search_files_ctrl_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
       "type_2_chars_to_search_files_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
-      "search_failed": "Impossible de rechercher les fichiers. Réessayez.",
       "outside_project_enter_sends": "Ce chemin aboutit en dehors du projet, il n’y a donc rien à compléter — Enter envoie le message",
-      "outside_project_ctrl_enter_sends": "Ce chemin aboutit en dehors du projet, il n’y a donc rien à compléter — Ctrl+Enter envoie le message"
+      "outside_project_ctrl_enter_sends": "Ce chemin aboutit en dehors du projet, il n’y a donc rien à compléter — Ctrl+Enter envoie le message",
+      "search_denied": "Accès refusé au dossier du projet",
+      "search_root_missing": "Dossier du projet introuvable",
+      "retry": "Réessayer",
+      "check_project_folder": "Clique sur le nom du dossier sous la zone de message pour changer le dossier du projet",
+      "search_denied_path": "Accès refusé à ce chemin",
+      "check_path_inside_project": "Choisis un autre chemin",
+      "enter_sends": "Enter envoie le message",
+      "ctrl_enter_sends": "Ctrl+Enter envoie le message"
     },
     "fileRenderers": {
       "binary_file_download_hint": "Ce n'est pas du texte, il n'y a donc rien à afficher ici. Téléchargez une copie pour l'ouvrir dans une autre application.",
