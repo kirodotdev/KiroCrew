@@ -113,10 +113,42 @@ Every entry produced by this campaign's current round (the W00-S1 slice, and
 the evidence catalog it draws on) has `status: planned` and
 `last_reached_status: planned`: nothing has begun implementation yet. A
 future round moves entries along the ladder; it does not invent new rungs
-without a scoped revision of this spec, and it does not skip a rung silently
-(an entry does not jump from `planned` to `merged` without passing through
-the rungs a validator can check for, tracked via `last_reached_status` even
-while `status` reads `blocked`).
+without a scoped revision of this spec.
+
+**A conjunction of required fields proves an entry's CURRENT claim is
+internally consistent with its evidence — it does not, by itself, prove
+the entry's history actually visited every intermediate rung.** A single
+edit that writes `status: merged` together with a `verification_contract`
+resolving to a passing `ConformanceRun`, a `tested_sha`, and a `merged_sha`
+all at once is indistinguishable, from field presence alone, from an entry
+that genuinely progressed through `implementing` and `code_complete` first.
+The per-rung checklist below is a real, checkable constraint — it catches
+an entry claiming `merged` with no verification evidence at all, which is
+the common and consequential failure mode — but it is NOT a claim that this
+schema alone can detect a skipped rung when every required field for the
+CLAIMED rung is honestly populated. Proving the latter needs an actual
+transition history (an ordered log of `status` changes with a timestamp
+and, for each transition, the `ConformanceRun`/SHA that justified it), which
+is out of scope for this manifest-entry schema and belongs to a future,
+separately-scoped revision if the campaign decides the stronger guarantee is
+worth the added structure. Until then, the checklist below is a floor
+(a validator that fails it has found a real defect), not a ceiling (passing
+it is not a full proof of honest progression).
+
+| Rung | Required non-null/non-empty by this point |
+|---|---|
+| `code_complete` | `verification_contract`, `tested_sha` |
+| `contract_verified` | the above, plus the referenced `ConformanceRun.verdict == pass` |
+| `live_verified` | the above, plus every `applicable: true` matrix cell at `contract_verified` or later (see "Per-mode, per-surface, per-auth-mode evidence") |
+| `merged` | the above, plus `merged_sha` |
+| `release_verified` | the above, plus `release_sha` |
+
+A validator checking a `status`/`last_reached_status` claim against this
+table catches the common failure mode — a rung claimed with no supporting
+evidence at all — as a missing required field. It does not, on its own,
+distinguish an honest multi-step progression from a single edit that
+populated every field at once; see the paragraph above this table for what
+would be needed to close that gap.
 
 ## Manifest entry: one row per required operation
 
@@ -126,13 +158,14 @@ Every required operation the connector campaign tracks — one row per
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `operation_id` | string | yes | Stable identifier. Does not change across campaign rounds once assigned. |
+| `operation_kind` | enum | yes | One of `single_fetch`, `list`, `search`, `mutation`, `stream`. The discriminator `pagination`'s required-when condition below checks against directly: `pagination` is required exactly when `operation_kind` is `list` or `search`, and a validator reads this field rather than inferring list/search-ness from the operation's name, its `effect`, or any other field. |
 | `provider` | string | yes | The vendor's own name for its surface (e.g. `github`), matching that vendor's own official branding. |
 | `service_id` | enum | yes | The campaign's neutral service-range identifier. One of: `github`, `gmail`, `google_drive`, `sharepoint`, `outlook`, `onedrive`, `onenote`, `teams`, `excel_shared_engine`, `office_documents`, `slack`, `asana`, `salesforce`, `zoom` — the 12 named service ranges plus the two Office capability sets (`excel_shared_engine`, `office_documents`), which are horizontal capability groups spanning SharePoint/OneDrive rather than a 13th provider (see `W07` in the DAG below). This is the complete, closed set for the current campaign round; a validator checks membership against this list directly, not against anything outside this document. Adding a service range is a scoped revision of this enum, under the same owning-spec rule any other manifest field evolves by. |
 | `required` | boolean | yes | Whether the operation is in the campaign's required scope. |
 | `category` | enum | yes | One of `baseline_alignment`, `production_requirement`, `user_extension`. This field renames evidence into a requirement class; it never shrinks scope on its own. |
 | `source_status` | enum | yes | `user_required` / `official_baseline` / `unverified` — see "Two axes" above. |
-| `source` | object | yes | `{source_kind, source_id, observed_at, snapshot_ref}` — see "`source_kind`, and how a `user_required` or not-yet-sourced entry is represented" below. |
-| `observed_at` | string | yes | When the entry's shape was last confirmed against its source, so drift is detectable later. |
+| `source` | object | yes | `{source_kind, source_id, observed_at, snapshot_ref}` — this inner `observed_at` is `null` when `source_kind` is `not_yet_sourced` (there is no source to have observed anything against yet, and forcing a timestamp here would fabricate one); for every other `source_kind` it records the moment THIS SOURCE was last checked, independent of the entry-level `observed_at` below. See "`source_kind`, and how a `user_required` or not-yet-sourced entry is represented" below. |
+| `observed_at` | string | yes | The single authoritative timestamp for when THIS MANIFEST ENTRY's shape was last confirmed as a whole (schema fields, not just the source citation), so drift is detectable later. Distinct from `source.observed_at`: that one timestamps the citation, this one timestamps the entry — an entry can be re-confirmed against an unchanged source (bumping this field alone) or re-sourced without every other field changing (bumping `source.observed_at` alone), and a validator must not assume the two move together or collapse them into one value. |
 | `effect` | enum | yes | One of `read`, `write`, `delete`, `share`, `external_send`, `admin`, `billable`. A closed vocabulary so a governance policy hook can match on it without a free-text field, and so `EvidenceReceipt`'s per-effect verification rule (below) has something to switch on. |
 | `input_schema` | object | yes | `{schema_ref, schema_version}` — where the operation's input shape is defined and which version of it this entry targets. Distinct from `output_schema`: an operation's request and response shapes version independently and a validator must be able to check each on its own. |
 | `output_schema` | object | yes | `{schema_ref, schema_version}` — same shape as `input_schema`, for the operation's response. |
@@ -141,17 +174,17 @@ Every required operation the connector campaign tracks — one row per
 | `scopes` | array | yes | The minimal vendor-side scope(s) this operation needs. A manifest entry never requests a broader scope than the operation itself uses. |
 | `account_types` | array | yes | Which account types (`personal`, `organization`, `enterprise_cloud`, `work_school`, …) the operation is available under. One axis of the verification matrix below. |
 | `surfaces` | array | yes | Which entry points (chat, App, workflow, background) can reach this operation. One axis of the verification matrix below. |
-| `policy` | object | yes | The governance hook-point structure this operation's policy attaches to — the platform ∩ workspace ∩ session ∩ connection ∩ provider intersection model. This field declares the hook shape; it carries no policy VALUE. |
-| `pagination` | string | when the operation lists or searches | The operation's own pagination contract (`page`/`perPage`, a cursor, `@odata.nextLink`, `queryMore`, …). Declared per operation: two operations on the same provider are not assumed to share one pagination contract. |
-| `retry` | object | when the operation writes | Which idempotency/retry class the operation actually has: `base_sha_guard`, `generate_ids_preallocation`, `external_id_upsert`, or `none_verify_by_readback`. A manifest entry never claims a generic exactly-once guarantee an operation does not have. |
-| `adapter` | object | yes | `{module_ref, version}` — a placeholder pointing at the implementation module that will back this operation and the version of it a given manifest entry targets. Left with an explicit placeholder value (never silently blank) until an implementation round assigns a real module — this spec does not assign adapters. |
-| `code_refs` | array | when applicable | Pointers into an existing reusable subsystem (e.g. `connections/mint.py`) an implementation round should start from. |
+| `policy` | object | yes | `{platform_scope, workspace_scope, session_scope, connection_scope, provider_scope}` — five fields, each `string | null`. Each names the specific governance scope-catalog entry (see `governance.md`'s `SCOPE_CATALOG`) this operation's dispatch is gated by at that layer of the platform ∩ workspace ∩ session ∩ connection ∩ provider intersection model; `null` means that layer imposes no additional scope beyond what the others already require, not that the layer is skipped. This field declares the hook shape (which five scope-catalog entries apply and at which layer); it carries no policy VALUE (an allow/deny decision), which is evaluated at runtime by the governance engine, never precomputed into the manifest. |
+| `pagination` | string | when `operation_kind` is `list` or `search` | The operation's own pagination contract (`page`/`perPage`, a cursor, `@odata.nextLink`, `queryMore`, …). Declared per operation: two operations on the same provider are not assumed to share one pagination contract. |
+| `retry` | object | when `effect` is one of `write`, `delete`, `share`, `external_send`, or `admin` (every `effect` value except the read-only `read` and the metering-only `billable`) | `{idempotency_class: enum, detail: string}` — `idempotency_class` is exactly one of `base_sha_guard`, `generate_ids_preallocation`, `external_id_upsert`, or `none_verify_by_readback`, naming which idempotency/retry class the operation actually has; `detail` is a short, non-normative note on the mechanism (e.g. which header carries the base SHA, or what the readback checks) and carries no independent validation weight. A manifest entry never claims a generic exactly-once guarantee an operation does not have. A validator reads `effect` directly for this required-when check, the same pattern `pagination`'s row above uses for `operation_kind` — never inferred from the operation's name or its `operation_kind`. |
+| `adapter` | object | yes | `{module_ref, version}` — a placeholder pointing at the implementation module that will back this operation and the version of it a given manifest entry targets. Before an implementation round assigns a real module, `module_ref` is the literal string `"UNASSIGNED"` and `version` is the literal string `"0.0.0-unassigned"` — this exact sentinel pair, never an empty string, never `null`, and never a real-looking but fictitious module path. A validator checks for this exact pair to know an entry is pre-implementation; any other value in either field is read as a real (or malformed) assignment. |
+| `code_refs` | array | never required; optional whenever the implementation-round author knows of a reusable subsystem to point at | Pointers into an existing reusable subsystem (e.g. `connections/mint.py`) an implementation round should start from. An empty array is always legal and means no such pointer is known yet, not that none exists — this is an authorial hint for the implementation round, not a fact a validator derives from other fields (unlike `applicable` in the evidence matrix below, which this array's "when applicable" wording must not be read as referencing). |
 | `runner_version` | string | yes | The version of the conformance-runner contract (see below) this entry's verification evidence was produced against. Distinct from `adapter.version` and from `input_schema`/`output_schema` versions — all four can advance independently and a validator must not assume they move together. |
-| `verification_contract` | object | yes | `{run_ref, receipt_ref}` — `run_ref` resolves to exactly one `ConformanceRun.run_id` and `receipt_ref` resolves to exactly one `EvidenceReceipt.receipt_id`; both are opaque identifiers, resolved by exact-string lookup, never by any other matching rule (nearest, latest, best-effort). The referenced `ConformanceRun.operation_id` MUST equal this entry's own `operation_id`, and the referenced `EvidenceReceipt.conformance_run_ref` MUST equal `run_ref` — a validator checks both equalities, and a pointer failing either is malformed, not stale. A `status` transition past `code_complete` is valid ONLY against a `ConformanceRun` whose `verdict` is `pass` — a `fail` or `inconclusive` run's `EvidenceReceipt`, however `runtime_verified: true` it is, never promotes an entry's `status`; only its own newer, passing re-run does. Superseded (older-`tested_sha`, or `fail`/`inconclusive`) runs are kept, never deleted — they are the record of what was tried — but a manifest entry's live `status` always resolves against its CURRENT `verification_contract` pointer, which an implementer must repoint to the newest passing run, never leave aimed at a stale one. |
-| `evidence_by_mode_surface_and_auth` | array | yes | One row per applicable `(auth_mode, account_type, surface)` combination. See "Per-mode, per-surface, per-auth-mode evidence" below. An entry with an empty array here is only honest at `status: planned` — anything past `code_complete` needs at least one populated row. |
+| `verification_contract` | object or null | yes | `{run_ref, receipt_ref}` — `null` at `status: planned` (no `ConformanceRun` has executed yet; an honest planned entry has nothing to point at, and this field must not be forced to reference a fabricated run to satisfy an unconditional-required rule). Once `status` reaches `code_complete` or later, `verification_contract` is required and non-null: `run_ref` resolves to exactly one `ConformanceRun.run_id` and `receipt_ref` resolves to exactly one `EvidenceReceipt.receipt_id`; both are opaque identifiers, resolved by exact-string lookup, never by any other matching rule (nearest, latest, best-effort). The referenced `ConformanceRun.operation_id` MUST equal this entry's own `operation_id`, the referenced `EvidenceReceipt.conformance_run_ref` MUST equal `run_ref`, AND `verification_contract.receipt_ref` MUST equal that same `ConformanceRun`'s own `evidence_receipt_ref` — a validator checks all three equalities, and a pointer failing any of them is malformed, not stale. This three-way equality is what makes `ConformanceRun` <-> `EvidenceReceipt` a true one-to-one pairing: a manifest cannot select one receipt via `verification_contract.receipt_ref` while its referenced run's own `evidence_receipt_ref` names a different one. A `status` transition past `code_complete` is valid ONLY against a `ConformanceRun` whose `verdict` is `pass` — a `fail` or `inconclusive` run's `EvidenceReceipt`, however `runtime_verified: true` it is, never promotes an entry's `status`; only its own newer, passing re-run does. Superseded (older-`tested_sha`, or `fail`/`inconclusive`) runs are kept, never deleted — they are the record of what was tried — but a manifest entry's live `status` always resolves against its CURRENT `verification_contract` pointer, which an implementer must repoint to the newest passing run, never leave aimed at a stale one. |
+| `evidence_by_mode_surface_and_auth` | array | yes | One row per applicable `(auth_mode, account_type, surface)` combination. See "Per-mode, per-surface, per-auth-mode evidence" below. An empty array is legal only at `status: planned`; the moment `status` moves past `planned`, the matrix must be populated AND total — exactly one row per `auth_modes` × `account_types` × `surfaces` combination, matching "When an empty or placeholder matrix is legal" below exactly. |
 | `tested_sha` | string or null | yes | The immutable commit SHA this operation's implementation was last tested against — see "Immutable ref binding" below. `null` until `status` reaches `code_complete`. |
 | `merged_sha` | string or null | yes | The commit SHA at which this operation's implementation merged to the default branch. `null` until `status` reaches `merged`. |
-| `release_sha` | string or null | yes | The immutable commit SHA of the release this operation was confirmed working in — see "Immutable ref binding" below; never a tag or other movable alias. `null` until `status` reaches `release_verified`. A human-readable release identifier (e.g. a version tag) is a separate, non-normative display field if one is needed; it is never substituted for this field's SHA value. |
+| `release_sha` | string or null | yes | The immutable commit SHA of the release this operation was confirmed working in — see "Immutable ref binding" below; never a tag or other movable alias. `null` until `status` reaches `release_verified`. A human-readable release identifier (e.g. a version tag) is a separate, non-normative display field if one is needed; it is never substituted for this field's SHA value. A transition to `release_verified` is valid ONLY when the entry's `verification_contract`-referenced `ConformanceRun.tested_sha` equals this same `release_sha` — a passing run against an earlier, pre-release commit does not certify the shipped release; the run that certifies `release_verified` must be a run AGAINST the release SHA itself. |
 | `status` | enum | yes | The operation's current implementation state — see "Two axes" above. |
 | `last_reached_status` | enum | yes | The highest rung reached before a stall — see "`blocked` is a flag, not a rung" above. Equal to `status` whenever the entry is not currently `blocked`. |
 | `blocker` | object or null | when `status` is `blocked` | `{reason, owner, unblock_action}` — see below. |
@@ -170,7 +203,7 @@ entry to fake a citation it does not have just to fill a required field:
 | `format_spec` | A named external format specification (e.g. an RFC, an OOXML part). |
 | `search_snippet_corroborated` | A search result corroborating the claim, short of a fully rendered official page. |
 | `user_stated` | The user (or the campaign's mission brief) stated this requirement directly. Pairs with `source_status: user_required`; `snapshot_ref` for this kind points at the statement itself (a brief section, a decision record), never a fabricated vendor URL. A `user_stated` entry must never be represented as `official_docs` to satisfy a schema expectation of "a vendor source exists" — there may be no vendor source yet, and that is not a defect in the entry. |
-| `not_yet_sourced` | No source has been captured yet. Pairs with `source_status: unverified`. `snapshot_ref` is an explicit placeholder string (never a blank, and never a real-looking but unfetched URL) until a research pass supplies one. An entry with `source_kind: not_yet_sourced` is not deleted for lacking a real citation — the absence of a snapshot is itself the state this value exists to record, not a reason to drop the row (see "An entry's `source_status` is never deleted..." above, which applies identically here). |
+| `not_yet_sourced` | No source has been captured yet. Pairs with `source_status: unverified`. `snapshot_ref` is an explicit placeholder string (never a blank, and never a real-looking but unfetched URL) until a research pass supplies one, and the inner `source.observed_at` is `null` for the same reason — see the `observed_at` row above, which states this once rather than repeating it here. An entry with `source_kind: not_yet_sourced` is not deleted for lacking a real citation — the absence of a snapshot is itself the state this value exists to record, not a reason to drop the row (see "An entry's `source_status` is never deleted..." above, which applies identically here). |
 
 A validator checks `source_kind` membership against this six-value list; it
 never treats an entry's citation as absent just because the citation is
@@ -212,9 +245,9 @@ evidence_by_mode_surface_and_auth: [
     surface: string            // one value from this entry's own surfaces
     applicable: boolean        // false when this combination cannot occur for this operation
     exclusion_reason: string | null   // required, non-null, when applicable=false — a stated PROVIDER or POLICY fact ruling the combination out (e.g. "the vendor's service-to-service token type carries no scope this operation's chat-surface dispatch requires" or "policy denies interactive-surface dispatch for this operation's admin effect"), never a generalization from auth-mode name alone
-    verification_contract_ref: string | null   // resolves to a ConformanceRun.run_id by exact-string lookup, under the same rule as the entry's own verification_contract.run_ref above — including the no-stale-promotion rule (a fail/inconclusive run never promotes this cell); null only when applicable=false
+    verification_contract_ref: string | null   // null while this cell's own status is planned or implementing (no ConformanceRun exists yet for this specific cell); required non-null once this cell's own status reaches code_complete or later, resolving to a ConformanceRun.run_id by exact-string lookup under the same rule as the entry's own verification_contract.run_ref above — including the no-stale-promotion rule (a fail/inconclusive run never promotes this cell); also null when applicable=false. The referenced ConformanceRun's own operation_id, auth_mode, account_type, and surface MUST equal this cell's four coordinates exactly (the entry's own operation_id plus this row's own auth_mode/account_type/surface) — a validator checks all four, not merely that SOME passing run exists; a run recorded against a different auth_mode, account_type, or surface never promotes this cell, even if it is a genuinely passing run for the same operation_id.
     status: enum                // same eight-value ladder as the entry's own top-level `status`, for this cell only; null-equivalent (`planned`) when applicable=false
-    last_reached_status: enum   // same rule as the entry's own top-level last_reached_status (below): the highest rung this cell reached before a stall, carried independently of status so a cell's own blocked flag never erases its own progress
+    last_reached_status: enum   // same rule as the entry's own top-level last_reached_status (above): the highest rung this cell reached before a stall, carried independently of status so a cell's own blocked flag never erases its own progress
   }
 ]
 ```
@@ -231,11 +264,17 @@ existing either way.
 has been evaluated yet, applicable or not, and an empty array is the honest
 statement of that. The moment an entry's top-level `status` moves past
 `planned` (including into `blocked` from any later rung — see
-"`last_reached_status`" below), the matrix must be POPULATED and TOTAL: every
+"`last_reached_status`" above), the matrix must be POPULATED and TOTAL: every
 combination `auth_modes` × `account_types` × `surfaces` produces exactly one
 row (never zero, never more than one for the same triple), each row is either
-`applicable: true` with a live `status`/`verification_contract_ref`, or
-`applicable: false` with a stated `exclusion_reason` per the rule above. A
+`applicable: true` with its own `status` set to a real rung (its
+`verification_contract_ref` following that row's own status the same way
+the entry-level field follows the entry's own status — null through
+`implementing`, required from `code_complete`), or `applicable: false` with
+a stated `exclusion_reason` per the rule above. Populated-and-total is a
+claim about row EXISTENCE and SHAPE, never about every row's evidence being
+resolved yet — a row can honestly sit at `applicable: true, status:
+implementing, verification_contract_ref: null` and still satisfy totality. A
 validator checks totality (row count equals the cross-product size, no
 duplicate triples) as a structural rule the moment `status` leaves `planned`.
 
@@ -270,14 +309,38 @@ is derived from another at read time:
   equality; a validator does not attempt to resolve one against a live
   repository to check "is this still current," because immutability is the
   property being relied on, not currency.
-- **Cross-consistency, not sameness, is the checked relationship.** A
-  validator checks that a `ConformanceRun`'s own recorded
+- **Cross-consistency, not sameness, is the checked relationship — for a
+  `ConformanceRun`'s OWN five fields against each other.** A validator
+  checks that a `ConformanceRun`'s own recorded
   `tested_sha`/`adapter.version`/schema versions/`runner_version` are
   internally consistent with each other *as of that run* (e.g. the adapter
-  version that SHA actually built), not that they match the manifest
-  entry's current top-level fields — the top-level fields can have advanced
-  since, and requiring them to match would make evidence expire the moment
-  unrelated progress happens elsewhere.
+  version that SHA actually built). This is a narrower claim than "the run
+  matches the manifest": it says nothing about whether the run the entry's
+  `verification_contract` currently points at is still the run that
+  justifies the entry's CURRENT rung.
+- **A validator additionally checks that the referenced run still matches
+  what the entry claims TODAY, not only that the run was internally
+  consistent when it executed.** Once `status` is at `code_complete` or
+  later, the entry's own top-level `tested_sha`, `adapter.version`,
+  `input_schema.schema_version`, `output_schema.schema_version`, and
+  `runner_version` MUST equal the corresponding fields recorded on the
+  `ConformanceRun` that `verification_contract.run_ref` currently resolves
+  to. If any one of the five has moved on the entry (a newer adapter
+  version shipped, a schema bumped, the runner contract revised) since that
+  run executed, the referenced run no longer certifies the entry as it
+  stands NOW — even though the run remains internally consistent and its
+  own record is never altered. A validator treats this as the entry's
+  `verification_contract` pointer having gone STALE, in exactly the sense
+  the `verification_contract` field's own row above already uses that
+  word: the entry fails validation at its current claimed rung until an
+  implementer repoints `verification_contract` to a newer `ConformanceRun`
+  whose five fields match the entry's current top-level values (the same
+  repoint duty that row already places on a superseded run), or the
+  entry's top-level fields are rolled back to match the run that still
+  applies. This closes the gap the "not
+  currency" wording above could otherwise be read to open: immutability of
+  a PAST run's own record is not license for a validator to certify a
+  CHANGED target using an old run's word for it.
 
 ### `blocker` structure
 
@@ -369,7 +432,7 @@ on, so the full field set is inlined below rather than referenced elsewhere.
 | `runner_version` | string | yes | The conformance-runner contract version this run itself was executed under. |
 | `executed_at` | timestamp | yes | When the run executed. |
 | `request_shape_hash` | string | yes | A hash of the request shape sent — never the literal request, so no account-specific parameter value is retained. |
-| `response_summary` | object | yes | A structural summary of the response (which fields were present, whether types matched) — never a full unredacted response dump. |
+| `response_summary` | object | yes | `{fields_present: array<string>, types_matched: boolean, unexpected_fields: array<string>}` — `fields_present` names which of `output_schema`'s declared fields the actual response carried, `types_matched` is `true` only if every present field's runtime type matched `output_schema`, and `unexpected_fields` names any response field `output_schema` does not declare. Never a full unredacted response dump — this is a structural summary, not a content capture. |
 | `verdict` | enum | yes | `pass` / `fail` / `inconclusive`. |
 | `evidence_receipt_ref` | string | yes | Points at this run's `EvidenceReceipt`. |
 
@@ -382,7 +445,7 @@ or later is checked against:
 | `conformance_run_ref` | string | yes | Points back at the `ConformanceRun` this receipt evidences. |
 | `claim` | string | yes | A one-sentence, human-readable statement of what this receipt verifies. |
 | `runtime_verified` | boolean | yes | `true` only when this receipt is the direct product of a real, live call. `false` marks a design-time placeholder — a `false` receipt can never satisfy a `status` transition past `code_complete`. |
-| `readback_result` | object or null | see "Per-effect verification and cleanup" below | The independent, observable confirmation that the operation's effect actually took place, in the shape that effect allows. `null` is valid only for `effect: read`. |
+| `readback_result` | object or null | see "Per-effect verification and cleanup" below | `{checked_at: string, method: string, matched: boolean, detail: string}` when non-null — `checked_at` is the timestamp of the independent read this row's own `effect` requires (deliberately NOT named `observed_at`, which already has two other, disambiguated meanings in this schema — see the `observed_at` row above), `method` names how it was obtained (e.g. `"independent_read"`, `"grantee_side_read"`, `"vendor_delivery_id"` — see the per-effect table below for which method each `effect` value demands), `matched` is `true` only if that independent observation confirms the effect actually took place in the shape that row's own "`readback_result` requirement" column describes, and `detail` carries the observation itself (the value read back, the delivery ID returned, etc.) for audit. `null` is valid only for `effect: read`, per the same table. |
 | `cleanup_confirmed` | boolean | yes | Derived, never independently asserted: `true` if and only if `cleanup_status` is `confirmed`; `false` for every other `cleanup_status` value (`not_applicable`, `not_automatable`, `pending`). This field exists for a consumer that only needs a yes/no answer; `cleanup_status` is the field of record, and a receipt where the two disagree is malformed. |
 | `cleanup_status` | enum | yes | `not_applicable` (this run's effect created no state needing cleanup, or the state it created was itself the sole test artifact and its own removal is the confirmed cleanup act — see the per-effect table below for which case applies to which effect), `confirmed` (cleanup ran and was independently verified), `not_automatable` (see below), or `pending`. |
 | `negative_test_refs` | array | yes | Pointers at the negative-path test(s) this operation's conformance coverage includes (permission-denied, ACL-denied, idempotent-retry — at least one, chosen per the operation's own `effect`/`auth_modes`). |
@@ -424,6 +487,24 @@ round consuming it, to perform a real business action (a real send, a real
 charge, a real admin change) outside an explicit, separately-approved test
 context.
 
+**Open decision, explicitly named rather than silently absent: the
+serialization format and in-repo storage location of a manifest entry,
+`ConformanceRun`, and `EvidenceReceipt` are NOT fixed by this spec.** This
+document defines the field-level SHAPE (names, types, required-when rules)
+those three carry — enough for a validator to be written against the shape
+alone — but not the concrete artifact format (a JSON file per entry, one
+combined file, a SQLite table, etc.) or the repo path each lives at. That
+is a genuine implementation-round decision, not a gap this slice is
+ducking: naming it here now would be inventing an answer ahead of the round
+that actually builds the validator and the runner, which is exactly the
+"spec amended reactively" failure mode this document's owning-spec rule
+(stated at the top of this document) exists to prevent for any OTHER
+kind of change. The validator round and the entry-population round MUST
+agree on one format and one path before either ships — this sentence is
+the tracking hook for that agreement: the round that makes this decision
+updates this exact paragraph, in the same commit as the code that
+implements it, per this document's own owning-spec rule.
+
 ## The work-stream DAG
 
 The connector campaign's work is sequenced into numbered streams, `W00`
@@ -461,7 +542,7 @@ empty arrow between two stream numbers.
 | Edge | Depends on |
 |---|---|
 | `W00 → W01` | The full required-range index this document and the campaign evidence catalog define (the acceptance index, the shared-contract families, the cross-service scenarios). `W01` consumes this range; it does not redefine it. |
-| `W01 → W02..W14` (each provider stream) | The shared control-plane primitives `W01` produces: the binding/auth/policy/reliability contracts (`AUTH-*`, `GOV-*`, `RUN-*` family entries) each provider stream's own operations reference through their manifest `policy`/`auth_modes`/`retry` fields. |
+| `W01 → W02..W14` (each downstream stream) | The shared control-plane primitives `W01` produces: the binding/auth/policy/reliability contracts (`AUTH-*`, `GOV-*`, `RUN-*` family entries) each downstream stream's own operations reference through their manifest `policy`/`auth_modes`/`retry` fields. |
 | `W03 → W04` | Google's shared auth layer (the OAuth/token contract `W03` establishes for Gmail) is the same auth contract Drive's operations authenticate through — Drive does not derive a separate Google auth mechanism. |
 | `W05 → W06` | Every Graph auth/client-construction primitive `W05` establishes (token acquisition, the client each operation calls through), plus the unified typed error taxonomy (`RUN-01`: auth/scope/consent/not-found/forbidden/quota/throttle/conflict/input/temporary/partial/ambiguous), plus Graph's own pagination/locator convention (`@odata.nextLink` and cursor semantics) and upload mechanics (simple vs. resumable), must all be concrete before `W06` can consume one shared foundation instead of each operation deriving its own. |
 | `W05 → W07` | The same full set `W05 → W06` depends on — auth/client construction, error taxonomy, pagination/locator convention, upload mechanics — plus the rate-limit bucketing (`RUN-03`), write idempotency (`RUN-04`), and concurrency/ETag (`RUN-05`) mechanisms, must be concrete before `W07`'s operations can declare a real `pagination`/`retry` value rather than a placeholder. |
@@ -470,7 +551,7 @@ empty arrow between two stream numbers.
 | `W02 → W13` (GitHub's structured-data source) | GitHub's account-binding mechanism (`W02`) must be concrete before GitHub's own structured-data contract (schema/refresh/query/ACL/lineage) can authenticate its calls. Actionable independently of Salesforce's readiness. |
 | `W10 → W13` (Salesforce's structured-data source) | Salesforce's account-binding mechanism (`W10`) must be concrete before Salesforce's own structured-data contract can authenticate its calls. Actionable independently of GitHub's readiness. |
 | every stream's ready operations → `W15` | Each operation flows into `W15` individually, the moment its own acceptance criterion is met — not gated on a whole stream finishing. |
-| all required-live streams + `W15` → `W16` | `W16` is the final integration once every provider stream (`W02`, `W03`, `W05`, `W08`, `W09`, `W10`, `W11`, `W14`, plus the streams layered on them) has reached its own ready state and `W15` has completed independent acceptance. |
+| all required-live streams + `W15` → `W16` | `W16` is the final integration once every gating stream (`W02`, `W03`, `W05`, `W08`, `W09`, `W10`, `W11`, `W14`, plus the streams layered on them) has reached its own ready state and `W15` has completed independent acceptance. |
 
 ### Stream-numbering rule
 
