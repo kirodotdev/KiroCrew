@@ -260,17 +260,58 @@ def parse_added_lines(diff_text: str, *, anchor_deletions: bool = False) -> set[
 
 
 def resolve_base(base: str) -> str:
-    """The commit an env-provided base ref measures against.
+    """The commit an env-provided base ref measures against, ANNOUNCED.
 
     ``merge-base`` is the honest divergence point, but a shallow CI clone
     fetches the base commit as its own tip with no shared history, so it often
-    has none — the base tip is then the fallback. This is resolution, not
+    has none -- the base tip is then the fallback. This is resolution, not
     parsing: it is the one step the env-base family does differently from the
     resolver above, so it stays a separate function the gates call once per
     run.
+
+    The fallback is a DEGRADED answer and this function says so on the way past,
+    because a verdict computed against the wrong base is otherwise
+    indistinguishable from one computed against the right base. Measuring a
+    working tree against the base TIP rather than the divergence point puts
+    every commit the base gained since the fork into the comparison, and the
+    direction is worth naming precisely rather than assumed:
+
+    * A line the BASE removed after the fork is absent from the tip and present
+      here, so it reads as a line THIS branch added. An added-line gate can
+      then report a violation on a line the branch never wrote. That is the
+      common case and it over-blocks.
+    * A line the base ADDED after the fork reads as a deletion, which widens
+      ``changed_paths_at`` to files the branch never touched.
+    * It can also fail OPEN, narrowly: a line the base added independently and
+      identically is in both trees, so it appears as no change at all and the
+      gate stops attributing it to the branch that did add it.
+
+    Announced on stdout as a workflow command, matching the gates that call it,
+    and as a ``warning`` on the fallback path so it surfaces as an annotation
+    instead of a log line nobody opens. Announcing the SUCCESS path too is
+    deliberate: a run that prints nothing cannot be told from one whose
+    announcement was lost, which is the same unfalsifiable-pass problem one
+    layer up.
+
+    Printed unconditionally, with no once-per-base guard, because "once per
+    run" above is a counted fact rather than a hope: each of the seven
+    consumers reaches this from a single un-looped call site in its own
+    ``main``. A guard would be a branch nothing can enter.
     """
     code, out = _git("merge-base", base, "HEAD")
-    return out.strip() if code == 0 else base
+    if code == 0:
+        resolved = out.strip()
+        print(f"::notice::ratchet-scope: base {base} measured at merge-base {resolved}.")
+        return resolved
+    print(
+        f"::warning::ratchet-scope: `git merge-base {base} HEAD` found no shared "
+        f"history, so this run measures against the base TIP {base} instead of the "
+        f"divergence point. Every commit the base gained since the fork is inside "
+        f"the comparison: a line the base REMOVED reads as one this branch added, "
+        f"so a violation may be reported against a line the branch never wrote. "
+        f"Fetch enough history for a merge-base to make the verdict exact."
+    )
+    return base
 
 
 def changed_paths_at(frm: str) -> list[str]:
