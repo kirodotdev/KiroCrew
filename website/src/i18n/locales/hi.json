@@ -9595,7 +9595,9 @@
         "search_files": "फ़ाइलें खोजें",
         "searching": "खोज रहे हैं…",
         "showing_first_matches": "पहले {{shown}} मिलान दिखा रहे हैं",
-        "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी"
+        "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी",
+        "search_timed_out": "खोज का समय समाप्त",
+        "refresh_retries": "पुनः प्रयास के लिए रीफ़्रेश करें"
       },
       "knowledgePicker": {
         "cancel": "रद्द करें",

@@ -9461,7 +9461,9 @@
         "search_files": "파일 검색",
         "searching": "검색 중…",
         "showing_first_matches": "처음 {{shown}}개의 일치 항목 표시 중",
-        "unable_to_list_folder": "폴더 목록을 표시할 수 없습니다"
+        "unable_to_list_folder": "폴더 목록을 표시할 수 없습니다",
+        "search_timed_out": "검색 시간 초과",
+        "refresh_retries": "다시 시도하려면 새로고침"
       },
       "knowledgePicker": {
         "cancel": "취소",

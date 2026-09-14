@@ -6,12 +6,14 @@ import { Files, Diff, Search, X, RefreshCw, FileText } from 'lucide-react'
 import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
 import ErrorNotice from '../../components/ErrorNotice'
-import { findReport } from '../../utils/errorReport'
+import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { EmptyState } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import { searchErrorCause, type SearchErrorCause } from '../../lib/searchErrorCause'
 import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree } from '../../pierre/tree'
+import { errMessage } from '../../utils/thunkError'
 
 /** Rail width bounds; the grip clamps between them. */
 const RAIL_MIN_W = 300
@@ -77,23 +79,131 @@ function rememberQuery(projectDir: string, value: string): void {
  *
  * `ready` covers the in-flight case on purpose: the tree renders its own loading
  * state, so the rail should mount rather than flashing an error first.
+ *
+ * `error` stays ONE state because the rail renders the same notice either way, keyed on
+ * the deadline-vs-other split the pickers use. Whether it counts as AVAILABLE is
+ * cause-keyed, exactly as the pickers' Retry is: see `useTreeAvailable`.
  */
-export type TreeState = 'no-dir' | 'error' | 'ready'
+export type TreeState = 'no-dir' | 'error' | 'recoverable' | 'ready'
 
-export function useTreeState(projectDir: string | null | undefined): TreeState {
-  const q = useQuery({
+function useTreeQuery(projectDir: string | null | undefined) {
+  return useQuery({
     queryKey: ['project-tree', projectDir ?? ''],
     queryFn: () => api.projectTree(projectDir ?? ''),
     enabled: !!projectDir,
     retry: false,
     staleTime: 10_000,
   })
-  if (!projectDir) return 'no-dir'
-  return q.isError ? 'error' : 'ready'
 }
 
+/**
+ * A cause, reconsidered against ONE endpoint's own codes.
+ *
+ * Only the degraded `failed` is reconsidered, because `failed` is retryable — so an endpoint whose
+ * refusal the shared map has no entry for silently offered a Refresh that can only fail again. A
+ * deadline stays `timed_out`, and a refusal the shared map does carry stays `denied`. Duck-typed on
+ * `body`: the suites reject with an ApiError-shaped plain object against a mocked `api/client`.
+ */
+export function causeWithEndpointCodes(
+  err: unknown,
+  byCode: Record<string, SearchErrorCause>,
+): SearchErrorCause {
+  const cause = searchErrorCause(err)
+  if (cause !== 'failed') return cause
+  const body = typeof err === 'object' && err !== null ? (err as { body?: unknown }).body : undefined
+  const code = parseErrorCode(typeof body === 'string' ? body : undefined)
+  return (code && byCode[code]) || cause
+}
+
+/** The TREE endpoint spells an unreachable root `unknown_project_dir`; the shared map has no entry. */
+const TREE_CAUSE_BY_CODE: Record<string, SearchErrorCause> = {
+  unknown_project_dir: 'root_missing',
+}
+
+/**
+ * The TREE notice copy, keyed by the same cause the listing arm uses.
+ *
+ * `denied` and `root_missing` borrow the listing arm's strings, exactly as `LISTING_FAILURE_KEYS`
+ * does: a refusal is the same fact whichever read hit it. Collapsing them into the generic key left
+ * a refused tree read saying only "Couldn't load the file tree", so its reason had to be inferred
+ * from the absent remedy clause -- the same guess this change removes on the listing arm.
+ */
+const TREE_FAILURE_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'pages.chat.filesHome.tree_error',
+  failed: 'pages.chat.filesHome.tree_error',
+  denied: 'pages.chat.folderPanel.search_denied',
+  root_missing: 'pages.chat.folderPanel.search_root_missing',
+}
+
+// Named only where re-asking can help: a refusal returns the same answer, so pointing a denied
+// or missing notice at Refresh would offer a remedy that cannot work.
+export const RETRYABLE_CAUSES: ReadonlySet<SearchErrorCause> = new Set(['timed_out', 'failed'])
+
+export function useTreeState(projectDir: string | null | undefined): TreeState {
+  const q = useTreeQuery(projectDir)
+  if (!projectDir) return 'no-dir'
+  if (!q.isError) return 'ready'
+  // A deadline or a codeless failure: either can answer differently on a Refresh, so the rail
+  // must stay to carry one. A refusal or a missing root cannot, and stays hidden.
+  const cause = causeWithEndpointCodes(q.error, TREE_CAUSE_BY_CODE)
+  return RETRYABLE_CAUSES.has(cause) ? 'recoverable' : 'error'
+}
+
+/**
+ * The tree failure as one composed line, or null while the read has not failed.
+ *
+ * Every surface that can render a tree failure reads it from here, because the cause rule and the
+ * remedy gate spelled per surface is how the surfaces came to disagree in the first place.
+ */
+export function useTreeNotice(
+  projectDir: string | null | undefined,
+  t: (key: string) => string,
+): string | null {
+  const q = useTreeQuery(projectDir)
+  if (!projectDir || !q.isError) return null
+  return failureMessage(t, TREE_FAILURE_KEYS, causeWithEndpointCodes(q.error, TREE_CAUSE_BY_CODE))
+}
+
+/**
+ * Whether the rail is worth mounting. Delegates to `useTreeState` rather than re-spelling the
+ * cause rule, because two spellings of one rule is how the surfaces came to disagree.
+ *
+ * A RECOVERABLE read keeps the rail — a deadline or a codeless failure, both of which can answer
+ * differently on a Refresh. On the FILE-TAB rail hiding it strands the user outright: `SidePanel`
+ * drops the rail AND its toggle with no notice, so there is no statement of the failure and no way
+ * to re-ask. The Files-home surface is not that case — base already rendered a `tree_error` notice
+ * beside a labelled Refresh — so there this is a regroup for one cause rule, not a rescue. A denial
+ * or a missing root returns the same answer however often it is re-asked, so those keep the
+ * hidden-rail behaviour rather than promising a recovery that cannot arrive.
+ */
 export function useTreeAvailable(projectDir: string | null | undefined): boolean {
-  return useTreeState(projectDir) === 'ready'
+  const state = useTreeState(projectDir)
+  return state === 'ready' || state === 'recoverable'
+}
+
+/**
+ * `cause — remedy`, joined in ONE place so no surface voices a failure differently.
+ *
+ * Callers gate it on the cause: a refusal answers the same however often it is re-asked, so
+ * naming Refresh there would offer a remedy that cannot arrive.
+ */
+export function withRemedy(t: (key: string) => string, named: string): string {
+  return `${named} — ${t('pages.chat.folderPanel.refresh_retries')}`
+}
+
+/**
+ * The failure copy, naming the control that retries it.
+ *
+ * The recovery is an icon-only Refresh, so a notice that only states the cause leaves the remedy
+ * undiscoverable until the user clicks an unrelated-looking button.
+ */
+export function failureMessage(
+  t: (key: string) => string,
+  keys: Record<SearchErrorCause, string>,
+  cause: SearchErrorCause,
+): string {
+  const named = t(keys[cause])
+  return RETRYABLE_CAUSES.has(cause) ? withRemedy(t, named) : named
 }
 
 /** A hit's path as the rail shows it: relative to the searched root, because the
@@ -347,6 +457,9 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     _setQuery(v)
   }
 
+  const { isError: treeError, error: treeErr } = useTreeQuery(projectDir)
+  const treeRecoverable = useTreeState(projectDir) === 'recoverable'
+  const treeNotice = useTreeNotice(projectDir, t)
   const { data: status, isError: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
@@ -376,6 +489,9 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
       setRefreshing(false)
     }
   }
+  // Reserved while the notice names this control, and while a read is in flight: an icon alone
+  // leaves the remedy unnamed on the surface whose Refresh a reader has least reason to find.
+  const reserveRefreshLabel = refreshing || treeRecoverable
 
   // The grip sits on the rail's LEFT edge, so the hook negates the drag delta
   // (edge: 'left'): dragging left grows the rail. Clamping and the persisted
@@ -471,11 +587,23 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
           <button
             onClick={refresh}
             disabled={refreshing}
-            className="flex flex-none items-center justify-center w-[26px] h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-default"
+            className={`flex flex-none items-center justify-center h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-default ${
+              reserveRefreshLabel ? 'gap-1 px-1.5' : 'w-[26px]'
+            }`}
             title={t('pages.chat.fileBrowserRail.refresh')}
             aria-label={t('pages.chat.fileBrowserRail.refresh')}
           >
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            {/* Laid out before it is needed, never animated: a 26px→auto morph cannot transition,
+                so the growth is spent while the read is still in flight. */}
+            {reserveRefreshLabel && (
+              <span
+                aria-hidden
+                className={`text-[11px] leading-none ${treeRecoverable ? '' : 'invisible'}`}
+              >
+                {t('pages.chat.fileBrowserRail.refresh')}
+              </span>
+            )}
           </button>
         </div>
         {/* The Name/Content toggle has its own row, in words, both always
@@ -519,6 +647,18 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
         {statusError && (
           <div className="px-2 pt-1.5 shrink-0">
             <ErrorNotice variant="inline" message={t('pages.chat.fileBrowserRail.git_status_failed')} askAgent />
+          </div>
+        )}
+        {/* A bounded tree read that rejects used to paint an empty tree, which reads as
+            an empty project. File rail, no draft -> hand-off on. */}
+        {treeError && (
+          <div className="px-2 pt-1.5 shrink-0 flex items-center gap-2">
+            <ErrorNotice
+              variant="inline"
+              message={treeNotice ?? ''}
+              report={findReport(errMessage(treeErr))}
+              askAgent
+            />
           </div>
         )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">

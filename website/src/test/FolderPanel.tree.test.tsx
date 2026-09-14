@@ -157,6 +157,42 @@ describe('FolderPanel — project-root workspace tree', () => {
     await waitFor(() => expect(api.browseFiles).toHaveBeenCalledTimes(2))
   })
 
+  it('refreshes the tree read as well while a RECOVERABLE tree failure holds', async () => {
+    // A recoverable failure leaves tree mode (it needs 'ready'), so Refresh took the listing
+    // branch and never re-read the tree — the one button offered could not restore it.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    const tree = vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    const before = tree.mock.calls.length
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(tree.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('names Refresh on a recoverable tree failure, the arm the rail is kept mounted for', async () => {
+    // The tree notice carried no remedy and left the header icon-only, so the one arm this PR
+    // keeps on screen was the one with nothing on screen saying how to re-ask.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    expect(await screen.findByText(/^Couldn't load the file tree — Refresh to retry/)).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByLabelText('Refresh').querySelector('span')?.textContent).toBe('Refresh'))
+  })
+
+  it('reports ONE failure when a wedged gateway fails the tree and the listing together', async () => {
+    // At the project root both reads hit the same outage, so the tree notice sat above the
+    // listing's and one problem read as two. The listing's is kept: it names its own cause.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    expect(await screen.findByText(/^Folder listing timed out/)).toBeInTheDocument()
+    // Regex, not an exact string: the tree notice now carries a remedy clause, so an exact-text
+    // query would find nothing whether it rendered or not and the assertion would be vacuous.
+    expect(screen.queryByText(/Couldn't load the file tree/)).not.toBeInTheDocument()
+  })
+
   it('opens a file through the normal file tab without re-targeting the folder tab', async () => {
     const onFileOpen = vi.fn()
     const onPathChange = vi.fn()

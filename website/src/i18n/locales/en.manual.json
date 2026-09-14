@@ -3724,7 +3724,9 @@
         "search_files": "Search files",
         "searching": "Searching…",
         "showing_first_matches": "Showing the first {{shown}} matches",
-        "unable_to_list_folder": "Unable to list folder"
+        "unable_to_list_folder": "Unable to list folder",
+        "search_timed_out": "Search timed out",
+        "refresh_retries": "Refresh to retry"
       },
       "knowledgePicker": {
         "knowledge_results_for_query": "Knowledge results for “{{query}}”",
