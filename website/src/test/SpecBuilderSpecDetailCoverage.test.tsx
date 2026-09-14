@@ -291,6 +291,7 @@ describe('SpecDetail docs split', () => {
     renderDetail()
 
     await screen.findByTestId('doc-view')
+    expect(screen.getByTestId('chat-column').closest('section')).toHaveClass('min-h-0')
     expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '60')
   })
 

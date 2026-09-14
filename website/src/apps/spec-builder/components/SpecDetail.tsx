@@ -580,7 +580,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
           so the column is anchored instead of floating under a page-wide title
           band. Issue Radar's detail column does the same: every column owns its
           header, and the headers line up. */}
-      <section className="flex-1 min-w-0 flex flex-col">
+      <section className="flex-1 min-w-0 min-h-0 flex flex-col">
         <header className="shrink-0 h-[52px] px-4 border-b border-border flex items-center gap-2.5">
           {isMobile
             ? (

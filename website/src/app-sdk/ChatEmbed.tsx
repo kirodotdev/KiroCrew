@@ -190,7 +190,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
    *  see useComposerDraft's own docs. Picking a follow-up option edits the draft
    *  (matching every other surface) instead of sending immediately. */
-  const { draft, setDraft, picked, toggleOption, composition, submitOnEnter } =
+  const { draft, setDraft, textareaRef, picked, toggleOption, composition, submitOnEnter } =
     useComposerDraft({ followUpOptions })
 
   // startAtBottom follow is owned by the virtualizer behind ChatMessageList.
@@ -364,12 +364,13 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         </div>
       )}
 
-      <div className={`flex items-center gap-2 px-3 py-2 shrink-0 ${frameless ? '' : 'border-t border-border bg-bg-accent'}`}>
-        <input
-          type="text"
+      <div className={`flex items-end gap-2 px-3 py-2 shrink-0 ${frameless ? '' : 'border-t border-border bg-bg-accent'}`}>
+        <textarea
+          ref={textareaRef}
+          rows={1}
           {...composition}
           aria-label={i18nT('appSdk.chatEmbed.chat_message')}
-          className="flex-1 min-w-0 px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors"
+          className="flex-1 min-w-0 min-h-[38px] resize-none overflow-y-auto px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors"
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => submitOnEnter(e, () => send())}
