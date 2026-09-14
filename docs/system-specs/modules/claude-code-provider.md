@@ -48,12 +48,13 @@ plain public build:
   returns `(argv, searched_path)`; the result is memoized process-wide in
   `_claude_acp_argv_cache`, so the search runs once and the "not found" message
   names exactly the directories that were searched.
-- `_resolve_claude_code_executable()` finds the `claude` CLI and `_spawn` exports
-  it as `CLAUDE_CODE_EXECUTABLE` when the caller has not set one. The adapter
-  forwards it to `@anthropic-ai/claude-agent-sdk` as
-  `pathToClaudeCodeExecutable`; without it the SDK fails `session/new` with
+- `_point_adapter_at_claude_cli()` names the `claude` CLI (an operator-set
+  `CLAUDE_CODE_EXECUTABLE` wins, else `_resolve_claude_code_executable()`). The
+  adapter forwards `CLAUDE_CODE_EXECUTABLE` to `@anthropic-ai/claude-agent-sdk`
+  as `pathToClaudeCodeExecutable`; without it the SDK fails `session/new` with
   "Claude native binary not found", because it does not search `PATH` for
-  `claude` on its own.
+  `claude` on its own. Crew points that variable at its own launcher rather than
+  at the CLI; see below.
 - The adapter is a **public** npm package, `CLAUDE_ACP_NPM_PKG =
   "@agentclientprotocol/claude-agent-acp"`. Nothing on this path is
   edition-private.
@@ -123,6 +124,56 @@ Anthropic documents two mechanisms that would close even the pre-approved case �
 the untrusted copy being read at all. Whether `claude-agent-acp` forwards either over
 ACP is not answered in this repository, and is the prerequisite for Crew gating
 *every* Claude tool call rather than every call Claude asks about.
+
+### The bypass capability is withheld by a launcher
+
+The adapter sets the Agent SDK option `allowDangerouslySkipPermissions` for every
+session that is not running as root (`ALLOW_BYPASS = !IS_ROOT ||
+!!process.env.IS_SANDBOX`), and assigns it after spreading the caller's
+`_meta.claudeCode.options`, so a host cannot turn it off over ACP. The SDK turns
+it into `--allow-dangerously-skip-permissions` on the `claude` command line: the
+*capability* to enter `bypassPermissions`, the one mode in which the adapter never
+sends `session/request_permission` at all. Crew never selects that mode
+(`CC_PERMISSION_MODE_BYPASS` is named only so guards have one spelling), and it
+does not ship the adapter, so it cannot patch that line either.
+
+What Crew does own is `CLAUDE_CODE_EXECUTABLE`. `_point_adapter_at_claude_cli`
+sets it to `acp/claude_launcher.mjs` and passes the real CLI in
+`KIROCREW_CLAUDE_CODE_EXECUTABLE`. The SDK runs a `.mjs` executable with node,
+and the launcher drops exactly that one flag, then starts the real CLI with
+every other argument in order, stdio inherited, the exit status and a
+terminating signal propagated, and `CLAUDE_CODE_EXECUTABLE` set back to the real
+path so the CLI's own environment is the one it would have had without the hop.
+The launcher carries a `#!/usr/bin/env node` shebang and the executable bit,
+because the adapter also spawns `CLAUDE_CODE_EXECUTABLE` directly for `claude
+auth status`; without them that spawn fails with `EACCES` and every session logs
+an auth-status failure even though the session itself runs.
+
+On Windows the launcher is not used: `_point_adapter_at_claude_cli` starts the
+CLI directly there, the pre-launcher path, and logs that the capability is not
+withheld. An npm-installed `claude` resolves to a `.cmd` shim on Windows, and
+neither the SDK running a `.mjs` executable under node on win32 nor a cmd.exe
+routing of that shim has been exercised on a Windows host; a wrong guess on
+either would fail every Windows Claude session at `session/new` where the
+direct path works today. Enabling the launcher on Windows waits on an
+end-to-end verification there, and is a change to this paragraph plus
+`test_windows_starts_the_cli_directly_until_verified`.
+The operator's choice of binary is kept; only the capability request is
+withheld. A CLI that refuses the flag in its environment — it does so as root,
+for example — therefore starts instead of failing `session/new` with `Claude
+Code process exited with code 1`.
+
+Scope, stated exactly: the launcher withholds the capability flag and nothing
+else. An explicit `--permission-mode bypassPermissions` — which the adapter
+passes when a settings file Crew did not author sets `defaultMode` to it — goes
+through unchanged, so the inherited-settings boundary described above and in
+the known gap below is not closed by this. Such a session still starts: the CLI
+accepts `--permission-mode bypassPermissions` without the capability flag when
+not running as root (verified on Claude Code 2.1.269), and as root it refuses
+exactly as it did before the launcher existed. A launcher missing from the install
+falls back to starting the CLI directly, with a warning. Pinned by
+`test/test_claude_launcher.py`, which runs the launcher under node against fake
+CLIs and pins that the kiro spawn gets neither variable.
 
 ### MCP tools on a Claude session
 

@@ -43,6 +43,8 @@ recursive-include src/kiro_crew/docs *.md
 # a missing line here drops the file from every published artifact.
 recursive-include src/kiro_crew/docs *.json
 recursive-include src/kiro_crew/tests_fixtures *
+# The claude CLI launcher the Claude backend starts its CLI through (acp/client.py).
+include src/kiro_crew/acp/claude_launcher.mjs
 
 # --- Pruning: never ship test trees, vendored node deps, or build cruft ------
 prune test
