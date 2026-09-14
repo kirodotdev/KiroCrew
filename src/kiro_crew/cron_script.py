@@ -372,6 +372,7 @@ def _write_grant_epochs(path: Path, data: dict[str, Any]) -> None:
     reports the revoke/grant as done. Directory fsync is best-effort where
     the platform has no ``O_DIRECTORY`` (Windows).
     """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w") as fh:
@@ -1123,6 +1124,45 @@ class ScriptContext:
             return {"error": str(exc)}
 
 
+def _ensure_temp_dir(dir_path: str | Path | None = None) -> Path:
+    """Ensure parent temp directory exists before creating scratch/temp files.
+
+    If the inherited TMPDIR was reclaimed by scratch sweep or does not exist,
+    recreates it so mkstemp/mkdtemp calls succeed.
+    If the recreated directory is under the managed scratch root, records an
+    owner record so sweep_dead_scratch can reclaim it when the process exits
+    rather than permanently leaking.
+    """
+    if dir_path is not None:
+        targets = [Path(dir_path)]
+    else:
+        targets = []
+        if tempfile.tempdir:
+            targets.append(Path(tempfile.tempdir))
+        if os.environ.get("TMPDIR"):
+            targets.append(Path(os.environ["TMPDIR"]))
+        if not targets:
+            targets.append(Path(tempfile.gettempdir()))
+
+    for target in targets:
+        os.makedirs(target, mode=0o700, exist_ok=True)
+        try:
+            from kiro_crew import agent_scratch
+
+            scratch_root = agent_scratch.scratch_root().resolve()
+            resolved = target.resolve()
+            if resolved.is_relative_to(scratch_root) and resolved != scratch_root:
+                rel = resolved.relative_to(scratch_root)
+                scratch_entry = scratch_root / rel.parts[0]
+                owner_file = scratch_entry / agent_scratch.OWNER_FILENAME
+                if not owner_file.exists():
+                    agent_scratch.record_owner(scratch_entry, os.getpid())
+        except Exception:
+            pass
+
+    return targets[0]
+
+
 # ── MCP Tool Bridge ──
 
 
@@ -1203,9 +1243,16 @@ class McpToolClient:
         # failures are legible. DEVNULL hid the real cause -- wrong
         # Node version, expired auth cookies, OOM kill, sandbox failure -- behind
         # a generic "disconnected during 'initialize'" RuntimeError.
-        self._stderr_file = tempfile.NamedTemporaryFile(
-            mode="w+", prefix="mcp-stderr-", suffix=".log", delete=False
-        )
+        _ensure_temp_dir()
+        try:
+            self._stderr_file = tempfile.NamedTemporaryFile(
+                mode="w+", prefix="mcp-stderr-", suffix=".log", delete=False
+            )
+        except FileNotFoundError:
+            _ensure_temp_dir()
+            self._stderr_file = tempfile.NamedTemporaryFile(
+                mode="w+", prefix="mcp-stderr-", suffix=".log", delete=False
+            )
         try:
             self._proc = popen_limited(
                 sandboxed_argv,
@@ -1590,7 +1637,12 @@ def run_script_sandboxed(
         # running with the secrets). The verified body itself travels over
         # STDIN — never re-read from any pathname a same-UID writer could
         # swap after verification.
-        pinned_dir = tempfile.mkdtemp(prefix="kirocrew_cron_pin_")
+        _ensure_temp_dir()
+        try:
+            pinned_dir = tempfile.mkdtemp(prefix="kirocrew_cron_pin_")
+        except FileNotFoundError:
+            _ensure_temp_dir()
+            pinned_dir = tempfile.mkdtemp(prefix="kirocrew_cron_pin_")
         import_dir_str = pinned_dir
 
     stdin_payload: str | None = None
@@ -1692,9 +1744,17 @@ def run_script_sandboxed(
     # 3.10 ``-I`` still makes the script's own directory sys.path[0], and the
     # shared temp dir is somewhere an agent can leave a json.py waiting.
     # Ungranted runs keep the shared temp dir (their prelude strips it).
-    fd, launcher_path = tempfile.mkstemp(
-        suffix=".py", prefix="kirocrew_cron_", dir=pinned_dir if stdin_payload else None
-    )
+    target_dir = pinned_dir if stdin_payload else None
+    _ensure_temp_dir(target_dir)
+    try:
+        fd, launcher_path = tempfile.mkstemp(
+            suffix=".py", prefix="kirocrew_cron_", dir=target_dir
+        )
+    except FileNotFoundError:
+        _ensure_temp_dir(target_dir)
+        fd, launcher_path = tempfile.mkstemp(
+            suffix=".py", prefix="kirocrew_cron_", dir=target_dir
+        )
     sandbox_cleanup: str | None = None
     # Resolve the dial port ONCE: the credential written below and the
     # _KIROCREW_DIAL_PORT the child dials must come from the same resolution, or a
@@ -1709,7 +1769,12 @@ def run_script_sandboxed(
     # .secret file would win the derivation and 403 every notify().
     internal_secret = _child_internal_secret(internal_secret_provider, dial_port)
     # Write secret to temp file for ScriptContext (scrubbed from env)
-    secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
+    _ensure_temp_dir()
+    try:
+        secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
+    except FileNotFoundError:
+        _ensure_temp_dir()
+        secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
     try:
         try:
             # Tighten the DACL BEFORE writing the secret bytes so the file is
