@@ -179,7 +179,6 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
   const [internalDraft, setInternalDraft] = useState(initialDraft)
   const controlled = controlledDraft !== undefined
   const draft = controlled ? controlledDraft : internalDraft
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const ime = useImeGuard()
 
   // Read through refs so the setter identity is STABLE across renders. A setter that
@@ -211,17 +210,74 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
   // flex column would otherwise see that intermediate and reflow visibly. The
   // element's own CSS floor (e.g. a `min-h-*` class) still decides the empty size,
   // so a surface keeps its own resting geometry.
-  useIsomorphicLayoutEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
+  //
+  // Read through a ref so `measure` stays stable while always applying the
+  // current cap; the effect below still re-runs on `maxHeight` to re-measure.
+  const maxHeightRef = useRef(maxHeight)
+  maxHeightRef.current = maxHeight
+  const measure = useCallback((el: HTMLTextAreaElement) => {
     const prevOverflow = el.style.overflow
     const prevScrollTop = el.scrollTop
     el.style.overflow = 'hidden'
     el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+    el.style.height = `${Math.min(el.scrollHeight, maxHeightRef.current)}px`
     el.style.overflow = prevOverflow
     el.scrollTop = prevScrollTop
-  }, [draft, maxHeight])
+  }, [])
+
+  // Re-measured on placeholder changes too: while the draft is empty, a wrapped
+  // placeholder is what decides the box's height, and a surface that swaps its
+  // placeholder (e.g. idle vs working copy) would otherwise keep the height
+  // measured under the old text. The placeholder is a DOM attribute the deps
+  // never see, so a MutationObserver watches it — owned by the ref's setter
+  // rather than the layout effect, because the node can also be REPLACED while
+  // `draft` and `maxHeight` are unchanged: an effect-owned observer would stay
+  // on the detached node until the next draft change. The setter fires for both
+  // `ref={...}` attachment (React writes `.current` on mount/unmount) and the
+  // imperative assignments consumers already use, so the observer always sits on
+  // the live node and lets go of a detached one immediately.
+  const nodeRef = useRef<HTMLTextAreaElement | null>(null)
+  const observerRef = useRef<MutationObserver | null>(null)
+  const observe = useCallback((el: HTMLTextAreaElement) => {
+    measure(el)
+    // Hosts without MutationObserver: skip the observer, keep the measure.
+    if (typeof MutationObserver === 'undefined') return
+    const mo = new MutationObserver(() => measure(el))
+    mo.observe(el, { attributes: true, attributeFilter: ['placeholder'] })
+    observerRef.current = mo
+  }, [measure])
+  const textareaRef = useMemo<MutableRefObject<HTMLTextAreaElement | null>>(() => ({
+    get current() {
+      return nodeRef.current
+    },
+    set current(el: HTMLTextAreaElement | null) {
+      if (el === nodeRef.current) return
+      observerRef.current?.disconnect()
+      observerRef.current = null
+      nodeRef.current = el
+      if (el) observe(el)
+    },
+  }), [observe])
+
+  // Backstop for consumers that attach imperatively and never write `null` back:
+  // without it the observer would outlive the hook on unmount. Symmetric on
+  // purpose: StrictMode's dev double-invoke runs this cleanup and re-mount
+  // WITHOUT detaching the ref, so the mount half must re-install the observer
+  // the cleanup half tore down, or the re-measure is silently dead in dev.
+  useEffect(() => {
+    const el = nodeRef.current
+    if (el && !observerRef.current) observe(el)
+    return () => {
+      observerRef.current?.disconnect()
+      observerRef.current = null
+    }
+  }, [observe])
+
+  useIsomorphicLayoutEffect(() => {
+    const el = nodeRef.current
+    if (!el) return
+    measure(el)
+  }, [draft, maxHeight, measure])
 
   /**
    * Append, never substitute: both texts are typed work, and text the server has
