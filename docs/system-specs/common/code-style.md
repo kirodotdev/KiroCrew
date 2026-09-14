@@ -168,6 +168,15 @@ that genuinely writes in the console encoding (`ps`, `systeminfo`, user shells)
 keeps locale decoding and says so with an inline `# subprocess-encoding: locale`
 marker — an audit trail, not an escape hatch.
 
+PowerShell is the one console-encoding child whose emit side we *can* pin, the
+same move as `PYTHONIOENCODING` for a Python child: prefix the command with
+`[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);` and then
+`**UTF8_TEXT` is correct rather than forbidden, because the encoding is now
+known. Pinning only this end raises `UnicodeDecodeError` on a legacy code page,
+and leaving both ends on the code page silently best-fits an unrepresentable
+character away. Use the BOM-less `UTF8Encoding` spelling so no host prepends a
+byte-order mark to the first field.
+
 ## Frontend
 
 Icons are `lucide-react` components with `className="lucide-inline"`. Never an
