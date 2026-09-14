@@ -169,8 +169,13 @@ describe('ProjectsPage', () => {
     renderWithProviders(<ProjectsPage />)
     await screen.findByText('Done Project')
     fireEvent.click(screen.getByText('Done Project'))
-    expect(screen.getByRole('button', { name: /restart/i })).toBeInTheDocument()
-    expect(screen.getByText('Schedule')).toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse',
+    })
+    expect(await screen.findByRole('menuitem', { name: /restart/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Schedule' })).toBeInTheDocument()
   })
 
   it('restart calls retryTaskRun with from_step 1', async () => {
@@ -229,7 +234,12 @@ describe('ProjectsPage', () => {
     renderWithProviders(<ProjectsPage />)
     await screen.findByText('Cron Me')
     fireEvent.click(screen.getByText('Cron Me'))
-    fireEvent.click(screen.getByText('Schedule'))
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse',
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Schedule' }))
     expect(mockApi.createCron).toHaveBeenCalledWith({
       name: 'Project: Cron Me',
       message: 'run __inline__:my spec content',
