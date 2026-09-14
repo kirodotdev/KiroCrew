@@ -390,7 +390,7 @@
         "titleblock_live": "EM CURSO",
         "notes_heading": "NOTAS",
         "note_1": "Uma faixa vai da esquerda para a direita pelas colunas de fases; a cabeça marca a fase ativa do item.",
-        "note_2": "Um chip chanfrado tem um PR aberto; um retângulo simples ainda não.",
+        "note_2": "Uma pílula #N significa que o item tem um PR; uma faixa sem PR não mostra pílula #N.",
         "note_3": "Um trecho ponto-traço indica que o item pulou uma fase; um arco sob a faixa é uma fase reentrada.",
         "note_4": "Um ramal fora da faixa é uma saída: skipped, yielded, handed back, preempted ou awaiting reply.",
         "note_5": "Uma permanência acima de uma hora é sinalizada; a permanência aberta conta desde a última entrada na fase atual.",

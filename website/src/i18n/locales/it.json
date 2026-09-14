@@ -390,7 +390,7 @@
         "titleblock_live": "IN VOLO",
         "notes_heading": "NOTE",
         "note_1": "Una corsia va da sinistra a destra lungo le colonne delle fasi; la testa segna la fase attiva dell'elemento.",
-        "note_2": "Un chip smussato ha un PR aperto; un rettangolo semplice non ne ha ancora.",
+        "note_2": "Un badge #N indica che l'elemento ha un PR; una corsia senza PR non mostra alcun badge #N.",
         "note_3": "Un tratto punto-linea indica che l'elemento ha saltato una fase; un arco sotto la corsia è una fase rientrata.",
         "note_4": "Un moncone fuori dalla corsia è un'uscita -- saltata, ceduta, restituita, prelazionata o in attesa di risposta.",
         "note_5": "Una permanenza oltre un'ora viene segnalata; la permanenza aperta conta dall'ultimo ingresso nella fase corrente.",

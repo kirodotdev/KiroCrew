@@ -390,7 +390,7 @@
         "titleblock_live": "EN CURSO",
         "notes_heading": "NOTAS",
         "note_1": "Una vía va de izquierda a derecha por las columnas de fases; la cabeza marca la fase activa del elemento.",
-        "note_2": "Un chip biselado tiene un PR abierto; un rectángulo simple aún no.",
+        "note_2": "Una etiqueta #N significa que el elemento tiene un PR; una vía sin PR no muestra etiqueta #N.",
         "note_3": "Un tramo punto-raya indica que el elemento saltó una fase; un arco bajo la vía es una fase reingresada.",
         "note_4": "Un ramal fuera de la vía es una salida: skipped, yielded, handed back, preempted o awaiting reply.",
         "note_5": "Una permanencia de más de una hora se marca; la permanencia abierta cuenta desde la última entrada en la fase actual.",

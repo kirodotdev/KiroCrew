@@ -387,7 +387,7 @@
         "titleblock_live": "AKTIV",
         "notes_heading": "NOTIZEN",
         "note_1": "Eine Spur läuft links nach rechts über die Phasenspalten; der Kopf markiert die aktive Phase des Elements.",
-        "note_2": "Ein abgeschrägter Chip hat einen offenen PR; ein einfaches Rechteck noch keinen.",
+        "note_2": "Ein #N-Pill bedeutet, dass das Element einen PR hat; eine Spur ohne PR zeigt keinen #N-Pill.",
         "note_3": "Eine Strichpunktstrecke bedeutet, das Element hat eine Phase übersprungen; ein Bogen unter der Spur ist eine erneut betretene Phase.",
         "note_4": "Ein Stummel an der Spur ist ein Ausgang -- übersprungen, abgegeben, zurückgegeben, verdrängt oder auf Antwort wartend.",
         "note_5": "Eine Verweildauer über einer Stunde wird markiert; die offene Verweildauer zählt ab dem letzten Eintritt in die aktuelle Phase.",

@@ -390,7 +390,7 @@
         "titleblock_live": "EN VOL",
         "notes_heading": "NOTES",
         "note_1": "Une voie va de gauche à droite sur les colonnes de phases ; la tête marque la phase active de l'élément.",
-        "note_2": "Une puce chanfreinée a un PR ouvert ; un rectangle simple n'en a pas encore.",
+        "note_2": "Une pastille #N signifie que l'élément a un PR ; une voie sans PR n'affiche pas de pastille #N.",
         "note_3": "Un tronçon en trait mixte signifie que l'élément a sauté une phase ; un arc sous la voie est une phase ré-entrée.",
         "note_4": "Un ergot hors de la voie est une sortie -- sautée, cédée, rendue, préemptée ou en attente de réponse.",
         "note_5": "Un séjour de plus d'une heure est signalé ; le séjour en cours compte depuis la dernière entrée dans la phase actuelle.",

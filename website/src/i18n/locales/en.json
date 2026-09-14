@@ -258,7 +258,7 @@
         "titleblock_live": "IN FLIGHT",
         "notes_heading": "NOTES",
         "note_1": "A lane runs left to right across the phase columns; the head marks the item's live phase.",
-        "note_2": "A chamfered chip has a PR open; a plain rect has none yet.",
+        "note_2": "A #N pill means the item has a PR; a lane with no PR shows no #N pill.",
         "note_3": "A dot-dash span means the item skipped a phase; an under-lane arc is a re-entered phase.",
         "note_4": "A stub off the lane is an exit — skipped, yielded, handed back, preempted, or awaiting a reply.",
         "note_5": "A dwell over an hour is flagged; the open dwell counts from the most recent entry into the current phase.",
