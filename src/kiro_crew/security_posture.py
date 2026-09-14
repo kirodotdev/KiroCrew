@@ -1248,6 +1248,21 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "is audited.",
     ),
     (
+        "Slide-deck render screen and conversion diagnostic",
+        "dashboard/handlers/office_slides.py",
+        "The .pptx/.ppt slide renderer screens the deck's rendered text through "
+        "the credential redactor then the exfiltration-URL redactor BEFORE it "
+        "rasterizes any page (`_screen_rendered_text`): a slide PNG is a picture "
+        "of that text and cannot be redacted after the fact, so a deck whose "
+        "visible text either scanner would change is not rendered at all -- the "
+        "manifest answers `content_redacted` and the panel falls back to the "
+        "text outline, which the file-preview route redacts per slide. The same "
+        "credential-then-URL chain also scrubs the conversion child's stderr "
+        "tail before it is logged or returned as `detail`. Both scanners run "
+        "over the full text; a scanner that raises drops the field rather than "
+        "emitting it, and the render is refused rather than served unredacted.",
+    ),
+    (
         "MCP custom server specs",
         "dashboard/handlers/mcp_custom.py",
         "Editable MCP server specs returned by the dashboard HTTP API to the browser. "
