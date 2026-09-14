@@ -67,7 +67,10 @@ the `internal-content-scan` check.
   that draft in a `{/* No hand-off: … */}` comment. Inside a Radix menu, leave it
   off and render a sibling `ErrorNoticeMenuItem`; its `describedBy` must point to
   the passive notice's `id`, so the hand-off is a real menu focus stop rather than
-  a nested button. Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`).
+  a nested button. Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`). A new
+  always-mounted shell must also mount `ActionFailureNotice`, the sink
+  `reportActionFailure` writes a rejected gateway write to, as the two `App.tsx`
+  shells and `PopoutFrame` do; `test/App.actionFailureNotice.test.tsx` pins the mount.
 - **Security: every `dangerouslySetInnerHTML` goes through DOMPurify** via
   `md()` / `sanitize()` / `esc()` in `src/api/helpers.ts`. A bypass is an XSS bug,
   so there is no acceptable pointer for this one.

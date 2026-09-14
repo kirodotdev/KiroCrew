@@ -10,13 +10,17 @@ import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { i18nT } from '../i18n/t'
+import { fmtList } from '../i18n/format'
 import type { ChatSlot } from '../types'
 import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
+import { reportActionFailure } from '../utils/actionFailure'
+import { findReport, parseErrorCode, type ErrorReport } from '../utils/errorReport'
 
 interface PinMutationEntry {
   key: string
   pinned: boolean
   succeeded: boolean | null
+  report?: ErrorReport
   pinGeneration: number
   slotsGeneration: number
   /** `slotWriteSeq` right after this entry's optimistic write. */
@@ -98,6 +102,52 @@ export function useSessionActions(mode?: string): SessionActions {
   ) => {
     entry.succeeded = succeeded
     if (batch.entries.some(candidate => candidate.succeeded === null)) return
+    // A rejected pin whose commit the server DID apply comes back pinned from the
+    // authoritative frame, and "was undone" would then be false.
+    const reportRevertedPins = (reconciled: Iterable<string>) => {
+      const owned = new Set(reconciled)
+      // One verdict per session, read off its newest entry: rapid toggles of one
+      // session leave it several entries, and judging each would name that
+      // session once per click and count it as that many.
+      const latest = new Map<string, PinMutationEntry>()
+      for (const candidate of batch.entries) latest.set(candidate.key, candidate)
+      const reverted: Array<{ key: string; name: string; report?: ErrorReport }> = []
+      for (const [key, candidate] of latest) {
+        if (!owned.has(key)) continue
+        const slot = store.getState().dashboard.slots.find(s => s.key === key)
+        // A session that left the list mid-write has no row to roll back and none
+        // to name. Without this, the absent row reads as unpinned, so a failed
+        // PIN reported (unnamed) while a failed UNPIN did not.
+        if (!slot) continue
+        if ((slot.pinned ?? false) === candidate.pinned) continue
+        if (candidate.succeeded !== false) continue
+        reverted.push({ key, name: slot.title ?? '', report: candidate.report })
+      }
+      if (reverted.length === 0) return
+      // One report for the batch: the store stacks, so a call per candidate would
+      // hand the reader N banners to dismiss one by one for a single click.
+      const report = reverted[0]?.report
+      if (reverted.length === 1) {
+        reportActionFailure(i18nT('hooks.useSessionActions.pin_change_failed'), reverted[0].name, report)
+        return
+      }
+      // Multi-session notices must name every reported session. An untitled row
+      // falls back to its key, so the first row's report always belongs to one of
+      // the sessions named in the sentence.
+      const names = reverted.map(candidate => candidate.name || candidate.key)
+      // Several sessions get their own lead: the shared one has a single subject
+      // slot, and N titles joined into it read as one session called "A, B". The
+      // names move into the sentence, joined the way the language joins a list,
+      // and the count is theirs: a session with no row to name is not counted
+      // either, or the heading would promise more than the sentence delivers.
+      const listed = fmtList(names)
+      reportActionFailure(
+        i18nT('hooks.useSessionActions.pin_change_failed_named', { names: listed }),
+        listed,
+        report,
+        i18nT('hooks.useSessionActions.pin_change_failed_heading', { count: names.length }),
+      )
+    }
     const snapshotVersion = ++batch.snapshotVersion
     try {
       let slots: ChatSlot[]
@@ -154,6 +204,7 @@ export function useSessionActions(mode?: string): SessionActions {
         const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
         if (current !== pinned) dispatch(updateSlotPin({ key, pinned }))
       }
+      reportRevertedPins(latest.keys())
       const currentSlots = store.getState().dashboard.slots
       const pinnedKeys = new Set(currentSlots.filter(slot => slot.pinned).map(slot => slot.key))
       const currentKeys = new Set(currentSlots.map(slot => slot.key))
@@ -226,6 +277,7 @@ export function useSessionActions(mode?: string): SessionActions {
       // list. The `invalidateQueries({ queryKey: ['chat-slots'] })` this branch
       // used to end with was never that retry -- no query is registered on that
       // key, so it refreshed nothing (#10204).
+      reportRevertedPins(ownedKeys)
     }
   }, [dispatch, queryClient])
 
@@ -236,6 +288,21 @@ export function useSessionActions(mode?: string): SessionActions {
         queryClient.invalidateQueries({ queryKey: ['slots'] })
         dispatch(switchSlot(data.key))
       }
+    },
+    // A fork that fails switches to no session, so without this the click is
+    // indistinguishable from one that never registered. Its own heading: nothing
+    // was created, so the shared "Couldn't update" would name a change that did
+    // not happen.
+    onError: (err, slot) => {
+      const listed = store.getState().dashboard.slots.find(s => s.key === slot)
+      if (!listed) return
+      const name = listed.title ?? ''
+      reportActionFailure(
+        i18nT('hooks.useSessionActions.fork_failed'),
+        name,
+        findReport(err.message),
+        i18nT('hooks.useSessionActions.fork_failed_heading', { name }),
+      )
     },
   })
 
@@ -279,10 +346,15 @@ export function useSessionActions(mode?: string): SessionActions {
       ctx.entry.confirmedPinned = typeof answered === 'boolean' ? answered : null
       return finishPinMutation(ctx.batch, ctx.entry, true)
     },
-    onError: (_err, _vars, ctx) => ctx
-      ? finishPinMutation(ctx.batch, ctx.entry, false)
-      : undefined,
+    onError: (err, _vars, ctx) => {
+      if (!ctx) return undefined
+      ctx.entry.report = findReport(err.message)
+      return finishPinMutation(ctx.batch, ctx.entry, false)
+    },
   })
+
+  const slotTitle = (key: string) =>
+    store.getState().dashboard.slots.find(s => s.key === key)?.title ?? ''
 
   // Orchestrator/Autopilot mode toggle (optimistic, server-persisted).
   const modeMutation = useMutation({
@@ -292,11 +364,16 @@ export function useSessionActions(mode?: string): SessionActions {
       dispatch(updateSlot({ key, mode: newMode }))
       return { key, prev, newMode }
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (!ctx) return
-      // Guarded rollback: don't clobber a superseding mode toggle.
-      const current = store.getState().dashboard.slots.find(s => s.key === ctx.key)?.mode ?? ''
-      if (current === ctx.newMode) dispatch(updateSlot({ key: ctx.key, mode: ctx.prev }))
+      // Guarded rollback: don't clobber a superseding mode toggle. A session that
+      // left the list has no row to roll back or name — and its absence must not
+      // read as mode '', or a rejected switch back to normal chat reports an undo
+      // that never happened while the Autopilot direction stays silent.
+      const slot = store.getState().dashboard.slots.find(s => s.key === ctx.key)
+      if (!slot || (slot.mode ?? '') !== ctx.newMode) return
+      dispatch(updateSlot({ key: ctx.key, mode: ctx.prev }))
+      reportActionFailure(i18nT('hooks.useSessionActions.mode_change_failed'), slotTitle(ctx.key), findReport(err.message))
     },
   })
 
@@ -305,17 +382,37 @@ export function useSessionActions(mode?: string): SessionActions {
   // over the websocket (and lighting the row's unread indicator for a
   // non-active slot). Failure must NOT be silent -- the user would proceed
   // believing their stale MCP config was refreshed, the exact confusion the
-  // feature exists to fix. alert() is the always-available surface (the
-  // dashboard has no global toast); the copy branches on the backend's
+  // feature exists to fix. It reports to the shared in-page notice, which carries
+  // the agent hand-off a native alert() cannot. The copy branches on the backend's
   // machine-readable code, because "try again when the session is idle" is a
   // dead end for a slot that LOOKS idle but has sub-agents still working.
   const reloadMutation = useMutation({
     mutationFn: (slot: string) => api.chatSlotReload(slot),
-    onError: (err) => {
-      const body = err instanceof ApiError ? err.body : ''
-      alert(i18nT(body.includes('slot_subagents_running')
-        ? 'hooks.useSessionActions.reload_failed_subagents'
-        : 'hooks.useSessionActions.reload_failed'))
+    onError: (err, slot) => {
+      const listed = store.getState().dashboard.slots.find(s => s.key === slot)
+      if (!listed) return
+      const responded = err instanceof ApiError
+      const code = responded ? parseErrorCode(err.body) : undefined
+      const messageKey = !responded
+        ? 'hooks.useSessionActions.reload_failed'
+        : code === 'slot_subagents_running'
+          ? 'hooks.useSessionActions.reload_failed_subagents'
+          : code === 'turn_in_flight'
+            ? 'hooks.useSessionActions.reload_failed_busy'
+            : code === 'session_rebound'
+              ? 'hooks.useSessionActions.reload_failed_rebound'
+              : err.status === 409
+                ? 'hooks.useSessionActions.reload_failed_conflict'
+                : 'hooks.useSessionActions.reload_failed_rejected'
+      const name = listed.title ?? ''
+      // Its own lead, like fork and send: a reload changes no setting, so the
+      // shared "Couldn’t update" would claim an edit that was never attempted.
+      reportActionFailure(
+        i18nT(messageKey),
+        name,
+        findReport(err.message),
+        i18nT('hooks.useSessionActions.reload_failed_heading', { name }),
+      )
     },
   })
 

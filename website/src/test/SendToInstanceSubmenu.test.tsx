@@ -3,15 +3,16 @@
  *
  * jsdom cannot drive a real Radix submenu open (no PointerEvent), the same
  * limitation ChatSidebar.moveToFolder.test.tsx documents. So this file locks the
- * two halves that ARE reliably testable:
- *   (1) the wrapper's self-hiding contract (no instances → no menu entry), and
- *   (2) InstanceSendItems — the row list, rendered against a plain Item stub, so
- *       the disabled / outcome logic is asserted without a live submenu.
+ * three pieces that ARE reliably testable:
+ *   (1) the wrapper's self-hiding contract (no instances → no menu entry),
+ *   (2) InstanceSendItems — the row list, rendered against a plain Item stub, and
+ *   (3) the wrapper's mutation outcome, using lightweight menu primitives so a
+ *       send can be driven without a live Radix submenu.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { InstanceView } from '../api/client'
+import { ApiError, type InstanceView } from '../api/client'
 
 const mocks = vi.hoisted(() => ({
   listInstances: vi.fn(),
@@ -19,13 +20,52 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
+  ApiError: class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, message: string, body = '') {
+      super(message)
+      this.status = status
+      this.body = body
+    }
+  },
   api: new Proxy(mocks as Record<string, unknown>, {
     get: (t, p: string) => (p in t ? t[p] : vi.fn().mockResolvedValue([])),
   }),
 }))
 
+vi.mock('../components/ui/dropdown-menu', () => {
+  const Passthrough = ({ children }: { children?: React.ReactNode }) => <>{children}</>
+  const Item = ({ title, disabled, onSelect, children }: {
+    title?: string
+    disabled?: boolean
+    onSelect?: (event: Event) => void
+    children?: React.ReactNode
+  }) => (
+    <button
+      type="button"
+      title={title}
+      disabled={disabled}
+      onClick={() => onSelect?.(new Event('select'))}
+    >
+      {children}
+    </button>
+  )
+  return {
+    DropdownMenu: Passthrough,
+    DropdownMenuContent: Passthrough,
+    DropdownMenuSub: Passthrough,
+    DropdownMenuSubTrigger: Passthrough,
+    DropdownMenuSubContent: Passthrough,
+    DropdownMenuItem: Item,
+  }
+})
+
 import SendToInstanceSubmenu, { InstanceSendItems } from '../components/SendToInstanceSubmenu'
 import { DropdownMenu, DropdownMenuContent } from '../components/ui/dropdown-menu'
+import { store } from '../store'
+import { removeSlotOptimistic, sseSlots } from '../store/dashboardSlice'
+import { __resetActionFailureForTests, useActionFailure } from '../utils/actionFailure'
 
 /** Minimal InstanceView; only id/name/status are read by the component. */
 function inst(over: Partial<InstanceView> & { id: string }): InstanceView {
@@ -82,8 +122,12 @@ function renderWrapper() {
 
 describe('SendToInstanceSubmenu', () => {
   beforeEach(() => {
+    __resetActionFailureForTests()
     mocks.listInstances.mockReset()
     mocks.sendSessionToInstance.mockReset()
+    store.dispatch(sseSlots([
+      { key: 'slot-1', title: 'Session one', mode: 'chat' } as never,
+    ]))
   })
 
   it('renders no menu entry when no instances are configured', async () => {
@@ -106,6 +150,40 @@ describe('SendToInstanceSubmenu', () => {
     })
     renderWrapper()
     expect(await screen.findByText('Send a copy to')).toBeTruthy()
+  })
+
+  it('reports a send failure while the source session is still listed', async () => {
+    mocks.listInstances.mockResolvedValue({
+      active: true, instances: [inst({ id: 'devdesk' })], warm_set_cap: 5,
+    })
+    mocks.sendSessionToInstance.mockRejectedValue(new ApiError(409, 'peer refused'))
+    const { result } = renderHook(() => useActionFailure())
+    renderWrapper()
+    const row = await screen.findByTitle('devdesk')
+    act(() => { row.click() })
+    await waitFor(() =>
+      expect(mocks.sendSessionToInstance).toHaveBeenCalledWith('devdesk', 'slot-1'))
+    await waitFor(() => expect(result.current.failure?.message).toContain('peer refused'))
+    expect(result.current.failure?.subject).toBe('Session one')
+  })
+
+  it('reports nothing when the source session leaves the list before send fails', async () => {
+    mocks.listInstances.mockResolvedValue({
+      active: true, instances: [inst({ id: 'devdesk' })], warm_set_cap: 5,
+    })
+    let rejectSend!: (reason: unknown) => void
+    mocks.sendSessionToInstance.mockImplementation(() =>
+      new Promise((_resolve, reject) => { rejectSend = reject }))
+    const { result } = renderHook(() => useActionFailure())
+    renderWrapper()
+    const row = await screen.findByTitle('devdesk')
+    act(() => { row.click() })
+    await waitFor(() =>
+      expect(mocks.sendSessionToInstance).toHaveBeenCalledWith('devdesk', 'slot-1'))
+    act(() => { store.dispatch(removeSlotOptimistic('slot-1')) })
+    await act(async () => { rejectSend(new Error('peer refused')); await Promise.resolve() })
+    expect(await screen.findByText('peer refused')).toBeTruthy()
+    expect(result.current.failure).toBeNull()
   })
 })
 
@@ -185,17 +263,17 @@ describe('InstanceSendItems', () => {
     expect(screen.getByText('Sent')).toBeTruthy()
   })
 
-  it('reports failure with the peer message as the row tooltip', () => {
+  it('leaves no error surface on the row, which the page notice owns', () => {
     render(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
-        states={{ devdesk: { kind: 'error', message: 'peer refused the transfer' } }}
+        states={{ devdesk: { kind: 'idle' } }}
         onSend={vi.fn()}
         Item={StubItem}
       />,
     )
-    expect(screen.getByText('Failed')).toBeTruthy()
-    expect(screen.getByTitle('peer refused the transfer')).toBeTruthy()
+    expect(screen.queryByText('Failed')).toBeNull()
+    expect(screen.queryByText('Sent')).toBeNull()
   })
 
   it('a repeat send stays available after success (copy semantics)', () => {

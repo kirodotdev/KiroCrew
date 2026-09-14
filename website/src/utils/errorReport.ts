@@ -154,7 +154,7 @@ export function redactSecrets(text: string): string {
  * linear (see the wing bound above — 2MB in ~5ms), so a multi-megabyte body is
  * milliseconds, not the frozen main thread the quadratic version produced.
  */
-function redactThenCap(text: string, max: number): string {
+export function redactThenCap(text: string, max: number): string {
   const redacted = redactSecrets(text)
   return redacted.length > max ? redacted.slice(0, max) + TRUNCATION_SUFFIX : redacted
 }
