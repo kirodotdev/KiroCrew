@@ -1,7 +1,7 @@
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import SessionActionsMenu from './SessionActionsMenu'
-import { sseSlots, markSlotUnread } from '../store/dashboardSlice'
+import { sseSlots, markSlotUnread, sseConnected } from '../store/dashboardSlice'
 import { sseSubagentSpawn } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { ChatSlot } from '../types'
@@ -75,6 +75,7 @@ function setup(
   unread = false,
 ) {
   const store = createTestStore()
+  store.dispatch(sseConnected())
   store.dispatch(sseSlots([{ key: 'zzq-slot', messages: 0, running: false, ...slot } as ChatSlot]))
   if (unread) store.dispatch(markSlotUnread('zzq-slot'))
   return renderWithProviders(
@@ -134,6 +135,7 @@ describe('SessionActionsMenu', () => {
     // backend still 409s (the reset would tear down the children's shared
     // runtime), so the item must not offer the click.
     const store = createTestStore()
+    store.dispatch(sseConnected())
     store.dispatch(sseSlots([{ key: 'zzq-slot', messages: 0, running: false } as ChatSlot]))
     store.dispatch(sseSubagentSpawn({ slot: 'zzq-slot', id: 'sa-1', task: 't', agent: 'a' }))
     renderWithProviders(
@@ -220,6 +222,7 @@ describe('SessionActionsMenu', () => {
 
   it('renders the same item set through the context-menu family', () => {
     const store = createTestStore()
+    store.dispatch(sseConnected())
     store.dispatch(sseSlots([{ key: 'zzq-slot', messages: 0, running: false } as ChatSlot]))
     renderWithProviders(
       <SessionActionsMenu variant="context" slotKey="zzq-slot" />,

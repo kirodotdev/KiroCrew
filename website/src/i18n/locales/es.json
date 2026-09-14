@@ -7619,7 +7619,6 @@
       "quote_hint": "Cita la selección en el redactor de esta conversación: tu respuesta va al chat principal"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Falló",
       "not_connected": "no conectado",
       "send_a_copy_to": "Enviar una copia a",
       "sent": "Enviado",
@@ -7635,6 +7634,7 @@
       "mark_as_read": "Marcar como leída",
       "mark_as_unread": "Marcar como no leída",
       "move_to_folder": "Mover a la carpeta…",
+      "offline_reason": "Gateway sin conexión — las acciones atenuadas necesitan conexión",
       "open_in_new_tab": "Abrir en una pestaña de sesión",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
@@ -15493,9 +15493,24 @@
       "saving": "Guardando…"
     },
     "offline": {
+      "change_tags": "cambiar las etiquetas",
+      "close_sessions": "cerrar sesiones",
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
+      "export_sessions": "exportar sesiones",
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
-      "submit_comments": "enviar comentarios"
+      "move_folders": "mover carpetas",
+      "move_sessions": "mover sesiones",
+      "optimize": "optimizar prompts",
+      "pin_sessions": "fijar sesiones",
+      "recolor_sessions": "recolorear sesiones",
+      "reload_sessions": "recargar sesiones",
+      "rename_sessions": "cambiar el nombre de las sesiones",
+      "resume_sessions": "reanudar sesiones",
+      "send": "enviar",
+      "send_to_instances": "enviar a instancias",
+      "submit_comments": "enviar comentarios",
+      "switch_session_modes": "cambiar los modos de sesión",
+      "switch_sessions": "cambiar de sesión"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Tu navegador bloqueó la ventana desacoplada. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."

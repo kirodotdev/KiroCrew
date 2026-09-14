@@ -3,7 +3,7 @@ import type React from 'react'
 import { renderWithProviders } from '../test/helpers'
 import SessionColorSwatches from './SessionColorSwatches'
 import { store } from '../store'
-import { sseSlots, sseSlotColor } from '../store/dashboardSlice'
+import { sseSlots, sseSlotColor, sseConnected } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import type { ChatSlot } from '../types'
 
@@ -28,6 +28,7 @@ const render = (ui: React.ReactElement) =>
   renderWithProviders(ui, { store: store as never })
 
 function seedStore(colorIndex: number | null) {
+  store.dispatch(sseConnected())
   store.dispatch(sseSlots([
     { key: 'zzq-slot', messages: 0, running: false, color_index: colorIndex } as ChatSlot,
   ]))
@@ -73,8 +74,11 @@ describe('SessionColorSwatches', () => {
 
     fireEvent.click(screen.getAllByRole('button')[1])
     expect(colorOf()).toBe(0)
-    expect(onPicked).toHaveBeenCalledTimes(1)
+    // Deferred to success: closing the menu on click would unmount the host of
+    // the notice a rejection reports into.
+    expect(onPicked).not.toHaveBeenCalled()
     await waitFor(() => expect(setSlotColor).toHaveBeenCalledWith('zzq-slot', 0))
+    await waitFor(() => expect(onPicked).toHaveBeenCalledTimes(1))
   })
 
   it('picking no-colour clears the index', async () => {

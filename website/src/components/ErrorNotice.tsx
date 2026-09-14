@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react'
+import type { AriaAttributes, ComponentType, ReactNode } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
 import type { ErrorReport } from '../utils/errorReport'
@@ -6,9 +6,12 @@ import type { ErrorReport } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
+  className?: string
   title?: string
   disabled?: boolean
   'aria-describedby'?: string
+  'aria-disabled'?: AriaAttributes['aria-disabled']
+  'aria-label'?: string
   onSelect?: (event: Event) => void
   children?: ReactNode
 }>

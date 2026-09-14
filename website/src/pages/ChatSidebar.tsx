@@ -2404,7 +2404,7 @@ const SessionRow = memo(function SessionRow({
               ? i18nT('pages.chatSidebar.opens_here_runs_on_instance', { name: peerName })
               : undefined
           }
-          {...offlineProps(connected, 'switch sessions')}
+          {...offlineProps(connected, i18nT('utils.offline.switch_sessions'))}
           role="button"
           tabIndex={0}
           data-session-row={rowIdentity}
@@ -8855,7 +8855,7 @@ function ChatSidebar({
                     dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
                   }
                   return (
-                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
+                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, i18nT('utils.offline.resume_sessions'))} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
                       // WCAG 2.1.1: history rows must be resumable via keyboard.
                       if (e.key !== 'Enter' && e.key !== ' ') return
                       if ((e.target as HTMLElement) !== e.currentTarget) return
