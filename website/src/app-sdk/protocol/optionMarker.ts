@@ -35,14 +35,22 @@
 // `】` U+3011, `］` U+FF3D, `〕` U+3015) mirrors the backend's `MARKER_CLOSERS`. The prompt only ever specifies ASCII `]`, but a
 // model intermittently substitutes a lookalike, and a single wrong codepoint
 // breaks the end anchor — the marker then leaks into the message as literal text
-// and the turn silently loses its pills. Labels are unaffected, so accepting the
-// lookalike costs nothing. ReDoS profile is unchanged from the previous literal
-// `\]`: the class shares no character with the trailing `[ \t]*`, and the body
-// excludes it from its negated class and readmits all four codepoints in exactly
-// TWO tempered places (below) — as the matched-pair form's final atom, and via the
-// continuation lookahead. A widening of this class has to be re-audited against
-// both; the pair form is the one holding the deciding lookahead, so it is the one
-// not to skip.
+// and the turn silently loses its pills. Each closer is PAIRED POSITIONALLY with
+// an opener (`[`<->`]`, `【`<->`】`, `［`<->`］`, `〔`<->`〕`), mirroring the
+// backend's `MARKER_OPENERS`: the matched-pair body emits one alternative per
+// pair and closes on THAT pair's closer alone, so `[OPTIONS: 【x】 | Skip]` parses
+// exactly as `[OPTIONS: [x] | Skip]` while a MISMATCHED pair (`【 … ]`) has no
+// pair parse and declines. ReDoS profile stays linear because every negated class
+// in the body excludes EVERY bracket — all four openers and all four closers — so
+// an opener is never also an ordinary character, a failed pair attempt scans at
+// most to the next bracket, and a run of the same opener costs one failed attempt
+// per character (the bare-opener alternative then takes it). The class shares no
+// character with the trailing `[ \t]*`, and the body
+// excludes every closer from its negated class and readmits them in exactly
+// TWO tempered places (below) — as each matched-pair form's closing atom (one
+// closer per pair), and via the continuation lookahead (the full class). A
+// widening of this class has to be re-audited against both; the pair forms hold
+// the deciding lookahead, so they are the ones not to skip.
 //
 // A CLOSER MUST BE MATCHED, OR CONTINUE THE LABEL LIST (#9284). A label may
 // legitimately carry a closer (`[OPTIONS: Alpha ] | Bravo ]]` is a supported,
@@ -73,14 +81,16 @@
 // "marker ended, prose followed". There is more than one way to be that closer,
 // and all of them parsed on the old body:
 //
-//   [OPTIONS: Fix ]x logging | Skip]             unmatched — no `[` at all
+//   [OPTIONS: Fix ]x logging | Skip]             unmatched — no opener at all
 //   [OPTIONS: Fix list[dict[str, Any]] now | S]  nesting deeper than one level
-//   [OPTIONS: 【重要】修复 | 跳过】                 a lookalike PAIR — `【` is not an
-//                                                opener, only `[` is
+//   [OPTIONS: 见【表1] 说明 | 跳过]                 a MISMATCHED pair — `【` pairs
+//                                                with `】`, never with `]`
 //
 // All fail toward a VISIBLE marker, not toward deleted prose, and that asymmetry
-// is what makes them affordable. Making them parse means matching brackets to
-// arbitrary depth and over an opener set this grammar does not have. The
+// is what makes them affordable. A MATCHED lookalike pair (`[OPTIONS: 【x】 |
+// Skip]`) is NOT a cost — it parses, because `MARKER_OPENERS` pairs `【` with
+// `】`. Making the remaining shapes parse means matching brackets to arbitrary
+// depth, or pairing openers with closers this grammar keeps unpaired. The
 // separator-tail form (`…| Wait], details in CHANGELOG[1]`) is NOT reachable by
 // this rule: `], ` does continue the list, by the same rule that makes
 // `[OPTIONS: Alpha ], Bravo]` legal. What decides it is the TERMINATOR GATE below,
@@ -143,7 +153,7 @@
 // and clone the regex internally, which also retires the `lastIndex` hazard that used
 // to be every caller's problem.
 const OPTION_MARKER_RE =
-  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
+  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3010(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3011(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\uFF3B(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\uFF3D(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3014(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3015(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[[\u3010\uFF3B\u3014](?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3010(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3011(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\uFF3B(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\uFF3D(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3014(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3015(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[[\u3010\uFF3B\u3014](?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
 
 /** The pattern's source text, for the tests that pin its shape.
  *
@@ -178,14 +188,29 @@ export const OPTION_MARKER_PATTERN_SOURCE = OPTION_MARKER_RE.source
  * An unmatched CLOSER is ignored: a label may legitimately carry one
  * (`[OPTIONS: Alpha ] | Bravo ]]` is supported and tested).
  *
+ * Openers are TYPED, not fungible. `【` pairs with `】` and nothing else, so a closer
+ * pops only the opener it partners; a closer of another kind is ignored exactly like
+ * an unmatched one. Counting every closer against every opener admitted
+ * `[OPTIONS: A 【x] | B]` — the `]` after `x` closed the `【` on the count and a label
+ * with a half-open lookalike pair rendered as options. Under typed pairing that `【`
+ * is still open at the terminator, the bare-opener shape, and the candidate declines.
+ *
  * Mirrors `_marker_labels_have_unmatched_opener` in `constants.py`. */
+const PAIR_OPENERS = '[【［〔'
+const PAIR_CLOSERS = ']】］〕' // index-aligned with PAIR_OPENERS
+
 export function labelsHaveUnmatchedOpener(labels: string): boolean {
-  let depth = 0
+  const open: number[] = []
   for (const ch of labels) {
-    if (ch === '[') depth++
-    else if (']】］〕'.includes(ch) && depth > 0) depth--
+    const o = PAIR_OPENERS.indexOf(ch)
+    if (o >= 0) {
+      open.push(o)
+      continue
+    }
+    const c = PAIR_CLOSERS.indexOf(ch)
+    if (c >= 0 && open.length > 0 && open[open.length - 1] === c) open.pop()
   }
-  return depth > 0
+  return open.length > 0
 }
 
 /** The labels of a candidate match. Groups 1/2 belong to the wrapped branch, 3/4 to

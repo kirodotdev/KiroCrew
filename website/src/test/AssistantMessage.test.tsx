@@ -895,22 +895,34 @@ describe('parseOptions', () => {
     // The label body: tempered alternation, NOT a nested quantifier. Spelled with
     // `\uXXXX` escapes because that is how the SOURCE spells the closer class —
     // `.source` is the literal pattern text, so a literal `】` here would not match.
-    const C = '\\]\\u3011\\uFF3D\\u3015'
+    const O = ['\\[', '\\u3010', '\\uFF3B', '\\u3014'] // openers `[ 【 ［ 〔`
+    const CL = ['\\]', '\\u3011', '\\uFF3D', '\\u3015'] // closers `] 】 ］ 〕`, paired positionally
+    const C = CL.join('')
+    const B = `[${O.slice(1).join('')}${C}` // every bracket, as the negated classes spell it
     const CONT = `[ \\t]*[|,]|[${C}]`
-    // Four alternatives, mutually exclusive at every position. The two bracket
-    // forms both begin at `[` but are each other's negation on what FOLLOWS the
+    // The alternatives are mutually exclusive at every position. The pair forms
+    // and the continuation form are each other's negation on what FOLLOWS the
     // closer, so no span of input ever has two parses — that disjointness is what
-    // the linearity rests on, so it is pinned here character for character. BOTH
-    // bracket forms carry `(?!OPTIONS?:)`: that is what keeps a nested head out of
-    // a label, and dropping it from the pair form is a widening, not a tidy-up.
+    // the linearity rests on, so it is pinned here character for character. EVERY
+    // opener carries `(?!OPTIONS?:)`: that is what keeps a nested head out of
+    // a label, and dropping it from a pair form is a widening, not a tidy-up.
     //
     // Note what is NOT here: whether a candidate's terminating closer is really its
     // own. That is bracket balance, which no pattern decides at unbounded depth, so
     // `labelsHaveUnmatchedOpener` decides it and the pattern is module-private to stop the
     // two being applied separately. Pinning the pattern's shape is still worth it:
     // this is the half that has to stay linear.
+    // One matched-pair alternative PER opener/closer pair, each closing on its own
+    // pair's closer only; then the bare-opener form over the whole opener class.
+    // Every negated class excludes EVERY bracket (all four openers and all four
+    // closers), so an opener is never also an ordinary character and a failed
+    // pair attempt scans at most to the next bracket.
+    const pairs = O.map((o, i) => `${o}(?!OPTIONS?:)[^${B}\\n]*${CL[i]}(?!${CONT})`).join('|')
+    // The bare-opener alternative is a character class of every opener; inside a
+    // class the leading `[` is literal, so its members are spelled without the `\`.
+    const openerClass = `[[${O.slice(1).join('')}]`
     expect(src).toContain(
-      `(?:\\[(?!OPTIONS?:)[^[${C}\\n]*[${C}](?!${CONT})|\\[(?!OPTIONS?:)|[${C}](?=${CONT})|[^[${C}\\n])*`,
+      `(?:${pairs}|${openerClass}(?!OPTIONS?:)|[${C}](?=${CONT})|[^${B}\\n])*`,
     )
     // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
     // exponentially, and it is what the tempered body above replaced.

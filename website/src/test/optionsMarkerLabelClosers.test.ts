@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseOptions } from '../app-sdk/protocol'
 // The pattern is in-tree only — the barrel deliberately withholds it from the app surface.
-import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
+import { labelsHaveUnmatchedOpener, stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
 
 // #9284: a label may legitimately carry a closer (`[OPTIONS: Alpha ] | Bravo ]]` is
 // a supported, tested shape), so the body has to admit one — but admitting it
@@ -122,13 +122,73 @@ describe('OPTION_MARKER_RE label closers must be matched or continue the list (#
     ])
   })
 
-  it('accepts a lookalike PAIR as a cost, because only ASCII `[` opens', () => {
-    // The closer set was widened to the CJK lookalikes; there is no matching
-    // OPENER set, so `【` is an ordinary character and the `】` after it reads as
-    // unmatched. Common in Chinese output, hence stated explicitly.
-    const text = '[OPTIONS: 【重要】修复 | 跳过】'
+  it('parses a MATCHED lookalike pair like an ASCII `[...]` pair (#9375)', () => {
+    // `MARKER_OPENERS` pairs each lookalike opener with its closer, so a matched
+    // `【…】` / `［…］` / `〔…〕` inside a label renders buttons exactly as `[…]` does.
+    for (const [open, close] of [
+      ['【', '】'],
+      ['［', '］'],
+      ['〔', '〕'],
+    ]) {
+      const text = `[OPTIONS: Fix ${open}x${close} logging | Skip]`
+      expect(parseOptions(text).options, text).toEqual([`Fix ${open}x${close} logging`, 'Skip'])
+    }
+    // A label may be entirely a lookalike pair, too. Common in Chinese output.
+    expect(parseOptions('[OPTIONS: 【重要】修复 | 跳过】').options).toEqual(['【重要】修复', '跳过'])
+  })
+
+  it('declines a MISMATCHED lookalike pair as a cost (#9375)', () => {
+    // `【` pairs with `】`, never with `]`, so `【 … ]` has no pair parse; the `]`
+    // reads as unmatched and the marker declines rather than deleting prose.
+    for (const text of [
+      '[OPTIONS: 见【表1] 说明 | 跳过]',
+      '[OPTIONS: Fix [x】 logging | Skip]',
+      '[OPTIONS: Fix ［x〕 logging | Skip]',
+    ]) {
+      expect(parseOptions(text).options, text).toEqual([])
+      expect(parseOptions(text).text, text).toBe(text)
+    }
+  })
+
+  it('declines a mismatched pair even when its closer ends the label', () => {
+    // The balance check pairs openers by TYPE. Before, every closer decremented one
+    // shared count, so `【x]` read as closed and this candidate rendered buttons
+    // from a label with a half-open lookalike pair. The `【` is still open at the
+    // terminator — the bare-opener shape — so it declines and no prose moves.
+    for (const text of [
+      '[OPTIONS: A 【x] | B]',
+      '[OPTIONS: A [x】 | B]',
+      '[OPTIONS: A ［x〕 | B]',
+      '[OPTIONS: A 【x] | B】',
+    ]) {
+      expect(labelsHaveUnmatchedOpener(text.slice('[OPTIONS:'.length, -1)), text).toBe(true)
+      expect(parseOptions(text).options, text).toEqual([])
+      expect(parseOptions(text).text, text).toBe(text)
+    }
+    // Typed pairing still accepts nesting across kinds and the unmatched closer.
+    expect(parseOptions('[OPTIONS: A [x【y】] | B]').options).toEqual(['A [x【y】]', 'B'])
+    expect(parseOptions('[OPTIONS: Alpha ] | Bravo ]]').options).toEqual(['Alpha ]', 'Bravo ]'])
+  })
+
+  it('still parses a citation like ref[1] in a label (#9375)', () => {
+    expect(parseOptions('[OPTIONS: see ref[1] | Skip]').options).toEqual(['see ref[1]', 'Skip'])
+  })
+
+  it('still declines the #10058 bare-opener terminator', () => {
+    const text = '[OPTIONS: A | B then check arr[0]'
     expect(parseOptions(text).options).toEqual([])
     expect(parseOptions(text).text).toBe(text)
+  })
+
+  it('declines a bare LOOKALIKE opener before the terminator the same way', () => {
+    // A matched `【重要】` earlier in the label is fine; the bare `【` before the
+    // final `】` is the opener whose partner would end the marker. The balance
+    // gate counts every opener the grammar knows, so the line stays whole.
+    for (const [o, c] of [['\u3010', '\u3011'], ['\uFF3B', '\uFF3D'], ['\u3014', '\u3015']]) {
+      const text = `[OPTIONS: ${o}重要${c}修复 | B 详见${o}0${c}`
+      expect(parseOptions(text).options, text).toEqual([])
+      expect(parseOptions(text).text, text).toBe(text)
+    }
   })
 
   it('never swallows a NESTED head into a label', () => {
@@ -229,6 +289,25 @@ describe('the #9284 temper stays linear', () => {
     const start = Date.now()
     parseOptions(text)
     expect(Date.now() - start).toBeLessThan(2000)
+  })
+
+  it('costs a run of any opener about what a run of ASCII `[` costs', () => {
+    // A repeated-token degeneration after a head: 20,000 copies of one opener
+    // with no partner. Every negated class in the body excludes EVERY bracket,
+    // so each pair attempt fails on the next character and the bare-opener
+    // alternative takes it — one step per character for every opener kind. An
+    // interior that admitted the lookalikes would rescan the remaining run at
+    // each position instead, and the ratio would be in the hundreds.
+    const cost = (opener: string) => {
+      const text = `[OPTIONS: A | B ${opener.repeat(20_000)}`
+      const start = performance.now()
+      parseOptions(text)
+      return performance.now() - start
+    }
+    const ascii = Math.max(cost('['), 1)
+    for (const opener of ['\u3010', '\uFF3B', '\u3014']) {
+      expect(cost(opener), opener).toBeLessThan(8 * ascii)
+    }
   })
 
   it('cannot blow up where the two bracket alternatives meet', () => {
