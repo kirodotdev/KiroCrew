@@ -6580,6 +6580,11 @@ def wsl_namespace_argv(
     guest interpreter has loaded it (``unlink_self``), and the staging round
     trip sweeps any sibling older than :data:`_WSL2_STALE_LAUNCHER_MINUTES`
     that a spawn dying before exec left behind.
+
+    That staging directory is itself sealed read-only inside every launcher's
+    namespace, so a sandboxed sibling cannot replace a launcher in the window
+    between staging and exec — the native backend gets the same property from
+    the seal on ``config_dir()/run``. See the seal's own comment below.
     """
     identity = _resolve_wsl2_identity(distro)
     if identity is None:
@@ -6635,6 +6640,28 @@ def wsl_namespace_argv(
         # other resolution step in this function.
         raise RuntimeError(f"failed to translate sensitive paths for WSL2 masking: {exc}") from exc
 
+    # Sealed in EVERY launcher's namespace, including the one staged inside it.
+    # The native backend gets this for free: its launcher lives under
+    # ``config_dir()/run``, which ``_voice_runtime_parent_paths`` already seals
+    # read-only, so a sandboxed sibling cannot reach a launcher waiting to
+    # execute. The guest staging dir had no equivalent, and the asymmetry is the
+    # whole exposure: a launcher is read by the guest interpreter AFTER staging
+    # and BEFORE ``unshare()``, so a same-UID sibling that can replace the file
+    # in that window runs its own code with no isolation applied yet. ``set -C``
+    # and the 128-bit random name stop a sibling PRE-creating the path; only this
+    # seal stops one REPLACING it (unlink-and-recreate, or rename-over), which
+    # noclobber does not cover.
+    #
+    # Sealing costs nothing that has to work: every write into this directory is
+    # made by ``wsl.exe`` from the Windows side (the ``mkdir``/``cat``/``chmod``
+    # staging below and its stale sweep), which is outside every launcher
+    # namespace, and the launcher's own ``unlink_self`` runs at module import,
+    # before the ``unshare()`` this seal lives behind. What it does deny is a
+    # sandboxed workload writing into the staging directory, which is exactly the
+    # capability being withdrawn.
+    guest_run_dir = f"{identity[2]}/.kirocrew-sandbox-run"
+    guest_readonly_dirs = (*guest_readonly_dirs, guest_run_dir)
+
     script = _build_launcher_script(
         sandbox_level,
         strip_python_env=strip_python_env,
@@ -6660,7 +6687,8 @@ def wsl_namespace_argv(
     # during which a same-UID sibling (a concurrently-sandboxed cron job or
     # hook, exactly the untrusted workload this backend exists to confine)
     # could have raced to replace it before this launcher ever executes.
-    guest_run_dir = f"{identity[2]}/.kirocrew-sandbox-run"
+    # ``guest_run_dir`` is resolved above, where it is also added to the launcher's
+    # read-only seals.
     staged_path = f"{guest_run_dir}/kirocrew_sandbox_{secrets.token_hex(16)}.py"
     quoted_dir = shlex.quote(guest_run_dir)
     quoted_path = shlex.quote(staged_path)

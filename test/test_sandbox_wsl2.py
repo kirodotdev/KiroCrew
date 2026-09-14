@@ -19,7 +19,9 @@ development; see the PR description for that evidence.
 
 from __future__ import annotations
 
+import json
 import platform
+import re
 import types
 
 import pytest
@@ -664,6 +666,57 @@ def test_wsl_namespace_argv_stages_the_launcher_in_one_round_trip(monkeypatch):
     ), "the write must be noclobber-protected against a same-UID sibling"
     assert f"-mmin +{sb._WSL2_STALE_LAUNCHER_MINUTES} -delete" in script_arg
     assert "|| true" in script_arg, "a failed sweep must never decide whether the spawn stages"
+
+
+def test_wsl_namespace_argv_seals_the_guest_staging_dir_read_only(monkeypatch):
+    """A launcher is read by the guest interpreter after staging and BEFORE
+    unshare(), so a same-UID sibling that can replace the file in that window
+    runs its own code with no isolation applied. ``set -C`` stops a sibling
+    PRE-creating the name; only a read-only seal on the staging directory stops
+    one REPLACING it. The native backend gets the same property free, from the
+    seal on ``config_dir()/run``."""
+    _stub_wsl_namespace_deps(monkeypatch)
+    captured: dict = {}
+
+    def fake_build_launcher_script(sandbox_level, **kwargs):
+        captured.update(kwargs)
+        return "# launcher"
+
+    monkeypatch.setattr(sb, "_build_launcher_script", fake_build_launcher_script)
+
+    argv = sb.wsl_namespace_argv(["/bin/bash", "-c", "echo hi"], distro="Ubuntu-26.04")
+
+    run_dir = "/home/alice/.kirocrew-sandbox-run"
+    assert run_dir in captured["extra_readonly_dirs"], (
+        "the staging directory must be sealed inside every launcher's namespace, "
+        "or a sandboxed sibling can swap a launcher out before isolation applies"
+    )
+    assert run_dir not in captured["extra_hidden_dirs"], (
+        "hidden, not sealed, would mask the launcher the guest interpreter is " "about to read"
+    )
+    staged = argv[argv.index("python3") + 1 + len(sb._LAUNCHER_INTERPRETER_FLAGS)]
+    assert staged.startswith(run_dir + "/"), "the seal must cover the path actually staged"
+
+
+def test_guest_staging_seal_reaches_the_generated_launcher_readonly_dirs(monkeypatch):
+    """End to end through the REAL builder: a seal that never reaches
+    ``READONLY_DIRS`` is not a seal, and the mocked-builder test above cannot
+    see the filter the builder applies to caller-supplied entries."""
+    _stub_wsl_namespace_deps(monkeypatch)
+    scripts: list[str] = []
+
+    def fake_wsl_run(argv, **kwargs):
+        if kwargs.get("input_text"):
+            scripts.append(kwargs["input_text"])
+        return types.SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(sb, "_wsl_run", fake_wsl_run)
+    monkeypatch.setattr(sb, "_resolved_kiro_agents_targets", lambda: [])
+
+    sb.wsl_namespace_argv(["/bin/bash", "-c", "echo hi"], "cc", distro="Ubuntu-26.04")
+
+    readonly = json.loads(re.search(r"^READONLY_DIRS = (\[.*?\])$", scripts[0], re.M).group(1))
+    assert "/home/alice/.kirocrew-sandbox-run" in readonly
 
 
 def test_wsl_namespace_argv_staged_path_is_random_and_unique(monkeypatch):
