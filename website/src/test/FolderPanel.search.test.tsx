@@ -14,6 +14,8 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import FolderPanel from '../pages/chat/FolderPanel'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
+import { ERROR_HANDOFF_KEY, __resetErrorJournalForTests, recordError } from '../utils/errorReport'
 
 const ROOT = '/proj'
 
@@ -283,6 +285,126 @@ describe('FolderPanel search', () => {
     await screen.findByText('README.md')
     await type('app')
 
-    expect(await screen.findByText('Access denied')).toBeInTheDocument()
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.queryByText('Access denied')).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Every failure notice is keyed on the CAUSE, never on the rejection's own message.
+ *
+ * A deadline rejects with a message that is truthy, so the `message || t(...)` shape
+ * these notices used to carry rendered that English string in every locale. Each case
+ * asserts the raw text is ABSENT as well as the translated string present: presence
+ * alone would still pass with both on screen.
+ */
+describe('FolderPanel failure copy is cause-keyed', () => {
+  function deadline(): Error {
+    const e = new Error('deadline exceeded')
+    e.name = 'TimeoutError'
+    return e
+  }
+
+  it('names a timed-out search without leaking the deadline text', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(deadline())
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('Search timed out')).toBeInTheDocument()
+    expect(screen.queryByText('deadline exceeded')).not.toBeInTheDocument()
+  })
+
+  it('names a timed-out listing without leaking the deadline text', async () => {
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(deadline())
+
+    renderPanel()
+
+    expect(await screen.findByText('Folder listing timed out')).toBeInTheDocument()
+    expect(screen.queryByText('deadline exceeded')).not.toBeInTheDocument()
+  })
+
+  it('distinguishes a refusal from a timeout on the machine code', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ code: 'access_denied' })),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('No access to this folder')).toBeInTheDocument()
+    expect(screen.queryByText('Search timed out')).not.toBeInTheDocument()
+  })
+
+  it('reports an expired session as a generic failure, not as a refused folder', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ code: 'access_denied' }), true),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.queryByText('No access to this folder')).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * The journal is keyed on the RAW server sentence, so translating the notice moved the
+ * displayed text off that key and `Ask the agent` fell back to a bare message — the
+ * endpoint, status and backend code never reached the agent. These pin the hand-off
+ * payload rather than the copy, so a future `report=` removal fails here and not only
+ * in review.
+ */
+describe('FolderPanel hands the agent the structured report, not the translated copy', () => {
+  function journalled403() {
+    recordError({
+      source: 'api',
+      message: 'Access denied',
+      status: 403,
+      code: 'access_denied',
+      endpoint: '/api/file-search',
+    })
+    return new ApiError(403, 'Access denied', JSON.stringify({ code: 'access_denied' }))
+  }
+
+  function handoffPrompt(): string {
+    return sessionStorage.getItem(ERROR_HANDOFF_KEY) ?? ''
+  }
+
+  beforeEach(() => {
+    __resetErrorJournalForTests()
+    sessionStorage.clear()
+  })
+
+  it('carries endpoint, status and code from a refused search', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(journalled403())
+
+    renderPanel()
+    await screen.findByText('README.md')
+    const user = await type('app')
+    await screen.findByText('No access to this folder')
+    await user.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    const prompt = handoffPrompt()
+    expect(prompt).toContain('/api/file-search')
+    expect(prompt).toContain('HTTP 403')
+    expect(prompt).toContain('access_denied')
+  })
+
+  it('carries them from a refused listing too', async () => {
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(journalled403())
+
+    renderPanel()
+    await screen.findByText('No access to this folder')
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    const prompt = handoffPrompt()
+    expect(prompt).toContain('HTTP 403')
+    expect(prompt).toContain('access_denied')
   })
 })
