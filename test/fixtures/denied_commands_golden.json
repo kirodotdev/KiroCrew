@@ -670,5 +670,35 @@
     "pattern": "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*(?:[\\w.:/\\\\-]*[/\\\\])?(?:ssh|scp|sftp|rsync)(?:\\.exe)?\\s+(?:\\S*@)?(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[?::1\\]?|\\$\\(\\s*hostname|`\\s*hostname|\\$\\{?hostname\\}?)(?=[\\s:'\\\");&|#]|\\Z)",
     "category": "self-protection",
     "description": "Blocks ssh/scp/sftp/rsync targeting this same machine (localhost, 127.x.x.x, ::1, $(hostname), or this host's own name/addresses), which re-enters the host OUTSIDE the agent sandbox: a command run through `ssh localhost` bypasses every other control here, and passwordless sudo on the far side completes a full escape. Connections to other hosts stay allowed, with one declared exception: a first-seen DOTTED hostname in HOST position is refused once, per process, while an off-loop DNS check rules out a loopback alias, then cached; a dotless name is answered from the hosts file same-call, without a refusal."
+  },
+  {
+    "id": "network-exposure-tailscale-serve",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+serve(?!\\s+status\\b)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale serve` mutations, which publish or withdraw a handler on this machine's tailnet and would widen the agent's own network exposure outside the governed, owner-only publish path. `tailscale serve status` (the read) stays allowed."
+  },
+  {
+    "id": "network-exposure-tailscale-funnel",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+funnel(?!\\s+status\\b)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale funnel`, which exposes a local service to the PUBLIC internet. The agent must never be able to make a service publicly reachable. `tailscale funnel status` (the read) stays allowed."
+  },
+  {
+    "id": "network-exposure-tailscale-node-mutate",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(?:up|set|login|logout|switch|cert)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale up`, `set`, `login`, `logout`, `switch`, and `cert` — node-state and identity mutations that can enable an SSH server, advertise this node as an exit node or subnet router, change which tailnet it is on, or provision a serve certificate. Read subcommands (`status`, `netcheck`, `ping`, `whois`) stay allowed."
+  },
+  {
+    "id": "network-exposure-tailscale-drive",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+drive(?!\\s+list\\b)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale drive` mutations (`share`, `rename`, `unshare`), which expose a host directory to every node on the tailnet or change what is already exposed. `tailscale drive list` (the read) stays allowed."
+  },
+  {
+    "id": "network-exposure-tailscale-exit-node",
+    "pattern": ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+exit-node(?!\\s+(?:list|suggest)\\b)\\b.*",
+    "category": "network-exposure",
+    "description": "Blocks `tailscale exit-node connect` and `disconnect`, which route this machine's traffic through another tailnet node and change where its egress appears from. `tailscale exit-node list` and `suggest` (the reads) stay allowed."
   }
 ]
