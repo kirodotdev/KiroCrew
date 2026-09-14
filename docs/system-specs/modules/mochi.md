@@ -37,6 +37,10 @@ disabled responses; actual enabled-state changes still log immediately.
 
 ## Load-bearing contracts
 
+The desktop shell rate-limits repeated instance-resolution diagnostics per
+outcome for one minute. Alternating unanswered and resolved polls do not flood
+the log, while a confirmed target change (including a new port) logs immediately.
+
 - **Reserved `mochi` chat slot.** The chat panel is backed by a dedicated core
   chat slot keyed `mochi`. It is the app's identity for streaming/approvals; do
   not repurpose it.
