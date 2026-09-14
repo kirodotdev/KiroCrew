@@ -270,4 +270,33 @@ describe('file-explorer/FileViewer sensitive detection', () => {
     expect(isSensitivePath('/tmp/test.txt')).toBe(false)
   })
 
+  // The backend emits native path strings (`str(Path)` in the file_explorer
+  // server), so on Windows every separator is a backslash and a `/`-only
+  // pattern matches nothing -- the banner silently stops appearing there.
+  it('detects sensitive files in Windows-native paths', async () => {
+    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    expect(isSensitivePath('C:\\Users\\dev\\.ssh\\id_rsa')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\.aws\\credentials')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\.gnupg\\private-keys')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\project\\.env')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\.env.local')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\.npmrc')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\.docker\\config.json')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\.kube\\config')).toBe(true)
+    expect(isSensitivePath('\\\\share\\team\\.netrc')).toBe(true)
+  })
+
+  // `report.env` / `build.env.json` are decided by the leading-separator anchor
+  // alone: drop it from the patterns and both start matching. They are here so a
+  // future "just widen the patterns" rewrite cannot quietly over-match while the
+  // positive cases above still pass.
+  it('does not flag regular Windows-native paths', async () => {
+    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    expect(isSensitivePath('C:\\Users\\dev\\code.ts')).toBe(false)
+    expect(isSensitivePath('C:\\Users\\dev\\project\\src\\main.py')).toBe(false)
+    expect(isSensitivePath('C:\\Users\\dev\\envfile.txt')).toBe(false)
+    expect(isSensitivePath('C:\\Users\\dev\\report.env')).toBe(false)
+    expect(isSensitivePath('C:\\Users\\dev\\build.env.json')).toBe(false)
+  })
+
 })
