@@ -51,7 +51,8 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { useRecallHistory } from '../hooks/useRecallHistory'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, recordSendAttempt, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -228,6 +229,16 @@ export default function ChatPane({
   const inputRef = useRef(input)
   const pendingFilesRef = useRef(pendingFiles)
   const pasteBlocksRef = useRef(pasteBlocks)
+  /** What this recall REPLACED — text AND sidecars, tagged with its slot. Second
+   *  copy of ChatPage's shape; see the note there on why it is not yet one hook. */
+  const recallDraftRef = useRef<{ slot: string; text: string; files?: string[]; pastes?: PasteBlock[] } | null>(null)
+  /** The park writes the user's own pair, never the recalled one: this park is a
+   *  LAYOUT effect, so it precedes the passive exit report. */
+  const recallParkValues = useCallback((slot: string, text: string, files: string[], pastes: PasteBlock[]) => {
+    const held = recallDraftRef.current
+    if (!held || held.slot !== slot) return { text, files, pastes }
+    return { text: held.text, files: held.files ?? files, pastes: held.pastes ?? pastes }
+  }, [])
   // False once the pane is gone: a recovery or upload result that lands after
   // unmount has no composer to write to (a setState on an unmounted component
   // is a silent no-op), so it goes to the store instead.
@@ -268,7 +279,9 @@ export default function ChatPane({
     // the one copy — the store entry is cleared so a later park cannot
     // overwrite an arrival that came in between.
     if (prev !== slotKey) {
-      writePaneDraft(prev, { text: inputRef.current, files: pendingFilesRef.current, pastes: pasteBlocksRef.current })
+      // Snapshot-aware: while recall holds this slot's own sidecars the staged set
+      // is another prompt's, and parking it is how the user's own was lost.
+      writePaneDraft(prev, recallParkValues(prev, inputRef.current, pendingFilesRef.current, pasteBlocksRef.current))
       slotKeyRef.current = slotKey
       const incoming = takePaneDraft(slotKey)
       setInput(incoming.text)
@@ -307,9 +320,9 @@ export default function ChatPane({
     return () => {
       unsubscribe()
       mountedRef.current = false
-      writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: pasteBlocksRef.current })
+      writePaneDraft(slotKeyRef.current, recallParkValues(slotKeyRef.current, inputRef.current, pendingFilesRef.current, pasteBlocksRef.current))
     }
-  }, [slotKey, carryIntoComposer])
+  }, [slotKey, carryIntoComposer, recallParkValues])
   /** Stage uploaded attachment paths for the slot they were picked in. A slow
    *  upload can resolve after the pane was rebound to another member; the
    *  paths then belong to the ORIGINATING slot's parked draft, not to whoever
@@ -363,6 +376,41 @@ export default function ChatPane({
   useEffect(() => { setPinned(null); setPinExpanded(false) }, [slotKey, setPinned, setPinExpanded])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
+  const attemptedSends = useAppSelector((s) => s.chat.attemptedSends?.[slotKey])
+  // `allMessages`, not the queued-stripped `messages` below: a queued row's prompt
+  // DID land, so hiding its send id would re-offer a prompt already on screen.
+  const { history: sentMessages, entries: recallEntries } = useRecallHistory(allMessages, slotKey, attemptedSends)
+  const handleRecall = useCallback((index: number | null, exit: 'draft' | 'adopt' = 'adopt') => {
+    const slot = slotKeyRef.current
+    const held = recallDraftRef.current
+    const mine = held && held.slot === slot ? held : null
+    if (index === null) {
+      recallDraftRef.current = null
+      // UNPRUNED (`inputRef` still holds the recalled text here) and no park:
+      // chatPaneDrafts is for OFF-screen slots only.
+      if (exit === 'draft' && mine) {
+        if (mine.files) setPendingFiles(mine.files)
+        if (mine.pastes) setPasteBlocks(mine.pastes)
+      }
+      return
+    }
+    const attempt = recallEntries[index]?.attempt
+    // The text is captured with the FIRST replacement, before ChatInput swaps it.
+    const snap = mine ?? { slot, text: inputRef.current }
+    if (attempt?.files) {
+      if (!snap.files) snap.files = pendingFilesRef.current.slice()
+      setPendingFiles([...attempt.files])
+    } else if (snap.files) {
+      setPendingFiles(snap.files)
+    }
+    if (attempt?.pastes) {
+      if (!snap.pastes) snap.pastes = pasteBlocksRef.current.slice()
+      setPasteBlocks([...attempt.pastes])
+    } else if (snap.pastes) {
+      setPasteBlocks(snap.pastes)
+    }
+    recallDraftRef.current = snap  // even text-only: a transcript prompt displaces the draft too
+  }, [recallEntries])
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
   const streamState = useAppSelector((s) => selectSlotStreamState(s, slotKey))
   const running = streamState !== 'idle'
@@ -967,6 +1015,9 @@ export default function ChatPane({
     // the optimistic bubble — without this id the echo appends a SECOND user
     // bubble carrying the raw marker.
     const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    // The pane cleared its composer above and a `response-late` keeps its bubble
+    // pending WITHOUT restoring, so this record is then the text's only copy.
+    if (!optionText) dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId, files: filePaths, pastes: bubblePastes }))
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running). A real queue has its own card; an immediate dispatch supplies
@@ -1801,6 +1852,8 @@ export default function ChatPane({
           onChange={handleUserInput}
           pasteBlocks={pasteBlocks}
           onPasteBlocksChange={setPasteBlocks}
+          sentMessages={sentMessages}
+          onRecall={handleRecall}
           onSend={doSend}
           isRunning={busy}
           onStop={onStop}

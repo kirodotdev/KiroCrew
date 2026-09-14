@@ -17,9 +17,14 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { setActiveSlot } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, recordSendAttempt } from '../store/chatSlice'
+import { buildRecallEntries, type RecallAttempt, type RecallMessage } from '../lib/recallHistory'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+
+/** Texts only -- a local shim; production has no text-only caller. */
+const buildRecallHistory = (m: readonly RecallMessage[], a?: readonly RecallAttempt[]) =>
+  buildRecallEntries(m, a).map((e) => e.text)
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -505,5 +510,99 @@ describe('full-dashboard new-window intent', () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-retry'))
     expect(screen.queryByText('Could not start a new session')).toBeNull()
     expect(sendChat).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * A new-session send records its prompt under the session it actually reaches.
+ *
+ * The composer clears at submission, so the ↑ recall record is the prompt's only
+ * copy — and a copy filed under the wrong session is no copy at all. `uiSlot`
+ * names the slot the composer sat in, which is exactly the one a new-session
+ * send leaves behind, so recording before the create resolves files the prompt
+ * against a session that never received it while the one that did has nothing.
+ */
+describe('a new-session send records under the session it creates', () => {
+  /** A create failure re-arms the new-session intent on the same slot, and that is
+   *  the one route a MANUAL (non-optionText) send takes the create branch on — the
+   *  auto-send route passes its text as `optionText` and records nothing. */
+  it('files the prompt under the created slot, not the one left behind', async () => {
+    createChatSlot.mockRejectedValueOnce(new Error('gateway unavailable'))
+    const store = makeStore()
+    await renderPage(store)
+    await act(async () => { await Promise.resolve() })
+    await waitFor(() => {
+      expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true)
+    })
+
+    createChatSlot.mockResolvedValue({ key: 'slot-new', title: 'slot-new', messages: 0, running: false })
+    const input = screen.getByLabelText('Message input')
+    fireEvent.change(input, { target: { value: 'recover me in the new session' } })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(store.getState().chat.attemptedSends?.['slot-new']?.map(a => a.text))
+        .toContain('recover me in the new session')
+    })
+    expect(store.getState().chat.attemptedSends?.['slot-a']?.map(a => a.text) ?? [])
+      .not.toContain('recover me in the new session')
+  })
+
+  /** The reported loss: the record used to be taken AFTER the create resolved, so
+   *  a rejection unwound send() before it ran and left the prompt in no slot's
+   *  record — with the composer already cleared, ↑ had nothing to return. The
+   *  record is now taken before the await, so the origin slot keeps it. */
+  it('keeps the prompt recoverable when the session create fails', async () => {
+    createChatSlot.mockRejectedValueOnce(new Error('gateway unavailable'))
+    const store = makeStore()
+    await renderPage(store)
+    await act(async () => { await Promise.resolve() })
+    await waitFor(() => {
+      expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true)
+    })
+
+    createChatSlot.mockRejectedValue(new Error('gateway still unavailable'))
+    const input = screen.getByLabelText('Message input')
+    fireEvent.change(input, { target: { value: 'the create rejected under me' } })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(store.getState().chat.attemptedSends?.['slot-a']?.map(a => a.text))
+        .toContain('the create rejected under me')
+    })
+    const st = store.getState().chat
+    expect(buildRecallHistory(st.messages, st.attemptedSends?.['slot-a']).at(-1))
+      .toBe('the create rejected under me')
+  })
+
+  /** ChatPage keeps its OWN copy of the snapshot/restore logic (ChatPane has the
+   *  twin), so each composer needs its own mount test. */
+  it('stages a recalled prompt own file chip in the main composer', async () => {
+    const store = makeStore()
+    await renderPage(store)
+    const input = screen.getByLabelText('Message input')
+    act(() => {
+      store.dispatch(recordSendAttempt({
+        slot: 'slot-a', text: 'it had a file', sendId: 's-page', files: ['/tmp/page.pdf'],
+      }))
+    })
+    expect(screen.queryByText('page.pdf')).toBeNull()
+    // This harness auto-sends, so its own prompt may hold the tail; walk back to
+    // ours rather than assuming a position.
+    const box = input as HTMLTextAreaElement
+    for (let i = 0; i < 4 && box.value !== 'it had a file'; i++) {
+      box.setSelectionRange(0, 0)
+      fireEvent.keyDown(input, { key: 'ArrowUp' })
+      await waitFor(() => expect(box.value).not.toBe(''))
+    }
+    expect(box.value).toBe('it had a file')
+    await waitFor(() => expect(screen.getByText('page.pdf')).toBeTruthy())
   })
 })

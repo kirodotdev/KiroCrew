@@ -26,7 +26,7 @@ import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMess
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone, switchSlotNoticeCopy,
-  appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
+  appendMessage, appendSlotMessage, recordSendAttempt, transferSendAttempt, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
   selectContinuable,
@@ -60,6 +60,7 @@ import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
+import { useRecallHistory } from '../hooks/useRecallHistory'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
 import {
@@ -645,13 +646,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
-  // User-sent messages (oldest → newest) for ↑/↓ prompt history in the input.
-  // Deduplicate consecutive identical prompts to match shell/REPL behavior.
-  // `messages` gets a new reference on every streaming chunk; preserve the
-  // previous array when user-message content is unchanged so `sentMessages`
-  // stays referentially stable and doesn't re-run downstream effects.
-  const sentMessagesRef = useRef<string[]>([])
-  const sentMessagesSlotRef = useRef<string | null>(null)
   // Per-slot timestamp (ms) of the last soft-stop press, used to arm the
   // force-kill. A force press (second click while soft_pending) arriving
   // within FORCE_KILL_ARMING_MS of that slot's soft stop is treated as an
@@ -659,29 +653,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // mashing Stop. Keyed by slot so switching slots can't measure one slot's
   // press against another slot's timestamp.
   const softStopAtMapRef = useRef<Map<string, number>>(new Map())
-  const sentMessages = useMemo(() => {
-    const out: string[] = []
-    for (const m of messages) {
-      if (m.role !== 'user') continue
-      const text = m.rawText ?? m.content
-      if (!text || text === out[out.length - 1]) continue
-      out.push(text)
-    }
-    // Reset the cached reference when switching slots — otherwise two
-    // conversations with matching length+tail would share the prior array.
-    if (sentMessagesSlotRef.current !== activeSlot) {
-      sentMessagesSlotRef.current = activeSlot ?? null
-      sentMessagesRef.current = out
-      return out
-    }
-    // Append-only within a slot — full element-wise compare (array is small).
-    const prev = sentMessagesRef.current
-    if (prev.length === out.length && prev.every((v, i) => v === out[i])) {
-      return prev
-    }
-    sentMessagesRef.current = out
-    return out
-  }, [messages, activeSlot])
+  // Prompts this slot submitted, whatever became of them (see `attemptedSends`).
+  const attemptedSends = useAppSelector(s => (activeSlot ? s.chat.attemptedSends?.[activeSlot] : undefined))
+  const { history: sentMessages, entries: recallEntries } = useRecallHistory(messages, activeSlot, attemptedSends)
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
   // Live mirror for `autoFollowAllowed`, a stable callback several effects
   // depend on: taking `slotRunning` as a dependency would re-attach those
@@ -1329,6 +1303,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('token'),
   )
   const inputRef = useRef(input)
+  /** What this recall REPLACED — text AND sidecars, tagged with its slot; parking a
+   *  mismatched pair loses the pre-recall text. ChatPane holds a second copy; the
+   *  shared hook is written and passing but does not fit this PR's size budget. */
+  const recallDraftRef = useRef<{ slot: string | null; text: string; files?: string[]; pastes?: PasteBlock[] } | null>(null)
+  /** What to park for `slot`: the pre-recall snapshot while one is held for it, else
+   *  the live values. A reload or unmount reports no exit, so parking the recalled
+   *  set is what left the user's own copy nowhere. */
+  const recallParkValues = useCallback((slot: string, text: string, files: string[], pastes: PasteBlock[]) => {
+    const held = recallDraftRef.current
+    if (!held || held.slot !== slot) return { text, files, pastes }
+    return { text: held.text, files: held.files ?? files, pastes: held.pastes ?? pastes }
+  }, [])
   inputRef.current = input
   // Holds the exact text a widget action pre-filled into the composer, so the
   // eventual user-initiated send can be tagged meta.origin='widget' for
@@ -1730,7 +1716,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // not the live activeSlot (see the composerSlotRef note above).
   // The draft key is composerSlotRef, which a ref does not need to be a
   // dependency of; the slot-change effect below handles the transition.
-  useEffect(() => { inputRef.current = input; const s = composerSlotRef.current; if (s) { setDraft(drafts.current, s, input); saveDraftsDebounced() } }, [input, saveDraftsDebounced])
+  useEffect(() => { inputRef.current = input; const s = composerSlotRef.current; if (s && !recallHoldingRef.current) { setDraft(drafts.current, s, input); saveDraftsDebounced() } }, [input, saveDraftsDebounced])
   // Create-carry. The composer stays bound to the old slot until a create
   // resolves, so anything typed in that window (a fast typist after the new-chat
   // shortcut, or a click into the composer while the POST is slow) lands in the
@@ -1762,8 +1748,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       })
     }
   }, [foregroundCreateId])
-  // Per-slot draft: save current → restore target (persisted to localStorage)
-  useEffect(() => {
+  // Per-slot draft, save→restore. LAYOUT like ChatPane's twin: ChatInput reports its
+  // slot exit from a passive DESCENDANT, which would clear the snapshot first.
+  useLayoutEffect(() => {
     // Re-hydrate from localStorage — only pull in keys we don't already have
     // in-memory, so unflushed drafts from rapid slot switches aren't clobbered.
     const stored = loadDrafts()
@@ -1774,10 +1761,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     for (const [k, v] of Object.entries(storedPastes)) { if (!(k in pasteDrafts.current)) pasteDrafts.current[k] = v }
     const storedSessionRefs = loadSessionRefDrafts()
     for (const [k, v] of Object.entries(storedSessionRefs)) { if (!(k in sessionRefDrafts.current)) sessionRefDrafts.current[k] = v }
-    if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
     const stagedNow = stagedNowRef.current
-    if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, stagedNow.files)
-    if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, stagedNow.pastes)
+    if (prevSlot.current) {
+      // The user's own text AND sidecars as ONE pair: a reload reports no exit.
+      const parked = recallParkValues(prevSlot.current, inputRef.current, stagedNow.files, stagedNow.pastes)
+      setDraft(drafts.current, prevSlot.current, parked.text)
+      setFileDraft(fileDrafts.current, prevSlot.current, parked.files)
+      setPasteDraft(pasteDrafts.current, prevSlot.current, parked.pastes)
+    }
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, stagedNow.sessions)
     const prevSlotVal = prevSlot.current
     prevSlot.current = activeSlot
@@ -1895,28 +1886,35 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // the slot it happened in; carried over, it reads as the new slot's.
     setActionError(prev => prev?.preserveOnSwitch ? prev : null)
     flushDrafts()
-  }, [activeSlot, flushDrafts, raisePrefillHint])
+  }, [activeSlot, flushDrafts, raisePrefillHint, recallParkValues])
   // Persist drafts on unmount (navigating away from chat page)
   useEffect(() => () => {
     if (saveDraftsTimer.current) { clearTimeout(saveDraftsTimer.current); saveDraftsTimer.current = null }
-    if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
-    if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
-    if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
+    if (prevSlot.current) {
+      // The user's own text AND sidecars as ONE pair: a reload reports no exit.
+      const parked = recallParkValues(prevSlot.current, inputRef.current, pendingFilesRef.current, pasteBlocksRef.current)
+      setDraft(drafts.current, prevSlot.current, parked.text)
+      setFileDraft(fileDrafts.current, prevSlot.current, parked.files)
+      setPasteDraft(pasteDrafts.current, prevSlot.current, parked.pastes)
+    }
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
     flushDrafts()
-  }, [flushDrafts])
+  }, [flushDrafts, recallParkValues])
   // Flush pending draft save on tab close / refresh (debounce may not fire)
   useEffect(() => {
     const h = () => {
-      if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
-      if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
-      if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
+      if (prevSlot.current) {
+        const parked = recallParkValues(prevSlot.current, inputRef.current, pendingFilesRef.current, pasteBlocksRef.current)
+        setDraft(drafts.current, prevSlot.current, parked.text)
+        setFileDraft(fileDrafts.current, prevSlot.current, parked.files)
+        setPasteDraft(pasteDrafts.current, prevSlot.current, parked.pastes)
+      }
       if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
       flushDrafts()
     }
     window.addEventListener('beforeunload', h)
     return () => window.removeEventListener('beforeunload', h)
-  }, [flushDrafts])
+  }, [flushDrafts, recallParkValues])
   const { rect: agentBtnRect, anchorTo: anchorAgentBtn } = useAnchoredTriggerRect(agentDropdown)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const { rect: projectBtnRect, anchorTo: anchorProjectBtn } = useAnchoredTriggerRect(projectPickerOpen)
@@ -1960,11 +1958,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // crop completes. Threaded into uploadFiles as an explicit target.
   const snipSlotRef = useRef<string | null>(null)
   const pendingFilesRef = useRef(pendingFiles)
+  /** True while ↑/↓ recall holds this composer's pre-recall pair in
+   *  `recallDraftRef`. Both live-persists below SKIP while it is set: the staging
+   *  is another prompt's, and writing it under this slot is what left the user's
+   *  own set with no copy anywhere else. */
+  const recallHoldingRef = useRef(false)
   useEffect(() => {
     pendingFilesRef.current = pendingFiles
     // Key off composerSlotRef, not activeSlot (see the composerSlotRef note).
     const s = composerSlotRef.current
-    if (s) {
+    if (s && !recallHoldingRef.current) {
       setFileDraft(fileDrafts.current, s, pendingFiles)
       saveDraftsDebounced()
     }
@@ -1982,12 +1985,52 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // them alongside the text draft (mirrors the pendingFiles effect above).
     // Key off composerSlotRef, not activeSlot (see the composerSlotRef note).
     const s = composerSlotRef.current
-    if (s) {
+    if (s && !recallHoldingRef.current) {
       setPasteDraft(pasteDrafts.current, s, pasteBlocks)
       saveDraftsDebounced()
     }
     // draft key is composerSlotRef; slot-change effect handles that transition.
   }, [pasteBlocks, saveDraftsDebounced])
+  const handleRecall = useCallback((index: number | null, exit: 'draft' | 'adopt' = 'adopt') => {
+    const slot = composerSlotRef.current ?? null
+    const held = recallDraftRef.current
+    const mine = held && held.slot === slot ? held : null
+    if (index === null) {
+      recallDraftRef.current = null
+      recallHoldingRef.current = false
+      let files = pendingFilesRef.current
+      let pastes = pasteBlocksRef.current
+      // UNPRUNED: `inputRef` still holds the recalled text here (batched onChange).
+      if (exit === 'draft' && mine) {
+        if (mine.files) { files = mine.files; setPendingFiles(files) }
+        if (mine.pastes) { pastes = mine.pastes; setPasteBlocks(pastes) }
+      }
+      if (slot) {
+        setFileDraft(fileDrafts.current, slot, files)
+        setPasteDraft(pasteDrafts.current, slot, pastes)
+        saveDraftsDebounced()
+      }
+      return
+    }
+    const attempt = recallEntries[index]?.attempt
+    // The text is captured with the FIRST replacement, before ChatInput swaps it.
+    const snap = mine ?? { slot, text: inputRef.current }
+    // A replaced kind is rewritten on EVERY later move: leaving it staged put one
+    // prompt's attachment under another's text and sent it with the wrong prompt.
+    if (attempt?.files) {
+      if (!snap.files) snap.files = pendingFilesRef.current.slice()
+      setPendingFiles([...attempt.files])
+    } else if (snap.files) {
+      setPendingFiles(snap.files)
+    }
+    if (attempt?.pastes) {
+      if (!snap.pastes) snap.pastes = pasteBlocksRef.current.slice()
+      setPasteBlocks([...attempt.pastes])
+    } else if (snap.pastes) {
+      setPasteBlocks(snap.pastes)
+    }
+    recallDraftRef.current = snap; recallHoldingRef.current = true  // even text-only: the draft is still displaced
+  }, [recallEntries, saveDraftsDebounced])
   // Session references staged by dragging a session from the list onto this
   // pane. Serialized as LINKS on send — never the referenced transcript.
   const [pendingSessions, setPendingSessions] = useState<SessionRef[]>([])
@@ -2621,6 +2664,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const bubblePastes = pruneBlocksUtil(displayTxt, activePastes)
     if (bubblePastes.length) saveStoredPaste(llmTxt, displayTxt, bubblePastes, filePaths)
 
+    // Minted here rather than beside the POST below because the recall record
+    // needs it: an attempt is matched to its transcript row by this id alone.
+    const sendId = mintSendId()
+
     if (!isolated) setPrefillHint(false)
     if (!isolated && !optionText) {
       setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
@@ -2641,6 +2688,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       forceNew = newSessionRef.current
       newSessionRef.current = false
     }
+    // Before the create is awaited, not after: a rejection unwinds send() with the
+    // composer already cleared, and ↑ is the only net left. Transferred below.
+    const originSlot = slot
+    if (slot && !optionText) dispatch(recordSendAttempt({ slot, text: displayTxt, sendId, files: filePaths, pastes: bubblePastes }))
     if (!slot || forceNew) {
       sendingRef.current = true;
       // The composer was cleared above, so a create failure here would destroy
@@ -2816,6 +2867,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         })
       }
     }
+    // The record follows the prompt: left under the slot a new-session send has
+    // left behind, that slot's ↑ would offer a prompt it never saw.
+    if (slot && !optionText && slot !== originSlot) {
+      if (originSlot) dispatch(transferSendAttempt({ from: originSlot, to: slot, sendId }))
+      else dispatch(recordSendAttempt({ slot, text: displayTxt, sendId, files: filePaths, pastes: bubblePastes }))
+    }
     setPendingAgent(''); setPendingModel(''); setPendingProject('')
     // Build meta for persistence (knowledge, files, pastes)
     const meta: Record<string, unknown> = {}
@@ -2828,7 +2885,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // to this exact optimistic bubble without relying on content equality.
     // The server preserves meta fields on the user row it appends, so the
     // echo carries both this sendId AND the server-minted `mid` (#2845).
-    const sendId = mintSendId()
+    // Minted at the recall record above, so both name the same send.
     meta.sendId = sendId
     const metaPayload = meta
     // A busy snapshot may be stale. The server's user event supplies the
@@ -7993,6 +8050,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onOptimizeResult={handleOptimizeResult}
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               sentMessages={sentMessages}
+              onRecall={handleRecall}
               sendOnEnter={isMobile ? 'ctrl-enter' : chatConfig.sendOnEnter}
               followUpOptions={followUpOptions}
               followUpPicked={followUpPicked}
