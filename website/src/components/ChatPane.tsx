@@ -46,7 +46,8 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { useRecallHistory } from '../hooks/useRecallHistory'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, recordSendAttempt, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -293,6 +294,10 @@ export default function ChatPane({
   useEffect(() => { setPinned(null); setPinExpanded(false) }, [slotKey, setPinned, setPinExpanded])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
+  const attemptedSends = useAppSelector((s) => s.chat.attemptedSends?.[slotKey])
+  // `allMessages`, not the queued-stripped `messages` below: a queued row's prompt
+  // DID land, so hiding its send id would re-offer a prompt already on screen.
+  const sentMessages = useRecallHistory(allMessages, slotKey, attemptedSends)
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
   const streamState = useAppSelector((s) => selectSlotStreamState(s, slotKey))
   const running = streamState !== 'idle'
@@ -784,6 +789,9 @@ export default function ChatPane({
     // the optimistic bubble — without this id the echo appends a SECOND user
     // bubble carrying the raw marker.
     const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    // The pane cleared its composer above and a `response-late` keeps its bubble
+    // pending WITHOUT restoring, so this record is then the text's only copy.
+    if (!optionText) dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId }))
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running). A real queue has its own card; an immediate dispatch supplies
@@ -1559,6 +1567,7 @@ export default function ChatPane({
         <ChatInput
           value={input}
           onChange={setInput}
+          sentMessages={sentMessages}
           onSend={doSend}
           isRunning={busy}
           onStop={onStop}
