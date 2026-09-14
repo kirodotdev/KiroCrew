@@ -6761,7 +6761,26 @@ def wsl_namespace_argv(
     if cwd:
         # DrvFs is already confirmed above (unconditionally, for the
         # sensitive-path masking), so no second verification is needed here.
-        wrapped += ["--cd", _translate_windows_path_to_wsl2(distro, cwd)]
+        #
+        # Converted to RuntimeError like every other failure in this function,
+        # because a *cwd* is the one input here that is neither ours nor the
+        # operator's config: it is whatever directory the caller happens to be
+        # running in. A UNC data home or a path on a mapped network drive is not
+        # drive-rooted, so the translator correctly refuses it -- and a bare
+        # ValueError would escape ``wrap_argv`` entirely (its wsl2 arm catches
+        # RuntimeError), reaching callers that expect either a wrapped argv or
+        # SandboxUnavailableError as an unhandled traceback. Still fail-closed
+        # either way; this only makes the refusal legible.
+        try:
+            guest_cwd = _translate_windows_path_to_wsl2(distro, cwd)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"cannot run this spawn under WSL2: its working directory {cwd!r} has no "
+                f"/mnt/<drive> equivalent inside the guest ({exc}). A UNC path or a mapped "
+                "network drive cannot be reached this way; move the directory onto a local "
+                "drive letter, or select a different sandbox backend."
+            ) from exc
+        wrapped += ["--cd", guest_cwd]
     # The same interpreter flags as the native launcher: without ``-S`` a
     # same-UID workload's ``usercustomize.py`` under the guest's own
     # site-packages would run BEFORE the script reaches ``unshare()``, i.e.

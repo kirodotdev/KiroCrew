@@ -799,6 +799,41 @@ def test_wrap_argv_wsl2_does_not_relabel_an_unsealable_ceiling_as_transient(monk
         sb.wrap_argv(["/bin/bash", "-c", "echo hi"], mode="standard", posix_shell_argv=True)
 
 
+def test_wsl_namespace_argv_refuses_an_untranslatable_cwd_legibly(monkeypatch):
+    """A *cwd* is the one input here that is neither ours nor the operator's
+    config -- it is wherever the caller happens to be running. A UNC path or a
+    mapped network drive is not drive-rooted, so the translator correctly
+    refuses it, and a bare ValueError would escape ``wrap_argv`` (whose wsl2 arm
+    catches RuntimeError) as an unhandled traceback at callers that expect a
+    wrapped argv or SandboxUnavailableError."""
+    _stub_wsl_namespace_deps(monkeypatch)
+    monkeypatch.setattr(sb, "_build_launcher_script", lambda *a, **kw: "# launcher")
+    with pytest.raises(RuntimeError, match="no\n?.*/mnt/<drive> equivalent|/mnt/<drive>"):
+        sb.wsl_namespace_argv(
+            ["/bin/bash", "-c", "echo hi"],
+            distro="Ubuntu-26.04",
+            cwd=r"\\server\share\app-sources\x",
+        )
+
+
+def test_wrap_argv_wsl2_reports_an_untranslatable_cwd_as_sandbox_unavailable(monkeypatch):
+    """The same refusal seen from the chokepoint every caller actually uses."""
+    monkeypatch.setattr(sb, "sys", _win32())
+    monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "wsl2")
+    monkeypatch.setattr(sb, "_operator_wants_wsl2", lambda: "Ubuntu-26.04")
+    _stub_wsl_namespace_deps(monkeypatch)
+    monkeypatch.setattr(sb, "_build_launcher_script", lambda *a, **kw: "# launcher")
+    monkeypatch.setattr(sb, "_materialize_sealable_ceilings", lambda: [])
+    monkeypatch.setattr(sb, "_materialize_maskable_dirs", lambda: [])
+    with pytest.raises(sb.SandboxUnavailableError):
+        sb.wrap_argv(
+            ["/bin/bash", "-c", "echo hi"],
+            mode="standard",
+            cwd=r"\\server\share\app-sources\x",
+            posix_shell_argv=True,
+        )
+
+
 def test_wsl_namespace_argv_staged_path_is_random_and_unique(monkeypatch):
     _stub_wsl_namespace_deps(monkeypatch)
     monkeypatch.setattr(sb, "_build_launcher_script", lambda *a, **kw: "# launcher")
