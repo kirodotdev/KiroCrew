@@ -134,6 +134,10 @@ class TestCatalog:
             "tailscale logout",
             "tailscale switch other-tailnet",
             "tailscale cert desk.tail1a2b3c.ts.net",
+            # `web` serves the node-configuration UI: an open listener, and a
+            # surface from which every `set` above can be done without spelling it.
+            "tailscale web",
+            "tailscale web --listen 0.0.0.0:8088",
             "tailscale --socket=/tmp/ts.sock serve --bg --https=443 http://127.0.0.1:5476",
             # `drive share` exposes a host directory to every node on the tailnet;
             # `rename`/`unshare` mutate that same exposure.
@@ -177,6 +181,65 @@ class TestCatalog:
             assert not security.is_denied(
                 allowed, denied_regexes=effective
             ), f"tailscale read wrongly blocked: {allowed!r}"
+
+    def test_tailscale_family_scope_is_pinned_at_the_indirection_boundary(self):
+        """What the regex tier reaches for this family, and where it provably stops.
+
+        The pattern tiers match command TEXT. A shell resolves a parameter
+        expansion or a command substitution BEFORE it resolves the program, so
+        the word `tailscale` need never appear in the text of a line that runs
+        `tailscale`. No pattern can close that class: the name can be assembled
+        from parts (`t=tail; u=scale; "$t$u" funnel 3000`), so there is no
+        finite set of spellings to enumerate. The tier that CAN close it is the
+        argv-structural floor, which resolves literal assignments before it
+        attributes a token to the program position (`_resolve_local_assignments`
+        in `security/shell_normalizer.py`), and today that floor recognises only
+        the product's own CLI as a program.
+
+        This test pins both halves so neither is mistaken for the other. The
+        first half is real coverage and must not regress. The second half is a
+        DOCUMENTED LIMIT, asserted as the current behaviour on purpose: an
+        argv floor for this family would turn these green-as-allowed cases into
+        denials, and this test going red is the signal to move the case up and
+        rewrite the scope paragraph in `docs/system-specs/modules/security.md`
+        in the same commit. A silently-closed limit that the spec still
+        describes as open is the failure this guards against.
+        """
+        from kiro_crew import security
+
+        effective = list(
+            security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), False, (), ())
+        )
+
+        # ── Closed: every dressing that leaves the name in the text ──
+        # Quoting and empty-string splices are normalized by the Pass-2
+        # quote-normalized view; an absolute path, an `env` prefix, and a
+        # nested interpreter all still carry the literal word.
+        for blocked in (
+            "tailscale funnel 3000",
+            '"tailscale" funnel 3000',
+            "tail''scale funnel 3000",
+            "/usr/bin/tailscale funnel 3000",
+            "env tailscale funnel 3000",
+            'eval "tailscale funnel 3000"',
+            "sh -c 'tailscale funnel 3000'",
+        ):
+            assert security.is_denied(
+                blocked, denied_regexes=effective
+            ), f"tailscale exposure not blocked: {blocked!r}"
+
+        # ── Open: the name is produced by an expansion the text does not spell ──
+        # Denying these needs the program position, not more pattern text.
+        for open_case in (
+            't=tailscale; "$t" funnel 3000',
+            "TS=tailscale; $TS funnel 3000",
+            "$(echo tailscale) funnel 3000",
+            "`echo tailscale` funnel 3000",
+        ):
+            assert not security.is_denied(open_case, denied_regexes=effective), (
+                "an indirection case is now denied -- move it into the closed set above "
+                f"and update the security spec's scope paragraph: {open_case!r}"
+            )
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway

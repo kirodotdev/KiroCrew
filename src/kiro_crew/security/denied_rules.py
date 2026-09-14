@@ -1524,7 +1524,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "Blocks `tailscale serve` mutations, which publish or withdraw a handler on this "
             "machine's tailnet and would widen the agent's own network exposure outside the "
             "governed, owner-only publish path. `tailscale serve status` (the read) stays "
-            "allowed."
+            "allowed. Scope: the direct command. Containment for tailnet exposure is the OS sandbox and the owner-only publish path."
         ),
     ),
     DeniedCommandRule(
@@ -1536,7 +1536,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         description=(
             "Blocks `tailscale funnel`, which exposes a local service to the PUBLIC internet. "
             "The agent must never be able to make a service publicly reachable. "
-            "`tailscale funnel status` (the read) stays allowed."
+            "`tailscale funnel status` (the read) stays allowed. Scope: the direct command. Containment for tailnet exposure is the OS sandbox and the owner-only publish path."
         ),
     ),
     DeniedCommandRule(
@@ -1545,18 +1545,34 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         # server (``--ssh``), advertise this node as an exit node or subnet
         # router, or accept routes; ``login``/``logout``/``switch`` change which
         # tailnet -- and therefore which ACLs -- this node is on; ``cert``
-        # provisions the TLS certificate an HTTPS ``serve`` depends on.  None of
-        # these has a read spelling, so there is no carve-out here.
+        # provisions the TLS certificate an HTTPS ``serve`` depends on; ``web``
+        # starts a listener serving the node-configuration UI, so it is both
+        # halves of this family at once -- an open port, and a surface from
+        # which every ``set`` above can be performed without ever spelling the
+        # verb.  ``--listen`` puts that surface on a non-loopback address.  None
+        # of these has a read spelling, so there is no carve-out here.
+        #
+        # This row ENUMERATES its verbs while the ``drive`` and ``exit-node``
+        # rows below deny by default behind a read carve-out, so a subcommand
+        # tailscale ships later arrives denied there and unnoticed here.  That
+        # asymmetry is deliberate for now: inverting this row means owning an
+        # allowlist of every read the CLI has (``status``, ``netcheck``,
+        # ``ping``, ``whois``, ``version``, ``ip``, ``licenses``, ``bugreport``)
+        # plus the deliberately-allowed ``configure``, and getting that list
+        # wrong refuses ordinary diagnostics rather than letting an exposure
+        # through.  It is a question about the family's shape, and it is tracked
+        # separately from the rows themselves.
         pattern=(
             ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*"
-            "\\s+(?:up|set|login|logout|switch|cert)\\b.*"
+            "\\s+(?:up|set|login|logout|switch|cert|web)\\b.*"
         ),
         category="network-exposure",
         description=(
-            "Blocks `tailscale up`, `set`, `login`, `logout`, `switch`, and `cert` — node-state "
-            "and identity mutations that can enable an SSH server, advertise this node as an "
-            "exit node or subnet router, change which tailnet it is on, or provision a serve "
-            "certificate. Read subcommands (`status`, `netcheck`, `ping`, `whois`) stay allowed."
+            "Blocks `tailscale up`, `set`, `login`, `logout`, `switch`, `cert`, and `web` — "
+            "node-state and identity mutations that can enable an SSH server, advertise this "
+            "node as an exit node or subnet router, change which tailnet it is on, provision a "
+            "serve certificate, or start a listener serving the node-configuration UI. Read "
+            "subcommands (`status`, `netcheck`, `ping`, `whois`) stay allowed. Scope: the direct command. Containment for tailnet exposure is the OS sandbox and the owner-only publish path."
         ),
     ),
     DeniedCommandRule(
@@ -1574,7 +1590,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         description=(
             "Blocks `tailscale drive` mutations (`share`, `rename`, `unshare`), which expose a "
             "host directory to every node on the tailnet or change what is already exposed. "
-            "`tailscale drive list` (the read) stays allowed."
+            "`tailscale drive list` (the read) stays allowed. Scope: the direct command. Containment for tailnet exposure is the OS sandbox and the owner-only publish path."
         ),
     ),
     DeniedCommandRule(
@@ -1591,7 +1607,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         description=(
             "Blocks `tailscale exit-node connect` and `disconnect`, which route this machine's "
             "traffic through another tailnet node and change where its egress appears from. "
-            "`tailscale exit-node list` and `suggest` (the reads) stay allowed."
+            "`tailscale exit-node list` and `suggest` (the reads) stay allowed. Scope: the direct command. Containment for tailnet exposure is the OS sandbox and the owner-only publish path."
         ),
     ),
 ]
