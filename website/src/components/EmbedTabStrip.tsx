@@ -203,6 +203,28 @@ export default function EmbedTabStrip() {
 
   // --- Drag reorder: tab follows cursor, reorder on drop ---
   const dragRef = useRef<{ index: number; slug: string; startX: number; active: boolean } | null>(null)
+  // Armed only when setPointerCapture THROWS on pointer-down (see
+  // onPointerDown below). An uncaptured drag gets no retargeting and no
+  // lostpointercapture, so a release outside the strip never reaches it and
+  // the reorder state strands mid-drag. Window-level up/cancel listeners for
+  // that specific pointerId are the one place the terminal event can still
+  // be heard — the same acquisition-side fallback the shared usePointerDrag
+  // hook arms.
+  const fallbackRef = useRef<{ pointerId: number; dispose: () => void } | null>(null)
+  const disarmFallback = useCallback(() => {
+    fallbackRef.current?.dispose()
+    fallbackRef.current = null
+  }, [])
+  // Latest-ref routing for the window fallback armed in onPointerDown: the
+  // end handlers below are defined after it, so the fallback calls through
+  // here instead of naming them (same latest-ref pattern as tabsRef).
+  const dragEndRef = useRef({
+    up: (_e: React.PointerEvent | PointerEvent) => {},
+    cancel: () => {},
+  })
+  // If the component unmounts mid-uncaptured-drag, the window listeners must
+  // not outlive it.
+  useEffect(() => disarmFallback, [disarmFallback])
   const [dragSlug, setDragSlug] = useState<string | null>(null)
   const [dragOffset, setDragOffset] = useState(0)
   const tabRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -231,13 +253,37 @@ export default function EmbedTabStrip() {
     const strip = stripRef.current
     if (!strip) return
 
+    // A new press replaces whatever drag dragRef held, so a fallback armed
+    // for the outgoing pointer goes with it.
+    disarmFallback()
     dragRef.current = {
       index,
       slug: tabs[index].slug || `new-${index}`,
       startX: e.clientX,
       active: false,
     }
-    strip.setPointerCapture(e.pointerId)
+    let captured = true
+    try { strip.setPointerCapture(e.pointerId) } catch { captured = false }
+    if (!captured) {
+      // The drag still starts (tab activation below still runs), but the
+      // gesture must remain terminable: without retargeting, a release
+      // outside the strip never reaches it.
+      const pointerId = e.pointerId
+      const onWindowEnd = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return
+        if (ev.type === 'pointercancel') dragEndRef.current.cancel()
+        else dragEndRef.current.up(ev)
+      }
+      window.addEventListener('pointerup', onWindowEnd)
+      window.addEventListener('pointercancel', onWindowEnd)
+      fallbackRef.current = {
+        pointerId,
+        dispose: () => {
+          window.removeEventListener('pointerup', onWindowEnd)
+          window.removeEventListener('pointercancel', onWindowEnd)
+        },
+      }
+    }
 
     // Activate the tab being dragged
     if (index !== activeIndex) {
@@ -278,12 +324,14 @@ export default function EmbedTabStrip() {
   }
 
   const onPointerCancel = () => {
+    disarmFallback()
     dragRef.current = null
     setDragSlug(null)
     setDragOffset(0)
   }
 
-  const onPointerUp = (e: React.PointerEvent) => {
+  const onPointerUp = (e: React.PointerEvent | PointerEvent) => {
+    disarmFallback()
     const d = dragRef.current
     dragRef.current = null
     if (!d?.active) {
@@ -334,6 +382,9 @@ export default function EmbedTabStrip() {
       persist(currentTabs, currentIndex)
     }, 0)
   }
+
+  // Publish the end handlers for the window fallback armed in onPointerDown.
+  dragEndRef.current = { up: onPointerUp, cancel: onPointerCancel }
 
   const getTitle = (slug: string, _index: number) => {
     if (!slug) return i18nT('components.embedTabStrip.sessions')
