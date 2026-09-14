@@ -6863,9 +6863,16 @@
       "searching_enter_held": "検索中… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
       "type_2_chars_to_search_files_ctrl_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Ctrl+Enter ではまだ送信されません。Esc を押して閉じると、Ctrl+Enter でメッセージを送信できます",
       "type_2_chars_to_search_files_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
-      "search_failed": "ファイルを検索できませんでした。もう一度お試しください。",
       "outside_project_enter_sends": "このパスは最終的にプロジェクトの外に出るため、補完できるものがありません — Enter でメッセージを送信します",
-      "outside_project_ctrl_enter_sends": "このパスは最終的にプロジェクトの外に出るため、補完できるものがありません — Ctrl+Enter でメッセージを送信します"
+      "outside_project_ctrl_enter_sends": "このパスは最終的にプロジェクトの外に出るため、補完できるものがありません — Ctrl+Enter でメッセージを送信します",
+      "search_denied": "プロジェクトフォルダーへのアクセスが拒否されました",
+      "search_root_missing": "プロジェクトフォルダーが見つかりません",
+      "retry": "再試行",
+      "check_project_folder": "プロジェクトフォルダーを変更するには、メッセージボックスの下にあるフォルダー名をクリックしてください",
+      "search_denied_path": "このパスへのアクセスが拒否されました",
+      "check_path_inside_project": "別のパスを選んでください",
+      "enter_sends": "Enter でメッセージを送信します",
+      "ctrl_enter_sends": "Ctrl+Enter でメッセージを送信します"
     },
     "fileRenderers": {
       "binary_file_download_hint": "テキストではないため、ここに表示できるものはありません。コピーをダウンロードして別のアプリで開いてください。",
