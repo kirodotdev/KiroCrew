@@ -67,6 +67,7 @@ in the **same commit** when you change what it documents.
 | CI, PR flow, review gates, commit messages | [ci-and-reviews](docs/ci/ci-and-reviews.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
 | constants, comments, lint, code style, the brand name | [code-style](docs/system-specs/common/code-style.md) |
 | connections, connectors, an external account link | [connections](docs/system-specs/modules/connections.md) |
+| the connector campaign's manifest schema or work-stream DAG | [connector-capability-manifest](docs/system-specs/modules/connector-capability-manifest.md) |
 | a POSIX call: locks, signals, PIDs, chmod, RSS | [platform-compat](docs/system-specs/common/platform-compat.md) + [windows-install](docs/guides/windows-install.md) |
 | injected `[Cron notification]` / `[Subagent completion event]` | [injected-messages](docs/system-specs/common/injected-messages.md) |
 | build, install, dev mode | [CONTRIBUTING.md](CONTRIBUTING.md) + [install](docs/guides/install.md) |
