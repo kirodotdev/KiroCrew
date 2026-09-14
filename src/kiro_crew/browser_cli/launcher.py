@@ -67,11 +67,11 @@ from kiro_crew import platform_compat
 from kiro_crew.browser_cli.install import (
     ATTRIBUTION_REMEDY,
     SeamSupport,
-    _redact,
     cli_command,
     cli_dashboard_socket_support,
     cli_env,
     cli_path,
+    redact_install_output,
 )
 from kiro_crew.browser_cli.launch import SESSION_ENV, SOCKETS_ENV, ui_socket_env
 from kiro_crew.config.paths import config_dir
@@ -359,7 +359,7 @@ def _distill(out: str, err: str) -> str:
             kept.append(stripped[: -len(" {")].rstrip())
             break
         kept.append(stripped)
-    return _redact("\n".join(kept))[:_ERROR_CAP]
+    return redact_install_output("\n".join(kept))[:_ERROR_CAP]
 
 
 def _error_text(rc: int, out: str, err: str) -> str:

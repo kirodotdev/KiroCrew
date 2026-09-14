@@ -3562,19 +3562,31 @@ async def api_browser_install_start(request: web.Request) -> web.Response:
                     # operator with a bare "failed" -- which cannot tell a
                     # registry auth error apart from a blocked download, the two
                     # cases the panel renders this string to explain.
-                    # Redacted before it reaches the panel. npm failures routinely
-                    # quote the command's own environment back at you: a registry
-                    # line carrying `_authToken=`, or a proxy URL with inline
-                    # credentials. This string is rendered verbatim in Settings and
-                    # is the thing an operator screenshots into a bug report, so it
-                    # goes through the same two-pass redaction as every other
-                    # external surface.
+                    # Redacted before it reaches the panel. Step stderr is already
+                    # scrubbed at the source (browser_cli.install._step runs the
+                    # npm-aware redactor on it), but the `error` fallback and the
+                    # exception arm below are composed HERE and never pass through
+                    # _step. This call re-runs the same npm-aware redactor
+                    # (redact_install_output: the shared two-pass PLUS the npm
+                    # shapes such as a bare `_authToken=`) so all three carriers
+                    # get identical coverage -- the module-local _redact runs only
+                    # the shared pair and would let an npm registry line through.
                     detail = first.get("stderr") or first.get("error") or "failed"
-                    state._browser_install_error = _redact(
+                    state._browser_install_error = browser_cli_install.redact_install_output(
                         f"{first.get('name', 'install')}: {str(detail).strip()}"
                     )[:2000]
             except Exception as exc:  # noqa: BLE001 - surfaced to the operator
-                state._browser_install_error = _redact(str(exc))[:2000]
+                # Redact the FULL text, then truncate: any pre-redaction cut can
+                # split a credential so its `@` anchor is gone, no pattern
+                # matches, and npm-line compression pulls the surviving fragment
+                # into the 2000-char display window. Pinned by
+                # test_a_credential_straddling_a_pre_redaction_cut_is_still_masked.
+                # Unbounded input cannot reach this arm in practice: install._run
+                # reports subprocess failures as return codes rather than raising
+                # with output, and every raise site carries a short message.
+                state._browser_install_error = browser_cli_install.redact_install_output(str(exc))[
+                    :2000
+                ]
 
         state._browser_install_task = asyncio.create_task(_run())
     return await api_browser_install_get(request)
@@ -3634,12 +3646,16 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
             failed = [] if result.get("ok") or not steps else steps[-1:]
             if failed:
                 first = failed[0]
-                state._browser_install_error = _redact(
+                # npm-aware redactor, same reasoning as the CLI install above.
+                state._browser_install_error = browser_cli_install.redact_install_output(
                     f"{first.get('name', 'install-browser')}: "
                     f"{first.get('stderr') or first.get('error') or 'failed'}"
                 )[:2000]
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
-            state._browser_install_error = _redact(str(exc))[:2000]
+            # Redact the full text, then truncate; see the CLI install above.
+            state._browser_install_error = browser_cli_install.redact_install_output(str(exc))[
+                :2000
+            ]
 
     state._browser_install_task = asyncio.create_task(_run())
     return await api_browser_install_get(request)

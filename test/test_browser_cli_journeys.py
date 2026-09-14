@@ -574,6 +574,59 @@ class TestOneInstallSlotIsNotAFoldedLie:
         assert _json.loads(resp.text)["code"] == "install_already_running"
 
 
+def _owner_install_request(state, body: dict | None = None, path: str = "/api/browser/install"):
+    """Configured-owner request stub shared by the install-error tests.
+
+    One copy on purpose: two hand-rolled owner-claims mocks drift independently,
+    and a change to the owner predicate would fix one class while the other kept
+    asserting against a stale request shape.
+    """
+    from unittest.mock import MagicMock
+
+    req = MagicMock()
+    req.path = path
+    _claims = {"app": "", "user": "the-owner"}
+    req.get = lambda key, default=None: _claims.get(key, default)
+    req.__contains__ = lambda self_inner, key: key in _claims
+    req.__getitem__ = lambda self_inner, key: _claims[key]
+
+    async def _json():
+        return body or {}
+
+    req.json = _json
+    req.app = {"state": state}
+    return req
+
+
+def _drive_install_error(monkeypatch, handler_name: str, body: dict | None = None) -> str | None:
+    """Drive one install handler on a fresh state and return the error string.
+
+    The caller monkeypatches ``install`` / ``install_browser`` first; this
+    helper stubs only the status GET the handlers answer with.
+    """
+    import asyncio
+
+    from kiro_crew.dashboard.handlers import messaging as msg
+
+    monkeypatch.setattr(msg.browser_cli_install, "detect", lambda: {"installed": True})
+    monkeypatch.setattr(msg.browser_cli_token, "has_token", lambda: False)
+
+    async def _go():
+        state = type("S", (), {})()
+        state.owner_id = "the-owner"
+        state._browser_install_task = None
+        state._browser_install_error = None
+        await getattr(msg, handler_name)(_owner_install_request(state, body))
+        task = state._browser_install_task
+        # A missing task means the handler refused before doing any work; a
+        # `None`-asserting caller must not read that as "no error produced".
+        assert task is not None, f"{handler_name} never started the install task"
+        await task
+        return state._browser_install_error
+
+    return asyncio.run(_go())
+
+
 class TestARecoveredStepIsNotReportedAsAnError:
     """A step can fail and be RECOVERED, so "any step failed" is not the verdict.
 
@@ -606,44 +659,11 @@ class TestARecoveredStepIsNotReportedAsAnError:
         ],
     }
 
-    def _owner_request(self, state):
-        from unittest.mock import MagicMock
-
-        req = MagicMock()
-        req.path = "/api/browser/install"
-        _claims = {"app": "", "user": "the-owner"}
-        req.get = lambda key, default=None: _claims.get(key, default)
-        req.__contains__ = lambda self_inner, key: key in _claims
-        req.__getitem__ = lambda self_inner, key: _claims[key]
-
-        async def _json():
-            return {}
-
-        req.json = _json
-        req.app = {"state": state}
-        return req
-
     def _last_error(self, monkeypatch, result):
-        import asyncio
-
         from kiro_crew.dashboard.handlers import messaging as msg
 
         monkeypatch.setattr(msg.browser_cli_install, "install", lambda: result)
-        monkeypatch.setattr(msg.browser_cli_install, "detect", lambda: {"installed": True})
-        monkeypatch.setattr(msg.browser_cli_token, "has_token", lambda: False)
-
-        async def _go():
-            state = type("S", (), {})()
-            state.owner_id = "the-owner"
-            state._browser_install_task = None
-            state._browser_install_error = None
-            await msg.api_browser_install_start(self._owner_request(state))
-            task = state._browser_install_task
-            if task is not None:
-                await task
-            return state._browser_install_error
-
-        return asyncio.run(_go())
+        return _drive_install_error(monkeypatch, "api_browser_install_start")
 
     def test_a_recovered_with_deps_refusal_leaves_no_error(self, monkeypatch: pytest.MonkeyPatch):
         assert self._last_error(monkeypatch, self._RECOVERED) is None
@@ -707,6 +727,122 @@ class TestARecoveredStepIsNotReportedAsAnError:
         assert error is not None
         assert "install-browser" in error
         assert "sudo dnf install -y nss" in error
+
+
+class TestInstallErrorStringsGetNpmAwareRedaction:
+    """Every carrier of the install error string masks a bare ``_authToken=``.
+
+    Step ``stderr`` is scrubbed at the source (``browser_cli.install._step``),
+    but the ``error`` fallback and the ``except Exception`` arms are composed in
+    the handlers, where the module-local two-pass ``_redact`` does NOT know the
+    npm shapes. These tests pin all four assignment sites to the npm-aware
+    ``redact_install_output``.
+    """
+
+    _SECRET = "deadbeefcafe1234secret"
+    _NPM_LINE = f"//npm.internal.example/:_authToken={_SECRET}"
+
+    def _drive(self, monkeypatch, handler_name: str, body: dict | None = None) -> str | None:
+        return _drive_install_error(monkeypatch, handler_name, body)
+
+    def _assert_token_masked(self, error: str | None) -> None:
+        assert error is not None
+        # The secret value is gone...
+        assert self._SECRET not in error
+        # ...but the key survives with the marker, so the operator can still
+        # see WHAT kind of line failed without seeing the credential.
+        assert "_authToken" in error
+        assert "[REDACTED" in error
+
+    def test_a_cli_install_exception_masks_a_bare_authtoken(self, monkeypatch: pytest.MonkeyPatch):
+        from kiro_crew.dashboard.handlers import messaging as msg
+
+        def _boom():
+            raise RuntimeError(f"npm config set {self._NPM_LINE} failed")
+
+        monkeypatch.setattr(msg.browser_cli_install, "install", _boom)
+        self._assert_token_masked(self._drive(monkeypatch, "api_browser_install_start"))
+
+    def test_an_engine_install_exception_masks_a_bare_authtoken(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from kiro_crew.dashboard.handlers import messaging as msg
+
+        def _boom(engine):
+            raise RuntimeError(f"npm config set {self._NPM_LINE} failed")
+
+        monkeypatch.setattr(msg.browser_cli_install, "install_browser", _boom)
+        self._assert_token_masked(
+            self._drive(monkeypatch, "api_browser_engine_install", {"engine": "chromium"})
+        )
+
+    def test_a_step_whose_only_diagnostic_is_error_masks_the_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The ``error`` fallback never passes through ``_step``'s stderr scrub,
+        so its redaction happens ONLY at the handler."""
+        from kiro_crew.dashboard.handlers import messaging as msg
+
+        failed = {
+            "ok": False,
+            "steps": [
+                {
+                    "name": "npm-install-global",
+                    "ok": False,
+                    "returncode": 1,
+                    # No `stderr` key at all: the handler must fall back to
+                    # `error`, which carries the npm line verbatim.
+                    "error": f"npm config set {self._NPM_LINE} failed",
+                },
+            ],
+        }
+        monkeypatch.setattr(msg.browser_cli_install, "install", lambda: failed)
+        self._assert_token_masked(self._drive(monkeypatch, "api_browser_install_start"))
+
+    def test_a_credential_straddling_a_pre_redaction_cut_is_still_masked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Redaction must see the FULL exception text before any truncation.
+
+        A pre-redaction cut splits `user:secret@host` so the `@` anchor is
+        gone and no pattern matches -- and because the npm lines BEFORE the
+        credential collapse ~20x under redaction, the surviving cleartext
+        fragment lands well inside the 2000-char window the panel renders.
+        This message is built so the secret sits entirely before offset 8000
+        and its `@` after it: the test fails on any pre-redaction cut at 8000
+        and passes on redact-then-truncate.
+        """
+        from kiro_crew.dashboard.handlers import messaging as msg
+
+        filler = f"//r.example/:_authToken={'z' * 200}\n"
+        head = filler * 35  # 7875 chars, ends with a newline so the URL owns its line
+        secret_url = "http://admin:LEAKED_SECRET" + "x" * 110 + "@proxy.example.com"
+        message = head + secret_url + " refused"
+        # The full secret value ends before 8000; the `@` anchor sits after it.
+        assert message.index("LEAKED_SECRET") + len("LEAKED_SECRET") < 8000
+        assert message.index("@proxy") > 8000
+
+        def _boom():
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(msg.browser_cli_install, "install", _boom)
+        error = self._drive(monkeypatch, "api_browser_install_start")
+        assert error is not None
+        assert "LEAKED_SECRET" not in error
+        assert "[REDACTED" in error
+
+    def test_the_inline_credential_url_case_still_masks(self, monkeypatch: pytest.MonkeyPatch):
+        """No regression: the shape the OLD redactor did catch stays caught."""
+        from kiro_crew.dashboard.handlers import messaging as msg
+
+        def _boom():
+            raise RuntimeError("proxy https://user:sup3rs3cret@proxy.example.com/ refused")
+
+        monkeypatch.setattr(msg.browser_cli_install, "install", _boom)
+        error = self._drive(monkeypatch, "api_browser_install_start")
+        assert error is not None
+        assert "sup3rs3cret" not in error
+        assert "[REDACTED" in error
 
 
 def test_non_object_json_is_a_validation_error_not_a_500():

@@ -982,9 +982,9 @@ class TestFailureDetailIsRedactedAtTheSource:
             )
 
         # ── The timing half: catastrophe only ──
-        mod._redact(small)  # warm up (JIT, import overhead)
+        mod.redact_install_output(small)  # warm up (JIT, import overhead)
         start = time.thread_time()
-        mod._redact(large)
+        mod.redact_install_output(large)
         elapsed = time.thread_time() - start
         assert elapsed < _CATASTROPHIC_CEILING, (
             f"redacting {len(large)} adversarial chars took {elapsed:.3f}s, over the "
