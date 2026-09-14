@@ -1390,7 +1390,7 @@ class TestTextScrapeIsOptIn:
 
 class TestSpawnSuppressesConsoleWindow:
     """The identity/usage helper spawns must pass ``creationflags`` carrying
-    ``platform_compat._SUBPROCESS_NO_WINDOW`` (issue #10849).
+    ``platform_compat._SUBPROCESS_NO_WINDOW``.
 
     On Windows the gateway runs without a console, so a console-subsystem child
     spawned without ``CREATE_NO_WINDOW`` gets a fresh console allocated that
