@@ -20,6 +20,12 @@ vi.mock('../pages/ProjectDetailPage', () => ({
   ),
 }))
 
+vi.mock('../components/MoveToCrewDialog', () => ({
+  default: ({ unitId }: { unitId: string }) => (
+    <div role="dialog" data-testid="taskrun-move-dialog">move:{unitId}</div>
+  ),
+}))
+
 vi.mock('../components/AgentSelector', () => ({
   default: ({ value, onChange }: { value: string; onChange: (name: string) => void }) => (
     <select
@@ -94,6 +100,14 @@ async function openRun(name = 'Existing'): Promise<HTMLElement> {
   await screen.findByTestId('project-detail')
   return screen.getByTestId('project-detail').parentElement!.parentElement!
     .querySelector<HTMLElement>('div.border-b')!
+}
+
+function openHeaderOverflow(header: HTMLElement): void {
+  fireEvent.pointerDown(within(header).getByRole('button', { name: 'More actions' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse',
+  })
 }
 
 let alertSpy: ReturnType<typeof vi.spyOn>
@@ -568,6 +582,18 @@ describe('ProjectsPage — header actions by run status', () => {
     renderWithProviders(<ProjectsPage />)
     const header = await openRun()
     expect((within(header).getByRole('checkbox') as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('keeps Move reachable through overflow instead of adding a peer button', async () => {
+    resetApi([mkRun({ status: 'completed' })])
+    renderWithProviders(<ProjectsPage />)
+    const header = await openRun()
+    expect(within(header).queryByRole('button', { name: 'Preview a move to crew…' })).not.toBeInTheDocument()
+
+    openHeaderOverflow(header)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Preview a move to crew…' }))
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
   })
 
   it('moves a completed run into a chat slot', async () => {

@@ -12,6 +12,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import WeekGrid from '../components/WeekGrid'
 import TimezoneSelect from '../components/TimezoneSelect'
 import JobForm from '../components/JobForm'
+import MoveToCrewDialog from '../components/MoveToCrewDialog'
 import JobLogsView from '../components/JobLogsView'
 import ErrorNotice from '../components/ErrorNotice'
 import type { KiroCrewAgent } from '../components/AgentSelector'
@@ -216,6 +217,8 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
 
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
+  // Crew-to-crew work migration (issue #7577): which job's move plan is open.
+  const [movingJobId, setMovingJobId] = useState<string | null>(null)
   const dispatch = useAppDispatch()
   const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
   // A recovered roster must not be recovered for this form alone. `useAgents`
@@ -526,6 +529,16 @@ export default function SchedulePage() {
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
+        {/* Crew-to-crew work migration (issue #7577): the Schedule-tab action.
+            Shows what moving this job to another crew WOULD do — the transmit
+            step lands with the tunnel wiring. */}
+        {movingJobId && (
+          <MoveToCrewDialog
+            unitId={movingJobId}
+            onPlan={toCrew => api.planCronMove(movingJobId, toCrew)}
+            onClose={() => setMovingJobId(null)}
+          />
+        )}
         {/* View switching is NAVIGATION, so it sits at page level rather than in
             the list's own toolbar — next to three action buttons it read as
             three more of them. `collapse={false}`: this lives in the header's
@@ -996,6 +1009,7 @@ export default function SchedulePage() {
                       onToggleStrict={async () => { try { await api.updateCron(j.id, { strict_schedule: !j.strict_schedule }); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}
                       onMove={fid => handleMoveJob(j.id, fid)}
                       onNewFolder={handleNewFolder}
+                      onMoveToCrew={() => setMovingJobId(j.id)}
                     />
                   </div>
                   {/* askAgent on: row actions (pause, strict, move, run, delete)

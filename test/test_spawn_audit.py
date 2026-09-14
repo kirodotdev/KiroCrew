@@ -1095,6 +1095,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
         # created; the sole input is the operator-typed app name.
         "cli_commands.py::_register_app_crons_to_scheduler",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``, bound here as ``_asyncio``) driving the
+        # async plan builders from the loop-less CLI ``cron move`` / ``taskrun
+        # move`` paths. No child process is created and there is no argv at all:
+        # the coroutines read a cron job or a ``runs.json`` record and return a
+        # plan dict. The only inputs are the operator-typed unit id, target crew
+        # and ``--runs-file`` path, the last of which goes through
+        # ``safe_read_file``. Same classification as
+        # ``_cleanup_app_crons_from_scheduler`` above.
+        "cli_commands.py::_cron_dispatch",
+        "cli_commands.py::_taskrun_dispatch",
         "cli_doctor.py::_doctor",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving the async Discord
