@@ -7352,6 +7352,7 @@
       "mark_as_read": "পড়া হিসেবে চিহ্নিত করো",
       "mark_as_unread": "অপঠিত হিসেবে চিহ্নিত করো",
       "move_to_folder": "ফোল্ডারে সরান…",
+      "offline_reason": "গেটওয়ে অফলাইন — ম্লান করা কাজগুলোর জন্য সংযোগ দরকার",
       "open_in_new_tab": "সেশন ট্যাবে খুলুন",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
@@ -14912,8 +14913,12 @@
       "saving": "সংরক্ষণ হচ্ছে..."
     },
     "offline": {
+      "delete_artifacts": "আর্টিফ্যাক্ট মুছে ফেলা",
+      "delete_folders": "ফোল্ডার মুছে ফেলা",
       "disabled_gateway_offline": "{{label}} নিষ্ক্রিয় — গেটওয়ে অফলাইন",
       "gateway_offline_reconnect": "গেটওয়ে অফলাইন — {{action}} করতে আবার সংযুক্ত হও",
+      "rename_folders": "ফোল্ডারের নাম পরিবর্তন",
+      "star_artifacts": "আর্টিফ্যাক্ট তারা দেওয়া",
       "submit_comments": "মন্তব্য জমা দেওয়া"
     },
     "popoutController": {

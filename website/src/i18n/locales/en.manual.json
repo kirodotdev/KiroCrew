@@ -6259,8 +6259,12 @@
       "saving": "Saving..."
     },
     "offline": {
+      "delete_artifacts": "delete artifacts",
+      "delete_folders": "delete folders",
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
+      "rename_folders": "rename folders",
+      "star_artifacts": "star artifacts",
       "submit_comments": "submit comments"
     },
     "popoutController": {

@@ -3,7 +3,15 @@ import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../store/dashboardSlice'
+
+/** The row's star and delete are gateway-gated, so this fixture connects. */
+function connectedStore() {
+  const s = createTestStore()
+  s.dispatch(sseConnected())
+  return s
+}
 import { api } from '../api/client'
 import type { Artifact } from '../types'
 
@@ -245,7 +253,7 @@ describe('ArtifactsPage', () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
       artifacts: [mkArtifact('cr-queue', { pinned: true })],
     })
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     const starBtn = screen.getByLabelText('Remove star from artifact')
     expect(starBtn).toBeInTheDocument()
