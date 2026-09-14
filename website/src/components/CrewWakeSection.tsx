@@ -183,14 +183,11 @@ export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, on
   const onCreated = useCallback(() => {
     // The saved job should be visible where it was made: close the form and
     // let the refreshed list carry the evidence that the save happened. The
-    // form unmounts before it can report saving=false (its host on the
-    // Schedule page unmounts WITH it, so it never needs to), so the flag is
-    // cleared here — a stale true would render the next create's button as a
-    // permanently disabled "Saving…".
-    setSavingDraft(false)
+    // form clears its own saving flag before calling this (it reports
+    // saving=false on every outcome), so there is nothing to unlearn here.
     setCreating(false)
     void refetch()
-  }, [refetch, setCreating, setSavingDraft])
+  }, [refetch, setCreating])
 
   // A failed fetch leaves `jobs` empty, which would otherwise render the
   // affirmative "nothing wakes this crew" — a false statement about the crew
@@ -320,7 +317,8 @@ export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, on
             agents={[]}
             defaultAgent=""
             lockedAgent={crew}
-            memberId={crew === 'default' ? undefined : crew}
+            /* Unconditional: JobForm applies the default-crew rule itself. */
+            memberId={crew}
             providerAgent={agentTemplate}
             onSaved={onCreated}
             externalSubmit
