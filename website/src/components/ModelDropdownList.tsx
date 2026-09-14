@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { Check } from 'lucide-react'
 
+import { Skeleton } from './ui'
 import { isPricedMultiplier } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
 import { fmtNumber } from '../i18n/format'
@@ -104,13 +105,23 @@ const TIER_BORDER: Record<ReturnType<typeof costTier>, string> = {
 }
 
 /** Shared model list used in dropdown portals across AgentsPage and ChatPage */
-export default function ModelDropdownList({ models, activeModel, onSelect }: {
-  models: ModelItem[]; activeModel: string; onSelect: (name: string) => void
+export default function ModelDropdownList({ models, activeModel, onSelect, loading = false }: {
+  models: ModelItem[]; activeModel: string; onSelect: (name: string) => void; loading?: boolean
 }) {
   const activeRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'center', behavior: 'instant' })
   }, [])
+  if (loading && models.length === 0) {
+    return (
+      <div data-testid="model-list-loading" aria-hidden="true" className="flex flex-col gap-2 px-2.5 py-2.5">
+        <Skeleton className="h-3.5 w-28" />
+        <Skeleton className="h-3 w-44" />
+        <Skeleton className="mt-1 h-3.5 w-36" />
+        <Skeleton className="h-3 w-24" />
+      </div>
+    )
+  }
   return (
     <div className="overflow-y-auto flex flex-col gap-0.5">
       {models.map(m => {

@@ -1628,8 +1628,8 @@ export default function ChatPane({
                 </Btn>
               </div>
             )}
-            <div role="listbox" aria-label={i18nT('components.chatPane.model_list')} className="overflow-y-auto max-h-[280px]">
-              <ModelDropdownList models={modelDD.filtered} activeModel={shownModel} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />
+            <div role="listbox" aria-label={i18nT('components.chatPane.model_list')} aria-busy={paneRemoteCrew.modelsLoading || undefined} className="overflow-y-auto max-h-[280px]">
+              <ModelDropdownList models={modelDD.filtered} activeModel={shownModel} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} loading={paneRemoteCrew.modelsLoading} />
             </div>
             {!modelPickerConfigured && <ManageModelsFooter onManage={() => {
               modelDD.setOpen(false)

@@ -437,3 +437,58 @@ class TestPeerCapabilityCarrier:
         with pytest.raises(ValueError):
             await mgr.peer_capability("nobita", "/api/agents/evil")
         mgr._peer_target.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_peer_model_capability_outlives_the_final_gateway_discovery(monkeypatch):
+    from kiro_crew.instances import ssh_tunnel_manager as stm
+    from kiro_crew.instances.constants import (
+        DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS,
+        DEFAULT_MODEL_CAPABILITY_PROXY_TIMEOUT_SECS,
+    )
+
+    seen_timeouts: list[float] = []
+
+    class _Content:
+        def iter_chunked(self, _size):
+            async def _chunks():
+                yield b"{}"
+
+            return _chunks()
+
+    class _Response:
+        status = 200
+        content = _Content()
+
+    class _ResponseContext:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class _Session:
+        def __init__(self, *, timeout):
+            seen_timeouts.append(timeout.total)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def get(self, *_args, **_kwargs):
+            return _ResponseContext()
+
+    monkeypatch.setattr(stm.aiohttp, "ClientSession", _Session)
+    manager = stm.SshTunnelManager.__new__(stm.SshTunnelManager)
+    manager._peer_target = MagicMock(return_value=("http://127.0.0.1:7778/api", "mc"))
+    manager._peer_cookie_header = MagicMock(return_value={"Cookie": "mc=value"})
+
+    assert await manager.peer_capability("remote-1", "/api/models") == (True, {})
+    assert await manager.peer_capability("remote-1", "/api/version") == (True, {})
+    assert seen_timeouts == [
+        DEFAULT_MODEL_CAPABILITY_PROXY_TIMEOUT_SECS,
+        DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS,
+    ]
+    assert DEFAULT_MODEL_CAPABILITY_PROXY_TIMEOUT_SECS > 10

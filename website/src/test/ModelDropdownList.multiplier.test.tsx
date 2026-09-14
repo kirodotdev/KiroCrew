@@ -262,3 +262,12 @@ describe('withAutoFirst — Auto keeps the multiplier it was served', () => {
     expect(out.map(m => m.name)).toEqual(['auto', 'glm-5'])
   })
 })
+
+describe('ModelDropdownList — loading state', () => {
+  it('shows placeholders instead of claiming an empty list has no matches', () => {
+    render(<ModelDropdownList models={[]} activeModel="" onSelect={vi.fn()} loading />)
+
+    expect(screen.getByTestId('model-list-loading')).toBeInTheDocument()
+    expect(screen.queryByText(/No models match/i)).not.toBeInTheDocument()
+  })
+})

@@ -239,18 +239,22 @@ DEFAULT_SEARCH_PROXY_TIMEOUT_SECS: float = 6.0
 # a truthful worst case is well under 1 MiB; 4 MiB only ever bites on garbage.
 SEARCH_REPLY_MAX_BYTES: int = 4 * 1024 * 1024
 
-# Timeout (secs) for one peer capability read over an already-open tunnel (GET
-# the peer's /api/version, /api/agents, /api/models, /api/effort-levels or
+# Timeout (secs) for a cheap peer capability read over an already-open tunnel
+# (GET the peer's /api/version, /api/agents, /api/effort-levels or
 # /api/workspaces — no SSH spawn). Larger than the token probe (2s) because the
-# peer does real work for some of these (the model list can round-trip to its
-# own provider), and kept as short as that work allows because a capability read
-# blocks a chat header from rendering: a user watching an empty model picker is
-# better served by a fast "peer did not answer" than by a long wait. It is the
-# one peer budget ABOVE the federated-search timeout (6s), which fans out reads
-# that a partial result set can absorb; a missing capability read has no partial
-# form — the picker is simply empty — so it is the one worth waiting out.
-# The reads run concurrently, so this is the worst-case latency for the set.
+# peer still performs real reads, and kept short because capability reads block
+# a chat header from rendering. The reads run concurrently, so this is the
+# worst-case latency for the cheap set.
 DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
+
+# The peer's /api/models route is the exception: a cold request may spend up to
+# 5s detecting its sandbox backend and then up to 10s in kiro-cli
+# `chat --list-models`. Giving it the generic 8s budget guarantees the hub cuts
+# off a valid cold discovery before the peer's own bounded operation can settle.
+# Twenty seconds leaves transport/setup headroom while remaining below the
+# session-transfer budget; a partial response is retried by the dashboard only
+# while the peer is reachable and version-compatible.
+DEFAULT_MODEL_CAPABILITY_PROXY_TIMEOUT_SECS: float = 20.0
 
 # Byte ceiling for one peer capability reply, enforced BEFORE JSON decoding for
 # the same reason as the search cap above. Sized for the largest honest payload

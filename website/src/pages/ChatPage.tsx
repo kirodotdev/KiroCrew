@@ -7548,6 +7548,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 inputRef={modelInputRef}
                 onListKeyDown={onModelListKeyDown}
                 models={filteredModels}
+                modelsLoading={remoteCrew.modelsLoading}
                 activeModel={shownModel}
                 onSelectModel={name => switchModel(name)}
                 filter={modelFilter}

@@ -13,6 +13,8 @@ interface Props {
   dropdownRef: React.Ref<HTMLDivElement>
   inputRef: React.Ref<HTMLInputElement>
   models: ModelItem[]
+  /** The peer's model roster has not arrived yet or is retrying a partial read. */
+  modelsLoading?: boolean
   activeModel: string
   onSelectModel: (name: string) => void
   filter: string
@@ -64,7 +66,7 @@ interface Props {
 const WIDTH = 340
 /** Model picker with reasoning effort embedded below the searchable model list. */
 export default function ModelEffortDropdown({
-  anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
+  anchorRect, dropdownRef, inputRef, models, modelsLoading = false, activeModel, onSelectModel,
   filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault, onManageModels,
   modelVisibilityError = false, onRetryModelVisibility,
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
@@ -181,8 +183,8 @@ export default function ModelEffortDropdown({
                 )}
               </div>
             )}
-            <div role="listbox" aria-label={i18nT('components.modelEffortDropdown.model_list')} className="min-h-0 flex-1 max-h-[240px] overflow-y-auto">
-              <ModelDropdownList models={models} activeModel={activeModel} onSelect={onSelectModel} />
+            <div role="listbox" aria-label={i18nT('components.modelEffortDropdown.model_list')} aria-busy={modelsLoading || undefined} className="min-h-0 flex-1 max-h-[240px] overflow-y-auto">
+              <ModelDropdownList models={models} activeModel={activeModel} onSelect={onSelectModel} loading={modelsLoading} />
             </div>
             {onManageModels && <ManageModelsFooter onManage={onManageModels} />}
             {hasEffort && slot && (
