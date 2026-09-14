@@ -361,6 +361,7 @@ import { rewindWithRollback } from '../lib/rewindCall'
 import { isChatPageSurface, slotChannelLabel } from '../utils/channelOrigin'
 import { findSurfaceBySlotMode, surfaceLabel } from '../surfaces/registry'
 import { errMessage } from '../utils/thunkError'
+import { useActionFailure } from '../utils/actionFailure'
 
 
 import { i18nT } from '../i18n/t'
@@ -1000,6 +1001,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // `title` is optional because several sites already own a whole-sentence
   // message ("Fork failed: …") that must stay intact for the error-journal match.
   const [actionError, setActionError] = useState<{ title?: string; message: string } | null>(null)
+  // The store-backed sibling of `actionError`: a write reported from a menu
+  // subtree that unmounts as the menu closes has no component left to hold it.
+  const actionFailure = useActionFailure()
   const showActionError = useCallback((message: string, title?: string) => {
     // Same failure re-reported (an effect re-run, a retry that fails the same
     // way) keeps the stored object, so React bails out instead of re-rendering.
@@ -6326,6 +6330,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         )}
       </AnimatePresence>
+      {/* Above the embed-mode split, because a rejected write reported from a
+          popout menu has no surface in a mode that drops the sidebar. */}
+      <ErrorNotice
+        title={actionFailure.failure?.subject ? i18nT('pages.chatPage.could_not_update', { name: actionFailure.failure.subject }) : undefined}
+        message={actionFailure.failure?.message ?? ''}
+        report={actionFailure.failure?.report}
+        askAgent
+        onDismiss={actionFailure.clear}
+        className="mx-4 mt-2 mb-0 animate-rise"
+        testId="session-action-error"
+      />
       {embedMode === 'chat' ? null : embedMode === 'sessions' ? (
         <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [&_.sidebar-resize-handle]:!hidden">
           <ChatSidebar

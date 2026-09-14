@@ -7229,6 +7229,7 @@
       "failed": "失敗",
       "not_connected": "未接続",
       "send_a_copy_to": "コピーを送信",
+      "send_failed": "そのインスタンスにコピーを送信できませんでした。",
       "sent": "送信しました",
       "sent_transcript_only": "送信しました（記録のみ）",
       "transcript_only_hint": "そのインスタンスが会話コンテキスト全体を復元できなかったため、このコピーは記録のみから再開します。",
@@ -7242,6 +7243,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "offline_reason": "ゲートウェイがオフラインです — グレー表示の操作には接続が必要です",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -7257,7 +7259,9 @@
       "unpin": "ピン留め解除"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "色の変更は取り消されました。",
       "custom_color": "カスタムカラー",
+      "custom_color_picker": "カスタムカラーピッカー",
       "hex_color_code": "16進カラーコード",
       "no_color": "色なし"
     },
@@ -8369,7 +8373,11 @@
     },
     "useSessionActions": {
       "close_this_session": "このセッションを閉じますか？",
+      "fork_failed": "セッションを複製できませんでした。何も作成されていません。",
+      "mode_change_failed": "モードの変更は取り消されました。",
+      "pin_change_failed": "ピン留めの変更は取り消されました。",
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
+      "reload_failed_busy": "セッションの再読み込みに失敗しました。エージェントが処理中の可能性があります。セッションがアイドルになってから再試行してください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
       "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
@@ -8390,6 +8398,9 @@
       "approval_required": "承認が必要です",
       "tool_approval": "ツールの承認：{{name}}",
       "unknown": "不明"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "移動は取り消されました。"
     }
   },
   "lib": {
@@ -9765,6 +9776,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "「{{name}}」を更新できませんでした",
       "turn_minimap": "会話のターンを移動",
       "turn_minimap_active": "{{current}} / {{count}} ターン：{{prompt}}",
       "turn_minimap_active_windowed": "読み込み済み {{count}} 件中のターン {{current}}: {{prompt}}",
@@ -14720,6 +14732,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} は無効です — ゲートウェイがオフラインです",
       "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
+      "recolor_sessions": "セッションの色を変更",
+      "send_to_instances": "インスタンスに送信",
       "submit_comments": "コメントを送信"
     },
     "popoutController": {

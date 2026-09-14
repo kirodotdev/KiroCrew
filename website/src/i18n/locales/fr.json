@@ -7449,6 +7449,7 @@
       "failed": "Échec",
       "not_connected": "non connecté",
       "send_a_copy_to": "Envoyer une copie à",
+      "send_failed": "Impossible d'envoyer une copie à cette instance.",
       "sent": "Envoyé",
       "sent_transcript_only": "Envoyé (transcription seule)",
       "transcript_only_hint": "Cette instance n'a pas pu restaurer le contexte complet de la conversation ; cette copie reprend uniquement à partir de la transcription.",
@@ -7462,6 +7463,7 @@
       "mark_as_read": "Marquer comme lu",
       "mark_as_unread": "Marquer comme non lu",
       "move_to_folder": "Déplacer vers un dossier…",
+      "offline_reason": "Passerelle hors ligne — les actions grisées nécessitent une connexion",
       "open_in_new_tab": "Ouvrir dans un onglet de session",
       "pin": "Épingler",
       "pop_out_to_window": "Détacher dans une fenêtre",
@@ -7477,7 +7479,9 @@
       "unpin": "Désépingler"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "Le changement de couleur a été annulé.",
       "custom_color": "Couleur personnalisée",
+      "custom_color_picker": "Sélecteur de couleur personnalisée",
       "hex_color_code": "Code couleur hexadécimal",
       "no_color": "Aucune couleur"
     },
@@ -8599,7 +8603,11 @@
     },
     "useSessionActions": {
       "close_this_session": "Fermer cette session ?",
+      "fork_failed": "Impossible de dupliquer cette session — rien n'a été créé.",
+      "mode_change_failed": "Le changement de mode a été annulé.",
+      "pin_change_failed": "La modification de l’épinglage a été annulée.",
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
+      "reload_failed_busy": "Le rechargement de la session a échoué : l’agent est peut-être en cours de tour. Réessayez lorsque la session est inactive.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passer en mode autopilote ? Les prochains messages utiliseront le comportement autopilote (planifier → approuver → exécuter).",
       "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard."
@@ -8620,6 +8628,9 @@
       "approval_required": "Approbation requise",
       "tool_approval": "Approbation d’outil : {{name}}",
       "unknown": "Inconnu"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Le déplacement a été annulé."
     }
   },
   "lib": {
@@ -10049,6 +10060,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Impossible de mettre à jour « {{name}} »",
       "turn_minimap": "Parcourir les tours de la conversation",
       "turn_minimap_active": "Tour {{current}} sur {{count}} : {{prompt}}",
       "turn_minimap_active_windowed": "Tour {{current}} sur {{count}} chargés : {{prompt}}",
@@ -15107,6 +15119,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} désactivé — passerelle hors ligne",
       "gateway_offline_reconnect": "Passerelle hors ligne — reconnecte-toi pour {{action}}",
+      "recolor_sessions": "recolorer des sessions",
+      "send_to_instances": "envoyer vers des instances",
       "submit_comments": "envoyer les commentaires"
     },
     "popoutController": {

@@ -3,6 +3,8 @@ import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { updateSlotFolder } from '../store/dashboardSlice'
+import { i18nT } from '../i18n/t'
+import { reportActionFailure } from '../utils/actionFailure'
 
 /** Options for a single move. */
 export type MoveSlotOptions = {
@@ -56,6 +58,7 @@ export function useMoveSlotToFolder(): (
       // fails would clobber B's optimistic update even though B succeeded.
       const current = store.getState().dashboard.slots.find(s => s.key === ctx.slotKey)?.folder_id ?? ''
       if (current === ctx.target) dispatch(updateSlotFolder({ key: ctx.slotKey, folderId: ctx.prev }))
+      reportActionFailure(i18nT('hooks.useMoveSlotToFolder.move_failed'), store.getState().dashboard.slots.find(s => s.key === ctx.slotKey)?.title ?? '')
     },
   })
   // `mutate` is referentially stable across renders, so the returned callback is too.

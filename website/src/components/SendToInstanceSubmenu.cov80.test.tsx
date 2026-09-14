@@ -1,5 +1,6 @@
 import { screen, fireEvent, waitFor } from '@testing-library/react'
-import { renderWithProviders } from '../test/helpers'
+import { renderWithProviders, createTestStore } from '../test/helpers'
+import { sseConnected } from '../store/dashboardSlice'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import { api } from '../api/client'
 import type { InstanceView } from '../api/client'
@@ -66,7 +67,11 @@ function instance(over: Partial<InstanceView> = {}): InstanceView {
 
 function mount(instances: InstanceView[], variant: 'dropdown' | 'context' = 'dropdown') {
   listInstances.mockResolvedValue({ instances } as never)
-  return renderWithProviders(<SendToInstanceSubmenu slotKey="zzq-slot" variant={variant} />)
+  // Seeded, not inherited: createTestStore models a DISCONNECTED dashboard, which
+  // the offline sink guard would refuse every send here asserts.
+  const store = createTestStore()
+  store.dispatch(sseConnected())
+  return renderWithProviders(<SendToInstanceSubmenu slotKey="zzq-slot" variant={variant} />, { store })
 }
 
 describe('SendToInstanceSubmenu', () => {

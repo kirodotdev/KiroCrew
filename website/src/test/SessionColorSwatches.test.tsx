@@ -6,7 +6,7 @@
  * through the mocked api; onPicked fires so a controlled menu can close).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import type { ReactNode } from 'react'
@@ -29,12 +29,14 @@ vi.mock('../hooks/useSessionPalette', () => ({
 }))
 
 import { store } from '../store'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import SessionColorSwatches from '../components/SessionColorSwatches'
 
 const SLOT = 'chat-color-1'
 // SessionColorSwatches writes via useMutation, so it needs a QueryClientProvider.
 const wrap = (ui: ReactNode) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  store.dispatch(sseConnected())
   return render(<QueryClientProvider client={qc}><Provider store={store}>{ui}</Provider></QueryClientProvider>)
 }
 
@@ -44,6 +46,61 @@ beforeEach(() => {
   mocks.clearSlotColor.mockResolvedValue({})
 })
 afterEach(() => vi.clearAllMocks())
+
+describe('SessionColorSwatches – a panel opened online must not write once the gateway drops', () => {
+  // A bare dispatch is never flushed into the tree, so the drop has to happen
+  // inside act() exactly as the SSE handler's would.
+  const goOffline = () => act(() => { store.dispatch(sseDisconnected()) })
+
+  it('refuses a hex commit on Enter after the connection drops', async () => {
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const hexInput = screen.getByLabelText('Hex color code') as HTMLInputElement
+    fireEvent.change(hexInput, { target: { value: '#A1B2C3' } })
+    // The panel is already open and legitimate; only now does the gateway go.
+    goOffline()
+    fireEvent.keyDown(screen.getByLabelText('Hex color code'), { key: 'Enter' })
+    await waitFor(() => expect(screen.getByLabelText('Hex color code')).toBeDisabled())
+    expect(mocks.setSlotColorHex).not.toHaveBeenCalled()
+  })
+
+  it('disables both custom inputs while offline, matching the dimmed buttons', () => {
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    goOffline()
+    // Control: the store really is offline, so a still-enabled input below is the
+    // component ignoring it rather than the dispatch not landing.
+    expect(store.getState().dashboard.connected).toBe(false)
+    expect(screen.getByLabelText('Hex color code')).toBeDisabled()
+    expect(screen.getByLabelText('Custom color picker')).toBeDisabled()
+  })
+
+  it('drops a drag commit already scheduled when the gateway goes mid-debounce', async () => {
+    // The one path `disabled` cannot cover: the PATCH is queued behind a 300ms
+    // timer, so the drop lands between the gesture and the write.
+    vi.useFakeTimers()
+    try {
+      wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+      fireEvent.click(screen.getByLabelText('Custom color'))
+      const wheel = document.querySelector('input[type="color"]') as HTMLInputElement
+      fireEvent.change(wheel, { target: { value: '#333333' } })
+      goOffline()
+      await vi.advanceTimersByTimeAsync(350)
+      expect(mocks.setSlotColorHex).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still commits while connected, so the guard is not blanket', async () => {
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const hexInput = screen.getByLabelText('Hex color code') as HTMLInputElement
+    fireEvent.change(hexInput, { target: { value: '#A1B2C3' } })
+    fireEvent.keyDown(hexInput, { key: 'Enter' })
+    await waitFor(() => expect(mocks.setSlotColorHex).toHaveBeenCalledWith(SLOT, '#a1b2c3'))
+  })
+})
 
 describe('SessionColorSwatches', () => {
   it('renders a No-color button plus palette swatches', () => {
@@ -73,6 +130,17 @@ describe('SessionColorSwatches', () => {
     fireEvent.click(cell)
     expect(cell.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByLabelText('Hex color code')).toBeTruthy()
+  })
+
+  it('the panel toggle and the colour wheel do NOT share one accessible name', () => {
+    // On base both resolved components.sessionColorSwatches.custom_color, so a
+    // screen reader announced two different controls identically.
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const toggle = screen.getByLabelText('Custom color')
+    const wheel = screen.getByLabelText('Custom color picker')
+    expect(toggle).not.toBe(wheel)
+    expect(screen.getAllByLabelText('Custom color')).toHaveLength(1)
   })
 
   it('committing a hex via Enter persists lowercase through api.setSlotColorHex', async () => {

@@ -7449,6 +7449,7 @@
       "failed": "Falló",
       "not_connected": "no conectado",
       "send_a_copy_to": "Enviar una copia a",
+      "send_failed": "No se pudo enviar una copia a esa instancia.",
       "sent": "Enviado",
       "sent_transcript_only": "Enviado (solo transcripción)",
       "transcript_only_hint": "Esa instancia no pudo restaurar el contexto completo de la conversación, así que esta copia se reanuda solo desde la transcripción.",
@@ -7462,6 +7463,7 @@
       "mark_as_read": "Marcar como leída",
       "mark_as_unread": "Marcar como no leída",
       "move_to_folder": "Mover a la carpeta…",
+      "offline_reason": "Gateway sin conexión — las acciones atenuadas necesitan conexión",
       "open_in_new_tab": "Abrir en una pestaña de sesión",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
@@ -7477,7 +7479,9 @@
       "unpin": "Dejar de fijar"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "Se deshizo el cambio de color.",
       "custom_color": "Color personalizado",
+      "custom_color_picker": "Selector de color personalizado",
       "hex_color_code": "Código de color hexadecimal",
       "no_color": "Sin color"
     },
@@ -8599,7 +8603,11 @@
     },
     "useSessionActions": {
       "close_this_session": "¿Cerrar esta sesión?",
+      "fork_failed": "No se pudo duplicar esta sesión: no se creó nada.",
+      "mode_change_failed": "Se deshizo el cambio de modo.",
+      "pin_change_failed": "Se deshizo el cambio de anclaje.",
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
+      "reload_failed_busy": "No se pudo recargar la sesión: el agente puede estar a mitad de un turno. Inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
       "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar."
@@ -8620,6 +8628,9 @@
       "approval_required": "Se requiere aprobación",
       "tool_approval": "Aprobación de herramienta: {{name}}",
       "unknown": "Desconocido"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Se deshizo el movimiento."
     }
   },
   "lib": {
@@ -10049,6 +10060,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "No se pudo actualizar “{{name}}”",
       "turn_minimap": "Navegar por los turnos de la conversación",
       "turn_minimap_active": "Turno {{current}} de {{count}}: {{prompt}}",
       "turn_minimap_active_windowed": "Turno {{current}} de {{count}} cargados: {{prompt}}",
@@ -15107,6 +15119,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
+      "recolor_sessions": "recolorear sesiones",
+      "send_to_instances": "enviar a instancias",
       "submit_comments": "enviar comentarios"
     },
     "popoutController": {

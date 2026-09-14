@@ -7449,6 +7449,7 @@
       "failed": "Non riuscito",
       "not_connected": "non connesso",
       "send_a_copy_to": "Invia una copia a",
+      "send_failed": "Non è stato possibile inviare una copia a quell'istanza.",
       "sent": "Inviato",
       "sent_transcript_only": "Inviato (solo trascrizione)",
       "transcript_only_hint": "Quell'istanza non ha potuto ripristinare il contesto completo della conversazione, quindi questa copia riprende solo dalla trascrizione.",
@@ -7462,6 +7463,7 @@
       "mark_as_read": "Segna come letto",
       "mark_as_unread": "Segna come non letto",
       "move_to_folder": "Sposta nella cartella…",
+      "offline_reason": "Gateway offline — le azioni attenuate richiedono una connessione",
       "open_in_new_tab": "Apri in una scheda di sessione",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
@@ -7477,7 +7479,9 @@
       "unpin": "Non fissare"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "La modifica del colore è stata annullata.",
       "custom_color": "Colore personalizzato",
+      "custom_color_picker": "Selettore di colore personalizzato",
       "hex_color_code": "Codice colore esadecimale",
       "no_color": "Nessun colore"
     },
@@ -8599,7 +8603,11 @@
     },
     "useSessionActions": {
       "close_this_session": "Chiudere questa sessione?",
+      "fork_failed": "Non è stato possibile duplicare questa sessione: non è stato creato nulla.",
+      "mode_change_failed": "Il cambio di modalità è stato annullato.",
+      "pin_change_failed": "La modifica del fissaggio è stata annullata.",
       "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
+      "reload_failed_busy": "Ricaricamento della sessione non riuscito: l’agente potrebbe essere a metà di un turno. Riprova quando la sessione è inattiva.",
       "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passare alla modalità pilota automatico? I messaggi successivi useranno il comportamento del pilota automatico (pianifica → approva → esegui).",
       "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat."
@@ -8620,6 +8628,9 @@
       "approval_required": "Approvazione richiesta",
       "tool_approval": "Approvazione dello strumento: {{name}}",
       "unknown": "Sconosciuto"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Lo spostamento è stato annullato."
     }
   },
   "lib": {
@@ -10049,6 +10060,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Impossibile aggiornare “{{name}}”",
       "turn_minimap": "Naviga tra i turni della conversazione",
       "turn_minimap_active": "Turno {{current}} di {{count}}: {{prompt}}",
       "turn_minimap_active_windowed": "Turno {{current}} di {{count}} caricati: {{prompt}}",
@@ -15106,6 +15118,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} disattivato — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — riconnettiti per {{action}}",
+      "recolor_sessions": "ricolorare le sessioni",
+      "send_to_instances": "inviare alle istanze",
       "submit_comments": "inviare i commenti"
     },
     "popoutController": {

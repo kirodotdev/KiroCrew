@@ -10,7 +10,12 @@ import {
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem,
 } from './ui/context-menu'
 
+import OfflineMenuReason from './OfflineMenuReason'
 import { i18nT } from '../i18n/t'
+import { offlineProps } from '../utils/offline'
+import { useConnected } from '../hooks/useConnected'
+import { reportActionFailure } from '../utils/actionFailure'
+import { findReport } from '../utils/errorReport'
 
 /** Per-instance outcome of the most recent send attempt in this open menu. */
 type SendState =
@@ -137,6 +142,9 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
 }
 
 export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstanceSubmenuProps) {
+  // Read here rather than taken as a prop: every caller wants the same gate, and
+  // an optional one left a caller ungated.
+  const connected = useConnected()
   const [states, setStates] = useState<Record<string, SendState>>({})
 
   const { data } = useQuery({
@@ -162,6 +170,16 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
       }))
     },
     onError: (e, { id }) => {
+      const detail = e instanceof Error && e.message
+        ? e.message
+        : i18nT('components.sendToInstanceSubmenu.unknown_error')
+      // The per-row tooltip keeps the peer's own words; the page notice gets a
+      // translated sentence, with the raw text reachable through the journal.
+      reportActionFailure(
+        i18nT('components.sendToInstanceSubmenu.send_failed'),
+        undefined,
+        findReport(detail),
+      )
       setStates(s => ({
         ...s,
         [id]: {
@@ -169,9 +187,7 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
           // The API client throws ApiError (an Error subclass) carrying the
           // peer's own message, so this surfaces "peer refused the transfer"
           // rather than a generic failure.
-          message: e instanceof Error && e.message
-            ? e.message
-            : i18nT('components.sendToInstanceSubmenu.unknown_error'),
+          message: detail,
         },
       }))
     },
@@ -185,18 +201,26 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
 
+  // Neither held closed nor `disabled`: Radix drops a disabled trigger from
+  // roving focus, and closing the flyout mid-browse yanks it from the pointer.
   return (
     <Sub>
-      <SubTrigger>
+      <SubTrigger
+        {...offlineProps(connected, i18nT('utils.offline.send_to_instances'))}
+        className={connected ? undefined : 'opacity-40 text-muted'}
+      >
         <Send size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{i18nT('components.sendToInstanceSubmenu.send_a_copy_to')}</span>
         <ChevronRight size={12} className="text-muted" />
       </SubTrigger>
       <SubContent className="min-w-[210px] max-h-[280px] overflow-y-auto">
+        {!connected && <OfflineMenuReason testId="send-instance-offline-reason" />}
         <InstanceSendItems
           instances={instances}
           states={states}
-          onSend={(id) => sendMutation.mutate({ id })}
+          // Refused at the sink as well as the trigger: the touch submenu opened
+          // regardless until now, and its sibling FolderMoveSubmenu guards onPick.
+          onSend={(id) => { if (!connected) return; sendMutation.mutate({ id }) }}
           Item={Item}
         />
       </SubContent>
