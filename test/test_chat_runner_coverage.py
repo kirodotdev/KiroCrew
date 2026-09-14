@@ -4596,3 +4596,39 @@ class TestPromptSubmitTranscriptRead:
             "the re-injection probe read the transcript on the event-loop thread; "
             "it must go through asyncio.to_thread"
         )
+
+
+# ── SessionClosingError shutdown race ─────────────────────────────────────
+
+
+class TestSessionClosingQuietAbort:
+    """A gateway-shutdown race during turn prep is a quiet abort, not an error.
+
+    Two dashboard slots were mid ``get_or_create`` when a restart's
+    ``close_all`` set ``_closing``; the allocation gate raised
+    ``SessionClosingError`` (by design) but the generic terminal handler then
+    logged an ERROR traceback, appended an ❌ error card to the slot, and
+    recorded a spurious session failure. The dedicated arm must swallow it: no
+    card, no record_failure, no exception out of ``_run_chat``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_closing_appends_no_error_card(self, tmp_path):
+        from kiro_crew.session import SessionClosingError
+
+        state, _client = _runner_state(tmp_path)
+        state.sessions.get_or_create = AsyncMock(
+            side_effect=SessionClosingError(
+                "SessionManager began closing during provider startup; "
+                "refusing to register a session behind the shutdown snapshot"
+            )
+        )
+        slot = _slot()
+
+        await _drive(state, slot, "hello")
+
+        assert _errors(slot) == [], (
+            "a shutdown race during session creation must not surface an "
+            "error card in the chat slot"
+        )
+        state.sessions.record_failure.assert_not_awaited()
