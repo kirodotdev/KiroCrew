@@ -1,7 +1,7 @@
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import SlotTagPopover, { compareRevisions, shouldSeedAcceptedSnapshot } from './SlotTagPopover'
-import { sseSlots } from '../store/dashboardSlice'
+import { sseSlots, sseConnected } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import type { ChatSlot, ChatTag } from '../types'
@@ -33,6 +33,9 @@ function mount(
   tagsRevision?: string,
 ) {
   const store = createTestStore()
+  // These cases assert the WRITES land, and the picker gates them on a live
+  // gateway; createTestStore() starts disconnected.
+  store.dispatch(sseConnected())
   store.dispatch(sseSlots([
     { key: 'zzq-slot', messages: 0, running: false, tags: slotTags, tags_revision: tagsRevision } as ChatSlot,
     ...extraSlots,
