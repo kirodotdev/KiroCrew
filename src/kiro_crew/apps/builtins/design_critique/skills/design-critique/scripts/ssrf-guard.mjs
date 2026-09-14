@@ -108,6 +108,17 @@ async function hostVerdict(hostname) {
 // request/redirect/subresource is re-resolved here; a public host is allowed,
 // an internal one is aborted.
 export async function installSsrfGuard(target, allowOrigin = null) {
+  // HTTP route() does not intercept WebSockets, so a rendered page could open a
+  // ws:// to an internal host and read it back. Filtering that egress needs
+  // routeWebSocket (Playwright >= 1.48). When this build lacks it, REFUSE the
+  // capture rather than silently skipping the guard: fail closed, never open.
+  // Checked first so no half-installed guard is left on the context.
+  if (typeof target.routeWebSocket !== 'function') {
+    throw new Error(
+      'ssrf-guard: this Playwright build has no routeWebSocket (added in 1.48); ' +
+      'refusing to capture because WebSocket egress cannot be filtered — upgrade playwright'
+    )
+  }
   await target.route('**/*', async (route) => {
     try {
       const u = new URL(route.request().url())
@@ -122,33 +133,31 @@ export async function installSsrfGuard(target, allowOrigin = null) {
       return route.abort('blockedbyclient')
     }
   })
-  // HTTP route() does not intercept WebSockets, so a rendered page could open a
-  // ws:// to an internal host and read it back. Apply the same host verdict to
-  // every WebSocket: connect to the server only when allowed, else close.
-  if (typeof target.routeWebSocket === 'function') {
-    await target.routeWebSocket(/.*/, (ws) => {
-      void (async () => {
-        try {
-          const u = new URL(ws.url())
-          const verdict = await hostVerdict(u.hostname)
-          // Loopback is scoped to the allowed base's host:port (schemes differ
-          // for ws vs http, so origin can't match) — the preview server's own
-          // HMR socket is permitted; any other loopback port/host is not.
-          let sameBase = false
-          if (allowOrigin) {
-            try {
-              const b = new URL(allowOrigin)
-              sameBase = b.hostname === u.hostname && (b.port || '') === (u.port || '')
-            } catch { sameBase = false }
-          }
-          const ok = verdict === 'public' || (verdict === 'loopback' && sameBase)
-          if (ok) ws.connectToServer()
-          else ws.close({ code: 1008, reason: 'blockedbyclient' })
-        } catch {
-          ws.close({ code: 1008, reason: 'blockedbyclient' })
+  // Apply the same host verdict to every WebSocket: connect to the server only
+  // when allowed, else close. The fail-closed capability check at the top of
+  // this function guarantees routeWebSocket exists here.
+  await target.routeWebSocket(/.*/, (ws) => {
+    void (async () => {
+      try {
+        const u = new URL(ws.url())
+        const verdict = await hostVerdict(u.hostname)
+        // Loopback is scoped to the allowed base's host:port (schemes differ
+        // for ws vs http, so origin can't match) — the preview server's own
+        // HMR socket is permitted; any other loopback port/host is not.
+        let sameBase = false
+        if (allowOrigin) {
+          try {
+            const b = new URL(allowOrigin)
+            sameBase = b.hostname === u.hostname && (b.port || '') === (u.port || '')
+          } catch { sameBase = false }
         }
-      })()
-    })
-  }
+        const ok = verdict === 'public' || (verdict === 'loopback' && sameBase)
+        if (ok) ws.connectToServer()
+        else ws.close({ code: 1008, reason: 'blockedbyclient' })
+      } catch {
+        ws.close({ code: 1008, reason: 'blockedbyclient' })
+      }
+    })()
+  })
 }
 
