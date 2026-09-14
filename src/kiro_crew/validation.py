@@ -189,6 +189,12 @@ USER_MAX_LEN = 20
 # patterns in this file (e.g. ``CHANNEL_ID_RE``).
 SLACK_THREAD_TS_RE = re.compile(r"^[0-9]{10,}\.[0-9]{6,}$")
 
+#: X-Session-Key namespace the supervising Kiro CLI uses for its own ACP sessions
+#: when it drives a ``kirocrew gateway --supervised`` sidecar (Phase 3 bridge):
+#: ``kiro-cli:<acp sessionId>``. Recognised as an established session ONLY by a
+#: supervised gateway (see ``_recognize_session`` in ``handlers/cron.py``).
+SUPERVISOR_SESSION_KEY_PREFIX = "kiro-cli:"
+
 
 def infer_use_case(session_key: str) -> str:
     """Map a KiroCrew session_key to a categorical useCase label.

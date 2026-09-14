@@ -65,6 +65,7 @@ from kiro_crew.validation import (
     MAX_CRON_MESSAGE,
     MAX_SHORT_STRING,
     SLACK_THREAD_TS_RE,
+    SUPERVISOR_SESSION_KEY_PREFIX,
     FieldSpec,
     ValidationError,
     normalize_lesson_category,
@@ -2250,6 +2251,25 @@ async def _recognize_session(
     # so widening the namespace does not widen memory writes to ephemeral
     # sessions.
     is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
+    # The supervising Kiro CLI (Phase 3 bridge) names its ACP sessions
+    # ``kiro-cli:<sessionId>`` on X-Session-Key. Those sessions live in the
+    # CLI, not in this gateway: they have no slot, no restricted-key entry
+    # and no JSONL here, so every branch below would answer
+    # ``unknown_session`` and no memory/lesson/ledger/cron write could ever
+    # succeed through the bridge. Recognise the namespace ONLY on a
+    # supervised gateway (``state.supervised``), where the only caller that
+    # can reach these routes is the loopback parent holding the internal
+    # secret — the same trust that already admits any ``slack:``-namespaced
+    # key on an ordinary gateway. An unsupervised gateway is unchanged.
+    if getattr(state, "supervised", False) and sk.startswith(SUPERVISOR_SESSION_KEY_PREFIX):
+        _sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="allowed",
+            source="dashboard",
+            resources="supervisor_session",
+        )
+        return None
     # Only consult the on-disk JSONL when the cheaper in-memory checks all
     # fail. ``_probe_persisted_session()`` performs synchronous filesystem
     # I/O (path resolution plus a bounded metadata head read), so it runs

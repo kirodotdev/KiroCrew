@@ -3887,6 +3887,11 @@ class DashboardState:
         # while session restoration and tunnel setup finish. The gateway may
         # defer restored channel agents until its memory task completes.
         self.ready: bool = False
+        # True when this gateway is a supervised loopback child of the Kiro CLI
+        # (``kirocrew gateway --supervised``). Set by ``start_dashboard``. Read by
+        # the session-recognition gate so the supervising CLI's ``kiro-cli:<id>``
+        # session keys count as established sessions (they have no slot here).
+        self.supervised: bool = False
         self.memory_startup_task: "asyncio.Task[None] | None" = None
         # Wired by server.py after the gateway-owned prerequisite service is
         # constructed. The central chat runner reads this latch so every turn

@@ -3895,6 +3895,7 @@ async def start_dashboard(
         slack_client=slack_client,
         owner_id=owner_id,
     )
+    state.supervised = supervised
 
     # --- Pending-skill approval notifications ---
     # A staged candidate (new OR update) stays invisible until a human approves
