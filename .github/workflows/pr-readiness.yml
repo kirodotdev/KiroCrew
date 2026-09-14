@@ -1120,7 +1120,46 @@ jobs:
             state="checking"
             label="readiness: checking"
             status_state="pending"
-            description="${#waiting[@]} readiness check(s) still pending"
+            # Name the pending lanes, not just their count. A lane that has
+            # produced zero runs for an immutable head can never produce one
+            # without a new commit, so naming it (e.g. "Internal Content Scan
+            # (not started)") lets a human re-run THAT lane instead of pushing
+            # an empty commit that forces a full re-review. The commit-status
+            # description has a hard 140-char API limit (the POST silently
+            # truncates past it), so the list is capped: names until the budget
+            # is spent, then "+N more", with the count kept as the prefix. This
+            # is diagnostic only -- it changes no lane's pass/pending/fail
+            # classification and no state that resolves or blocks; the same
+            # `waiting[]` that sets the count sets the names.
+            count="${#waiting[@]}"
+            names=""
+            shown=0
+            for item in "${waiting[@]}"; do
+              candidate="$names"
+              if [ -n "$candidate" ]; then
+                candidate="$candidate, $item"
+              else
+                candidate="$item"
+              fi
+              # Reserve room for the count prefix, the "; waiting on " joiner
+              # and a possible " (+N more)" suffix so the final string cannot
+              # exceed the 140-char commit-status limit. The count prefix runs
+              # to ~35 chars and the suffix to ~11, so a 70-char names budget
+              # leaves margin for both.
+              if [ "${#candidate}" -gt 70 ]; then
+                break
+              fi
+              names="$candidate"
+              shown=$(( shown + 1 ))
+            done
+            description="$count readiness check(s) still pending"
+            if [ -n "$names" ]; then
+              description="$description; waiting on $names"
+              remaining=$(( count - shown ))
+              if [ "$remaining" -gt 0 ]; then
+                description="$description (+$remaining more)"
+              fi
+            fi
           else
             # Fork PRs reach this branch too: the AI code reviews run on forks
             # via the Stage-2 fork-*-review.yml pipeline and are evaluated above
