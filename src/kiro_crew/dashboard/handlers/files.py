@@ -7094,14 +7094,56 @@ async def api_file_sheet(request: web.Request) -> web.Response:
 _GIT_PANEL_STDOUT_CAP = 8 * 1024 * 1024
 
 
+def _project_directory_absent(path: str) -> bool:
+    """Return whether *path* is missing or is not a directory.
+
+    A permission or other operational failure is not absence: the caller keeps
+    the original Git failure and returns 503 instead of claiming ``repo: false``.
+    """
+    try:
+        return not _stat_mod.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        return True
+    except OSError:
+        return False
+
+
+_GIT_PROBE_STDERR_CAP = 4096
+
+
+def _probe_git_dir(base: str, env: dict) -> tuple[int, str]:
+    """Ask sandboxed Git whether *base* belongs to a repository.
+
+    ``rev-parse --git-dir`` owns repository discovery. Stdout is unused and
+    discarded. Stderr is hard-capped before decoding so a repository cannot make
+    this polling endpoint buffer an unbounded diagnostic.
+    """
+    rc, stderr, truncated = _run_git_bounded(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=base,
+        env=env,
+        timeout=5,
+        cap=_GIT_PROBE_STDERR_CAP,
+        capture="stderr",
+    )
+    if truncated:
+        return -9, ""
+    return rc, stderr
+
+
 def _run_git_bounded(
-    args: list[str], cwd: str, env: dict, timeout: float,
+    args: list[str],
+    cwd: str,
+    env: dict,
+    timeout: float,
     cap: int = _GIT_PANEL_STDOUT_CAP,
     decode_errors: str = "replace",
+    capture: str = "stdout",
 ) -> tuple[int, str, bool]:
-    """Run git capturing at most ``cap`` bytes of stdout.
+    """Run git capturing at most ``cap`` bytes from one output stream.
 
-    Returns ``(returncode, stdout_text, truncated)``. When the process
+    ``capture`` is ``"stdout"`` or ``"stderr"``; the other stream is discarded.
+    Returns ``(returncode, captured_text, truncated)``. When the process
     outlives ``timeout`` or overflows ``cap`` it is killed and reported as
     truncated with a nonzero returncode -- callers already treat nonzero as
     "no data", which is the safe degraded answer for a pathological repo.
@@ -7111,6 +7153,9 @@ def _run_git_bounded(
     ``"surrogateescape"`` so non-UTF-8 path bytes round-trip through
     ``os.fsencode`` (see :func:`kiro_crew.subprocess_utf8.utf8_path_stdout`).
     """
+    if capture not in ("stdout", "stderr"):
+        raise ValueError(f"unsupported capture stream: {capture}")
+
     # OS-sandbox + credential-scrubbed env chokepoint (worktree.py's _run_git
     # pattern): the repository content is agent-influenced, and git filter
     # drivers (filter.<name>.clean/process from .git/config) can run during
@@ -7126,8 +7171,11 @@ def _run_git_bounded(
     try:
         try:
             proc = popen_limited(
-                argv, cwd=cwd, env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                argv,
+                cwd=cwd,
+                env=env,
+                stdout=(subprocess.PIPE if capture == "stdout" else subprocess.DEVNULL),
+                stderr=(subprocess.PIPE if capture == "stderr" else subprocess.DEVNULL),
             )
         except OSError:
             # The cwd (project dir) can vanish between the handler's isdir
@@ -7139,9 +7187,10 @@ def _run_git_bounded(
 
         def _drain() -> None:
             nonlocal overflow
-            assert proc.stdout is not None
+            stream = proc.stdout if capture == "stdout" else proc.stderr
+            assert stream is not None
             while True:
-                chunk = proc.stdout.read(65536)
+                chunk = stream.read(65536)
                 if not chunk:
                     return
                 if len(buf) + len(chunk) > cap:
@@ -7353,14 +7402,40 @@ async def api_project_git_status(request: web.Request) -> web.Response:
             # panel can open them.
             "-c", "core.quotePath=false",
         ]
-        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+        _env = {
+            **os.environ,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "LC_ALL": "C",
+            "LANGUAGE": "C",
+        }
 
-        # Check if it's a repo
-        probe_rc, _probe_out, _ = _run_git_bounded(
-            [*_git_cmd, "rev-parse", "--git-dir"], cwd=base, env=_env, timeout=5,
-        )
+        # Git owns repository discovery inside the sandbox. Its English
+        # not-a-repository verdict is confirmed absence. Every other probe
+        # failure remains an operational outage unless the directory vanished.
+        probe_rc, probe_err = _probe_git_dir(base, _env)
         if probe_rc != 0:
-            return {"repo": False, "files": []}
+            if any(
+                line.lstrip().startswith("fatal: not a git repository")
+                for line in probe_err.lower().splitlines()
+            ):
+                return {"repo": False, "files": []}
+            return {"_status_unavailable": True}
+
+        # ``rev-parse --git-dir`` proves this is a repository, not that HEAD is
+        # usable. Keep this separate from status: with
+        # ``HEAD = ref: refs/heads/bad.lock``, the exact
+        # ``git status --porcelain=v1 -b`` command exits 0 with bogus output
+        # ``## A  a.txt``, while ``git branch --show-current`` exits 128. The
+        # ``test_lock_suffix_head_ref_matches_git_probe`` regression pins this
+        # state. Detached and unborn repositories both return success.
+        head_rc, _head_out, _ = _run_git_bounded(
+            [*_git_cmd, "branch", "--show-current"],
+            cwd=base,
+            env=_env,
+            timeout=5,
+        )
+        if head_rc != 0:
+            return {"_status_unavailable": True}
 
         # Refuse repos whose own config names a content-filter driver: status
         # re-hashes modified files through ``filter.<name>.clean``, which would
@@ -7372,7 +7447,9 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         root_rc, root_out, _ = _run_git_bounded(
             [*_git_cmd, "rev-parse", "--show-toplevel"], cwd=base, env=_env, timeout=5,
         )
-        repo_root = root_out.strip() if root_rc == 0 else base
+        repo_root = root_out.strip()
+        if root_rc != 0 or not repo_root:
+            return {"_status_unavailable": True}
 
         # Branch + ahead/behind via status -b
         status_rc, status_out, _ = _run_git_bounded(
@@ -7380,7 +7457,7 @@ async def api_project_git_status(request: web.Request) -> web.Response:
             cwd=base, env=_env, timeout=10,
         )
         if status_rc != 0:
-            return {"repo": True, "repoRoot": repo_root, "files": []}
+            return {"_status_unavailable": True}
 
         lines = status_out.splitlines()
         branch = None
@@ -7496,6 +7573,22 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         return result
 
     result = await asyncio.to_thread(_run)
+    # A project directory can vanish after the initial directory check and
+    # surface from process creation as ENOENT/ENOTDIR (FileNotFoundError or
+    # NotADirectoryError), including Windows errors 2, 3, and 267. Re-check the
+    # authoritative path once here so every spawn/status stage has the same
+    # classification: absence is a normal no-repository result; only a failure
+    # while the directory still exists is an operational outage.
+    if await asyncio.to_thread(_project_directory_absent, base):
+        return web.json_response({"repo": False, "files": []})
+    if result.pop("_status_unavailable", False):
+        return web.json_response(
+            {
+                "error": "Couldn't read the repository status.",
+                "code": "git_status_unavailable",
+            },
+            status=503,
+        )
     # Egress redaction: repo content (paths, branch label, repo root) is
     # agent-influenceable and this response body is rendered by the dashboard,
     # so it goes through the same redaction as api_project_git. Normal values

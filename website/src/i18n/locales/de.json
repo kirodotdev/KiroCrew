@@ -8282,12 +8282,18 @@
       "empty_state": "Keine Änderungen oder Commits vorhanden.",
       "just_now": "gerade eben",
       "loading": "wird geladen...",
+      "not_a_repository": "Kein Git-Repository",
+      "not_a_repository_help": "Dieser Projektordner ist kein Git-Repository. Wenn sich das Repository in einem Unterordner befindet, klicken Sie auf den Ordnernamen unter dem Nachrichtenfeld.",
       "no_project": "Kein Projektordner für diese Sitzung festgelegt.",
       "refresh": "Aktualisieren",
       "title": "Git",
       "uncommitted": "{{count}} nicht committet",
-      "status_failed": "Der Repository-Status konnte nicht gelesen werden.",
+      "branch_unavailable": "Branch nicht verfügbar",
+      "status_failed": "Der Repository-Status konnte nicht gelesen werden. Der Commit-Verlauf ist möglicherweise veraltet.",
       "log_failed": "Das Commit-Protokoll konnte nicht gelesen werden."
+    },
+    "workspaceTree": {
+      "status_failed": "Der Repository-Status konnte nicht gelesen werden."
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

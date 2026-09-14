@@ -27,7 +27,9 @@ import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { i18nT } from '../i18n/t'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel, type ContributedFileMenuItem, type ReportFileMenuError } from '../apps/fileMenuContributions'
 import { downloadFileToDisk } from '../utils/fileReadUrl'
+import { findReport } from '../utils/errorReport'
 import { normalizeWindowsPath } from '../utils/fileTokens'
+import { errMessage } from '../utils/thunkError'
 import { recallExpandedPaths, rememberExpandedPaths } from './treeExpansionMemory'
 import { TreeSkeleton } from './tree'
 
@@ -330,7 +332,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     refetchInterval: 10_000,
     refetchOnWindowFocus: true,
   })
-  const { data: status } = useQuery({
+  const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir && (mode === 'changed' || !!tree?.repo),
@@ -614,6 +616,24 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     ),
     [],
   )
+
+  // A failed status request is terminal for this load. Changed mode has no
+  // other payload that can make the tree ready, so reuse the Git panel's
+  // unavailable notice instead of leaving the loading shimmer on screen.
+  if (mode === 'changed' && statusError) {
+    return (
+      <div className="h-full p-2">
+        <ErrorNotice
+          variant="inline"
+          className="whitespace-normal"
+          message={i18nT('components.workspaceTree.status_failed')}
+          report={findReport(errMessage(statusError))}
+          askAgent
+          testId="workspace-tree-status-error"
+        />
+      </div>
+    )
+  }
 
   // Data still in flight: an empty tree is indistinguishable from an empty
   // workspace, so show shimmer rows until the first payload decides which.

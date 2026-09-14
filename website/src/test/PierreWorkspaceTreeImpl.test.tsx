@@ -346,6 +346,62 @@ describe('PierreWorkspaceTreeImpl — changed mode', () => {
     await waitFor(() => expect(screen.getByText('Working tree clean')).toBeInTheDocument())
     expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
   })
+
+  it('reports a changed-mode 503 once with its own copy and structured agent handoff', async () => {
+    const errorReport = await import('../utils/errorReport')
+    const serverMessage = 'server-only workspace status detail'
+    errorReport.__resetErrorJournalForTests()
+    errorReport.__resetNavSeamForTests()
+    sessionStorage.clear()
+    errorReport.installSoftNavigate(() => {})
+
+    try {
+      errorReport.recordError({
+        source: 'api',
+        message: serverMessage,
+        status: 503,
+        code: 'git_status_unavailable',
+        endpoint: '/api/project/git/status',
+      })
+      vi.mocked(api.projectGitStatus).mockRejectedValue(
+        Object.assign(new Error(serverMessage), {
+          status: 503,
+          code: 'git_status_unavailable',
+        }),
+      )
+
+      const direct = renderTree({ mode: 'changed' })
+
+      const notice = await screen.findByTestId('workspace-tree-status-error')
+      expect(notice).toHaveTextContent('Couldn’t read the repository status.')
+      expect(notice).not.toHaveTextContent('Commit history may be out of date.')
+      expect(screen.queryByRole('status', { name: 'Loading workspace…' })).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Ask the agent' }))
+      const prompt = errorReport.consumeChatHandoff()
+      expect(prompt).toContain('- Request: /api/project/git/status -> HTTP 503')
+      expect(prompt).toContain('- Code: git_status_unavailable')
+      expect(prompt).toContain(`- Message: ${serverMessage}`)
+
+      direct.unmount()
+      const { default: FileBrowserRail } = await import('../pages/chat/FileBrowserRail')
+      const railClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <QueryClientProvider client={railClient}>
+          <FileBrowserRail projectDir={ROOT} onFileOpen={vi.fn()} />
+        </QueryClientProvider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Changed' }))
+
+      const hostedNotice = await screen.findByTestId('workspace-tree-status-error')
+      expect(hostedNotice).toHaveTextContent('Couldn’t read the repository status.')
+      expect(screen.getAllByRole('alert')).toHaveLength(1)
+    } finally {
+      errorReport.__resetErrorJournalForTests()
+      errorReport.__resetNavSeamForTests()
+      sessionStorage.clear()
+    }
+  })
 })
 
 describe('PierreWorkspaceTreeImpl — selection wiring', () => {

@@ -512,11 +512,11 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             </button>
           </div>
         </div>
-        {/* A failed status read is surfaced, not swallowed: without this the
-            Changed count silently reads 0, which is indistinguishable from a
-            clean tree. Its own row under the header (the 40px header is full).
-            File rail, no draft → hand-off on. */}
-        {statusError && (
+        {/* In All mode, a failed status read must still explain why the Changed
+            count is unavailable. In Changed mode the Pierre tree owns this same
+            query failure and renders the one-sentence notice plus its structured
+            agent handoff; mounting this row there would duplicate one failure. */}
+        {statusError && !changedMode && (
           <div className="px-2 pt-1.5 shrink-0">
             <ErrorNotice variant="inline" message={t('pages.chat.fileBrowserRail.git_status_failed')} askAgent />
           </div>
