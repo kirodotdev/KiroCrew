@@ -356,6 +356,7 @@ function applyHeight(
   manualHeight: number | null,
   prefillHint?: boolean,
   parked?: boolean,
+  caretFollow?: boolean,
 ) {
   if (parked) {
     // Clipped out of layout — there is nothing valid to measure. Drop the memo
@@ -390,9 +391,18 @@ function applyHeight(
     markComposerResize()
   }
   // When typing at the end of overflowing content, snap to the bottom so the caret
-  // stays visible.
+  // stays visible. `caretFollow` is false for exactly one caller: the value
+  // effect re-measuring a value the PARENT set -- a hand-off prefill, a slot's
+  // draft restore. Snapping there yanked the view to the LAST line of a seeded
+  // prompt (an error hand-off landed showing only the closing fence of its
+  // report, with the sentence that says what broke scrolled out of sight), and
+  // the caret was not at risk: it only moves when the user edits, and a real
+  // edit comes through the `input` event, which follows it. A re-measure at an
+  // UNCHANGED value -- the cap change when the prefill hint expires, unparking,
+  // a width change -- is a viewport change under a caret the user placed, so it
+  // still follows.
   const caretAtEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
-  if (document.activeElement === el && el.scrollHeight > el.clientHeight && caretAtEnd) {
+  if (caretFollow && document.activeElement === el && el.scrollHeight > el.clientHeight && caretAtEnd) {
     el.scrollTop = el.scrollHeight
   }
 }
@@ -2330,7 +2340,8 @@ function ChatInput({
   }, [value, autoFocusKey, composerControl])
 
   const handleInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
-    if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint, parkedRef.current)
+    // This IS the user's edit, so the caret is followed.
+    if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint, parkedRef.current, true)
   }, [manualHeight, prefillHint])
 
   const setTextUndoable = useCallback((text: string) => {
@@ -3265,9 +3276,35 @@ function ChatInput({
 
   // Auto-resize textarea to fit content. Moved down here from the other composer
   // effects so it can name `textareaParked` — see the note at that site.
+  const lastMeasuredValueRef = useRef(value)
   useEffect(() => {
-    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked)
+    // A changed value here was set by the parent (the user's own edits already
+    // followed the caret in handleInput); an unchanged one means the cap, the
+    // parking or the manual height moved under text the user placed the caret
+    // in. See `applyHeight` for why only the former must not follow the caret.
+    const valueChanged = lastMeasuredValueRef.current !== value
+    lastMeasuredValueRef.current = value
+    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked, !valueChanged)
   }, [value, prefillHint, manualHeight, textareaParked])
+
+  // A pre-filled prompt is read from its first line. When the seed REPLACES what
+  // the box held, a box that was scrolled for the previous text keeps that
+  // offset across the value swap, so the new prompt's first line can start above
+  // the fold: reset once, when the hint arrives with the seed. When the seed was
+  // APPENDED to a draft the user was writing (the widget send path), the new
+  // text is the tail and the offset they had is the right one, so leave it. The
+  // caret stays at the end either way, so typing still appends. The DOM value is
+  // read rather than the prop so the effect keys on the hint alone.
+  const valueBeforeHintRef = useRef(value)
+  useEffect(() => {
+    const el = inputRef.current
+    if (!prefillHint || !el) return
+    // The append path joins on a trimmed draft, so compare against that form.
+    const prev = valueBeforeHintRef.current.trimEnd()
+    const appended = prev.trim().length > 0 && el.value.startsWith(prev)
+    if (!appended) el.scrollTop = 0
+  }, [prefillHint])
+  useEffect(() => { valueBeforeHintRef.current = value }, [value])
 
   // Re-measure when the textarea's WIDTH changes at an unchanged value: a window
   // resize, a sibling column folding, the side panel docking. The wrapped
@@ -3287,7 +3324,7 @@ function ChatInput({
       const width = el.clientWidth
       if (width === lastWidth) return
       lastWidth = width
-      if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current)
+      if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, true)
     })
     ro.observe(el)
     return () => ro.disconnect()

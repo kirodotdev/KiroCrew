@@ -5754,7 +5754,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "Prompt optimieren — anderer Chat wird gerade optimiert",
       "optimizing_another_chat_please_wait": "Anderer Chat wird optimiert — bitte warten",
       "optimizing_prompt": "Prompt wird optimiert…",
-      "plan_pre_filled_add_context_then_send": "Plan vorbefüllt — Kontext hinzufügen und dann senden",
+      "plan_pre_filled_add_context_then_send": "Eingabe vorbefüllt — Kontext hinzufügen und dann senden",
       "project": "Projekt",
       "project_2": "Projekt: {{path}}",
       "queue": "Warteschlange",

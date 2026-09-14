@@ -5754,7 +5754,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "প্রম্পট অপ্টিমাইজ করো — এখন অন্য একটি চ্যাট অপ্টিমাইজ হচ্ছে",
       "optimizing_another_chat_please_wait": "অন্য একটি চ্যাট অপ্টিমাইজ হচ্ছে — অপেক্ষা করো",
       "optimizing_prompt": "প্রম্পট অপ্টিমাইজ করা হচ্ছে…",
-      "plan_pre_filled_add_context_then_send": "প্ল্যান আগেই পূরণ করা হয়েছে — কনটেক্সট যোগ করে তারপর পাঠান",
+      "plan_pre_filled_add_context_then_send": "বার্তা আগেই পূরণ করা হয়েছে — কনটেক্সট যোগ করে তারপর পাঠান",
       "project": "প্রজেক্ট",
       "project_2": "প্রজেক্ট: {{path}}",
       "queue": "কিউ",

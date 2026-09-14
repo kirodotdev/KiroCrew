@@ -5940,7 +5940,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "Улучшить промпт — идёт улучшение в другом чате",
       "optimizing_another_chat_please_wait": "Идёт улучшение в другом чате — подожди",
       "optimizing_prompt": "Оптимизация промпта…",
-      "plan_pre_filled_add_context_then_send": "План подставлен — добавьте контекст и нажмите «Отправить»",
+      "plan_pre_filled_add_context_then_send": "Сообщение подставлено — добавьте контекст и нажмите «Отправить»",
       "project": "Проект",
       "project_2": "Проект: {{path}}",
       "queue": "В очередь",

@@ -339,12 +339,12 @@ describe('ChatInput', () => {
   describe('prefill hint', () => {
     it('shows prefill hint when enabled', () => {
       renderWithProviders(<ChatInput {...defaultProps} prefillHint />)
-      expect(screen.getByText(/Plan pre-filled/)).toBeInTheDocument()
+      expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
     })
 
     it('does not show prefill hint by default', () => {
       renderWithProviders(<ChatInput {...defaultProps} />)
-      expect(screen.queryByText(/Plan pre-filled/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Prompt pre-filled/)).not.toBeInTheDocument()
     })
   })
 
@@ -483,6 +483,61 @@ describe('ChatInput', () => {
       instrument(ta, { initialScrollTop: 0, scrollHeight: 100, clientHeight: 140 })
       fireEvent.input(ta)
       expect(ta.scrollTop).toBe(0)
+    })
+
+    // The snap is for a caret the user placed. A value the PARENT set -- an error
+    // hand-off's report seeded into a fresh session, a slot's draft restore -- is
+    // not that, and the same focused + caret-at-end + overflowing state yanked
+    // the view to the last line of the seed, hiding the sentence that says what
+    // broke. The caret is not at risk there: it only moves on a real edit, and a
+    // real edit arrives through the `input` event above.
+    it('does not snap for a parent-driven value change (a seeded prompt is read from its first line)', () => {
+      const seed = 'This error just came up.\n\n```error-report\n- Route: /apps/x\n- Request: /api/apps/x -> HTTP 500\n- Message: boom\n```'
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} value="" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      setActive(ta)
+      instrument(ta, { initialScrollTop: 0, scrollHeight: 352, clientHeight: 140 })
+      // Programmatic value set: the browser leaves the caret at the end.
+      ta.setSelectionRange(seed.length, seed.length)
+      rerender(<ChatInput {...defaultProps} value={seed} prefillHint />)
+      expect(ta.scrollTop).toBe(0)
+    })
+
+    // The other half of the rule: a re-measure at an UNCHANGED value (the hint
+    // expiring after the user typed, which drops the cap from 320 to 140) is a
+    // viewport change under a caret the user placed, so the caret is followed --
+    // otherwise the line they just typed would be below the fold.
+    it('follows the caret when the cap shrinks under an unchanged value', () => {
+      const value = 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl'
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} value={value} prefillHint />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      ta.setSelectionRange(value.length, value.length)
+      setActive(ta)
+      instrument(ta, { initialScrollTop: 0, scrollHeight: 289, clientHeight: 140 })
+      rerender(<ChatInput {...defaultProps} value={value} />)
+      expect(ta.scrollTop).toBe(289)
+    })
+
+    it('resets the scroll offset when a seed replaces the box, so it starts at its first line', () => {
+      const value = 'a\nb\nc\nd\ne\nf\ng\nh'
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} value={value} />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      // The box was scrolled for the previous text; the seed swaps the value under it.
+      instrument(ta, { initialScrollTop: 120, scrollHeight: 352, clientHeight: 140 })
+      rerender(<ChatInput {...defaultProps} value={'This error just came up.\n\n```error-report\n- Message: boom\n```'} prefillHint />)
+      expect(ta.scrollTop).toBe(0)
+    })
+
+    it('keeps the scroll offset when the seed was appended to the draft the user was writing', () => {
+      // The widget send path joins its text onto the trimmed draft and raises
+      // the same hint; the appended tail is the new text, so the offset the user
+      // had is the right one and a jump to the top would hide what just arrived.
+      const draft = 'a\nb\nc\nd\ne\nf\ng\nh  '
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} value={draft} />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      instrument(ta, { initialScrollTop: 120, scrollHeight: 352, clientHeight: 320 })
+      rerender(<ChatInput {...defaultProps} value={`${draft.trimEnd()}\nwidget text`} prefillHint />)
+      expect(ta.scrollTop).toBe(120)
     })
   })
 

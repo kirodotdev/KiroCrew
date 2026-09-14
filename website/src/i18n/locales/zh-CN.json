@@ -5661,7 +5661,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "优化提示词 — 正在优化另一个聊天",
       "optimizing_another_chat_please_wait": "正在优化另一个聊天 — 请稍候",
       "optimizing_prompt": "正在优化提示词…",
-      "plan_pre_filled_add_context_then_send": "计划已预填 — 补充上下文后发送",
+      "plan_pre_filled_add_context_then_send": "提示已预填 — 补充上下文后发送",
       "project": "项目",
       "project_2": "项目：{{path}}",
       "queue": "排队",

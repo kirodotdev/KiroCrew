@@ -5661,7 +5661,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "프롬프트 최적화 — 다른 채팅을 최적화하는 중",
       "optimizing_another_chat_please_wait": "다른 채팅을 최적화하는 중 — 잠시 기다리세요",
       "optimizing_prompt": "프롬프트 최적화 중…",
-      "plan_pre_filled_add_context_then_send": "계획이 미리 입력됨 — 컨텍스트를 추가한 뒤 전송하세요",
+      "plan_pre_filled_add_context_then_send": "메시지가 미리 입력됨 — 컨텍스트를 추가한 뒤 전송하세요",
       "project": "프로젝트",
       "project_2": "프로젝트: {{path}}",
       "queue": "대기열",

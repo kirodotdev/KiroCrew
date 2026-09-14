@@ -5754,7 +5754,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "प्रॉम्प्ट ऑप्टिमाइज़ करें — दूसरी चैट ऑप्टिमाइज़ हो रही है",
       "optimizing_another_chat_please_wait": "दूसरी चैट ऑप्टिमाइज़ हो रही है — कृपया प्रतीक्षा करें",
       "optimizing_prompt": "प्रॉम्प्ट ऑप्टिमाइज़ हो रहा है…",
-      "plan_pre_filled_add_context_then_send": "प्लान पहले से भरा गया — संदर्भ जोड़ें, फिर भेजें",
+      "plan_pre_filled_add_context_then_send": "संदेश पहले से भरा गया — संदर्भ जोड़ें, फिर भेजें",
       "project": "प्रोजेक्ट",
       "project_2": "प्रोजेक्ट: {{path}}",
       "queue": "कतार में डालें",

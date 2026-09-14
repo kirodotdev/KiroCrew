@@ -4232,7 +4232,7 @@
       "message_input": "Message input",
       "model": "Model",
       "optimizing_prompt": "Optimizing prompt…",
-      "plan_pre_filled_add_context_then_send": "Plan pre-filled — add context then Send",
+      "plan_pre_filled_add_context_then_send": "Prompt pre-filled — add context, then Send",
       "queue_message": "Queue message",
       "quick_actions_like_clearing_the_chat_or_checking": "Quick actions like clearing the chat or checking usage",
       "reference_a_file": "Reference a file",

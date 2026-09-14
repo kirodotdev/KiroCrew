@@ -5847,7 +5847,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "Optimiser le prompt — optimisation d’un autre chat en cours",
       "optimizing_another_chat_please_wait": "Optimisation d’un autre chat — patiente",
       "optimizing_prompt": "Optimisation du prompt…",
-      "plan_pre_filled_add_context_then_send": "Plan pré-rempli — ajoutez du contexte puis Envoyer",
+      "plan_pre_filled_add_context_then_send": "Message pré-rempli — ajoutez du contexte puis Envoyer",
       "project": "Projet",
       "project_2": "Projet : {{path}}",
       "queue": "Mettre en file",

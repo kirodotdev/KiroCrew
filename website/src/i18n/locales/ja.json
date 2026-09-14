@@ -5661,7 +5661,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "プロンプトを最適化 — 別のチャットを最適化中",
       "optimizing_another_chat_please_wait": "別のチャットを最適化中 — お待ちください",
       "optimizing_prompt": "プロンプト最適化中…",
-      "plan_pre_filled_add_context_then_send": "プラン (事前入力) — コンテキストを追加して送信",
+      "plan_pre_filled_add_context_then_send": "メッセージ (事前入力) — コンテキストを追加して送信",
       "project": "プロジェクト",
       "project_2": "プロジェクト：{{path}}",
       "queue": "キュー",

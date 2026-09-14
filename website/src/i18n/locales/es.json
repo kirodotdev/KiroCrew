@@ -5847,7 +5847,7 @@
       "optimize_prompt_busy_optimizing_another_chat": "Optimizar el prompt — ocupado optimizando otro chat",
       "optimizing_another_chat_please_wait": "Optimizando otro chat — espera un momento",
       "optimizing_prompt": "Optimizando el prompt…",
-      "plan_pre_filled_add_context_then_send": "Plan precargado — añade contexto y pulsa Enviar",
+      "plan_pre_filled_add_context_then_send": "Mensaje precargado — añade contexto y pulsa Enviar",
       "project": "Proyecto",
       "project_2": "Proyecto: {{path}}",
       "queue": "Poner en cola",
