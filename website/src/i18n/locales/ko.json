@@ -15687,8 +15687,16 @@
       "saving": "저장 중…"
     },
     "offline": {
+      "delete_artifacts": "아티팩트 삭제",
+      "delete_folders": "폴더를 삭제",
+      "dimmed_actions_need_connection": "게이트웨이가 오프라인입니다 — 흐리게 표시된 작업에는 연결이 필요합니다",
       "disabled_gateway_offline": "{{label}}이(가) 비활성화되었습니다 — 게이트웨이가 오프라인입니다",
       "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
+      "move_folders": "폴더를 이동",
+      "name_not_saved_keep_field_open": "게이트웨이가 오프라인입니다 — 아직 저장되지 않았습니다. 이 입력란을 열어 둔 채 다시 연결하세요. 닫으면 이름이 삭제됩니다.",
+      "rename_folders": "폴더 이름을 변경",
+      "save_folder_names": "폴더 이름 저장",
+      "star_artifacts": "아티팩트 즐겨찾기 표시 또는 해제",
       "submit_comments": "댓글 제출"
     },
     "popoutController": {

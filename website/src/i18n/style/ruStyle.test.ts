@@ -79,3 +79,36 @@ describe('ru DNT (style/ru.md §3)', () => {
     expect(bad, report(bad)).toEqual([])
   })
 })
+
+/**
+ * `utils.offline.gateway_offline_reconnect` renders "…, чтобы {{action}}", and
+ * `чтобы` governs an infinitive. A nominalised action ("удаление артефактов")
+ * reads fine alone in the catalogue but renders as "чтобы удаление артефактов",
+ * so the mismatch only appears once interpolated — which is why it needs a guard
+ * rather than review.
+ */
+describe('ru interpolated actions (utils.offline.gateway_offline_reconnect)', () => {
+  const PREFIX = 'utils.offline.'
+  /** Keys under utils.offline that are NOT interpolated as {{action}}. */
+  const NOT_ACTIONS = new Set([
+    'gateway_offline_reconnect',
+    'disabled_gateway_offline',
+    'dimmed_actions_need_connection',
+    'name_not_saved_keep_field_open',
+  ])
+  const actions = Object.entries(ru).filter(
+    ([key]) => key.startsWith(PREFIX) && !NOT_ACTIONS.has(key.slice(PREFIX.length)),
+  )
+
+  it('the frame still interpolates {{action}} and there are actions to check', () => {
+    expect(ru[`${PREFIX}gateway_offline_reconnect`]).toContain('чтобы {{action}}')
+    expect(actions.length).toBeGreaterThan(0)
+  })
+
+  it('opens every action with an infinitive, as `чтобы` requires', () => {
+    const bad = actions
+      .filter(([, value]) => !/^[а-яё]+(ть|ти|чь)(?=\s|$)/i.test(value.trim()))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+    expect(bad, report(bad)).toEqual([])
+  })
+})

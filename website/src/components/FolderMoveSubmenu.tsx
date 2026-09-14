@@ -2,6 +2,7 @@ import type React from 'react'
 import { Folder, Check, ChevronRight } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
+import { offlineProps } from '../utils/offline'
 import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
@@ -21,6 +22,11 @@ interface FolderMoveSubmenuProps {
   readonly label?: string
   /** Label for the "no folder (root)" entry. */
   readonly rootLabel?: string
+  /** Offline verb phrase (e.g. "move folders"). When set, the trigger keeps its
+   *  own node and chevron but is dimmed, carries the offline tooltip, and cannot
+   *  expand, so there is no pick to drop — a submenu that opens while the pick is
+   *  refused reads as success and loses the write silently. */
+  readonly offlineVerb?: string
 }
 
 /**
@@ -79,6 +85,7 @@ export default function FolderMoveSubmenu({
   variant,
   label = 'Move to folder',
   rootLabel = 'No folder (root)',
+  offlineVerb,
 }: FolderMoveSubmenuProps) {
   // Pick the primitive family for this surface. Both families share the same
   // props shape, so the body below is identical regardless of variant.
@@ -87,9 +94,22 @@ export default function FolderMoveSubmenu({
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
 
+  const offline = !!offlineVerb
+
+  // Offline the trigger keeps its own node, so a disconnect with the menu open
+  // dims one element rather than swapping it for another. The gate is a
+  // controlled `open` rather than `disabled` alone: Radix honours `disabled` on a
+  // SubTrigger, but on touch the same component renders a role="button" div
+  // (PhoneSubTriggerDiv) that spreads unrecognised props onto the <div> and calls
+  // onToggle unconditionally, so `disabled` means nothing there. `open` reaches
+  // usePhoneSubState, which pins `expanded` to it, closing both paths.
   return (
-    <Sub>
-      <SubTrigger>
+    <Sub {...(offline ? { open: false } : {})}>
+      <SubTrigger
+        disabled={offline}
+        className={offline ? 'opacity-40 text-muted cursor-not-allowed' : undefined}
+        {...(offline ? offlineProps(false, offlineVerb, label) : {})}
+      >
         <Folder size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{label}</span>
         <ChevronRight size={12} className="text-muted" />

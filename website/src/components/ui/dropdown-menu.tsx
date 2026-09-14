@@ -66,14 +66,18 @@ DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName
 
 const DropdownMenuItem = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.Item>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & { inset?: boolean }
->(({ className, inset, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & { inset?: boolean; dimmed?: boolean }
+>(({ className, inset, dimmed, ...props }, ref) => (
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
       'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       inset && 'pl-8',
+      // A row that stays mounted and focusable but refuses the action, e.g. while
+      // the gateway is offline. Distinct from `disabled`, whose
+      // `pointer-events-none` suppresses the tooltip that names the reason.
+      dimmed && 'opacity-40 text-muted cursor-not-allowed',
       className
     )}
     {...props}

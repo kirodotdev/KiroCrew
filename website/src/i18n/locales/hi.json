@@ -15888,8 +15888,16 @@
       "saving": "सहेजा जा रहा है..."
     },
     "offline": {
+      "delete_artifacts": "आर्टिफ़ैक्ट हटाने",
+      "delete_folders": "फ़ोल्डर मिटाने",
+      "dimmed_actions_need_connection": "गेटवे ऑफ़लाइन — धुँधले विकल्पों के लिए कनेक्शन ज़रूरी है",
       "disabled_gateway_offline": "{{label}} बंद — गेटवे ऑफ़लाइन",
       "gateway_offline_reconnect": "गेटवे ऑफ़लाइन — {{action}} के लिए फिर से कनेक्ट करो",
+      "move_folders": "फ़ोल्डर ले जाने",
+      "name_not_saved_keep_field_open": "गेटवे ऑफ़लाइन — अभी सहेजा नहीं गया। इस फ़ील्ड को खुला रखो और फिर से कनेक्ट करो; बंद करने पर नाम चला जाएगा।",
+      "rename_folders": "फ़ोल्डर का नाम बदलने",
+      "save_folder_names": "फ़ोल्डर के नाम सहेजने",
+      "star_artifacts": "आर्टिफ़ैक्ट को तारांकित करने या तारांकन हटाने",
       "submit_comments": "टिप्पणियाँ सबमिट करने"
     },
     "popoutController": {

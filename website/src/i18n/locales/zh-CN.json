@@ -15687,8 +15687,16 @@
       "saving": "保存中…"
     },
     "offline": {
+      "delete_artifacts": "删除工件",
+      "delete_folders": "删除文件夹",
+      "dimmed_actions_need_connection": "网关离线 — 变暗的操作需要连接",
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
       "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
+      "move_folders": "移动文件夹",
+      "name_not_saved_keep_field_open": "网关离线 — 尚未保存。请保持此输入框打开并重新连接。关闭后名称将被丢弃。",
+      "rename_folders": "重命名文件夹",
+      "save_folder_names": "保存文件夹名称",
+      "star_artifacts": "标记或取消标记工件",
       "submit_comments": "提交评论"
     },
     "popoutController": {
