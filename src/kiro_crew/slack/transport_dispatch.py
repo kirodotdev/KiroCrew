@@ -931,6 +931,22 @@ async def handle_message_transport(
             )
         with contextlib.suppress(Exception):
             await slack.set_thread_status(channel, reply_ts, "")
+    except asyncio.CancelledError:
+        # A mid-turn cancellation (per-turn deadline, shutdown, or session
+        # supersession) can land on an await after the model completed.
+        # ``except Exception`` below does NOT catch a ``CancelledError`` (a
+        # ``BaseException``), so without this the cancellation would reach the
+        # ``finally`` teardown with NO verdict booked. When the renderer did not
+        # finalize its delivery, an answer-carrying send was cancelled (most
+        # narrowly the OPTIONS footer, whose choices ride only in that footer), so
+        # the reader did not get the answer: book a failure rather than leave an
+        # unrecorded verdict hole. A finalized turn keeps its normal accounting.
+        # Then re-raise: a cancellation must always propagate.
+        if client and _acquired and renderer is not None and not renderer.turn_finalized:
+            with contextlib.suppress(Exception):
+                await sessions.record_failure(session_key)
+                Stats().inc_message_failed()
+        raise
     except Exception as exc:
         logger.exception("transport_dispatch: error handling message")
         Stats().inc_message_failed()

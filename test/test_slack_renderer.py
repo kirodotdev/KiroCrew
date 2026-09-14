@@ -1386,3 +1386,95 @@ class TestWaitIdentity:
         # different tool; and a foreign server's own ``wait`` is not the core
         # tool, so a suffix match would roll the stream over on it.
         assert is_wait_identity(tool_name) is False
+
+
+class TestRenderFallbackEmptyText:
+    """A tool-only / reasoning-only turn reaches ``_render_fallback`` with empty
+    text on the no-stream path; the answer-carrying ``chat.update`` must not be
+    sent empty (Slack rejects empty text as ``no_text`` and raises, failing an
+    ordinary completed turn). The fallback substitutes the ``_No response._``
+    placeholder, mirroring the native path."""
+
+    def test_empty_text_sends_placeholder_not_empty_update(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        # Simulate the no-stream placeholder path: a message ts exists to update.
+        renderer._stream_ts = "ts-existing"
+
+        asyncio.run(renderer._render_fallback(""))
+
+        updates = [kw["text"] for name, kw in rec.calls if name == "update_message"]
+        assert updates, "no update_message was attempted"
+        # The answer-carrying update carried the placeholder, never empty text —
+        # an empty text would raise no_text against the real client.
+        assert all(t for t in updates), "an empty chat.update was sent (no_text raise)"
+        assert updates[0] == "_No response._"
+
+
+class TestOptionsFooterCancellationDefersFinalize:
+    """F2: on an OPTIONS turn the footer is answer-carrying (the choices ride
+    only in it). A CancelledError during the footer ``post_blocks`` must leave
+    the turn UN-finalized so the transport dispatcher records a failure — not a
+    finalized success for choices the reader never received. The renderer defers
+    ``_finalized`` past the footer for OPTIONS turns precisely for this."""
+
+    def test_cancel_during_options_footer_leaves_turn_unfinalized(self):
+        async def scenario():
+            rec = _RecSlack()
+
+            async def _cancel_post_blocks(channel, blocks, text, thread_ts=None, **kw):
+                raise asyncio.CancelledError()
+
+            rec.post_blocks = _cancel_post_blocks  # type: ignore[assignment]
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            # Streaming path with an OPTIONS-only-carrying answer body.
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+            renderer._stream_ts = "ts-stream"
+            renderer._use_slack_stream = True
+            renderer._delivered = "pick one"  # answer body already streamed
+
+            raised = False
+            try:
+                await renderer.on_done()
+            except asyncio.CancelledError:
+                raised = True
+
+            assert raised, "the cancellation must propagate so the dispatcher can act"
+            # The OPTIONS choices never reached the reader, so the turn must NOT be
+            # finalized — an un-finalized turn is what makes the dispatcher record a
+            # failure instead of booking a success for undelivered choices.
+            assert (
+                renderer.turn_finalized is False
+            ), "finalized a turn whose OPTIONS never delivered"
+
+        asyncio.run(scenario())
+
+    def test_non_options_footer_cancel_still_finalizes(self):
+        """A non-OPTIONS turn's footer is pure decoration, so the answer is
+        already delivered and the turn stays finalized even if the footer post is
+        cancelled — the deferral must apply ONLY to OPTIONS turns."""
+
+        async def scenario():
+            rec = _RecSlack()
+
+            async def _cancel_post_blocks(channel, blocks, text, thread_ts=None, **kw):
+                raise asyncio.CancelledError()
+
+            rec.post_blocks = _cancel_post_blocks  # type: ignore[assignment]
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "just an answer, no choices"
+            renderer._stream_ts = "ts-stream"
+            renderer._use_slack_stream = True
+            renderer._delivered = "just an answer, no choices"
+
+            try:
+                await renderer.on_done()
+            except asyncio.CancelledError:
+                pass
+
+            # No OPTIONS: the answer is fully delivered, the footer is decoration,
+            # so the turn is finalized (a footer cancellation must not un-book a
+            # delivered answer).
+            assert renderer.turn_finalized is True
+
+        asyncio.run(scenario())
