@@ -273,13 +273,30 @@ describe('file-explorer/FileViewer sensitive detection', () => {
   // The backend emits native path strings (`str(Path)` in the file_explorer
   // server), so on Windows every separator is a backslash and a `/`-only
   // pattern matches nothing -- the banner silently stops appearing there.
-  it('detects sensitive files in Windows-native paths', async () => {
+  //
+  // These three are the cases that carry the REAL harm, because they are the
+  // ones the backend actually serves. `_is_sensitive` (server.py) 403s any path
+  // with a `SENSITIVE_DIRS` part -- `.ssh`, `.aws`, `.gnupg`, `.docker`,
+  // `.kube`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials` -- so such a file
+  // never reaches `FileViewer` at all. `.env` and a project-level `credentials`
+  // are in neither set, are served, and lost their banner on Windows.
+  it('detects sensitive files the backend serves, in Windows-native paths', async () => {
+    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    expect(isSensitivePath('C:\\Users\\dev\\project\\.env')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\.env.local')).toBe(true)
+    expect(isSensitivePath('C:\\Users\\dev\\project\\credentials')).toBe(true)
+  })
+
+  // The rest of the pattern list, kept as defence in depth rather than as a
+  // claim of harm: this helper is independent of the backend gate, and a path
+  // that arrives some other way (a future caller, a relaxed root) must still be
+  // matched. Deliberately NOT presented as the motivating defect -- the server
+  // refuses every one of these today.
+  it('also matches the backend-denied families, which the gate makes unreachable', async () => {
     const { isSensitivePath } = await import('../apps/file-explorer/utils')
     expect(isSensitivePath('C:\\Users\\dev\\.ssh\\id_rsa')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.aws\\credentials')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.gnupg\\private-keys')).toBe(true)
-    expect(isSensitivePath('C:\\Users\\dev\\project\\.env')).toBe(true)
-    expect(isSensitivePath('C:\\Users\\dev\\.env.local')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.npmrc')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.docker\\config.json')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.kube\\config')).toBe(true)
