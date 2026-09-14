@@ -1497,6 +1497,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # agent-influenced input; sandboxing the probe would be circular for the
         # same reason as the other boot-time self-checks above.
         "slack/gateway.py::_warn_if_kiro_cli_outdated",
+        # Only spawn_feature_gateway calls this helper, for initial boot and
+        # restart. It fixes sys.executable -m kiro_crew gateway --test-mode;
+        # no executable/argv parameter exists. Home/env come from the isolated
+        # test supervisor, never HTTP/MCP requests. Dynamic projected MCP
+        # commands in workflow_memory_scenario instead use sandboxed_spawn_argv.
+        "testing/harness.py::_launch_gateway",
+        # before_spawn still seeds via sys.executable -c with a literal seed
+        # program and the test's fixture name as data, never interpolated code.
+        # harness_environment pins the owned temporary home and checkout src;
+        # seed keeps its fixture-containment/main-home/nonempty guards and the
+        # call has timeout=30. No HTTP/MCP-selected command reaches this site.
         "testing/harness.py::spawn_feature_gateway",
         # Apple on-device speech (macOS only). None of these takes an agent-authored
         # command: the argv is a fixed toolchain path or the helper Kiro Crew itself
@@ -2378,3 +2389,33 @@ def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
         "TimeoutError and CancelledError arms that call _kill_and_reap (or the "
         "startup-child kill/reap pair) on the proc before returning/re-raising."
     )
+
+
+def test_harness_preflight_seed_is_fixed_argv():
+    """The preflight exemption covers one fixed seed call, not dynamic MCP."""
+    source = (_SRC_ROOT / "testing" / "harness.py").read_text(encoding="utf-8")
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "spawn_feature_gateway"
+    )
+    calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.func.attr in _SPAWN_ATTRS
+    ]
+    assert len(calls) == 1
+    expected = ast.parse(
+        "subprocess.run([sys.executable, '-c', "
+        "'from kiro_crew.seed import seed; import sys; seed(sys.argv[1])', fixture], "
+        "cwd=str(spawn_cwd), env=env, capture_output=True, text=True, "
+        "encoding='utf-8', errors='replace', timeout=30)",
+        mode="eval",
+    ).body
+    assert ast.dump(calls[0]) == ast.dump(expected)
+    assert "testing/harness.py::_launch_gateway" in BENIGN_SPAWNS
+    assert "testing/harness.py::spawn_feature_gateway" in BENIGN_SPAWNS

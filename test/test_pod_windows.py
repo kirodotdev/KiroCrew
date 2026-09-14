@@ -432,12 +432,15 @@ def test_stop_ends_then_deletes_and_drops_the_wrapper(cfg, monkeypatch, drainabl
     assert not win.task_script_path(cfg, "smoke").exists()
 
 
-def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeypatch):
+@pytest.mark.parametrize("recycled", [False, True])
+def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeypatch, recycled):
     """`/End` is asynchronous; stop must poll the exact root handle."""
 
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
     monkeypatch.setattr(win, "time", _FakeClock())
     seen = {"n": 0}
+    # Numeric liveness must follow the fixture, never a real host PID collision.
+    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and (seen["n"] < 4 or recycled))
 
     def _active(_handle):
         seen["n"] += 1
@@ -461,8 +464,12 @@ def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeyp
     monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
     win.write_task_script(cfg, "smoke")
 
-    assert win.stop(cfg, "smoke").returncode == 0
+    result = win.stop(cfg, "smoke")
+    assert result.returncode == (1 if recycled else 0), result.stderr
     assert seen["n"] >= 4, "stop must poll rather than trust /End's return"
+    assert win.task_script_path(cfg, "smoke").exists() is recycled
+    if recycled:
+        assert "ALIVE but does not carry" in result.stderr
 
 
 def test_stop_preserves_everything_when_the_gateway_will_not_die(cfg, monkeypatch):

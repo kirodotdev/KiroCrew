@@ -80,7 +80,7 @@ async def test_restart_io_off_loop_retains_payload_and_is_idempotent(tmp_path, m
     writes.clear()
     again = await _create(sessions=None, store=store)
     assert writes == []
-    assert again._new_run_id() == "wf_000043"
+    assert await again._new_run_id() == "wf_000043"
     assert again.registry.reopen_host_run("wf_000042", task_id="task-1", persist=False)
     await again.registry.persist_async("wf_000042")
     assert (await asyncio.to_thread(real_load))[0]["status"] == "running"
@@ -215,7 +215,7 @@ async def test_async_reload_evicts_off_loop_and_skips_bad_records(tmp_path, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["load_all", "save", "delete"])
-async def test_async_reload_preserves_best_effort_storage_failures(
+async def test_async_reload_refuses_inventory_failure_but_keeps_write_compatibility(
     tmp_path, monkeypatch, operation
 ):
     store = WorkflowRunStore(base_dir=tmp_path)
@@ -229,11 +229,16 @@ async def test_async_reload_preserves_best_effort_storage_failures(
     done, event = MagicMock(), MagicMock()
     registry.set_on_done(done)
     registry.set_on_event(event)
-    assert await registry.load_persisted_async() == (0 if operation == "load_all" else 1)
-    if operation == "save":
-        assert registry.get("wf_000042").status == "failed"
-    else:
+    if operation == "load_all":
+        with pytest.raises(OSError, match="test storage unavailable"):
+            await registry.load_persisted_async()
         assert registry.list() == []
+    else:
+        assert await registry.load_persisted_async() == 1
+        if operation == "save":
+            assert registry.get("wf_000042").status == "failed"
+        else:
+            assert registry.list() == []
     done.assert_not_called()
     event.assert_not_called()
 
@@ -246,7 +251,7 @@ async def test_async_service_without_persistence_does_not_construct_store(monkey
     monkeypatch.setattr(service, "WorkflowRunStore", store_factory)
     svc = await WorkflowService.create(sessions=None, persist=False)
     assert svc.list_runs() == []
-    assert svc._new_run_id() == "wf_000001"
+    assert await svc._new_run_id() == "wf_000001"
     store_factory.assert_not_called()
 
 
@@ -258,20 +263,27 @@ async def test_dashboard_initialization_failure_keeps_workflows_unavailable(
     from test_dashboard_server_startup_coverage import _dashboard
 
     from kiro_crew.dashboard.handlers.workflows import api_workflow_runs
+    from kiro_crew.taskrunner import TaskRunner, WorkflowInitializing
 
     async def fail(**kwargs):
         raise RuntimeError("test initialization failure")
 
     monkeypatch.setattr(WorkflowService, "create", fail)
-    driver = SimpleNamespace(
-        attach_workflow_service=MagicMock(), defer_workflow_attachment=MagicMock()
-    )
+    driver = TaskRunner(sessions=MagicMock(), work_dir=tmp_path / "tasks")
+    attach = MagicMock(wraps=driver.attach_workflow_service)
+    monkeypatch.setattr(driver, "attach_workflow_service", attach)
     async with _dashboard(tmp_path, monkeypatch, task_runner=driver) as (runner, state, _):
         pending = [t for t in state._background_tasks if t.get_name() == "workflow-initialization"]
         await asyncio.wait_for(asyncio.gather(*pending), 5)
         assert state.ready and state.workflow_service is None
-        assert state.task_runner is driver  # standalone TaskRunner stays available on failure
-        driver.attach_workflow_service.assert_called_once_with(None)
+        assert state.task_runner is driver
+        assert state.workflow_startup_status == "failed"
+        attach.assert_not_called()  # Construction failed before either port was attached.
+        with pytest.raises(WorkflowInitializing, match="restart the gateway") as error:
+            await driver._reserve_start("failed-init")
+        assert error.value.code == "workflow_initialization_failed"
+        assert driver._runs == {} and driver._tasks == {}
+        assert not driver._start_ids_in_flight
         request = make_mocked_request("GET", "/api/workflows/runs", app=runner.app)
         assert (await api_workflow_runs(request)).status == 503
         assert "WorkflowService unavailable" in caplog.text
@@ -418,13 +430,36 @@ async def test_channel_task_admission_waits_for_workflow_attachment(
             release.set()
             await asyncio.wait_for(initializer, 5)
             reply = await task_arg_reply(str(spec), orch.task_runner)
-            assert "Task started" in reply
-            await asyncio.wait_for(executed.wait(), 5)
-            run = next(iter(driver._runs.values()))
             if init_fails:
+                from kiro_crew.taskrunner import WorkflowInitializing
+
                 assert state.workflow_service is None
-                assert run.workflow_run_id == ""
+                assert state.task_runner is driver
+                assert state.workflow_startup_status == "failed"
+                assert "Task started" not in reply
+                assert "restart the gateway" in reply
+                with pytest.raises(WorkflowInitializing, match="restart the gateway") as error:
+                    await driver._reserve_start("failed-init")
+                assert error.value.code == "workflow_initialization_failed"
+                assert driver._runs == {} and driver._tasks == {}
+                assert not driver._start_ids_in_flight
+                assert not executed.is_set()
+                standalone = TaskRunner(sessions=MagicMock(), work_dir=tmp_path / "standalone")
+                monkeypatch.setattr(standalone, "run", no_model_run)
+                try:
+                    standalone_reply = await task_arg_reply(str(spec), standalone)
+                    assert "Task started" in standalone_reply
+                    await asyncio.wait_for(executed.wait(), 5)
+                    standalone_run = next(iter(standalone._runs.values()))
+                    assert standalone_run.workflow_run_id == ""
+                finally:
+                    await asyncio.wait_for(
+                        asyncio.gather(*list(standalone._tasks.values()), return_exceptions=True), 5
+                    )
             else:
+                assert "Task started" in reply
+                await asyncio.wait_for(executed.wait(), 5)
+                run = next(iter(driver._runs.values()))
                 assert run.workflow_run_id
                 assert (
                     state.workflow_service.registry.get(run.workflow_run_id).task_id == run.task_id
@@ -452,7 +487,7 @@ async def test_shared_task_admission_refuses_before_mutating_state(tmp_path, ent
     assert driver._runs == {} and driver._tasks == {}
     assert not driver._start_ids_in_flight
     driver.attach_workflow_service(None)
-    driver._require_workflow_ready()  # explicit failure releases standalone mode
+    driver._require_workflow_ready()  # explicit None releases standalone mode
 
 
 @pytest.mark.asyncio
@@ -794,3 +829,20 @@ async def test_project_delete_preserves_unrelated_errors():
     request = _make_request(_make_app(runner), "DELETE", match_info={"id": "existing"})
     with pytest.raises(RuntimeError, match="storage failure"):
         await api_project_delete(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_factory", [False, True])
+async def test_requested_persistence_never_falls_back_when_store_cannot_open(
+    monkeypatch, async_factory
+):
+    from kiro_crew.workflows import service
+
+    factory = MagicMock(side_effect=OSError("store unavailable"))
+    monkeypatch.setattr(service, "WorkflowRunStore", factory)
+    with pytest.raises(OSError, match="store unavailable"):
+        if async_factory:
+            await WorkflowService.create(sessions=None)
+        else:
+            WorkflowService(sessions=None)
+    factory.assert_called_once_with()

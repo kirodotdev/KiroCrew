@@ -209,6 +209,7 @@ function ExpandableRunRow({
             }
             result={snapshot?.result}
             error={snapshot?.error ?? run.error ?? null}
+            errorCode={snapshot?.error_code}
           />
           <WorkflowSourcePanel
             run_id={run.run_id}

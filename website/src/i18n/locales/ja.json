@@ -4638,6 +4638,7 @@
         "page_label": "Workflows"
       },
       "workflowRunTree": {
+        "checkpoint_save_failed": "進捗を保存できませんでした。再起動する前に必要な結果をコピーしてください。ストレージへのアクセス権と空き容量を確認してください。次のチェックポイントで保存を再試行します。",
         "agent_other": "{{count}} 個のエージェント",
         "budget": "予算",
         "cancelled": "キャンセル済み",
@@ -11266,6 +11267,7 @@
       "embedModel": {
         "active": "アクティブ: {{model}} · {{dim}}d",
         "active_unknown": "アクティブなモデルが不明です",
+        "configured_inactive": "設定済み: {{model}} · {{dim}}d · 非アクティブ",
         "apply": "モデルを適用",
         "applying": "適用中…",
         "badge_bundled": "バンドル",
@@ -11301,7 +11303,9 @@
         "subtitle": "ローカルで実行されます。変更するとバックグラウンドで保存されたメモリが再埋め込みされます。",
         "title": "埋め込みモデル",
         "will_revert": "空です。バンドルされたモデルに戻ります。",
-        "err_env_override_with_ref": "<settingRef/> が設定されており、この設定を上書きしています。ここでモデルを変更するには、設定を解除してください。"
+        "err_env_override_with_ref": "<settingRef/> が設定されており、この設定を上書きしています。ここでモデルを変更するには、設定を解除してください。",
+        "apply_reapply": "メモリベクトルを再構築",
+        "confirm_reapply_body": "設定済みのモデルを再読み込みし、保存されているメモリベクトルを消去して再構築します。"
       },
       "kiroCrewCfgTab": {
         "approval_mode": "承認モード",
@@ -11744,6 +11748,18 @@
         "usage_tracking_is_not_available_for": "{{provider}} では使用量のトラッキングを利用できません。"
       },
       "vectorMemoryCard": {
+        "legacy_vectors_warning": "これらのベクトルはモデルファイルの記録前に生成されました。ファイルを変更した場合は、埋め込みモデル設定で再適用して再構築してください。",
+        "legacy_vectors_warning_path_error": "これらのベクトルはモデルファイルの記録前に生成されており、設定されたパスのファイルは現在使用できません。まずモデルパスを修正し、その後に適用してベクトルを再構築してください。",
+        "verification_pending": "モデルを検証中です。その間、メモリはキーワード検索を使用します。",
+        "verification_failed": "検証のためにモデルファイル {{path}} を読み取れませんでした。ファイルが存在し読み取り可能であることを確認してから、もう一度適用してください。",
+        "download_error_detail": "同梱モデルをダウンロードできませんでした。ネットワークまたはプロキシを確認してから、再試行してください。",
+        "model_error_path": "{{message}} パス：{{path}}",
+        "model_error_path_pointer": "設定されたパスの埋め込みモデルファイルは使用できないため、その間メモリはキーワード検索を使用します。",
+        "repair_unknown": "一部のメモリストアを確認できなかったため、すべてのストアの再構築は未確認です。このページを開いている間は確認が自動的に再試行され、閉じているストアは次に開いたときに再構築されます。この表示が続く場合は、gateway のログを確認してください。",
+        "repair_pending": "モデル変更後の再構築がすべてのメモリストアで進行中です：{{items}}。",
+        "repair_vectors_other": "{{count}} 件のメモリが新しいベクトルを待っています",
+        "repair_invalidation_other": "{{count}} 件の開いているストアにはまだ消去待ちの古いベクトルがあります",
+        "repair_deferred_other": "{{count}} 件の閉じている、または利用できないストアは次に開いたときに再構築されます",
         "column_importance": "重要度",
         "column_score": "スコア",
         "column_text": "内容",
@@ -11764,7 +11780,7 @@
         "downloading_from_cdn": "CDNからダウンロード中…",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · ローカルでインプロセス実行",
-        "embeddings": "埋め込み",
+        "embedding_status": "埋め込みの状態",
         "entries": "エントリ",
         "episodic_context_injected_per_message": "エピソード的コンテキスト（メッセージごとに注入）",
         "episodic_memory": "エピソード的メモリ",
@@ -11784,6 +11800,7 @@
         "no_events": "イベントなし",
         "no_matching_entries": "一致するエントリなし",
         "no_semantic_entries": "意味的エントリなし",
+        "not_active": "非アクティブ",
         "of": "の",
         "open_embedding_model_settings": "埋め込みモデルの設定を開く",
         "preview": "プレビュー",
@@ -11799,6 +11816,7 @@
         "set": "設定",
         "setup_failed": "セットアップ失敗",
         "showing": "表示中",
+        "status_unknown": "不明",
         "structured_key_value_facts_about_you_confidence": "構造化されたキー-バリューペアのあなたに関する事実。信頼度：システムがどの程度確実か（1.0 =設定済み、0.85 =チャットから抽出）。ソース：誰が書いたか（user_explicit =ユーザー、consolidation =自動抽出）。",
         "structured_semantic_key_value_episodic_conversat": "構造化された意味的（キー-バリューペア）およびエピソード的（会話フラグメント）なメモリとベクトル検索。埋め込みは常時オン — モデルはバックグラウンドで自動的にダウンロードされます。",
         "test_query_e_g_what_database_should_i_use": "テストクエリ（例：「どのデータベースを使うべき？」）",

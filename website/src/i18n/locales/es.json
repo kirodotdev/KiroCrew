@@ -4741,6 +4741,7 @@
         "configuration_1": "Activa la app oculta con kirocrew app enable workflows; valida Python DSL en Author o usa las herramientas de flujo del chat o MCP para una orquestación real de agentes y supervísala en Runs."
       },
       "workflowRunTree": {
+        "checkpoint_save_failed": "No se pudo guardar el progreso. Copia los resultados necesarios antes de reiniciar. Comprueba el acceso al almacenamiento y el espacio libre; se volverá a intentar guardar en el siguiente punto de control.",
         "agent_many": "{{count}} agentes",
         "agent_one": "{{count}} agente",
         "agent_other": "{{count}} agentes",
@@ -11596,6 +11597,7 @@
       "embedModel": {
         "active": "Activo: {{model}} · {{dim}}d",
         "active_unknown": "Modelo activo desconocido",
+        "configured_inactive": "Configurado: {{model}} · {{dim}}d · no activo",
         "apply": "Aplicar modelo",
         "applying": "Aplicando…",
         "badge_bundled": "incluido",
@@ -11631,7 +11633,9 @@
         "subtitle": "Se ejecuta localmente. Cambiarlo vuelve a generar los embeddings de las memorias en segundo plano.",
         "title": "Modelo de embeddings",
         "will_revert": "Vacío: volverá al modelo incluido.",
-        "err_env_override_with_ref": "<settingRef/> está configurada y anula esta configuración. Desactívala para cambiar el modelo aquí."
+        "err_env_override_with_ref": "<settingRef/> está configurada y anula esta configuración. Desactívala para cambiar el modelo aquí.",
+        "apply_reapply": "Reconstruir vectores de memoria",
+        "confirm_reapply_body": "Esto recarga el modelo configurado y borra y reconstruye los vectores de memoria almacenados."
       },
       "kiroCrewCfgTab": {
         "approval_mode": "Modo de aprobación",
@@ -12082,6 +12086,24 @@
         "usage_tracking_is_not_available_for": "El seguimiento de uso no está disponible para {{provider}}."
       },
       "vectorMemoryCard": {
+        "legacy_vectors_warning": "Estos vectores son anteriores al registro de su archivo de modelo. Si cambió ese archivo, vuelva a aplicarlo en los ajustes del modelo de embeddings para reconstruirlos.",
+        "legacy_vectors_warning_path_error": "Estos vectores son anteriores al registro de su archivo de modelo, y el archivo de la ruta configurada no se puede usar ahora. Corrige primero la ruta del modelo y luego aplícala para reconstruirlos.",
+        "verification_pending": "Se está verificando el modelo. Mientras tanto, la memoria usa búsqueda por palabras clave.",
+        "verification_failed": "No se pudo leer el archivo de modelo {{path}} para verificarlo. Asegúrate de que el archivo existe y se puede leer, y luego aplícalo de nuevo.",
+        "download_error_detail": "No se pudo descargar el modelo incluido. Revisa tu red o proxy y luego reintenta.",
+        "model_error_path": "{{message}} Ruta: {{path}}",
+        "model_error_path_pointer": "El archivo del modelo de embeddings en la ruta configurada no se puede usar, así que mientras tanto la memoria usa búsqueda por palabras clave.",
+        "repair_unknown": "Algunos almacenes de memoria no se pudieron comprobar, así que la reconstrucción no está confirmada para todos. La comprobación se reintenta automáticamente mientras esta página esté abierta, y un almacén cerrado se reconstruye la próxima vez que se abre. Si esto sigue apareciendo, revisa el registro del gateway.",
+        "repair_pending": "La reconstrucción tras el cambio de modelo sigue en curso en todos los almacenes de memoria: {{items}}.",
+        "repair_vectors_one": "{{count}} memoria aún necesita un vector nuevo",
+        "repair_vectors_other": "{{count}} memorias aún necesitan un vector nuevo",
+        "repair_vectors_many": "{{count}} memorias aún necesitan un vector nuevo",
+        "repair_invalidation_one": "{{count}} almacén abierto aún tiene vectores antiguos por borrar",
+        "repair_invalidation_other": "{{count}} almacenes abiertos aún tienen vectores antiguos por borrar",
+        "repair_invalidation_many": "{{count}} almacenes abiertos aún tienen vectores antiguos por borrar",
+        "repair_deferred_one": "{{count}} almacén cerrado o no disponible se reconstruirá la próxima vez que se abra",
+        "repair_deferred_other": "{{count}} almacenes cerrados o no disponibles se reconstruirán la próxima vez que se abran",
+        "repair_deferred_many": "{{count}} almacenes cerrados o no disponibles se reconstruirán la próxima vez que se abran",
         "column_importance": "Importancia",
         "column_score": "Puntuación",
         "column_text": "Texto",
@@ -12102,7 +12124,7 @@
         "downloading_from_cdn": "Descargando desde la CDN…",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · se ejecuta localmente en el proceso",
-        "embeddings": "Embeddings",
+        "embedding_status": "Estado de embeddings",
         "entries": "entradas",
         "episodic_context_injected_per_message": "Contexto episódico (inyectado por mensaje)",
         "episodic_memory": "Memoria episódica",
@@ -12122,6 +12144,7 @@
         "no_events": "No hay eventos",
         "no_matching_entries": "No hay entradas coincidentes",
         "no_semantic_entries": "No hay entradas semánticas",
+        "not_active": "no activa",
         "of": "de",
         "open_embedding_model_settings": "Abrir la configuración del modelo de embeddings",
         "preview": "Vista previa",
@@ -12137,6 +12160,7 @@
         "set": "Establecer",
         "setup_failed": "Configuración fallida",
         "showing": "Mostrando",
+        "status_unknown": "desconocida",
         "structured_key_value_facts_about_you_confidence": "Datos estructurados de clave-valor sobre ti. Confianza: qué tan seguro está el sistema (1.0 = lo definiste tú, 0.85 = extraído del chat). Fuente: quién lo escribió (user_explicit = tú, consolidation = extraído automáticamente).",
         "structured_semantic_key_value_episodic_conversat": "Memoria semántica estructurada (clave-valor) + episódica (fragmentos de conversación) con búsqueda vectorial. Los embeddings están siempre activos — el modelo se descarga automáticamente en segundo plano.",
         "test_query_e_g_what_database_should_i_use": "Consulta de prueba (p. ej. '¿qué base de datos debería usar?')",

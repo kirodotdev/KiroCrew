@@ -65,6 +65,10 @@ A fabricated PID can identify a real process on the test host. Give a real
 than letting it select the host backend. Keep that source isolated across
 `fresh()` and exercise the real cross-tick state transitions. A collision case
 must still detect the fabricated child's exit without reading the host table.
+Windows pod handle-stop fixtures must also own the separate numeric `pid_exists`
+probe: after a simulated handle exits, a real host process with the same PID
+must not change the verdict. Cover both a gone PID and a recycled live PID;
+the latter must still refuse state deletion after exact-handle draining.
 
 Tests of executable ownership pin only the ancestors above their temporary tree;
 fixture files retain their real ownership and permission bits. Host kernel headers
@@ -76,7 +80,13 @@ Duration-accounting tests use injected clocks and report durations for exact
 arithmetic; subprocess integration tests verify reporting and cleanup without a
 wall-clock ceiling tied to runner speed.
 
+Cancellation-during-persistence tests must wait for a worker-entered handshake
+before cancelling, not infer entry from a short sleep. Keep the worker's wait
+bounded, release it in `finally`, and await the cancelled task's write drain;
+assertions must still prove the lock stays held and the real write completes.
+
 ### Config overrides
+
 Use `monkeypatch` to override config paths:
 ```python
 def test_load_from_file(self, tmp_path, monkeypatch):
@@ -97,6 +107,11 @@ Use `tmp_path` fixture:
 def test_custom_work_dir(self, tmp_path):
     client = AcpClient(work_dir=tmp_path)
 ```
+
+Assert path containment against the fixture's resolved root, not a substring
+such as `.kiro/crew` that may also occur in `tmp_path`'s ancestors. Parameterize
+path-repair tests with a same-named ancestor directory so this stays independent
+of the runner's temporary directory.
 
 ### Links: use the conftest helpers, do not skip on Windows
 
@@ -1256,6 +1271,31 @@ agent run, while CI asks for it explicitly. So you no longer need an override ju
 avoid coverage. (Coverage's cost is overwhelmingly TIME, not memory: re-measured
 across three slices it added +33% to +160% wall clock but only +1.6% to +8.1% peak
 worker RSS.)
+
+### Opt-in Windows CI progress records
+
+The Windows test job loads `scripts.ci_pytest_progress` explicitly with `-p` and
+`--ci-progress-dir`; importing the plugin without that option registers no recorder
+and creates no files. It leaves selection, scheduling, coverage and timeout limits
+unchanged. One open JSONL stream per worker records collection start/end and selected
+count, test start/end, and pytest's setup/call/teardown durations. File names include
+worker, PID and a fresh UUID, so nested runs and repeated in-process runs cannot
+replace one another. Each record is flushed, without per-event fsync or path probes.
+Source declarations are parsed once per selected module for structural names;
+parameter values and dynamic node names are never copied. A selected-collection
+ordinal distinguishes cases; unsupported declarations use `dynamic`. No captured
+output, exception text, locals or absolute paths are recorded.
+
+The controller emits a bounded `CI_PROGRESS` summary at most once per 30 seconds
+of incoming phase reports, with the last phase, last completed test and slowest
+phase since the previous summary. Worker-ready/collected and session-end markers
+are also logged. These are event-driven, not a heartbeat: a stuck collection or
+worker can leave no new summary, and the last summary need not name the test active
+at cancellation. JSONL preserves prior events on process termination, but a job
+limit can skip artifact upload and a machine loss can lose the files entirely.
+The Actions log then retains only the sampled summaries, not a complete trace.
+Diagnostic file I/O failures disable that stream without changing the test verdict.
+Linux child-process tests verify these mechanics, not native Windows performance.
 
 ### Running on a machine with little RAM
 

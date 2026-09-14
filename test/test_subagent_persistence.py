@@ -45,7 +45,13 @@ def agent_root(tmp_path, monkeypatch):
 
 class TestCreateAgentFolder:
     def test_creates_state_json(self, agent_root):
-        path = create_agent_folder("abc123", task="do stuff", agent="kirocrew", parent_session="dashboard:default", max_turns=100)
+        path = create_agent_folder(
+            "abc123",
+            task="do stuff",
+            agent="kirocrew",
+            parent_session="dashboard:default",
+            max_turns=100,
+        )
         state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         assert state["id"] == "abc123"
         assert state["task"] == "do stuff"
@@ -119,9 +125,7 @@ class TestReadState:
         (folder / "state.json").write_text("{corrupt")
         assert read_state("bad") is None
 
-    def test_invalid_encoding_depth_and_nonobject_return_none(
-        self, agent_root, monkeypatch
-    ):
+    def test_invalid_encoding_depth_and_nonobject_return_none(self, agent_root, monkeypatch):
         import kiro_crew.subagent_persistence as sp
 
         folder = agent_root / "bad-shapes"
@@ -203,9 +207,7 @@ class TestWriteTombstone:
         agent_id = "t-memory-only-snapshot"
         create_agent_folder(agent_id, task="t")
         with _CLEANUP_IDENTITY_LOCK:
-            _LIVE_CLEANUP_IDENTITIES[agent_id] = [
-                {"session_id": "sid-memory", "provider": "acp"}
-            ]
+            _LIVE_CLEANUP_IDENTITIES[agent_id] = [{"session_id": "sid-memory", "provider": "acp"}]
         with patch.object(
             sp,
             "_read_cleanup_identities_file",
@@ -214,15 +216,11 @@ class TestWriteTombstone:
             write_tombstone(agent_id, cause="error", recovery_action="none")
         assert (read_tombstone(agent_id) or {})["session_id"] == "sid-memory"
 
-    def test_live_identity_snapshot_does_not_wait_and_delete_clears_fallback(
-        self, agent_root
-    ):
+    def test_live_identity_snapshot_does_not_wait_and_delete_clears_fallback(self, agent_root):
         agent_id = "t-identity-lock"
         create_agent_folder(agent_id, task="t")
         with _CLEANUP_IDENTITY_LOCK:
-            _LIVE_CLEANUP_IDENTITIES[agent_id] = [
-                {"session_id": "sid-lock", "provider": "acp"}
-            ]
+            _LIVE_CLEANUP_IDENTITIES[agent_id] = [{"session_id": "sid-lock", "provider": "acp"}]
             write_tombstone(agent_id, cause="error", recovery_action="none")
         assert (read_tombstone(agent_id) or {})["session_id"] == "sid-lock"
 
@@ -296,9 +294,7 @@ class TestWriteTombstone:
         assert protected_path.is_relative_to(agent_root.parent)
         assert protected_path.exists()
 
-    def test_concurrent_publish_during_sidecar_write_is_not_overwritten(
-        self, agent_root
-    ):
+    def test_concurrent_publish_during_sidecar_write_is_not_overwritten(self, agent_root):
         from unittest.mock import patch
 
         import kiro_crew.subagent_persistence as sp
@@ -348,9 +344,10 @@ class TestWriteTombstone:
             "sid-first",
             "sid-second",
         ]
-        assert [
-            item["session_id"] for item in sp._live_cleanup_identities(agent_id)
-        ] == ["sid-first", "sid-second"]
+        assert [item["session_id"] for item in sp._live_cleanup_identities(agent_id)] == [
+            "sid-first",
+            "sid-second",
+        ]
 
     def test_snapshots_cleanup_identity_from_readable_state(self, agent_root):
         create_agent_folder("t3", task="t")
@@ -425,9 +422,7 @@ class TestPruneStaleTombstones:
         "died_case",
         ["string", "nan", "infinity", "future", "oversized"],
     )
-    def test_invalid_tombstone_died_uses_mtime_fallback(
-        self, agent_root, monkeypatch, died_case
-    ):
+    def test_invalid_tombstone_died_uses_mtime_fallback(self, agent_root, monkeypatch, died_case):
         agent_id = f"invalid-died-{died_case}"
         create_agent_folder(agent_id, task="t")
         update_state(agent_id, session_id="sid-died", provider="acp", keep=False)
@@ -500,9 +495,7 @@ class TestPruneStaleTombstones:
         assert cleaned == ["sid-cutoff"]
         assert not (agent_root / agent_id).exists()
 
-    def test_future_died_and_mtime_preserve_unreadable_state_grace(
-        self, agent_root, monkeypatch
-    ):
+    def test_future_died_and_mtime_preserve_unreadable_state_grace(self, agent_root, monkeypatch):
         """Clock rollback must not turn unknown retention into immediate cleanup."""
         import kiro_crew.subagent_persistence as sp
 
@@ -964,7 +957,9 @@ class TestPerTurnStateUpdates:
         provider.approve_tool = AsyncMock()
 
         async def _stream(*_a, **_kw):
-            yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, title="shell", request_id=1, tool_kind="mcp")
+            yield LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST, title="shell", request_id=1, tool_kind="mcp"
+            )
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="result")
             yield LLMEvent(kind=EVENT_COMPLETE)
 
@@ -1064,16 +1059,20 @@ class TestTombstoneOnAbnormalExit:
         async def _hang(*a, **kw):
             await asyncio.sleep(999)
 
-        with patch.object(manager, "_run_inner", _hang), \
-             patch.object(manager, "_default_timeout", 0.01), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"), \
-             patch.object(manager, "_fire_event", new_callable=AsyncMock), \
-             patch.object(manager, "_on_done", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_run_inner", _hang),
+            patch.object(manager, "_default_timeout", 0.01),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(manager, "_fire_event", new_callable=AsyncMock),
+            patch.object(manager, "_on_done", new_callable=AsyncMock),
+        ):
             await manager._run(info)
 
         # Tombstone should still say "reaped", not "timeout"
-        ts = json.loads((agent_root / "reaped_timeout" / "tombstone.json").read_text(encoding="utf-8"))
+        ts = json.loads(
+            (agent_root / "reaped_timeout" / "tombstone.json").read_text(encoding="utf-8")
+        )
         assert ts["cause"] == "reaped"
         # Error should not be overwritten
         assert info.error == "reaped by reaper"
@@ -1096,7 +1095,9 @@ class TestTombstoneOnAbnormalExit:
 
         async def _many_tools(*_a, **_kw):
             for i in range(5):
-                yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, title=f"tool{i}", request_id=i, tool_kind="mcp")
+                yield LLMEvent(
+                    kind=EVENT_PERMISSION_REQUEST, title=f"tool{i}", request_id=i, tool_kind="mcp"
+                )
 
         provider.stream = MagicMock(side_effect=lambda *a, **kw: _many_tools())
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
@@ -1275,9 +1276,11 @@ class TestFolderCleanupOnSuccess:
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, on_done=_slow_on_done)
 
-        with patch("kiro_crew.subagent._ON_DONE_TIMEOUT", 0.01), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            patch("kiro_crew.subagent._ON_DONE_TIMEOUT", 0.01),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("delivery failure test", parent_session_key="dashboard:default")
             await manager._tasks[info.id]
 
@@ -1305,6 +1308,7 @@ class TestOrphanReconciliation:
         create_agent_folder("orphan1", task="old task", parent_session="dashboard:default")
         write_result_chunk("orphan1", "some result")
         from kiro_crew.subagent_persistence import update_state
+
         update_state("orphan1", pid=99999)  # dead PID
 
         with patch.object(manager, "_is_pid_alive", return_value=False):
@@ -1347,9 +1351,11 @@ class TestOrphanReconciliation:
         create_agent_folder("orphan3", task="stuck task")
         update_state("orphan3", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=True), \
-             patch.object(manager, "_is_orphan_process", return_value=True), \
-             patch.object(manager, "_kill_orphan_pid") as mock_kill:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=True),
+            patch.object(manager, "_is_orphan_process", return_value=True),
+            patch.object(manager, "_kill_orphan_pid") as mock_kill,
+        ):
             await manager._reconcile_orphans()
 
         mock_kill.assert_called_once_with(99999)
@@ -1370,9 +1376,11 @@ class TestOrphanReconciliation:
         create_agent_folder("recycled1", task="old task")
         update_state("recycled1", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=True), \
-             patch.object(manager, "_is_orphan_process", return_value=False), \
-             patch.object(manager, "_kill_orphan_pid") as mock_kill:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=True),
+            patch.object(manager, "_is_orphan_process", return_value=False),
+            patch.object(manager, "_kill_orphan_pid") as mock_kill,
+        ):
             await manager._reconcile_orphans()
 
         mock_kill.assert_not_called()
@@ -1393,9 +1401,11 @@ class TestOrphanReconciliation:
         create_agent_folder("orphan_ts", task="ts task")
         update_state("orphan_ts", pid=88888, pid_recorded_at=1234567890.5)
 
-        with patch.object(manager, "_is_pid_alive", return_value=True), \
-             patch.object(manager, "_is_orphan_process", return_value=True) as mock_check, \
-             patch.object(manager, "_kill_orphan_pid"):
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=True),
+            patch.object(manager, "_is_orphan_process", return_value=True) as mock_check,
+            patch.object(manager, "_kill_orphan_pid"),
+        ):
             await manager._reconcile_orphans()
 
         mock_check.assert_called_once_with(88888, 1234567890.5)
@@ -1414,7 +1424,9 @@ class TestOrphanReconciliation:
 
         # Should not re-tombstone
         await manager._reconcile_orphans()
-        ts = json.loads((agent_root / "already_dead" / "tombstone.json").read_text(encoding="utf-8"))
+        ts = json.loads(
+            (agent_root / "already_dead" / "tombstone.json").read_text(encoding="utf-8")
+        )
         assert ts["cause"] == "timeout"  # unchanged
 
     @pytest.mark.asyncio
@@ -1458,8 +1470,10 @@ class TestOrphanNotification:
         write_result_chunk("notif1", "the answer is 42")
         update_state("notif1", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=False), \
-             patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=False),
+            patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify,
+        ):
             await manager._reconcile_orphans()
 
         mock_notify.assert_awaited_once()
@@ -1480,8 +1494,10 @@ class TestOrphanNotification:
         create_agent_folder("notif2", task="lost task")
         update_state("notif2", pid=99999)
 
-        with patch.object(manager, "_is_pid_alive", return_value=False), \
-             patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify:
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=False),
+            patch.object(manager, "_notify_orphan", new_callable=AsyncMock) as mock_notify,
+        ):
             await manager._reconcile_orphans()
 
         mock_notify.assert_awaited_once()
@@ -1509,8 +1525,15 @@ class TestOrphanNotification:
 
         state = {"id": "notif3", "task": "fallback task", "parent_session": "dashboard:default"}
 
-        with patch.object(manager, "_try_inject_orphan_notification", new_callable=AsyncMock, return_value=False), \
-             patch.object(manager, "_send_orphan_slack_dm", new_callable=AsyncMock) as mock_dm:
+        with (
+            patch.object(
+                manager,
+                "_try_inject_orphan_notification",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(manager, "_send_orphan_slack_dm", new_callable=AsyncMock) as mock_dm,
+        ):
             msg = await manager._notify_orphan("notif3", state, "delivered", True)
 
         mock_dm.assert_not_awaited()  # DM happens once, at digest time
@@ -1541,8 +1564,12 @@ class TestOrphanNotification:
             injected_meta = meta
             return True
 
-        with patch.object(manager, "_try_inject_orphan_notification", side_effect=_capture_inject), \
-             patch("kiro_crew.subagent._redact", side_effect=lambda m: f"[REDACTED]{m}") as mock_redact:
+        with (
+            patch.object(manager, "_try_inject_orphan_notification", side_effect=_capture_inject),
+            patch(
+                "kiro_crew.subagent._redact", side_effect=lambda m: f"[REDACTED]{m}"
+            ) as mock_redact,
+        ):
             await manager._notify_orphan("notif_redact", state, "delivered", True)
 
         # _redact must have been called before injection
@@ -1577,8 +1604,10 @@ class TestOrphanNotification:
             if call_count == 1:
                 raise RuntimeError("notification failed")
 
-        with patch.object(manager, "_is_pid_alive", return_value=False), \
-             patch.object(manager, "_notify_orphan", side_effect=_failing_notify):
+        with (
+            patch.object(manager, "_is_pid_alive", return_value=False),
+            patch.object(manager, "_notify_orphan", side_effect=_failing_notify),
+        ):
             await manager._reconcile_orphans()
 
         # Both orphans should be tombstoned despite notification failure
@@ -1645,7 +1674,9 @@ class TestSpawnStatusReadsFromAgentFolder:
         """read_state returns data for orphaned agents (not in memory)."""
         from kiro_crew.subagent_persistence import create_agent_folder, read_state, write_tombstone
 
-        create_agent_folder("orphan_status", task="orphaned task", parent_session="dashboard:default")
+        create_agent_folder(
+            "orphan_status", task="orphaned task", parent_session="dashboard:default"
+        )
         write_tombstone("orphan_status", cause="gateway_restart", recovery_action="delivered")
 
         state = read_state("orphan_status")
@@ -1744,7 +1775,9 @@ class TestRecordSlowCommand:
     def test_appends_multiple_lines(self, agent_root):
         record_slow_command("ag1", idle_secs=200)
         record_slow_command("ag2", idle_secs=300)
-        lines = (agent_root / "slow_commands.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        lines = (
+            (agent_root / "slow_commands.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        )
         assert len(lines) == 2
         assert {json.loads(lines[0])["id"], json.loads(lines[1])["id"]} == {"ag1", "ag2"}
 
@@ -1756,9 +1789,7 @@ def _slow_log_records(path):
     if not path.exists():
         return []
     return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").strip().splitlines()
-        if line
+        json.loads(line) for line in path.read_text(encoding="utf-8").strip().splitlines() if line
     ]
 
 
@@ -1774,9 +1805,7 @@ class TestRecordSlowCommandRotation:
 
     @pytest.fixture(autouse=True)
     def small_cap(self, monkeypatch):
-        monkeypatch.setattr(
-            "kiro_crew.subagent_persistence._SLOW_LOG_MAX_BYTES", self.CAP
-        )
+        monkeypatch.setattr("kiro_crew.subagent_persistence._SLOW_LOG_MAX_BYTES", self.CAP)
 
     def test_rotation_keeps_every_record(self, agent_root):
         """One rotation: older records land in ``.jsonl.1``, none are lost."""
@@ -1858,9 +1887,7 @@ class TestRecordSlowCommandRotation:
 
         live = agent_root / "slow_commands.jsonl"
         live.write_text("x" * (self.CAP + 10), encoding="utf-8")
-        lock_fd = os.open(
-            agent_root / "slow_commands.jsonl.lock", os.O_CREAT | os.O_RDWR, 0o600
-        )
+        lock_fd = os.open(agent_root / "slow_commands.jsonl.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             assert platform_compat.try_acquire_lock(lock_fd, exclusive=True)
             done = threading.Event()
@@ -1879,3 +1906,88 @@ class TestRecordSlowCommandRotation:
         finally:
             platform_compat.release_lock(lock_fd)
             os.close(lock_fd)
+
+
+class TestProtectedMemoryMode:
+    @pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+    def test_mode_survives_editable_metadata_replacement(self, agent_root, mode):
+        from kiro_crew.subagent_persistence import read_run_memory_mode
+
+        folder = create_agent_folder("privacy-mode", memory_mode=mode)
+        (folder / "state.json").write_text(
+            json.dumps({"memory_mode": "persistent", "parent_session": "dashboard:replacement"}),
+            encoding="utf-8",
+        )
+        assert read_run_memory_mode("privacy-mode") == mode
+        create_agent_folder("privacy-mode", memory_mode="persistent")
+        assert read_run_memory_mode("privacy-mode") == mode
+
+    def test_recreation_can_only_tighten_mode(self, agent_root):
+        from kiro_crew.subagent_persistence import read_run_memory_mode
+
+        expected = "persistent"
+        for mode in ("persistent", "incognito", "temporary", "incognito", "persistent"):
+            create_agent_folder("privacy-tighten", memory_mode=mode)
+            expected = "temporary" if mode == "temporary" or expected == "temporary" else mode
+            assert read_run_memory_mode("privacy-tighten") == expected
+
+    @pytest.mark.parametrize("damage", ["missing", "legacy", "unknown", "corrupt"])
+    def test_unknown_mode_cannot_be_recreated_as_persistent(self, agent_root, damage):
+        from kiro_crew.subagent_persistence import _run_memory_identity_path, read_run_memory_mode
+
+        create_agent_folder("privacy-damaged", memory_mode="temporary")
+        record = _run_memory_identity_path("privacy-damaged")
+        if damage == "missing":
+            record.unlink()
+        elif damage == "corrupt":
+            record.write_text("not json", encoding="utf-8")
+        else:
+            payload = {"memory_store": "", "version": 2}
+            if damage == "unknown":
+                payload["memory_mode"] = "unexpected"
+            record.write_text(json.dumps(payload), encoding="utf-8")
+        original = record.read_bytes() if record.exists() else None
+        with pytest.raises(ValueError, match="memory binding unavailable"):
+            read_run_memory_mode("privacy-damaged")
+        with pytest.raises(ValueError, match="memory binding unavailable"):
+            create_agent_folder("privacy-damaged", memory_mode="persistent")
+        assert (record.read_bytes() if record.exists() else None) == original
+
+    def test_tightening_does_not_recreate_run_state(self, agent_root):
+        from kiro_crew.subagent_persistence import read_run_memory_mode, tighten_run_memory_mode
+
+        folder = create_agent_folder("mode-only-update", task="keep this original task")
+        before = (folder / "state.json").read_bytes()
+        assert tighten_run_memory_mode("mode-only-update", "temporary") == "temporary"
+        assert tighten_run_memory_mode("mode-only-update", "persistent") == "temporary"
+        assert read_run_memory_mode("mode-only-update") == "temporary"
+        assert (folder / "state.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("original", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize("requested", ["persistent", "incognito", "temporary"])
+def test_runtime_mode_binding_only_tightens(agent_root, original, requested):
+    from kiro_crew.messaging.privacy_mode import strictest
+    from kiro_crew.subagent_persistence import bind_session_memory_mode, read_session_memory_mode
+
+    key = "taskrunner:mode-composition:runtime"
+    assert bind_session_memory_mode(key, original) == original
+    expected = strictest((original, requested)) or "persistent"
+    assert bind_session_memory_mode(key, requested) == expected
+    assert bind_session_memory_mode(key, "persistent") == expected
+    assert read_session_memory_mode(key) == expected
+
+
+def test_runtime_mode_publication_error_is_sanitized(agent_root, monkeypatch):
+    from kiro_crew.subagent import _describe_exception
+    from kiro_crew.subagent_persistence import bind_session_memory_mode
+
+    def fail(*args, **kwargs):
+        raise OSError("private-path-must-not-escape")
+
+    monkeypatch.setattr("kiro_crew.subagent_persistence._atomic_write", fail)
+    with pytest.raises(ValueError) as error:
+        bind_session_memory_mode("taskrunner:failed:runtime", "temporary")
+    assert _describe_exception(error.value) == (
+        "ValueError: memory binding unavailable: session policy publication failed"
+    )

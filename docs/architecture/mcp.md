@@ -1519,3 +1519,19 @@ or the watcher failed at runtime, which the skip cannot see: `POST
 /api/sessions/restart` is the recovery. On an older kiro-cli, or another
 harness, the warm pool holds pre-spawned processes carrying the old config. Use
 Apply & Restart, or `kirocrew config set`, which triggers a restart.
+
+## Private workflow callers
+
+Workflow writes resolve the current strict MCP session and pass that same key
+to HTTP. This includes authoring, saved-definition runs, ad-hoc `source` and
+`intent` runs, cancellation and subtree reruns. Missing strict identity refuses
+the write before HTTP; a lenient ancestor-session fallback cannot authorize it.
+Kernel identity or a validated member proof still decides authority;
+headers, workflow ids and template names never select a private store. Workflow
+run/detail/list/cancel/rerun enforce the recorded execution scope. Private worker
+processes use direct projected MCP servers inside their existing OS sandbox,
+not shared V1 broker sessions. The deterministic workflow E2E model executes
+these real MCP transports through `sandboxed_spawn_argv` and `popen_limited`,
+which applies resource limits after exec rather than running Python in a fork
+child. Temporary launcher profiles are cleaned up even when spawning fails;
+synthetic tool events are not memory-access evidence.

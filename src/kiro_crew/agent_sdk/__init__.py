@@ -76,7 +76,17 @@ from kiro_crew.agent_sdk.capabilities import (
     capabilities_for,
     capabilities_of,
 )
-from kiro_crew.agent_sdk.drivers.acp import finish_suspended_spawn
+from kiro_crew.agent_sdk.context import (
+    CONTEXT_EVENT_AGENT_CHANGED,
+    CONTEXT_EVENT_CLEAR,
+    CONTEXT_EVENT_COMPACTION,
+    CONTEXT_EVENT_COMPLETED,
+    CONTEXT_EVENT_TEXT,
+    CONTEXT_EVENT_TOOL,
+    ContextPromptProvider,
+    ContextStreamEvent,
+)
+from kiro_crew.agent_sdk.drivers.acp import context_provider_of, finish_suspended_spawn
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
     AgentAuthDeclaration,
@@ -99,6 +109,15 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "ContextPromptProvider",
+    "ContextStreamEvent",
+    "CONTEXT_EVENT_AGENT_CHANGED",
+    "CONTEXT_EVENT_CLEAR",
+    "CONTEXT_EVENT_COMPACTION",
+    "CONTEXT_EVENT_COMPLETED",
+    "CONTEXT_EVENT_TEXT",
+    "CONTEXT_EVENT_TOOL",
+    "context_provider_of",
     "AgentTurnUsage",
     "MODEL_NAMESPACE_ACP",
     "SessionCapabilities",

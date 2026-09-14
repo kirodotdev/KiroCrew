@@ -796,6 +796,7 @@
     },
     "workflows": {
       "workflowRunTree": {
+        "checkpoint_save_failed": "Progress could not be saved. Copy any needed results before restarting. Check storage access and free space; saving retries at the next checkpoint.",
         "cancelled": "Cancelled",
         "result": "Result",
         "failed_with_error": "Failed: {{error}}",
@@ -4847,6 +4848,22 @@
         "usage_tracking_is_not_available_for": "Usage tracking is not available for {{provider}}."
       },
       "vectorMemoryCard": {
+        "embedding_status": "Embedding status",
+        "legacy_vectors_warning": "These vectors predate the record of their model file. If you changed that file, reapply it in Embedding Model settings to rebuild them.",
+        "legacy_vectors_warning_path_error": "These vectors predate the record of their model file, and the file at the configured path cannot be used right now. Fix the model path first, then apply it to rebuild them.",
+        "verification_pending": "Model verification is running. Memory uses keyword search meanwhile.",
+        "verification_failed": "The model file {{path}} could not be read for verification. Make sure the file exists and is readable, then apply it again.",
+        "download_error_detail": "The bundled model could not be downloaded. Check your network or proxy, then retry.",
+        "model_error_path": "{{message}} Path: {{path}}",
+        "model_error_path_pointer": "The embedding model file at the configured path cannot be used, so memory uses keyword search meanwhile.",
+        "repair_unknown": "Some memory stores could not be checked, so the rebuild is not confirmed for all of them. The check retries automatically while this page is open, and a closed store is rebuilt when it next opens. If this keeps showing, check the gateway log.",
+        "repair_pending": "The rebuild after the model change is still in progress across all memory stores: {{items}}.",
+        "repair_vectors_one": "{{count}} memory still needs a new vector",
+        "repair_vectors_other": "{{count}} memories still need a new vector",
+        "repair_invalidation_one": "{{count}} open store still holds old vectors to clear",
+        "repair_invalidation_other": "{{count}} open stores still hold old vectors to clear",
+        "repair_deferred_one": "{{count}} closed or unavailable store will be rebuilt when it next opens",
+        "repair_deferred_other": "{{count}} closed or unavailable stores will be rebuilt when they next open",
         "column_importance": "Importance",
         "column_score": "Score",
         "column_text": "Text",
@@ -4862,14 +4879,21 @@
         "every_memory_create_update_delete_conflict_and_i": "Every memory create, update, delete, conflict, and injection block is logged here.",
         "no_matching_entries": "No matching entries",
         "no_semantic_entries": "No semantic entries",
+        "not_active": "not active",
         "preview_what_gets_injected_into_prompts_enter_a": "Preview what gets injected into prompts. Enter a query to see episodic retrieval results.",
         "refine_your_filter_to_narrow_further": "— refine your filter to narrow further",
         "retrying_download": "Retrying download (attempt {{attempt}})…",
         "setup_failed": "Setup failed",
+        "status_unknown": "unknown",
         "structured_key_value_facts_about_you_confidence": "Structured key-value facts about you. Confidence: how certain the system is (1.0 = you set it, 0.85 = extracted from chat). Source: who wrote it (user_explicit = you, consolidation = auto-extracted).",
         "structured_semantic_key_value_episodic_conversat": "Structured semantic (key-value) + episodic (conversation fragments) memory with vector search. Embeddings are always-on — the model downloads automatically in the background.",
         "unknown_error": "Unknown error",
         "verifying_model_integrity": "Verifying model integrity…"
+      },
+      "embedModel": {
+        "configured_inactive": "Configured: {{model}} · {{dim}}d · not active",
+        "apply_reapply": "Rebuild memory vectors",
+        "confirm_reapply_body": "This reloads the configured model and clears and rebuilds the stored memory vectors."
       }
     },
     "overviewPage": {

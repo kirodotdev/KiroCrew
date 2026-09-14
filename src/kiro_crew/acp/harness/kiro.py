@@ -118,7 +118,18 @@ class KiroHarness(MembershipHarness):
             # non-default provider model: a later set_model cannot cross provider
             # boundaries, and an agent config may pin one of its own.
             argv += ["--model", ctx.model]
-        return SpawnPlan(argv=argv)
+        native_documents: tuple[tuple[str, str], ...] = ()
+        if ctx.private_memory:
+            from kiro_crew.member_essential_context import kiro_launch_documents
+
+            native_documents = tuple(
+                await asyncio.to_thread(
+                    kiro_launch_documents,
+                    ctx.agent,
+                    str(ctx.work_dir) if ctx.work_dir is not None else None,
+                )
+            )
+        return SpawnPlan(argv=argv, native_context_documents=native_documents)
 
     def apply_spawn_env(self, env: dict[str, str]) -> None:
         """Hand kiro-cli the API key from Crew's own configuration.

@@ -5267,7 +5267,10 @@ class DashboardState:
         # Secretary subsystem removed; kept as permanent None for apps/routes.py
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)
-        self.workflow_service: Any = None  # lazy-init in server.py (WorkflowService, M6)
+        self.workflow_service: Any = None  # published only after complete recovery
+        self.workflow_startup_status = "pending"
+        self.workflow_startup_stopping = False
+        self.workflow_startup_task: asyncio.Task[None] | None = None
         self.context_builder = context_builder
         self.conversation_log = conversation_log
         self.consolidator = consolidator
@@ -5603,6 +5606,20 @@ class DashboardState:
         from kiro_crew.dashboard.file_index import FileIndexRegistry
 
         self.file_indexes = FileIndexRegistry()
+        # Runtime services share the gateway's policy, never a model-supplied mode.
+        from kiro_crew.dashboard.handlers._shared import (
+            require_live_session_memory_mode,
+            resolve_session_memory_mode,
+        )
+
+        if self.subagents is not None:
+            self.subagents._memory_mode_for_session = lambda key: require_live_session_memory_mode(
+                self, key
+            )
+        if self.context_builder is not None:
+            self.context_builder.memory_mode_for_session = lambda key: resolve_session_memory_mode(
+                self, key
+            )
 
     def register_channel_transport(self, transport: "MessagingTransport") -> None:
         """Register a live channel transport for cross-surface mirror delivery.

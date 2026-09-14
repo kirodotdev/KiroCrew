@@ -69,6 +69,7 @@ from kiro_crew.task_reporter import (  # noqa: F401  (NotifyCallback re-exported
     notify,
     save_progress,
 )
+from kiro_crew.workflow_memory import TaskSnapshotError, private_task_operation
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -80,6 +81,16 @@ if TYPE_CHECKING:
 from kiro_crew.learn import Lesson
 
 logger = logging.getLogger(__name__)
+
+
+def _observe_background_completion(task: asyncio.Task[None]) -> None:
+    """Retrieve failures even after bookkeeping drops the task; awaiting still raises."""
+    if not task.cancelled():
+        error = task.exception()
+        if error is not None:
+            # Private task details belong to the scoped run error, never this callback.
+            logger.error("TaskRunner background completion failed (%s)", type(error).__name__)
+
 
 # ── Backward-compat re-exports ──
 Step = Task
@@ -105,7 +116,11 @@ _UNATTENDED_SOURCES = frozenset({"cron", "mcp"})
 
 
 class WorkflowInitializing(RuntimeError):
-    """Task mutations are temporarily unavailable until workflow attachment."""
+    """Task mutations are unavailable until workflow attachment."""
+
+    def __init__(self, message: str, *, code: str = "workflow_initializing") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class WorkflowRunPublisher(Protocol):
@@ -344,6 +359,7 @@ class TaskRunner:
         )
         self._ctor_max_parallel_steps = max_parallel_steps
         self._runs: dict[str, Project] = {}
+        self._unavailable_run_refs: list[dict] = []
         # Serialize registry writes and enforce monotonic ordering. Snapshots
         # are always built on the event-loop thread (see _serialize_runs), so
         # an older snapshot whose offloaded write lands late must not clobber a
@@ -352,6 +368,8 @@ class TaskRunner:
         self._persist_lock = threading.Lock()
         self._persist_seq = 0  # last sequence handed out (event-loop thread only)
         self._persist_written = 0  # highest sequence persisted (lock-guarded)
+        self._persist_failed = 0  # newer failures must not be overwritten by stale workers
+        self._snapshot_recovery_incomplete = False
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._start_lock = asyncio.Lock()
         self._start_ids_in_flight: set[str] = set()
@@ -447,29 +465,41 @@ class TaskRunner:
         return bool(self._start_ids_in_flight) or any(not t.done() for t in self._tasks.values())
 
     def _admission_closed(self) -> bool:
-        """Read SessionManager's shared gate without yielding."""
+        """Read the gateway shutdown gate without yielding."""
         return getattr(self._sessions, "admission_closed", False) is True
 
     async def _reserve_start(self, task_id: str) -> None:
         """Reserve one start atomically against the shared admission gate."""
         async with self._start_lock:
+            self._require_workflow_ready()
             if self._admission_closed():
                 raise ValueError("gateway admission is closed")
+            if task_id in self._start_ids_in_flight:
+                raise ValueError("Task is already starting")
+            prior = self._tasks.get(task_id)
+            if prior is not None and not prior.done():
+                raise ValueError("Cannot start while the previous run is still finishing")
             self._start_ids_in_flight.add(task_id)
 
     def _release_start(self, task_id: str) -> None:
         self._start_ids_in_flight.discard(task_id)
 
-    def defer_workflow_attachment(self) -> None:
-        """Hold new work while an async host initializes the publication port."""
+    def defer_workflow_attachment(self, *, failed: bool = False) -> None:
+        """Hold new work until attachment; a failed host requires a restart."""
         self._workflow_initializing = True
+        self._workflow_initialization_error = (
+            "Workflow initialization failed; restart the gateway." if failed else ""
+        )
 
     def _require_workflow_ready(self) -> None:
         if self._workflow_initializing:
+            error = getattr(self, "_workflow_initialization_error", "")
+            if error:
+                raise WorkflowInitializing(error, code="workflow_initialization_failed")
             raise WorkflowInitializing("Task runner is initializing workflows; retry shortly.")
 
     def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None:
-        """Release admission with a ready port, or standalone mode on init failure."""
+        """Release admission with a ready port, or explicit standalone fallback."""
         self._workflow_service = service
         self._workflow_initializing = False
 
@@ -504,6 +534,8 @@ class TaskRunner:
                     await asyncio.shield(persist_task)
                     raise
             await service.phase(run.workflow_run_id, "Planning")
+        except TaskSnapshotError:
+            raise
         except Exception:
             logger.warning("TaskRunner workflow publication failed to start", exc_info=True)
 
@@ -640,6 +672,7 @@ class TaskRunner:
 
     # ── Plan Mode ──
 
+    @private_task_operation
     async def plan(
         self,
         input_text: str = "",
@@ -677,6 +710,7 @@ class TaskRunner:
         self._refresh_from_config()
         _override = _resolve_workspace_dir(workspace_dir)
         async with self._start_lock:
+            self._require_workflow_ready()
             if self._admission_closed():
                 raise ValueError("gateway admission is closed")
             id_suffix = time.time_ns()
@@ -924,6 +958,7 @@ class TaskRunner:
             "force_approval": task.force_approval,
         }
 
+    @private_task_operation
     async def execute_plan(
         self,
         task_id: str,
@@ -1038,6 +1073,8 @@ class TaskRunner:
                 await self._execute_tasks(run, history_key)
                 if run.status == "running":
                     run.status = "completed"
+                    run.finished_at = time.time()
+                    await self._apersist_runs()
                     await self._notify(
                         "\u2705 Task completed",
                         format_completion_summary(run),
@@ -1062,21 +1099,24 @@ class TaskRunner:
                     run.status = "paused" if run.status == "pausing" else "cancelled"
                 run.finished_at = time.time()
                 save_progress(run)
-                await self._apersist_runs()
-                if run.branch_name and not workspace_lost:
-                    try:
-                        await git_coord.finalize(run)
-                    except Exception:
-                        logger.debug("Git finalize failed", exc_info=True)
-                await self._workflow_finalize(run)
-                if watchdog_task and not watchdog_task.done():
-                    watchdog_task.cancel()
-                if self._consolidator:
-                    self._consolidator.maybe_consolidate(history_key)
-                self._tasks.pop(task_id, None)
+                try:
+                    await self._apersist_runs()
+                    if run.branch_name and not workspace_lost:
+                        try:
+                            await git_coord.finalize(run)
+                        except Exception:
+                            logger.debug("Git finalize failed", exc_info=True)
+                    await self._workflow_finalize(run)
+                    if self._consolidator:
+                        self._consolidator.maybe_consolidate(history_key)
+                finally:
+                    if watchdog_task and not watchdog_task.done():
+                        watchdog_task.cancel()
+                    self._tasks.pop(task_id, None)
 
         try:
             self._tasks[task_id] = asyncio.create_task(_execute())
+            self._tasks[task_id].add_done_callback(_observe_background_completion)
         finally:
             self._release_start(task_id)
         return task_id
@@ -1206,6 +1246,8 @@ class TaskRunner:
             await self._execute_tasks(run, history_key)
             if run.status == "running":
                 run.status = "completed"
+                run.finished_at = time.time()
+                await self._apersist_runs()
                 await self._notify("\u2705 Task completed", format_completion_summary(run), run=run)
         except asyncio.CancelledError:
             if run.status != "pausing":
@@ -1225,17 +1267,19 @@ class TaskRunner:
                 run.status = "paused" if run.status == "pausing" else "cancelled"
             run.finished_at = time.time()
             save_progress(run)
-            await self._apersist_runs()
-            if run.branch_name:
-                try:
-                    await git_coord.finalize(run)
-                except Exception:
-                    logger.debug("Git finalize failed", exc_info=True)
-            await self._workflow_finalize(run)
-            if watchdog_task and not watchdog_task.done():
-                watchdog_task.cancel()
-            if self._consolidator:
-                self._consolidator.maybe_consolidate(history_key)
+            try:
+                await self._apersist_runs()
+                if run.branch_name:
+                    try:
+                        await git_coord.finalize(run)
+                    except Exception:
+                        logger.debug("Git finalize failed", exc_info=True)
+                await self._workflow_finalize(run)
+                if self._consolidator:
+                    self._consolidator.maybe_consolidate(history_key)
+            finally:
+                if watchdog_task and not watchdog_task.done():
+                    watchdog_task.cancel()
         return run
 
     async def _execute_tasks(self, run: Project, history_key: str) -> None:
@@ -1534,6 +1578,7 @@ class TaskRunner:
         # otherwise two same-spec starts can both pass the limit and overwrite
         # each other's timestamp-based ID before either appears in _tasks.
         async with self._start_lock:
+            self._require_workflow_ready()
             if self._admission_closed():
                 raise ValueError("gateway admission is closed")
             active = sum(1 for task in self._tasks.values() if not task.done())
@@ -1625,6 +1670,7 @@ class TaskRunner:
                         self._tasks.pop(task_id, None)
 
                 self._tasks[task_id] = asyncio.create_task(_wrapped())
+                self._tasks[task_id].add_done_callback(_observe_background_completion)
                 return task_id
             except BaseException:
                 rollback_run = self._runs.pop(task_id, None)
@@ -1760,9 +1806,15 @@ class TaskRunner:
         if bg_task and not bg_task.done():
             bg_task.cancel()
         self._runs.pop(task_id, None)
+        origin = self._run_session_keys.get(task_id)
+        try:
+            await self._apersist_runs()
+        except BaseException:
+            self._runs.setdefault(task_id, run)
+            raise
         self._stall_cancelled_ids.discard(task_id)
-        self._run_session_keys.pop(task_id, None)
-        await self._apersist_runs()
+        if self._run_session_keys.get(task_id) == origin:
+            self._run_session_keys.pop(task_id, None)
         await self._workflow_delete_link(run)
         try:
             # Resolved from ``kiro_crew.sel`` at call time, not through the
@@ -1845,6 +1897,7 @@ class TaskRunner:
         )
         return False
 
+    @private_task_operation
     async def retry_from_task(self, task_id: str, from_task: int, agent: str = "") -> str:
         self._require_workflow_ready()
         run = self._resolve_task(task_id)
@@ -1872,21 +1925,51 @@ class TaskRunner:
 
         await self._reserve_start(task_id)
         try:
-            for task in run.tasks:
-                if task.index >= from_task:
+            # Resolve fallible prerequisites before resetting results. After the
+            # acknowledged snapshot there must be no await before task handoff.
+            history_key = await self._bound_history_key(
+                run, f"taskrunner:run:{Path(run.spec_path).stem}"
+            )
+            previous_run = (
+                run.status,
+                run.error,
+                run.finished_at,
+                run.started_at,
+                run.last_task_time,
+            )
+            previous_tasks = [
+                (task, task.status, task.error, task.result, task.attempts)
+                for task in run.tasks
+                if task.index >= from_task
+            ]
+            try:
+                for task, *_ in previous_tasks:
                     task.status = TaskStatus.PENDING
                     task.error = ""
                     task.result = ""
                     task.attempts = 0
-            run.status = "running"
-            run.error = ""
-            run.finished_at = 0.0
-            run.started_at = run.last_task_time = time.time()
-            await self._apersist_runs()  # persist immediately so crash recovery works
+                run.status = "running"
+                run.error = ""
+                run.finished_at = 0.0
+                run.started_at = run.last_task_time = time.time()
+                await self._apersist_runs()
+            except BaseException:
+                # Persistence drains its worker even on repeated cancellation.
+                # Restore in place: callers may retain the Project/Task objects.
+                # A failed public projection can follow a hidden commit; this
+                # restores live state, not disk, until a later snapshot succeeds.
+                run.status, run.error, run.finished_at, run.started_at, run.last_task_time = (
+                    previous_run
+                )
+                for task, status, error, result, attempts in previous_tasks:
+                    task.status, task.error, task.result, task.attempts = (
+                        status,
+                        error,
+                        result,
+                        attempts,
+                    )
+                raise
             self._agent = agent
-            history_key = await self._bound_history_key(
-                run, f"taskrunner:run:{Path(run.spec_path).stem}"
-            )
         except BaseException:
             self._release_start(task_id)
             raise
@@ -1902,6 +1985,8 @@ class TaskRunner:
                 await self._execute_tasks(run, history_key)
                 if run.status == "running":
                     run.status = "completed"
+                    run.finished_at = time.time()
+                    await self._apersist_runs()
                     passed = sum(1 for t in run.tasks if t.status == TaskStatus.PASSED)
                     await self._notify(
                         "\u2705 Task completed", f"{passed}/{len(run.tasks)} passed", run=run
@@ -1923,14 +2008,17 @@ class TaskRunner:
                     run.status = "paused" if run.status == "pausing" else "cancelled"
                 run.finished_at = time.time()
                 save_progress(run)
-                await self._apersist_runs()
-                await self._workflow_finalize(run)
-                if watchdog_task and not watchdog_task.done():
-                    watchdog_task.cancel()
-                self._tasks.pop(task_id, None)
+                try:
+                    await self._apersist_runs()
+                    await self._workflow_finalize(run)
+                finally:
+                    if watchdog_task and not watchdog_task.done():
+                        watchdog_task.cancel()
+                    self._tasks.pop(task_id, None)
 
         try:
             self._tasks[task_id] = asyncio.create_task(_retry())
+            self._tasks[task_id].add_done_callback(_observe_background_completion)
         finally:
             self._release_start(task_id)
         return task_id
@@ -2023,6 +2111,14 @@ class TaskRunner:
             from kiro_crew.memory_stores import UnknownMemoryStore
 
             runtime_key = f"{_SESSION_PREFIX}:{run.task_id}:runtime" if run else ""
+            mode_resolver = (
+                getattr(self._ctx, "memory_mode_for_session", None)
+                if isinstance(getattr(self._ctx, "_session_memory_modes", None), dict)
+                else None
+            )
+            if runtime_key and mode_resolver is not None:
+                if await mode_resolver(runtime_key) != "persistent":
+                    return
             private_store = (
                 await asyncio.to_thread(read_private_session_store, runtime_key)
                 if runtime_key
@@ -2218,7 +2314,10 @@ class TaskRunner:
         # focused persistence tests. Production mutation APIs await
         # _apersist_runs so the fsync-backed atomic write never blocks the
         # gateway event loop.
-        self._commit_snapshot(self._next_persist_seq(), self._serialize_runs())
+        try:
+            self._commit_snapshot(self._next_persist_seq(), self._serialize_runs())
+        except TaskSnapshotError:
+            pass  # Legacy synchronous callers do not acknowledge durable admission.
 
     def _serialize_runs(self) -> str:
         """Serialize the runs registry to a JSON string.
@@ -2229,7 +2328,7 @@ class TaskRunner:
         or capture a torn snapshot, so persistence always snapshots here first
         and offloads only the byte-level write.
         """
-        data = []
+        data = list(self._unavailable_run_refs)
         for run in self._runs.values():
             if run.source == "cron":
                 continue
@@ -2318,17 +2417,28 @@ class TaskRunner:
         # lock: a stale snapshot (older seq) whose offloaded write is scheduled
         # late must never overwrite a newer one that already landed.
         with self._persist_lock:
+            if self._snapshot_recovery_incomplete:
+                raise TaskSnapshotError(
+                    "Task snapshot recovery incomplete; restart after storage recovers"
+                )
             if seq < self._persist_written:
                 return
+            if seq < self._persist_failed:
+                raise TaskSnapshotError("A newer task snapshot failed; retry the operation")
             try:
                 # Atomic write: serialize to a temp file in the same dir, fsync,
                 # then os.replace onto the final path so a crash/kill/full-disk
                 # mid-write can never leave a truncated registry that
                 # _load_runs would otherwise have to discard.
-                atomic_write(self._runs_path(), payload, fsync=True)
-            except OSError:
-                logger.debug("Failed to persist runs", exc_info=True)
-                return
+                from kiro_crew.workflow_memory import WorkflowMemoryError, write_task_snapshot
+
+                write_task_snapshot(self._runs_path(), payload, writer=atomic_write)
+            except (OSError, ValueError, WorkflowMemoryError) as exc:
+                self._persist_failed = max(self._persist_failed, seq)
+                logger.warning("Failed to persist task snapshot (%s)", type(exc).__name__)
+                raise TaskSnapshotError(
+                    "Task snapshot persistence failed; retry the operation"
+                ) from None
             self._persist_written = seq
 
     async def _apersist_runs(self) -> None:
@@ -2346,12 +2456,34 @@ class TaskRunner:
         """
         seq = self._next_persist_seq()
         payload = self._serialize_runs()
-        await asyncio.to_thread(self._commit_snapshot, seq, payload)
+        worker = asyncio.create_task(asyncio.to_thread(self._commit_snapshot, seq, payload))
+        cancelled = False
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                if not cancelled:
+                    raise
+        if cancelled:
+            # Retrieve a late write error, but preserve the caller's cancellation.
+            if not worker.cancelled():
+                worker.exception()
+            raise asyncio.CancelledError
+        worker.result()
 
     def _load_runs(self) -> None:
         path = self._runs_path()
         try:
-            raw = path.read_text(encoding="utf-8")
+            from kiro_crew.workflow_memory import read_task_registry
+
+            try:
+                raw = read_task_registry(path, strict=True)
+            except TaskSnapshotError:
+                self._snapshot_recovery_incomplete = True
+                logger.error("Task snapshot recovery incomplete; writes require a restart")
+                raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             # No registry yet — seed a fresh one rather than treating a
             # missing file as an error.
@@ -2372,7 +2504,7 @@ class TaskRunner:
             return
         try:
             items = json.loads(raw)
-        except (ValueError, OSError) as exc:
+        except ValueError as exc:
             # Never silently discard run state on a corrupt/truncated file:
             # surface the corruption loudly and preserve the bad file as a
             # sidecar for recovery instead of returning an empty registry.
@@ -2390,7 +2522,27 @@ class TaskRunner:
                 logger.warning("Failed to preserve corrupt runs registry", exc_info=True)
             return
         try:
-            for item in items:
+            from kiro_crew.workflow_memory import read_task_snapshot
+
+            private_task_ids: set[str] = set()
+            items = json.loads(
+                read_task_snapshot(
+                    path,
+                    public_payload=raw,
+                    preserve_unavailable=True,
+                    private_task_ids=private_task_ids,
+                )
+            )
+            self._unavailable_run_refs = [
+                item for item in items if item.get("private_payload") is True
+            ]
+        except Exception as exc:
+            logger.error("Failed to hydrate task snapshot (%s)", type(exc).__name__)
+            return
+        for item in items:
+            if item.get("private_payload") is True:
+                continue
+            try:
                 tasks = [
                     Task(
                         index=t["index"],
@@ -2446,7 +2598,6 @@ class TaskRunner:
                     derived_from_workflow_id=item.get("derived_from_workflow_id", ""),
                     derived_from_revision=int(item.get("derived_from_revision") or 0),
                 )
-                self._runs[run.task_id] = run
                 # Compensating control: never let per-run trust silently survive a
                 # gateway restart. A run recovered from an active state had its
                 # auto-approve granted for a live, attended launch; after a crash the
@@ -2489,12 +2640,14 @@ class TaskRunner:
                     logger.info(
                         "Recovered crashed cancelling run %s — marked as cancelled", run.task_id
                     )
-        except Exception:
-            # A structural error while rebuilding an individual run (not a
-            # parse failure — that is handled above) is surfaced loudly and
-            # leaves the runs already loaded intact, rather than silently
-            # discarding the whole registry.
-            logger.error("Failed to deserialize a run from registry %s", path, exc_info=True)
+                self._runs[run.task_id] = run
+            except Exception as exc:
+                # Hydration can succeed even when construction or crash recovery
+                # cannot. Keep private payloads out of both V1 and diagnostics.
+                task_id = item.get("task_id")
+                if isinstance(task_id, str) and task_id in private_task_ids:
+                    self._unavailable_run_refs.append({"task_id": task_id, "private_payload": True})
+                logger.error("Failed to deserialize a task snapshot row (%s)", type(exc).__name__)
 
     def _save_progress(self, run: Project) -> None:
         save_progress(run)

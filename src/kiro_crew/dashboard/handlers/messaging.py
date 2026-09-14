@@ -206,6 +206,20 @@ async def _spawn_scope_refusal(
     return web.json_response({"error": "not found", "code": "task_scope_denied"}, status=404)
 
 
+async def _spawn_request_memory_mode(
+    state: DashboardState, request: web.Request, parent: str
+) -> str:
+    from kiro_crew.dashboard.handlers._shared import resolve_session_memory_mode
+    from kiro_crew.messaging.privacy_mode import strictest
+
+    parent_mode = await resolve_session_memory_mode(state, parent)
+    caller = request.headers.get("X-Session-Key", "")
+    caller_mode = (
+        parent_mode if caller == parent else await resolve_session_memory_mode(state, caller)
+    )
+    return strictest((parent_mode, caller_mode)) or "persistent"
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -258,6 +272,16 @@ async def api_spawn(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    try:
+        admitted_mode = await _spawn_request_memory_mode(state, request, parent_session)
+    except (OSError, ValueError):
+        return web.json_response(
+            {
+                "error": "The originating session's memory mode is unavailable.",
+                "code": "memory_unavailable",
+            },
+            status=409,
+        )
     # approval_mode and silent are HTTP API parameters passed by the SDK,
     # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
     # (mcp_core.py) does not expose these params — they are added by the
@@ -403,6 +427,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         include_lessons=cleaned.get("include_lessons", True) is not False,
         include_project=cleaned.get("include_project", True) is not False,
         memory_store=child_memory_store,
+        _memory_mode=admitted_mode,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -491,6 +516,16 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     refusal = await _spawn_scope_refusal(request, claimed_session=parent_session)
     if refusal is not None:
         return refusal
+    try:
+        admitted_mode = await _spawn_request_memory_mode(state, request, parent_session)
+    except (OSError, ValueError):
+        return web.json_response(
+            {
+                "error": "The originating session's memory mode is unavailable.",
+                "code": "memory_unavailable",
+            },
+            status=409,
+        )
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
     try:
@@ -511,6 +546,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         model=model or None,
         max_turns=max_turns,
         cwd=resumed_cwd,
+        _memory_mode=admitted_mode,
     )
     if not info:
         return web.json_response(

@@ -136,10 +136,23 @@ class GatewayHandle:
         default_factory=threading.Event, init=False, repr=False, compare=False
     )
 
+    _restart: Optional[Callable[[Optional[bool]], "GatewayHandle"]] = None
+
     @property
     def teardown_confirmed(self) -> bool:
         """Whether the harness confirmed the whole spawned tree stopped."""
         return self._teardown_confirmed.is_set()
+
+    def restart(self, *, skip_model_download: Optional[bool] = None) -> "GatewayHandle":
+        """Restart this harness-owned process, retaining its isolated data home.
+
+        ``skip_model_download`` re-decides the one download switch for the NEW
+        process (see :func:`spawn_feature_gateway`); ``None`` keeps the previous
+        launch's value. The remaining environment retains its initial snapshot.
+        """
+        if self._restart is None:
+            raise GatewaySpawnError("This handle has no active harness supervisor")
+        return self._restart(skip_model_download)
 
     def diagnostics(self) -> str:
         """Exit status plus the stderr and stdout tails of the child, for a
@@ -890,6 +903,87 @@ def _end_escaped_descendants(escaped: dict[int, str]) -> bool:
         time.sleep(0.05)
 
 
+def _launch_gateway(
+    home: Path, env: dict[str, str], *, fixture: str | None, approval: str, crons: bool
+) -> subprocess.Popen:
+    """Launch only our test gateway; no caller-supplied executable or argv."""
+    cmd = [sys.executable, "-m", "kiro_crew", "gateway", "--test-mode"]
+    if fixture is not None:
+        cmd.extend(["--seed", fixture])
+    cmd.extend(["--approval", approval])
+    if not crons:
+        cmd.append("--no-crons")
+    return subprocess.Popen(
+        cmd,
+        # Seeding replaces home atomically; do not keep cwd on its old inode.
+        cwd=home.parent,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+    )
+
+
+def harness_environment(
+    home: Path, src: Path, *, skip_model_download: bool = True
+) -> dict[str, str]:
+    """The environment a harness gateway is launched with.
+
+    Layered over the caller's ``os.environ`` so supported production knobs the
+    test process exports (``KIROCREW_EMBED_MODEL_URL``, ``OLLAMA_MODELS``) reach
+    the gateway, then pinned: the data home, the agent-spec home, the test-rig
+    marker, unbuffered stdout, and -- unless ``skip_model_download`` is False --
+    the ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch. That flag is the ONLY
+    default a caller can drop, and only through this keyword: it is what a
+    dedicated download-failure evidence gateway needs, because the production
+    download manager honours the same flag for the dashboard's Retry click as
+    for the boot-time background task. A caller that drops it must also export
+    a loopback ``KIROCREW_EMBED_MODEL_URL`` nothing serves; the harness does not
+    check that, the CI budget does.
+    """
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(src) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "KIROCREW_HOME": str(home),
+        # Isolate the AGENT-SPEC home too, not just the data home.
+        # ``kirocrew gateway`` boot runs ``rebuild_agent_config``, which writes the
+        # managed MCP specs into ``kiro_agents_dir()``. Left at the default that
+        # resolves the operator's real machine-wide ``~/.kiro/agents`` -- and the
+        # spawned gateway is an ordinary (non-worktree) install, so ``agent.py``'s
+        # write guard takes the "writing its own shared home" branch and does NOT
+        # decline. It would then stamp this throwaway checkout's venv + tmp data
+        # home into the real install's specs, breaking every managed MCP call on
+        # the machine until the next gateway restart heals it.
+        #
+        # Pointing ``KIRO_HOME`` at ``<home>/kiro`` makes ``kiro_agents_dir()``
+        # resolve to ``<home>/kiro/agents`` -- which is EXACTLY
+        # ``isolated_agents_dir(<home>)``, the dedicated dir the write guard's
+        # private-target exemption already lets this instance own. The whole tree
+        # is removed with ``home`` on teardown, so the gateway writes only its own
+        # specs and leaves the shared install untouched.
+        "KIRO_HOME": str(home / "kiro"),
+        # Marks this gateway as a test rig. It grants no launch privilege —
+        # the packaged fake backend is exec'd by the ordinary in-place path
+        # like any other runnable executable.
+        FAKE_ACP_TEST_MODE_ENV: "1",
+        # Force unbuffered Python so we see READY without waiting for the
+        # next flush. ``--json-ready`` already calls ``flush=True`` on the
+        # READY print itself, but other prints leading up to it (e.g.
+        # "Created default config") would block-buffer when stdout is a
+        # pipe and could mask early failures.
+        "PYTHONUNBUFFERED": "1",
+    }
+    if skip_model_download:
+        # Embeddings are default-on; never let a harness-spawned gateway
+        # kick the 610MB embedding-model download during a test run.
+        env["KIROCREW_SKIP_MODEL_DOWNLOAD"] = "1"
+    else:
+        # An inherited "1" would silently re-arm the skip the caller asked to drop.
+        env.pop("KIROCREW_SKIP_MODEL_DOWNLOAD", None)
+    return env
+
+
 @contextlib.contextmanager
 def spawn_feature_gateway(
     fixture: str = "minimal",
@@ -899,6 +993,7 @@ def spawn_feature_gateway(
     timeout: Optional[float] = None,
     kiro_bin: Optional[str | Path] = None,
     before_spawn: Optional[Callable[[dict[str, str], Path], None]] = None,
+    skip_model_download: bool = True,
 ) -> Iterator[GatewayHandle]:
     """Spin up an isolated gateway from the current workspace checkout.
 
@@ -934,6 +1029,13 @@ def spawn_feature_gateway(
             using the ordinary seed API in a child; preflight-created private
             files are preserved and gateway startup does not seed again.
             Mutating the environment copy does not alter the gateway launch.
+        skip_model_download: ``True`` (default) exports
+            ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` so no harness gateway ever
+            fetches the 610MB embedding model. ``False`` leaves the production
+            download path armed for THIS gateway only -- the dedicated
+            download-failure evidence gateway, which points
+            ``KIROCREW_EMBED_MODEL_URL`` at a loopback port nothing serves.
+            See :func:`harness_environment`.
 
     Yields:
         ``GatewayHandle`` once the gateway has bound its dashboard port
@@ -958,41 +1060,7 @@ def spawn_feature_gateway(
             env_timeout = os.environ.get("KIROCREW_HARNESS_READY_TIMEOUT")
             timeout = float(env_timeout) if env_timeout else DEFAULT_READY_TIMEOUT
 
-        env = {
-            **os.environ,
-            "PYTHONPATH": str(src) + os.pathsep + os.environ.get("PYTHONPATH", ""),
-            "KIROCREW_HOME": str(home),
-            # Isolate the AGENT-SPEC home too, not just the data home.
-            # ``kirocrew gateway`` boot runs ``rebuild_agent_config``, which writes the
-            # managed MCP specs into ``kiro_agents_dir()``. Left at the default that
-            # resolves the operator's real machine-wide ``~/.kiro/agents`` -- and the
-            # spawned gateway is an ordinary (non-worktree) install, so ``agent.py``'s
-            # write guard takes the "writing its own shared home" branch and does NOT
-            # decline. It would then stamp this throwaway checkout's venv + tmp data
-            # home into the real install's specs, breaking every managed MCP call on
-            # the machine until the next gateway restart heals it.
-            #
-            # Pointing ``KIRO_HOME`` at ``<home>/kiro`` makes ``kiro_agents_dir()``
-            # resolve to ``<home>/kiro/agents`` -- which is EXACTLY
-            # ``isolated_agents_dir(<home>)``, the dedicated dir the write guard's
-            # private-target exemption already lets this instance own. The whole tree
-            # is removed with ``home`` on teardown, so the gateway writes only its own
-            # specs and leaves the shared install untouched.
-            "KIRO_HOME": str(home / "kiro"),
-            # Marks this gateway as a test rig. It grants no launch privilege —
-            # the packaged fake backend is exec'd by the ordinary in-place path
-            # like any other runnable executable.
-            FAKE_ACP_TEST_MODE_ENV: "1",
-            # Force unbuffered Python so we see READY without waiting for the
-            # next flush. ``--json-ready`` already calls ``flush=True`` on the
-            # READY print itself, but other prints leading up to it (e.g.
-            # "Created default config") would block-buffer when stdout is a
-            # pipe and could mask early failures.
-            "PYTHONUNBUFFERED": "1",
-            # Embeddings are default-on; never let a harness-spawned gateway
-            # kick the 610MB embedding-model download during a test run.
-            "KIROCREW_SKIP_MODEL_DOWNLOAD": "1",
-        }
+        env = harness_environment(home, src, skip_model_download=skip_model_download)
         if kiro_bin is not None:
             env["KIROCREW_KIRO_BIN"] = str(kiro_bin)
             from kiro_crew.agent import _resolve_kirocrew_bin
@@ -1007,22 +1075,7 @@ def spawn_feature_gateway(
             if not reachable or Path(reachable).resolve() != launcher.resolve():
                 raise GatewaySpawnError("existing kirocrew launcher is not reachable on child PATH")
 
-        cmd = [
-            sys.executable,
-            "-m",
-            "kiro_crew",
-            "gateway",
-            "--test-mode",
-            "--approval",
-            approval,
-        ]
-        if not crons:
-            # Suppress scheduled jobs by default — a stray cron firing during
-            # an unrelated test is a hard-to-diagnose source of flakes. Tests
-            # that specifically exercise the cron path opt back in via
-            # ``crons=True``.
-            cmd.append("--no-crons")
-        spawn_cwd = src.parent
+        spawn_cwd = home.parent
         if before_spawn is not None:
             # Native authentication/config preflights can create private files.
             # Seed the empty owned tree FIRST, retaining seed's ordinary guards.
@@ -1047,24 +1100,12 @@ def spawn_feature_gateway(
                     f"preflight fixture seed failed (exit {seeded.returncode}): {seeded.stderr}"
                 )
             before_spawn(dict(env), spawn_cwd)
-        else:
-            # Ordinary callers still seed atomically in gateway startup.
-            cmd.extend(["--seed", fixture])
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(spawn_cwd),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            # Process-group isolation so teardown can reap the whole tree and
-            # child MCP servers / kiro-cli sessions don't outlive their parent
-            # holding ports open. The two kwargs are passed EXPLICITLY (never
-            # **unpacked) per platform-compat.md: on POSIX start_new_session
-            # calls setsid so killpg reaps the group and creationflags=0 is a
-            # no-op; on Windows there is no setsid and CREATE_NEW_PROCESS_GROUP
-            # is what makes the tree taskkill /T-reapable.
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+        proc = _launch_gateway(
+            home,
+            env,
+            fixture=None if before_spawn is not None else fixture,
+            approval=approval,
+            crons=crons,
         )
 
         # Drain stderr asynchronously into a list so the buffer can't fill
@@ -1092,6 +1133,8 @@ def spawn_feature_gateway(
 
         known_descendants: dict[int, str] = {}
         handle: Optional[GatewayHandle] = None
+        running = True
+        active = True
         try:
             ready = _wait_for_ready_line(
                 proc, timeout=timeout, stderr_buffer=stderr_buffer, pump=pump
@@ -1126,6 +1169,66 @@ def spawn_feature_gateway(
                     f"--- stdout after READY (last) ---\n{out}"
                 )
 
+            def _restart(skip_model_download: Optional[bool] = None) -> GatewayHandle:
+                nonlocal proc, pump, stderr_buffer, known_descendants, running, handle
+                if not active or not running:
+                    raise GatewaySpawnError("The harness supervisor is no longer active")
+                if not _terminate_process_group(proc, known_descendants):
+                    raise GatewaySpawnError(
+                        "The previous gateway tree did not stop; restart refused"
+                    )
+                if handle is not None:
+                    handle._teardown_confirmed.set()
+                running = False
+                if skip_model_download is True:
+                    env["KIROCREW_SKIP_MODEL_DOWNLOAD"] = "1"
+                elif skip_model_download is False:
+                    env.pop("KIROCREW_SKIP_MODEL_DOWNLOAD", None)
+                # No seed on restart: persisted bindings and payloads are the input.
+                proc = _launch_gateway(home, env, fixture=None, approval=approval, crons=crons)
+                running = True
+                known_descendants = {}
+                stderr_buffer = []
+                if proc.stderr is not None:
+                    threading.Thread(
+                        target=_drain_stderr, args=(proc.stderr, stderr_buffer), daemon=True
+                    ).start()
+                pump = _StdoutPump(proc.stdout) if proc.stdout is not None else None
+                if pump is not None:
+                    pump.start()
+                restarted = _wait_for_ready_line(
+                    proc, timeout=timeout, stderr_buffer=stderr_buffer, pump=pump
+                )
+                if pump is not None:
+                    pump.handoff()
+                if proc.poll() is None:
+                    if platform_compat.IS_WINDOWS:
+                        root_token = platform_compat.process_start_time(proc.pid) or ""
+                        if root_token:
+                            for child in platform_compat.attributed_descendants(
+                                proc.pid, root_token
+                            ):
+                                child_token = platform_compat.process_start_time(child)
+                                if child_token:
+                                    known_descendants[child] = child_token
+                    else:
+                        for child in platform_compat.process_descendants(proc.pid):
+                            child_token = platform_compat.process_start_time(child)
+                            if child_token:
+                                known_descendants[child] = child_token
+                port = int(restarted["port"])
+                token = str(restarted["token"])
+                handle = GatewayHandle(
+                    url=f"http://localhost:{port}/?token={token}",
+                    port=port,
+                    token=token,
+                    home=home,
+                    proc=proc,
+                    _diagnostics=_diagnostics,
+                    _restart=_restart,
+                )
+                return handle
+
             handle = GatewayHandle(
                 url=url,
                 port=port,
@@ -1133,10 +1236,12 @@ def spawn_feature_gateway(
                 home=home,
                 proc=proc,
                 _diagnostics=_diagnostics,
+                _restart=_restart,
             )
             yield handle
         finally:
-            exited = _terminate_process_group(proc, known_descendants)
+            active = False
+            exited = _terminate_process_group(proc, known_descendants) if running else True
             if exited is True and handle is not None:
                 handle._teardown_confirmed.set()
     finally:

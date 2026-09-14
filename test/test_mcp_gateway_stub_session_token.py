@@ -1087,14 +1087,17 @@ async def test_a_subagents_own_turn_re_establishes_its_claim(
 
     class _Handle:
         stub_session_token = TOKEN_B
+        session_id = "subagent-test-session"
 
         async def prompt(self, _message: str) -> Any:
+            assert pushed == [(_PID, SUB_KEY, TOKEN_B)]
             for event in ():
                 yield event
 
     class _Runtime:
         _mcp_gateway_socket = "/tmp/kirocrew-gw.sock"
         pid = _PID
+        process_instance = "runtime-test-instance"
 
         def saw_not_logged_in(self) -> bool:
             return False

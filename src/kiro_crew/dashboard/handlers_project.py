@@ -93,7 +93,7 @@ async def api_project_delete(request):
         if not tr or not await tr.delete_run(pid):
             raise web.HTTPNotFound(text=f"Project {pid} not found")
     except WorkflowInitializing as exc:
-        return web.json_response({"error": str(exc), "code": "workflow_initializing"}, status=503)
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     return web.json_response({"ok": True})
 
 

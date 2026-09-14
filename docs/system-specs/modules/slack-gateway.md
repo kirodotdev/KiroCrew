@@ -4,7 +4,18 @@
 
 The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
 
+Independently scheduled agent runs admit their exact execution key as durable
+work before provider allocation, publishing its privacy mode in the existing
+protected runtime-policy tree. Single and sequential-agent paths share that
+admission, so first-turn child creation does not require a dashboard slot or a
+previous transcript. A damaged committed mode refuses allocation; a key prefix
+alone never grants a mode. Origin-chat injection keeps the chat's own policy.
+
 Startup wires memory objects behind one gateway-lifetime in-process barrier.
+Both dashboard and API-only servers receive the orchestrator's existing context
+builder. Post-bind workflow initialization uses that same object for essentials
+and store-bound context; it does not construct a second memory stack or add
+pre-bind memory reads.
 After the dashboard binds, one tracked worker activates pending V1 and V2 restores before opening any memory database or
 markdown/FTS store. It clears a previous gateway's cached handles, initializes the
 already-wired Global store and rebuilds FTS before releasing memory access.

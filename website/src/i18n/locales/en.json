@@ -7480,7 +7480,6 @@
         "delete": "Delete",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · runs locally in-process",
-        "embeddings": "Embeddings",
         "entries": "entries",
         "episodic_context_injected_per_message": "Episodic Context (injected per-message)",
         "episodic_memory": "Episodic Memory",

@@ -785,6 +785,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             resumed=resumed,
             minimal_context=turn.minimal_context,
             runtime_source=turn.channel_type,
+            context_provider=provider,
         )
 
         driver = TurnDriver(

@@ -312,6 +312,7 @@ class TestApiSpawnHandler:
         state = SimpleNamespace(subagents=mgr, conversation_log=MagicMock())
         request = MagicMock()
         request.app = {"state": state}
+        request.headers = {}
 
         async def _json() -> dict:
             return body
@@ -446,6 +447,7 @@ class TestRecordAndRetry:
         state = SimpleNamespace(subagents=mgr)
         request = MagicMock()
         request.app = {"state": state}
+        request.headers = {}
         request.match_info = {"agent_id": "a1"}
         await api_spawn_retry(request)
         assert mgr.spawn.call_args.kwargs["reasoning_effort"] == "xhigh"
@@ -712,12 +714,15 @@ class TestApiSpawnEffortDropped:
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         state = SimpleNamespace(
+            _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
+            _restricted_keys=set(),
             subagents=mgr,
             sessions=SimpleNamespace(get_agent=lambda key: parent_agent),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
         request.app = {"state": state}
+        request.headers = {}
         request.json = AsyncMock(return_value=body)
         cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}))
         if crews:
@@ -736,7 +741,9 @@ class TestApiSpawnEffortDropped:
         return _json.loads(resp.body)
 
     def test_auto_resolution_carries_the_verdict(self):
-        data = self._spawn({"task": "x", "reasoning_effort": "high", "parent_session": "d:1"})
+        data = self._spawn(
+            {"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"}
+        )
         assert "effort_dropped" in data
         assert "auto" in data["effort_dropped"]
 
@@ -746,20 +753,20 @@ class TestApiSpawnEffortDropped:
                 "task": "x",
                 "model": "sonnet-test-model",
                 "reasoning_effort": "high",
-                "parent_session": "d:1",
+                "parent_session": "dashboard:1",
             }
         )
         assert "effort_dropped" not in data
 
     def test_non_capable_role_pin_carries_the_verdict(self):
         data = self._spawn(
-            {"task": "x", "reasoning_effort": "high", "parent_session": "d:1"},
+            {"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"},
             role_models={"subagent": "deepseek-3.2"},
         )
         assert "deepseek-3.2" in data.get("effort_dropped", "")
 
     def test_no_effort_requested_omits_the_key(self):
-        data = self._spawn({"task": "x", "parent_session": "d:1"})
+        data = self._spawn({"task": "x", "parent_session": "dashboard:1"})
         assert "effort_dropped" not in data
         assert data["id"] == "a1"
 
@@ -926,18 +933,21 @@ class TestAppliedLineRendering:
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         state = SimpleNamespace(
+            _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
+            _restricted_keys=set(),
             subagents=mgr,
             sessions=SimpleNamespace(get_agent=lambda key: ""),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
         request.app = {"state": state}
+        request.headers = {}
         request.json = AsyncMock(
             return_value={
                 "task": "x",
                 "model": "sonnet-test-model",
                 "reasoning_effort": "high",
-                "parent_session": "d:1",
+                "parent_session": "dashboard:1",
             }
         )
         cfg = KiroCrewConfig(agent=AgentConfig())
@@ -962,14 +972,17 @@ class TestAppliedLineRendering:
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         state = SimpleNamespace(
+            _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
+            _restricted_keys=set(),
             subagents=mgr,
             sessions=SimpleNamespace(get_agent=lambda key: ""),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
         request.app = {"state": state}
+        request.headers = {}
         request.json = AsyncMock(
-            return_value={"task": "x", "reasoning_effort": "high", "parent_session": "d:1"}
+            return_value={"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"}
         )
         cfg = KiroCrewConfig(agent=AgentConfig())
         with (
@@ -1054,7 +1067,7 @@ class TestSessionChainResolution:
         from kiro_crew.config.loader import KiroCrewAgentConfig
 
         data = harness._spawn(
-            {"task": "x", "reasoning_effort": "high", "parent_session": "d:1"},
+            {"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"},
             crews={"parentcrew": KiroCrewAgentConfig(model="sonnet-test-model")},
             parent_agent="parentcrew",
         )
@@ -1077,14 +1090,17 @@ class TestVerdictOffTheEventLoop:
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         state = SimpleNamespace(
+            _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
+            _restricted_keys=set(),
             subagents=mgr,
             sessions=SimpleNamespace(get_agent=lambda key: ""),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
         request.app = {"state": state}
+        request.headers = {}
         request.json = AsyncMock(
-            return_value={"task": "x", "reasoning_effort": "high", "parent_session": "d:1"}
+            return_value={"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"}
         )
         cfg = KiroCrewConfig(agent=AgentConfig())
         seen: list[object] = []

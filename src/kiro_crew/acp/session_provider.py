@@ -18,6 +18,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +265,26 @@ class AcpSessionProvider(LLMProvider):
             except OSError:
                 logger.warning("cleanup_session: failed to delete %s", target, exc_info=True)
 
+    @property
+    def context_incarnation(self) -> object:
+        return (id(self._handle), self.session_id, self.process_instance)
+
+    @property
+    def context_provider_type(self) -> str:
+        from kiro_crew.providers.acp import provider_label
+
+        return provider_label(self)
+
+    @property
+    def native_context_documents(self) -> dict[str, str]:
+        return dict(self._handle.native_context_documents)
+
+    @property
+    def native_steering(self) -> bool:
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        return self.backend == ACP_BACKEND_KAS
+
     async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes."""
         # Re-establish this session's gateway claim before the turn can call a
@@ -286,8 +307,13 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
         try:
-            async for event in self._handle.prompt(message):
-                yield event
+            async with aclosing(
+                self.essential_delivery.stream(
+                    message, self._handle.prompt, lambda: self.context_incarnation
+                )
+            ) as events:
+                async for event in events:
+                    yield event
         except AcpRuntimeDead as exc:
             # Translate the shared-runtime death into the exception types
             # chat_runner handles (parity with AcpClient): auth-expiry ->
@@ -338,9 +364,18 @@ class AcpSessionProvider(LLMProvider):
         Same exception translation as stream(): everything leaving this
         surface stays within AcpError.
         """
+        # /compact and /clear discard native history; invalidate before dispatch
+        # so the next warm turn resends the complete snapshot even when the
+        # status receipt is missing or arrives late.
+        self.essential_delivery.prepare_command(command)
         try:
-            async for event in self._handle.stream_command(command):
-                yield event
+            async with aclosing(
+                self.essential_delivery.stream(
+                    command, self._handle.stream_command, lambda: self.context_incarnation
+                )
+            ) as events:
+                async for event in events:
+                    yield event
         except AcpRuntimeDead as exc:
             raise self._translate_dead(exc) from exc
         except AcpRuntimeError as exc:
@@ -393,6 +428,7 @@ class AcpSessionProvider(LLMProvider):
         """Cancel the current turn."""
         if not self._handle.is_turn_active:
             return "no_turn"
+        self.essential_delivery.invalidate()
         try:
             await self._handle.cancel(grace_secs=wait_ack_timeout)
             if wait_ack_timeout > 0:
@@ -674,6 +710,7 @@ class AcpSessionProvider(LLMProvider):
 
     async def compact(self, context: str = "") -> None:
         """Trigger context compaction."""
+        self.essential_delivery.invalidate()
         await self._guarded(self._handle.compact(context))
 
     async def wait_for_compaction(

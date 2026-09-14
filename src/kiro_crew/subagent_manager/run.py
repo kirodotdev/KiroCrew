@@ -648,6 +648,34 @@ class RunEventCoordinator(ManagerComponent):
             info.parent_session_key,
             info.memory_store,
         )
+        # Every continuation reaches this allocation boundary, including direct
+        # manager callers and recovery. Restore the original conversation's
+        # protected mode off-loop before any provider or model context exists.
+        if info.conversation_key:
+            from kiro_crew.subagent_persistence import tighten_run_memory_mode
+            from kiro_crew.workflows.registry import _await_owned
+
+            if not info.conversation_key.startswith("subagent:"):
+                raise ValueError("memory_unavailable: unrecognized conversation identity")
+            original_id = info.conversation_key.removeprefix("subagent:")
+            requested_mode = info.memory_mode
+
+            def restore_mode():
+                mode = tighten_run_memory_mode(original_id, requested_mode)
+                return tighten_run_memory_mode(info.id, mode)
+
+            owned = asyncio.create_task(asyncio.to_thread(restore_mode))
+            info._state_drain_active = True
+            try:
+                info.memory_mode = await _await_owned(owned)
+                info._memory_mode_ready = True
+            except (OSError, ValueError):
+                raise ValueError(
+                    "memory_unavailable: conversation memory mode is unavailable"
+                ) from None
+            finally:
+                info._state_drain_active = False
+
         # Queue waits and restarts can outlive a member/store configuration.
         # Revalidate before allocating any provider process for the run.
         if info.memory_store:
@@ -660,15 +688,21 @@ class RunEventCoordinator(ManagerComponent):
                 # This run's protected dispatch record is the authority. Never
                 # create a private binding from mutable transcript metadata.
                 await asyncio.to_thread(bind_private_session_store, session_key, info.memory_store)
-            await prepare_store_vectors(
-                self._manager._ctx_builder, info.memory_store, session_key=session_key
-            )
+            if info.memory_mode != "temporary":
+                await prepare_store_vectors(
+                    self._manager._ctx_builder, info.memory_store, session_key=session_key
+                )
             log = getattr(self._manager._ctx_builder, "conversation_log", None)
             if log is not None:
                 await asyncio.to_thread(
                     log.update_metadata, session_key, {"memory_store": info.memory_store}
                 )
         # Inherit approval policy from parent session; yolo/trust overrides
+        log = getattr(self._manager._ctx_builder, "conversation_log", None)
+        if log is not None:
+            await asyncio.to_thread(
+                log.update_metadata, session_key, {"memory_mode": info.memory_mode}
+            )
         parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
         if not parent_policy and info.approval_mode == "auto":
@@ -907,9 +941,10 @@ class RunEventCoordinator(ManagerComponent):
         # turn; it cannot continue with Global memory.
         from kiro_crew.context import prepare_store_vectors
 
-        await prepare_store_vectors(
-            self._manager._ctx_builder, info.memory_store, session_key=session_key
-        )
+        if info.memory_mode != "temporary":
+            await prepare_store_vectors(
+                self._manager._ctx_builder, info.memory_store, session_key=session_key
+            )
         full_message, _ = await run_in_embed_pool(
             self._manager._ctx_builder.build_message,
             message,
@@ -920,6 +955,10 @@ class RunEventCoordinator(ManagerComponent):
             provider_type=self._manager._provider_label_of(client),
             model_window=_sub_window,
             context_groups=_groups,
+            blocks_reads=info.memory_mode == "temporary",
+            context_provider=client,
+            agent=agent or None,
+            resumed=_resumed,
         )
         # The one place the resolved scope and its cost are both known — without
         # this, "the sub-agent didn't know X" is undebuggable after the fact.
@@ -1097,6 +1136,13 @@ class RunEventCoordinator(ManagerComponent):
             msg = full_message
             while True:
                 try:
+                    if not use_session_sharing:
+                        # Publish the live dedicated PID before every prompt,
+                        # including retries after a provider process replacement.
+                        # Shared sessions do not own their runtime's PID mapping.
+                        from kiro_crew.messaging.identity import publish_turn_identity
+
+                        await publish_turn_identity(self._manager._sessions, session_key)
                     async for _ev in client.stream(msg):
                         yield _ev
                     return

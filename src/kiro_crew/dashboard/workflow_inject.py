@@ -70,7 +70,8 @@ def _summarize(snapshot: dict) -> str:
             lines.extend(f"- `{p}`" for p in artifacts[:20])
             if len(artifacts) > 20:
                 lines.append(f"- … and {len(artifacts) - 20} more")
-    elif snapshot.get("error"):
+    # A returned result does not imply that its durable checkpoint succeeded.
+    if snapshot.get("error"):
         lines.append(f"\nError: {snapshot['error']}")
     # A failed run is not necessarily an empty one: every agent call that completed
     # before the ceiling / cancel / crash is preserved on the record. Say so
@@ -224,4 +225,64 @@ def inject_workflow_result(
             pass
         return True
     except Exception:  # noqa: BLE001 - injection is best-effort
+        return False
+
+
+async def inject_bound_workflow_result(
+    state: DashboardState, run_id: str, snapshot: dict, *, on_injected=None
+) -> bool:
+    """Private results may only reach the run's still-valid original memory."""
+    import asyncio
+
+    from kiro_crew.member_memory_auth import private_memory_store_for_session
+    from kiro_crew.memory_stores import member_memory_identity
+    from kiro_crew.workflow_memory import WorkflowScope, private_payload_path, read_binding
+
+    try:
+        binding = await asyncio.to_thread(read_binding, run_id)
+        if binding is None:
+            private_path = await asyncio.to_thread(private_payload_path, run_id)
+            if snapshot.get("execution_binding_version") or await asyncio.to_thread(
+                private_path.exists
+            ):
+                return False
+            if await asyncio.to_thread(
+                private_memory_store_for_session, snapshot.get("session_key", "")
+            ):
+                return False
+            return inject_workflow_result(state, run_id, snapshot, on_injected=on_injected)
+        scope = await WorkflowScope.restore(run_id)
+        if snapshot.get("session_key", "") != scope.origin:
+            return False
+        current = await asyncio.to_thread(private_memory_store_for_session, scope.origin)
+        if current != scope.store:
+            return False
+        if scope.store:
+            slot = state.get_slot(_slot_key_from_session(scope.origin))
+            if slot is not None:
+                from kiro_crew.dashboard.chat_utils import effective_session_key
+
+                if effective_session_key(slot) != scope.origin or slot.memory_store != scope.store:
+                    return False
+            else:
+                identity = await asyncio.to_thread(member_memory_identity, scope.store)
+                fallback_name = f"workflow-{run_id}"
+                slot = state.get_slot(fallback_name)
+                if slot is not None:
+                    if (
+                        getattr(slot, "linked_session_key", "") != scope.origin
+                        or getattr(slot, "memory_store", "") != scope.store
+                        or getattr(slot, "agent", "") != identity[0]
+                    ):
+                        return False
+                else:
+                    slot = state.get_or_create_slot(
+                        name=fallback_name, agent=identity[0], linked_session_key=scope.origin
+                    )
+                    slot.memory_store = scope.store
+                # A fallback transcript is visible, but is not an active parent turn.
+                on_injected = None
+        return inject_workflow_result(state, run_id, snapshot, on_injected=on_injected)
+    except Exception:
+        # Refusal never routes a private payload into a default fallback chat.
         return False

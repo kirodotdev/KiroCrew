@@ -194,11 +194,13 @@ def _redact_obj(obj: Any) -> Any:
     return obj
 
 
-def _wf_return(tool: str, text: str, *, outcome: str = "success") -> str:
+def _wf_return(
+    tool: str, text: str, *, outcome: str = "success", session_key: str | None = None
+) -> str:
     safe, _ = redact_exfiltration_urls(text)
     safe, _ = redact_credentials(safe)
     mcp_core.sel().log_tool_invocation(
-        session_key=mcp_core._resolve_session_key(),
+        session_key=session_key if session_key is not None else mcp_core._resolve_session_key(),
         source="mcp",
         tool_name=tool,
         outcome=outcome,
@@ -211,7 +213,10 @@ def workflow_author(name: str, args: dict[str, Any]) -> str:
     intent = (args.get("intent") or "").strip()
     if not intent:
         return _wf_return("workflow_author", "Error: intent is required", outcome="error")
-    d = mcp_core._post("/api/workflows/author", {"intent": intent})
+    session_key, error = _workflow_identity()
+    if not session_key:
+        return _wf_return(name, error, outcome="error")
+    d = mcp_core._post("/api/workflows/author", {"intent": intent}, session_key=session_key)
     if d.get("error"):
         return _wf_return(
             "workflow_author", f"workflow_author failed: {d['error']}", outcome="error"
@@ -238,6 +243,9 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         return _wf_return(
             "workflow_run", "Error: provide either 'source' or 'intent'", outcome="error"
         )
+    session_key, error = _workflow_identity()
+    if not session_key:
+        return _wf_return(name, error, outcome="error")
     wf_body: dict[str, Any] = {}
     if args.get("name"):
         wf_body["name"] = args["name"]
@@ -246,16 +254,6 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
     if isinstance(args.get("budget_total"), int):
         wf_body["budget_total"] = args["budget_total"]
     if workflow_ref:
-        session_key, _strict_err = mcp_core.require_strict_session_key(
-            "Error: cannot verify caller identity for workflow_run. Refusing to start a "
-            "session-bound workflow."
-        )
-        if not session_key:
-            return _wf_return(
-                "workflow_run",
-                _strict_err,
-                outcome="error",
-            )
         if args.get("input"):
             wf_body["input"] = args["input"]
         d = mcp_core._post(
@@ -275,7 +273,7 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         # authored inside the background run as a visible "Authoring" phase, so
         # the slow model call never blocks this tool (no 30s author timeout).
         wf_body["intent"] = intent
-        d = mcp_core._post("/api/workflows/run_intent", wf_body)
+        d = mcp_core._post("/api/workflows/run_intent", wf_body, session_key=session_key)
         if d.get("error"):
             return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
         return _wf_return(
@@ -286,7 +284,7 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
             f"here on completion — or check progress with workflow_status('{d.get('run_id')}').",
         )
     wf_body["source"] = source
-    d = mcp_core._post("/api/workflows/run", wf_body)
+    d = mcp_core._post("/api/workflows/run", wf_body, session_key=session_key)
     if d.get("error"):
         return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
     return _wf_return(
@@ -323,14 +321,22 @@ def workflow_library_list(name: str, args: dict[str, Any]) -> str:
 def workflow_status(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, WORKFLOW_RUN_ID_SCHEMA)
     run_id = args.get("run_id", "")
-    d = mcp_core._get(f"/api/workflows/runs/{run_id}")
+    session_key, error = _workflow_identity()
+    if not session_key:
+        return _wf_return(name, error, outcome="error", session_key="")
+    d = mcp_core._get(f"/api/workflows/runs/{run_id}", session_key=session_key)
     # A *failed* run's snapshot legitimately carries its own ``error`` field
     # (its failure message) alongside ``run_id`` — that is NOT a transport
     # error. Only bail early when the response is a bare transport/404 error
     # (``{"error": ...}`` with no ``run_id``); otherwise report the run,
     # including its failure message.
     if d.get("error") and "run_id" not in d:
-        return _wf_return("workflow_status", f"workflow_status: {d['error']}", outcome="error")
+        return _wf_return(
+            "workflow_status",
+            f"workflow_status: {d['error']}",
+            outcome="error",
+            session_key=session_key,
+        )
     # ``error`` (and ``name``) are LLM-derived — redact before surfacing them
     # to the dashboard/chat (credentials + exfiltration URLs).
     safe_err = _redact_obj(d["error"]) if d.get("error") else ""
@@ -339,19 +345,28 @@ def workflow_status(name: str, args: dict[str, Any]) -> str:
         "workflow_status",
         f"Run `{d.get('run_id')}` ({safe_name}): **{d.get('status')}** "
         f"— {d.get('event_count', 0)} events" + (f"; error: {safe_err}" if safe_err else ""),
+        session_key=session_key,
     )
 
 
 def workflow_result(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, WORKFLOW_RUN_ID_SCHEMA)
     run_id = args.get("run_id", "")
-    d = mcp_core._get(f"/api/workflows/runs/{run_id}")
+    session_key, error = _workflow_identity()
+    if not session_key:
+        return _wf_return(name, error, outcome="error", session_key="")
+    d = mcp_core._get(f"/api/workflows/runs/{run_id}", session_key=session_key)
     # As in workflow_status: a failed run carries its own ``error`` in the
     # snapshot. Distinguish a real transport error (no ``run_id``) from a
     # failed-but-readable run so a failed run still returns its full event
     # stream instead of masquerading as a transport failure.
     if d.get("error") and "run_id" not in d:
-        return _wf_return("workflow_result", f"workflow_result: {d['error']}", outcome="error")
+        return _wf_return(
+            "workflow_result",
+            f"workflow_result: {d['error']}",
+            outcome="error",
+            session_key=session_key,
+        )
     # ``result`` / ``error`` / ``events`` are LLM-derived (agent outputs, log
     # lines) — recursively redact credentials + exfiltration URLs before
     # returning them through this MCP tool to the dashboard/chat surface.
@@ -376,28 +391,44 @@ def workflow_result(name: str, args: dict[str, Any]) -> str:
     return _wf_return(
         "workflow_result",
         json.dumps(wf_payload, indent=2, default=str),
+        session_key=session_key,
     )
 
 
 def workflow_list(name: str, args: dict[str, Any]) -> str:
-    d = mcp_core._get("/api/workflows/runs")
+    session_key, error = _workflow_identity()
+    if not session_key:
+        return _wf_return(name, error, outcome="error", session_key="")
+    d = mcp_core._get("/api/workflows/runs", session_key=session_key)
     if d.get("error"):
-        return _wf_return("workflow_list", f"workflow_list: {d['error']}", outcome="error")
+        return _wf_return(
+            "workflow_list",
+            f"workflow_list: {d['error']}",
+            outcome="error",
+            session_key=session_key,
+        )
     runs = d.get("runs", [])
     if not runs:
-        return _wf_return("workflow_list", "No workflow runs yet.")
+        return _wf_return("workflow_list", "No workflow runs yet.", session_key=session_key)
     lines = [
         f"- `{r.get('run_id')}` {r.get('name') or '—'} → {r.get('status')} "
         f"({r.get('event_count', 0)} events)"
         for r in runs
     ]
-    return _wf_return("workflow_list", "Workflow runs (newest first):\n" + "\n".join(lines))
+    return _wf_return(
+        "workflow_list",
+        "Workflow runs (newest first):\n" + "\n".join(lines),
+        session_key=session_key,
+    )
 
 
 def workflow_cancel(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, WORKFLOW_RUN_ID_SCHEMA)
     run_id = args.get("run_id", "")
-    d = mcp_core._post(f"/api/workflows/runs/{run_id}/cancel", {})
+    session_key, error = _workflow_identity()
+    if not session_key:
+        return _wf_return(name, error, outcome="error")
+    d = mcp_core._post(f"/api/workflows/runs/{run_id}/cancel", {}, session_key=session_key)
     if d.get("error"):
         return _wf_return("workflow_cancel", f"workflow_cancel: {d['error']}", outcome="error")
     return _wf_return(
@@ -410,9 +441,13 @@ def workflow_rerun_subtree(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, WORKFLOW_RERUN_SCHEMA)
     run_id = args.get("run_id", "")
     from_index = args.get("from_index", 0)
+    session_key, error = _workflow_identity()
+    if not session_key:
+        return _wf_return(name, error, outcome="error")
     d = mcp_core._post(
         f"/api/workflows/runs/{run_id}/rerun",
         {"from_index": from_index if isinstance(from_index, int) else 0},
+        session_key=session_key,
     )
     if d.get("error"):
         return _wf_return(
@@ -436,3 +471,9 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "workflow_cancel": workflow_cancel,
     "workflow_rerun_subtree": workflow_rerun_subtree,
 }
+
+
+def _workflow_identity() -> tuple[str, str]:
+    return mcp_core.require_strict_session_key(
+        "Cannot verify the current workflow caller. No workflow action was performed."
+    )

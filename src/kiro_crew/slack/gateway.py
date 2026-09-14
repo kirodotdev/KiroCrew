@@ -4990,7 +4990,23 @@ class GatewayOrchestrator:
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
                 Returns (client, is_new, resumed, downgraded)."""
+
                 assert self.sessions is not None
+                modes = getattr(self.ctx_builder, "_session_memory_modes", None)
+                if isinstance(modes, dict):
+                    from kiro_crew.messaging.privacy_mode import strictest
+                    from kiro_crew.subagent_persistence import bind_session_memory_mode
+                    from kiro_crew.workflows.registry import _await_owned
+
+                    # A separately scheduled run is durable work, not a child
+                    # conversation. Only this trusted dispatch admits its key.
+                    publication = asyncio.create_task(
+                        asyncio.to_thread(bind_session_memory_mode, key, "persistent")
+                    )
+                    admitted_mode = await _await_owned(publication)
+                    modes[key] = (
+                        strictest((admitted_mode, modes.get(key, "persistent"))) or "persistent"
+                    )
                 if cron_memory_store:
                     from kiro_crew.context import prepare_store_vectors
                     from kiro_crew.member_memory_auth import bind_private_session_store
@@ -5093,10 +5109,14 @@ class GatewayOrchestrator:
                         full_message, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
                             msg,
-                            True,
+                            is_new,
+                            agent_session_key,
                             interactive=False,
                             agent=agent,
                             memory_store=cron_memory_store or None,
+                            context_provider=client,
+                            resumed=_resumed,
+                            minimal_context=job.minimal_context,
                         )
                         # Wall clock for the cron agent turn: acp never assigns
                         # TurnUsage.duration_ms, so the row falls back to this.
@@ -5235,10 +5255,13 @@ class GatewayOrchestrator:
                 full_message, _ = await run_in_embed_pool(
                     self.ctx_builder.build_message,
                     msg,
-                    True,
+                    is_new,
+                    session_key,
                     interactive=False,
-                    agent=job.agent_id or None,
+                    agent=cron_agent or None,
                     memory_store=cron_memory_store or None,
+                    context_provider=client,
+                    resumed=_resumed,
                     provider_type=_provider,
                     minimal_context=job.minimal_context,
                 )
@@ -6233,6 +6256,8 @@ class GatewayOrchestrator:
                 key,
                 memory_store=_memory_store,
                 provider_type=_provider,
+                context_provider=client,
+                resumed=_resumed,
             )
             _completion_hook = self._monitor_completion_hook(loop)
             if wake_message is not None and _completion_hook is None:
@@ -8883,6 +8908,8 @@ class GatewayOrchestrator:
                                 parent_key,
                                 memory_store=_memory_store,
                                 provider_type=_provider,
+                                context_provider=client,
+                                resumed=_resumed,
                             )
                         else:
                             msg = announce
@@ -9106,6 +9133,8 @@ class GatewayOrchestrator:
                             parent_key,
                             memory_store=_memory_store,
                             provider_type=_provider,
+                            context_provider=client,
+                            resumed=_resumed,
                         )
                     else:
                         msg = announce
@@ -9595,6 +9624,7 @@ class GatewayOrchestrator:
         self._local_only = is_local_only(configured_host, self._slack_enabled)
         self._dashboard_runner, self.dashboard_state = await start_api_server(
             sessions=self.sessions,
+            context_builder=self.ctx_builder,
             crons=self.cron_svc,
             lessons=LessonStore(),
             port=dashboard_port,

@@ -1462,6 +1462,7 @@
         "embed_model_path": "",
         "embed_model_id": "",
         "embed_model_stamp": [],
+        "embed_rebuild_generation": "",
         "embed_model_legacy_ids": [],
         "semantic_confidence_threshold": 0.8,
         "episodic_dedup_threshold": 0.88,
@@ -1621,6 +1622,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "memory.embed_rebuild_generation",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embedding Rebuild Generation",
+      "help": "Managed explicit-apply request identity. Stores acknowledge it only after invalidating their previous vectors; empty preserves ordinary upgrade behavior.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "memory.embed_model_legacy_ids",

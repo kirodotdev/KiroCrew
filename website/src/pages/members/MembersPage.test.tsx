@@ -1024,57 +1024,90 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
   })
 
-  it('the Crew summary folds the recorded activity by day, with the time strip behind each row, and honest counters', async () => {
-    const now = Date.now() / 1000
+  // The fold is by LOCAL calendar day (`groupActivityDays` floors each entry
+  // with `setHours(0,0,0,0)`), so every fixture timestamp is built the same
+  // way: a wall-clock time on a calendar day, not `now - k*86400`. The live
+  // clock alone cannot prove that: the fixture is only wrong for the two
+  // minutes after midnight, which a CI shard hit once (00:00:23 UTC, "Show 2
+  // more days" — today's entries had landed on yesterday). The second row pins
+  // the clock to 23 s after local midnight and runs the identical assertions,
+  // so the case fails on a midnight-straddling fixture on every run.
+  it.each([
+    ['the live clock', false],
+    ['a clock 23 seconds after local midnight', true],
+  ])('the Crew summary folds the recorded activity by day, with the time strip behind each row, and honest counters (%s)', async (_label, pinMidnight) => {
     const midnight = new Date()
     midnight.setHours(0, 0, 0, 0)
-    const todayStart = midnight.getTime() / 1000
-    // An hour into each earlier local day: unambiguous calendar days, unlike
-    // `now - k*86400`, which straddles midnight depending on the wall clock.
-    const onDay = (daysAgo: number) => todayStart - daysAgo * 86400 + 3600
-    vi.mocked(api.memberActivity).mockResolvedValue({
-      slug: 'oncall',
-      member: 'oncall',
-      capped: false,
-      entries: [
-        { ts: now - 60, via: 'chat', project: '' },
-        { ts: now - 120, via: 'select_crew', project: '/srv/kirocrew' },
-        { ts: onDay(1), via: 'chat', project: '' },
-        { ts: onDay(2), via: 'chat', project: '' },
-        { ts: onDay(3), via: 'chat', project: '' },
-        { ts: onDay(4), via: 'chat', project: '' },
-        // Older than 7 days: a day row of its own, but in neither counter.
-        { ts: onDay(9), via: 'chat', project: '' },
-      ],
-    })
-    await renderPage([row({ bound: true, slot_key: 'member-oncall', last_active_ts: now - 60 })])
-    fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-activity-days')
-    // Six distinct days, three shown before the fold; the button names the rest.
-    expect(screen.getAllByTestId('member-activity-day')).toHaveLength(3)
-    const more = screen.getByTestId('member-activity-more')
-    expect(more).toHaveTextContent('Show 3 more days')
-    // Today's row: the two entries collapse into counts by how the member was
-    // reached, and the project rides along as its last path segment.
-    const today = screen.getAllByTestId('member-activity-day')[0]
-    expect(today).toHaveTextContent('1 chat')
-    expect(today).toHaveTextContent('1 auto-picked')
-    expect(today).toHaveTextContent('kirocrew')
-    expect(today).not.toHaveTextContent('/srv/')
-    // Nothing is listed until a day is opened; opening it shows one time chip
-    // per entry, the routing decision still told apart from the conversation.
-    expect(screen.queryByTestId('member-activity-times')).toBeNull()
-    fireEvent.click(today)
-    const times = screen.getByTestId('member-activity-times')
-    expect(times.children).toHaveLength(2)
-    expect(within(times).getByTitle(/auto-picked by the orchestrator/i)).toBeTruthy()
-    fireEvent.click(more)
-    expect(screen.getAllByTestId('member-activity-day')).toHaveLength(6)
-    // Counters are derived from the same entries — 6 within 7 days; the
-    // 9-day-old one is excluded (today's count depends on wall clock, so only
-    // the week card is pinned exactly).
-    const stats = screen.getByTestId('member-stats')
-    expect(stats).toHaveTextContent('6')
+    if (pinMidnight) {
+      // Only Date is faked: waitFor/findBy keep real timers, so nothing here
+      // needs advancing, and the finally below restores it even on a throw.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(midnight.getTime() + 23_000))
+    }
+    try {
+      const now = Date.now() / 1000
+      const todayStart = midnight.getTime() / 1000
+      // A wall-clock time on the calendar day `daysAgo` before today. `setDate`
+      // walks the calendar (month ends, and a DST change on the way keeps the
+      // wall clock rather than a 24h count); noon exists on every day in every
+      // zone, unlike the first hour of a spring-forward day.
+      const onDay = (daysAgo: number) => {
+        const d = new Date(midnight)
+        d.setDate(d.getDate() - daysAgo)
+        d.setHours(12, 0, 0, 0)
+        return d.getTime() / 1000
+      }
+      // Today's entries sit just inside today's local day, so they are today
+      // however close to midnight the test runs — `now - 60` is yesterday for
+      // the first minute after midnight.
+      const today = (secondsIn: number) => todayStart + secondsIn
+      vi.mocked(api.memberActivity).mockResolvedValue({
+        slug: 'oncall',
+        member: 'oncall',
+        capped: false,
+        entries: [
+          { ts: today(2), via: 'chat', project: '' },
+          { ts: today(1), via: 'select_crew', project: '/srv/kirocrew' },
+          { ts: onDay(1), via: 'chat', project: '' },
+          { ts: onDay(2), via: 'chat', project: '' },
+          { ts: onDay(3), via: 'chat', project: '' },
+          { ts: onDay(4), via: 'chat', project: '' },
+          // Older than 7 days: a day row of its own, but in neither counter.
+          { ts: onDay(9), via: 'chat', project: '' },
+        ],
+      })
+      await renderPage([row({ bound: true, slot_key: 'member-oncall', last_active_ts: now - 60 })])
+      fireEvent.click(await rosterRow('oncall'))
+      await screen.findByTestId('member-activity-days')
+      // Six distinct days, three shown before the fold; the button names the rest.
+      expect(screen.getAllByTestId('member-activity-day')).toHaveLength(3)
+      const more = screen.getByTestId('member-activity-more')
+      expect(more).toHaveTextContent('Show 3 more days')
+      // Today's row: the two entries collapse into counts by how the member was
+      // reached, and the project rides along as its last path segment.
+      const todayRow = screen.getAllByTestId('member-activity-day')[0]
+      expect(todayRow).toHaveTextContent('1 chat')
+      expect(todayRow).toHaveTextContent('1 auto-picked')
+      expect(todayRow).toHaveTextContent('kirocrew')
+      expect(todayRow).not.toHaveTextContent('/srv/')
+      // Nothing is listed until a day is opened; opening it shows one time chip
+      // per entry, the routing decision still told apart from the conversation.
+      expect(screen.queryByTestId('member-activity-times')).toBeNull()
+      fireEvent.click(todayRow)
+      const times = screen.getByTestId('member-activity-times')
+      expect(times.children).toHaveLength(2)
+      expect(within(times).getByTitle(/auto-picked by the orchestrator/i)).toBeTruthy()
+      fireEvent.click(more)
+      expect(screen.getAllByTestId('member-activity-day')).toHaveLength(6)
+      // Counters are derived from the same entries — 6 within 7 days; the
+      // 9-day-old one is excluded. Today's count is 2 on either clock now that
+      // both of today's entries are inside the local day, but only the week
+      // card is pinned exactly, as before.
+      const stats = screen.getByTestId('member-stats')
+      expect(stats).toHaveTextContent('6')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('the Crew summary lists wake sources filtered to the member, via the shared predicates', async () => {

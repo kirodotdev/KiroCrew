@@ -4638,6 +4638,7 @@
         "page_label": "Workflows"
       },
       "workflowRunTree": {
+        "checkpoint_save_failed": "진행 상황을 저장하지 못했습니다. 재시작 전에 필요한 결과를 복사하세요. 저장소 접근 권한과 여유 공간을 확인하세요. 다음 체크포인트에서 저장을 다시 시도합니다.",
         "agent_other": "에이전트 {{count}}개",
         "budget": "예산",
         "cancelled": "취소됨",
@@ -11266,6 +11267,7 @@
       "embedModel": {
         "active": "활성: {{model}} · {{dim}}d",
         "active_unknown": "활성 모델을 알 수 없음",
+        "configured_inactive": "구성됨: {{model}} · {{dim}}d · 비활성",
         "apply": "모델 적용",
         "applying": "적용 중…",
         "badge_bundled": "번들",
@@ -11301,7 +11303,9 @@
         "subtitle": "로컬에서 실행됩니다. 변경하면 저장된 메모리를 백그라운드에서 다시 임베딩합니다.",
         "title": "임베딩 모델",
         "will_revert": "비어 있음 — 번들된 모델로 되돌아갑니다.",
-        "err_env_override_with_ref": "<settingRef/>이(가) 설정되어 있어 이 설정을 재정의합니다. 여기에서 모델을 변경하려면 해제하세요."
+        "err_env_override_with_ref": "<settingRef/>이(가) 설정되어 있어 이 설정을 재정의합니다. 여기에서 모델을 변경하려면 해제하세요.",
+        "apply_reapply": "메모리 벡터 재구축",
+        "confirm_reapply_body": "구성된 모델을 다시 로드하고 저장된 메모리 벡터를 지운 후 재구축합니다."
       },
       "kiroCrewCfgTab": {
         "approval_mode": "승인 모드",
@@ -11744,6 +11748,18 @@
         "usage_tracking_is_not_available_for": "{{provider}}에서는 사용량 추적을 사용할 수 없습니다."
       },
       "vectorMemoryCard": {
+        "legacy_vectors_warning": "이 벡터는 모델 파일이 기록되기 전에 생성되었습니다. 파일을 변경했다면 임베딩 모델 설정에서 다시 적용하여 벡터를 다시 만드세요.",
+        "legacy_vectors_warning_path_error": "이 벡터는 모델 파일이 기록되기 전에 생성되었고, 설정된 경로의 파일은 현재 사용할 수 없습니다. 먼저 모델 경로를 수정한 다음 적용하여 벡터를 다시 만드세요.",
+        "verification_pending": "모델을 검증 중입니다. 그동안 메모리는 키워드 검색을 사용합니다.",
+        "verification_failed": "검증을 위해 모델 파일 {{path}}을(를) 읽을 수 없습니다. 파일이 존재하고 읽을 수 있는지 확인한 다음 다시 적용하세요.",
+        "download_error_detail": "기본 제공 모델을 다운로드할 수 없습니다. 네트워크 또는 프록시를 확인한 다음 다시 시도하세요.",
+        "model_error_path": "{{message}} 경로: {{path}}",
+        "model_error_path_pointer": "구성된 경로의 임베딩 모델 파일을 사용할 수 없어 그동안 메모리는 키워드 검색을 사용합니다.",
+        "repair_unknown": "일부 메모리 저장소를 확인할 수 없어 전체 재생성이 확인되지 않았습니다. 이 페이지가 열려 있는 동안 확인이 자동으로 다시 실행되고, 닫힌 저장소는 다음에 열릴 때 다시 만들어집니다. 이 메시지가 계속 표시되면 gateway 로그를 확인하세요.",
+        "repair_pending": "모델 변경 후 재생성이 모든 메모리 저장소에서 아직 진행 중입니다: {{items}}.",
+        "repair_vectors_other": "{{count}}개의 메모리가 새 벡터를 기다리고 있습니다",
+        "repair_invalidation_other": "{{count}}개의 열린 저장소에 아직 지워야 할 이전 벡터가 있습니다",
+        "repair_deferred_other": "{{count}}개의 닫힌 또는 사용할 수 없는 저장소는 다음에 열릴 때 다시 만들어집니다",
         "column_importance": "중요도",
         "column_score": "점수",
         "column_text": "내용",
@@ -11764,7 +11780,7 @@
         "downloading_from_cdn": "CDN에서 다운로드 중…",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · 로컬 프로세스에서 실행",
-        "embeddings": "임베딩",
+        "embedding_status": "임베딩 상태",
         "entries": "항목",
         "episodic_context_injected_per_message": "일화 기억 컨텍스트 (메시지마다 주입)",
         "episodic_memory": "일화 기억",
@@ -11784,6 +11800,7 @@
         "no_events": "이벤트 없음",
         "no_matching_entries": "일치하는 항목 없음",
         "no_semantic_entries": "의미 기억 항목 없음",
+        "not_active": "비활성",
         "of": "중",
         "open_embedding_model_settings": "임베딩 모델 설정 열기",
         "preview": "미리 보기",
@@ -11799,6 +11816,7 @@
         "set": "설정",
         "setup_failed": "설정에 실패했습니다",
         "showing": "표시 중",
+        "status_unknown": "알 수 없음",
         "structured_key_value_facts_about_you_confidence": "사용자에 대한 구조화된 키-값 사실입니다. 신뢰도: 시스템이 얼마나 확신하는지 (1.0 = 직접 설정, 0.85 = 채팅에서 추출). 출처: 누가 작성했는지 (user_explicit = 사용자, consolidation = 자동 추출).",
         "structured_semantic_key_value_episodic_conversat": "벡터 검색을 지원하는 구조화된 의미 기억 (키-값) 및 일화 기억 (대화 조각)입니다. 임베딩은 항상 켜져 있으며, 모델은 백그라운드에서 자동으로 다운로드됩니다.",
         "test_query_e_g_what_database_should_i_use": "테스트 검색어 (예: ‘어떤 데이터베이스를 써야 할까?’)",

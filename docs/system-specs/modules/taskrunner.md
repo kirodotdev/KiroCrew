@@ -26,6 +26,17 @@ and consolidation retain the member. Failure lessons use the member's vector
 store and a private session. Existing unbound tasks retain Global V1 behavior.
 Missing or corrupt private identity refuses execution instead of widening it.
 
+Gateway-created runtime keys also receive a frozen privacy record under the
+existing sandbox-readonly `member-memory-bindings/session-modes/` tree. This
+contains identity and mode only, not task content. Continuation preparation
+recovers it after restart instead of trusting editable history or the current
+parent slot, and can only tighten it. A committed directory with missing or
+invalid policy refuses; an unknown legacy task key is not stamped persistent.
+Standalone embedders without a policy resolver retain their existing behavior.
+Temporary tasks skip vector preparation and memory context; automatic failure
+learning refuses both temporary and incognito tasks. Restricted child transcript
+metadata mirrors the policy for consolidation, but is not recovery authority.
+
 Internal HTTP callers inherit only their verified session identity. Body fields
 such as `created_by`, `session_key`, or `memory_store` cannot select authority.
 Run routes check the canonical run binding, including display-name resolution;
@@ -62,8 +73,21 @@ taskrunner.py        (orchestrator)
 
 ### Workflow substrate attachment
 
-The gateway attaches its singleton `WorkflowService` and `TaskRunner` after both
-are constructed. The dependency is optional so CLI, tests, and headless callers
+The gateway attaches its singleton `WorkflowService` and `TaskRunner` only after
+complete workflow recovery. Both server entrypoints launch this recovery as a
+tracked background task after the listener binds and its credentials are published,
+never from `on_startup` or an awaited pre-bind step. The existing async factory
+retains complete private restoration, off-loop disk reads and eviction, and
+owning-loop handle hydration. Authenticated workflow routes and TaskRunner mutation
+requests receive HTTP 503 until recovery and both attachments succeed; TaskRunner
+status and cancel remain available. The canonical `defer_workflow_attachment()`
+gate also rejects non-HTTP mutations. Initialization failure unpublishes both ports
+and keeps this gate closed, with code `workflow_initialization_failed` and a message
+to restart the gateway; only pending recovery asks callers to retry.
+Shutdown closes admission, cancels and drains initialization, and forbids late
+publication even if the factory returns after cancellation.
+
+The dependency is optional so CLI, tests, and headless callers outside the gateway
 retain the existing TaskRunner behavior when no workflow service is present.
 An async dashboard host first calls `defer_workflow_attachment()` on the shared
 runner before yielding during startup. While deferred, `plan`, `run`,
@@ -81,8 +105,9 @@ Status and cancel
 remain available. These checks run before creating or mutating run state, including
 calls from messaging channels
 that retain the gateway's runner reference. Attachment releases that gate;
-explicit attachment of `None` releases standalone fallback after initialization
-failure. Cancellation or slow I/O does not release it. Standalone and headless
+explicit attachment of `None` releases standalone fallback. Gateway failure cleanup
+immediately defers again without yielding, so a failed private gateway never opens
+that fallback. Cancellation or slow I/O does not release the gate. Standalone and headless
 callers that never defer attachment retain their existing admission behavior.
 Workflow publication is best-effort once attachment has settled: an absent or
 failed publication service cannot fail standalone planning or execution. Pending
@@ -92,7 +117,12 @@ runs. A retryable refusal preserves that evidence without a new reconciliation
 mechanism. Every host lifecycle checkpoint — registration, source,
 rebind, phase/step events, pause, terminal state, and deletion — awaits the workflow
 service's off-loop durable mirror, so a maximum-size YAML plan cannot block the
-gateway event loop while its shared run record is written.
+gateway event loop while its shared run record is written. Registration also awaits
+old terminal-run eviction off-loop, using the same per-run write/delete fence as
+checkpoints. Repeated cancellation drains this work before removing an unreturned
+registration. This changes only the workflow mirror; TaskRunner's hidden committed
+snapshot, public-projection acknowledgment, and finalize-after-task-persistence
+boundaries remain unchanged.
 
 The chat-to-plan dashboard route registers its placeholder project with this
 port before applying steps, and the dashboard delete route delegates to
@@ -789,3 +819,101 @@ Left/right split layout: 260px sidebar + detail/compose area.
   - **Tasks tab**: DAG/Phased view toggle with `DagView` and `PhasedView` components
 - **Action buttons**: Execute/Chat/Discard (planned), ■ Cancel (running), ↻ Restart/⏰ Schedule (completed/failed)
 - **WS-driven updates**: `push_refresh("taskrunner")` on every notification, 3s auto-refresh polling
+
+### Private task snapshot storage
+
+The public `runs.json` retains normal V1 rows. A private task contributes only
+its task ID and a private-payload reference there. Once a writer has private
+payloads, the owner-only file under `memory_stores/.task-runs` becomes a version-1
+snapshot with `public` (the complete directory, including V1 rows and private
+references) and `private` (retained private payloads). One fsync-backed atomic
+replace commits both together. Only then does the writer refresh public
+`runs.json`, which is a projection, not a second commit point. Private input,
+source, results, errors and lessons never enter that projection. The hidden path
+is keyed by the owning public registry path, not a caller-supplied store.
+
+A hidden write/replace failure leaves the old complete snapshot. A public
+projection failure after the hidden replace leaves the new complete snapshot
+committed but unacknowledged; the async operation raises a sanitized
+`TaskSnapshotError`, never success. Retrying refreshes both. Restore prefers the
+hidden directory even if the public file is stale, missing or corrupt. Deletion
+and eviction remove membership from that directory in the same atomic replace;
+retained historical payloads are never scanned for discovery. The hidden commit
+continues to carry the directory after its last private task is deleted.
+V1-only registries and legacy list-shaped sidecars keep their public-directory
+format until a private payload is written. Merely loading or retaining an
+unavailable legacy reference does not migrate its sidecar or revive old rows.
+
+The existing sequence/write lock still serializes snapshots. A delayed older
+worker behind a newer failed attempt raises rather than overwriting a possibly
+committed snapshot or claiming success. A later successful snapshot supersedes
+both. Async persistence
+snapshots on the owning loop, writes off-loop, and drains the owned worker before
+propagating cancellation, including repeated cancellation. Admission, edits,
+delete and completion notifications await acknowledged writes. Background/plan
+admission failures run their existing rollback; failed deletion restores the
+in-memory entry so a second delete can retry. Retry admission resolves its bound
+history before resetting results, reserves the canonical run ID against concurrent
+retry/execute starts, and hands off to its background task without another await
+after snapshot acknowledgment. A failed write or cancellation restores every reset
+task field and run status/error/timestamp in place, retaining Project and Task
+identities; the selected agent changes only after acknowledgment. The reservation
+is released on failure, including repeated cancellation after the writer drains.
+This is an in-memory rollback: a public-projection failure can leave the reset
+hidden snapshot committed but unacknowledged. A later successful persist writes
+the restored results; a crash before it can still recover that unacknowledged
+retry, under the cross-resource limits below. Terminal-write failures still stop watchdogs and release background
+task bookkeeping, but do not publish a successful workflow terminal or remove its
+recovery worktree. Plan execution, background runs and retries register a done
+observer that retrieves any finalization exception after bookkeeping drops the
+task and emits a bounded diagnostic through the existing private-task filter.
+Awaiters still receive the original exception;
+cancellation is not logged as failure. A failed completion write still marks the
+run failed and cannot send a completed notification. The synchronous compatibility
+helper alone remains best-effort.
+
+Restore resolves private references only through the hidden original rows and
+surviving protected `taskrunner:<id>:runtime` bindings. Editing a public reference
+cannot replace private content or select another memory store. Missing authority
+refuses hydration and preserves recovery material rather than loading a V1 task.
+Saved task-plan invocations have no spec file, so `save_progress` writes no
+project-visible progress file for those runs.
+An unavailable private run's retained payload cannot be erased by a later public
+update. Without a readable committed directory, restore retains the existing
+public-reference fallback for inspection, but fences snapshot writes for that
+runner instance. Restoring storage access alone cannot make an incomplete
+in-memory directory safe to overwrite the hidden commit; restart to rehydrate it.
+Only malformed authoritative public JSON is renamed
+`.corrupt`; a broken public projection does not quarantine a valid hidden commit.
+A missing binding, missing sidecar or unreadable private snapshot leaves that
+task unavailable and does not prevent other public tasks from restoring.
+Later snapshots carry unavailable references without treating them as replacement
+payloads. If the private sidecar itself cannot be read, saving fails without
+replacing either file; diagnostics contain only the exception type.
+
+This is not a transaction across task snapshots, workflow-run files, filesystem
+workspaces and external effects. A process exit after commit but before reply can
+leave an unacknowledged task; a failed rollback can retain it for owner recovery.
+A public projection may lag until the next successful persist. Durability inherits
+`atomic_write`'s fsync/platform limits; it does not repair deleted hidden files or
+provide cross-process writer coordination. Stop old writers before upgrading:
+legacy writers do not understand the new envelope.
+Structurally invalid hydrated private rows follow the same unavailable path:
+TaskRunner isolates construction and crash recovery per record, publishes only
+fully restored projects, and retains each failed private reference for later
+snapshots. Hydration reports private provenance separately from row contents,
+including when the public marker was removed; it does not duplicate the task
+schema or downgrade a failed private row to V1. A malformed row cannot prevent
+later valid public rows from restoring, and structural errors log only their
+exception type without private values or tracebacks.
+
+### Private task diagnostics
+
+Planning, execution and retry derive a diagnostic scope from protected session
+identity. Their background tasks inherit that scope. TaskRunner, task executor,
+planner, reporter, git coordination and dynamic workflow logs emit only a stable
+opaque task token plus level or exception type while in that scope. Message
+arguments, exception text and tracebacks do not reach shared gateway logs.
+The original task error remains in the hidden task snapshot for owner recovery.
+Public tasks retain their existing diagnostic messages and tracebacks. This
+changes emitted diagnostics, not the sandbox or governance ceiling.

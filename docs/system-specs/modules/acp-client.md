@@ -421,7 +421,7 @@ HTTP response.
 | Notification | Event Kind | Fields |
 |-------------|-----------|--------|
 | `_kiro.dev/compaction/status` | `compaction_status` | `text` = started/completed/failed, `title` = summary |
-| `_kiro.dev/clear/status` | `clear_status` | (none) |
+| `_kiro.dev/clear/status` | `clear_status` | (none); also invalidates the essential-context receipt (`providers.md`) |
 | `_kiro.dev/agent/switched` | `agent_switched` | `text` = new agent name |
 | `_kiro.dev/mcp/oauth_request` | `mcp_oauth_request` | `server_name`, `oauth_url` |
 | `_kiro.dev/mcp/server_initialized` | `mcp_server_initialized` | `server_name` |

@@ -2042,6 +2042,38 @@ def _is_temporary_transcript(persisted_mode: str) -> bool:
     return persisted_mode == "temporary"
 
 
+async def _headless_mode_refusal(
+    state: DashboardState,
+    sk: str,
+    operation: str,
+    blocks_mode: Callable[[str], bool],
+) -> web.Response | None:
+    """Enforce the admitted mode without consulting a replacement parent."""
+    from kiro_crew.dashboard.handlers._shared import resolve_session_memory_mode
+    from kiro_crew.workflow_memory import WorkflowMemoryError
+
+    try:
+        mode = await resolve_session_memory_mode(state, sk)
+        if not blocks_mode(mode):
+            return None
+    except (OSError, ValueError, WorkflowMemoryError):
+        pass  # Unknown birth policy is not permission to access memory.
+    _sel().log_api_access(
+        caller=sk,
+        operation=operation,
+        outcome="denied",
+        source="dashboard",
+        resources="restricted_session_mode",
+    )
+    return web.json_response(
+        {
+            "error": "Memory access is not allowed in this session mode.",
+            "code": "restricted_session",
+        },
+        status=403,
+    )
+
+
 async def _recognize_session(
     state: DashboardState,
     sk: str,
@@ -2094,6 +2126,23 @@ async def _recognize_session(
     slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
     in_slots = slot_name in state._slots
     in_restricted = sk in state._restricted_keys
+    # Headless callers have no slot. A namespace only selects this lookup:
+    # recognition still requires the FULL key's live owner. Dashboard/archive
+    # callers keep their persisted-mode check even if a provider remains alive.
+    # Dedicated children use SessionManager; shared children own runtime handles
+    # through SubagentManager. Neither a saved run nor its parent's PID suffices.
+    # Private proof/store authorization and restricted-mode gates stay separate.
+    sessions = getattr(state, "sessions", None)
+    subagents = getattr(state, "subagents", None)
+    in_live_session = (
+        sk.startswith(("subagent:", "wf:", "wf-pool:", "wf-unpooled:", "wf-worker:", "wf-author:"))
+        and sessions is not None
+        and sessions.has_session(sk) is True
+    ) or (subagents is not None and subagents.has_live_shared_session(sk) is True)
+    if in_live_session:
+        refusal = await _headless_mode_refusal(state, sk, operation, blocks_persisted_mode)
+        if refusal is not None:
+            return refusal
     # A channel-originated session (Slack, Telegram, Discord, Webex,
     # WeCom, …) is a legitimate established session: its key is namespaced
     # ``{channel}:{conversation_id}`` and the transport publishes
@@ -2129,7 +2178,7 @@ async def _recognize_session(
     # hop. One composed call answers BOTH questions (does the session
     # exist, and may it touch memory) from a single path resolution, so the
     # two decisions can never be made about different files.
-    if not (in_slots or in_restricted or is_channel_ns):
+    if not (in_slots or in_restricted or is_channel_ns or in_live_session):
         exists, persisted_mode = await asyncio.to_thread(_probe_persisted_session, slot_name)
         if not exists:
             # Slot may have been evicted from memory (idle sweep,
@@ -2204,6 +2253,14 @@ async def _recognize_session(
             outcome="allowed",
             source="dashboard",
             resources="restricted_key",
+        )
+    elif in_live_session:
+        _sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="allowed",
+            source="dashboard",
+            resources="live_session",
         )
     else:  # is_channel_ns
         _sel().log_api_access(

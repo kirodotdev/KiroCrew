@@ -955,6 +955,78 @@ no-output review must not look clean. A BLOCKING-labelled finding without the
 `[BLOCK-MERGE]` marker is only a non-gating **advisory warning**, since a coherence
 check on that pairing mis-fires whenever the model quotes prior text.
 
+The Opus discovery pass has its own marker, `[OPUS-DISCOVERY] <sha>`, and the
+`Capture discovery candidates` step fails closed when it is absent, before
+validation runs. That branch keeps its existing `::error::` line and `exit 1`, and
+in addition prints one `::notice::discovery-capture-diagnostics` line. The line
+carries fixed keys only: the execution file's shape (`absent`, `empty`, `array`,
+`object`, `jsonl`, `other`, `unparseable`), the captured byte count, how many
+transcript messages carry a `result`, the number of `compact_boundary` system
+messages, the number of permission denials, that same number split by the
+denied tool (`denied_read`, `denied_grep`, `denied_glob`, `denied_bash`, each an
+exact `tool_name` match, and `denied_other` for every other name, a missing or
+non-string name, or a malformed entry; the five sum to `permission_denials` and
+no recorded name is ever echoed), whether the full marker appears in at least
+one assistant `text` block of the transcript (`marker_in_assistant`), and four
+measurements of the text the extraction itself produced before
+redaction: its character count, and whether the full marker, a short-SHA marker
+or the literal `<HEAD_SHA>` placeholder appears in it. That text is the shell
+variable the marker grep was fed, so on a JSONL transcript it is every record's
+`.result` concatenated and a non-string result is the JSON `jq -r` rendered,
+exactly as the candidate file sees them. It reaches jq over stdin, never as a
+process argument. Each value is a count, a boolean or one word from a closed
+set, validated by shape before it is echoed; a file jq cannot parse yields
+`unparseable` and `unknown` transcript counts, never jq's error text. Counts
+that come from `wc` are stripped of the padding BSD `wc` (macOS) adds before
+they are echoed, so every token on the line is one `key=value` pair on every
+platform. A `true` full-marker value on this branch means the capture, not the
+model, lost the marker (the redactor rewrote it). A `true` `marker_in_assistant`
+with a `false` full-marker value means a scanned assistant text block contains
+it but the extracted result does not. It does not establish message order or
+prove review completeness. `false` says only that no scanned `text` block
+carried it. In both cases the
+gate still fails and nothing lifts a marker out of an earlier message. A
+`compact_boundaries` of `0` means no `compact_boundary` message was observed in
+the file; it is not proof of anything the transcript does not record. The
+success path still prints the redacted candidate file as a tuning signal, as
+before; the failing branch prints no transcript or candidate content, and neither
+path uploads the execution file.
+`test_ai_review_workflows.py::TestOpusDiscoveryCaptureExecutes` runs the real
+step against fixtures that plant sentinel strings in the tool arguments, denied
+tool names, tool results and the model's text, and asserts none reach stdout or
+stderr; one case runs the step with a `wc` shim that pads like BSD `wc` and
+asserts the line still parses one token per key. The same block runs verbatim in
+`fork-opus-review.yml` as trusted workflow text; it never executes a helper from
+the fork's tree.
+
+What the first diagnostics line said. On
+[PR #10586](https://github.com/kirodotdev/KiroCrew/pull/10586) the same-repo
+discovery pass lost its marker at two heads
+([run 34787154779](https://github.com/kirodotdev/KiroCrew/actions/runs/34787154779),
+[run 34791198099](https://github.com/kirodotdev/KiroCrew/actions/runs/34791198099)).
+Observed on the second: `exec_file=array captured_bytes=294 result_messages=1
+extracted_chars=293 marker_in_extracted=false short_sha_marker_only=false
+placeholder_marker=false compact_boundaries=0 permission_denials=4`, with a
+result message reporting 19 turns and `is_error: false`. The extraction selected
+the one result message the transcript had; that message did not contain the
+marker; the redactor did not rewrite one. The capture is not where the marker
+went. What the 293 characters said, and which four tool calls were denied, is
+not observable from that run, by design; the per-tool denial counts exist so
+the next occurrence answers the second question. The two marker-less passes
+were also the two with the largest prefetched diffs on that PR (996,100 and
+1,093,568 bytes against 466,134 to 778,441 bytes for the passes that produced
+the marker) and the fewest turns (19 against 26 to 62). That is a correlation
+across two heads, not a mechanism: the diagnostics do not measure what the
+model read or how much context it used, and this page does not claim the diff
+exceeded the model's context. The prompt
+(`.github/review-prompts/opus-discovery.md`, read from the base commit, so a PR
+cannot change the prompt that reviews it) defines two output shapes, a
+candidate list or `No candidates.`, each ending in the marker and each described
+as the product of inspecting every hunk; a pass that stops short of that has no
+conforming shape. A short free-text final message is one hypothesis consistent
+with these numbers, and it is unconfirmed. No reading of the diagnostics line
+changes the verdict.
+
 A lane's summary comment is **one slot shared by every run on the PR**, and it
 is upserted in place. The comments API has no `If-Match`, so a write to that
 slot is last-writer-wins, and it exposes no edit history, so the loss is

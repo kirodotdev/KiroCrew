@@ -60,6 +60,26 @@ The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-s
 3. Otherwise the slot name (portion after the `:` prefix, or the whole key) must satisfy at least one of:
    - Present in `state._slots` (live in-memory slot), **OR**
    - Key is in `state._restricted_keys`, **OR**
+   - A dedicated subagent (`subagent:`) or headless workflow (`wf:`,
+     `wf-pool:`, `wf-unpooled:`, `wf-worker:`, `wf-author:`) has its full key
+     registered in the real `SessionManager`. The prefix alone grants nothing.
+     Shared subagents instead
+     require an active `SubagentManager` record whose exact handle queue is still
+     registered on its live ACP runtime. No prefix, saved run, parent PID or
+     retained transcript substitutes for that live ownership. Teardown ends this
+     recognition; retry/continuation must have a live allocation again.
+     A live child also checks its admitted memory mode, captured before queueing
+     or approval and stored in the protected run identity. Active subagents use
+     their gateway-owned snapshot; recovery reads the protected record off-loop.
+     Workflow workers use their protected run binding. The gate does not follow
+     an editable parent field or consult a replacement parent slot. Unknown or
+     damaged mode authority refuses with `restricted_session`; incognito blocks
+     writes and temporary also blocks recall. These checks only restrict an
+     independently recognized child; a retained record never grants liveness.
+     Dashboard/archive callers retain their persisted-mode checks even when
+     their provider remains registered.
+     This existence check does not replace restricted-mode checks or private
+     process/session proof and store authorization, **OR**
    - Key is in a **messaging-channel namespace** — recognised by `messaging.link.is_channel_session_key()` (any of `slack:`/`discord:`/`telegram:`/`webex:`/`wecom:`/… per `CHANNEL_SESSION_NAMESPACES`), or it is a bare Slack `thread_ts` matching `validation.SLACK_THREAD_TS_RE` (`^\d{10,}\.\d{6,}$`), **OR**
    - The corresponding JSONL file exists under `~/.kiro/crew/sessions/{slot_name}.jsonl`, `~/.kiro/crew/sessions/dashboard_{slot_name}.jsonl`, `~/.kiro/crew/sessions/cron_{slot_name}.jsonl`, or `~/.kiro/crew/sessions/dashboard_cron-{slot_name}.jsonl` — resolved by `_session_has_persisted_history()` in `handlers/_shared.py`. The two `cron` forms exist because `history._safe_key` folds `:` to `_`: a cron session keyed off `cron:{id}` persists as `cron_{id}.jsonl`, and its linked dashboard slot keyed off `dashboard:cron-{id}` persists as `dashboard_cron-{id}.jsonl`, so an idle-evicted cron session's `learn_add` is recognised rather than rejected as forged.
 
@@ -67,7 +87,7 @@ The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-s
 
 A Slack thread keys its session off the **bare** `thread_ts` (e.g. `1781215864.487849`), set in `slack/handler.py` and frozen into the MCP subprocess's `KIROCREW_SESSION_KEY` env var; the `slack:<chan>:<ts>` form is only a `send_message` delivery target, never the session key. Recognising the bare-`thread_ts` shape is required because the session JSONL is written *after* the LLM turn completes, so the first `learn_add` in a fresh Slack thread would otherwise race the flush and fail with `unknown session` until the transcript lands on disk (then succeed minutes later). Dashboard keys are always prefixed (`dashboard:*`, `chat-N-*`), never a bare `digits.digits`, so the regex cannot widen authorization for dashboard or forged keys.
 
-The same first-turn flush race applies to **every** messaging channel, not just Slack: a Telegram/Discord/Webex/WeCom session key is namespaced `{channel}:{conversation_id}` (e.g. `telegram:kirocrew:forum:-100…:18:gen3`) and, post-#232, the transport publishes `session_pid` so the gateway resolves it into `X-Session-Key`. Recognising the whole channel-namespace family via `is_channel_session_key` (not just `slack:`) is therefore the load-bearing acceptance for channel sessions. The `_session_has_persisted_history` fallback alone cannot rescue them: `slot_name = sk.split(":", 1)[-1]` keeps the inner colons (`kirocrew:forum:-100…:18:gen3`) and drops the channel prefix, while the on-disk file is `dashboard_<safe_key>.jsonl` with `:` folded to `_` — so no probed name ever matches. Before this generalization, only `slack:` was accepted, so `learn_add` (and the other `POST /api/lessons` writers) failed with `unknown session` from every non-Slack channel even though the session was fully identified (regression #1268). The `dashboard:`/`cron:`/`hook:`/`subagent:`/`channel:` namespaces are deliberately **not** in `CHANNEL_SESSION_NAMESPACES`, so they are unaffected and still resolve through the slot / persisted-JSONL paths.
+The same first-turn flush race applies to **every** messaging channel, not just Slack: a Telegram/Discord/Webex/WeCom session key is namespaced `{channel}:{conversation_id}` (e.g. `telegram:kirocrew:forum:-100…:18:gen3`) and, post-#232, the transport publishes `session_pid` so the gateway resolves it into `X-Session-Key`. Recognising the whole channel-namespace family via `is_channel_session_key` (not just `slack:`) is therefore the load-bearing acceptance for channel sessions. The `_session_has_persisted_history` fallback alone cannot rescue them: `slot_name = sk.split(":", 1)[-1]` keeps the inner colons (`kirocrew:forum:-100…:18:gen3`) and drops the channel prefix, while the on-disk file is `dashboard_<safe_key>.jsonl` with `:` folded to `_` — so no probed name ever matches. Before this generalization, only `slack:` was accepted, so `learn_add` (and the other `POST /api/lessons` writers) failed with `unknown session` from every non-Slack channel even though the session was fully identified (regression #1268). The `dashboard:`/`cron:`/`hook:`/`subagent:`/`channel:` namespaces are deliberately **not** in `CHANNEL_SESSION_NAMESPACES`, so they resolve through live ownership, slot or persisted-JSONL paths rather than namespace acceptance.
 
 The JSONL-existence check exists because MCP subprocesses retain their original `KIROCREW_SESSION_KEY` env var for the life of the process, but the gateway's idle-sweep loop evicts in-memory slots after ~60 minutes of inactivity (see `session.py`). Without this fallback, reopened dashboard tabs would deterministically fail `learn_add` once the slot is swept, even though the user is actively engaged.
 
@@ -82,6 +102,7 @@ Every `learn_add` session-scope permission decision — both allows and the deny
 | `sk == "dashboard:ui"` | allowed | `dashboard_ui` |
 | `slot_name in state._slots` | allowed | `live_slot` |
 | `sk in state._restricted_keys` | allowed | `restricted_key` |
+| Headless full key in `SessionManager` or an active shared child's exact live runtime handle | allowed | `live_session` |
 | `is_channel_session_key(sk)` (slack/telegram/discord/webex/wecom/…) or `SLACK_THREAD_TS_RE` match (bare `thread_ts`) | allowed | `channel_namespace` |
 | JSONL exists under `~/.kiro/crew/sessions/` | allowed | `jsonl_fallback_recovery` |
 | None of the above | denied | `unknown_session` |

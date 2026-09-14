@@ -109,6 +109,7 @@ const WorkflowSidebarRow = memo(function WorkflowSidebarRow({ row }: { row: WfRu
             }
             result={snapshot?.result}
             error={snapshot?.error ?? row.error ?? null}
+            errorCode={snapshot?.error_code}
           />
           <WorkflowSourcePanel
             run_id={row.run_id}

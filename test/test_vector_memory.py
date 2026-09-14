@@ -3251,7 +3251,9 @@ class TestDbLockGuard:
     makes a raw unlocked ``self.db.execute(...)`` in vector_memory.py a CI
     failure instead of a code-review catch: new fetches must route through
     ``_fetch_all_locked``/``_fetch_one_locked`` (which lock internally) or sit
-    inside an explicit ``with self._db_lock:`` read-modify-write section.
+    inside an explicit ``with self._db_lock:`` read-modify-write section or
+    ``_vector_commit``. The helper's own acquisition is checked too; removing it
+    must fail this guard, not turn the helper's name into an exemption.
     """
 
     #: Methods allowed to touch the raw ``self._db`` attribute unlocked:
@@ -3281,15 +3283,73 @@ class TestDbLockGuard:
         class Visitor(ast.NodeVisitor):
             def __init__(self) -> None:
                 self.lock_depth = 0
+                self.exit_stacks: set[str] = set()
                 self.func_stack: list[str] = []
 
             def visit_With(self, node: ast.With) -> None:
-                locked = any(
-                    guard._is_self_attr(item.context_expr, "_db_lock") for item in node.items
-                )
-                self.lock_depth += 1 if locked else 0
+                saved_depth, saved_stacks = self.lock_depth, self.exit_stacks.copy()
+                for item in node.items:
+                    expr = item.context_expr
+                    if guard._is_self_attr(expr, "_db_lock") or (
+                        isinstance(expr, ast.Call)
+                        and guard._is_self_attr(expr.func, "_vector_commit")
+                    ):
+                        self.lock_depth += 1
+                    if (
+                        isinstance(expr, ast.Call)
+                        and isinstance(expr.func, ast.Name)
+                        and expr.func.id == "ExitStack"
+                        and isinstance(item.optional_vars, ast.Name)
+                    ):
+                        self.exit_stacks.add(item.optional_vars.id)
                 self.generic_visit(node)
-                self.lock_depth -= 1 if locked else 0
+                self.lock_depth, self.exit_stacks = saved_depth, saved_stacks
+
+            def visit_Expr(self, node: ast.Expr) -> None:
+                self.generic_visit(node)
+                call = node.value
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "enter_context"
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id in self.exit_stacks
+                    and len(call.args) == 1
+                    and guard._is_self_attr(call.args[0], "_db_lock")
+                ):
+                    self.lock_depth += 1
+
+            def visit_Try(self, node: ast.Try) -> None:
+                # An enter_context which raises cannot protect its error handler.
+                saved = self.lock_depth
+                for statement in node.body:
+                    self.visit(statement)
+                for statement in node.orelse:
+                    self.visit(statement)
+                self.lock_depth = saved
+                for handler in node.handlers:
+                    self.visit(handler)
+                    self.lock_depth = saved
+                for statement in node.finalbody:
+                    self.visit(statement)
+                self.lock_depth = saved
+
+            def visit_If(self, node: ast.If) -> None:
+                saved = self.lock_depth
+                self.visit(node.test)
+                for statement in node.body:
+                    self.visit(statement)
+                self.lock_depth = saved
+                for statement in node.orelse:
+                    self.visit(statement)
+                self.lock_depth = saved
+
+            visit_While = visit_If
+
+            def visit_For(self, node: ast.For) -> None:
+                saved = self.lock_depth
+                self.generic_visit(node)
+                self.lock_depth = saved
 
             def visit_ClassDef(self, node) -> None:
                 self.func_stack.append(node.name)
@@ -3298,10 +3358,11 @@ class TestDbLockGuard:
 
             def _visit_func(self, node) -> None:
                 self.func_stack.append(node.name)
-                saved = self.lock_depth
+                saved, saved_stacks = self.lock_depth, self.exit_stacks
                 self.lock_depth = 0  # function body runs at call time, not here
+                self.exit_stacks = set()
                 self.generic_visit(node)
-                self.lock_depth = saved
+                self.lock_depth, self.exit_stacks = saved, saved_stacks
                 self.func_stack.pop()
 
             visit_FunctionDef = _visit_func
@@ -3374,6 +3435,51 @@ class TestDbLockGuard:
         assert "(S.sneaky.inner)" in flagged
         assert "(S.raw)" in flagged
         assert "S.good" not in flagged
+
+    def test_guard_tracks_exit_stack_scope_and_acquisition(self) -> None:
+        import ast
+
+        tree = ast.parse(
+            "class S:\n"
+            "    def scopes(self, condition):\n"
+            "        with ExitStack() as resources:\n"
+            "            self.db.execute('before')\n"
+            "            if condition:\n"
+            "                resources.enter_context(self._db_lock)\n"
+            "            self.db.execute('conditional')\n"
+            "            try:\n"
+            "                resources.enter_context(self._db_lock)\n"
+            "                self.db.execute('guarded')\n"
+            "            except OSError:\n"
+            "                self.db.execute('failed admission')\n"
+            "            resources.enter_context(self._db_lock)\n"
+            "            self.db.execute('guarded again')\n"
+            "            def later():\n"
+            "                resources.enter_context(self._db_lock)\n"
+            "                self.db.execute('captured closed stack')\n"
+            "        self.db.execute('after')\n"
+            "    def transaction(self):\n"
+            "        with self._vector_commit([1.0]):\n"
+            "            self.db.execute('guarded transaction')\n"
+        )
+        violations = self._find_unserialized_statements(tree)
+        assert len(violations) == 5, violations
+        assert sum("S.scopes.later" in item for item in violations) == 1
+        assert not any("S.transaction" in item for item in violations)
+
+    def test_guard_rejects_vector_commit_without_its_real_lock(self) -> None:
+        import ast
+        import inspect
+
+        from kiro_crew import vector_memory
+
+        source = inspect.getsource(vector_memory)
+        acquisition = "resources.enter_context(self._db_lock)"
+        assert source.count(acquisition) == 1
+        violations = self._find_unserialized_statements(
+            ast.parse(source.replace(acquisition, "pass"))
+        )
+        assert any("VectorMemoryStore._vector_commit" in item for item in violations), violations
 
 
 class TestAsyncInitOffloadGuard:

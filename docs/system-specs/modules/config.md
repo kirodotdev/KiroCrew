@@ -30,6 +30,45 @@ surfaces, out-of-range values are clamped with a warning rather than raising, an
 a malformed section degrades to defaults so a hand-edited file cannot prevent the
 gateway from starting.
 
+## Embedding rebuild request publication
+
+`memory.embed_rebuild_generation` is an explicit-apply request identity, not a
+model label or a completion counter. Model apply commits it with the validated
+model settings before invalidating vectors. Managed vector publications hold the
+same config sidecar lock while checking that request and committing their SQLite
+write. They cannot publish an old result after a newly committed request, even
+when the store has not yet been reconciled. Store-local signatures and handled
+requests remain checked inside SQLite write admission. Conditional model rollback
+preserves the request and unrelated edits, and refuses a competing model/request
+change. An untouched upgrade retains the empty request default.
+
+This field is install-local runtime obligation state even though it is published
+atomically in the model-settings transaction in `config.json`. It is not a
+portable preference or a completed-work flag. Back up and restore the model
+settings, this request, and memory databases together. Copying a non-empty request
+to a different installation intentionally invalidates stores that have not
+acknowledged that request, including aligned ones; do not distribute it in a
+fleet configuration template. Clearing/resetting it while keeping existing
+memory databases loses the outstanding same-label rebuild obligation. The
+ordinary model-space signature check remains, but cannot replace that lost
+request. Such a reset is not a supported way to cancel or complete rebuilding:
+after a reset or mismatched restore, explicitly apply the intended model again
+(`Rebuild memory vectors` for an unchanged path) before relying on vector search.
+That publishes a fresh obligation for open and later-opened stores. This design
+accepts config/state coupling to retain one atomic publication point; it does
+not claim to recover obligations that an operator deletes out of band.
+
+Managed vector publication resolves a symlinked config through `_lock_target`,
+exactly as the config writer does, before taking its sidecar lock. Within a
+store operation the order is config sidecar, the store's process-local lock,
+then SQLite write admission. A writer waiting for the config sidecar therefore
+holds no database lock that could stall a concurrent reader. Both locks remain
+held through vector validation, commit or rollback. Model apply releases its config mutation before
+aligning stores; it never holds that sidecar while waiting for a store lock.
+Native inference runs before those publication locks. Store close releases its
+SQLite and lifetime handles without saving a vector index or acquiring config
+admission again, including when rollback failure closes an uncertain connection.
+
 ## Data Home Location
 
 KiroCrew's data root nests **under kiro-cli's own `~/.kiro/` base** so all
@@ -831,6 +870,16 @@ runtime edit is reflected on the next `load()`; `save()` also invalidates it
 eagerly via `_invalidate_config_cache()`. The defaults-only path (neither file
 present) is not cached.
 
+**Section construction.** Compound section constructors run in small private
+helpers in the loader namespace. This bounds each construction frame instead of
+putting every field expression in one large traced resolver frame. The helpers
+preserve field evaluation order, coercion, defaults, and section-local assignment
+expressions. Each call creates fresh dataclasses and mutable defaults; no resolved
+configuration or permission value is cached by a helper. File fingerprinting,
+validation, overlay handling, cache-generation fencing, migration, degradation,
+and publication remain in the existing load path. Store admission and workflow
+identity checks still run at every existing call site.
+
 ### `KiroCrewConfig._resolve_agent_model() -> str`
 Reads model from installed agent config (`~/.kiro/agents/kirocrew.json`),
 falling back to the bundled `config_package_dir()/defaults.json` (i.e.
@@ -1573,6 +1622,7 @@ class TaskRunnerConfig:
 
 @dataclass
 class MemoryConfig:
+    embed_rebuild_generation: str = ""  # managed explicit-apply request; each store acknowledges after invalidation
     embed_model_stamp: list[int] = field(default_factory=list)  # managed device/inode/size/mtime_ns/ctime_ns; empty means unverified
     embed_model_legacy_ids: list[str] = field(default_factory=list)  # managed compatibility labels retained across restarts; explicit model apply clears them and rebuilds inherited vectors
     history_idle_hours: float = 3.0  # consolidate history after N hours idle

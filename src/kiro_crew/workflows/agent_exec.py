@@ -53,6 +53,8 @@ def build_agent_fn(
     default_model: Optional[str] = None,
     cwd: Optional[str] = None,
     extra_env: Optional[dict[str, str]] = None,
+    memory_scope: Any = None,
+    context_builder: Any = None,
 ) -> AgentFn:
     """Return an ``agent_fn`` that runs each workflow agent step through a model.
 
@@ -75,8 +77,12 @@ def build_agent_fn(
         session = opts.get("session")
         ephemeral = session is None
         key = session or f"wf:{run_id}:{next(counter)}"
+        if memory_scope is not None:
+            if session is not None:
+                key = memory_scope.worker_key(f"named:{session}")
+            await memory_scope.prepare(context_builder, key)
 
-        provider, *_ = await sessions.get_or_create(
+        provider, is_new, _resumed = await sessions.get_or_create(
             key,
             agent=opts.get("agent") or default_agent,
             model=opts.get("model") or default_model,
@@ -89,6 +95,20 @@ def build_agent_fn(
         # setup is not charged to the turn.
         _turn_t0 = time.monotonic()
         try:
+            from kiro_crew.messaging.identity import publish_turn_identity
+
+            await publish_turn_identity(sessions, key)
+            if memory_scope is not None:
+                prompt = await memory_scope.prompt(
+                    context_builder,
+                    key,
+                    prompt,
+                    is_new=is_new,
+                    provider=provider,
+                    resumed=_resumed,
+                    agent=opts.get("agent") or default_agent,
+                    cwd=opts.get("cwd") or cwd,
+                )
             text = await stream_and_collect(
                 provider,
                 prompt,
@@ -153,12 +173,16 @@ def build_agent_fn(
             # in workflow results stored in history or injected into parent chat.
             text, _ = redact_credentials(text)
             text, _ = redact_exfiltration_urls(text)
+            if memory_scope is not None:
+                await memory_scope.validate()
             return text
         finally:
             # Every successful acquire owns a lease, including stateful calls.
             # Returning it without cleanup keeps the named provider and history.
             try:
                 sessions.release(key, cleanup=ephemeral)
+                if ephemeral and memory_scope is not None:
+                    await sessions.destroy(key)
             except Exception:  # noqa: BLE001 - cleanup must not mask the result
                 logger.warning("workflow session lease release failed", exc_info=True)
 

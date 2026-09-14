@@ -834,12 +834,16 @@ jobs:
         # is red either way, and a named red in 12 minutes beats an
         # uninterpretable one at the 40-minute cap.
         shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
+          pytest -p scripts.ci_pytest_progress \
+            --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
+            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
         # namespace sandbox at all, so `userns_available()` is False and every
@@ -847,6 +851,17 @@ jobs:
         # test_dogfood_learnings / test_pr_watchers stay tracked as node ids in
         # test/windows-expected-failures.txt, which is the mechanism a whole-file deselect
         # was standing in for.
+
+      - name: Upload Windows pytest progress
+        # Job timeout can skip even always() steps; periodic CI_PROGRESS lines
+        # retain partial evidence in the Actions log without relying on this upload.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-pytest-progress-${{ matrix.group }}
+          path: ${{ runner.temp }}/pytest-progress/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
 
   # `kirocrew pod` on Windows, booted for real under Task Scheduler.
   #
@@ -2629,7 +2644,7 @@ jobs:
         working-directory: website
         run: npx playwright install chromium
 
-      - name: i18n render-time gate (en-XA + shipped locales)
+      - name: Resolve base for the parallel i18n render-time gate
         # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
         # JSON, so three defect classes are invisible to all of them: a string that
         # was never extracted (ordinary TypeScript to a scanner), a sentence
@@ -2664,29 +2679,35 @@ jobs:
         run: |
           I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
             "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
-          export I18N_BASE_REF
-          npm run i18n:render
+          printf 'I18N_BASE_REF=%s\n' "$I18N_BASE_REF" >> "$GITHUB_ENV"
 
-      - name: Run E2E (smoke + Playwright)
-        # KIROCREW_E2E=1 is set by `setup.py test_e2e` itself. KIROCREW_E2E_REQUIRE=1
-        # turns environment-resolution misses (missing website dir, Playwright CLI,
-        # or node<18) into HARD failures -- without it a skipped suite counts as a
-        # pass and the gate goes green having run zero browser specs. The suite
-        # wires the packaged fake ACP backend (KIROCREW_KIRO_BIN) internally, so
-        # every turn is deterministic and offline: no Kiro/model calls, no cost.
+      - name: Require real private workflow MCP execution
+        env:
+          KIROCREW_E2E: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
+        run: python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py
+
+      - name: Run E2E and dedicated memory UI evidence in parallel
+        # Default success() keeps real private workflow MCP execution mandatory.
+        # Smoke and UI read the staged production bundle; i18n builds a separate
+        # dist-dev and a temporary base tree. All three share only read-only
+        # dependency/browser installs, with separate homes, ports and outputs.
+        # The helper awaits ALL outcomes even if one fails, preserves the UI's
+        # 12-minute cap, and drains adopted gateway/browser children on cancel.
+        # Overlap head+base i18n rendering rather than consume ~8 minutes of the
+        # fixed 25-minute job budget before the ordinary E2E lane can start.
+        # KIROCREW_E2E=1 is set by setup.py for smoke and only in the UI child
+        # for evidence; REQUIRE turns missing prerequisites into hard failures.
         env:
           KIROCREW_E2E_REQUIRE: "1"
           VOICE_EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          # CI-enforced on-loop persistence invariant: the e2e gateway boots with
-          # strict mode so any un-offloaded session-JSONL mutator that enters
-          # ``_locked`` on the event loop raises ``OnLoopPersistError`` and fails
-          # this gate at PR time (setup.py test_e2e also sets this; declared here
-          # for discoverability). See docs/system-specs/modules/history.md.
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
-        run: python setup.py test_e2e
+          KIROCREW_MEMORY_UI_EVIDENCE_DIR: ${{ runner.temp }}/memory-embedding-evidence
+        run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: voice-recovery-evidence
@@ -2695,7 +2716,7 @@ jobs:
           retention-days: 7
 
       - name: Upload member memory UI evidence
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: member-memory-ui-evidence
@@ -2706,6 +2727,8 @@ jobs:
             website/test-results/**/member-memory-evidence.json
             website/test-results/**/memory-v1-*.png
             website/test-results/**/memory-v2-*.png
+            ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-*.png
+            ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-evidence.json
           if-no-files-found: ignore
           retention-days: 7
 

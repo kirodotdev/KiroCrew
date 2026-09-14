@@ -1776,9 +1776,11 @@ class TestPersistence:
 
     def test_stale_snapshot_never_clobbers_a_newer_one(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        runner._commit_snapshot(5, '["new"]')
-        runner._commit_snapshot(2, '["stale"]')
-        assert (tmp_path / "runs.json").read_text(encoding="utf-8") == '["new"]'
+        newest = json.dumps([_registry_item(task_id="snapshot-task", name="new")])
+        stale = json.dumps([_registry_item(task_id="snapshot-task", name="stale")])
+        runner._commit_snapshot(5, newest)
+        runner._commit_snapshot(2, stale)
+        assert (tmp_path / "runs.json").read_text(encoding="utf-8") == newest
         assert runner._persist_written == 5
 
 

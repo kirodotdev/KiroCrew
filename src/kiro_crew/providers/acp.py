@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
@@ -1510,6 +1511,7 @@ class AcpProvider(LLMProvider):
 
     async def start(self) -> None:
         await self.prepare_private_memory()
+        self.essential_delivery.invalidate()
         # Re-apply the overlay on every (re)start to cover resume / model swap.
         # (no-op for claude backend — that path applies effort live below.)
         self._apply_effort_overlay()
@@ -1634,9 +1636,38 @@ class AcpProvider(LLMProvider):
             diff_path=e.diff_path,
         )
 
+    @property
+    def context_incarnation(self) -> object:
+        return (id(self._client), self.session_id, self.process_instance)
+
+    @property
+    def context_provider_type(self) -> str:
+        return provider_label(self)
+
+    @property
+    def native_context_documents(self) -> dict[str, str]:
+        if isinstance(self._client, AcpSessionProvider):
+            return self._client.native_context_documents
+        return {}
+
+    @property
+    def native_steering(self) -> bool:
+        # Kiro ACP manual/fileMatch support depends on version and engine;
+        # the fallback keeps those guides reachable without a false capability.
+        return self._client.backend == ACP_BACKEND_KAS
+
     async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
-        async for e in self._client.stream_events(message):
-            yield self._to_llm_event(e)
+        # The direct client can respawn in ensure_ready; resolve that BEFORE
+        # comparing receipts so a recycled conversation receives the full text.
+        if isinstance(self._client, AcpClient) and self._private_memory:
+            await self._client.ensure_ready()
+        async with aclosing(
+            self.essential_delivery.stream(
+                message, self._client.stream_events, lambda: self.context_incarnation
+            )
+        ) as events:
+            async for e in events:
+                yield self._to_llm_event(e)
 
     async def stream_command(self, command: str) -> AsyncIterator[LLMEvent]:
         # _kiro.dev/commands/execute is a kiro extension, so only
@@ -1650,12 +1681,20 @@ class AcpProvider(LLMProvider):
         # Membership rather than "not claude": the RPC is the narrow capability
         # here, so a harness added later must opt in to it, not inherit it and
         # hard-error on every slash command a user types.
-        if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
-            async for e in self._client.stream_events(command):
+        # /compact and /clear discard native history; invalidate before dispatch
+        # so the next warm turn resends the complete snapshot even when the
+        # status receipt is missing or arrives late.
+        self.essential_delivery.prepare_command(command)
+        send = (
+            self._client.stream_events
+            if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+            else self._client.stream_command
+        )
+        async with aclosing(
+            self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
+        ) as events:
+            async for e in events:
                 yield self._to_llm_event(e)
-            return
-        async for e in self._client.stream_command(command):
-            yield self._to_llm_event(e)
 
     async def approve_tool(self, request_id: str | int, *, always: bool = False) -> None:
         await self._client.approve_tool(request_id, always=always)
@@ -1692,6 +1731,7 @@ class AcpProvider(LLMProvider):
 
     async def compact(self, context: str = "") -> None:
         """Trigger native /compact with optional context-preserving prompt."""
+        self.essential_delivery.invalidate()
         if context:
             # Truncate to avoid overwhelming the compact prompt
             prompt = context[:4000] if len(context) > 4000 else context
@@ -1729,6 +1769,7 @@ class AcpProvider(LLMProvider):
         if not self._client.has_active_turn():
             logger.debug("provider.cancel: no active turn, skip")
             return "no_turn"
+        self.essential_delivery.invalidate()
         try:
             # Pass the ack budget so the client's read-grace window matches how
             # long we will actually wait below — otherwise a budget above the

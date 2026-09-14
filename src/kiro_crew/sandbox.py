@@ -4334,6 +4334,22 @@ def _validate_private_mcp_gateway_socket(
             )
 
 
+def _private_memory_scan_failure(
+    operation: Literal["root_iterdir", "entry_stat", "entry_iterdir"],
+    tree: Literal["root_tmp", "sessions", "snapshots", "memory"],
+    exc: OSError,
+) -> RuntimeError:
+    """Describe a failed scan without copying exception text or filesystem names."""
+    fields = [f"operation={operation}", f"tree={tree}"]
+    for name in ("errno", "winerror"):
+        value = getattr(exc, name, None)
+        if type(value) is int and 0 <= value <= 0xFFFFFFFF:
+            fields.append(f"{name}={value}")
+    return RuntimeError(
+        "memory_unavailable: cannot verify protected memory hardlinks (" + " ".join(fields) + ")"
+    )
+
+
 def _validate_private_memory_hardlinks(layout: _PrivateMemoryLayout | None = None) -> None:
     """A path mask cannot hide another name for the same protected inode."""
     remaining = 100_000
@@ -4356,23 +4372,36 @@ def _validate_private_memory_hardlinks(layout: _PrivateMemoryLayout | None = Non
                     "create or correct it, then start the private member again"
                 )
             continue
-        for entry in root.iterdir():
-            name = entry.name
-            if (
-                name in ("memory", "backups")
-                or name.startswith(("memory.", "memory_", "lessons.", ".memory", ".lessons"))
-                or name.endswith(".tmp")
-                or (root_name in layout.homes and name in ("snapshots", "sessions"))
-            ):
-                pending.append(entry)
+        try:
+            for entry in root.iterdir():
+                name = entry.name
+                if (
+                    name in ("memory", "backups")
+                    or name.startswith(("memory.", "memory_", "lessons.", ".memory", ".lessons"))
+                    or name.endswith(".tmp")
+                    or (root_name in layout.homes and name in ("snapshots", "sessions"))
+                ):
+                    tree: Literal["root_tmp", "sessions", "snapshots", "memory"] = "memory"
+                    if name == "sessions":
+                        tree = "sessions"
+                    elif name == "snapshots":
+                        tree = "snapshots"
+                    elif name.endswith(".tmp"):
+                        tree = "root_tmp"
+                    pending.append((entry, tree))
+        except OSError as exc:
+            raise _private_memory_scan_failure("root_iterdir", "memory", exc) from exc
     while pending:
-        path = pending.pop()
+        path, tree = pending.pop()
         remaining -= 1
         if remaining < 0:
             raise RuntimeError(
                 "memory_unavailable: private memory hardlink verification exceeded its file limit"
             )
-        info = path.stat()
+        try:
+            info = path.stat()
+        except OSError as exc:
+            raise _private_memory_scan_failure("entry_stat", tree, exc) from exc
         inode = (info.st_dev, info.st_ino)
         if inode in visited:
             continue
@@ -4383,7 +4412,10 @@ def _validate_private_memory_hardlinks(layout: _PrivateMemoryLayout | None = Non
                 "remove the extra link before starting this private member"
             )
         if stat.S_ISDIR(info.st_mode):
-            pending.extend(path.iterdir())
+            try:
+                pending.extend((entry, tree) for entry in path.iterdir())
+            except OSError as exc:
+                raise _private_memory_scan_failure("entry_iterdir", tree, exc) from exc
 
 
 def _prepare_private_log_dir(layout: _PrivateMemoryLayout | None = None) -> str:

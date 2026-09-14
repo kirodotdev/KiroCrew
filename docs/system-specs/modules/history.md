@@ -4,6 +4,11 @@
 
 Persistent conversation history with provenance tracking and LLM-driven consolidation. Conversations survive session expiry and gateway restarts.
 
+Private essential-context receipts are not transcript metadata and are never
+restored as authority. A resumed provider gets a current complete snapshot even
+when native history contains the previous copy. User/history replay identity and
+current-request exclusion remain independent of essential-envelope deduplication.
+
 Consolidation resolves its destination through the same strict recorded memory
 binding as interactive turns, before starting an extraction provider. A named
 member store must be declared, readable and prepared; malformed or unavailable

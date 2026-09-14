@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
+from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Per-step tool-call ceiling — shared with the per-call path (agent_exec) so a
@@ -45,6 +46,21 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.workflows.agent_exec import _MAX_TURNS_PER_STEP
 
 logger = logging.getLogger(__name__)
+
+
+def _log_unpooled_teardown_failure(action: str, exc: BaseException) -> None:
+    """Record a failed unpooled ``release``/``destroy`` without leaking detail.
+
+    Type name only — no ``str(exc)``, no ``exc_info`` — so a session error whose
+    text carries private-memory detail stays out of the log even when the
+    private-task diagnostics filter is not active for this scope. A leaked
+    lease or provider process is operator-relevant, hence WARNING.
+    """
+    logger.warning(
+        "workflow pool: unpooled session teardown (%s) failed: %s",
+        action,
+        type(exc).__name__,
+    )
 
 
 async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = None) -> str:
@@ -87,6 +103,8 @@ class _WorkflowSessionWorker:
         model: Optional[str],
         cwd: Optional[str],
         extra_env: Optional[dict[str, str]] = None,
+        memory_scope: Any = None,
+        context_builder: Any = None,
     ) -> None:
         self._sessions = sessions
         self._key = key
@@ -94,11 +112,18 @@ class _WorkflowSessionWorker:
         self._model = model
         self._cwd = cwd
         self._extra_env = extra_env
+        self._memory_scope = memory_scope
+        self._context_builder = context_builder
+        # Lifecycle only; EssentialDelivery owns successful delivery evidence.
+        self._is_new = True
+        self._resumed = False
         self._provider: Any = None
 
     async def start(self) -> None:
         """Cold-start THIS worker's session once (the only cold start it pays)."""
-        provider, *_ = await self._sessions.get_or_create(
+        if self._memory_scope is not None:
+            await self._memory_scope.prepare(self._context_builder, self._key)
+        provider, self._is_new, self._resumed = await self._sessions.get_or_create(
             self._key,
             agent=self._agent,
             model=self._model,
@@ -110,9 +135,34 @@ class _WorkflowSessionWorker:
     async def send_message(self, prompt: str, timeout: float = 1800.0) -> str:
         if self._provider is None:
             await self.start()
+        # Publish this turn's session identity so managed MCP tools resolve
+        # X-Session-Key — same point in the turn as every other sending surface
+        # (after the session exists, before the prompt is built or streamed).
+        # A workflow worker's kiro-cli runs with no ambient KIROCREW_SESSION_KEY,
+        # so the gateway PID-walk is the ONLY way its MCP calls carry THIS
+        # worker's key. Per turn, not once at start: a hard reset respawns the
+        # process (new pid). One shared writer lives in messaging.identity; it
+        # is fail-safe by contract, so it can never break the turn.
+        await publish_turn_identity(self._sessions, self._key)
         # Honor the pool's per-task timeout: a wedged turn is terminated here
         # instead of holding a _task_sema permit until the run-level ceiling.
-        return await _run_step(self._provider, prompt, timeout=timeout)
+        if self._memory_scope is not None:
+            prompt = await self._memory_scope.prompt(
+                self._context_builder,
+                self._key,
+                prompt,
+                is_new=self._is_new,
+                provider=self._provider,
+                resumed=self._resumed,
+                agent=self._agent,
+                cwd=self._cwd,
+            )
+        result = await _run_step(self._provider, prompt, timeout=timeout)
+        if self._memory_scope is not None:
+            await self._memory_scope.validate()
+        self._is_new = False
+        self._resumed = False
+        return result
 
     async def reset(self) -> None:
         """Cheap clean slate before REUSE — fresh conversation on the warm process.
@@ -122,6 +172,11 @@ class _WorkflowSessionWorker:
         unavailable or fails, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
         (correctness over speed on the fallback path)."""
+        if self._memory_scope is not None:
+            await self._memory_scope.prepare(self._context_builder, self._key)
+        # Lifecycle only; EssentialDelivery owns successful delivery evidence.
+        self._is_new = True
+        self._resumed = False
         prov = self._provider
         new_conv = getattr(prov, "new_conversation", None) if prov is not None else None
         if new_conv is not None:
@@ -187,6 +242,8 @@ def build_pooled_agent_fn(
     max_workers: int = 4,
     max_starting: int = 2,
     max_identities: int = 8,
+    memory_scope: Any = None,
+    context_builder: Any = None,
 ) -> "tuple[Callable[[str, dict], Any], _AggregatePool]":
     """Return ``(agent_fn, pool)`` where ``agent_fn`` reuses WARM sessions.
 
@@ -219,6 +276,8 @@ def build_pooled_agent_fn(
                 model=model,
                 cwd=work_dir,
                 extra_env=extra_env,
+                memory_scope=memory_scope,
+                context_builder=context_builder,
             )
 
         return WorkerPool(
@@ -263,11 +322,13 @@ def build_pooled_agent_fn(
     _unpooled = itertools.count()
 
     async def _run_unpooled(prompt: str, opts: dict) -> Any:
-        # Fallback when the identity cap is hit: a one-shot ephemeral session,
-        # torn down after the call so it never lingers. No warm reuse, but
-        # bounded — this is the overflow valve, not the common path.
-        key = f"wf-unpooled:{run_id}:{next(_unpooled)}"
-        provider, *_ = await sessions.get_or_create(
+        named = opts.get("session")
+        key = named if named is not None else f"wf-unpooled:{run_id}:{next(_unpooled)}"
+        if memory_scope is not None:
+            if named is not None:
+                key = memory_scope.worker_key(f"named:{named}")
+            await memory_scope.prepare(context_builder, key)
+        provider, is_new, _resumed = await sessions.get_or_create(
             key,
             agent=opts.get("agent") or default_agent,
             model=opts.get("model") or default_model,
@@ -275,39 +336,57 @@ def build_pooled_agent_fn(
             extra_env=extra_env,
         )
         try:
-            return await _run_step(provider, prompt)
+            # Same identity publication as the pooled worker (see
+            # _WorkflowSessionWorker.send_message): a named ``session=`` chain
+            # and the identity-cap overflow session both run on their own
+            # kiro-cli process with no ambient session key.
+            await publish_turn_identity(sessions, key)
+            if memory_scope is not None:
+                prompt = await memory_scope.prompt(
+                    context_builder,
+                    key,
+                    prompt,
+                    is_new=is_new,
+                    provider=provider,
+                    resumed=_resumed,
+                    agent=opts.get("agent") or default_agent,
+                    cwd=opts.get("cwd") or cwd,
+                )
+            result = await _run_step(provider, prompt)
+            if memory_scope is not None:
+                await memory_scope.validate()
+            return result
         finally:
-            try:
-                await sessions.destroy(key)
-            except Exception:
-                logger.debug("workflow pool: unpooled session teardown failed", exc_info=True)
-
-    async def agent_fn(prompt: str, opts: dict) -> Any:
-        # Stateful ``session=`` calls bypass the pool: they need a stable, named
-        # session that persists across steps, not a reset-between-uses worker.
-        named = opts.get("session")
-        if named is not None:
-            provider, *_ = await sessions.get_or_create(
-                named,
-                agent=opts.get("agent") or default_agent,
-                model=opts.get("model") or default_model,
-                cwd=opts.get("cwd") or cwd,
-                extra_env=extra_env,
-            )
-            try:
-                return await _run_step(provider, prompt)
-            finally:
+            # Best-effort teardown. An exception raised from this ``finally``
+            # would REPLACE the step's real outcome: a successful ``result``
+            # would vanish behind a session error, and the body's own exception
+            # (provider failure, a private ``validate()`` rejection) would be
+            # swallowed. So a teardown failure is logged and dropped; the body's
+            # outcome always wins. ``CancelledError`` is a BaseException and is
+            # deliberately NOT caught, so a cancel still propagates.
+            #
+            # Log the exception TYPE only (no message, no traceback): this
+            # logger is under the private-task diagnostics filter and the
+            # session error text can carry private-memory detail.
+            if named is not None:
                 # Release the turn lease, not the named conversation.
                 try:
-                    sessions.release(named, cleanup=False)
-                except Exception:
-                    logger.warning("workflow named session lease release failed", exc_info=True)
-        # Ephemeral default path: run on a warm worker from the sub-pool matching
-        # this call's (agent, model, cwd) — honoring per-call overrides exactly as
-        # the per-call-session model (build_agent_fn) it replaces did.
+                    sessions.release(key, cleanup=False)
+                except Exception as exc:
+                    _log_unpooled_teardown_failure("release", exc)
+            else:
+                try:
+                    await sessions.destroy(key)
+                except Exception as exc:
+                    _log_unpooled_teardown_failure("destroy", exc)
+
+    async def agent_fn(prompt: str, opts: dict) -> Any:
+        if memory_scope is not None:
+            await memory_scope.validate()
+        if opts.get("session") is not None:
+            return await _run_unpooled(prompt, opts)
         target = _pool_for(opts.get("agent"), opts.get("model"), opts.get("cwd"))
         if target is None:
-            # Identity cap reached — run unpooled (bounded overflow valve).
             return await _run_unpooled(prompt, opts)
         return await target.send(prompt)
 

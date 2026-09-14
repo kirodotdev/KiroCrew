@@ -1796,6 +1796,14 @@ class MemoryConfig:
             "modification nanoseconds and change nanoseconds. An empty list means unverified.",
         ),
     )
+    embed_rebuild_generation: str = field(
+        default="",
+        metadata=_meta(
+            "Embedding Rebuild Generation",
+            "Managed explicit-apply request identity. Stores acknowledge it only after "
+            "invalidating their previous vectors; empty preserves ordinary upgrade behavior.",
+        ),
+    )
     embed_model_legacy_ids: list[str] = field(
         default_factory=list,
         metadata=_meta(

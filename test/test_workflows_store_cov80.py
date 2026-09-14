@@ -1,11 +1,9 @@
-"""Coverage for the best-effort paths of the durable workflow-run store.
+"""Coverage for workflow-run store failure reporting and recovery.
 
-``WorkflowRunStore`` is a side-effect-only persistence layer whose contract is
-"a storage failure must never break a run", so most of its code is failure
-handling: an unusable runs dir, an unserializable payload, a failed atomic
-replace, a corrupt run file. Those branches are what these tests pin, plus the
-``workflows.dir`` config resolution and the injective ``run_id`` -> filename
-mapping.
+The store reports failed saves so the registry can preserve execution while
+showing durability health. Tests cover an unusable directory, serialization and
+atomic replace failures, cleanup, and independently rejected corrupt payloads,
+plus config resolution and injective ``run_id`` -> filename mapping.
 """
 
 from __future__ import annotations
@@ -110,16 +108,18 @@ class TestSave:
         store.save("", {"run_id": ""})
         assert not store.runs_dir.exists()
 
-    def test_unusable_runs_dir_is_swallowed(self, tmp_path) -> None:
+    def test_unusable_runs_dir_reports_failure(self, tmp_path) -> None:
         blocker = tmp_path / "blocked"
         blocker.write_text("not a directory", encoding="utf-8")
         store = WorkflowRunStore(base_dir=blocker)
-        store.save("wf_000010", {"run_id": "wf_000010"})
+        with pytest.raises(OSError, match="directory unavailable"):
+            store.save("wf_000010", {"run_id": "wf_000010"})
         assert not store.runs_dir.exists()
 
     def test_unserializable_payload_writes_nothing(self, tmp_path) -> None:
         store = WorkflowRunStore(base_dir=tmp_path)
-        store.save("wf_000011", {("tuple", "key"): "unserializable"})
+        with pytest.raises(OSError, match="serialization failed"):
+            store.save("wf_000011", {("tuple", "key"): "unserializable"})
         assert list(store.runs_dir.glob("*.json")) == []
 
     def test_failed_chmod_still_persists_the_run(self, monkeypatch, tmp_path) -> None:
@@ -137,7 +137,8 @@ class TestSave:
             raise OSError("replace failed")
 
         monkeypatch.setattr(store_mod.os, "replace", _boom)
-        store.save("wf_000013", {"run_id": "wf_000013"})
+        with pytest.raises(OSError, match="checkpoint write failed"):
+            store.save("wf_000013", {"run_id": "wf_000013"})
         assert list(store.runs_dir.glob("*.json")) == []
         assert list(store.runs_dir.glob("*.tmp")) == []
 
@@ -152,7 +153,8 @@ class TestSave:
 
         monkeypatch.setattr(store_mod.os, "replace", _boom)
         monkeypatch.setattr(Path, "unlink", _unlink_boom)
-        store.save("wf_000014", {"run_id": "wf_000014"})
+        with pytest.raises(OSError, match="checkpoint write failed"):
+            store.save("wf_000014", {"run_id": "wf_000014"})
         assert list(store.runs_dir.glob("*.json")) == []
 
 

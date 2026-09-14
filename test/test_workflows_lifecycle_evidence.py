@@ -526,10 +526,20 @@ def test_mcp_result_exposes_redacted_finished_agent_outputs(monkeypatch, aggrega
     handle.result = aggregate
     handle.agent_results = {0: {"answer": "kept", "credential": token}, 1: None}
     handle.agent_errors = {1: "agent returned no result"}
-    monkeypatch.setattr(mcp_core, "_get", lambda path: handle.snapshot(include_events=True))
+    # This unit test owns the caller and transport; never resolve host identity.
+    caller = "wf-worker:wf_mcp:result-reader"
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: caller)
+    reads = []
+
+    def get(path, *, session_key):
+        reads.append((path, session_key))
+        return handle.snapshot(include_events=True)
+
+    monkeypatch.setattr(mcp_core, "_get", get)
     monkeypatch.setattr(workflows, "_wf_return", lambda tool, text, **kw: text)
 
     raw = workflows.workflow_result("workflow_result", {"run_id": "wf_mcp"})
+    assert reads == [("/api/workflows/runs/wf_mcp", caller)]
     payload = json.loads(raw)
     assert payload["agent_results"]["0"]["answer"] == "kept"
     assert payload["agent_results"]["1"] is None
@@ -689,3 +699,115 @@ async def test_success_cancellation_respects_terminal_boundary(phase, cleanup_ra
     finally:
         release.set()
         await asyncio.wait_for(asyncio.gather(handle.task, return_exceptions=True), 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_save_failure_is_visible_without_replacing_execution_result(
+    tmp_path, monkeypatch, asynchronous
+):
+    from kiro_crew.dashboard.workflow_inject import _summarize
+
+    store = WorkflowRunStore(base_dir=tmp_path / "workflows")
+    registry = RunRegistry(store=store)
+    handle = RunHandle(run_id="wf_storage_error", name="storage error")
+    registry.register(handle)
+    path = store.runs_dir / "wf_storage_error.json"
+    saved = path.read_bytes()
+    save = store.save
+    notifications = []
+    registry.set_on_done(lambda _rid, snapshot: notifications.append(snapshot))
+
+    def fail_save(*_args):
+        raise OSError("PRIVATE_SAVE_FAILURE_SENTINEL")
+
+    monkeypatch.setattr(store, "save", fail_save)
+    if asynchronous:
+        await registry.mark_terminal_async(handle.run_id, STATUS_FINISHED, result={"kept": True})
+    else:
+        registry.mark_terminal(handle.run_id, STATUS_FINISHED, result={"kept": True})
+    for snapshot in (handle.snapshot(), notifications[0]):
+        assert snapshot["status"] == STATUS_FINISHED
+        assert snapshot["result"] == {"kept": True}
+        assert "checkpoint could not be saved" in snapshot["error"]
+        assert "PRIVATE_SAVE_FAILURE_SENTINEL" not in snapshot["error"]
+        assert str(tmp_path) not in snapshot["error"]
+        assert "checkpoint could not be saved" in _summarize(snapshot)
+    assert handle.error is None  # Execution did not fail; durability did.
+    assert path.read_bytes() == saved
+    monkeypatch.setattr(store, "save", save)
+    if asynchronous:
+        await registry.persist_async(handle.run_id)
+    else:
+        registry.persist(handle.run_id)
+    assert handle.snapshot()["error"] is None
+    assert RunRegistry(store=store).load_persisted() == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["directory", "serialization", "write", "replace"])
+async def test_real_store_failures_reach_registry_durability_reporting(
+    tmp_path, monkeypatch, caplog, failure
+):
+    import logging
+    from pathlib import Path
+
+    from kiro_crew.workflows import store as store_module
+
+    caplog.set_level(logging.DEBUG, logger=store_module.__name__)
+
+    store = WorkflowRunStore(base_dir=tmp_path / "workflows")
+    registry = RunRegistry(store=store)
+    handle = RunHandle(run_id="wf_store_error", name="storage")
+    registry.register(handle)
+    path = store.runs_dir / "wf_store_error.json"
+    saved = path.read_bytes()
+    sentinel = "PRIVATE_FILESYSTEM_FAILURE_SENTINEL"
+    with monkeypatch.context() as patch:
+        if failure == "serialization":
+            handle.args = {("invalid", "json-key"): "secret"}
+        elif failure == "directory":
+            original = Path.mkdir
+
+            def mkdir(candidate, *args, **kwargs):
+                if candidate == store.runs_dir:
+                    raise OSError(sentinel)
+                return original(candidate, *args, **kwargs)
+
+            patch.setattr(Path, "mkdir", mkdir)
+        elif failure == "write":
+            original = Path.write_text
+
+            def write(candidate, *args, **kwargs):
+                if candidate == path.with_suffix(".json.tmp"):
+                    raise OSError(sentinel)
+                return original(candidate, *args, **kwargs)
+
+            patch.setattr(Path, "write_text", write)
+        else:
+            original = store_module.os.replace
+
+            def replace(source, destination, *args, **kwargs):
+                if Path(destination) == path:
+                    raise OSError(sentinel)
+                return original(source, destination, *args, **kwargs)
+
+            patch.setattr(store_module.os, "replace", replace)
+        await registry.mark_terminal_async(handle.run_id, STATUS_FINISHED, result={"kept": True})
+        snapshot = handle.snapshot()
+        assert "checkpoint could not be saved" in (snapshot["error"] or "")
+        assert sentinel not in snapshot["error"]
+        assert snapshot["result"] == {"kept": True}
+        assert path.read_bytes() == saved
+        assert not path.with_suffix(".json.tmp").exists()
+        assert sentinel not in caplog.text
+        assert str(tmp_path) not in caplog.text
+        assert all(
+            record.exc_info is None
+            for record in caplog.records
+            if record.name == store_module.__name__
+        )
+    handle.args = {}
+    await registry.persist_async(handle.run_id)
+    assert handle.snapshot()["error"] is None
+    assert path.read_bytes() != saved

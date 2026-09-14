@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from functools import cached_property
 from typing import Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
@@ -29,6 +30,7 @@ from kiro_crew.acp.types import (  # noqa: F401
 )
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
+from kiro_crew.essential_delivery import EssentialDelivery
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -76,6 +78,31 @@ class SessionMcpReport(Protocol):
 
 class LLMProvider(ABC):
     """Abstract LLM backend."""
+
+    @cached_property
+    def essential_delivery(self) -> EssentialDelivery:
+        """Private prompt receipts belong to this provider, never the builder."""
+        return EssentialDelivery()
+
+    @property
+    def context_incarnation(self) -> object:
+        """Identity of the native conversation retaining injected instructions."""
+        return (id(self), self.session_id)
+
+    @property
+    def context_provider_type(self) -> str:
+        """Actual provider label used by context assembly, not global config."""
+        return "acp"
+
+    @property
+    def native_steering(self) -> bool:
+        """Whether the serving harness owns conditional steering selection."""
+        return False
+
+    @property
+    def native_context_documents(self) -> dict[str, str]:
+        """Exact documents supplied at native startup, empty without evidence."""
+        return {}
 
     @abstractmethod
     async def start(self) -> None:

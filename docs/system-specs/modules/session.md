@@ -55,6 +55,16 @@ tests have moved off the corresponding legacy seam.
 
 ## Private member session ownership
 
+Private essential-context receipts live on the serving provider, not the logical
+session key or shared ContextBuilder. Their identity includes the inner client,
+native session ID and existing `process_instance` token. Replacing a client or
+provider, including an in-place `_Session.adopt_provider`, cannot inherit an old
+receipt. Explicit compaction and in-stream compaction events invalidate receipts;
+a late terminal from the pre-compaction epoch cannot restore one. The existing
+member lifecycle decides forced refresh for fresh, resumed and reinjection turns.
+Private minimal sessions retain their own initial snapshot and receipt.
+
+
 An ordinary dashboard chat that has already used private member memory keeps
 that ownership for its lifetime. The agent-switch endpoint reads the protected
 binding for the effective session key before changing any slot fields, resetting

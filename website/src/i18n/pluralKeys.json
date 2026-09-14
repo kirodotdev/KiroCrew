@@ -1,4 +1,7 @@
 [
+  "pages.overview.vectorMemoryCard.repair_deferred",
+  "pages.overview.vectorMemoryCard.repair_invalidation",
+  "pages.overview.vectorMemoryCard.repair_vectors",
   "app.n_more",
   "app.notification_count",
   "app.show_more_apps",

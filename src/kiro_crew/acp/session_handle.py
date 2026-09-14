@@ -637,6 +637,7 @@ class AcpSessionHandle:
         crew_agent: str = "",
     ) -> None:
         self._session_id = session_id
+        self.native_context_documents: dict[str, str] = {}
         self._queue = queue
         self._runtime = runtime
         # When True, destroy() skips the transcript unlink (subagent

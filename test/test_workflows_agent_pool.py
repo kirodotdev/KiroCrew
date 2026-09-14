@@ -54,14 +54,14 @@ class _FakeSessions:
     async def get_or_create(self, key, *, agent=None, model=None, cwd=None, extra_env=None):
         # A live key returns instantly (SessionManager's warm per-key fast path).
         if key in self.live:
-            return (self.live[key],)
+            return self.live[key], False, False
         self.cold_starts += 1
         self.created_identities.append((agent, model, cwd))
         self.created_extra_env.append(extra_env)
         prov = _FakeProvider(tag=key)
         self.live[key] = prov
         self.keys_seen.add(key)
-        return (prov,)
+        return prov, True, False
 
     def release(self, key, *, cleanup=False):
         self.releases += 1
@@ -320,12 +320,12 @@ class _ClockSessions:
 
     async def get_or_create(self, key, *, agent=None, model=None, cwd=None, extra_env=None):
         if key in self.live:
-            return (self.live[key],)
+            return self.live[key], False, False
         self.cold_starts += 1
         self.clock_ms += _COLD_START_MS
         prov = _ClockProvider(self, tag=key)
         self.live[key] = prov
-        return (prov,)
+        return prov, True, False
 
     def release(self, key, *, cleanup=False):
         self.live.pop(key, None)

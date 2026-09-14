@@ -175,9 +175,50 @@ silent darkening is no guard.
 `ci.yml`'s `e2e` job (`E2E (stub ACP backend, offline)`) installs the backend
 with `--group dev`, runs `npm ci` and `npm run build` in `website/`, stages
 `website/dist` into `src/kiro_crew/static/dist` so the specs render the real
-bundled dashboard rather than a 404, installs Chromium, runs the i18n render-time
-gate (which reuses that Chromium install), and finally runs `python setup.py
-test_e2e`.
+bundled dashboard rather than a 404, installs Chromium, resolves the i18n base,
+requires the real private-workflow MCP test to pass, then runs
+`python scripts/ci_e2e_parallel.py`. That CI-only helper overlaps the unchanged
+`python setup.py test_e2e` command, dedicated Memory UI pytest command and
+`npm --prefix website run i18n:render`. All three outcomes are awaited; no
+failure cancels or hides another lane. The prerequisite and job verdict remain
+mandatory, with the same 25-minute job ceiling. This removes the serial
+head+base render gate from the critical path: on run 34803496478 it took 487
+seconds before the private prerequisite, leaving only 616 seconds for the two
+E2E lanes before the job timed out.
+
+The staged production bundle, Python packages, Node modules and Chromium
+install remain read-only inputs. i18n builds its own `website/dist-dev` and a
+separate temporary base tree, retaining the complete locale/surface and vs-base
+checks. Each lane has its own `TMPDIR` under `runner.temp/e2e-s` (smoke),
+`runner.temp/e2e-u` (UI), or `runner.temp/e2e-i` (i18n), with
+short names to leave room for Unix socket paths; the harness continues to create a
+fresh data home, agent-spec home and random port per gateway. The dedicated UI
+process owns its environment changes, per-scenario authentication files, JSON
+reports and output directories. It cannot overwrite the shared suite's auth
+state or clear `website/test-results`. Each suite retains its existing worker
+count, retries, assertions and per-test timeouts. CPU and RAM remain shared;
+current-run CI must confirm that the overlap fits the budget under runner load.
+
+Each lane has a small Linux subreaper supervisor because harness gateways start
+new process sessions. During normal execution it reaps already-exited adopted
+children, so a harness waiting for its stopped descendants to disappear does not
+wait on unreaped zombies. Direct-child exit statuses remain owned by `Popen`.
+On cancellation or the UI's 12-minute lane timeout, the supervisor terminates,
+escalates and reaps its own descendants, including detached children adopted
+after their parent exits. The outer supervisor waits for all lane supervisors
+and drains any adopted residue. Already-dead children are reaped without failing
+a successful lane; children observed still alive during final cleanup fail that
+lane even when the drain succeeds. No PID is signalled after it has been reaped.
+The helper adds no test retry or readiness override and does not run on other
+OS jobs. Short-process regressions verify these lifecycle rules, not the absence
+of live residue or temporary-directory warnings in a particular E2E run.
+
+The read-aloud and member-memory evidence upload steps use `always()` to attempt
+upload even after a failure or cancellation. They retain only the existing named
+artifacts: partial images/manifests are not completed scenarios. A hard job kill
+or runner loss can still prevent upload; `always()` cannot guarantee delivery
+after the runner is gone. Short-process scheduler regressions establish waiting,
+failure propagation and cancellation cleanup, not private-MCP or browser proof.
 
 ### The browser install is budgeted, and installs no apt packages
 
@@ -278,6 +319,113 @@ the current run must reach and pass that scenario before its images are used.
 `if-no-files-found: ignore`, deliberately: a run that fails before the specs
 start (a stalled browser install) has neither directory, and the upload must not
 turn that into a second, misleading failure.
+
+### Memory embedding states: one dedicated gateway per state
+
+`website/playwright/memory-embedding-evidence.spec.ts` photographs five
+Memory-tab states that describe the WHOLE gateway (its `config.json`, its
+download manager, which stores are open), so the shared gateway above cannot
+hold them without changing what the other 230 specs see. Every test is tagged
+`@memory-evidence`, `playwright.config.ts` excludes that tag unless
+`PLAYWRIGHT_RUN_MEMORY_EVIDENCE=1`, and the shared run never sets it: the spec
+is dark there by design, and `--list` under the shared run shows zero of its
+tests. `test/e2e/test_memory_ui_evidence.py` is what runs it, as one lane of the
+`Run E2E and dedicated memory UI evidence in parallel` step of the same `e2e`
+job, alongside `setup.py test_e2e` after the real private-MCP prerequisite has
+passed. A red browser lane does not leave the evidence un-captured: both lanes
+finish and either failure fails the job; nothing is `continue-on-error`.
+
+Each scenario boots its own `spawn_feature_gateway(fixture="minimal")`,
+prepares the state through production surfaces only, waits until
+`/api/memory/embedding-status` reports it, then runs exactly one spec test with
+`--grep` and absolute spec/config paths. Its own absolute output directory is
+passed as `PLAYWRIGHT_MEMORY_EVIDENCE_OUTPUT_DIR` and consumed by the Playwright
+configuration only when `PLAYWRIGHT_RUN_MEMORY_EVIDENCE=1`, not as a command-line
+argument. Playwright runs with `cwd=tmp_path`; its default evidence output is
+`tmp_path/evidence/<scenario>`. CI sets `KIROCREW_MEMORY_UI_EVIDENCE_DIR` to
+`${{ runner.temp }}/memory-embedding-evidence`, with one scenario subdirectory
+per invocation (Playwright clears its output dir per run, so a shared one would erase the
+previous scenario). The driver requires one passed test from that file and zero
+skips per scenario. No `route.fulfill`, no frontend state edit, no patched
+download manager; the fake ACP model backend is the only stand-in.
+
+| Scenario | How the gateway gets there | What the spec asserts and photographs |
+|---|---|---|
+| `missing-custom-legacy` | `memory.embed_model_path` set to a file that does not exist, plus `embed_model_legacy_ids`, written to the gateway's own `config.json` (the knob is config-file-only by design) | `setup_error_code=model_path_not_found` + `legacy_embedding_vectors`; the legacy warning says "fix the path first" and owns the only settings link, that link focuses the model path field, no duplicate error pointer appears, the Embedding Model field shows `No file at that path.` exactly once with none of the backend prose, the button reads `Rebuild memory vectors` (the field still holds the configured path) and is disabled, no rebuild line |
+| `missing-custom-pointer` | The same missing `memory.embed_model_path`, with NO `embed_model_legacy_ids` | `setup_error_code=model_path_not_found` and an empty `setup_warning_code`; no legacy warning, so the Vector Memory card renders the short `embedding-setup-error-pointer` (the fault and its cost: keyword search meanwhile) that carries neither the message nor the path, names "settings" exactly once through its only settings link (`href="#embed-model-path"`, focuses the field) rather than restating the destination in prose, and no diagnostic block; `No file at that path.` appears exactly once, under the field, the full path appears in no text node (it remains in the input value and disclosure tooltip), the custom filename appears exactly once in the existing model disclosure with the API's dimension and not in either error notice, `Rebuild memory vectors` is disabled, no rebuild line |
+| `configured-inactive` | A fresh gateway: the bundled file was never downloaded | `model_id`/`model_dim` known, `model_active=false`; header `data-state=inactive` reading `Configured: … · not active`, never `Active model unknown`; badge muted (`text-[var(--muted)]`, never the `text-ok` success colour); no re-embedding progressbar, no rebuild line, no field error, no alert, no raw `setup_error` prose, no keyword-search reassurance; the Vector Memory card's Embeddings stat tile (`embeddings-stat-badge`) reads `data-state=inactive` / `not active` in the same muted colour, never `text-warn`/`text-ok` and never `model loading`; the button offers an ENABLED `Rebuild memory vectors` for the unchanged bundled default. Second image: that stat tile scrolled into the viewport (it sits on the Vector Memory card, above the header framed by the first image) so the muted `not active` tile is photographed, not only asserted. Third image: that button clicked opens the confirm modal under the card's own neutral `Embedding Model` title (never `Change the embedding model?`), with a `Rebuild memory vectors` confirm (no `Change model`) and the configured-model reload and vector-rebuild warning (no "new one" claim); the modal is then CANCELLED, the dialog is gone, and the status read afterwards shows no apply in flight (`reembed.step` not `applying`/`running`, `model_active` still `false`) — nothing is submitted to a gateway whose bundled file is absent. The manifest records `reapplyConfirm.opened/cancelled` and the step read after cancel |
+| `deferred-repair` | `memory.embed_rebuild_generation` set, a `memory_stores` entry declared but never opened, two facts written through `PUT /api/memory/semantic` | `reembed.step=deferred`; the single `embed-model-repair-status` line names only the NON-ZERO counts exactly as the API reports them, each with its own plural form, joined by `Intl.ListFormat` for the UI language (the spec recomputes the expected sentence from the API counts), never their sum, never a `0 …` clause, and not `repair_unknown`; the status has no progress bar and no alert; the muted `Keyword search still works. Safe to leave this page.` reassurance renders exactly once under it, and no failure hint |
+| `download-failed` | Exported `KIROCREW_EMBED_MODEL_URL=https://127.0.0.1:<closed port>/…` and an empty `OLLAMA_MODELS`; boot with a missing custom path so the boot-time background download (6 attempts, hours of backoff, holds the manager lock) declines; `restart(skip_model_download=False)`; remove the path from `config.json`; the spec POSTs `/api/memory/enable-embeddings` (the dashboard's Retry) | Polls until `download_step == "failed"` (not `waiting_retry`), requires `waiting_retry` to have been observed, `download_attempt=3`, `setup_error_code=model_download_failed`; photographs the terminal notice with `View details` collapsed, then expanded, then collapsed again; the raw `setup_error` prose is inside the expanded details and nowhere else (not in the notice, not on the Embedding Model card), and no field error or rebuild line renders |
+
+The configured-inactive scenario also captures a real checkpoint-storage warning
+on `/workflows`. After the workflow service is readable, the driver replaces only
+its empty ephemeral `workflows/runs` directory with a file (a non-empty directory
+refuses the setup). After the existing three Memory captures, the browser starts
+a small workflow through the authenticated owner API. It waits for both a finished
+result and the storage warning from the real failing directory operation, then
+opens Runs and photographs `WorkflowRunTree` showing the warning beside the retained
+result. The manifest records only the run ID, status and assertion booleans.
+No HTTP response or frontend state is injected to manufacture that state.
+
+HTTP READY is not memory-data readiness. Before changing the deferred fixture's
+config or writing its facts, the driver waits for a successful read of the exact
+store's statistics endpoint. Only HTTP 503 is retried, for a bounded thirty seconds;
+other failures propagate and a permanently unavailable store still fails the test.
+The deferred scenario waits for its exact requested rebuild generation before
+launching the browser. It observes the actual browser embedding-status response
+shared by both cards and computes its exact expected sentence from that snapshot.
+A second independent API read is not an oracle for the currently rendered data:
+the inventory may change between requests before the next 30-second refresh.
+The full localized sentence (including its
+all-memory-stores scope), independent plural forms and zero omission stay exact
+assertions; the deferred count is not pinned to the one explicitly added store.
+
+`spawn_feature_gateway(skip_model_download=...)` and
+`GatewayHandle.restart(skip_model_download=...)` are the only harness switch this
+adds: `True` (default) exports `KIROCREW_SKIP_MODEL_DOWNLOAD=1` as before,
+`False` drops it for that one gateway. The production download manager honours
+that flag for the dashboard's Retry click as well as the boot task, which is why
+the terminal download state cannot be reached under the shared gateway. The
+retry policy is the production constant (3 attempts, 60s then 120s), so the
+scenario costs about three minutes; the CI helper enforces a 12-minute ceiling
+for the dedicated UI lane, without imposing that ceiling on the shared suite.
+`harness_environment()` is unit-tested in `test/test_harness.py`: the default
+skip, the drop, and that `KIROCREW_HOME`/`KIRO_HOME` stay pinned either way.
+The supervisor restart test also verifies that only the download switch changes:
+all other environment values retain the initial launch snapshot. The failed
+mirror port stays bound without listening until teardown, and loopback hosts
+are excluded from proxies for this scenario.
+
+Dedicated outputs land under the runner's temporary
+`memory-embedding-evidence/<scenario>/` directory, or `tmp_path/evidence/<scenario>`
+without the CI override. The `member-memory-ui-evidence` uploader collects
+`memory-v2-embedding-*.png` and `memory-v2-embedding-evidence.json` from that
+explicit temporary root. These files do not live under `website/test-results`;
+the ordinary shared suite's output paths remain unchanged. The
+manifest records the scenario, test status and retry, the checkout and PR-head
+SHAs, run id and attempt, the image names, and the non-secret status fields the
+assertions read (`model_active`, `download_step`, `setup_error_code`, the three
+repair counts). The dedicated invocation disables Playwright retries: a retry must not reuse a
+mutated download manager as if it were a fresh scenario. Its child invocation
+has a 540-second bound inside the 600-second pytest bound; neither changes the
+shared browser suite's retry or timeout policy.
+
+The manifest never records the token, cookies, the home path or raw backend
+prose (the spec reads `setup_error` only to assert it is absent from the page).
+`model_identity_unverified`, `model_verification_failed`, `repair_unknown` and
+the unknown-model header (`Active model unknown`, no provenance badge) are not
+exercised by these five scenarios: no stable real-gateway fixture for them has
+been verified here, their behaviour is covered by unit tests only, and no image
+claims those states. The same holds for the Embedding Model card's return-focus
+re-check of a restored file (`EmbeddingModelCard.apply.test.tsx`): it needs a
+file restored between two reads and a window focus event, which no scenario
+stages. This records what is verified, not that such a fixture is
+impossible. Each `SCENARIOS` fragment is a `--grep` regex over the
+full spec title; `test/test_memory_ui_evidence_driver.py` pins offline that every
+fragment selects exactly one title and every title has a scenario, so a new
+scenario cannot silently run its neighbour. Collection and unit checks are not
+proof of browser execution:
+the CI scenarios must actually pass before their images count as evidence.
 
 ## The distribution layer: install the artifact, then boot it
 

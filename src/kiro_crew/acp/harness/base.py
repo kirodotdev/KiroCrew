@@ -29,7 +29,7 @@ process and the session table; the harness only says what to put in them.
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -75,6 +75,9 @@ class SpawnContext:
     home: Path
     """One snapshot of the home directory, for the same reason."""
 
+    private_memory: bool = field(default=False, kw_only=True)
+    """Trusted private execution flag; never supplied by an agent-controlled spec."""
+
     sandbox_mode: str = "auto"
     """The sandbox tier this spawn will use, as configured.
 
@@ -101,6 +104,9 @@ class SpawnPlan:
     """The argv to spawn, plus what the spawn decided about itself."""
 
     argv: list[str]
+
+    native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
+    """Admitted sources owned by this exact native launch configuration."""
 
     host_auth: bool = False
     """Crew answers this process's credential callbacks.

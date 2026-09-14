@@ -4587,6 +4587,7 @@
         "page_label": "工作流"
       },
       "workflowRunTree": {
+        "checkpoint_save_failed": "进度未能保存。重启前请复制需要保留的结果。请检查存储访问权限和可用空间；下一个检查点会重试保存。",
         "agent_other": "{{count}} 个代理",
         "budget": "预算",
         "cancelled": "已取消",
@@ -11266,6 +11267,7 @@
       "embedModel": {
         "active": "当前：{{model}} · {{dim}}维",
         "active_unknown": "当前模型未知",
+        "configured_inactive": "已配置：{{model}} · {{dim}}维 · 未启用",
         "apply": "应用模型",
         "applying": "正在应用…",
         "badge_bundled": "内置",
@@ -11301,7 +11303,9 @@
         "subtitle": "在本地运行。更改后将在后台重新嵌入已存储的记忆。",
         "title": "嵌入模型",
         "will_revert": "为空 — 将恢复为内置模型。",
-        "err_env_override_with_ref": "<settingRef/> 已设置并覆盖此设置。取消设置以在此处更改模型。"
+        "err_env_override_with_ref": "<settingRef/> 已设置并覆盖此设置。取消设置以在此处更改模型。",
+        "apply_reapply": "重建记忆向量",
+        "confirm_reapply_body": "此操作会重新加载已配置的模型，并清除、重建已存储的记忆向量。"
       },
       "kiroCrewCfgTab": {
         "approval_mode": "审批模式",
@@ -11744,6 +11748,18 @@
         "usage_tracking_is_not_available_for": "{{provider}} 不支持用量跟踪。"
       },
       "vectorMemoryCard": {
+        "legacy_vectors_warning": "这些向量生成时尚未记录模型文件。如果你更换过该文件，请在嵌入模型设置中重新应用，以重建向量。",
+        "legacy_vectors_warning_path_error": "这些向量生成时尚未记录模型文件，而当前配置路径下的文件暂时无法使用。请先修正模型路径，再应用以重建向量。",
+        "verification_pending": "正在校验模型。此期间记忆使用关键词搜索。",
+        "verification_failed": "无法读取模型文件 {{path}} 进行校验。请确认文件存在且可读，然后重新应用。",
+        "download_error_detail": "无法下载内置模型。请检查网络或代理，然后重试。",
+        "model_error_path": "{{message}} 路径：{{path}}",
+        "model_error_path_pointer": "配置路径下的嵌入模型文件无法使用，此期间记忆使用关键词搜索。",
+        "repair_unknown": "部分记忆存储暂时无法检查，因此尚未确认全部重建完成。此页面打开期间会自动重试检查，已关闭的存储会在下次打开时重建。如果一直显示此提示，请查看 gateway 日志。",
+        "repair_pending": "更换模型后重建仍在全部记忆存储中进行：{{items}}。",
+        "repair_vectors_other": "{{count}} 条记忆待生成新向量",
+        "repair_invalidation_other": "{{count}} 个已打开存储仍有旧向量待清除",
+        "repair_deferred_other": "{{count}} 个已关闭或不可用存储将在下次打开时重建",
         "column_importance": "重要性",
         "column_score": "得分",
         "column_text": "内容",
@@ -11764,7 +11780,7 @@
         "downloading_from_cdn": "正在从 CDN 下载…",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · 本地进程内运行",
-        "embeddings": "嵌入",
+        "embedding_status": "嵌入状态",
         "entries": "条记录",
         "episodic_context_injected_per_message": "情景上下文（按消息注入）",
         "episodic_memory": "情景记忆",
@@ -11784,6 +11800,7 @@
         "no_events": "无事件",
         "no_matching_entries": "无匹配记录",
         "no_semantic_entries": "无语义记录",
+        "not_active": "未启用",
         "of": "/",
         "open_embedding_model_settings": "打开嵌入模型设置",
         "preview": "预览",
@@ -11799,6 +11816,7 @@
         "set": "设定",
         "setup_failed": "设置失败",
         "showing": "正在显示",
+        "status_unknown": "未知",
         "structured_key_value_facts_about_you_confidence": "关于你的结构化键值事实。置信度：系统的确定程度（1.0 = 由你设定，0.85 = 从聊天中提取）。来源：由谁写入（user_explicit = 你，consolidation = 自动提取）。",
         "structured_semantic_key_value_episodic_conversat": "带向量搜索的结构化语义（键值）+ 情景（对话片段）记忆。嵌入始终开启 — 模型会在后台自动下载。",
         "test_query_e_g_what_database_should_i_use": "测试查询（例如“我该用哪个数据库？”）",

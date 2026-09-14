@@ -29,6 +29,7 @@ import pytest
 from aiohttp import web
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
+from kiro_crew.embeddings import CustomModelSpec
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
@@ -1866,7 +1867,7 @@ class TestEmbeddingStatusCustomModel:
     @pytest.mark.asyncio
     async def test_healthy_custom_model_reports_done_and_no_retry(self) -> None:
         model_path = Path("/models/custom.gguf")
-        custom = SimpleNamespace(error="", path=model_path)
+        custom = CustomModelSpec(model_path, "custom.gguf", 768, "")
         a, b, c, d = self._patches(custom, model_present=True)
         with a, b, c, d:
             body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
@@ -1882,7 +1883,7 @@ class TestEmbeddingStatusCustomModel:
 
     @pytest.mark.asyncio
     async def test_broken_custom_model_reports_error_without_retry(self) -> None:
-        custom = SimpleNamespace(error="unreadable", path=Path("/models/custom.gguf"))
+        custom = CustomModelSpec(Path("/models/custom.gguf"), "custom.gguf", 768, "unreadable")
         a, b, c, d = self._patches(custom, model_present=False)
         with a, b, c, d:
             body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
@@ -1893,7 +1894,7 @@ class TestEmbeddingStatusCustomModel:
     @pytest.mark.asyncio
     async def test_missing_custom_file_reports_error_naming_the_path(self) -> None:
         model_path = Path("/models/custom.gguf")
-        custom = SimpleNamespace(error="", path=model_path)
+        custom = CustomModelSpec(model_path, "custom.gguf", 768, "")
         a, b, c, d = self._patches(custom, model_present=False)
         with a, b, c, d:
             body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
@@ -2178,7 +2179,14 @@ def _apply_store(previous_dim: int = 512, retargeted: bool = True) -> Any:
     store._embedding_dim = previous_dim
     store.set_embedding_dim.return_value = retargeted
     store.recorded_embedding_space.return_value = "sig"
-    store.backfill_missing_embeddings.return_value = 7
+    store.recorded_rebuild_generation.return_value = "test-request"
+    store.embedding_repair_state.return_value = (False, 7)
+
+    def backfill(**kwargs: Any) -> int:
+        store.embedding_repair_state.return_value = (False, 0)
+        return 7
+
+    store.backfill_missing_embeddings.side_effect = backfill
     return store
 
 
@@ -2237,6 +2245,8 @@ class _ApplyHarness:
             )
         )
         enter(patch(f"{_MOD}.active_embedding_space_signature", return_value="sig"))
+        enter(patch(f"{_MOD}.embedding_rebuild_generation", return_value="test-request"))
+        enter(patch(f"{_MOD}.validated_cached_vector_stores", return_value=()))
         enter(patch(f"{_MOD}.embedding_backend_serving", return_value=self._serving))
         enter(patch(f"{_MOD}._write_embed_model_config", self.write))
         enter(patch(f"{_MOD}._read_memory_config", return_value={"embed_model_id": "m"}))
@@ -2278,6 +2288,20 @@ class TestApplyEmbeddingModelWorker:
         h.activate.assert_called_once()
         h.prog.finish.assert_called_once_with(7)
         store.backfill_missing_embeddings.assert_called_once()
+        h.prog.begin_run.assert_called_once_with(7)
+        h.prog.advance.assert_called_once_with(7, 7)
+
+    @pytest.mark.asyncio
+    async def test_unhandled_rebuild_request_refuses_activation(self) -> None:
+        store = _apply_store()
+        store.recorded_rebuild_generation.return_value = "previous-request"
+        with _ApplyHarness() as h:
+            await _run_apply(store, "")
+        h.activate.assert_not_called()
+        store.backfill_missing_embeddings.assert_not_called()
+        h.rollback.assert_awaited_once()
+        h.reset.assert_called_once()
+        assert "could not be removed" in h.prog.fail.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_load_failure_drops_the_candidate_and_fails(self) -> None:

@@ -4792,6 +4792,7 @@
         "configuration_1": "Active l'app masquée avec kirocrew app enable workflows ; valide le Python DSL dans Author, ou utilise les outils de workflow du chat ou MCP pour une véritable orchestration d'agents et suis-la dans Runs."
       },
       "workflowRunTree": {
+        "checkpoint_save_failed": "La progression n’a pas pu être enregistrée. Copiez les résultats nécessaires avant de redémarrer. Vérifiez l’accès au stockage et l’espace libre ; l’enregistrement sera réessayé au prochain point de contrôle.",
         "agent_many": "{{count}} agents",
         "agent_one": "{{count}} agent",
         "agent_other": "{{count}} agents",
@@ -11596,6 +11597,7 @@
       "embedModel": {
         "active": "Actif : {{model}} · {{dim}}d",
         "active_unknown": "Modèle actif inconnu",
+        "configured_inactive": "Configuré : {{model}} · {{dim}}d · non actif",
         "apply": "Appliquer le modèle",
         "applying": "Application…",
         "badge_bundled": "intégré",
@@ -11631,7 +11633,9 @@
         "subtitle": "Fonctionne localement. Le changer relance le calcul des embeddings des mémoires en arrière-plan.",
         "title": "Modèle d'embeddings",
         "will_revert": "Vide : retour au modèle intégré.",
-        "err_env_override_with_ref": "<settingRef/> est définie et remplace ce paramètre. Supprimez-la pour changer le modèle ici."
+        "err_env_override_with_ref": "<settingRef/> est définie et remplace ce paramètre. Supprimez-la pour changer le modèle ici.",
+        "apply_reapply": "Reconstruire les vecteurs de mémoire",
+        "confirm_reapply_body": "Cette action recharge le modèle configuré et efface puis reconstruit les vecteurs de mémoire stockés."
       },
       "kiroCrewCfgTab": {
         "approval_mode": "Mode d'approbation",
@@ -12082,6 +12086,24 @@
         "usage_tracking_is_not_available_for": "Le suivi de l’utilisation n’est pas disponible pour {{provider}}."
       },
       "vectorMemoryCard": {
+        "legacy_vectors_warning": "Ces vecteurs datent d’avant l’enregistrement de leur fichier de modèle. Si vous avez changé ce fichier, réappliquez-le dans les paramètres du modèle de plongement pour les reconstruire.",
+        "legacy_vectors_warning_path_error": "Ces vecteurs datent d’avant l’enregistrement de leur fichier de modèle, et le fichier du chemin configuré ne peut pas être utilisé pour l’instant. Corrige d’abord le chemin du modèle, puis applique-le pour les reconstruire.",
+        "verification_pending": "La vérification du modèle est en cours. La mémoire utilise la recherche par mots-clés en attendant.",
+        "verification_failed": "Impossible de lire le fichier de modèle {{path}} pour le vérifier. Vérifie que le fichier existe et qu’il est lisible, puis applique-le à nouveau.",
+        "download_error_detail": "Impossible de télécharger le modèle intégré. Vérifie ton réseau ou ton proxy, puis réessaie.",
+        "model_error_path": "{{message}} Chemin : {{path}}",
+        "model_error_path_pointer": "Le fichier du modèle d'embedding au chemin configuré est inutilisable ; la mémoire utilise la recherche par mots-clés en attendant.",
+        "repair_unknown": "Certains magasins de mémoire n’ont pas pu être vérifiés, la reconstruction n’est donc pas confirmée pour tous. La vérification est relancée automatiquement tant que cette page est ouverte, et un magasin fermé est reconstruit à sa prochaine ouverture. Si ce message persiste, consulte le journal du gateway.",
+        "repair_pending": "La reconstruction après le changement de modèle est toujours en cours dans tous les magasins de mémoire: {{items}}.",
+        "repair_vectors_one": "{{count}} souvenir attend encore un nouveau vecteur",
+        "repair_vectors_other": "{{count}} souvenirs attendent encore un nouveau vecteur",
+        "repair_vectors_many": "{{count}} souvenirs attendent encore un nouveau vecteur",
+        "repair_invalidation_one": "{{count}} magasin ouvert contient encore d’anciens vecteurs à effacer",
+        "repair_invalidation_other": "{{count}} magasins ouverts contiennent encore d’anciens vecteurs à effacer",
+        "repair_invalidation_many": "{{count}} magasins ouverts contiennent encore d’anciens vecteurs à effacer",
+        "repair_deferred_one": "{{count}} magasin fermé ou indisponible sera reconstruit à sa prochaine ouverture",
+        "repair_deferred_other": "{{count}} magasins fermés ou indisponibles seront reconstruits à leur prochaine ouverture",
+        "repair_deferred_many": "{{count}} magasins fermés ou indisponibles seront reconstruits à leur prochaine ouverture",
         "column_importance": "Importance",
         "column_score": "Pertinence",
         "column_text": "Texte",
@@ -12102,7 +12124,7 @@
         "downloading_from_cdn": "Téléchargement depuis le CDN…",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · s'exécute localement dans le processus",
-        "embeddings": "Embeddings",
+        "embedding_status": "État des embeddings",
         "entries": "entrées",
         "episodic_context_injected_per_message": "Contexte épisodique (injecté à chaque message)",
         "episodic_memory": "Mémoire épisodique",
@@ -12122,6 +12144,7 @@
         "no_events": "Aucun événement",
         "no_matching_entries": "Aucune entrée correspondante",
         "no_semantic_entries": "Aucune entrée sémantique",
+        "not_active": "non actif",
         "of": "sur",
         "open_embedding_model_settings": "Ouvrir les paramètres du modèle d’embedding",
         "preview": "Aperçu",
@@ -12137,6 +12160,7 @@
         "set": "Définir",
         "setup_failed": "Échec de la configuration",
         "showing": "Affichage de",
+        "status_unknown": "inconnu",
         "structured_key_value_facts_about_you_confidence": "Faits structurés clé-valeur à ton sujet. Confiance : le degré de certitude du système (1.0 = tu l’as défini, 0.85 = extrait du chat). Source : qui l’a écrit (user_explicit = toi, consolidation = extrait automatiquement).",
         "structured_semantic_key_value_episodic_conversat": "Mémoire structurée sémantique (clé-valeur) + épisodique (fragments de conversation) avec recherche vectorielle. Les embeddings sont toujours actifs — le modèle se télécharge automatiquement en arrière-plan.",
         "test_query_e_g_what_database_should_i_use": "Requête de test (ex. « quelle base de données utiliser ? »)",

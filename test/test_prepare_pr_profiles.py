@@ -355,6 +355,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     exempt_scripts = {
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
+        # Linux-only E2E orchestration, not a static scan: boots isolated
+        # gateways and browsers after CI provisions its namespace capability.
+        # Keep real E2E proof in CI, not in the repeated local scan floor.
+        "scripts/ci_e2e_parallel.py",
         # Generates the manifest. verify_vendor_manifest.py is the checker, and
         # that one is in the floor.
         "scripts/vendor_manifest.sh",
@@ -435,7 +439,8 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # exemption, so keep the reason accurate.
         "node": "diagnostic blob-reconcile step; the gating bundle-size step is in gates[]",
     }
-    tools = set(re.findall(r"(?m)^\s*run: ([a-z][a-z0-9_-]+) ", run_text))
+    # exec replaces the shell; classify its payload, not the shell builtin.
+    tools = set(re.findall(r"(?m)^\s*run: (?:exec\s+)?([a-z][a-z0-9_-]+) ", run_text))
     tool_missing = sorted(
         t for t in tools - set(exempt_tools) if not re.search(rf"\b{re.escape(t)}\b", floor)
     )
@@ -444,6 +449,20 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "Add each to profiles/kirocrew.json gates[] in its CI-exact form, or "
         "add it to exempt_tools here with the reason it is not a local gate."
     )
+
+
+@pytest.mark.parametrize(
+    "command, missing",
+    [
+        ("exec uncovered-static-check --verify", "uncovered-static-check"),
+        ("exec python scripts/check_uncovered_static.py", "scripts/check_uncovered_static.py"),
+    ],
+)
+def test_floor_still_rejects_uncovered_scans_behind_exec(monkeypatch, command, missing):
+    run_text = _ci_workflow_run_text() + f"\n    run: {command}\n"
+    monkeypatch.setattr(sys.modules[__name__], "_ci_workflow_run_text", lambda: run_text)
+    with pytest.raises(AssertionError, match=re.escape(missing)):
+        test_ci_blocking_scans_are_covered_by_the_floor()
 
 
 def test_test_gates_are_diff_scoped_and_carry_a_base_ref():

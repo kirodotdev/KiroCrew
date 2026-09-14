@@ -1,16 +1,36 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
-import { Brain, Hourglass, CheckCircle, RefreshCw, Search, AlertTriangle, Check, X } from 'lucide-react'
+import { Brain, Hourglass, CheckCircle, RefreshCw, Search, AlertTriangle, Check, CircleOff, CircleHelp, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { esc } from '../../api/helpers'
+import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { fmtDateNumeric, fmtDateTimeNumeric } from '../../i18n/format'
+
+/** Whether an element with `id` is in the document, read when `watch` turns on.
+ *
+ * Effects run after the whole tree has committed, so a sibling card's field
+ * mounted in the same commit is visible here. The check runs when the caller
+ * starts caring (`watch` flips true, which is when a path error arrives), not
+ * on every commit: the field's presence is a property of which cards the
+ * surface mounts, not of a poll. The answer is `false` until that effect runs,
+ * which is why the caller falls back to the full notice rather than to nothing
+ * while it is `false`. A DOM presence check, not data fetching, so it does not
+ * belong in React Query. */
+function useAnchorTargetPresent(id: string, watch: boolean): boolean {
+  const [present, setPresent] = useState(false)
+  useEffect(() => {
+    if (!watch) return
+    setPresent(document.getElementById(id) != null)
+  }, [watch, id])
+  return watch && present
+}
 const extractError = (err: unknown): string => {
   if (err != null && typeof err === 'object' && !(err instanceof Error)) {
     const obj = err as Record<string, unknown>;
@@ -32,7 +52,7 @@ interface VectorStats {
   has_legacy_memory?: boolean
 }
 
-interface EmbeddingStatus {
+interface EmbeddingStatus extends EmbeddingSetupFields {
   setup_step?: string
   setup_error?: string
   // Operator warning from the backend about a usable but degraded setup, such
@@ -151,6 +171,20 @@ export function embedModelDisclosure(status?: EmbeddingStatus | null): { label: 
   return { label, title }
 }
 
+// Collapsed raw backend exception behind a localized known-code notice. Same
+// <details>/`memoryV2.view_details` shape MemoryRetiredCard uses for long text.
+// `translate="no"` because the content is machine output, not copy; it is never
+// interpolated into the localized body, which is what keeps that body readable
+// in every shipped language.
+function SetupDiagnostic({ text }: { text: string }) {
+  return (
+    <details className="text-[11px] text-muted" data-testid="embedding-setup-diagnostic">
+      <summary className="cursor-pointer">{i18nT('memoryV2.view_details')}</summary>
+      <pre translate="no" className="mt-1 whitespace-pre-wrap break-words font-mono">{text}</pre>
+    </details>
+  )
+}
+
 export default function VectorMemoryCard({ onActiveChange, onMigratedChange, diagnosticsOnly = false }: { onActiveChange?: (active: boolean) => void; onMigratedChange?: (migrated: boolean) => void; diagnosticsOnly?: boolean }) {
   // One instance covers every input in this card; the binding's focus/blur reset makes sharing safe.
   const ime = useImeGuard()
@@ -160,10 +194,28 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
     const status = await api.vectorEmbeddingStatus()
     if (!status) throw new Error(i18nT('pages.overview.vectorMemoryCard.unknown_error'))
     return status
-  }, staleTime: 0, retry: false })
+  }, staleTime: 0, retry: false, refetchInterval: query => embeddingRepairMessage(query.state.data ?? null) ? 30000 : false })
   const semanticRead = useQuery({ queryKey: ['member-memory', 'default', 'semantic-browser'], queryFn: () => api.vectorSemantic(), enabled: !diagnosticsOnly, staleTime: 0, retry: false })
   const stats = statsRead.data as VectorStats | undefined
   const embStatus = (embeddingRead.data ?? null) as EmbeddingStatus | null
+  const setupWarning = embeddingSetupWarning(embStatus)
+  const setupError = embeddingSetupError(embStatus)
+  // Raw backend exception behind a known-code notice. The body above is fully
+  // localized with a next step; this stays collapsed for whoever reads logs.
+  const setupDiagnostic = embeddingSetupDiagnostic(embStatus)
+  // A model PATH error is stated once, under the path field on the Embedding
+  // Model card, which also shows the path itself. When that field is on the
+  // page, this card renders a short pointer to it instead of the same message
+  // and path a second time. The check is against the rendered DOM, not an
+  // assumption about the tab: a surface that mounts this card without the
+  // Embedding Model card keeps the full body here, so the fault is never hidden
+  // and the pointer never links to an anchor that is not there.
+  const setupErrorPointer = embeddingSetupErrorPointer(embStatus)
+  const pathFieldPresent = useAnchorTargetPresent(EMBED_MODEL_PATH_ID, setupErrorPointer !== '')
+  const pointToPathField = setupErrorPointer !== '' && pathFieldPresent
+  // The standing-rebuild summary (embeddingRepairMessage) only drives the 30s
+  // refetch above here. It is RENDERED on the Embedding Model card, the card
+  // that owns Apply, so the same tab never shows it twice.
   const semantic = useMemo(() => (semanticRead.data?.entries ?? []) as SemanticEntry[], [semanticRead.data])
   const [episodic, setEpisodic] = useState<EpisodicEntry[]>([])
   const [epQuery, setEpQuery] = useState('')
@@ -353,7 +405,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
       }
       return i18nT('pages.overview.vectorMemoryCard.downloading_embedding_model_610mb')
     }
-    return step
+    return embeddingSetupStepLabel(step, status?.download_attempt)
   }
 
   // Compute determinate progress percentage from byte counts when available
@@ -371,28 +423,43 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
       <ErrorNotice message={statsRead.error ? extractError(statsRead.error) : undefined} />
       {/* No hand-off: a status retry must not discard the same unsaved memory drafts. */}
       <ErrorNotice message={embeddingRead.error ? extractError(embeddingRead.error) : undefined} />
-      {embStatus?.setup_warning && (
+      {setupWarning && (
         <p role="status" data-testid="embedding-setup-warning" className="flex items-start gap-1.5 text-[12px] text-warn">
           <AlertTriangle className="lucide-inline shrink-0 mt-0.5" />
           <span>
-            {embStatus.setup_warning}{' '}
+            {setupWarning}{' '}
             {/* The Embedding Model card sits below this card on the Memory tab; the
                 fragment moves focus to its path field, so the fix is one Tab away. */}
-            <a href="#embed-model-path" className="underline hover:text-accent transition-colors whitespace-nowrap">
+            <a href={`#${EMBED_MODEL_PATH_ID}`} className="underline hover:text-accent transition-colors whitespace-nowrap">
               {i18nT('pages.overview.vectorMemoryCard.open_embedding_model_settings')}
             </a>
           </span>
         </p>
       )}
+      {/* No hand-off: the card may still hold unsaved memory drafts. */}
+      {active && setupError && pointToPathField && embStatus?.setup_warning_code !== 'legacy_embedding_vectors' && (
+        <div className="flex items-center gap-1.5 flex-wrap text-[12px]" data-testid="embedding-setup-error-pointer">
+          <ErrorNotice message={setupErrorPointer} variant="inline" />
+          {/* Same fragment the legacy warning uses: focus lands on the path field. */}
+          <a href={`#${EMBED_MODEL_PATH_ID}`} className="underline text-danger hover:text-accent transition-colors whitespace-nowrap">
+            {i18nT('pages.overview.vectorMemoryCard.open_embedding_model_settings')}
+          </a>
+        </div>
+      )}
+      {active && setupError && !pointToPathField && <ErrorNotice message={setupError} variant="inline" />}
+      {active && setupError && setupDiagnostic && <SetupDiagnostic text={setupDiagnostic} />}
       {summaryError && <Btn disabled={statsRead.isFetching || embeddingRead.isFetching} onClick={() => void load()}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
       {!active && !enabling && !summaryError && (
         <div className="flex flex-col gap-3 items-start">
-          {embeddingStartError || embStatus?.setup_error
+          {embeddingStartError || setupError
             ? (
-              <div className="flex items-center gap-2">
-                {/* No hand-off: retry here preserves all unsaved memory drafts. */}
-                <ErrorNotice message={embeddingStartError || embStatus?.setup_error} variant="inline" />
-                <Btn onClick={startEmbeddings}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  {/* No hand-off: retry here preserves all unsaved memory drafts. */}
+                  <ErrorNotice message={embeddingStartError || setupError} variant="inline" />
+                  <Btn onClick={startEmbeddings}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>
+                </div>
+                {!embeddingStartError && setupDiagnostic && <SetupDiagnostic text={setupDiagnostic} />}
               </div>
             )
             : embStatus?.model_available
@@ -416,11 +483,10 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
               <div className="text-2xl animate-pulse"><Brain className="lucide-inline" /></div>
               <div className="flex-1">
                 <div className="text-sm font-medium text-text-strong mb-1">
-                  {step === 'checking' && i18nT('pages.overview.vectorMemoryCard.checking_system_status')}
-                  {step === 'downloading' && downloadStepLabel(step, embStatus)}
+                  {step !== 'done' && step !== 'error' && downloadStepLabel(step, embStatus)}
                   {step === 'done' && <><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.ready')}</>}
                   {/* No hand-off: the card may still hold unsaved memory drafts. */}
-                  {step === 'error' && <ErrorNotice message={embStatus?.setup_error || i18nT('pages.overview.vectorMemoryCard.setup_failed')} variant="inline" />}
+                  {step === 'error' && <ErrorNotice message={setupError || i18nT('pages.overview.vectorMemoryCard.setup_failed')} variant="inline" />}
                 </div>
                 <div className="w-full bg-bg-elevated rounded-full h-2 border border-border overflow-hidden">
                   <div className={`h-full rounded-full ${hasDeterminatePct ? 'transition-all duration-1000 ease-out' : step === 'downloading' ? 'animate-[grow_300s_ease-out_forwards]' : 'transition-all duration-700 ease-out'}`}
@@ -430,6 +496,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
                   {step === 'downloading' && i18nT('pages.overview.vectorMemoryCard.downloading_from_cdn')}
                   {step === 'error' && i18nT('pages.overview.vectorMemoryCard.download_failed_check_network_connectivity_and_t')}
                 </div>
+                {step === 'error' && setupDiagnostic && <SetupDiagnostic text={setupDiagnostic} />}
               </div>
             </div>
           </div>
@@ -449,14 +516,24 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
               </div>
             ))}
             <div className="stat-accent relative overflow-hidden bg-bg-elevated rounded-md px-3 py-2 border border-border">
-              <div className="text-muted text-[11px] uppercase tracking-wider">{i18nT('pages.overview.vectorMemoryCard.embeddings')}</div>
+              <div className="text-muted text-[11px] uppercase tracking-wider">{i18nT('pages.overview.vectorMemoryCard.embedding_status')}</div>
               <div className="text-lg font-bold">
                 {embStatus?.setup_step && embStatus.setup_step !== 'idle' && embStatus.setup_step !== 'done'
-                  ? <Badge variant="warn"><Hourglass className="lucide-inline" /> {embStatus.setup_step}</Badge>
+                  ? <Badge variant="warn" data-testid="embeddings-stat-badge" data-state="progress"><Hourglass className="lucide-inline" /> {embeddingSetupStepLabel(embStatus.setup_step, embStatus.download_attempt)}</Badge>
                   : (() => {
-                      const modelOk = embStatus?.model_available ?? embStatus?.server_healthy;
-                      if (!modelOk) return <Badge variant="warn"><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.model_loading')}</Badge>;
-                      return <Badge variant="ok"><Check className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.active')}</Badge>;
+                      // Setup is idle or done, so nothing is progressing here: the
+                      // Embedding Model card's header on this same tab reads a known
+                      // model with `model_active === false` as "configured … not
+                      // active", and this tile must not contradict it with a guessed
+                      // "model loading". `model_active` is the serving answer; an
+                      // older backend without it answers through the legacy fields
+                      // (file present = ready to serve). A false answer is a neutral
+                      // not-active, no answer at all is unknown, and only a true
+                      // answer earns the success colour.
+                      const serving = embStatus?.model_active ?? embStatus?.model_available ?? embStatus?.server_healthy
+                      if (serving === true) return <Badge variant="ok" data-testid="embeddings-stat-badge" data-state="active"><Check className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.active')}</Badge>;
+                      if (serving === false) return <Badge variant="muted" data-testid="embeddings-stat-badge" data-state="inactive"><CircleOff className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.not_active')}</Badge>;
+                      return <Badge variant="muted" data-testid="embeddings-stat-badge" data-state="unknown"><CircleHelp className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.status_unknown')}</Badge>;
                     })()
                 }
               </div>

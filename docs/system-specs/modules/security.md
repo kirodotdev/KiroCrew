@@ -2,6 +2,15 @@
 
 ## Overview
 
+The subprocess audit lists two fixed test-harness sites separately:
+`testing/harness.py::_launch_gateway` starts the package's gateway, while
+`testing/harness.py::spawn_feature_gateway` runs the literal seed program before
+its optional preflight callback. Both use the test supervisor's isolated home
+and checkout source. The seed fixture name is an argv data value, not code;
+fixture containment, protected-home and nonempty-target guards remain active,
+with a 30-second subprocess timeout. This does not exempt dynamic projected MCP
+commands: those retain the sandbox chokepoint and the AST routing audit.
+
 KiroCrew implements defense-in-depth security across multiple layers: OS-level process isolation, credential path protection, input/output validation, authentication, authorization, and audit logging. This document consolidates all security controls and the vulnerabilities they address.
 
 Private member memory directories (`memory_stores/`) are hidden from agent
@@ -55,6 +64,15 @@ private descendant retains its OS isolation and is refused when its member
 cannot be verified, including after gateway restart. Probe failure is unknown
 and grants neither Global V1 nor owner authority. Native Windows refuses private
 execution before allocation and retains its V1 caller contract.
+
+The workflow HTTP identity regression reports a complete JSON trace on failure,
+not a truncated assertion repr. It observes the original checks on their calling
+thread: protected-record validation, process incarnation, Seatbelt query return
+and errno, and the fixture's Global target existence. Only branch facts and
+exception classes are included; record contents, paths, proofs and secrets are
+excluded. The observer forwards the existing per-frame tracer and restores it
+on exit, preserving coverage collection. It neither replaces a permission result
+nor retries a probe.
 
 Ordinary V1 runtimes have explicit process-start-bound V1 records, allowing their
 sandboxed MCP descendants to continue using Global V1. On Linux those descendants
@@ -195,7 +213,17 @@ snapshots can contain Global memory, and transcripts can contain other members'
 context. Gateway-owned history APIs remain outside that filesystem view. Before
 private launch on either OS, a bounded scan of the reserved memory-bearing
 source trees refuses hardlinked files, since a path mask cannot hide another
-name for their inode. It does not scan project trees. The Linux canary checks
+name for their inode. It does not scan project trees. Scan I/O failures still
+refuse launch and retain their original exception cause. Their bounded outer
+error preserves the `memory_unavailable: cannot verify protected memory hardlinks`
+prefix and reports only a fixed operation (`root_iterdir`, `entry_stat`, or
+`entry_iterdir`), tree category (`root_tmp`, `sessions`, `snapshots`, or `memory`),
+and available unsigned 32-bit integer `errno`/`winerror` values. Root enumeration
+uses the aggregate `memory` category; descendants retain their selected tree's
+category. These fields survive workflow error serialization without exposing
+paths, filenames, exception messages, or private content. Required-root remedies,
+hardlink rejection, scan selection and limits are unchanged; diagnostics neither
+retry nor skip failed I/O. The Linux canary checks
 that `/proc` root/cwd/fd aliases cannot cross the launcher's user-namespace
 boundary; runtime evidence still comes from CI, not profile-string inspection.
 

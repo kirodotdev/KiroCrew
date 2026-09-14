@@ -90,8 +90,15 @@ class _ReconcilableStore(Protocol):
     def recorded_embedding_space(self) -> "str | None": ...
 
     def reconcile_embedding_space(
-        self, signature: str, *, clear_when_unknown: bool = False
+        self,
+        signature: str,
+        *,
+        clear_when_unknown: bool = False,
+        force: bool = False,
+        rebuild_generation: str = "",
     ) -> int: ...
+
+    def recorded_rebuild_generation(self) -> str: ...
 
 
 class _AlignableStore(_ReconcilableStore, Protocol):
@@ -824,6 +831,7 @@ class CustomModelSpec(NamedTuple):
     model_id: str
     dim: int
     error: str
+    error_code: str = ""
 
 
 class _ModelIdentityUnverified(OSError):
@@ -1161,7 +1169,7 @@ def resolve_custom_model() -> "CustomModelSpec | None":
         dim = raw_dim
     configured_id = str(memory_cfg.get("embed_model_id", "") or "").strip()
 
-    path, error, _code = validate_custom_model_path(raw, origin)
+    path, error, code = validate_custom_model_path(raw, origin)
     model_id = "custom:unavailable"
     if not error:
         try:
@@ -1182,11 +1190,13 @@ def resolve_custom_model() -> "CustomModelSpec | None":
         except _ModelIdentityUnverified as exc:
             model_id = "custom:unverified"
             error = str(exc)
+            code = "model_identity_unverified"
             _start_model_verification(path, configured_id, memory_cfg.get("embed_model_stamp"))
         except OSError as exc:
             error = f"{origin} could not be read: {exc}"
+            code = "model_verification_failed"
     _log_custom_model_error(error)
-    return CustomModelSpec(path, model_id, dim, error)
+    return CustomModelSpec(path, model_id, dim, error, code)
 
 
 # Last error reported by resolve_custom_model(), so a persistent misconfiguration
@@ -1279,6 +1289,14 @@ def active_embedding_space_signature() -> str:
     return embedding_space_signature(backend.model_id, backend.dim)
 
 
+def embedding_rebuild_generation(memory: dict | None = None) -> str:
+    """Return the managed request identity; absence leaves upgrades untouched."""
+    value = (memory if memory is not None else _read_memory_config()).get(
+        "embed_rebuild_generation", ""
+    )
+    return value if isinstance(value, str) else ""
+
+
 def store_embedding_space_is_stale(store: "_ReconcilableStore") -> bool:
     """True when *store*'s vectors were NOT produced by the active backend.
 
@@ -1287,6 +1305,9 @@ def store_embedding_space_is_stale(store: "_ReconcilableStore") -> bool:
     treated as the bundled model's, which is provable: nothing else could have
     written those vectors before space tracking existed.
     """
+    generation = embedding_rebuild_generation()
+    if generation and store.recorded_rebuild_generation() != generation:
+        return True
     recorded = store.recorded_embedding_space() or default_embedding_space_signature()
     return recorded != active_embedding_space_signature()
 
@@ -1427,6 +1448,21 @@ def _align_store_embedding_space(store: "_AlignableStore") -> int:
                 "embedding_dim", _DEFAULT_DIM
             ):
                 return 0
+        generation = embedding_rebuild_generation(memory)
+        if generation and store.recorded_rebuild_generation() != generation:
+            # Do not let an outgoing loaded backend acknowledge the request for
+            # its replacement, including a same-width change in another writer.
+            configured_id = (
+                memory.get("embed_model_id") if memory.get("embed_model_path") else _MODEL_ID
+            )
+            if backend.model_id != configured_id or dim != memory.get(
+                "embedding_dim", _DEFAULT_DIM
+            ):
+                return 0
+            store.set_embedding_dim(dim)
+            return store.reconcile_embedding_space(
+                active, clear_when_unknown=True, rebuild_generation=generation
+            )
         legacy_ids = legacy_embedding_ids(memory.get("embed_model_legacy_ids"))
         if (
             legacy_ids
@@ -2686,10 +2722,12 @@ class _EmbedFlight:
 _sync_embed_flights: dict[tuple[int, str], _EmbedFlight] = {}
 
 
-def _shared_sync_embed(text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
+def _shared_sync_embed(
+    text: str, *, priority: int = PRIORITY_NORMAL, backend: EmbeddingBackend | None = None
+) -> list[float] | None:
     global _sync_embed_cache_backend
     text = text[:_MAX_EMBED_CHARS]
-    backend = get_shared_embedder()
+    backend = backend if backend is not None else get_shared_embedder()
     key = (backend.model_id, text)
     flight_key = (id(backend), text)
     work = _work_for_priority(priority)

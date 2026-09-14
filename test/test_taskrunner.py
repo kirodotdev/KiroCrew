@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -71,6 +72,50 @@ def _make_mock_provider(text: str = "done") -> MagicMock:
     provider.reject_tool = AsyncMock()
     provider.context_usage_pct = MagicMock(return_value=0.0)
     return provider
+
+
+@asynccontextmanager
+async def _at_workflow_checkpoint(runner, operation, release, checkpoint="_workflow_begin"):
+    """Finish real workflow setup before timing the cancellation trigger.
+
+    Registration allocates a protected ID and persists off-loop, including ACL
+    work on Windows. That setup is not the persistence/publication cancellation
+    being tested. Keep it real, but hold its last checkpoint until the test is
+    ready to start its one-second entry-event wait.
+    """
+    ready = asyncio.get_running_loop().create_future()
+    proceed = asyncio.Event()
+    original = getattr(runner, checkpoint)
+
+    async def prepared(run, *args, **kwargs):
+        await original(run, *args, **kwargs)
+        assert run.workflow_run_id
+        assert runner._workflow_service.status(run.workflow_run_id) is not None
+        ready.set_result(None)
+        await proceed.wait()
+
+    with patch.object(runner, checkpoint, prepared):
+        task = asyncio.create_task(operation)
+        try:
+            done, _ = await asyncio.wait(
+                (ready, task), timeout=10, return_when=asyncio.FIRST_COMPLETED
+            )
+            if task in done:
+                task.result()  # Surface setup exceptions instead of an unrelated event timeout.
+                pytest.fail("Operation ended before reaching the workflow checkpoint")
+            assert ready in done, f"Workflow setup did not reach {checkpoint}"
+            proceed.set()
+            yield task
+        finally:
+            proceed.set()
+            release.set()
+            ready.cancel()
+            if not task.done():
+                task.cancel()
+            done, _ = await asyncio.wait((task,), timeout=10)
+            assert task in done, "Cancellation test left its operation running"
+            if not task.cancelled():
+                task.exception()  # Retrieve failures even when the entry-event wait failed.
 
 
 # ── Step / TaskRun dataclass tests ──
@@ -228,13 +273,15 @@ class TestWorkflowRunIntegration:
                 await persistence_release.wait()
 
         runner._apersist_runs = block_placeholder_persistence  # type: ignore[method-assign]
-        starting = asyncio.create_task(runner.start_background(spec_path))
-        await asyncio.wait_for(persistence_started.wait(), timeout=1)
-        starting.cancel()
-        persistence_release.set()
+        async with _at_workflow_checkpoint(
+            runner, runner.start_background(spec_path), persistence_release
+        ) as starting:
+            await asyncio.wait_for(persistence_started.wait(), timeout=1)
+            starting.cancel()
+            persistence_release.set()
 
-        with pytest.raises(asyncio.CancelledError):
-            await starting
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(starting), timeout=10)
 
         assert persist_calls == 2
 
@@ -262,20 +309,23 @@ class TestWorkflowRunIntegration:
             return_value=[Step(index=1, title="Implement", description="make the change")]
         )
         publication_started = asyncio.Event()
+        publication_release = asyncio.Event()
 
         async def block_plan_source(_run_id: str, _source: str, *, source_format: str = "") -> bool:
             del source_format
             publication_started.set()
-            await asyncio.Future()
+            await publication_release.wait()
             return True
 
         workflows.set_source = block_plan_source  # type: ignore[method-assign]
-        planning = asyncio.create_task(runner.plan("implement the feature"))
-        await asyncio.wait_for(publication_started.wait(), timeout=1)
-        planning.cancel()
+        async with _at_workflow_checkpoint(
+            runner, runner.plan("implement the feature"), publication_release
+        ) as planning:
+            await asyncio.wait_for(publication_started.wait(), timeout=1)
+            planning.cancel()
 
-        with pytest.raises(asyncio.CancelledError):
-            await planning
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(planning), timeout=10)
 
         assert runner._runs == {}
         assert workflows.list_runs() == []
@@ -361,6 +411,7 @@ class TestWorkflowRunIntegration:
         spec_path = tmp_path / "cancel-during-setup.yaml"
         spec_path.write_text("agents:\n  test:\n    prompt: run tests\n", encoding="utf-8")
         persist_started = asyncio.Event()
+        persist_release = asyncio.Event()
         persist_calls = 0
 
         async def cancel_first_persist() -> None:
@@ -368,14 +419,19 @@ class TestWorkflowRunIntegration:
             persist_calls += 1
             if persist_calls == 1:
                 persist_started.set()
-                await asyncio.Future()
+                await persist_release.wait()
 
         runner._apersist_runs = cancel_first_persist  # type: ignore[method-assign]
-        task = asyncio.create_task(runner.run(spec_path, task_id="cancelled_setup", source="yaml"))
-        await asyncio.wait_for(persist_started.wait(), timeout=1)
-        task.cancel()
+        async with _at_workflow_checkpoint(
+            runner,
+            runner.run(spec_path, task_id="cancelled_setup", source="yaml"),
+            persist_release,
+            checkpoint="_workflow_rebind",
+        ) as task:
+            await asyncio.wait_for(persist_started.wait(), timeout=1)
+            task.cancel()
 
-        run = await task
+            run = await asyncio.wait_for(asyncio.shield(task), timeout=10)
 
         assert run.status == "cancelled"
         assert runner._runs[run.task_id].status == "cancelled"

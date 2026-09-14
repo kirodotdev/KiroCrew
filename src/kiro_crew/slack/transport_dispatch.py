@@ -596,6 +596,7 @@ async def handle_message_transport(
                 # between the two modes.
                 blocks_reads=is_thread_temporary(session_key),
                 runtime_source="slack",
+                context_provider=client,
             )
         else:
             full_message = text

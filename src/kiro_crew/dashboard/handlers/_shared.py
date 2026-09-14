@@ -14,6 +14,7 @@ import sys
 import sysconfig
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Mapping, NamedTuple
 
 import aiohttp
@@ -1972,6 +1973,98 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
     return carried, ttl_ceiling
 
 
+def inherited_session_memory_mode(state: DashboardState, key: str) -> str | None:
+    """Read only restrictions captured by trusted child creation in this process."""
+    from kiro_crew.messaging.privacy_mode import strictest
+
+    modes = []
+    admitted = getattr(getattr(state, "context_builder", None), "_session_memory_modes", None)
+    if isinstance(admitted, dict) and key in admitted:
+        modes.append(admitted[key])
+    manager = getattr(state, "subagents", None)
+    if manager is not None:
+        for info in getattr(manager, "running", ()):
+            if (info.conversation_key or f"subagent:{info.id}") == key:
+                if not info._memory_mode_ready:
+                    return "temporary"
+                modes.append(info.memory_mode)
+    if any(mode not in VALID_MEMORY_MODES for mode in modes):
+        return "temporary"
+    return (strictest(modes) or "persistent") if modes else None
+
+
+def live_session_memory_mode(state: DashboardState, key: str) -> str | None:
+    """Snapshot gateway-owned policy without filesystem I/O or namespace grants."""
+    if key in ("", "dashboard:ui"):
+        return "persistent"
+    inherited = inherited_session_memory_mode(state, key)
+    if inherited is not None:
+        return inherited
+    # A headless key must not borrow an unrelated dashboard slot's suffix.
+    slot = (
+        state._slots.get(key.removeprefix("dashboard:")) if key.startswith("dashboard:") else None
+    )
+    from kiro_crew.validation import SLACK_THREAD_TS_RE
+
+    channel = is_channel_session_key(key) or bool(SLACK_THREAD_TS_RE.fullmatch(key))
+    if channel:
+        _hydrate_conv_flags(state.sessions, key)
+        if is_thread_temporary(key):
+            return "temporary"
+        if is_thread_incognito(key):
+            return "incognito"
+    request = SimpleNamespace(headers={"X-Session-Key": key})
+    if slot is not None or channel:
+        if _blocks_reads_session(state, request):
+            return "temporary"
+        if _is_restricted_session(state, request):
+            return "incognito"
+        return "persistent"
+    return None
+
+
+def require_live_session_memory_mode(state: DashboardState, key: str) -> str:
+    mode = live_session_memory_mode(state, key)
+    if not isinstance(mode, str) or mode not in VALID_MEMORY_MODES:
+        raise ValueError("The originating session's memory mode is unavailable")
+    return mode
+
+
+async def resolve_session_memory_mode(state: DashboardState, key: str) -> str:
+    """Resolve admission policy, retaining live snapshots across off-loop work."""
+    mode = live_session_memory_mode(state, key)
+    if mode is not None:
+        if mode not in VALID_MEMORY_MODES:
+            raise ValueError("The originating session's memory mode is invalid")
+        return mode
+    if key.startswith("subagent:"):
+        from kiro_crew.subagent_persistence import read_run_memory_mode
+
+        return await asyncio.to_thread(read_run_memory_mode, key.removeprefix("subagent:"))
+    if key.startswith(("wf:", "wf-pool:", "wf-unpooled:", "wf-worker:", "wf-author:", "wf-scope:")):
+        from kiro_crew.workflow_memory import WorkflowMemoryError, read_binding
+
+        try:
+            row = await asyncio.to_thread(read_binding, key.split(":", 2)[1], required=True)
+        except WorkflowMemoryError as exc:
+            raise ValueError("The originating session's memory mode is unavailable") from exc
+        mode = row.get("memory_mode") if row is not None else None
+    else:
+        from kiro_crew.subagent_persistence import read_session_memory_mode
+
+        mode = await asyncio.to_thread(read_session_memory_mode, key)
+        if mode is not None:
+            return mode
+        if key.startswith("taskrunner:"):
+            raise ValueError("The task runtime's protected memory mode is unavailable")
+        exists, mode = await asyncio.to_thread(_probe_persisted_session, key.split(":", 1)[-1])
+        if not exists:
+            mode = None
+    if not isinstance(mode, str) or mode not in VALID_MEMORY_MODES:
+        raise ValueError("The originating session's memory mode is unavailable")
+    return mode
+
+
 def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
     """Check if request comes from an ephemeral (incognito) or temporary (guest) session.
 
@@ -1983,6 +2076,9 @@ def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
         return False
     if sk == "dashboard:ui":
         return False
+    inherited = inherited_session_memory_mode(state, sk)
+    if inherited is not None and inherited != "persistent":
+        return True
     if sk in state._restricted_keys:
         return True
     slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
@@ -2023,6 +2119,9 @@ def _blocks_reads_session(state: DashboardState, request: "Any") -> bool:
     sk = _read_session_key(request)
     if not sk or sk == "dashboard:ui":
         return False
+    inherited = inherited_session_memory_mode(state, sk)
+    if inherited is not None and inherited not in {"persistent", "incognito"}:
+        return True
     slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
     slot = state._slots.get(slot_name)
     if slot and slot.blocks_reads:

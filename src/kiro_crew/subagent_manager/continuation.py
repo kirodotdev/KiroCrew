@@ -253,6 +253,7 @@ class ContinuationCoordinator(ManagerComponent):
         max_turns: int = 0,
         cwd: str = "",
         _preassigned_id: str = "",
+        _memory_mode: str | None = None,
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id*.
 
@@ -409,6 +410,7 @@ class ContinuationCoordinator(ManagerComponent):
             # topic's first message reads the crew's silo and every routed
             # follow-up reads the global store -- a split nothing reports.
             memory_store=memory_store,
+            _memory_mode=_memory_mode,
         )
 
     def _inherited_memory_store_impl(self, conv_id: str) -> str:

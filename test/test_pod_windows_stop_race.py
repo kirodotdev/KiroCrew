@@ -216,7 +216,8 @@ def test_exact_drain_names_a_known_live_survivor_instead_of_a_snapshot_failure(
     assert result == expected
 
 
-def test_stop_takes_the_exact_handle_path_on_every_host(cfg, monkeypatch):
+@pytest.mark.parametrize("recycled", [False, True])
+def test_stop_takes_the_exact_handle_path_on_every_host(cfg, monkeypatch, recycled):
     """The exact-handle teardown is the ONLY stop path; there is no token fallback.
 
     Pinned with the module flag reading as a non-Windows host, which is what the
@@ -228,6 +229,7 @@ def test_stop_takes_the_exact_handle_path_on_every_host(cfg, monkeypatch):
     monkeypatch.setattr(win, "IS_WINDOWS", False)
     monkeypatch.setattr(win, "handoff_in_progress", lambda *_a: False)
     active = {8001}
+    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and (8001 in active or recycled))
     monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242 if 8001 in active else None)
     monkeypatch.setattr(win, "process_start_time", lambda _pid: "100")
     monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "100"))
@@ -262,8 +264,11 @@ def test_stop_takes_the_exact_handle_path_on_every_host(cfg, monkeypatch):
 
     result = win.stop(cfg, "demo", timeout=0.1)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == (1 if recycled else 0), result.stderr
     assert opened == [(4242, "100")]
+    assert win.task_script_path(cfg, "demo").exists() is recycled
+    if recycled:
+        assert "ALIVE but does not carry" in result.stderr
 
 
 def test_stop_closes_retained_handles_when_end_raises(cfg, monkeypatch):
@@ -418,7 +423,10 @@ def test_stop_pod_preserves_home_and_task_on_incomplete_handle_proof(
     assert sorted(closed) == [8001, 9001, *partial_handles]
 
 
-def test_stop_terminally_scans_an_exited_root_before_reporting_zero_residue(cfg, monkeypatch):
+@pytest.mark.parametrize("recycled", [False, True])
+def test_stop_terminally_scans_an_exited_root_before_reporting_zero_residue(
+    cfg, monkeypatch, recycled
+):
     """The child appears only after the pre-/End snapshot and root exit."""
 
     root_pid = 4242
@@ -427,6 +435,12 @@ def test_stop_terminally_scans_an_exited_root_before_reporting_zero_residue(cfg,
     child_handle = 9001
     active_handles = {root_handle, child_handle}
     supervised = {"pid": root_pid}
+    monkeypatch.setattr(
+        win,
+        "pid_exists",
+        lambda pid: (pid == root_pid and (root_handle in active_handles or recycled))
+        or (pid == child_pid and child_handle in active_handles),
+    )
     root_scans: list[bool] = []
     terminated: list[int] = []
     closed: list[int] = []
@@ -481,7 +495,9 @@ def test_stop_terminally_scans_an_exited_root_before_reporting_zero_residue(cfg,
 
     result = win.stop(cfg, "demo", timeout=0.1)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == (1 if recycled else 0), result.stderr
+    if recycled:
+        assert "ALIVE but does not carry" in result.stderr
     assert root_scans[0] is True
     assert False in root_scans, "the exited root must receive a terminal snapshot"
     assert child_handle in terminated

@@ -346,6 +346,8 @@ async def execute_task(
                     project=str(work_dir) if work_dir else None,
                     provider_type=KiroCrewConfig.load().agent.provider,
                     memory_store=memory_store,
+                    context_provider=client,
+                    resumed=_resumed,
                 )
             else:
                 full_prompt = task_prompt

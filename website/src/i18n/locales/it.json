@@ -4741,6 +4741,7 @@
         "configuration_1": "Attiva l'app nascosta con kirocrew app enable workflows; convalida Python DSL in Author oppure usa gli strumenti di workflow della chat o MCP per una vera orchestrazione degli agenti e monitorala in Runs."
       },
       "workflowRunTree": {
+        "checkpoint_save_failed": "Impossibile salvare l’avanzamento. Copia i risultati necessari prima di riavviare. Controlla l’accesso all’archiviazione e lo spazio libero; il salvataggio verrà ritentato al prossimo checkpoint.",
         "agent_many": "{{count}} agenti",
         "agent_one": "{{count}} agente",
         "agent_other": "{{count}} agenti",
@@ -11596,6 +11597,7 @@
       "embedModel": {
         "active": "Attivo: {{model}} · {{dim}}d",
         "active_unknown": "Modello attivo sconosciuto",
+        "configured_inactive": "Configurato: {{model}} · {{dim}}d · non attivo",
         "apply": "Applica modello",
         "applying": "Applicazione…",
         "badge_bundled": "incluso",
@@ -11631,7 +11633,9 @@
         "subtitle": "Gira in locale. Cambiarlo ricalcola gli embedding delle memorie in background.",
         "title": "Modello di embedding",
         "will_revert": "Vuoto: tornerà al modello incluso.",
-        "err_env_override_with_ref": "<settingRef/> è impostata e sovrascrive questa impostazione. Rimuovila per cambiare il modello qui."
+        "err_env_override_with_ref": "<settingRef/> è impostata e sovrascrive questa impostazione. Rimuovila per cambiare il modello qui.",
+        "apply_reapply": "Ricostruisci i vettori di memoria",
+        "confirm_reapply_body": "Questa operazione ricarica il modello configurato e cancella e ricostruisce i vettori di memoria archiviati."
       },
       "kiroCrewCfgTab": {
         "approval_mode": "Modalità di approvazione",
@@ -12082,6 +12086,24 @@
         "usage_tracking_is_not_available_for": "Il monitoraggio dell’utilizzo non è disponibile per {{provider}}."
       },
       "vectorMemoryCard": {
+        "legacy_vectors_warning": "Questi vettori precedono la registrazione del file del modello. Se hai modificato il file, riapplicalo nelle impostazioni del modello di embedding per ricostruirli.",
+        "legacy_vectors_warning_path_error": "Questi vettori precedono la registrazione del file del modello, e il file nel percorso configurato al momento non è utilizzabile. Correggi prima il percorso del modello, poi applicalo per ricostruirli.",
+        "verification_pending": "Verifica del modello in corso. Nel frattempo, la memoria usa la ricerca per parole chiave.",
+        "verification_failed": "Impossibile leggere il file del modello {{path}} per la verifica. Assicurati che il file esista e sia leggibile, poi applicalo di nuovo.",
+        "download_error_detail": "Impossibile scaricare il modello incluso. Controlla la rete o il proxy, poi riprova.",
+        "model_error_path": "{{message}} Percorso: {{path}}",
+        "model_error_path_pointer": "Il file del modello di embedding nel percorso configurato non può essere usato, quindi nel frattempo la memoria usa la ricerca per parole chiave.",
+        "repair_unknown": "Alcuni archivi di memoria non sono stati verificati, quindi la ricostruzione non è confermata per tutti. Il controllo si ripete automaticamente finché questa pagina resta aperta, e un archivio chiuso viene ricostruito alla prossima apertura. Se il messaggio continua a comparire, controlla il log del gateway.",
+        "repair_pending": "La ricostruzione dopo il cambio di modello è ancora in corso in tutti gli archivi di memoria: {{items}}.",
+        "repair_vectors_one": "{{count}} ricordo attende ancora un nuovo vettore",
+        "repair_vectors_other": "{{count}} ricordi attendono ancora un nuovo vettore",
+        "repair_vectors_many": "{{count}} ricordi attendono ancora un nuovo vettore",
+        "repair_invalidation_one": "{{count}} archivio aperto contiene ancora vecchi vettori da cancellare",
+        "repair_invalidation_other": "{{count}} archivi aperti contengono ancora vecchi vettori da cancellare",
+        "repair_invalidation_many": "{{count}} archivi aperti contengono ancora vecchi vettori da cancellare",
+        "repair_deferred_one": "{{count}} archivio chiuso o non disponibile verrà ricostruito alla prossima apertura",
+        "repair_deferred_other": "{{count}} archivi chiusi o non disponibili verranno ricostruiti alla prossima apertura",
+        "repair_deferred_many": "{{count}} archivi chiusi o non disponibili verranno ricostruiti alla prossima apertura",
         "column_importance": "Importanza",
         "column_score": "Punteggio",
         "column_text": "Testo",
@@ -12102,7 +12124,7 @@
         "downloading_from_cdn": "Download dalla CDN…",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · viene eseguito localmente nel processo",
-        "embeddings": "Embedding",
+        "embedding_status": "Stato degli embedding",
         "entries": "voci",
         "episodic_context_injected_per_message": "Contesto episodico (inserito per messaggio)",
         "episodic_memory": "Memoria episodica",
@@ -12122,6 +12144,7 @@
         "no_events": "Nessun evento",
         "no_matching_entries": "Nessuna voce corrispondente",
         "no_semantic_entries": "Nessuna voce semantica",
+        "not_active": "non attivo",
         "of": "di",
         "open_embedding_model_settings": "Apri le impostazioni del modello di embedding",
         "preview": "Anteprima",
@@ -12137,6 +12160,7 @@
         "set": "Imposta",
         "setup_failed": "Configurazione non riuscita",
         "showing": "Visualizzati",
+        "status_unknown": "sconosciuto",
         "structured_key_value_facts_about_you_confidence": "Fatti strutturati chiave-valore su di te. Confidenza: quanto è certo il sistema (1.0 = l’hai impostato tu, 0.85 = estratto dalla chat). Origine: chi l’ha scritto (user_explicit = tu, consolidation = estratto automaticamente).",
         "structured_semantic_key_value_episodic_conversat": "Memoria semantica strutturata (chiave-valore) + episodica (frammenti di conversazione) con ricerca vettoriale. Gli embedding sono sempre attivi — il modello viene scaricato automaticamente in background.",
         "test_query_e_g_what_database_should_i_use": "Query di prova (ad es. \"quale database dovrei usare?\")",

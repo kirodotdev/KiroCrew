@@ -46,6 +46,20 @@ OnDoneFn = Callable[[str, dict], None]
 OnEventFn = Callable[[str, dict], None]
 
 
+async def _await_owned(task: "asyncio.Task[Any]") -> Any:
+    """Drain owned work even under repeated cancellation, then propagate it."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 def _int_key(k: Any) -> Any:
     """agent_results is keyed by call_index (int); JSON object keys are strings,
     so coerce back to int on load (keep non-numeric keys as-is, defensively)."""
@@ -82,6 +96,7 @@ class RunHandle:
     # False when the durable store had to redact source bytes (or provenance is
     # unknown). Such source remains usable for display/rerun, but not promotion.
     source_is_original: bool = True
+    execution_binding_version: int = 0
     args: dict = field(default_factory=dict)
     agent_results: dict = field(default_factory=dict)  # call_index → result (resume cache)
     # call_index → bounded reason that call failed. Kept next to agent_results so a
@@ -99,10 +114,15 @@ class RunHandle:
     derived_from_revision: int = 0
     # Off-loop persistence coordination belongs to the run identity itself. It
     # is live-only state and therefore intentionally absent from snapshots.
+    _pending_checkpoints: set[asyncio.Task] = field(
+        default_factory=set, init=False, repr=False, compare=False
+    )
     _persist_lock: Optional[asyncio.Lock] = field(
         default=None, init=False, repr=False, compare=False
     )
     _persist_generation: int = field(default=0, init=False, repr=False, compare=False)
+    # Live durability health, separate from the workflow function's outcome.
+    _persistence_error: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
     def snapshot(self, *, include_events: bool = True, include_result: bool = True) -> dict:
         """JSON-serializable view of this run (never leaks the asyncio.Task).
@@ -119,10 +139,11 @@ class RunHandle:
             "run_id": self.run_id,
             "name": self.name,
             "status": self.status,
-            "error": self.error,
+            "error": "; ".join(filter(None, (self._persistence_error, self.error))) or None,
             "author": self.author,
             "session_key": self.session_key,
             "source_format": self.source_format,
+            "execution_binding_version": self.execution_binding_version,
             "driver": self.driver,
             "task_id": self.task_id,
             "capabilities": list(self.capabilities),
@@ -145,6 +166,8 @@ class RunHandle:
             "phase": self._current_phase(),
             "last_log": self._last_log(),
         }
+        if self._persistence_error and not self.error:
+            snap["error_code"] = "workflow_checkpoint_failed"
         if include_result:
             snap["result"] = self.result
         # Work that outlived a run which ENDED WITHOUT a usable return value
@@ -216,6 +239,7 @@ class RunHandle:
             "author": self.author,
             "session_key": self.session_key,
             "source_format": self.source_format,
+            "execution_binding_version": self.execution_binding_version,
             "driver": self.driver,
             "task_id": self.task_id,
             "capabilities": list(self.capabilities),
@@ -261,6 +285,7 @@ class RunHandle:
             author=obj.get("author", ""),
             session_key=obj.get("session_key", ""),
             source_format=obj.get("source_format", "python"),
+            execution_binding_version=obj.get("execution_binding_version", 0),
             driver=obj.get("driver", "workflow"),
             task_id=obj.get("task_id", ""),
             capabilities=tuple(obj.get("capabilities") or ()),
@@ -309,16 +334,55 @@ class RunRegistry:
     def _persist(self, handle: RunHandle) -> None:
         if self._store is None:
             return
-        self._persist_snapshot(handle.run_id, handle.to_store_json())
+        handle._persistence_error = self._persist_snapshot(handle.run_id, handle.to_store_json())
 
-    def _persist_snapshot(self, run_id: str, payload: dict[str, Any]) -> None:
-        """Write a caller-built snapshot without touching loop-affine state."""
+    def _persist_snapshot(self, run_id: str, payload: dict[str, Any]) -> Optional[str]:
+        """Return sanitized durability health; the caller owns loop-affine state."""
         try:
             self._store.save(run_id, payload)
-        except Exception:  # noqa: BLE001 - persistence must never break a run
-            pass
+        except Exception:  # noqa: BLE001 - preserve execution, but never hide storage failure
+            return (
+                "Workflow checkpoint could not be saved. Copy needed results before restart; "
+                "check storage access and free space. A later checkpoint retries automatically."
+            )
+        return None
+
+    def persist_soon(self, run_id: str) -> None:
+        """Queue a sync callback's checkpoint; terminal settlement owns its drain."""
+        handle = self._runs.get(run_id)
+        if handle is None or self._store is None:
+            return
+        task = asyncio.create_task(self.persist_async(run_id))
+        handle._pending_checkpoints.add(task)
+        task.add_done_callback(handle._pending_checkpoints.discard)
 
     # --- lifecycle ---
+    async def register_async(self, handle: RunHandle, *, persist: bool = True) -> None:
+        """Register on-loop, await eviction/writes, and roll back cancelled admission."""
+        self._runs[handle.run_id] = handle
+        self._runs.move_to_end(handle.run_id)
+
+        async def _register() -> None:
+            await self._evict_async()
+            if persist:
+                await self.persist_async(handle.run_id)
+
+        try:
+            await _await_owned(asyncio.create_task(_register()))
+        except BaseException:
+            await _await_owned(asyncio.create_task(self.delete_async(handle.run_id)))
+            raise
+
+    async def _evict_async(self) -> None:
+        while len(self._runs) > self._max_runs:
+            rid = next(
+                (rid for rid, h in self._runs.items() if h.status not in ACTIVE_STATUSES),
+                None,
+            )
+            if rid is None:
+                break
+            await self.delete_async(rid)
+
     def register(self, handle: RunHandle, *, persist: bool = True) -> None:
         self._runs[handle.run_id] = handle
         self._runs.move_to_end(handle.run_id)
@@ -331,12 +395,7 @@ class RunRegistry:
         while len(self._runs) > self._max_runs:
             for rid, h in list(self._runs.items()):
                 if h.status not in ACTIVE_STATUSES:
-                    del self._runs[rid]
-                    if self._store is not None:
-                        try:
-                            self._store.delete(rid)
-                        except Exception:  # noqa: BLE001
-                            pass
+                    self.delete(rid)
                     break
             else:
                 break  # all running — keep them
@@ -386,11 +445,11 @@ class RunRegistry:
         record to disk.
 
         Deliberately does NOT force a store write of its own. ``store.save``
-        re-serializes and re-redacts the ENTIRE run record synchronously on the
-        gateway event loop, so writing once per agent call would add an O(N) stall
-        per call over a record that grows with every payload. Disk durability
-        instead rides the write this module already performs — ``record_event``
-        flushes every ``_save_every`` events, and each agent call emits two events —
+        re-serializes and re-redacts the ENTIRE run record, so writing once per
+        agent call would add O(N) work over a record that grows with every payload.
+        Live callbacks queue those writes off-loop. Disk durability rides the
+        existing cadence — ``record_event`` checkpoints every ``_save_every``
+        events, and each agent call emits two events —
         plus the guaranteed flush at ``mark_terminal``. The trade is explicit: a
         hard gateway kill can lose the newest payloads that no flush has covered
         yet, exactly as it can already lose the newest events.
@@ -434,12 +493,19 @@ class RunRegistry:
     async def mark_terminal_async(
         self, run_id: str, status: str, *, result: Any = None, error: Optional[str] = None
     ) -> None:
-        """Mark terminal and await the durable flush without blocking the loop."""
-        h = self._transition_terminal(run_id, status, result=result, error=error)
-        if h is None:
-            return
-        await self.persist_async(run_id)
-        self._notify_done(run_id, h)
+        """Drain checkpoints and flush the selected outcome before notifying."""
+
+        async def _finish() -> None:
+            handle = self._runs.get(run_id)
+            if handle is not None and handle._pending_checkpoints:
+                await asyncio.gather(*handle._pending_checkpoints)
+            h = self._transition_terminal(run_id, status, result=result, error=error)
+            if h is None:
+                return
+            await self.persist_async(run_id)
+            self._notify_done(run_id, h)
+
+        await _await_owned(asyncio.create_task(_finish()))
 
     def persist(self, run_id: str) -> None:
         """Public hook: force-persist a run (e.g. after its source is set mid-run)."""
@@ -463,17 +529,13 @@ class RunRegistry:
             async with lock:
                 if generation != handle._persist_generation or self._runs.get(run_id) is not handle:
                     return
-                await asyncio.to_thread(self._persist_snapshot, run_id, payload)
+                handle._persistence_error = await asyncio.to_thread(
+                    self._persist_snapshot, run_id, payload
+                )
 
-        write_task = asyncio.create_task(_write_latest())
-        try:
-            await asyncio.shield(write_task)
-        except BaseException:
-            # A worker write cannot be stopped after dispatch. Keep the per-run
-            # lock until it settles so cancellation cannot let another checkpoint
-            # overlap the same temporary file or overtake the durable snapshot.
-            await asyncio.shield(write_task)
-            raise
+        # A worker cannot be stopped after dispatch. Retain its lock and drain
+        # even repeated cancellations before allowing a successor checkpoint.
+        await _await_owned(asyncio.create_task(_write_latest()))
 
     def delete(self, run_id: str) -> bool:
         """Forget one run and its durable record."""
@@ -505,12 +567,7 @@ class RunRegistry:
                     except Exception:  # noqa: BLE001 - memory deletion is authoritative
                         pass
 
-            delete_task = asyncio.create_task(_delete_after_writes())
-            try:
-                await asyncio.shield(delete_task)
-            except BaseException:
-                await asyncio.shield(delete_task)
-                raise
+            await _await_owned(asyncio.create_task(_delete_after_writes()))
         return True
 
     def set_status(self, run_id: str, status: str, *, persist: bool = True) -> bool:
@@ -562,27 +619,24 @@ class RunRegistry:
         if self._store is None:
             return 0
         loaded = 0
-        try:
-            for obj in self._store.load_all():
-                handle = self._restore_persisted_record(obj)
-                if handle is None:
-                    continue
-                loaded += 1
-                # Idempotent restart writeback: a record stored as "running" is
-                # demoted to failed by from_store_json (it cannot resume in a new
-                # process). Persist the corrected state so the durable record
-                # matches memory and an external reader does not keep seeing
-                # "running". Only running->failed writes; an already-terminal
-                # record is left untouched, so repeated restarts converge.
-                # to_store_json carries the full record, so payloads
-                # (agent_results / agent_errors), source, provenance and args
-                # survive the writeback.
-                if obj.get("status") == STATUS_RUNNING:
-                    self._persist(handle)
-        except Exception:  # noqa: BLE001
-            pass
-        # Honor the bounded-LRU ceiling: a store with more records than max_runs
-        # must not leave the in-memory registry over its documented bound.
+        # A failed inventory is not an empty store: allocation must not restart
+        # at zero and overwrite legacy runs that have no immutable binding yet.
+        for obj in self._store.load_all():
+            handle = self._restore_persisted_record(obj)
+            if handle is None:
+                continue
+            loaded += 1
+            # Idempotent restart writeback: a record stored as "running" is
+            # demoted to failed by from_store_json (it cannot resume in a new
+            # process). Persist the corrected state so the durable record
+            # matches memory and an external reader does not keep seeing
+            # "running". Only running->failed writes; an already-terminal
+            # record is left untouched, so repeated restarts converge.
+            # to_store_json carries the full record, so payloads
+            # (agent_results / agent_errors), source, provenance and args
+            # survive the writeback.
+            if obj.get("status") == STATUS_RUNNING:
+                self._persist(handle)
         self._evict()
         return loaded
 
@@ -610,27 +664,17 @@ class RunRegistry:
 
         async def _load() -> int:
             loaded = 0
-            try:
-                records = await asyncio.to_thread(self._store.load_all)
-                for obj in records:
-                    handle = self._restore_persisted_record(obj)
-                    if handle is None:
-                        continue
-                    loaded += 1
-                    if obj.get("status") == STATUS_RUNNING:
-                        await self.persist_async(handle.run_id)
-            except Exception:  # noqa: BLE001 - match the best-effort sync loader
-                pass
+            records = await asyncio.to_thread(self._store.load_all)
+            for obj in records:
+                handle = self._restore_persisted_record(obj)
+                if handle is None:
+                    continue
+                loaded += 1
+                if obj.get("status") == STATUS_RUNNING:
+                    await self.persist_async(handle.run_id)
             # Same oldest-terminal eviction as the sync API, but await deletion
             # through the per-run write queue instead of doing disk I/O on-loop.
-            while len(self._runs) > self._max_runs:
-                rid = next(
-                    (rid for rid, h in self._runs.items() if h.status not in ACTIVE_STATUSES),
-                    None,
-                )
-                if rid is None:
-                    break
-                await self.delete_async(rid)
+            await self._evict_async()
             return loaded
 
         load_task = asyncio.create_task(_load())
@@ -685,10 +729,12 @@ async def start_background_run(
     session_key: str = "",
     source: str = "",
     source_is_original: bool = True,
+    execution_binding_version: int = 0,
     args: Optional[dict] = None,
     workflow_id: str = "",
     workflow_slug: str = "",
     workflow_revision: int = 0,
+    admission_closed: Optional[Callable[[], bool]] = None,
 ) -> str:
     """Schedule a workflow run on the loop, register a handle, return its run_id.
 
@@ -706,15 +752,21 @@ async def start_background_run(
         session_key=session_key,
         source=source,
         source_is_original=source_is_original,
+        execution_binding_version=execution_binding_version,
         args=args or {},
         workflow_id=workflow_id,
         workflow_slug=workflow_slug,
         workflow_revision=workflow_revision,
     )
-    registry.register(handle)
+    await registry.register_async(handle)
+    if admission_closed is not None and admission_closed():
+        await registry.delete_async(run_id)
+        return ""
 
     def record(event: WorkflowEvent) -> None:
-        registry.record_event(run_id, event)
+        registry.record_event(run_id, event, persist=False)
+        if len(handle.events) % registry._save_every == 0:
+            registry.persist_soon(run_id)
 
     async def _drive() -> None:
         try:
@@ -724,12 +776,15 @@ async def start_background_run(
             # partial (or empty) map must not erase them.
             if agent_results:
                 handle.agent_results.update(agent_results)
-            registry.mark_terminal(run_id, status, result=result, error=error)
         except asyncio.CancelledError:
-            registry.mark_terminal(run_id, STATUS_CANCELLED, error="cancelled")
+            await registry.mark_terminal_async(run_id, STATUS_CANCELLED, error="cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 - capture, never crash the loop
-            registry.mark_terminal(run_id, STATUS_FAILED, error=repr(exc))
+            await registry.mark_terminal_async(run_id, STATUS_FAILED, error=repr(exc))
+        else:
+            # The runner has already selected its outcome. Cancellation while
+            # flushing must drain that outcome, not reinterpret success as cancel.
+            await registry.mark_terminal_async(run_id, status, result=result, error=error)
 
     handle.task = asyncio.ensure_future(_drive())
     return run_id

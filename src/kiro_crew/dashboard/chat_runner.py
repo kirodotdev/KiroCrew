@@ -8143,6 +8143,7 @@ async def _run_chat(
                 ),
                 user_span_out=_user_span,
                 needs_reinjection=_needs_reinjection,
+                context_provider=client,
             )
             # The reported span is valid for the message as build_message
             # returned it. Several later steps PREPEND to the finished prompt

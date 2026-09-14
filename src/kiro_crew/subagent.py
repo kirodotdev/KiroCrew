@@ -1202,6 +1202,8 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    memory_mode: str = field(default="persistent", kw_only=True)
+    _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
     # The app that spawned this child (empty for a non-app spawn). Persisted so
     # the child's per-tool-call gate can resolve the app's Level-2 profile, not
@@ -1629,8 +1631,10 @@ class SubagentManager:
         on_orphan_dm: Callable[[str], Awaitable[bool]] | None = None,
         completion_keep: str = "head",
         completion_keep_chars: int = COMPLETION_KEEP_DEFAULT_CHARS,
+        memory_mode_for_session: Callable[[str], str] | None = None,
     ):
         self._sessions = sessions
+        self._memory_mode_for_session = memory_mode_for_session
         self._ctx_builder = ctx_builder
         self._on_done = on_done
         self._max_concurrent = max_concurrent
@@ -2314,6 +2318,7 @@ class SubagentManager:
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
+        _memory_mode: str | None = None,
     ) -> SubagentInfo | None:
         return self._admission.spawn_impl(
             task,
@@ -2339,6 +2344,7 @@ class SubagentManager:
             _agent_prevalidated,
             _from_queue,
             _preassigned_id,
+            _memory_mode=_memory_mode,
         )
 
     async def _safe_announce(self, info: SubagentInfo) -> None:
@@ -2379,9 +2385,18 @@ class SubagentManager:
         max_turns: int = 0,
         cwd: str = "",
         _preassigned_id: str = "",
+        _memory_mode: str | None = None,
     ) -> SubagentInfo | None:
         return self._continuation.continue_conversation_impl(
-            conv_id, task, parent_session_key, agent, model, max_turns, cwd, _preassigned_id
+            conv_id,
+            task,
+            parent_session_key,
+            agent,
+            model,
+            max_turns,
+            cwd,
+            _preassigned_id,
+            _memory_mode=_memory_mode,
         )
 
     def recorded_cwd(self, conv_id: str) -> str:
@@ -2445,6 +2460,29 @@ class SubagentManager:
     def running(self) -> list[SubagentInfo]:
         """Return currently running (not done) subagents."""
         return [a for a in self._agents.values() if not a.done]
+
+    def has_live_shared_session(self, session_key: str) -> bool:
+        """Recognize a shared child only while its exact runtime handle is live.
+
+        Run records survive completion/restart for display and continuation;
+        they are not session authority. The runtime's queue registry is what
+        destroy() unregisters, even when the parent process keeps running.
+        """
+        for info in self._agents.values():
+            if info.done or info.reaped or not info._session_sharing:
+                continue
+            if (info.conversation_key or f"subagent:{info.id}") != session_key:
+                continue
+            provider = info._shared_provider
+            if not isinstance(provider, AcpSessionProvider):
+                continue
+            runtime, handle = provider._runtime, provider._handle
+            if (
+                runtime.is_alive()
+                and runtime._session_queues.get(handle.session_id) is handle._queue
+            ):
+                return True
+        return False
 
     @property
     def all_agents(self) -> list[SubagentInfo]:

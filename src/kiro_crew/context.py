@@ -13,7 +13,7 @@ import threading
 import time
 import unicodedata
 from collections import defaultdict, deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +62,7 @@ from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.skills import SkillsLoader
 
 if TYPE_CHECKING:
+    from kiro_crew.agent_sdk import ContextPromptProvider
     from kiro_crew.channel_history import ChannelHistory
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
@@ -389,10 +390,13 @@ async def session_store_for_turn(ctx_builder: object, session_key: str) -> str:
     part that is easy to get wrong, and the store a caller resolves is the store its
     vectors must be prepared for.
     """
+
     store = await asyncio.to_thread(
         store_of_session, getattr(ctx_builder, "conversation_log", None), session_key
     )
-    await prepare_store_vectors(ctx_builder, store, session_key=session_key)
+    modes = getattr(ctx_builder, "_session_memory_modes", None)
+    if not isinstance(modes, dict) or modes.get(session_key) != "temporary":
+        await prepare_store_vectors(ctx_builder, store, session_key=session_key)
     return store
 
 
@@ -405,6 +409,24 @@ async def inherit_session_memory(
     from kiro_crew.memory_stores import UnknownMemoryStore, memory_store_version
 
     log = getattr(ctx_builder, "conversation_log", None)
+    modes = getattr(ctx_builder, "_session_memory_modes", None)
+    if isinstance(modes, dict):
+        from kiro_crew.messaging.privacy_mode import strictest
+
+        resolver = getattr(ctx_builder, "memory_mode_for_session", None)
+        mode = await resolver(parent_session_key) if resolver is not None else "persistent"
+        if mode not in {"persistent", "incognito", "temporary"}:
+            raise ValueError("The originating session's memory mode is unavailable")
+        mode = strictest((mode, modes.get(session_key, "persistent"))) or "persistent"
+        if resolver is not None:
+            from kiro_crew.subagent_persistence import bind_session_memory_mode
+            from kiro_crew.workflows.registry import _await_owned
+
+            publication = asyncio.create_task(
+                asyncio.to_thread(bind_session_memory_mode, session_key, mode)
+            )
+            mode = await _await_owned(publication)
+        modes[session_key] = strictest((mode, modes.get(session_key, "persistent"))) or "persistent"
     store = await asyncio.to_thread(store_of_session, log, parent_session_key)
     if store:
         private = await asyncio.to_thread(memory_store_version, store) == 2
@@ -419,6 +441,14 @@ async def inherit_session_memory(
         # Named V1 stores have no protected registry record, but their child must
         # still retain the parent's recorded store rather than widening to Global.
         await asyncio.to_thread(log.update_metadata, session_key, {"memory_store": store})
+    if (
+        isinstance(modes, dict)
+        and log is not None
+        and modes.get(session_key) in {"incognito", "temporary"}
+    ):
+        await asyncio.to_thread(
+            log.update_metadata, session_key, {"memory_mode": modes[session_key]}
+        )
     return await session_store_for_turn(ctx_builder, session_key)
 
 
@@ -830,14 +860,24 @@ def _marker_spans(
         # actually matches.
         norm: list[str] = []
         origin: list[int] = []
-        for idx, ch in enumerate(text):
-            for compatible in unicodedata.normalize("NFKC", ch):
+        cursor = 0
+        # ASCII is unchanged by every normalization below. Copy entire runs in
+        # C instead of paying the Unicode pipeline per character whenever one
+        # non-ASCII character appears anywhere in a large prompt.
+        for match in re.finditer(r"[^\x00-\x7f]", text):
+            idx = match.start()
+            norm.append(text[cursor:idx])
+            origin.extend(range(cursor, idx))
+            cursor = idx + 1
+            for compatible in unicodedata.normalize("NFKC", match.group()):
                 if _is_marker_ignorable(compatible):
                     continue
                 folded = compatible.translate(_MULTIBYTE_TABLE)
                 for candidate in folded:
                     norm.append("-" if unicodedata.category(candidate) == "Pd" else candidate)
                     origin.append(idx)
+        norm.append(text[cursor:])
+        origin.extend(range(cursor, len(text)))
 
         norm_str = "".join(norm)
         raw = []
@@ -2764,6 +2804,8 @@ class ContextBuilder:
         self.lessons = lessons or LessonStore()
         self.conversation_log = conversation_log
         self.channel_history = channel_history
+        self.memory_mode_for_session: Callable[[str], Awaitable[str]] | None = None
+        self._session_memory_modes: dict[str, str] = {}
         if bot_name:
             self._bot_name = bot_name
         else:
@@ -3177,6 +3219,11 @@ class ContextBuilder:
         blocks_reads: bool = False,
         context_groups: frozenset[str] | None = None,
         profile_overrides: dict[str, str] | None = None,
+        native_documents: dict[str, str] | None = None,
+        native_envelope_out: list[str] | None = None,
+        execution_template: str = "",
+        conditional_index: bool = False,
+        trigger_text: str = "",
     ) -> str:
         """Refresh complete private-member anchors without a retrieval/model call."""
         from kiro_crew.member_essential_context import (
@@ -3195,9 +3242,29 @@ class ContextBuilder:
         documents = documents_for_member(
             template,
             project,
+            conditional_index=conditional_index,
+            context_settings=True,
+            trigger_text=trigger_text,
             include_project=not blocks_reads
             and _group_included(context_groups, CONTEXT_GROUP_PROJECT),
         )
+        if execution_template and execution_template != template:
+            sources = dict(documents)
+            for source, body in documents_for_member(
+                execution_template,
+                project,
+                conditional_index=conditional_index,
+                context_settings=True,
+                trigger_text=trigger_text,
+                include_project=not blocks_reads
+                and _group_included(context_groups, CONTEXT_GROUP_PROJECT),
+            ):
+                if source in sources and sources[source] != body:
+                    raise MemberEssentialContextError(
+                        f"Essential source {source}: changed during preparation"
+                    )
+                sources[source] = body
+            documents = list(sources.items())
         if reads:
             memory = self.get_memory_for(workspace, memory_store)
             for path, empty in (
@@ -3225,7 +3292,24 @@ class ContextBuilder:
                     "current conversation already answers the question.",
                 )
             )
-        return render_essentials(documents, identity=identity)
+        envelope = render_essentials(documents, identity=identity)
+        if native_envelope_out is not None:
+            native = native_documents or {}
+            native_envelope_out.append(
+                render_essentials(
+                    [
+                        (
+                            (source, "")
+                            if native.get(source) == body
+                            or native.get(f"template://{execution_template}#prompt") == body
+                            else (source, body)
+                        )
+                        for source, body in documents
+                    ],
+                    identity=identity,
+                )
+            )
+        return envelope
 
     def build_session_context(
         self,
@@ -3247,6 +3331,7 @@ class ContextBuilder:
         query_text: str = "",
         project: str | None = None,
         member: str = "",
+        _v2_essentials: str | None = None,
     ) -> str:
         """Build context for a new session (memory + skills + history).
 
@@ -3300,14 +3385,16 @@ class ContextBuilder:
         is_cc = is_claude_code(provider_type)
         caps = _resolve_caps(model_window)
         parts: list[str] = []
-        essentials = self._build_v2_essentials(
-            memory_store,
-            member=member,
-            project=project,
-            workspace=workspace,
-            blocks_reads=blocks_reads,
-            context_groups=context_groups,
-        )
+        essentials = _v2_essentials
+        if essentials is None:
+            essentials = self._build_v2_essentials(
+                memory_store,
+                member=member,
+                project=project,
+                workspace=workspace,
+                blocks_reads=blocks_reads,
+                context_groups=context_groups,
+            )
 
         # Minimal V1 stays date/time + agent identity. Private V2 also carries
         # the complete essential envelope, including member-bound cron jobs.
@@ -3538,7 +3625,12 @@ class ContextBuilder:
         # (claude-agent-acp) does NOT read agent ``resources``, so only it needs
         # the explicit load. Injecting on the ACP/kiro backend would duplicate
         # what kiro-cli already loaded.
-        if not is_custom and is_cc and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
+        if (
+            not essentials
+            and not is_custom
+            and is_cc
+            and _group_included(context_groups, CONTEXT_GROUP_PROJECT)
+        ):
             steering_ctx = _load_steering_resources()
             if steering_ctx:
                 if lazy_skills and len(steering_ctx) > caps.steering:
@@ -3909,6 +4001,7 @@ class ContextBuilder:
         needs_reinjection: bool = False,
         context_groups: frozenset[str] | None = None,
         member: str = "",
+        context_provider: "ContextPromptProvider | None" = None,
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -3940,6 +4033,24 @@ class ContextBuilder:
         Returns:
             (full_message, hook_result) — hook_result may be a reply/modify/inject.
         """
+        from kiro_crew.agent_sdk import context_provider_of
+        from kiro_crew.essential_delivery import EssentialDelivery
+
+        delivery = None
+        blocks_reads = (
+            blocks_reads or self._session_memory_modes.get(session_key or "") == "temporary"
+        )
+        native_documents: dict[str, str] = {}
+        context_provider = context_provider_of(context_provider)
+        if context_provider is not None:
+            candidate_delivery = context_provider.essential_delivery
+            if isinstance(candidate_delivery, EssentialDelivery):
+                delivery = candidate_delivery
+                provider_type = context_provider.context_provider_type
+                if project is None:
+                    project = context_provider.cwd or None
+                if is_new_session and not resumed and not needs_reinjection:
+                    native_documents = context_provider.native_context_documents
         is_custom = agent and agent != "kirocrew"
         hook_result = self.hooks.on_message(text)
 
@@ -3973,23 +4084,43 @@ class ContextBuilder:
         #      its rules read keeps the gate).
         #   MINIMAL (V1 cron) -> no member section. Private V2 cron derives
         #      its owner from the validated memory binding above/below and
-        #      refreshes the complete essential envelope on every turn.
+        #      validates the complete envelope on every turn. Its provider
+        #      suppresses only snapshots already acknowledged by that conversation.
         # Missing file still reads as "" (the normal unbounded-by-choice
         # state); a bad slug degrades like the builder.
         from kiro_crew.member_essential_context import member_for_store
 
         _private_owner, _private_template = member_for_store(memory_store, member)
-        if _private_owner and not is_new_session:
-            parts.append(
-                self._build_v2_essentials(
-                    memory_store,
-                    member=member,
-                    project=project,
-                    workspace=workspace,
-                    blocks_reads=blocks_reads,
-                    context_groups=context_groups,
-                )
+        _native_envelopes: list[str] = []
+        _essentials = (
+            self._build_v2_essentials(
+                memory_store,
+                member=member,
+                project=project,
+                workspace=workspace,
+                blocks_reads=blocks_reads,
+                context_groups=context_groups,
+                native_documents=native_documents,
+                native_envelope_out=_native_envelopes,
+                execution_template=agent or "kirocrew",
+                trigger_text=(
+                    hook_result.text
+                    if hook_result.action == HOOK_MODIFY
+                    else (
+                        text[user_text_range[0] : user_text_range[1]]
+                        if user_text_range is not None
+                        else text
+                    )
+                ),
+                conditional_index=context_provider is not None
+                and delivery is not None
+                and not context_provider.native_steering,
             )
+            if _private_owner
+            else ""
+        )
+        if _essentials and not is_new_session:
+            parts.append(_essentials)
         _member_turn = member_turn_context(
             "" if _private_owner else member,
             member_lifecycle(
@@ -4029,7 +4160,7 @@ class ContextBuilder:
             # so the LLM treats it as its identity, not background info.
             if slim_resume:
                 agent_prompt = ""
-            elif is_cc:
+            elif is_cc and (not is_custom or not _private_owner):
                 # CC gets the SAME KiroCrew persona prompt as kiro — including
                 # the Output Format rules (diff blocks, image embeds, OPTIONS)
                 # which are dashboard UI contracts, not kiro-specific. Only the
@@ -4046,7 +4177,7 @@ class ContextBuilder:
                     agent_prompt = ""
             elif is_custom:
                 agent_prompt = self._load_agent_prompt(
-                    agent or "", project, owner_template=_private_template
+                    agent or "", project, owner_template=(agent or "") if _private_owner else ""
                 )
             else:
 
@@ -4080,6 +4211,7 @@ class ContextBuilder:
                 query_text=text,
                 project=project,
                 member=member,
+                _v2_essentials=_essentials,
             )
             if session_ctx:
                 # Scrub forgeable boundary markers from the UNTRUSTED content in
@@ -4702,4 +4834,36 @@ class ContextBuilder:
             start = head + len(seg[: _user_bounds[0]].translate(_MULTIBYTE_TABLE))
             end = head + len(seg[: _user_bounds[1]].translate(_MULTIBYTE_TABLE))
             user_span_out.extend((start, end))
+        if delivery is not None and _essentials and context_provider is not None:
+            lifecycle = member_lifecycle(
+                is_new_session=is_new_session,
+                resumed=resumed,
+                minimal_context=minimal_context,
+                needs_reinjection=needs_reinjection,
+            )
+            delivery.bind(
+                _essentials.translate(_MULTIBYTE_TABLE),
+                scope=(
+                    session_key,
+                    _private_owner,
+                    memory_store,
+                    workspace,
+                    project,
+                    agent,
+                    _private_template,
+                    provider_type,
+                    context_provider.served_model,
+                    mode,
+                    blocks_reads,
+                    None if context_groups is None else sorted(context_groups),
+                    minimal_context,
+                    model_window,
+                    _agent_includes_crew_context(agent),
+                ),
+                force=lifecycle is not MemberLifecycle.WARM,
+                incarnation=context_provider.context_incarnation,
+                native_envelope=(
+                    _native_envelopes[0].translate(_MULTIBYTE_TABLE) if native_documents else None
+                ),
+            )
         return final, hook_result
