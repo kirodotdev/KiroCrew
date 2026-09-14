@@ -1,0 +1,50 @@
+/* Scopes the `--mc-message-font-size` setting to message bubble body text.
+ *
+ * MarkdownRenderer's `p`/`li`/heading renderers are shared by ~30 non-chat
+ * surfaces (issue/PR panels, notification modals, meeting notes, artifact
+ * previews) that have no `--mc-message-font-size` var and rely on the
+ * renderer's own fixed sizes. Overriding the renderer's defaults directly
+ * would leak this setting into every one of those.
+ *
+ * `.msg-content` alone is not bubble-exclusive either — it's also the class
+ * MarkdownRenderer's own host wrapper carries in ~9 non-chat surfaces
+ * (ArtifactThumbs, NotificationDetailPanel, MarkdownPanel, ContentRenderer,
+ * ArtifactBody, RemoteArtifactDetailPage, ...).
+ *
+ * Scoped by `.mc-message-font-scope` rather than the theming contract's
+ * `.message-bubble` (website/docs/theming-contract.md pins that class to a
+ * user/assistant turn specifically, so a theme author styling it should not
+ * also be styling a cron/system notification row). `.mc-message-font-scope`
+ * carries no contract meaning — it exists only so this stylesheet can find
+ * every surface that should scale, chat bubbles and system notification rows
+ * alike, without widening what `.message-bubble` means to a theme.
+ */
+.mc-message-font-scope.msg-content p,
+.mc-message-font-scope.msg-content li {
+  font-size: inherit;
+  /* Tailwind's `leading-relaxed` value, applied here directly since the
+   * ancestor's font-size is now variable rather than the fixed default. */
+  line-height: 1.625;
+}
+
+/* Headings keep their proportions to the (now variable) body size instead of
+ * staying fixed px, so the hierarchy never inverts as the setting scales up.
+ * `em` here resolves against the bubble's own font-size, i.e. the setting.
+ * Values are each heading's original fixed size (20/18/16/14/14/13px) divided
+ * by the 14px default body size, so the ratios — and the rendered result at
+ * the default — are unchanged from before this rule existed. */
+.mc-message-font-scope.msg-content h1 { font-size: 1.4286em; }
+.mc-message-font-scope.msg-content h2 { font-size: 1.2857em; }
+.mc-message-font-scope.msg-content h3 { font-size: 1.1429em; }
+.mc-message-font-scope.msg-content h4,
+.mc-message-font-scope.msg-content h5 { font-size: 1em; }
+.mc-message-font-scope.msg-content h6 { font-size: 0.9286em; }
+
+/* Inline code keeps its fixed size even when the surrounding prose scales.
+ * index.css sets `.msg-content code { font-size: .9em }` — a relative unit
+ * that inherits the now-variable message font-size. Pin it back to the
+ * original rendered value (≈13px at the 14px default) so the declared
+ * "code blocks and inline code are out of scope" holds. */
+.mc-message-font-scope.msg-content :not(pre) > code {
+  font-size: 13px;
+}
