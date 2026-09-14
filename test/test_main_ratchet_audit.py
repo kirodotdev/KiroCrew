@@ -391,6 +391,11 @@ class TestGateParityWithCi:
             "check_builtin_skill_scope.py",
             "check_loop_bound_locks.py",
             "check_testpaths_coverage.py",
+            # Whole-tree by construction (every committed manifest entry is
+            # re-validated every run, no *_BASE_REF diff concept exists), and
+            # already a blocking check on every PR via fast-gate.yml -- the
+            # same reasoning check_feature_map.py above is deferred under.
+            "check_connector_manifest.py",
         }
     )
 

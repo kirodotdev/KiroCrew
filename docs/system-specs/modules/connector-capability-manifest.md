@@ -167,8 +167,8 @@ Every required operation the connector campaign tracks — one row per
 | `source` | object | yes | `{source_kind, source_id, observed_at, snapshot_ref}` — this inner `observed_at` is `null` when `source_kind` is `not_yet_sourced` (there is no source to have observed anything against yet, and forcing a timestamp here would fabricate one); for every other `source_kind` it records the moment THIS SOURCE was last checked, independent of the entry-level `observed_at` below. See "`source_kind`, and how a `user_required` or not-yet-sourced entry is represented" below. |
 | `observed_at` | string | yes | The single authoritative timestamp for when THIS MANIFEST ENTRY's shape was last confirmed as a whole (schema fields, not just the source citation), so drift is detectable later. Distinct from `source.observed_at`: that one timestamps the citation, this one timestamps the entry — an entry can be re-confirmed against an unchanged source (bumping this field alone) or re-sourced without every other field changing (bumping `source.observed_at` alone), and a validator must not assume the two move together or collapse them into one value. |
 | `effect` | enum | yes | One of `read`, `write`, `delete`, `share`, `external_send`, `admin`, `billable`. A closed vocabulary so a governance policy hook can match on it without a free-text field, and so `EvidenceReceipt`'s per-effect verification rule (below) has something to switch on. |
-| `input_schema` | object | yes | `{schema_ref, schema_version}` — where the operation's input shape is defined and which version of it this entry targets. Distinct from `output_schema`: an operation's request and response shapes version independently and a validator must be able to check each on its own. |
-| `output_schema` | object | yes | `{schema_ref, schema_version}` — same shape as `input_schema`, for the operation's response. |
+| `input_schema` | object | yes | `{schema_ref, schema_version}` — where the operation's input shape is defined and which version of it this entry targets. Distinct from `output_schema`: an operation's request and response shapes version independently and a validator must be able to check each on its own. `schema_ref` follows the same two-shape resolvability rule `source.snapshot_ref` does (below): an `https://` URL, or an in-repo path (an optional `#fragment` suffix is stripped before the existence check) whose resolved path stays inside the repository and exists — the evidence a reader needs to audit an entry's input shape travels with the entry, the same rule this spec applies to `source.snapshot_ref`. Unlike `source.snapshot_ref`, there is no `not_yet_sourced`-style placeholder carve-out: an entry is expected to know where its own input shape is defined from the moment it exists. |
+| `output_schema` | object | yes | `{schema_ref, schema_version}` — same shape and same resolvability rule as `input_schema`, for the operation's response. |
 | `tool_names` | array | yes | The concrete tool name(s) (MCP tool name, REST-wrapper function name, etc.) this operation is invoked through. A validator checks this against the live tool inventory; a manifest entry naming no tool is not yet implementable. |
 | `auth_modes` | array | yes | Every auth mode this specific operation supports (e.g. `oauth_user`, `fine_grained_pat`, `service_to_service`). Declared per operation — a manifest entry never assumes every operation on one provider shares one auth mode. Each value here is one axis of the verification matrix below; it is never inferred from `account_types`, and `account_types` is never used as a stand-in for it (see "Per-mode, per-surface, per-auth-mode evidence"). |
 | `scopes` | array | yes | The minimal vendor-side scope(s) this operation needs. A manifest entry never requests a broader scope than the operation itself uses. |
@@ -487,23 +487,160 @@ round consuming it, to perform a real business action (a real send, a real
 charge, a real admin change) outside an explicit, separately-approved test
 context.
 
-**Open decision, explicitly named rather than silently absent: the
-serialization format and in-repo storage location of a manifest entry,
-`ConformanceRun`, and `EvidenceReceipt` are NOT fixed by this spec.** This
-document defines the field-level SHAPE (names, types, required-when rules)
-those three carry — enough for a validator to be written against the shape
-alone — but not the concrete artifact format (a JSON file per entry, one
-combined file, a SQLite table, etc.) or the repo path each lives at. That
-is a genuine implementation-round decision, not a gap this slice is
-ducking: naming it here now would be inventing an answer ahead of the round
-that actually builds the validator and the runner, which is exactly the
-"spec amended reactively" failure mode this document's owning-spec rule
-(stated at the top of this document) exists to prevent for any OTHER
-kind of change. The validator round and the entry-population round MUST
-agree on one format and one path before either ships — this sentence is
-the tracking hook for that agreement: the round that makes this decision
-updates this exact paragraph, in the same commit as the code that
-implements it, per this document's own owning-spec rule.
+**Resolved this round (W00-S2): the serialization format and in-repo storage
+location of a manifest entry, `ConformanceRun`, and `EvidenceReceipt`.** This
+paragraph is the tracking hook the prior round left, updated in the same
+commit as the validator that enforces it, per this document's own
+owning-spec rule:
+
+- **Manifest entries** — one JSON file per operation, at
+  `docs/system-specs/connector-manifest/entries/<service_id>/<operation_id>.json`.
+  One file per operation (not one combined file, not a database) keeps a
+  single operation's status change a one-file diff a reviewer can read
+  without a JSON-path query, and keeps two campaign rounds editing different
+  operations from touching the same file. `<service_id>` is one of this
+  spec's 14 closed `service_id` values; `<operation_id>` is the entry's own
+  stable identifier with a literal `.json` suffix — a validator resolves an
+  entry's on-disk path deterministically from its own two required fields,
+  never by directory scanning.
+- **`ConformanceRun` records** — appended as JSON Lines (one run object per
+  line) to `docs/system-specs/connector-manifest/runs/<service_id>.jsonl`.
+  One file per service, not per operation or per run, because a run record
+  is written once and never edited (immutable-ref binding, above, already
+  forbids rewriting one), so an append-only log has no update-race to guard
+  against; splitting further would multiply small files for no reader
+  benefit, and combining across services would make a single service's
+  conformance history impossible to diff in isolation.
+- **`EvidenceReceipt` records** — appended as JSON Lines to
+  `docs/system-specs/connector-manifest/receipts/<service_id>.jsonl`, same
+  layout and same rationale as `ConformanceRun` above, kept in a sibling
+  directory rather than the same file because a receipt and the run it
+  evidences have independent required-field sets and a reader wanting only
+  receipts (e.g. auditing every `cleanup_status`) should not have to filter
+  run objects out of the same stream.
+- **Cross-references stay opaque strings, resolved by exact match, never by
+  path construction.** `verification_contract.run_ref` /
+  `.receipt_ref`, and `evidence_by_mode_surface_and_auth[].verification_contract_ref`,
+  are `run_id` / `receipt_id` values looked up by scanning the relevant
+  `<service_id>.jsonl` for an exact match — a validator MUST NOT assume a
+  run's `run_id` or a receipt's `receipt_id` encodes its own file location;
+  the file layout above is a storage convenience for reviewers, not a
+  second addressing scheme a validator is allowed to parse instead of the
+  id fields themselves.
+- **Why JSON, not YAML or a database:** every other machine-checked
+  artifact this spec's sibling gates already read (`registry.json`, this
+  repo's other `check_*.py` gates) is JSON, so a manifest entry validator
+  reuses the standard library's `json` module rather than adding a new
+  parsing dependency for this one subsystem.
+
+This closes the tracking hook the prior round left open. A future round
+that needs a different artifact shape (e.g. splitting a service's `.jsonl`
+log once it grows large enough to matter) revises this paragraph in the
+same commit as the code that changes the layout, per the same owning-spec
+rule this paragraph is itself an instance of.
+
+**Resolved this round (W00-S2): `source.snapshot_ref`'s public, in-repo
+resolution path.** The prior round's finding was real: a `snapshot_ref`
+pointing at the campaign's private, out-of-repo evidence-catalog workspace
+(`catalog-evidence.json`, `contract-and-dag.md`, and similar working files
+prepared outside this repository) is not auditable by a reader who has only
+this repository checked out, which contradicts this document's own goal of
+being understandable and implementable from this repo alone. The rule,
+enforced by the validator this round ships:
+
+- **`snapshot_ref` MUST resolve to one of exactly two shapes, decided by
+  `source_kind`:**
+  - For `source_kind: official_docs` or `format_spec` — a fully-qualified
+    `https://` URL. These cite a vendor's own external documentation or an
+    external format specification; there is no in-repo copy to point at
+    instead, and a validator checks only that the string parses as an
+    `https://` URL (it cannot check the URL is live without a network call,
+    which is out of scope for a static schema validator — see "What this
+    spec deliberately does not contain").
+  - For `source_kind: repo_path`, `search_snippet_corroborated`,
+    `user_stated`, or `not_yet_sourced` — a path relative to the repository
+    root that MUST exist in this repository's working tree at the commit
+    the entry's `observed_at` corresponds to. A validator checks
+    existence directly (`os.path.exists` against the repo root), not by
+    string pattern alone. This is the fix for the prior round's finding: a
+    `search_snippet_corroborated` or `user_stated` entry's evidence is
+    committed INTO this repository (e.g. under
+    `docs/system-specs/connector-manifest/evidence/<service_id>/`, as a
+    short excerpt or citation note, never a full vendor-page mirror that
+    could raise its own copyright/redistribution question) rather than
+    pointing outward at a private workspace path — the evidence a reader
+    needs to audit a claim travels with the claim.
+  - `not_yet_sourced`'s `snapshot_ref` is still the explicit placeholder
+    string this spec already requires (see the `source_kind` table above);
+    that placeholder is itself a `repo_path`-shaped value pointing at
+    nothing on disk BY DESIGN, and the validator's existence check is
+    exempted for exactly this one `source_kind` value, per the placeholder
+    rule already stated there — this paragraph does not reopen that
+    exemption, only restates that it is the sole carve-out from the
+    existence check above.
+- **What this additionally resolves — the evidence catalog's own in-repo
+  home, closing the round-2 finding on top of the round-1 fix above.** A
+  second, related gap surfaced on re-reading Design Review's CURRENT
+  comment text rather than the version this spec had already answered: the
+  fix above makes an individual entry's `snapshot_ref` resolvable, but the
+  campaign's own evidence-catalog artifact — `catalog-evidence.json`,
+  cited throughout this document and its sibling campaign documents as the
+  authoritative source for the 273-operation / 72-contract counts and the
+  per-service/per-contract evidence tiers — was itself still a private,
+  out-of-repo working file with no named in-repo home, which is the same
+  defect one level up: a reader with only this repo could not resolve the
+  citation that grounds the citations. Registering that gap in a longer
+  "open decision" paragraph would repeat the exact mistake this paragraph
+  exists to correct — noting a decision is owed is not the same as the
+  decision being made. Resolved instead, in this same commit:
+  `catalog-evidence.json` is committed into this repository at
+  `docs/system-specs/connector-manifest/campaign-evidence/catalog-evidence.json`
+  — as a **distilled extract** (the operations/gaps/required-acceptance
+  reconciliation counts, the evidence-tier distributions, and the full
+  `shared_contracts` table of all 72 `contract_id` records), not the
+  campaign's full working catalog and not a live pointer into the
+  campaign's own working directory, which stays private and can keep
+  evolving without this repo's copy moving. The full per-operation research
+  catalog (`services[]`, `sources[]`, `scenario_preconditions`, and
+  similar) is deliberately NOT mirrored: nothing in this repository's
+  validator, tests, or spec text consumes it beyond the counts/tiers/
+  contract-table content the extract carries. Two other campaign artifacts
+  are likewise deliberately NOT mirrored, for the same zero-in-repo-consumer
+  reason: `contract-and-dag.md` (its work-stream DAG and contract-family
+  index duplicate this document's own numbering section below, which is
+  explicit that it governs on any conflict) and `code-audit.json` (nothing
+  this repository's validator, tests, or spec text consumes it). Mirroring
+  a file only a sibling document's prose cites (not a `snapshot_ref` any
+  manifest entry resolves) would be exactly the forward-looking "we'll want
+  this later" this rule does not exist to justify — a future round that
+  actually needs one of these three resolvable in-repo mirrors it (or the
+  specific facts it needs) in that round's own commit. A
+  `source.snapshot_ref` whose `source_id` cites the mirrored extract by
+  name now resolves, concretely, to a `repo_path`-shaped value under that
+  directory (`docs/system-specs/connector-manifest/campaign-evidence/catalog-evidence.json`),
+  checkable by the same existence rule stated above — not a second,
+  parallel resolution mechanism. A future round that needs a fresher
+  extract, or needs a specific operation record resolvable in-repo,
+  re-copies or re-derives just that content here in the same commit as
+  whatever manifest-entry change depends on it, per the same owning-spec
+  rule; this is a deliberate, reviewable copy-on-demand boundary, not a
+  live sync, so this repo's git history is the record of when the
+  campaign's shared understanding of its own evidence changed.
+- **What this does NOT resolve, and is not claiming to:** it does not make
+  every already-written campaign document (e.g. round-1/round-2/round-3
+  planning notes, this-session-only scratch files) retroactively cite an
+  in-repo path — only the one artifact actually mirrored above (as a
+  distilled extract) has an in-repo home, because it is the one this
+  spec's own text and this campaign's manifest entries actually cite as an
+  authoritative source for counts a reader needs to audit. It
+  resolves the CONTRACT going forward: any manifest entry this repo's
+  validator accepts as `code_complete` or later must carry a
+  `snapshot_ref` a reader with only this repo can open. A `planned`-stage
+  entry citing an out-of-repo path during early drafting is not itself
+  forbidden by the schema (a validator does not run against a document
+  that is not yet a manifest entry), but populating a real, validated
+  entry as this campaign's later entry-population round does is where this
+  rule bites.
 
 ## The work-stream DAG
 

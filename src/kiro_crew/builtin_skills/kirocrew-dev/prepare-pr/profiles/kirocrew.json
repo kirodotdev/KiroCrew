@@ -55,7 +55,9 @@
     "npm --prefix website run test:electron",
     "(cd website && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build --mode analyze && node scripts/check-bundle-size.mjs && node scripts/check-chunk-cycles.mjs)",
     "python3 scripts/check_memory_store_seam.py --test",
-    "BASE=\"$(git merge-base HEAD origin/main)\" && MEMSTORE_BASE_REF=\"$BASE\" python3 scripts/check_memory_store_seam.py"
+    "BASE=\"$(git merge-base HEAD origin/main)\" && MEMSTORE_BASE_REF=\"$BASE\" python3 scripts/check_memory_store_seam.py",
+    "python3 scripts/check_connector_manifest.py --test",
+    "python3 scripts/check_connector_manifest.py"
   ],
   "rule_files": [
     "AUTOSDE.yaml",

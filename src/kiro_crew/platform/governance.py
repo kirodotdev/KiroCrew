@@ -1202,6 +1202,17 @@ class ScopeSpec:
 # rows still loads. A rename would land in that tolerant path and silently stop
 # governing, instead of surfacing. (A renamed row declared ``enabled: false`` still
 # fails closed — the asymmetry is documented on ``_parse_controls``.)
+#
+# EXTERNAL CONSUMER (do not reshape without updating it): the connector-manifest
+# gate ``scripts/check_connector_manifest.py`` validates every manifest entry's
+# ``connection_scope`` against the KEYS of this dict. It reads them STATICALLY,
+# by AST-parsing this file for this exact ``SCOPE_CATALOG = { ... }`` assignment
+# and collecting the string-literal keys — it deliberately does NOT ``import``
+# this module (the gate runs in CI with no installed ``kiro_crew`` package). So
+# the keys must remain plain string literals in a module-level dict literal
+# named ``SCOPE_CATALOG``; a key computed at runtime, or the dict built
+# dynamically, would be invisible to that reader (which fails closed — an
+# unreadable catalog rejects, never silently allows).
 SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "tools": ScopeSpec(RULESET, matcher="identifier"),
     # Dashboard tool-approval modes. Today this scope governs exactly ONE mode:

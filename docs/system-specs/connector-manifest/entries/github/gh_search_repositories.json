@@ -1,0 +1,52 @@
+{
+  "operation_id": "gh_search_repositories",
+  "operation_kind": "search",
+  "provider": "github",
+  "service_id": "github",
+  "required": true,
+  "category": "baseline_alignment",
+  "source_status": "official_baseline",
+  "source": {
+    "source_kind": "official_docs",
+    "source_id": "github-rest-search-repositories",
+    "observed_at": "2026-09-01T00:00:00Z",
+    "snapshot_ref": "https://docs.github.com/en/rest/search/search#search-repositories"
+  },
+  "observed_at": "2026-09-01T00:00:00Z",
+  "effect": "read",
+  "input_schema": {
+    "schema_ref": "https://docs.github.com/en/rest/search/search#search-repositories",
+    "schema_version": "1.0.0"
+  },
+  "output_schema": {
+    "schema_ref": "https://docs.github.com/en/rest/search/search#search-repositories",
+    "schema_version": "1.0.0"
+  },
+  "tool_names": ["gh_search_repositories"],
+  "auth_modes": ["oauth_user", "fine_grained_pat"],
+  "scopes": ["repo:read"],
+  "account_types": ["personal", "organization"],
+  "surfaces": ["chat", "workflow"],
+  "policy": {
+    "platform_scope": null,
+    "workspace_scope": null,
+    "session_scope": null,
+    "connection_scope": null,
+    "provider_scope": null
+  },
+  "pagination": "page/perPage",
+  "adapter": {
+    "module_ref": "UNASSIGNED",
+    "version": "0.0.0-unassigned"
+  },
+  "code_refs": [],
+  "runner_version": "0.1.0",
+  "verification_contract": null,
+  "evidence_by_mode_surface_and_auth": [],
+  "tested_sha": null,
+  "merged_sha": null,
+  "release_sha": null,
+  "status": "planned",
+  "last_reached_status": "planned",
+  "blocker": null
+}
