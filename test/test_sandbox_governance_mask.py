@@ -273,6 +273,22 @@ class TestTheReconciliationIsComplete:
         for path in _expected_exceptions():
             assert path in fenced, f"{path} is exempted from a gate that never covered it"
 
+    def test_the_task_store_is_fenced_on_both_gates_as_a_directory(self) -> None:
+        """Both gates, and directory-scoped, or the fence is bypassable.
+
+        SQLite writes ``-wal`` / ``-journal`` / ``-shm`` beside the database and
+        replaces it through a sibling temp name, so a leaf-scoped entry would
+        leave a spelling that reaches the same rows. The tool gate stops an
+        agent's file tools; the sandbox mask stops a spawned shell's ``sqlite3``,
+        which never routes through that gate. One without the other is a hole,
+        which is why they move together.
+        """
+        assert "tasks" in security._CREW_SECRET_LEAVES
+        assert "tasks" in sandbox._CREW_HIDDEN_LEAVES
+        for prefix in _CREW_PREFIXES:
+            for leaf in ("tasks", "tasks/tasks.db", "tasks/tasks.db-wal", "tasks/tasks.db-journal"):
+                assert security.is_sensitive_path(_crew_path(prefix, leaf)), f"{prefix}/{leaf}"
+
     def test_the_three_dispositions_do_not_overlap(self) -> None:
         hidden = set(sandbox._CREW_HIDDEN_LEAVES)
         readonly = set(sandbox._CREW_READONLY_LEAVES)
