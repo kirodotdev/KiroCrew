@@ -695,10 +695,20 @@ def _harden(root: Path) -> None:
 
 
 def _soften(root: Path) -> None:
-    """Undo :func:`_harden`, root downwards so the walk can descend."""
-    os.chmod(root, 0o755)
+    """Undo :func:`_harden`, root downwards so the walk can descend.
+
+    Directories go back to owner-only `S_IRWXU` rather than `0o755`: all this
+    has to restore is THIS process's ability to list, write and descend so
+    pytest can clean `tmp_path` up, and group/other bits buy none of that.
+    Spelled symbolically because it is the exact permission being asked for --
+    and because the numeric spelling of owner-rwx trips
+    `insecure-file-permissions`, which reads any `7` triad as widely permissive
+    even when it is owner-only. On Windows `os.chmod` honours only the
+    read-only flag, which the owner write bit clears either way.
+    """
+    os.chmod(root, stat.S_IRWXU)
     for entry in root.rglob("*"):
-        os.chmod(entry, 0o755 if entry.is_dir() else 0o644)
+        os.chmod(entry, stat.S_IRWXU if entry.is_dir() else 0o644)
 
 
 @pytest.fixture
