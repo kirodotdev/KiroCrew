@@ -519,12 +519,24 @@ def _write_build_source_fingerprint(root: Path, git_bin: str, log: Callable[[str
 def _discard_path(path: Path) -> None:
     """Best-effort remove a file, symlink or directory.
 
-    A staged-aside entry can be any of the three — ``static/dist`` is a symlink
+    A staged-aside entry can be any of the three — ``static/dist`` is a link
     on a source install and a real tree once staged — and ``shutil.rmtree``
-    refuses a symlink even though ``is_dir()`` follows it and returns True.
+    refuses a link even though ``is_dir()`` follows it and returns True.
+
+    The link half must be ``is_link_or_junction``, not ``is_symlink``: this
+    module publishes ``static/dist`` itself via
+    :func:`platform_compat.symlink_or_junction`, which falls back to a directory
+    JUNCTION on Windows, and ``is_symlink`` reports False for one. A live
+    junction would then reach the ``rmtree`` branch, whose refusal
+    ``ignore_errors=True`` swallows — leaving the entry behind for good; a
+    DANGLING junction answers False to all three and was never removed at all.
+    ``unlink_link_or_junction`` detaches either shape without touching what it
+    points at.
     """
     try:
-        if path.is_symlink() or path.is_file():
+        if platform_compat.is_link_or_junction(path):
+            platform_compat.unlink_link_or_junction(path)
+        elif path.is_file():
             path.unlink(missing_ok=True)
         elif path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
@@ -629,15 +641,22 @@ def _stage_dist_locked(
         # (the normal source install) just as much as a staged tree — so a
         # failed publication can put it back. Deleting first means a replace
         # error publishes nothing and the dashboard serves no assets at all.
-        # is_symlink() is checked first so a BROKEN symlink is still moved.
-        if static_dist.is_symlink() or static_dist.exists():
+        # The link check comes first so a BROKEN link is still moved — and it
+        # must be is_link_or_junction, not is_symlink: this module publishes
+        # static/dist itself via platform_compat.symlink_or_junction, which
+        # falls back to a directory JUNCTION on Windows, and a dangling
+        # junction answers False to both is_symlink() and exists(). Without
+        # the wider predicate the move-aside is skipped and the os.replace
+        # below lands on the surviving entry — the same "Could not stage
+        # static/dist" failure _discard_path and build_dist guard against.
+        if platform_compat.is_link_or_junction(static_dist) or static_dist.exists():
             backup = static_dist.parent / f".dist.previous.{os.getpid()}"
             _discard_path(backup)
             os.replace(static_dist, backup)
         os.replace(tmp_dist, static_dist)
     except OSError as exc:
         log(f"  ⚠️  Could not stage static/dist: {exc}")
-        published = static_dist.is_symlink() or static_dist.exists()
+        published = platform_compat.is_link_or_junction(static_dist) or static_dist.exists()
         if backup is not None and not published:
             try:
                 os.replace(backup, static_dist)
