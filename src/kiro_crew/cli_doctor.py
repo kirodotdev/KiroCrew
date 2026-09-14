@@ -82,7 +82,11 @@ from kiro_crew.embeddings import (
     resolve_custom_model,
     verify_vendored_libs,
 )
-from kiro_crew.extras import install_hint
+from kiro_crew.extras import (
+    pip_install_channel_available,
+    pip_install_command,
+    pip_install_command_for,
+)
 from kiro_crew.kiro_cli import mcp_governance_may_apply, resolve_kiro_cli
 from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
@@ -3821,7 +3825,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  deps:        ✅ websockets, slack_sdk, aiohttp available")
         except ImportError:
             print("  deps:        ❌ missing modules (websockets/slack_sdk/aiohttp)")
-            print("               Fix: pip install -e .")
+            if pip_install_channel_available():
+                print(f"               Fix: {pip_install_command_for('-e', '.')}")
             issues.append("python deps")
 
     # SQLite FTS5 — required by memory + knowledge full-text search. On macOS
@@ -3834,8 +3839,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  sqlite fts5: ✅ available")
         else:
             print("  sqlite fts5: ❌ missing (memory/knowledge search will fail)")
-            print("               Fix: pip install pysqlite3-binary, or use a")
-            print("               Python whose SQLite was built with FTS5.")
+            # Only the pip half is gated. Where that command cannot run, using a
+            # different Python IS the remaining fix, so it stays visible in
+            # exactly the case the gate hides the command.
+            if pip_install_channel_available():
+                print(f"               Fix: {pip_install_command_for('pysqlite3-binary')}")
+            print("               Or use a Python whose SQLite was built with FTS5.")
             issues.append("sqlite fts5")
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  sqlite fts5: ⚠️  could not check ({exc})")
@@ -3905,8 +3914,21 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     except ImportError:
         print(
             "  faiss:       ⏹ not installed (optional) — episodic recall uses "
-            "the stdlib fallback; `pip install faiss-cpu` to accelerate it"
+            "the stdlib fallback; installing faiss-cpu accelerates it"
         )
+        # The command names THIS interpreter, not a bare `pip`. On a packaged or
+        # minimal install the gateway's python is not what a bare `pip` resolves
+        # to -- it may not be on PATH under that name at all -- so the wheel
+        # lands somewhere this process never imports from, and the next doctor
+        # run prints the identical advice with no sign the install missed.
+        #
+        # Printed only where that command can actually run. On the bundled
+        # desktop interpreter it would write into the code-signed bundle, which
+        # breaks later launches and is discarded on the next app update, so
+        # naming it there is worse advice than naming nothing. The dashboard's
+        # install card offers no command in the same state.
+        if pip_install_channel_available():
+            print(f"               Install: {pip_install_command_for('faiss-cpu')}")
 
     _custom = resolve_custom_model()
     if _custom is not None:
@@ -4006,7 +4028,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  transcribe:  ✅ amazon_transcribe importable (optional)")
         except ImportError:
             print("  transcribe:  ⏹ optional cloud STT not installed")
-            print(f"               Install: {install_hint('voice-aws')}")
+            # Same reasoning as the faiss line above: this process imports the
+            # package, so the command has to name this interpreter, and it is
+            # printed only where that command can actually run.
+            if pip_install_channel_available():
+                print(f"               Install: {pip_install_command('voice-aws')}")
 
         try:
             import boto3  # noqa: F401
@@ -4014,7 +4040,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  boto3:       ✅ importable (optional)")
         except ImportError:
             print("  boto3:       ⏹ optional AWS SDK not installed")
-            print(f"               Install: {install_hint('voice-aws')}")
+            if pip_install_channel_available():
+                print(f"               Install: {pip_install_command('voice-aws')}")
 
     # Apple's on-device speech is a host capability rather than an install, so the
     # only useful thing to print is the reason it cannot run. Reaching a not-ok

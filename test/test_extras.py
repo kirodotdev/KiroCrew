@@ -164,6 +164,60 @@ def test_the_command_names_this_interpreter() -> None:
     assert sys.executable in extras.pip_install_command("feishu")
 
 
+def test_a_non_extra_package_also_names_this_interpreter() -> None:
+    """An optional accelerator is not a declared extra, so it cannot be advised
+    through ``pip_install_command`` -- and it needs the interpreter named for
+    exactly the same reason, because it is imported by this process."""
+    import sys
+
+    command = extras.pip_install_command_for("faiss-cpu")
+
+    assert sys.executable in command
+    # Quoted through ``quote_spec`` rather than compared to the bare name: on
+    # Windows every spec is double-quoted, so a literal tail would assert the
+    # POSIX form on a runner that correctly emits the Windows one.
+    assert command.endswith(f"-m pip install {extras.quote_spec('faiss-cpu')}")
+
+
+def test_no_specs_yields_no_command() -> None:
+    """Same contract as an unknown extra: render nothing rather than a command
+    that installs nothing."""
+    assert extras.pip_install_command_for() == ""
+
+
+def test_a_non_extra_spec_is_quoted_for_the_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The renderer is shared with :func:`pip_install_command`, so a bounded pin
+    passed here has to survive the shell on either platform too."""
+    monkeypatch.setattr(extras.os, "name", "posix")
+    assert "'faiss-cpu>=1.7,<2'" in extras.pip_install_command_for("faiss-cpu>=1.7,<2")
+
+    monkeypatch.setattr(extras.os, "name", "nt")
+    windows = extras.pip_install_command_for("faiss-cpu>=1.7,<2")
+    assert '"faiss-cpu>=1.7,<2"' in windows
+    assert windows.startswith("& '")
+
+
+# ── Install channel ──
+
+
+def test_the_dashboard_guard_delegates_to_this_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The predicate lives here because this module also renders the command it
+    governs. Two copies of "can pip install here" would drift apart, and the
+    dashboard card and ``doctor`` would then disagree about the same command.
+
+    The three environments it refuses are covered against the dashboard entry
+    point in ``test_dashboard_handlers_core_coverage.py``; this pins the seam
+    those tests now reach through.
+    """
+    from kiro_crew.dashboard.handlers import _shared
+
+    monkeypatch.setattr(extras, "pip_install_channel_available", lambda: False)
+    assert _shared._pip_install_channel_available() is False
+
+    monkeypatch.setattr(extras, "pip_install_channel_available", lambda: True)
+    assert _shared._pip_install_channel_available() is True
+
+
 def test_posix_quotes_specifiers_with_single_quotes(monkeypatch: pytest.MonkeyPatch) -> None:
     """``<`` and ``>`` in a pin are redirection operators unless quoted.
 
