@@ -9443,7 +9443,9 @@
         "search_files": "ফাইল খুঁজুন",
         "searching": "খোঁজা হচ্ছে…",
         "showing_first_matches": "প্রথম {{shown}}টি মিল দেখানো হচ্ছে",
-        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
+        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি",
+        "search_timed_out": "অনুসন্ধানের সময় শেষ",
+        "refresh_retries": "আবার চেষ্টা করতে রিফ্রেশ করুন"
       },
       "knowledgePicker": {
         "cancel": "বাতিল",
