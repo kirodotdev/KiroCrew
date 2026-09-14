@@ -301,13 +301,12 @@ describe('FilePickerMenu', () => {
   })
 
   it('after the search settles in an ERROR, Enter is released too (trap must not survive the error path)', async () => {
-    // A failed search renders its own ErrorNotice (not the "No matches" copy,
-    // which would claim the search ran and found nothing); keeping the swallow
-    // there would recreate the #5029 trap whenever /api/file-search has a
-    // transient failure.
+    // A failed search renders its own ErrorNotice, never the "No matches" copy:
+    // saying the file is absent when the request never completed is a lie.
     fileSearch.mockRejectedValue(new Error('boom'))
     const { onSelect, onClose } = mount()
     expect(await screen.findByTestId('file-picker-search-error')).toHaveAttribute('role', 'alert')
+    expect(screen.getByText(/File search failed/)).toBeInTheDocument()
     expect(screen.queryByText(/No matching files/)).not.toBeInTheDocument()
     await waitFor(() => expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true))
     expect(onClose).toHaveBeenCalled()
