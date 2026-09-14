@@ -6967,17 +6967,29 @@ class DashboardState:
         """Push a chat message to all SSE clients via the global stream."""
         role = msg.get("role", "")
         content = msg.get("content", "")
-        # Mirror the display-time redaction gate _prepare_messages applies on
-        # the HTTP history path, so a row's *content* leaves the backend in one
-        # byte form regardless of which consumer receives it. Scope: content
-        # only — `cls` / `meta` and the live `chat_chunk` stream are
-        # deliberately not covered (see the direct_meta comment below). Gate is
-        # `!= "user"` for the same reason as there: every non-user role can
-        # carry model/tool output, and user-authored content stays raw (the
-        # user typed it and is the only one who sees it back).
-        if role != "user" and isinstance(content, str) and content:
-            content, _ = redact_exfiltration_urls(content)
-            content, _ = redact_credentials(content)
+        # This site and _prepare_messages (the HTTP history path) share ONE
+        # helper — chat_utils.redact_display_content — so a row's *content*
+        # leaves the backend in one byte form regardless of which consumer
+        # receives it, including structured (list/dict) legacy content, which
+        # is redacted recursively rather than skipped. Scope: content only —
+        # `cls` / `meta` and the live `chat_chunk` stream are deliberately not
+        # covered (see the direct_meta comment below). Gate is `!= "user"` for
+        # the same reason as there: every non-user role can carry model/tool
+        # output, and user-authored content stays raw (the user typed it and
+        # is the only one who sees it back).
+        # Deferred import: chat_utils imports from this module at module
+        # level, so the reverse import must stay function-level.
+        from kiro_crew.dashboard.chat_utils import (
+            redact_display_content,
+            serialize_wire_content,
+        )
+
+        if role != "user" and content:
+            content = redact_display_content(content)
+        else:
+            # The wire-string invariant covers EVERY row: a structured user
+            # row or a falsy container serializes to text without redaction.
+            content = serialize_wire_content(content)
         payload: dict[str, Any] = {
             "_type": "chat_message",
             "slot": slot_key,

@@ -273,12 +273,11 @@ def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
             meta = row_meta
     if meta:
         meta = _redact_deep(meta)
-    content = msg.get("content", "")
-    if isinstance(content, str):
-        content, _ = redact_exfiltration_urls(content)
-        content, _ = redact_credentials(content)
-    else:
-        content = _redact_deep(content)
+    # One shared guard for content: redact recursively and hold the
+    # wire-string shape (see redact_display_content). This stream has no
+    # user-content carve-out — it redacts every role, same as its previous
+    # inline redactor pair.
+    content = redact_display_content(msg.get("content", ""))
     cls_val = msg.get("cls", "")
     if isinstance(cls_val, str):
         cls_val, _ = redact_exfiltration_urls(cls_val)
@@ -1490,14 +1489,14 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
 
 
 def _redact_value(v):  # type: ignore[no-untyped-def]
-    """Recursively redact any value (str, dict, list, or passthrough)."""
+    """Recursively redact any value (str, dict, list/tuple, or passthrough)."""
     if isinstance(v, str):
         v, _ = redact_exfiltration_urls(v)
         v, _ = redact_credentials(v)
         return v
     if isinstance(v, dict):
         return _redact_meta(v)
-    if isinstance(v, list):
+    if isinstance(v, (list, tuple)):
         # Snapshot for the same reason as _redact_meta — the flush thread reads
         # containers the event loop is still appending to.
         return [_redact_value(i) for i in list(v)]
@@ -1567,6 +1566,66 @@ def _redact_for_display(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def redact_display_content(content: Any) -> str:
+    """Redact a message row's ``content`` for display, tolerating structured shapes.
+
+    The display-time content boundary — :func:`_prepare_messages` on the HTTP
+    history path and ``state._broadcast_chat_message`` on the live SSE path —
+    must neither skip a structured (list/dict) non-user value nor feed it to
+    the regex redactors, which accept only ``str`` and raise ``TypeError`` on
+    anything else. No current writer produces non-string content, but a
+    pre-rule, legacy, or hand-edited transcript row can — exactly the class of
+    row read-side redaction exists for. Both sites route through this ONE
+    helper; do not add another copy of the guard.
+
+    Delegates to :func:`_redact_value`, the same recursive walker the meta
+    redaction uses: ``str`` leaves get ``redact_exfiltration_urls`` then
+    ``redact_credentials`` (the order the existing sites apply), dict VALUES
+    are recursed, and list/tuple elements are recursed into a new list. The
+    result is then passed through :func:`serialize_wire_content`, so a
+    non-string value leaves as JSON text — and that text gets one final
+    redaction pass: the recursive walker does not rewrite dict KEYS in place
+    (two distinct keys redacting to the same string would collapse into one
+    entry), but on the serialized wire string a key is plain content, so the
+    text pass closes the key channel with no entry loss. Never mutates the
+    input (rows are shared by reference and ``dict(m)`` is shallow) and
+    never raises for JSON-shaped input.
+    """
+    redacted = _redact_value(content)
+    if isinstance(redacted, str):
+        return redacted
+    wire = serialize_wire_content(redacted)
+    wire, _ = redact_exfiltration_urls(wire)
+    wire, _ = redact_credentials(wire)
+    return wire
+
+
+def serialize_wire_content(content: Any) -> str:
+    """Wire-shape half of the display boundary: a row's ``content`` leaves as text.
+
+    ``str`` passes through unchanged; ``None`` — the absent-content shape a
+    legacy or hand-edited row can carry — becomes the empty string (its
+    display rendering; JSON "null" would put literal text in the chat); any
+    other value — container or scalar — is serialized to JSON text. Every
+    frontend consumer treats ``content`` as a string (``matchAll`` /
+    ``startsWith`` / ``replace`` / ``includes``), so any non-string on the
+    wire, ``None`` included, crashes the chat render.
+
+    No redaction happens here. The two display-boundary invariants have
+    different scopes — redaction is role-scoped (non-user only) while the
+    wire-string shape covers EVERY row, user rows and falsy values
+    included — so they are held separately: :func:`redact_display_content`
+    composes both for the redacted rows, and emission sites call this one
+    directly for the rows the redaction gate exempts. ``default=str`` keeps
+    it total for stray non-JSON leaves.
+    """
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    return json.dumps(content, ensure_ascii=False, default=str)
 
 
 def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
@@ -3066,8 +3125,7 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         if role == "chunk":
             text = m.get("content", "")
             if text:
-                text, _ = redact_exfiltration_urls(text)
-                text, _ = redact_credentials(text)
+                text = redact_display_content(text)
                 row: dict[str, Any] = {"role": "streaming", "content": text, "cls": "msg msg-a"}
                 # The newest chunk seq folded into this row (see
                 # _collapse_wire_rows). The client seeds its replay guard from
@@ -3093,22 +3151,25 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         # would emit raw stored bytes.
         # User-authored content stays raw: the user typed it and is the only
         # one who sees it back.
+        # Content may be structured (a legacy or hand-edited row):
+        # redact_display_content recurses into it rather than raising.
         if role != "user" and text:
-            text, _ = redact_exfiltration_urls(text)
-            text, _ = redact_credentials(text)
-            m = {**m, "content": text}
+            m = {**m, "content": redact_display_content(text)}
+        else:
+            # The wire-string invariant covers EVERY row, not just the
+            # redacted ones: a structured user row or a falsy container
+            # serializes to text (without redaction) instead of shipping a
+            # raw container the client render chokes on.
+            wire = serialize_wire_content(text)
+            if wire is not text:
+                m = {**m, "content": wire}
         msg_out = dict(m)
         if msg_out.get("variants"):
             # Snapshot for the same reason as _redact_meta — this runs in a
             # worker thread (slot-detail render offload) while the event
             # loop may still be appending variants to the live list.
             msg_out["variants"] = [
-                {
-                    **v,
-                    "content": redact_credentials(
-                        redact_exfiltration_urls(v.get("content", ""))[0]
-                    )[0],
-                }
+                {**v, "content": redact_display_content(v.get("content", ""))}
                 for v in list(msg_out["variants"])
                 if isinstance(v, dict)
             ]
