@@ -38,6 +38,7 @@ import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { rehypeSanitize, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
+import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
 import { mdImageDestToPath } from '../../../../utils/fileTokens'
 import { copyToClipboard } from '../../../../utils/clipboard'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
@@ -1671,6 +1672,9 @@ const LocalImage: React.FC<{ path: string; onClickImage?: (src: string) => void 
  */
 const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // The whitespace-run cap (see markdownDepthBound) is applied per TEXT
+  // segment below, after widget extraction, so a widget body reaches
+  // WidgetFrame byte-identical -- its <pre> indentation included.
   const cleaned = content.replace(/^\n+/, '')
   // If there's a complete widget in the stream, render it
   if (hasWidgets(cleaned)) {
@@ -1684,20 +1688,20 @@ const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
           // Last text segment after final widget — still streaming
           if (i > lastWidget) {
             const stripped = seg.content.replace(/<mcwidget[\s\S]*$/, '')
-            const prepared = fixStreamingFences(stripped)
+            const prepared = fixStreamingFences(capWhitespaceRuns(stripped))
             return <React.Fragment key={i}>
               <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{prepared}</Markdown>
               <span style={{ animation: 'blink 1s step-end infinite', display: 'inline-flex', verticalAlign: 'middle' }}><PawPrint size={11} /></span>
             </React.Fragment>
           }
-          return <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{seg.content}</Markdown>
+          return <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{capWhitespaceRuns(seg.content)}</Markdown>
         })}
       </>
     )
   }
   // Strip any partial/unclosed <mcwidget tag during streaming
   const stripped = cleaned.replace(/<mcwidget[\s\S]*$/, '')
-  const prepared = fixStreamingFences(stripped)
+  const prepared = fixStreamingFences(capWhitespaceRuns(stripped))
   return (
     <>
       <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{prepared}</Markdown>
@@ -1718,7 +1722,11 @@ function fixStreamingFences(s: string): string {
   return s
 }
 
-const MD_REMARK = [remarkGfm, remarkVerbatimUnknownTags]
+// `remarkBoundDepth` first: it bounds the parsed tree's depth inside parse(),
+// ahead of remark-gfm's recursive post-parse transform. Shared with the
+// core renderer, for the same reason the sanitizer is: this panel parses
+// the same untrusted message content through the same kind of pipeline.
+const MD_REMARK = [remarkBoundDepth, remarkGfm, remarkVerbatimUnknownTags]
 /**
  * Raw HTML must be ADMITTED, then SANITIZED — in that order.
  *
@@ -1728,7 +1736,7 @@ const MD_REMARK = [remarkGfm, remarkVerbatimUnknownTags]
  * The sanitizer is the core's, imported rather than copied: admitting raw HTML
  * is exactly the point where a second, drifting allowlist would become a hole.
  */
-const MD_REHYPE = [rehypeRaw, rehypeSanitize]
+const MD_REHYPE = [rehypeBoundRawDepth, rehypeRaw, rehypeSanitize]
 
 /**
  * Typed against react-markdown's own `Components`, so each override receives the
@@ -2196,14 +2204,14 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                     return <>
                       {segments.map((seg, i) => seg.type === 'widget'
                         ? <WidgetFrame key={i} html={seg.content} title={seg.title} />
-                        : <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{seg.content}</Markdown>
+                        : <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{capWhitespaceRuns(seg.content)}</Markdown>
                       )}
                       {images.map((p, i) => <LocalImage key={`img-${i}`} path={p} onClickImage={onImageClick} />)}
                     </>
                   }
 
                   return <>
-                    {cleanText && <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{cleanText}</Markdown>}
+                    {cleanText && <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{capWhitespaceRuns(cleanText)}</Markdown>}
                     {images.map((p, i) => <LocalImage key={i} path={p} onClickImage={onImageClick} />)}
                   </>
                 })()

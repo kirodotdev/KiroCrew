@@ -4,6 +4,7 @@ import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
 import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, FileCode, FileSpreadsheet, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
 import { copyCode, copyToClipboard } from '../utils/clipboard'
+import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
 import { hastTableToCsv, hastTableToMarkdown } from '../utils/tableClipboard'
 import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
@@ -2532,6 +2533,10 @@ export function remarkVerbatimUnknownTags() {
 // delimiters are classified), and the strikethrough companion AFTER, because it
 // extends gfm's own `~~` construct.
 const REMARK_PLUGINS: PluggableList = [
+  // FIRST: bounds the parsed tree's depth as part of parse(), ahead of
+  // remark-gfm's own post-parse transform, which recurses over the tree.
+  // Input-controlled nesting otherwise overflows the call stack there.
+  remarkBoundDepth,
   remarkCjkFriendly,
   remarkGfm,
   remarkCjkFriendlyGfmStrikethrough,
@@ -2706,7 +2711,10 @@ function rehypeUnwrapBlocks() {
   }
 }
 
-const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
+// `rehypeBoundRawDepth` sits ahead of `rehypeRaw`: raw HTML that would nest
+// past the depth bound is downgraded to text before rehype-raw's recursive
+// hast conversion can overflow on it.
+const REHYPE_PLUGINS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
 
 // Matches one source line break plus any leading tabs/spaces, so a trailing
 // space before the break doesn't survive as its own text node. Mirrors the
@@ -2791,7 +2799,7 @@ function rehypeSourcepos() {
     walk(tree)
   }
 }
-const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
+const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
 
@@ -3957,6 +3965,19 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // streaming transitions or when the agent emits protocol markup as text.
   // Both passes preserve mentions inside inline-code spans.
   let clean = stripStrayToolUseTags(stripStrayWidgetTags(content))
+  // Cap whitespace runs before parsing. Tree depth is bounded on the parsed
+  // tree (see markdownDepthBound), but the parser's own per-line container
+  // scan is O(depth), so a list indented to hundreds of levels costs seconds
+  // before any tree exists. Lexical, construct-agnostic, and an identity on
+  // any message without a whitespace run wider than 256 columns.
+  //
+  // Gated off in sourcePos mode, like every other column-shifting pass in
+  // this function: `data-sourcepos` maps a DOM selection back to source
+  // coordinates, and a shortened run would shift every later column on that
+  // line and anchor a comment to the wrong occurrence. The crash bound does
+  // not depend on the cap (the tree bounds hold either way); only the
+  // parser-time bound is given up on that surface.
+  if (!sourcePos) clean = capWhitespaceRuns(clean)
   // `glow` marks the live streaming tail block: while streaming, hold back an
   // incomplete trailing table so it doesn't paint as pipe text then snap into a
   // <table> when the delimiter row arrives.
