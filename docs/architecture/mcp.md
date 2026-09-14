@@ -697,7 +697,26 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
+
+`kirocrew-dashboard` is one transport carrying **two** authorization models, which is
+what makes its assignment decision larger than its name suggests. The
+`chat_folder_*` verbs are bounded by RESOURCE ownership — a folder created by an app
+carries it in `owner_app`, and an app may reshape only its own. The `session_*` verbs
+are bounded by CALLER class instead, and one of them (`session_send`) writes a turn
+into another session's conversation; [session-control.md](../system-specs/modules/session-control.md)
+is their spec and carries that reasoning.
+
+The consequence to know before granting: an agent handed the whole server for folder
+organization has the session verbs too. Whether they prompt depends on how the grant
+is spelled — `_mcp_pattern` maps a bare `@kirocrew-dashboard` entry to a one-level
+glob, so it auto-approves all nine, while naming tools individually leaves the rest
+to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
+`_MEMBER_DASHBOARD_GRANTS` (`agent.py`) are the shipped examples of the individual
+form, and they differ from each other on exactly this axis: the member's list
+includes `session_send` and `session_stop` because `authorize_target` refuses a
+member caller on any session it did not create, and the conductor's withholds them
+because it has no such fence.
 
 CLI commands and their MCP twins:
 
