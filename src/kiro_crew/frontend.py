@@ -39,15 +39,15 @@ _SIBLING_DIR_NAME = "KiroCrewWebsite"
 # the slowest HEALTHY build while still FIRING BEFORE the caller's own deadline --
 # a budget that never fires cannot report anything.
 #
-# 300s does not cover the build. `npm run build` is `tsc -b` followed by a
-# production bundle; on one developer machine it took 75-98s as a repeat build but
-# 328s and 420s on the first build after `npm ci` -- and it is that slow case the
-# budget has to clear, because the caller which hits this most, Dev Fleet's
-# Pull+Build, always builds immediately after `npm ci`. The type-check is the bulk
-# of it and does not amortize: the app project sets `noEmit`, so build mode looks
-# for an output file that never exists (`tsc -b --dry --verbose`: "out of date
-# because output file 'src/App.js' does not exist") and re-checks the whole app
-# every run. Shrinking that work is the real cure and is not attempted here.
+# 300s does not cover the build. `npm run build` is `tsc -p tsconfig.app.json`
+# followed by a production bundle; on one developer machine it took 75-98s as a
+# repeat build but 328s and 420s on the first build after `npm ci` -- and it is
+# that slow case the budget has to clear, because the caller which hits this most,
+# Dev Fleet's Pull+Build, always builds immediately after `npm ci`. The type-check
+# is the bulk of it. It keeps an incremental cache beside tsconfig.app.json that
+# survives `npm ci`, so a repeat build re-checks only what changed -- but a cold
+# clone has no cache, and a Pull+Build that moved the lockfile re-hashes the new
+# node_modules, so the budget is sized for the uncached case.
 #
 # The CEILING is that same caller: dev_fleet's stream watchdog kills the whole
 # sync run at ``runtime._RUN_DEADLINE_S`` (1800s), counted from fetch -- before
@@ -335,7 +335,7 @@ def _npm_build_and_stage_locked(
     """Run ``npm run build`` then stage it. Caller holds the staging lock.
 
     The build is spawned in its own process group and the whole tree is reaped
-    on timeout. ``npm run build`` is ``tsc -b && vite build``, so killing only
+    on timeout. ``npm run build`` is ``tsc -p tsconfig.app.json && vite build``, so killing only
     npm would leave vite writing ``website/dist`` after this function returns
     and the lock releases — a surviving writer makes the lock's exclusion
     meaningless, since a peer could then stage a tree vite is still rewriting.

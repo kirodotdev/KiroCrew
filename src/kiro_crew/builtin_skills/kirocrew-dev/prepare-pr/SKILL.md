@@ -388,8 +388,8 @@ backstop.
    evaluating the branch. Do not rerun setup unless the worktree or tool-cache state
    was invalidated. Then run the profile's `gates[]` on every pass. Gates are pure
    checks; a nonzero exit means the diff is not ready. For Kiro Crew that is the
-   diff-scoped test runner / isort / flake8 / mypy, plus `tsc -b` for frontend
-   changes. All gates must exit 0 before review. While ITERATING inside this
+   diff-scoped test runner / isort / flake8 / mypy, plus `tsc -p tsconfig.app.json`
+   for frontend changes. All gates must exit 0 before review. While ITERATING in this
    phase, `python3 scripts/local-gate.py` runs the change-scoped equivalent of
    CI's own bucket classification (frontend / meta / backend, catch-all on
    unrecognised paths), which avoids the full backend suite — roughly an hour at

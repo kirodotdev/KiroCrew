@@ -22,7 +22,7 @@ npm run test:playwright   # playwright test --headed --workers=1
 npm run test:playwright:headless
 npm run storybook         # component stories on http://127.0.0.1:6006 (loopback only)
 npm run build-storybook   # static build into storybook-static/ (gitignored)
-npx tsc -b                # the real type check
+npx tsc -p tsconfig.app.json   # the real type check
 ```
 
 One trap worth knowing before you trust a green run:
@@ -158,7 +158,7 @@ match when you are debugging a CI-only failure.
 
 - **jscpd** duplication check: copy-pasted code fails the build.
 - Coverage is emitted as cobertura XML from `test:website`.
-- `npx tsc -b` and eslint run as their own blocking steps.
+- `npx tsc -p tsconfig.app.json` and eslint run as their own blocking steps.
 - Coverage runs cap fork workers (`maxWorkers` in `vite.config.ts`) with a
   3072 MB old-space ceiling per worker. The cap leaves room for the Vitest
   coordinator, coverage maps, happy-dom state, and the operating system on a

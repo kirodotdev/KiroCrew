@@ -1964,10 +1964,13 @@ jobs:
       - name: Type check
         working-directory: website
         # Spelled out rather than `npm run typecheck` so this gate cannot be
-        # changed from package.json. Build mode is required either way: the root
-        # tsconfig is `files: []` + project references, and references are followed
-        # only by `-b`, so a plain `tsc --noEmit` there compiles an empty program.
-        run: npx tsc -b
+        # changed from package.json. The project is named explicitly: the root
+        # tsconfig is `files: []` + project references, so a bare `tsc --noEmit`
+        # there compiles an empty program. Not `tsc -b`: build mode judges
+        # "up to date" from the project's own inputs only, so with the incremental
+        # cache in tsconfig.app.json it would green-light a changed dependency
+        # `.d.ts` without re-checking a single file. `-p` re-hashes the whole program.
+        run: npx tsc -p tsconfig.app.json
 
       - name: Lint
         working-directory: website

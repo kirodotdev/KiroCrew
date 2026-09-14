@@ -24,6 +24,13 @@ SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" 
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 PROFILES_DIR = SKILL_DIR / "profiles"
 
+# The one type-check spelling every caller must agree on. `website/tsconfig.json`
+# is `files: []` + references, so the project has to be named; and it is named
+# with `-p`, not `-b`, because tsconfig.app.json carries an incremental cache
+# that build mode's own-inputs-only staleness check would wrongly trust across a
+# dependency change. See test_floor_typechecks_the_way_ci_does.
+TSC_APP_PROJECT = "tsc -p tsconfig.app.json"
+
 
 def _load(module_name, filename):
     return load_skill_script(module_name, SCRIPTS_DIR / filename)
@@ -286,9 +293,10 @@ def _ci_workflow_run_text() -> str:
     """Every blocking CI workflow, with comment-only lines removed.
 
     Every scan here matches a COMMAND, never a comment. ci.yml explains in
-    prose why the Type check step uses `tsc -b` and not `npm run typecheck`,
-    so a naive grep for `npm run <script>` finds a script CI deliberately does
-    NOT run -- the same trap as reading a ratchet number out of a comment.
+    prose why the Type check step spells out `tsc -p tsconfig.app.json` and not
+    `npm run typecheck`, so a naive grep for `npm run <script>` finds a script CI
+    deliberately does NOT run -- the same trap as reading a ratchet number out of
+    a comment.
 
     Both blocking workflows are read, not just ci.yml. The cheap lint gates now
     live in fast-gate.yml and ci.yml blocks on it through `await-fast-gate`, so a
@@ -521,19 +529,32 @@ def test_scoped_runner_self_test_passes():
 
 
 def test_floor_typechecks_the_way_ci_does():
-    """The floor spells out `tsc -b` rather than going through an npm script.
+    """The floor names the app project directly rather than going through an npm
+    script, and it names it with `-p`, not `-b`.
 
-    Build mode is what makes the check real: the root tsconfig is `files: []`
-    plus project references, and references are followed only by `-b`, so any
-    single-project invocation there compiles an EMPTY program and passes
-    unconditionally. Naming the command directly means the floor cannot be
-    changed out from under itself by an edit to `package.json` -- the same reason
-    ci.yml's Type check step spells it out too.
+    Naming the project is what makes the check real: the root tsconfig is
+    `files: []` plus project references, so a bare `tsc --noEmit` there compiles
+    an EMPTY program and passes unconditionally. Spelling the command out means
+    the floor cannot be changed out from under itself by an edit to
+    `package.json` -- the same reason ci.yml's Type check step spells it out too.
+
+    `-p` rather than `-b` because `tsconfig.app.json` carries an incremental
+    cache: build mode judges "up to date" from the project's own inputs only, so
+    a changed dependency `.d.ts` with an untouched `src/` is reported up to date
+    with 0 errors (measured: `-b` 0 errors in 0.3 s where `-p` and a cold run both
+    reported 1822). `-p` re-hashes every program file, node_modules included.
     """
     gates = "\n".join(
         json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))["gates"]
     )
-    assert "tsc -b" in gates, "the gate floor no longer type-checks with `tsc -b`"
+    assert TSC_APP_PROJECT in gates, (
+        f"the gate floor no longer type-checks with `{TSC_APP_PROJECT}`"
+    )
+    assert "tsc -b" not in gates, (
+        "the floor type-checks in build mode; with the incremental cache in "
+        "tsconfig.app.json, `-b` reports a changed dependency `.d.ts` as up to date "
+        "without re-checking anything"
+    )
     assert "run typecheck" not in gates, (
         "the floor reaches type-checking through an npm script, so a package.json "
         "edit can silently change what this gate runs"
@@ -541,31 +562,78 @@ def test_floor_typechecks_the_way_ci_does():
 
 
 def test_typecheck_script_actually_type_checks():
-    """`npm run typecheck` must run in BUILD mode, or it checks nothing at all.
+    """`npm run typecheck` must name the app project, or it checks nothing at all.
 
     `website/tsconfig.json` is a solution-style config -- `{"files": [], "references":
-    [...]}`. TypeScript follows `references` only in build mode, so `tsc --noEmit`
-    there compiles an empty program: measured 0 files listed, exit 0 with a genuine
-    type error present in `src/App.tsx`. `npm run check` chains this script, so the
-    one command that looks like a pre-push gate would pass over the whole tree.
+    [...]}`. A bare `tsc --noEmit` there compiles an empty program: measured 0 files
+    listed, exit 0 with a genuine type error present in `src/App.tsx`. `npm run
+    check` chains this script, so the one command that looks like a pre-push gate
+    would pass over the whole tree.
 
     Nothing else pins the spelling, so without this a revert to `tsc --noEmit`
-    restores a gate that is enforced in appearance only.
+    restores a gate that is enforced in appearance only, and a revert to `tsc -b`
+    restores one that skips a changed dependency (see
+    test_floor_typechecks_the_way_ci_does).
     """
     scripts = json.loads(
         (REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8")
     )["scripts"]
     typecheck = scripts["typecheck"]
 
-    assert "tsc -b" in typecheck, (
-        f"website `typecheck` script is {typecheck!r}; it must use build mode "
-        "(`tsc -b`) because the root tsconfig has `files: []` and a "
-        "non-build invocation there type-checks zero files"
+    assert TSC_APP_PROJECT in typecheck, (
+        f"website `typecheck` script is {typecheck!r}; it must name the app project "
+        f"(`{TSC_APP_PROJECT}`) because the root tsconfig has `files: []` and a "
+        "bare invocation there type-checks zero files"
+    )
+    assert "tsc -b" not in typecheck, (
+        f"website `typecheck` script is {typecheck!r}; build mode's up-to-date check "
+        "ignores dependency changes once tsconfig.app.json has an incremental cache"
     )
     assert "--noEmit" not in typecheck, (
         f"website `typecheck` script is {typecheck!r}; `--noEmit` selects "
         "single-project mode, which compiles an empty program against the "
         "solution-style root tsconfig"
+    )
+
+
+def test_ci_type_check_step_spells_the_type_check_like_the_floor():
+    """ci.yml's Type check step and the floor must run the same command.
+
+    The CI-coverage scan above mirrors `scripts/` and `npm run` invocations, but
+    the type check is a bare `npx tsc` line, so nothing else notices when one
+    side changes spelling. Both sides must name the app project with `-p`; a
+    return to `tsc -b` on either side reintroduces the false green that build
+    mode's up-to-date check gives a changed dependency once the incremental
+    cache exists.
+    """
+    run_text = _ci_workflow_run_text()
+    tsc_lines = [ln.strip() for ln in run_text.splitlines() if "tsc " in ln]
+    assert tsc_lines, "no `tsc` command visible in the blocking CI workflows"
+    assert any(TSC_APP_PROJECT in ln for ln in tsc_lines), (
+        f"CI type-checks with {tsc_lines!r}, not `{TSC_APP_PROJECT}`"
+    )
+    assert not any("tsc -b" in ln for ln in tsc_lines), (
+        f"CI type-checks in build mode ({tsc_lines!r}); `-b` trusts the incremental "
+        "cache across a dependency change"
+    )
+
+
+def test_named_project_is_the_root_tsconfigs_only_reference():
+    """`-p tsconfig.app.json` checks exactly one project; the root must list only it.
+
+    `tsc -b` on the solution root followed every reference. `-p` does not, so if
+    a second project is ever added to `website/tsconfig.json` every caller here
+    (package.json build/typecheck, ci.yml, the prepare-pr floor) would skip it
+    without any of them failing. This test turns that silent skip into a
+    decision: extend the callers, or go back to a spelling that follows
+    references and re-examine the cache.
+    """
+    root = json.loads((REPO_ROOT / "website" / "tsconfig.json").read_text(encoding="utf-8"))
+    assert root.get("files") == [], "root tsconfig is expected to be solution-style"
+    refs = [r["path"].lstrip("./") for r in root.get("references", [])]
+    assert refs == ["tsconfig.app.json"], (
+        f"website/tsconfig.json references {refs!r}; every `{TSC_APP_PROJECT}` caller "
+        "checks only tsconfig.app.json, so a new reference is a project no gate sees"
     )
 
 

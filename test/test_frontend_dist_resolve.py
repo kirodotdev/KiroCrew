@@ -782,7 +782,7 @@ def test_build_and_stage_reports_a_failed_build(tmp_path):
 def test_build_and_stage_reaps_the_whole_tree_on_timeout(tmp_path):
     """A timed-out build must have its descendants killed before the lock frees.
 
-    `npm run build` is `tsc -b && vite build`, so killing only npm leaves vite
+    `npm run build` is `tsc -p tsconfig.app.json && vite build`, so killing only npm leaves vite
     writing website/dist after the lock releases — and a surviving writer makes
     the lock's exclusion meaningless.
     """
@@ -856,7 +856,7 @@ def test_build_timeout_clears_a_measured_cold_build():
     """The build budget must clear the SLOWEST healthy build, not the fastest.
 
     It sat at 300s from the first commit while the frontend grew to ~50 runtime
-    dependencies. `npm run build` is `tsc -b` then a production bundle; on a
+    dependencies. `npm run build` is `tsc -p tsconfig.app.json` then a production bundle; on a
     developer machine that took 75-98s as a repeat build but 328s and 420s on the
     first build after `npm ci` -- and the slow case is the one Dev Fleet's
     Pull+Build always runs, so every sync was SIGKILLed mid-build and the

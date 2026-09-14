@@ -349,7 +349,7 @@ Resources:
       #   schedule, so `shutdown -c` cancels any pending timed shutdown
       #   (harmless if none is set). Best-effort: never fails the bootstrap.
       # "Swap": provisioned BEFORE install.sh as defense-in-depth headroom.
-      #   The frontend build (`tsc -b && vite build` over ~900 npm packages)
+      #   The frontend build (`tsc -p tsconfig.app.json && vite build` over ~900 npm packages)
       #   runs alongside dnf + a fresh `npm ci` during first boot and peaks
       #   ~3.4 GB (measured). The smallest tier is 16 GB (8 GB was retired),
       #   so this is NOT the primary bring-up fix (that is the SELinux reboot

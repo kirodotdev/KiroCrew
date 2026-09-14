@@ -10,6 +10,30 @@
     "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
+    // Incremental type-checking (kirodotdev/KiroCrew#10687). Without a cache every
+    // `tsc` run re-checks the whole program (~35 s on a native toolchain); with the
+    // tsbuildinfo below, a warm run re-checks only what changed (~5 s for a no-op).
+    //
+    // Invoke this project with `tsc -p tsconfig.app.json`, NOT `tsc -b`. Build mode
+    // decides "up to date" from the mtimes of the project's OWN inputs, so a changed
+    // dependency `.d.ts` (a lockfile bump, `npm ci` onto a moved lock) with an
+    // untouched `src/` reports up to date in 0.3 s with 0 errors -- a silent false
+    // green, measured here. `-p` re-hashes every program file, node_modules
+    // included, and pays a ~5 s floor for being sound.
+    //
+    // Not `composite`: it implies `declaration`, which this codebase cannot emit
+    // (TS4023 on exported selectors whose inferred types name non-exported slice
+    // state), and it would be inherited by every edition tsconfig that `extends`
+    // this file (see docs/extension-seams.md).
+    //
+    // The cache lives beside this file rather than under node_modules/.tmp because
+    // Dev Fleet's Pull+Build runs `npm ci` (which deletes node_modules) before every
+    // build, and that is the very path this exists to speed up. `*.tsbuildinfo` is
+    // gitignored and scripts/clean.sh removes this path. A tsconfig that `extends`
+    // this one inherits the path resolved against THIS directory and must override
+    // `tsBuildInfoFile` (see docs/extension-seams.md), or it writes into our cache.
+    "incremental": true,
+    "tsBuildInfoFile": "./tsconfig.app.tsbuildinfo",
     "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": true,

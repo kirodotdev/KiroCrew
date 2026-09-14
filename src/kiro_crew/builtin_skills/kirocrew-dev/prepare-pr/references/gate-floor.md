@@ -155,7 +155,7 @@ there.
 
 Strip comment-only lines before any such scan. `ci.yml` names commands in prose as
 well as running them — the Type check step's comment explains why it spells out
-`npx tsc -b` instead of going through a script — so a naive grep for
+`npx tsc -p tsconfig.app.json` instead of going through a script — so a naive grep for
 `npm run <script>` "finds" scripts no step invokes, the same trap as reading a
 ratchet number out of a comment.
 

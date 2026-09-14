@@ -59,7 +59,7 @@ isort --check-only src/kiro_crew test
 flake8 src/kiro_crew test
 mypy src/kiro_crew/
 cd website
-npx tsc -b
+npx tsc -p tsconfig.app.json
 npx vitest run
 cd ..
 ```
