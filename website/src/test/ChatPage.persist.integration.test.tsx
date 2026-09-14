@@ -61,7 +61,12 @@ vi.mock('../api/client', () => ({
      'chatSlotWorkspace', 'models', 'planAction', 'planFromChat', 'renameSlot',
      'resolveApproval', 'screenshot', 'slackChannels', 'slackLink', 'spawnList',
      'stopChatSlot', 'uploadFiles', 'voiceSynthesize', 'workspaces', 'chatSlots',
-     'notifications', 'status', 'sendChat'].map(k => [k, vi.fn().mockResolvedValue(k === 'chatSlotDetail' ? { messages: [], has_more: false } : {})])
+     'notifications', 'status', 'sendChat'].map(k => [k, vi.fn().mockResolvedValue(
+       k === 'chatSlotDetail' ? { messages: [], has_more: false }
+         // Stored as `chat.history` and iterated by ChatPage's chip roster: list-shaped.
+         : k === 'sessions' ? { sessions: [], has_more: false }
+           : {},
+     )])
   ),
 }))
 

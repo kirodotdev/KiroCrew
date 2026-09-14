@@ -29,7 +29,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
-  switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone,
+  switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone, fetchHistory,
   appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
@@ -305,6 +305,7 @@ import { prevUserTextFor } from './chat/share/shareSupport'
 import { turnHadPolicyBlock } from '../app-sdk/turnPolicyBlock'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { JiraHostsCtx } from '../lib/jiraHosts'
+import { SessionRosterMissCtx } from '../lib/sessionRoster'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import TypewriterText from '../components/TypewriterText'
 import { useChatNavigation } from '../hooks/useChatNavigation'
@@ -2034,14 +2035,48 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch(openActivityToTab('subagents'))
   }, [dispatch])
 
+  // The roster a transcript resolves session chips and `?sid=` links against:
+  // the open tabs plus the closed sessions already listed under "Older
+  // sessions". `selectSessionTab` switches to the former and resumes the latter
+  // (the sidebar row's own path), so a link to a closed session works exactly
+  // like one to an open tab. `history` is the server-side complement of the
+  // open slots, so the two sources do not overlap; an open slot still wins the
+  // map if they ever did.
   // `filteredSlots`, not `slots`: a surface this page cannot render would chip to a
   // destination the switch clears. Signature because heartbeats remint slot objects.
-  const sessionTitleSig = JSON.stringify(filteredSlots.map(s => [s.key, s.title || s.key]))
+  const sessionTitleSig = JSON.stringify([
+    ...history.map(h => [h.key, h.title || h.key]),
+    ...filteredSlots.map(s => [s.key, s.title || s.key]),
+  ])
   const sessionTitles = useMemo(
-    () => new Map(filteredSlots.map(s => [s.key, s.title || s.key] as const)),
+    () => new Map([
+      ...history.map(h => [h.key, h.title || h.key] as const),
+      ...filteredSlots.map(s => [s.key, s.title || s.key] as const),
+    ]),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the value-equal pair signature, not the slot objects (see above)
     [sessionTitleSig],
   )
+  // A transcript named a well-formed session key the roster lacks. The older
+  // sessions list is fetched lazily (nothing shows it at mount), so on a fresh
+  // load a closed session an agent linked to is simply not loaded yet: seed the
+  // list once, the same once-only seed the composer's history query uses. Once
+  // only, so a key that is genuinely gone cannot keep re-fetching, and only
+  // while the list is empty, so a reader who already paged deeper is not reset
+  // to page one. A key still missing after the seed stays a plain-text miss. A
+  // seed that FAILS is said so through the page's action-error notice: the
+  // reader clicked a link that did nothing, and silence would leave them
+  // guessing whether the session is gone or the list merely did not load.
+  const rosterSeededRef = useRef(false)
+  const historyLenRef = useRef(history.length)
+  historyLenRef.current = history.length
+  const seedSessionRoster = useCallback(() => {
+    if (rosterSeededRef.current) return
+    rosterSeededRef.current = true
+    if (historyLenRef.current !== 0) return
+    dispatch(fetchHistory(false)).unwrap().catch(() => {
+      showActionError(i18nT('pages.chatSidebar.older_sessions_load_failed'))
+    })
+  }, [dispatch, showActionError])
 
   const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
   const handleFork = useCallback(async (visibleIndex: number, messageId?: string) => {
@@ -6232,6 +6267,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         message bodies, previews, and panels alike -- so a pasted Jira URL
         chips identically wherever it renders. Cloud URLs need no provider. */}
     <JiraHostsCtx.Provider value={jiraSourceHosts}>
+    {/* A transcript that names a closed session the roster has not listed yet asks
+        this page to seed the older-sessions list (see `SessionRosterMissCtx`). */}
+    <SessionRosterMissCtx.Provider value={seedSessionRoster}>
     <div
       ref={chatContainerRef}
       /* Both sides are this page's own: a rightward drag opens the sessions
@@ -7797,6 +7835,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         activitySlot
       )}
     </div>
+    </SessionRosterMissCtx.Provider>
     </JiraHostsCtx.Provider>
     </TagPopoverProvider>
     </RowDisclosureProvider>

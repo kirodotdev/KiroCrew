@@ -49,6 +49,7 @@ import { LinkChip, LinkCard } from './LinkPreview'
 import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import { JiraHostsCtx } from '../lib/jiraHosts'
+import { SessionRosterMissCtx } from '../lib/sessionRoster'
 import { wholeMatchAutolinkHref, rearmConfigScanBudget } from '../utils/autolinkRules'
 import JiraLogo from './icons/JiraLogo'
 import GithubLogo from './icons/GithubLogo'
@@ -959,8 +960,8 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     } catch { /* keep it a normal link */ }
   }
   // Whether this href NAMES a same-origin chat session at all, independent of
-  // whether that session is currently reachable (open). A closed/unknown key is
-  // still a chat-session href — it just does not resolve in the open-tabs roster.
+  // whether that session is currently reachable. A forged or not-yet-listed key
+  // is still a chat-session href — it just does not resolve in the roster.
   const sessionHrefKey = sessionCandidate ? sessionKeyFromChatHref(sessionCandidate) : null
   // Whether this renderer is wired to route sessions at all — the SAME predicate
   // `resolveSessionChip` guards on (`onSessionOpen` AND `sessions`), so the link
@@ -974,6 +975,10 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   // Same gate as the inline chip, so a link and a bare key naming one session
   // cannot disagree about whether it is reachable.
   const sessionLink = sessionHrefKey ? resolveSessionChip(sessionHrefKey, sessionActions) : null
+  // A key the roster lacks may be a closed session the host has not listed yet;
+  // let the host widen the roster (see `SessionRosterMissCtx`). Resolution stays
+  // the roster's call — this only asks, it never resolves.
+  useSessionRosterMiss(sessionHrefKey ? sessionRosterMiss(sessionHrefKey, sessionActions) : null)
   // The attribute carries the canonical key: a modified click goes to the browser,
   // and an authored `dashboard_…` sid would open a session `?sid=` cannot resolve.
   const sessionHref = sessionLink && sessionCandidate ? canonicalChatHref(sessionCandidate, sessionLink.key) : null
@@ -982,11 +987,13 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     // still opens the session in its own tab.
     const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
     if (!plainPrimaryClick) return
-    // A resolvable session opens in place. A chat-session href that does NOT
-    // resolve is swallowed rather than left to the browser. `resolveSessionChip`
-    // returns null in two cases, both correctly declined here:
-    //   - a closed / unknown key — its raw `?sid=` would navigate to a session
-    //     the controller cannot load, landing on a dead/blank view (#9914);
+    // A session the roster lists — open tab or closed-on-disk alike — opens in
+    // place; the host resumes a closed one. A chat-session href that does NOT
+    // href that does NOT resolve is swallowed rather than left to the browser.
+    // `resolveSessionChip` returns null in two cases, both correctly declined here:
+    //   - a key the roster does not list (forged, deleted, or not yet loaded) —
+    //     its raw `?sid=` would navigate to a session the controller cannot load,
+    //     landing on a dead/blank view;
     //   - the ACTIVE session's own key (`resolveSessionChip` rejects
     //     `key === activeSession`) — a plain click is a no-op on the session you
     //     are already in, matching the backtick chip, which renders the active
@@ -1144,10 +1151,19 @@ const PathActionCtx = createContext<PathActions>({})
  * Where a session chip sends its activation, plus the roster that decides whether
  * a chip is offered at all.
  *
+ * The roster is every session the host KNOWS: the open tabs plus the closed
+ * sessions it has already listed (the sidebar's "Older sessions" rows). The
+ * host's `onSessionOpen` takes both — it switches to an open tab and resumes a
+ * closed session, exactly as clicking that row in the sidebar would — so open
+ * and closed are one kind of entry here, and a chip or link to a closed session
+ * behaves exactly like one to an open tab. What the roster excludes is a key the host cannot vouch for:
+ * a forged, deleted or never-listed key is a miss, and a miss renders as plain
+ * text rather than a chip that would announce a session that does not exist.
+ *
  * `sessions` ABSENT is deliberately not the same as an empty map: a caller that
  * never wired it (most of the ~30 call sites) does not KNOW which sessions exist,
  * so no chip is offered. An empty map is the opposite claim — a caller that does
- * know, and has nothing open.
+ * know, and has nothing to offer.
  *
  * The value is the display title, for the tooltip only. It is never substituted
  * for the chip's text, which would make the visible span disagree with what
@@ -1164,14 +1180,13 @@ const SessionActionCtx = createContext<SessionActions>({})
  * Whether a recognised slot key may render as a chip, and what to title it with.
  *
  * Mirrors the path chip's rule — an affordance only once the target is CONFIRMED —
- * with the slot roster standing in for the stat probe. Three refusals, each of
+ * with the session roster standing in for the stat probe. Three refusals, each of
  * which must stay plain text rather than become a chip that cannot act:
  *
  *   - the caller wired no handler or no roster (see `SessionActions`);
- *   - the key names a session that is not open, so there is nothing to switch to.
- *     A closed session's transcript may still exist on disk, but reopening it is
- *     a History-page resume rather than a slot switch, so `onSessionOpen` could
- *     not honour a chip here;
+ *   - the key names no session the host lists — forged, deleted, or a closed
+ *     session the host has not loaded into its roster yet (see
+ *     `sessionRosterMiss`, which lets the host widen the roster on demand);
  *   - the key names the session the reader is ALREADY in, where a click would be
  *     a visible no-op.
  */
@@ -1182,6 +1197,36 @@ function resolveSessionChip(raw: string, actions: SessionActions): { key: string
   const title = actions.sessions.get(key)
   if (title === undefined) return null
   return { key, title }
+}
+
+/**
+ * The well-formed session key `raw` names that the roster does NOT list, or null.
+ *
+ * Exactly the complement of `resolveSessionChip` within the cases where a chip
+ * COULD have been offered: routing wired, a real key, not the active session. A
+ * non-key span and a no-roster render are not misses — there was never a session
+ * to look up — and neither is the active key, which the roster does list.
+ */
+function sessionRosterMiss(raw: string, actions: SessionActions): string | null {
+  if (!actions.onSessionOpen || !actions.sessions) return null
+  const key = sessionKeyFrom(raw)
+  if (!key || key === actions.activeSession) return null
+  return actions.sessions.has(key) ? null : key
+}
+
+/**
+ * Tell the host about a roster miss, once per key per mount.
+ *
+ * An effect, not a render-time call: the host answers by fetching, and a fetch
+ * from inside render would re-run on every paint. Keyed on the key so a span
+ * whose text changes to a different unknown key reports again, while re-renders
+ * of the same span do not.
+ */
+function useSessionRosterMiss(key: string | null): void {
+  const onMiss = useContext(SessionRosterMissCtx)
+  useEffect(() => {
+    if (key && onMiss) onMiss(key)
+  }, [key, onMiss])
 }
 
 type PathResolution = {
@@ -1481,6 +1526,10 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   // Failure state for the chip's reveal (Shift+click / no handler wired); rendered
   // beside the chip. Declared before the early returns below (rules of hooks).
   const reveal = useRevealFailure(raw)
+  // A bare key the roster lacks may be a closed session the host has not listed
+  // yet (see `SessionRosterMissCtx`). Not inside a link: there the anchor owns the
+  // reference and reports for its own href.
+  useSessionRosterMiss(insideLink ? null : sessionRosterMiss(raw, sessionActions))
 
   // `data-path*` / `data-session-key` describe a chip THIS component rendered, so
   // only it may set them. rehypeSanitize allowlists every `data-*` attribute

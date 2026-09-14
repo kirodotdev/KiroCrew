@@ -6504,7 +6504,8 @@
       "remote_sessions_not_shown_in_board_view_other": "{{count}} remote sessions are not shown in board view — board columns manage local sessions only.",
       "sessions_from_instance_unavailable": "Sessions from {{names}} are unavailable right now.",
       "checking_remote_instances": "Checking remote instances…",
-      "remote_instances_list_unavailable": "Remote instances could not be listed, so their sessions are not shown."
+      "remote_instances_list_unavailable": "Remote instances could not be listed, so their sessions are not shown.",
+      "older_sessions_load_failed": "Older sessions could not be loaded, so links to closed sessions stay inactive."
     },
     "contextBreakdown": {
       "axis_bar": "bar length ∝ √chars · segments = that turn's composition",

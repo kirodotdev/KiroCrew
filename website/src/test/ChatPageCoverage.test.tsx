@@ -226,7 +226,11 @@ vi.mock('../api/client', () => ({
     get: (_t, prop: string) => {
       if (!(prop in apiMocks)) {
         apiMocks[prop] = vi.fn().mockResolvedValue(
-          prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 } : {},
+          prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 }
+            // Stored as `chat.history` by the composer's history seed and
+            // iterated by ChatPage for the session-chip roster: list-shaped.
+            : prop === 'sessions' ? { sessions: [], has_more: false }
+              : {},
         )
       }
       return apiMocks[prop]

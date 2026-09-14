@@ -178,12 +178,31 @@ export function useChatPageSessionController({
     // itself dep-free, so this identity is genuinely stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionTabs.openInNewTab, dispatch, activeSlotRef])
+  // Current history rows for the closed-session branch below, so the callback
+  // keeps a stable identity across history refreshes (a chip roster re-render
+  // is not a reason to remint every message's click handler).
+  const historyRef = useRef(history)
+  historyRef.current = history
   const selectSessionTab = useCallback((key: string) => {
     if (key === activeSlotRef.current || !connectedRef.current) return
+    // An open tab switches. A CLOSED session -- a key the Older-sessions list
+    // holds and no slot does -- resumes through the same thunk the sidebar row
+    // uses: `switchSlot` reads `GET /api/chat/slots/{key}`, which answers 404
+    // for any key the gateway has no live slot for, so a closed session must be
+    // resumed (POST) before it can be shown, and `resumeFromHistory` performs
+    // that resume, activates the slot, and records a failed or undisplayable
+    // answer on `unresumableResume` for the page's notice.
+    const closed = filteredSlotsRef.current.some(s => s.key === key)
+      ? undefined
+      : historyRef.current.find(h => h.key === key)
+    if (closed) {
+      dispatch(resumeFromHistory({ key, title: closed.title || key }))
+      return
+    }
     // Tab-strip select is a user gesture on a session reference: the announced
     // class.
     dispatch(switchSlot({ key, announceOnMissing: true }))
-  }, [dispatch, activeSlotRef])
+  }, [dispatch, activeSlotRef, filteredSlotsRef])
   const closeSessionTab = useCallback((key: string) => {
     const next = sessionTabs.closeTab(key)
     // Only the ACTIVE tab's close moves the user; closing any other tab must

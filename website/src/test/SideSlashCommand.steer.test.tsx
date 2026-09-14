@@ -43,6 +43,9 @@ vi.mock('../api/client', () => ({
           return vi.fn().mockResolvedValue([{ name: '/side' }, { name: '/clear' }])
         if (prop === 'models' || prop === 'workspaces' || prop === 'notifications')
           return vi.fn().mockResolvedValue([])
+        // The composer's history seed stores this response as `chat.history`,
+        // which ChatPage iterates for the session-chip roster.
+        if (prop === 'sessions') return vi.fn().mockResolvedValue({ sessions: [], has_more: false })
         return vi.fn().mockResolvedValue({})
       },
     },

@@ -116,9 +116,10 @@ describe('session chip — the honesty gates', () => {
     expect(el).toHaveAttribute('title', 'Click to copy')
   })
 
-  it('offers no chip for a session that is not open', () => {
-    // Its transcript may still be on disk, but reopening that is a History resume,
-    // not a slot switch — so a chip here could not do what it promises.
+  it('offers no chip for a session the roster does not list', () => {
+    // The roster is every session the host knows — open tabs and the closed
+    // sessions it has listed. A key in neither is forged, deleted, or not loaded
+    // yet, and a chip for it would promise a switch that may have nowhere to go.
     render(
       <MarkdownRenderer content={`\`${OTHER}\``} onSessionOpen={onSessionOpen} sessions={roster()} />,
     )
@@ -189,7 +190,7 @@ describe('session chip — a /chat?sid= deep link', () => {
     expect(onSessionOpen).not.toHaveBeenCalled()
   })
 
-  it('stays an ordinary external-style link when the session is not open', () => {
+  it('stays an ordinary external-style link when the roster does not list the session', () => {
     // Negative control for the assertion above: `target` is absent BECAUSE the
     // session resolved, not because the branch always drops it.
     render(
