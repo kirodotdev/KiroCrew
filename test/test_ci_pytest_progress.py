@@ -297,8 +297,8 @@ class TestCIProgress(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["backend-test-windows"]
         self.assertEqual(job["timeout-minutes"], 40)
-        self.assertEqual(job["strategy"]["matrix"]["group"], [1, 2, 3, 4])
-        self.assertEqual(job["env"]["SHARD_COUNT"], 4)
+        self.assertEqual(job["strategy"]["matrix"]["group"], [1, 2, 3, 4, 5, 6, 7, 8])
+        self.assertEqual(job["env"]["SHARD_COUNT"], 8)
         command = next(s["run"] for s in job["steps"] if s.get("name", "").startswith("Run tests"))
         for flag in [
             "-n auto",
