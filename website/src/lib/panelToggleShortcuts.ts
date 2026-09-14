@@ -56,8 +56,9 @@ export const PANEL_TOGGLE_IDS: readonly PanelToggleId[] = ['left-sidebar', 'sess
  * (VS Code's Toggle Panel, which hosts its integrated terminal), is `^J` on
  * Windows/Linux, i.e. readline's `accept-line`: a user pressing it instead of
  * Enter would close the panel mid-command. VS Code's terminal chord proper,
- * literal `Ctrl+`` on every platform, is not expressible here (`mod` is Cmd on
- * macOS by definition) and ⌘` is the macOS window cycler. Rather than pick which
+ * literal `Ctrl+`` on every platform, IS recordable here (`{ key: '`', ctrl:
+ * true }` on macOS, `{ key: '`', mod: true }` elsewhere), but it too spends a
+ * shell keystroke, and ⌘` is the macOS window cycler. Rather than pick which
  * shell keystroke to spend on everyone's behalf, the binding is left to the user
  * who wants it — and who then knows what they traded.
  */
@@ -140,7 +141,7 @@ export function resolvePanelToggleBindings(overrides: PanelToggleOverrides): Rec
 
 /**
  * Set one panel's binding and broadcast the change. `null` clears it to unbound;
- * a chord is normalized and stored. A non-null chord with no `mod`/`alt`
+ * a chord is normalized and stored. A non-null chord with no `mod`/`ctrl`/`alt`
  * modifier is refused (returns false, storage untouched) — a bare-key binding
  * would fire mid-typing. Only the one panel's entry changes; the others are
  * preserved.

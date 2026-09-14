@@ -13687,7 +13687,8 @@
         "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
         "clear_shortcut": "Leeren",
         "panel_toggles": "Panels umschalten",
-        "skips_shell_hint": "Funktioniert auch im Terminal, sodass Ihre Shell diese Taste nicht mehr erhält — wählen Sie nicht Strg+C oder Strg+R."
+        "skips_shell_hint": "Funktioniert auch im Terminal, sodass Ihre Shell diese Taste nicht mehr erhält — wählen Sie nicht Strg+C oder Strg+R.",
+        "skips_shell_hint_mac": "Funktioniert auch im Terminal, sodass Ihre Shell diese Taste nicht mehr erhält — wählen Sie nicht ⌃C (Strg+C) oder ⌃R (Strg+R)."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn die Sitzung ein wiederkehrendes Verfahren zeigt — eines, das eine künftige Sitzung an einem anderen Ziel erneut ausführen würde. Standardmäßig aus. Entwürfe werden in der Warteschlange auf dem Tab „Skills“ zur Überprüfung bereitgestellt — nichts geht ohne Ihre Genehmigung live (siehe unten).",

@@ -13866,7 +13866,8 @@
         "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9",
         "clear_shortcut": "Cancella",
         "panel_toggles": "Attiva/disattiva pannelli",
-        "skips_shell_hint": "Funziona anche nel terminale, quindi la tua shell non riceve più questo tasto: non scegliere Ctrl+C o Ctrl+R."
+        "skips_shell_hint": "Funziona anche nel terminale, quindi la tua shell non riceve più questo tasto: non scegliere Ctrl+C o Ctrl+R.",
+        "skips_shell_hint_mac": "Funziona anche nel terminale, quindi la tua shell non riceve più questo tasto: non scegliere ⌃C (Ctrl+C) o ⌃R (Ctrl+R)."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando la sessione dimostra una procedura ricorrente — una che una sessione futura, lavorando su un obiettivo diverso, eseguirebbe di nuovo. Disattivato per impostazione predefinita. Le bozze vengono messe in coda nella scheda Skill per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",
