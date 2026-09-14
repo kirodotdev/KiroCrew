@@ -324,6 +324,10 @@ export const mcpAppKey = (sessionKey: string, toolCallId: string): string =>
  *  oldest are evicted past this bound. */
 const MCP_APPS_PER_SLOT_MAX = 24
 
+/** Max prompts retained per slot in `attemptedSends`. Bounds a slot whose sends
+ *  keep failing; ↑ recall never needs more depth than a shell's history page. */
+const ATTEMPTED_SENDS_PER_SLOT_MAX = 50
+
 /** Drop every MCP App render payload belonging to `sessionKey` (slot deleted
  *  or its conversation cleared — the tool rows the apps hang off are gone). */
 const evictMcpApps = (state: { mcpApps: Record<string, McpAppRenderPayload> }, sessionKey: string): void => {
@@ -362,6 +366,8 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
   state.slotServerTotalSeq,
   state.thinkingOrphans,
+  // Recall entries describe one conversation's prompts, so they die with it.
+  state.attemptedSends,
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
@@ -814,6 +820,17 @@ interface ChatState {
   slotStopping: boolean
   slotState: SlotState
   slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>
+  /** Prompts the user SUBMITTED, per slot, oldest → newest — recorded when the
+   *  composer is cleared, not when the transcript accepts the message.
+   *
+   *  ↑/↓ recall is otherwise derived purely from `messages`, so it can only
+   *  offer prompts that reached the transcript. Every way a send is lost —
+   *  a POST that never arrived, an optimistic bubble dropped by a wholesale
+   *  refresh, a bubble appended to a slot the user is not looking at — also
+   *  erases the recall entry, and the composer was cleared before any of them
+   *  could be known. The user is then left with no copy of their own text
+   *  anywhere in the UI. Keyed on submission so recall survives all of them. */
+  attemptedSends: Record<string, string[]>
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -1133,6 +1150,7 @@ const initialState: ChatState = {
   slotStopping: false,
   slotState: 'idle',
   slotStatusDetail: {},
+  attemptedSends: {},
   slotHasMore: false,
   slotOldestIndex: 0,
   slotCursorKey: null,
@@ -4219,6 +4237,28 @@ const chatSlice = createSlice({
       }
       state.messages.push(ensureMsgId(m))
     },
+    /** Record a submitted prompt for ↑/↓ recall. Called where the composer is
+     *  cleared, so it runs for every send regardless of what becomes of it.
+     *
+     *  Consecutive duplicates collapse, matching both the transcript-derived
+     *  half of the history and shell behaviour. Retention is bounded per slot;
+     *  `slotKeyedMaps` evicts the whole entry when the slot goes.
+     *
+     *  `text` must be the spelling the transcript would carry for this message,
+     *  so a send that DOES land dedupes against its own bubble in
+     *  `buildRecallHistory` instead of being offered a second time. */
+    recordSendAttempt(state, action: PayloadAction<{ slot: string; text: string }>) {
+      const { slot, text } = action.payload
+      if (!slot || isUnsafeKey(slot) || !text) return
+      // Defensive init for the same reason every sibling per-slot map carries
+      // it: test fixtures and preloaded state need not define every key.
+      if (!state.attemptedSends) state.attemptedSends = {}
+      const key = safeKey(slot)
+      const list = (state.attemptedSends[key] ??= [])
+      if (list[list.length - 1] === text) return
+      list.push(text)
+      if (list.length > ATTEMPTED_SENDS_PER_SLOT_MAX) list.splice(0, list.length - ATTEMPTED_SENDS_PER_SLOT_MAX)
+    },
     /** Optimistically append a message to a specific slot's store — global
      *  `messages` when it's the active slot, else `slotMessages[slot]`. Lets a
      *  grid pane show a just-sent user message immediately in the right place. */
@@ -4603,7 +4643,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
+    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) delete state.attemptedSends?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
     /** A server-confirmed clear for a slot that is NOT the active view. The
      *  active-slot case routes through `clearMessages`; this one exists so a
      *  background slot's cached page cannot outlive its authoritative clear --
@@ -4615,6 +4655,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       writeSlotPage(state, slot, [], false)
       delete state.thinkingOrphans?.[safeKey(slot)]
+      delete state.attemptedSends?.[safeKey(slot)]
       evictMcpApps(state, slot)
     },
     truncateAfterIndex(state, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
@@ -6855,7 +6896,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, recordSendAttempt, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
