@@ -1386,3 +1386,57 @@ class TestTextScrapeIsOptIn:
         from kiro_crew.config.loader import DashboardConfig
 
         assert DashboardConfig().usage_text_scrape_enabled is False
+
+
+class TestSpawnSuppressesConsoleWindow:
+    """The identity/usage helper spawns must pass ``creationflags`` carrying
+    ``platform_compat._SUBPROCESS_NO_WINDOW`` (issue #10849).
+
+    On Windows the gateway runs without a console, so a console-subsystem child
+    spawned without ``CREATE_NO_WINDOW`` gets a fresh console allocated that
+    flashes on screen ~every 30s. On POSIX the constant is ``0``, so the
+    assertion still pins that the call threads the flag through rather than
+    dropping it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_sandbox_wrap(self, monkeypatch):
+        # wrap_argv cold-probes the OS sandbox and can raise on a host with no
+        # backend; the creationflags on the spawn is what these tests assert on.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+
+    @pytest.mark.asyncio
+    async def test_whoami_spawn_sets_no_window(self):
+        spawn = AsyncMock(return_value=_mock_proc(b"{}"))
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await sessions_mod._fetch_whoami("/bin/kiro")
+        assert spawn.await_args is not None, "whoami did not spawn"
+        assert (
+            spawn.await_args.kwargs.get("creationflags")
+            == sessions_mod.platform_compat._SUBPROCESS_NO_WINDOW
+        )
+
+    @pytest.mark.asyncio
+    async def test_usage_scrape_spawn_sets_no_window(self, monkeypatch):
+        _reset_usage_globals()
+        _enable_text_scrape(monkeypatch)
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        try:
+            with (
+                patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+                patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", return_value=None),
+                # Isolate the scrape spawn: whoami would otherwise share the mock.
+                patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})),
+                patch("asyncio.create_subprocess_exec", spawn),
+            ):
+                await sessions_mod._fetch_usage_bg()
+        finally:
+            _reset_usage_globals()
+        assert spawn.await_args is not None, "usage scrape did not spawn"
+        assert (
+            spawn.await_args.kwargs.get("creationflags")
+            == sessions_mod.platform_compat._SUBPROCESS_NO_WINDOW
+        )

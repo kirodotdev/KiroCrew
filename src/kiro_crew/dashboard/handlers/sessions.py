@@ -25,7 +25,7 @@ from aiohttp import web
 # binds via sys.modules and defers attribute access to call time, which also
 # keeps tests' monkeypatching of handlers.redact_* effective (late binding).
 import kiro_crew.dashboard.handlers as _h
-from kiro_crew import session_directive
+from kiro_crew import platform_compat, session_directive
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 
 # The migration module owns the pre-migration leftover-tab spelling.
@@ -639,6 +639,11 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=scrub_agent_subprocess_env(),
+            # Windows: the gateway has no console, so a helper spawned without
+            # CREATE_NO_WINDOW gets a fresh console allocated and flashes on
+            # screen. Suppress it (no-op on POSIX, where the flag is 0). Same
+            # guard the ACP spawn paths and kiro_prerequisite already apply.
+            creationflags=platform_compat._SUBPROCESS_NO_WINDOW,
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         raw = (out or err or b"").decode(errors="replace")
@@ -855,6 +860,11 @@ async def _fetch_usage_bg() -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=scrub_agent_subprocess_env(),
+            # Windows: the gateway has no console, so a helper spawned without
+            # CREATE_NO_WINDOW gets a fresh console allocated and flashes on
+            # screen. Suppress it (no-op on POSIX, where the flag is 0). Same
+            # guard the ACP spawn paths and kiro_prerequisite already apply.
+            creationflags=platform_compat._SUBPROCESS_NO_WINDOW,
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
         raw = (out or err or b"").decode(errors="replace")
