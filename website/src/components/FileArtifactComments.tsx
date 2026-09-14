@@ -145,7 +145,7 @@ export function useFileArtifactComments({
   const toggleSidebar = useCallback(() => setSidebarOpen(v => !v), [])
 
   // ── anchored-create popover (driven by the viewer's "Comment" action) ──
-  const [popover, setPopover] = useState<{ x: number; y: number; quote: string; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
+  const [popover, setPopover] = useState<{ x: number; y: number; quote: string; copyText?: string; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   const requestAnchoredComment = useCallback(() => {
     const sel = window.getSelection()
     const raw = sel?.toString() ?? ''
@@ -174,7 +174,7 @@ export function useFileArtifactComments({
     const rect = range.getBoundingClientRect()
     // Persist the rendered-text offset (`idx`) so the highlighter can re-anchor
     // to THIS occurrence rather than the first match of the quote.
-    setPopover({ x: rect.left, y: rect.bottom, quote, prefix, suffix, startOffset: idx, endOffset: idx + quote.length })
+    setPopover({ x: rect.left, y: rect.bottom, quote, copyText: raw, prefix, suffix, startOffset: idx, endOffset: idx + quote.length })
   }, [previewRef])
 
   // In-iframe text selection (widget/html via the bridge) → open the create
@@ -284,6 +284,7 @@ export function useFileArtifactComments({
           y={popover.y}
           onSubmit={addAnchored}
           onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
+          copyText={popover.copyText ?? popover.quote}
         />
       )}
       {openThread && (
