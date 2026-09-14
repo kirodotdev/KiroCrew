@@ -341,6 +341,13 @@ The connected-repo reader treats a non-object `config.json` as an empty config,
 and filters non-object rows from its `repos` list. A malformed row cannot stop
 the app from listing or updating other connected repositories.
 
+Every cache reader applies the same rule to its own file: a JSON root that parses
+but is not an object reads as a MISS, so the route refetches and the next write
+heals the file. Without that, a hand-edited or restored cache fails its route with
+the same error on every request until someone deletes the file. The investigation
+record is deliberately excluded — it is the only copy of a user's findings, so
+reading a malformed root as "absent" would let the next write replace it.
+
 ## Permissions
 
 Write routes (`/labels/apply`, `/labels/apply-bulk`, `/issue/state`,

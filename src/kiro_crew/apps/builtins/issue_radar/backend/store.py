@@ -340,7 +340,7 @@ def read_issues_cache(
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
-    if data.get("schema") != ISSUES_CACHE_SCHEMA:
+    if not isinstance(data, dict) or data.get("schema") != ISSUES_CACHE_SCHEMA:
         return None  # stale schema → treat as a miss so the route refetches
     issues = data.get("issues")
     return issues if isinstance(issues, list) else None
@@ -514,6 +514,8 @@ def read_members_cache(owner: str, repo: str, root: Path | None = None) -> dict 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
         return None
     # Coerce ``members`` to a list: the members cache carries no schema stamp
     # (unlike issues), so a file written by an older build with a different
@@ -992,6 +994,8 @@ def read_issue_detail_cache(owner: str, repo: str, number: int, root: Path | Non
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+    if not isinstance(data, dict):
+        return None
     return {"detail": data.get("detail"), "timeline": data.get("timeline", [])}
 
 
@@ -1145,6 +1149,8 @@ def read_issue_ai_cache(
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
         return None
     return {
         "summary": data.get("summary", ""),
@@ -1326,6 +1332,8 @@ def read_recommendations_cache(
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
         return None
     return {
         "recommendations": data.get("recommendations", []),
