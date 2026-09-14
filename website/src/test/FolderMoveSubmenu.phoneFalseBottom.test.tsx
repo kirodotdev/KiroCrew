@@ -7,7 +7,8 @@
  * behind an inner scroll that scrolling the menu never revealed.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { screen, fireEvent, cleanup } from '@testing-library/react'
+import { renderWithProviders, createConnectedTestStore } from './helpers'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '../components/ui/context-menu'
@@ -56,13 +57,14 @@ function expectNoInnerScrollBox(row: HTMLElement) {
 describe('FolderMoveSubmenu inline on touch', () => {
   it('chat-title dropdown: every folder sits in the menu scroll, not a capped inner box', () => {
     const onPick = vi.fn()
-    render(
+    renderWithProviders(
       <DropdownMenu open>
         <DropdownMenuTrigger>Title</DropdownMenuTrigger>
         <DropdownMenuContent>
           <FolderMoveSubmenu variant="dropdown" folders={folders()} onPick={onPick} />
         </DropdownMenuContent>
       </DropdownMenu>,
+      { store: createConnectedTestStore() },
     )
     fireEvent.click(screen.getByRole('button', { name: /Move to folder/ }))
     const items = screen.getAllByRole('menuitem')
@@ -75,13 +77,14 @@ describe('FolderMoveSubmenu inline on touch', () => {
 
   it('nested folders are listed and pickable from the inline body', () => {
     const onPick = vi.fn()
-    render(
+    renderWithProviders(
       <DropdownMenu open>
         <DropdownMenuTrigger>Title</DropdownMenuTrigger>
         <DropdownMenuContent>
           <FolderMoveSubmenu variant="dropdown" folders={folders()} onPick={onPick} />
         </DropdownMenuContent>
       </DropdownMenu>,
+      { store: createConnectedTestStore() },
     )
     fireEvent.click(screen.getByRole('button', { name: /Move to folder/ }))
     const child = screen.getByRole('menuitem', { name: /Folder 2 \/ Child 4|Child 4/ })
@@ -92,13 +95,14 @@ describe('FolderMoveSubmenu inline on touch', () => {
 
   it('sessions-list context menu: the same inline body has no capped inner box', () => {
     const onPick = vi.fn()
-    render(
+    renderWithProviders(
       <ContextMenu>
         <ContextMenuTrigger>Row</ContextMenuTrigger>
         <ContextMenuContent>
           <FolderMoveSubmenu variant="context" folders={folders()} onPick={onPick} />
         </ContextMenuContent>
       </ContextMenu>,
+      { store: createConnectedTestStore() },
     )
     fireEvent.contextMenu(screen.getByText('Row'))
     fireEvent.click(screen.getByRole('button', { name: /Move to folder/ }))

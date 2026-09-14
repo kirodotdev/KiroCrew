@@ -29,6 +29,7 @@ vi.mock('../hooks/useSessionPalette', () => ({
 }))
 
 import { store } from '../store'
+import { sseConnected } from '../store/dashboardSlice'
 import SessionColorSwatches from '../components/SessionColorSwatches'
 
 const SLOT = 'chat-color-1'
@@ -39,6 +40,7 @@ const wrap = (ui: ReactNode) => {
 }
 
 beforeEach(() => {
+  store.dispatch(sseConnected())
   mocks.setSlotColor.mockResolvedValue({})
   mocks.setSlotColorHex.mockResolvedValue({})
   mocks.clearSlotColor.mockResolvedValue({})

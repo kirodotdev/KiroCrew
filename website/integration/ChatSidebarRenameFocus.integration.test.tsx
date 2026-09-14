@@ -49,7 +49,8 @@ vi.mock('@radix-ui/react-context-menu', () => import('./__mocks__/@radix-ui/reac
 vi.mock('@radix-ui/react-dropdown-menu', () => import('./__mocks__/@radix-ui/react-dropdown-menu'))
 
 import ChatSidebar from '../src/pages/ChatSidebar'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../src/store/dashboardSlice'
 import { server } from './mocks/server'
 import { __resetAuthRecoveryStateForTests } from '../src/api/client'
 
@@ -155,7 +156,11 @@ async function flushFrames(n = 3) {
 
 describe('board card rename focus', () => {
   it('right-click → Rename keeps the input open through the menu close (edit not cancelled)', async () => {
-    const { container } = renderWithProviders(<ChatSidebar {...(props as any)} />)
+    // The menu's Rename item is withheld while offline, and createTestStore()'s
+    // default is dashboard.connected=false.
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    const { container } = renderWithProviders(<ChatSidebar {...(props as any)} />, { store })
 
     fireEvent.contextMenu(rowFor(container))
     const rename = await screen.findByRole('menuitem', { name: /Rename/ })

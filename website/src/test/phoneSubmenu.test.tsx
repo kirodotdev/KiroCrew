@@ -152,6 +152,21 @@ describe('PhoneSubTriggerDiv', () => {
     )
     expect(screen.getByRole('button', { name: /Recent/ })).toHaveAttribute('aria-expanded', 'true')
   })
+
+  it('still opens while aria-disabled, because the flyout is where the refusal is explained', () => {
+    const onToggle = vi.fn()
+    render(
+      <PhoneSubTriggerDiv expanded={false} onToggle={onToggle} aria-disabled>
+        <span>Recent</span>
+      </PhoneSubTriggerDiv>,
+    )
+    const row = screen.getByRole('button', { name: /Recent/ })
+    expect(row).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(row)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(onToggle).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('PhoneSubContentDiv', () => {

@@ -312,8 +312,6 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           folders={reparentTargets}
           currentFolderId={folder.parent_id || null}
           // Dimmed with its siblings; `moveFolderTo` refuses the pick at the sink.
-          offline={!connected}
-          offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
           onPick={pid => moveFolderTo(folder.id, pid)} />
         <Item data-testid={tid('settings')} {...offlineMenuRow(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'), () => { setFolderModal({ mode: 'edit', folderId: folder.id }) })}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</Item>
         {/* Hide this folder from the session lists (flat lane + tree).
