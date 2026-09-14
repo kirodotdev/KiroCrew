@@ -3,24 +3,68 @@ import { useState } from 'react'
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import AutoNudgePopover, { type AutoNudgeLoop } from '../components/AutoNudgePopover'
-import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
+import {
+  __resetForTests,
+  GOAL_DRAFT_RECORD_PREFIX,
+  GOAL_DRAFT_MAX_MESSAGE_CHARS,
+  GOAL_DRAFT_TTL_MS,
+  LEGACY_GOAL_DRAFTS_KEY,
+  loadGoalDraft,
+  loadGoalDraftSnapshot,
+  saveGoalDraft,
+} from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 const SLOT = 'chat-1-100'
 
-function renderPopover(loop: AutoNudgeLoop | null) {
+const goalRecordKeys = () => Array.from({ length: localStorage.length }, (_, index) => (
+  localStorage.key(index)
+)).filter((key): key is string => key?.startsWith(GOAL_DRAFT_RECORD_PREFIX) === true)
+
+const goalStorageSnapshot = () => goalRecordKeys()
+  .sort()
+  .map(key => [key, localStorage.getItem(key)])
+
+const isGoalRecordKey = (key: string) => key.startsWith(GOAL_DRAFT_RECORD_PREFIX)
+
+function renderPopover(loop: AutoNudgeLoop | null, slotKey = SLOT) {
   // A FRESH client per render: the popover reads the shared `cron-jobs` key, and
   // a client reused across tests would serve one test's stubbed rows to the next.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   return render(
     <QueryClientProvider client={qc}>
       <AutoNudgePopover
-        slotKey={SLOT}
+        slotKey={slotKey}
         loop={loop}
         open={true}
         onOpenChange={() => {}}
         onChange={() => {}}
       />
+    </QueryClientProvider>,
+  )
+}
+
+function renderStatefulPopover(loop: AutoNudgeLoop, slotKey: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+  function Harness() {
+    const [currentLoop, setCurrentLoop] = useState<AutoNudgeLoop | null>(loop)
+    const [open, setOpen] = useState(true)
+    return (
+      <>
+        <output data-testid="popover-open">{String(open)}</output>
+        <AutoNudgePopover
+          slotKey={slotKey}
+          loop={currentLoop}
+          open={open}
+          onOpenChange={setOpen}
+          onChange={setCurrentLoop}
+        />
+      </>
+    )
+  }
+  return render(
+    <QueryClientProvider client={qc}>
+      <Harness />
     </QueryClientProvider>,
   )
 }
@@ -42,6 +86,45 @@ describe('AutoNudgePopover goal persistence', () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
   const goalBox = () => screen.getByPlaceholderText(/Describe what you want the agent to accomplish/i) as HTMLTextAreaElement
+  const publishCrossTabSnapshot = (
+    slot: string,
+    draft: { message: string; idleSecs: number; maxCycles: number } | null,
+    updatedAt: number,
+    duplicates = 1,
+  ) => {
+    const priorKeys = new Set(goalRecordKeys())
+    saveGoalDraft(slot, draft, updatedAt)
+    const recordKey = goalRecordKeys().find(key => !priorKeys.has(key))
+    if (!recordKey) throw new Error('cross-tab fixture did not append a record')
+    for (let i = 0; i < duplicates; i++) {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: recordKey,
+        newValue: localStorage.getItem(recordKey),
+        storageArea: localStorage,
+      }))
+    }
+  }
+  const publishLegacyCrossTabSnapshot = (
+    slot: string,
+    draft: { message: string; idleSecs: number; maxCycles: number } | null,
+    updatedAt: number,
+    duplicates = 1,
+  ) => {
+    localStorage.setItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`, JSON.stringify({ [slot]: updatedAt }))
+    localStorage.setItem(
+      LEGACY_GOAL_DRAFTS_KEY,
+      JSON.stringify({ [slot]: draft ?? { deleted: true } }),
+    )
+    for (let i = 0; i < duplicates; i++) {
+      for (const key of [`${LEGACY_GOAL_DRAFTS_KEY}-ts`, LEGACY_GOAL_DRAFTS_KEY]) {
+        window.dispatchEvent(new StorageEvent('storage', {
+          key,
+          newValue: localStorage.getItem(key),
+          storageArea: localStorage,
+        }))
+      }
+    }
+  }
 
   it('remembers the user-typed goal and restores it after the loop is gone (the reported bug)', () => {
     vi.useFakeTimers()
@@ -58,6 +141,36 @@ describe('AutoNudgePopover goal persistence', () => {
     //    the popover restores the stored draft, not the default template.
     renderPopover(null)
     expect(goalBox().value).toBe('Ship the BYOA gate harness')
+  })
+
+  it.each([7_999, 8_000, 8_001])(
+    'keeps the goal editor remotely representable at %i ASCII characters',
+    length => {
+      renderPopover(null)
+      fireEvent.change(goalBox(), { target: { value: 'x'.repeat(length) } })
+
+      const expectedLength = Math.min(length, GOAL_DRAFT_MAX_MESSAGE_CHARS)
+      expect(goalBox().value).toBe('x'.repeat(expectedLength))
+      expect(screen.getByTestId('goal-message-character-count')).toHaveTextContent(
+        `${expectedLength} / ${GOAL_DRAFT_MAX_MESSAGE_CHARS}`,
+      )
+      if (expectedLength === GOAL_DRAFT_MAX_MESSAGE_CHARS) {
+        expect(screen.getByText(/Maximum 8000 characters/i)).toBeInTheDocument()
+      }
+    },
+  )
+
+  it('counts multibyte input by Unicode code point instead of UTF-16 units', () => {
+    renderPopover(null)
+    fireEvent.change(goalBox(), {
+      target: { value: '😀'.repeat(GOAL_DRAFT_MAX_MESSAGE_CHARS + 1) },
+    })
+
+    expect(goalBox().value).toBe('😀'.repeat(GOAL_DRAFT_MAX_MESSAGE_CHARS))
+    expect(goalBox().value.length).toBe(GOAL_DRAFT_MAX_MESSAGE_CHARS * 2)
+    expect(screen.getByTestId('goal-message-character-count')).toHaveTextContent(
+      `${GOAL_DRAFT_MAX_MESSAGE_CHARS} / ${GOAL_DRAFT_MAX_MESSAGE_CHARS}`,
+    )
   })
 
   it('flushes a pending debounced edit on unmount (a fast close does not lose the last keystrokes)', () => {
@@ -80,19 +193,27 @@ describe('AutoNudgePopover goal persistence', () => {
     expect(loadGoalDraft(SLOT)).toBeNull()
   })
 
+  it('starting an untouched default does not mirror it into the draft store', async () => {
+    renderPopover(null)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Start loop/i }))
+    })
+
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({ draft: null, updatedAt: 0 })
+  })
+
   it('opening with an existing stored draft does not rewrite it (a mere view must not touch the store)', () => {
     // Seed a draft, snapshot the raw storage, then open (no edit) and close.
     // The stored bytes must be identical — no TTL refresh, no LRU bump.
     saveGoalDraft(SLOT, { message: 'remembered goal', idleSecs: 120, maxCycles: 5 })
-    const draftsBefore = localStorage.getItem('mc-goal-drafts')
-    const tsBefore = localStorage.getItem('mc-goal-drafts-ts')
+    const recordsBefore = goalStorageSnapshot()
 
     const view = renderPopover(null)
     expect(goalBox().value).toBe('remembered goal') // restored on open
     view.unmount() // close without editing
 
-    expect(localStorage.getItem('mc-goal-drafts')).toBe(draftsBefore)
-    expect(localStorage.getItem('mc-goal-drafts-ts')).toBe(tsBefore)
+    expect(goalStorageSnapshot()).toEqual(recordsBefore)
   })
 
   it('prefers the live loop message over a stored draft when a loop is running', () => {
@@ -101,6 +222,1941 @@ describe('AutoNudgePopover goal persistence', () => {
     expect(goalBox().value).toBe('active loop goal')
   })
 
+
+  it('hydrates a newer desktop draft from the server over stale mobile local storage', async () => {
+    const now = Date.now()
+    saveGoalDraft(SLOT, { message: 'stale mobile goal', idleSecs: 60, maxCycles: 0 }, now - 5_000)
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(
+        String(url).startsWith('/api/autonudge/draft/')
+          ? {
+              draft: { message: 'latest desktop goal', idle_secs: 90, max_cycles: 4 },
+              updated_at: now,
+            }
+          : { jobs: [] },
+      ),
+    })) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(goalBox().value).toBe('latest desktop goal'))
+    expect(loadGoalDraft(SLOT)).toEqual({
+      message: 'latest desktop goal', idleSecs: 90, maxCycles: 4,
+    })
+  })
+
+  it('hydrates a remote canonical for a previously unseen inherited slot key', async () => {
+    const slot = 'toString'
+    const canonicalAt = Date.now()
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(
+        String(url).startsWith('/api/crons')
+          ? { jobs: [] }
+          : {
+              draft: { message: 'remote inherited-slot goal', idle_secs: 90, max_cycles: 4 },
+              updated_at: canonicalAt,
+            },
+      ),
+    })) as unknown as typeof fetch)
+
+    renderPopover(null, slot)
+
+    await waitFor(() => expect(goalBox().value).toBe('remote inherited-slot goal'))
+    expect(loadGoalDraftSnapshot(slot)).toEqual({
+      draft: { message: 'remote inherited-slot goal', idleSecs: 90, maxCycles: 4 },
+      updatedAt: canonicalAt,
+    })
+  })
+
+  it('migrates a newer sparse legacy draft for an inherited slot key', async () => {
+    const slot = 'constructor'
+    localStorage.setItem(LEGACY_GOAL_DRAFTS_KEY, JSON.stringify({
+      [slot]: { message: 'local inherited-slot goal', idleSecs: 120, maxCycles: 6 },
+    }))
+    const puts: Record<string, unknown>[] = []
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    renderPopover(null, slot)
+
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(goalBox().value).toBe('local inherited-slot goal')
+    expect((puts[0].draft as Record<string, unknown>).message).toBe(
+      'local inherited-slot goal',
+    )
+    expect(Number.isFinite(Number(puts[0].updated_at))).toBe(true)
+  })
+
+  it('offers an in-place retry after reconciliation fails', async () => {
+    const now = Date.now()
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      reads += 1
+      if (reads === 1) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'recovered desktop goal', idle_secs: 90, max_cycles: 4 },
+          updated_at: now,
+        }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    expect(await screen.findByTestId('goal-draft-sync-error')).toHaveTextContent(
+      "Couldn't sync this draft",
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(goalBox().value).toBe('recovered desktop goal'))
+    expect(reads).toBe(2)
+  })
+
+  it('migrates a newer local draft without letting the stale server copy win', async () => {
+    const now = Date.now()
+    saveGoalDraft(SLOT, { message: 'latest desktop goal', idleSecs: 120, maxCycles: 6 }, now)
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body))
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'stale mobile goal', idle_secs: 60, max_cycles: 0 },
+          updated_at: now - 5_000,
+        }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(fetchMock.mock.calls.some(call => call[1]?.method === 'PUT')).toBe(true))
+    const put = fetchMock.mock.calls.find(call => call[1]?.method === 'PUT')!
+    expect(JSON.parse(String(put[1]?.body)).draft.message).toBe('latest desktop goal')
+    expect(goalBox().value).toBe('latest desktop goal')
+  })
+
+  it('shows cross-device reconciliation and blocks Start until the canonical draft arrives', async () => {
+    const now = Date.now()
+    saveGoalDraft(SLOT, { message: 'stale mobile goal', idleSecs: 60, maxCycles: 0 }, now - 5_000)
+    let resolveDraft!: (value: { ok: boolean; json: () => Promise<unknown> }) => void
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      return new Promise(resolve => { resolveDraft = resolve })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    expect(screen.getByTestId('goal-draft-sync-status')).toHaveTextContent('Checking other devices…')
+    expect(screen.getByRole('button', { name: /Start loop/i })).toBeDisabled()
+
+    await act(async () => {
+      resolveDraft({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'latest desktop goal', idle_secs: 90, max_cycles: 4 },
+          updated_at: now,
+        }),
+      })
+    })
+
+    await waitFor(() => expect(goalBox().value).toBe('latest desktop goal'))
+    expect(screen.getByTestId('goal-draft-sync-status')).toHaveTextContent('Updated from another device.')
+    expect(screen.getByRole('button', { name: /Start loop/i })).not.toBeDisabled()
+  })
+
+  it('serializes a first-sync migration before a live edit from the same slot', async () => {
+    const now = Date.now()
+    saveGoalDraft(SLOT, { message: 'future-skewed local goal', idleSecs: 60, maxCycles: 0 }, now + 60_000)
+    const puts: Record<string, unknown>[] = []
+    let resolveMigration!: () => void
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (sent.migration === true) {
+          return new Promise(resolve => {
+            resolveMigration = () => resolve({
+              ok: true,
+              json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+            })
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: now + 60_001 }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'older server goal', idle_secs: 60, max_cycles: 0 },
+          updated_at: now,
+        }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    const view = renderPopover(null)
+    await waitFor(() => expect(puts).toHaveLength(1))
+    fireEvent.change(goalBox(), { target: { value: 'live edit while migration is pending' } })
+    view.unmount()
+    expect(puts).toHaveLength(1)
+
+    resolveMigration()
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(puts[0].migration).toBe(true)
+    expect(puts[1].migration).toBe(false)
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('live edit while migration is pending')
+  })
+
+  it('keeps per-slot write ordering across a popover remount', async () => {
+    const now = Date.now()
+    const puts: Record<string, unknown>[] = []
+    let resolveFirstPut!: () => void
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (puts.length === 1) {
+          return new Promise(resolve => {
+            resolveFirstPut = () => resolve({
+              ok: true,
+              json: () => Promise.resolve({ draft: sent.draft, updated_at: now + 1 }),
+            })
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: now + 2 }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    const first = renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    fireEvent.change(goalBox(), { target: { value: 'first mount edit' } })
+    first.unmount()
+    await waitFor(() => expect(puts).toHaveLength(1))
+
+    saveGoalDraft(SLOT, { message: 'second mount local copy', idleSecs: 60, maxCycles: 0 }, now + 2)
+    const second = renderPopover(null)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(puts).toHaveLength(1)
+
+    resolveFirstPut()
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(puts[0].migration).toBe(false)
+    expect(puts[1].migration).toBe(true)
+    second.unmount()
+  })
+
+  it('does not let an in-flight save erase a newer typed edit before its debounce fires', async () => {
+    const puts: Record<string, unknown>[] = []
+    let resolveFirstPut!: (value: { ok: boolean; json: () => Promise<unknown> }) => void
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (puts.length === 1) {
+          return new Promise(resolve => { resolveFirstPut = resolve })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            draft: sent.draft,
+            updated_at: Number(sent.updated_at) + 1,
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+
+    fireEvent.change(goalBox(), { target: { value: 'first submitted edit' } })
+    await waitFor(() => expect(puts).toHaveLength(1))
+
+    // This value exists only in the live form until its debounce fires. The
+    // older response must not reset it or clear the edit flag that owns its timer.
+    fireEvent.change(goalBox(), { target: { value: 'newer typed edit' } })
+    await act(async () => {
+      resolveFirstPut({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'first submitted edit', idle_secs: 60, max_cycles: 0 },
+          updated_at: Number(puts[0].updated_at) + 1,
+        }),
+      })
+      await Promise.resolve()
+    })
+
+    expect(goalBox().value).toBe('newer typed edit')
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('newer typed edit')
+  })
+
+  it('an older failed write cannot expose Retry over a newer live edit', async () => {
+    const puts: Record<string, unknown>[] = []
+    let failFirstPut!: () => void
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (puts.length === 1) {
+          return new Promise(resolve => {
+            failFirstPut = () => resolve({
+              ok: false,
+              status: 503,
+              json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+            })
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            draft: sent.draft,
+            updated_at: Number(sent.updated_at) + 1,
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    fireEvent.change(goalBox(), { target: { value: 'older submitted edit' } })
+    await waitFor(() => expect(puts).toHaveLength(1))
+
+    fireEvent.change(goalBox(), { target: { value: 'newer live edit' } })
+    await act(async () => {
+      failFirstPut()
+      await Promise.resolve()
+    })
+
+    expect(goalBox().value).toBe('newer live edit')
+    expect(screen.queryByTestId('goal-draft-sync-error')).toBeNull()
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('newer live edit')
+  })
+
+  it('surfaces a live write failure while preserving the local fallback', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    fireEvent.change(goalBox(), { target: { value: 'local edit stays here' } })
+
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toHaveTextContent(
+      "Couldn't sync this draft",
+    ))
+    expect(loadGoalDraft(SLOT)?.message).toBe('local edit stays here')
+  })
+
+  it('retries from the in-memory edit when local and remote persistence both fail', async () => {
+    const now = Date.now()
+    saveGoalDraft(SLOT, { message: 'older stored copy', idleSecs: 60, maxCycles: 0 }, now)
+    const puts: Record<string, unknown>[] = []
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (puts.length === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 503,
+            json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: Number(sent.updated_at) + 1 }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'older stored copy', idle_secs: 60, max_cycles: 0 },
+          updated_at: now,
+        }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) throw new Error('QuotaExceeded')
+      return orig.call(this, k, v)
+    }
+    try {
+      fireEvent.change(goalBox(), { target: { value: 'only in-memory edit' } })
+      await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }))
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(((puts[1].draft as Record<string, unknown>).message)).toBe('only in-memory edit')
+    expect(goalBox().value).toBe('only in-memory edit')
+  })
+
+  it('retains a first server canonical in memory when its local write-back fails', async () => {
+    const slot = 'chat-canonical-write-fallback'
+    const oldStamp = Date.now()
+    const canonicalStamp = oldStamp + 5_000
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 }, oldStamp)
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      reads += 1
+      if (reads === 1) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            draft: { message: 'server canonical', idle_secs: 90, max_cycles: 4 },
+            updated_at: canonicalStamp,
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+      })
+    }) as unknown as typeof fetch)
+
+    let writeAttempts = 0
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) {
+        writeAttempts += 1
+        throw new Error('QuotaExceeded')
+      }
+      return orig.call(this, k, v)
+    }
+    const first = renderPopover(null, slot)
+    try {
+      await waitFor(() => expect(goalBox().value).toBe('server canonical'))
+      await waitFor(() => expect(writeAttempts).toBeGreaterThan(0))
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+
+    first.unmount()
+    renderPopover(null, slot)
+    expect(goalBox().value).toBe('server canonical')
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(goalBox().value).toBe('server canonical')
+  })
+
+  it('Retry keeps a Start-path edit when local and remote writes both fail', async () => {
+    const slot = 'chat-start-write-fallback'
+    const oldStamp = Date.now()
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 }, oldStamp)
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }
+      if (init?.method === 'PUT') {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+        })
+      }
+      reads += 1
+      if (reads === 1) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            draft: { message: 'stale durable goal', idle_secs: 60, max_cycles: 0 },
+            updated_at: oldStamp,
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null, slot)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    fireEvent.change(goalBox(), { target: { value: 'only in-memory started goal' } })
+
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) throw new Error('QuotaExceeded')
+      return orig.call(this, k, v)
+    }
+    try {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Start loop/i }))
+        for (let i = 0; i < 6; i++) await Promise.resolve()
+      })
+      expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument()
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }))
+    expect(goalBox().value).toBe('only in-memory started goal')
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(goalBox().value).toBe('only in-memory started goal')
+  })
+
+  it('keeps a local clear-write failure visible instead of closing as if both stores cleared', async () => {
+    const slot = 'chat-clear-local-failure'
+    const oldStamp = Date.now() - 5_000
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 }, oldStamp)
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: sent.updated_at }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) throw new Error('QuotaExceeded')
+      return orig.call(this, k, v)
+    }
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+      await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+      expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+      expect(goalBox().value).toContain('north star')
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+
+    expect(loadGoalDraftSnapshot(slot)).toEqual({
+      draft: { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 },
+      updatedAt: oldStamp,
+    })
+  })
+
+  it('keeps a remote clear-write failure visible with a durable local tombstone', async () => {
+    const slot = 'chat-clear-remote-failure'
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 })
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+    expect(goalBox().value).toContain('north star')
+    expect(loadGoalDraftSnapshot(slot).draft).toBeNull()
+    expect(loadGoalDraftSnapshot(slot).updatedAt).toBeGreaterThan(0)
+  })
+
+  it('closes only after the clear tombstone is durable locally and remotely', async () => {
+    const slot = 'chat-clear-success'
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 })
+    let clearPut: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      clearPut = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: clearPut.updated_at }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+
+    await waitFor(() => expect(screen.getByTestId('popover-open')).toHaveTextContent('false'))
+    expect(clearPut).toMatchObject({ draft: null, migration: false })
+    expect(loadGoalDraftSnapshot(slot).draft).toBeNull()
+    expect(loadGoalDraftSnapshot(slot).updatedAt).toBeGreaterThan(0)
+  })
+
+  it('keeps and queues an edit typed while loop deletion is in flight', async () => {
+    const slot = 'chat-clear-delete-edit'
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 })
+    const puts: Record<string, unknown>[] = []
+    let resolveDelete!: () => void
+    let deleteStarted = false
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        deleteStarted = true
+        return new Promise(resolve => {
+          resolveDelete = () => resolve({ ok: true, json: () => Promise.resolve({}) })
+        })
+      }
+      if (!init?.method) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+        })
+      }
+      const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+      puts.push(sent)
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+    await waitFor(() => expect(deleteStarted).toBe(true))
+
+    fireEvent.change(goalBox(), { target: { value: 'edit while deleting loop' } })
+    resolveDelete()
+
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+    expect(goalBox().value).toBe('edit while deleting loop')
+    expect(puts[0]).toMatchObject({ draft: null, migration: false })
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('edit while deleting loop')
+    expect(loadGoalDraft(slot)?.message).toBe('edit while deleting loop')
+  })
+
+  it.each([
+    {
+      name: 'idle seconds',
+      slot: 'chat-clear-delete-idle-edit',
+      label: 'Seconds between nudges',
+      value: '321',
+      property: 'idle_secs',
+      expected: 321,
+    },
+    {
+      name: 'max cycles',
+      slot: 'chat-clear-delete-cycle-edit',
+      label: 'Max cycles (0 = infinite)',
+      value: '7',
+      property: 'max_cycles',
+      expected: 7,
+    },
+  ])('keeps a $name edit typed while loop deletion is in flight', async ({
+    slot, label, value, property, expected,
+  }) => {
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 90, maxCycles: 3 })
+    const puts: Record<string, unknown>[] = []
+    let resolveDelete!: () => void
+    let deleteStarted = false
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        deleteStarted = true
+        return new Promise(resolve => {
+          resolveDelete = () => resolve({ ok: true, json: () => Promise.resolve({}) })
+        })
+      }
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      puts.push(sent)
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({
+      slot_key: slot,
+      active: false,
+      message: 'stale durable goal',
+      idle_secs: 90,
+      max_cycles: 3,
+    }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+    await waitFor(() => expect(deleteStarted).toBe(true))
+
+    fireEvent.change(screen.getByLabelText(label), { target: { value } })
+    resolveDelete()
+
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+    expect(screen.getByLabelText(label)).toHaveValue(Number(value))
+    expect((puts[1].draft as Record<string, unknown>)[property]).toBe(expected)
+  })
+
+  it('keeps a newer edit visible through remote clear success and remount', async () => {
+    const slot = 'chat-clear-newer-edit'
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 })
+    const puts: Record<string, unknown>[] = []
+    let canonicalDraft: Record<string, unknown> | null = null
+    let canonicalAt = 0
+    let resolveClear!: () => void
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      if (!init?.method) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: canonicalDraft, updated_at: canonicalAt }),
+        })
+      }
+      const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+      puts.push(sent)
+      if (puts.length === 1) {
+        return new Promise(resolve => {
+          resolveClear = () => resolve({
+            ok: true,
+            json: () => Promise.resolve({ draft: null, updated_at: sent.updated_at }),
+          })
+        })
+      }
+      canonicalDraft = sent.draft as Record<string, unknown>
+      canonicalAt = Number(sent.updated_at)
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: canonicalDraft, updated_at: canonicalAt }),
+      })
+    }) as unknown as typeof fetch)
+
+    const first = renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+    await waitFor(() => expect(puts).toHaveLength(1))
+
+    fireEvent.change(goalBox(), { target: { value: 'newer edit during clear' } })
+    resolveClear()
+
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+    expect(goalBox().value).toBe('newer edit during clear')
+    expect(puts[0]).toMatchObject({ draft: null, migration: false })
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('newer edit during clear')
+    expect(loadGoalDraft(slot)?.message).toBe('newer edit during clear')
+
+    first.unmount()
+    renderPopover(null, slot)
+    expect(goalBox().value).toBe('newer edit during clear')
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    expect(goalBox().value).toBe('newer edit during clear')
+  })
+
+  it('ignores a failed clear completion after a newer edit is already queued', async () => {
+    const slot = 'chat-clear-failure-newer-edit'
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 })
+    const puts: Record<string, unknown>[] = []
+    let resolveClear!: () => void
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      puts.push(sent)
+      if (puts.length === 1) {
+        return new Promise(resolve => {
+          resolveClear = () => resolve({
+            ok: false,
+            status: 503,
+            json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+          })
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+    await waitFor(() => expect(puts).toHaveLength(1))
+
+    fireEvent.change(goalBox(), { target: { value: 'edit after local clear' } })
+    resolveClear()
+
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(screen.queryByTestId('goal-draft-sync-error')).toBeNull()
+    expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+    expect(goalBox().value).toBe('edit after local clear')
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('edit after local clear')
+    expect(loadGoalDraft(slot)?.message).toBe('edit after local clear')
+  })
+
+  it('retries the newer edit instead of the failed clear tombstone', async () => {
+    const slot = 'chat-clear-failure-retry-edit'
+    const oldStamp = Date.now() - 5_000
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 }, oldStamp)
+    const puts: Record<string, unknown>[] = []
+    let remoteHealthy = false
+    let resolveClear!: () => void
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      if (!init?.method) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            draft: { message: 'stale durable goal', idle_secs: 60, max_cycles: 0 },
+            updated_at: oldStamp,
+          }),
+        })
+      }
+      const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+      puts.push(sent)
+      if (puts.length === 1) {
+        return new Promise(resolve => {
+          resolveClear = () => resolve({
+            ok: false,
+            status: 503,
+            json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+          })
+        })
+      }
+      if (!remoteHealthy) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+    await waitFor(() => expect(puts).toHaveLength(1))
+
+    fireEvent.change(goalBox(), { target: { value: 'retry this newer edit' } })
+    resolveClear()
+
+    await waitFor(() => expect(puts).toHaveLength(2))
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(goalBox().value).toBe('retry this newer edit')
+    expect(loadGoalDraft(slot)?.message).toBe('retry this newer edit')
+
+    remoteHealthy = true
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }))
+
+    await waitFor(() => expect(puts).toHaveLength(3))
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-error')).toBeNull())
+    expect((puts[2].draft as Record<string, unknown>).message).toBe('retry this newer edit')
+    expect(goalBox().value).toBe('retry this newer edit')
+    expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+  })
+
+  it('preserves a failed clear tombstone and visible failure across remount', async () => {
+    const slot = 'chat-clear-remount'
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 })
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+      })
+    }) as unknown as typeof fetch)
+
+    const first = renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    first.unmount()
+
+    renderPopover(null, slot)
+    expect(goalBox().value).toContain('north star')
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(loadGoalDraftSnapshot(slot).draft).toBeNull()
+  })
+
+  it('keeps Retry failed when a local clear failure is followed by a remote failure', async () => {
+    const slot = 'chat-clear-local-then-remote'
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 })
+    let retrying = false
+    let retryReads = 0
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      if (retrying && !init?.method) {
+        retryReads += 1
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+        })
+      }
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: sent.updated_at }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) throw new Error('QuotaExceeded')
+      return orig.call(this, k, v)
+    }
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+      await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+
+    retrying = true
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }))
+    await waitFor(() => expect(retryReads).toBe(1))
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+    expect(goalBox().value).toContain('north star')
+  })
+
+  it('keeps Retry failed when a remote clear failure is followed by a local failure', async () => {
+    const slot = 'chat-clear-remote-then-local'
+    const oldStamp = Date.now() - 5_000
+    saveGoalDraft(slot, { message: 'stale durable goal', idleSecs: 60, maxCycles: 0 }, oldStamp)
+    let retrying = false
+    let retryPut: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      if (!retrying && init?.method === 'PUT') {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+        })
+      }
+      if (retrying && init?.method === 'PUT') {
+        retryPut = JSON.parse(String(init.body)) as Record<string, unknown>
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: null, updated_at: retryPut.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'stale durable goal', idle_secs: 60, max_cycles: 0 },
+          updated_at: oldStamp,
+        }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderStatefulPopover(makeLoop({ slot_key: slot, active: false }), slot)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' }))
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+
+    retrying = true
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) throw new Error('QuotaExceeded')
+      return orig.call(this, k, v)
+    }
+    try {
+      fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }))
+      await waitFor(() => expect(retryPut).not.toBeNull())
+      await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+      expect(screen.getByTestId('popover-open')).toHaveTextContent('true')
+      expect(goalBox().value).toContain('north star')
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+
+    expect(loadGoalDraftSnapshot(slot).draft).toBeNull()
+  })
+
+  it('keeps the only local draft when a full server store immediately evicts its migration', async () => {
+    const stamp = Date.now() - 1_000
+    const localDraft = { message: 'only local copy', idleSecs: 120, maxCycles: 3 }
+    saveGoalDraft(SLOT, localDraft, stamp)
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toHaveTextContent("Couldn't sync this draft"))
+    expect(screen.getByTestId('goal-draft-sync-error')).toHaveAttribute('role', 'alert')
+    expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull()
+    expect(goalBox().value).toBe('only local copy')
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({ draft: localDraft, updatedAt: stamp })
+  })
+
+  it('does not create a local tombstone when neither side has a draft', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(
+        String(url).startsWith('/api/crons')
+          ? { jobs: [] }
+          : { draft: null, updated_at: 0 },
+      ),
+    })) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    expect(goalRecordKeys()).toEqual([])
+  })
+
+  it('caches a lower canonical timestamp when it answers the submitted edit', async () => {
+    const canonicalAt = Date.now() - 1_000
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body))
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: canonicalAt }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: canonicalAt - 1 }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    const view = renderPopover(null)
+    await waitFor(() => expect(loadGoalDraftSnapshot(SLOT).updatedAt).toBe(canonicalAt - 1))
+    fireEvent.change(goalBox(), { target: { value: 'edit from a future-skewed browser' } })
+    view.unmount()
+
+    await waitFor(() => expect(loadGoalDraftSnapshot(SLOT)).toEqual({
+      draft: { message: 'edit from a future-skewed browser', idleSecs: 60, maxCycles: 0 },
+      updatedAt: canonicalAt,
+    }))
+  })
+
+  it('keeps a lower-timestamp server-confirmed canonical in memory when its write-back fails, so a future-dated stale copy cannot win during a GET outage', async () => {
+    // F1 (residual/crash-data-loss): a future-dated stale storage record exists
+    // -> a new edit reaches the server -> the lower-timestamp canonical write-back
+    // fails -> remount GET also fails. Provenance, not the skewed clock, must keep
+    // the confirmed canonical in the editor so Start cannot launch stale text.
+    const staleFutureStamp = Date.now() + 5 * 60_000
+    const canonicalStamp = Date.now() + 1_000
+    // A stale copy already sits in localStorage; it must never resurface once the
+    // server has confirmed a newer edit.
+    saveGoalDraft(SLOT, { message: 'stale stored copy', idleSecs: 60, maxCycles: 0 }, staleFutureStamp)
+
+    let getShouldFail = false
+    let resolvePut!: () => void
+    const puts: Record<string, unknown>[] = []
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        puts.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        // Hold the canonical until the test has counted the failed edit write.
+        return new Promise(resolve => {
+          resolvePut = () => resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              draft: { message: 'canonical from server', idle_secs: 60, max_cycles: 0 },
+              updated_at: canonicalStamp,
+            }),
+          })
+        })
+      }
+      // GET: returns the stale copy on first mount, then fails on remount.
+      if (getShouldFail) {
+        return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ error: 'down' }) })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'stale stored copy', idle_secs: 60, max_cycles: 0 },
+          updated_at: staleFutureStamp,
+        }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    const first = renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+
+    // localStorage now refuses every write, so both the edit and the
+    // server-confirmed canonical can only live in the module's in-memory snapshot.
+    // Count body-write attempts. The PUT stays held until the edit attempt is
+    // recorded, so any later increment belongs to cacheCanonical's write-back.
+    let setItemAttempts = 0
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) {
+        setItemAttempts += 1
+        throw new Error('QuotaExceeded')
+      }
+      return orig.call(this, k, v)
+    }
+    try {
+      fireEvent.change(goalBox(), { target: { value: 'recoverable edit' } })
+      await waitFor(() => expect(puts).toHaveLength(1))
+      const editAttempts = setItemAttempts
+      await act(async () => {
+        resolvePut()
+        await Promise.resolve()
+      })
+      // Wait until cacheCanonical attempts its own failing write-back.
+      await waitFor(() => expect(setItemAttempts).toBeGreaterThan(editAttempts))
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+
+    // localStorage never took a new write, so it still holds only the stale copy.
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({
+      draft: { message: 'stale stored copy', idleSecs: 60, maxCycles: 0 },
+      updatedAt: staleFutureStamp,
+    })
+
+    // Remount with the shared server copy unreachable: the only surviving newest
+    // copy is the in-memory canonical. Under the bug (unconditional delete after a
+    // failed re-save) this would show 'stale stored copy'.
+    first.unmount()
+    getShouldFail = true
+    renderPopover(null)
+    expect(goalBox().value).toBe('canonical from server')
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(goalBox().value).toBe('canonical from server')
+  })
+
+  it('a delayed tab\'s older canonical never downgrades a newer edit that landed meanwhile (delayed tab + quota + GET failure)', async () => {
+    // F1 (residual/crash-data-loss-corruption, span f9eb25b1dcc6): tab A edits,
+    // its localStorage write fails (quota) so the edit lives only in the module's
+    // in-memory fallback (older), and its PUT is slow. Tab B (same browser) writes
+    // a NEWER draft to shared localStorage. Tab A's delayed PUT then returns the
+    // canonical for its OLDER submission. It must NOT overwrite tab B's newer
+    // localStorage copy, and a reopen during the outage (GET fails) must show the
+    // newer copy -- never tab A's stale fallback.
+    const olderStamp = Date.now()
+    const newerStamp = olderStamp + 5_000
+
+    // The shared server copy is unreachable throughout (outage): every GET fails,
+    // so reconcile-on-open can only fall back to the local record.
+    let resolvePut!: (v: { ok: boolean; json: () => Promise<unknown> }) => void
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        return new Promise(resolve => { resolvePut = resolve })
+      }
+      return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ error: 'down' }) })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    const first = renderPopover(null)
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+
+    // Tab A edits while localStorage refuses writes: the edit survives only in the
+    // in-memory fallback (older), and its PUT is enqueued but held unresolved.
+    const orig = Storage.prototype.setItem
+    Storage.prototype.setItem = function(k: string, v: string) {
+      if (isGoalRecordKey(k)) throw new Error('QuotaExceeded')
+      return orig.call(this, k, v)
+    }
+    try {
+      fireEvent.change(goalBox(), { target: { value: 'tab A older edit' } })
+      await waitFor(() => expect(
+        fetchMock.mock.calls.some(c => (c[1] as RequestInit | undefined)?.method === 'PUT'),
+      ).toBe(true))
+    } finally {
+      Storage.prototype.setItem = orig
+    }
+    // The edit never reached localStorage; it lives only in the in-memory fallback.
+    expect(loadGoalDraftSnapshot(SLOT).updatedAt).toBe(0)
+
+    // Tab B is a separate JS realm: update the shared localStorage keys
+    // directly so tab A's module-local timestamp cache remains stale.
+    localStorage.setItem(
+      `${LEGACY_GOAL_DRAFTS_KEY}-ts`,
+      JSON.stringify({ [SLOT]: newerStamp }),
+    )
+    localStorage.setItem(
+      LEGACY_GOAL_DRAFTS_KEY,
+      JSON.stringify({
+        [SLOT]: { message: 'tab B newer edit', idleSecs: 60, maxCycles: 0 },
+      }),
+    )
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({
+      draft: { message: 'tab B newer edit', idleSecs: 60, maxCycles: 0 },
+      updatedAt: newerStamp,
+    })
+
+    // Tab A's delayed PUT now resolves with the canonical for its OLDER submission.
+    await act(async () => {
+      resolvePut({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'tab A older edit', idle_secs: 60, max_cycles: 0 },
+          updated_at: olderStamp + 1,
+        }),
+      })
+      // Drain the react-query mutation resolution AND the `.then(cacheCanonical)`
+      // tail (a macrotask, not just microtasks) so the retain/drop decision is
+      // deterministically made before we assert or remount.
+      await new Promise(resolve => setTimeout(resolve, 0))
+      await Promise.resolve()
+    })
+
+    // The newer localStorage copy must be intact -- not downgraded to tab A's
+    // older canonical. Under the bug the pending-timestamp branch fires and
+    // overwrites the durable copy with the delayed older canonical. This is the
+    // durable record a fresh tab (or a reload/Retry) reads while the server is
+    // unreachable -- the GET-failure reopen the finding describes -- so keeping
+    // it correct is what stops Start from launching the older goal.
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({
+      draft: { message: 'tab B newer edit', idleSecs: 60, maxCycles: 0 },
+      updatedAt: newerStamp,
+    })
+    first.unmount()
+  })
+
+  it('a delayed GET cannot overwrite a newer cross-tab local draft', async () => {
+    const firstStamp = Date.now()
+    const newerStamp = firstStamp + 5_000
+    saveGoalDraft(
+      SLOT,
+      { message: 'tab A initial draft', idleSecs: 60, maxCycles: 0 },
+      firstStamp,
+    )
+
+    let resolveGet!: (value: { ok: boolean; json: () => Promise<unknown> }) => void
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      return new Promise(resolve => { resolveGet = resolve })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    expect(screen.getByTestId('goal-draft-sync-status')).toHaveTextContent(
+      'Checking other devices…',
+    )
+
+    // A separate tab appends a newer immutable record while tab A's GET waits.
+    // The delayed response must re-read and preserve that record.
+    saveGoalDraft(
+      SLOT,
+      { message: 'tab B newer draft', idleSecs: 60, maxCycles: 0 },
+      newerStamp,
+    )
+
+    await act(async () => {
+      resolveGet({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'older remote canonical', idle_secs: 60, max_cycles: 0 },
+          updated_at: firstStamp + 1_000,
+        }),
+      })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(goalBox().value).toBe('tab B newer draft'))
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({
+      draft: { message: 'tab B newer draft', idleSecs: 60, maxCycles: 0 },
+      updatedAt: newerStamp,
+    })
+  })
+
+  it.each([
+    {
+      name: 'distinct draft bodies',
+      local: { message: 'offline local draft', idleSecs: 60, maxCycles: 0 },
+      remote: { message: 'equal-stamp remote draft', idleSecs: 90, maxCycles: 4 },
+    },
+    {
+      name: 'local draft versus remote tombstone',
+      local: { message: 'offline local draft', idleSecs: 60, maxCycles: 0 },
+      remote: null,
+    },
+    {
+      name: 'local tombstone versus remote draft',
+      local: null,
+      remote: { message: 'equal-stamp remote draft', idleSecs: 90, maxCycles: 4 },
+    },
+  ])('reissues equal-timestamp offline content: $name', async ({ local, remote }) => {
+    const stamp = Date.now()
+    saveGoalDraft(SLOT, local, stamp)
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: remote ? {
+            message: remote.message,
+            idle_secs: remote.idleSecs,
+            max_cycles: remote.maxCycles,
+          } : null,
+          updated_at: stamp,
+        }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(Number(puts[0].updated_at)).toBe(stamp + 1)
+    expect(puts[0].draft).toEqual(local ? {
+      message: local.message,
+      idle_secs: local.idleSecs,
+      max_cycles: local.maxCycles,
+    } : null)
+    await waitFor(() => expect(loadGoalDraftSnapshot(SLOT)).toEqual({
+      draft: local,
+      updatedAt: stamp + 1,
+    }))
+    if (local) expect(goalBox().value).toBe(local.message)
+    else expect(goalBox().value).toContain('north star')
+  })
+
+  it('reissues again when another client takes the first bumped timestamp', async () => {
+    const stamp = Date.now()
+    const local = { message: 'offline local draft', idleSecs: 60, maxCycles: 0 }
+    saveGoalDraft(SLOT, local, stamp)
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (puts.length === 1) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({
+            draft: { message: 'rival equal-stamp draft', idle_secs: 90, max_cycles: 4 },
+            updated_at: sent.updated_at,
+          }) })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({
+        draft: { message: 'initial remote draft', idle_secs: 90, max_cycles: 4 },
+        updated_at: stamp,
+      }) })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(puts.map(put => put.updated_at)).toEqual([stamp + 1, stamp + 2])
+    expect(puts.every(put => (put.draft as Record<string, unknown>).message === local.message)).toBe(true)
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({ draft: local, updatedAt: stamp + 2 })
+    expect(goalBox().value).toBe(local.message)
+  })
+
+  it('queues an accepted cross-tab draft for remote sync and adopts its canonical', async () => {
+    const updatedAt = Date.now() + 1_000
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: updatedAt + 1 }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    await act(async () => {
+      publishCrossTabSnapshot(
+        SLOT,
+        { message: 'newer cross-tab goal', idleSecs: 90, maxCycles: 4 },
+        updatedAt,
+      )
+    })
+
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(puts[0]).toMatchObject({ migration: true, updated_at: updatedAt })
+    expect(goalBox().value).toBe('newer cross-tab goal')
+    expect(loadGoalDraftSnapshot(SLOT).updatedAt).toBe(updatedAt + 1)
+  })
+
+  it('queues an accepted cross-tab tombstone and keeps the cleared editor live', async () => {
+    const firstStamp = Date.now()
+    const tombstoneStamp = firstStamp + 1_000
+    saveGoalDraft(
+      SLOT,
+      { message: 'goal cleared elsewhere', idleSecs: 60, maxCycles: 0 },
+      firstStamp,
+    )
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: null, updated_at: tombstoneStamp + 1 }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'goal cleared elsewhere', idle_secs: 60, max_cycles: 0 },
+          updated_at: firstStamp,
+        }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    await act(async () => { publishCrossTabSnapshot(SLOT, null, tombstoneStamp) })
+
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(puts[0]).toMatchObject({ draft: null, migration: true, updated_at: tombstoneStamp })
+    expect(goalBox().value).toContain('north star')
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({ draft: null, updatedAt: tombstoneStamp + 1 })
+  })
+
+  it('queues a cross-tab update behind the slot write already in flight', async () => {
+    const firstStamp = Date.now()
+    const crossTabStamp = firstStamp + 5_000
+    saveGoalDraft(
+      SLOT,
+      { message: 'first migration', idleSecs: 60, maxCycles: 0 },
+      firstStamp,
+    )
+    const puts: Record<string, unknown>[] = []
+    let resolveFirst!: () => void
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (puts.length === 1) {
+          return new Promise(resolve => {
+            resolveFirst = () => resolve({
+              ok: true,
+              json: () => Promise.resolve({ draft: sent.draft, updated_at: firstStamp + 1 }),
+            })
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: crossTabStamp + 1 }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(puts).toHaveLength(1))
+    await act(async () => {
+      publishCrossTabSnapshot(
+        SLOT,
+        { message: 'cross-tab waits behind migration', idleSecs: 60, maxCycles: 0 },
+        crossTabStamp,
+      )
+      await Promise.resolve()
+    })
+    expect(puts).toHaveLength(1)
+
+    await act(async () => { resolveFirst(); await Promise.resolve() })
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect((puts[1].draft as Record<string, unknown>).message)
+      .toBe('cross-tab waits behind migration')
+    expect(goalBox().value).toBe('cross-tab waits behind migration')
+  })
+
+  it('keeps a failed cross-tab sync visible and retries the same snapshot', async () => {
+    const updatedAt = Date.now() + 1_000
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        if (puts.length === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 503,
+            json: () => Promise.resolve({ error: 'temporarily unavailable' }),
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: updatedAt + 1 }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    await act(async () => {
+      publishCrossTabSnapshot(
+        SLOT,
+        { message: 'cross-tab retry goal', idleSecs: 60, maxCycles: 0 },
+        updatedAt,
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId('goal-draft-sync-error')).toBeInTheDocument())
+    expect(goalBox().value).toBe('cross-tab retry goal')
+
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }))
+    await waitFor(() => expect(puts).toHaveLength(2))
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-error')).toBeNull())
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('cross-tab retry goal')
+    expect(goalBox().value).toBe('cross-tab retry goal')
+  })
+
+  it.each(['raw', 'atomic'] as const)(
+    'does not remount an expired timestamp-less %s migration after server eviction',
+    async format => {
+      const nowValue = Date.now()
+      const now = vi.spyOn(Date, 'now').mockReturnValue(nowValue)
+      const legacyDraft = { message: `${format} legacy migration`, idleSecs: 60, maxCycles: 0 }
+      const payload = format === 'atomic'
+        ? { __slotDraftStore: 1, drafts: { [SLOT]: legacyDraft }, timestamps: {} }
+        : { [SLOT]: legacyDraft }
+      localStorage.setItem(LEGACY_GOAL_DRAFTS_KEY, JSON.stringify(payload))
+      const legacyBefore = localStorage.getItem(LEGACY_GOAL_DRAFTS_KEY)
+      const puts: Record<string, unknown>[] = []
+      vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+        if (String(url).startsWith('/api/crons')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+        }
+        if (init?.method === 'PUT') {
+          const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+          puts.push(sent)
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+        })
+      }) as unknown as typeof fetch)
+
+      const first = renderPopover(null)
+      await waitFor(() => expect(puts).toHaveLength(1))
+      expect(puts[0].updated_at).toBe(nowValue)
+      expect((puts[0].draft as Record<string, unknown>).message).toBe(legacyDraft.message)
+      first.unmount()
+
+      now.mockReturnValue(nowValue + GOAL_DRAFT_TTL_MS + 1)
+      saveGoalDraft(`${SLOT}-compaction-trigger`, {
+        message: 'unrelated fresh slot',
+        idleSecs: 60,
+        maxCycles: 0,
+      })
+      __resetForTests()
+      puts.length = 0
+      renderPopover(null)
+      await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+      expect(puts).toHaveLength(0)
+      expect(goalBox().value).toContain('north star')
+      expect(localStorage.getItem(LEGACY_GOAL_DRAFTS_KEY)).toBe(legacyBefore)
+      now.mockRestore()
+    },
+  )
+
+  it('ignores an unpaired legacy sidecar event until the body commit arrives', async () => {
+    const oldStamp = Date.now()
+    const newStamp = oldStamp + 1_000
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    localStorage.setItem(
+      LEGACY_GOAL_DRAFTS_KEY,
+      JSON.stringify({ [SLOT]: { message: 'stale legacy body', idleSecs: 60, maxCycles: 0 } }),
+    )
+    localStorage.setItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`, JSON.stringify({ [SLOT]: oldStamp }))
+
+    localStorage.setItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`, JSON.stringify({ [SLOT]: newStamp }))
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: `${LEGACY_GOAL_DRAFTS_KEY}-ts`,
+      newValue: localStorage.getItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`),
+      storageArea: localStorage,
+    }))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(puts).toHaveLength(0)
+    expect(goalBox().value).toContain('north star')
+
+    localStorage.setItem(
+      LEGACY_GOAL_DRAFTS_KEY,
+      JSON.stringify({ [SLOT]: { message: 'paired legacy body', idleSecs: 90, maxCycles: 4 } }),
+    )
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: LEGACY_GOAL_DRAFTS_KEY,
+      newValue: localStorage.getItem(LEGACY_GOAL_DRAFTS_KEY),
+      storageArea: localStorage,
+    }))
+
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect((puts[0].draft as Record<string, unknown>).message).toBe('paired legacy body')
+    expect(puts[0].updated_at).toBe(newStamp)
+  })
+
+  it('folds duplicate storage events into one remote migration', async () => {
+    const updatedAt = Date.now() + 1_000
+    const puts: Record<string, unknown>[] = []
+    let resolvePut!: () => void
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        return new Promise(resolve => {
+          resolvePut = () => resolve({
+            ok: true,
+            json: () => Promise.resolve({ draft: sent.draft, updated_at: updatedAt + 1 }),
+          })
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    await act(async () => {
+      publishLegacyCrossTabSnapshot(
+        SLOT,
+        { message: 'one migration only', idleSecs: 60, maxCycles: 0 },
+        updatedAt,
+        2,
+      )
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(puts).toHaveLength(1)
+    await act(async () => { resolvePut(); await Promise.resolve() })
+  })
+
+  it('requeues a formerly canonical cross-tab draft when a fresh read shows server eviction', async () => {
+    const updatedAt = Date.now() + 1_000
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+        puts.push(sent)
+        return Promise.resolve({
+          ok: true,
+          // Migration preserves the browser edit stamp. This makes the accepted
+          // snapshot byte-identical to the prior canonical, so only the fresh
+          // GET proving eviction can authorize a second queue entry.
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    const first = renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    await act(async () => {
+      publishCrossTabSnapshot(
+        SLOT,
+        { message: 'canonical later evicted', idleSecs: 60, maxCycles: 0 },
+        updatedAt,
+      )
+    })
+    await waitFor(() => expect(puts).toHaveLength(1))
+    first.unmount()
+
+    renderPopover(null)
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect((puts[1].draft as Record<string, unknown>).message).toBe('canonical later evicted')
+  })
+
+  it.each([
+    {
+      name: 'draft to canonical tombstone',
+      local: { message: 'draft rejected by canonical clear', idleSecs: 60, maxCycles: 0 },
+      canonical: null,
+      expected: null,
+    },
+    {
+      name: 'tombstone to canonical draft',
+      local: null,
+      canonical: { message: 'canonical draft beats clear', idleSecs: 90, maxCycles: 4 },
+      expected: 'canonical draft beats clear',
+    },
+  ])('applies the server canonical when it has the opposite mode: $name', async ({ local, canonical, expected }) => {
+    const updatedAt = Date.now() + 1_000
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            draft: canonical && {
+              message: canonical.message,
+              idle_secs: canonical.idleSecs,
+              max_cycles: canonical.maxCycles,
+            },
+            updated_at: updatedAt + 1,
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: null, updated_at: 0 }),
+      })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(screen.queryByTestId('goal-draft-sync-status')).toBeNull())
+    await act(async () => { publishCrossTabSnapshot(SLOT, local, updatedAt) })
+
+    await waitFor(() => {
+      if (expected) expect(goalBox().value).toBe(expected)
+      else expect(goalBox().value).toContain('north star')
+    })
+    expect(loadGoalDraftSnapshot(SLOT)).toEqual({
+      draft: canonical,
+      updatedAt: updatedAt + 1,
+    })
+  })
+
+  it('never lets a late server response overwrite text typed after open', async () => {
+    const now = Date.now()
+    let resolveDraft!: (value: { ok: boolean; json: () => Promise<unknown> }) => void
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      return new Promise(resolve => { resolveDraft = resolve })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    fireEvent.change(goalBox(), { target: { value: 'typing on mobile now' } })
+    await act(async () => {
+      resolveDraft({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'desktop response arrived late', idle_secs: 60, max_cycles: 0 },
+          updated_at: now + 1_000,
+        }),
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(goalBox().value).toBe('typing on mobile now')
+  })
   it('opening with a live loop never writes the loop config into the draft store', () => {
     vi.useFakeTimers()
     // No stored draft. Open with a live loop, let any timer fire, then close.
@@ -118,6 +2174,19 @@ describe('AutoNudgePopover goal persistence', () => {
     act(() => { vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS) })
     view.unmount()
     expect(loadGoalDraft(SLOT)).toBeNull()
+  })
+
+  it('stopping a loop leaves the remembered inactive draft unchanged', async () => {
+    saveGoalDraft(SLOT, { message: 'remembered before start', idleSecs: 120, maxCycles: 5 })
+    renderPopover(makeLoop({ message: 'live loop config', idle_secs: 90, max_cycles: 3 }))
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Stop loop/i }))
+    })
+
+    expect(loadGoalDraft(SLOT)).toEqual({
+      message: 'remembered before start', idleSecs: 120, maxCycles: 5,
+    })
   })
 
   it('falsy loop fields fall back to default template / 60 / 0, not bare "" / 0 (|| not ??)', () => {
@@ -170,6 +2239,26 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     expect(cyclesField().value).toBe('')
     fireEvent.blur(cyclesField())
     expect(cyclesField().value).toBe('0')
+  })
+
+  it('clamps locally accepted values before saving or syncing them', async () => {
+    renderPopover(null)
+    fireEvent.change(idleField(), { target: { value: '172800' } })
+    fireEvent.change(cyclesField(), { target: { value: '2147483648' } })
+    fireEvent.blur(idleField())
+    fireEvent.blur(cyclesField())
+
+    expect(idleField().value).toBe('86400')
+    expect(cyclesField().value).toBe('2147483647')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Start loop/i }))
+    })
+    const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+    const save = calls.find(call => call[1]?.method === 'POST' && call[1]?.body)
+    const body = JSON.parse(String(save?.[1]?.body))
+    expect(body.idle_secs).toBe(86400)
+    expect(body.max_cycles).toBe(2147483647)
   })
 
   it('Save sends the typed idle value even without an intervening blur', async () => {
