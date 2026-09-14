@@ -125,6 +125,7 @@ export default function ErrorNotice({
   variant = 'block',
   askAgent = false,
   askAgentLabel,
+  askAgentGate,
   actionPlacement = 'beside',
   messagePlacement = 'beside',
   scrollMessage = false,
@@ -201,6 +202,8 @@ export default function ErrorNotice({
    * `askAgent` is off.
    */
   askAgentLabel?: string
+  /** Runs the hand-off through a caller-owned navigation leave guard. */
+  askAgentGate?: (proceed: () => void) => void
   /**
    * Where the hand-off sits in the block variant. `beside` (default) puts it in
    * the banner's right-hand column, which is right for a banner that spans a
@@ -308,6 +311,7 @@ export default function ErrorNotice({
             message={message}
             onHandoff={onHandoff}
             label={askAgentLabel}
+            gate={askAgentGate}
           />
         )}
         {onDismiss && (
@@ -378,6 +382,7 @@ export default function ErrorNotice({
               message={message}
               onHandoff={onHandoff}
               label={askAgentLabel}
+              gate={askAgentGate}
             />
           </div>
         )}
@@ -388,6 +393,7 @@ export default function ErrorNotice({
           message={message}
           onHandoff={onHandoff}
           label={askAgentLabel}
+          gate={askAgentGate}
           className="mt-[1px]"
         />
       )}

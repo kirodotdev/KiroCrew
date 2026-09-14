@@ -8486,13 +8486,14 @@
       "changed_fields": "{{name}} hat {{fields}} geändert"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Fehlgeschlagen",
       "not_connected": "nicht verbunden",
       "send_a_copy_to": "Kopie senden an",
       "sent": "Gesendet",
       "sent_transcript_only": "Gesendet (nur Transkript)",
       "transcript_only_hint": "Diese Crew konnte den vollständigen Gesprächskontext nicht wiederherstellen; diese Kopie setzt nur auf dem Transkript fort.",
-      "unknown_error": "Unbekannter Fehler"
+      "unknown_error": "Unbekannter Fehler",
+      "send_failed": "Die Kopie wurde nicht zugestellt – diese Sitzung ist unverändert.",
+      "send_failed_heading": "Kopie von „{{name}}“ konnte nicht gesendet werden"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Zurück ins Hauptfenster holen",
@@ -8537,7 +8538,8 @@
     "sessionColorSwatches": {
       "custom_color": "Benutzerdefinierte Farbe",
       "hex_color_code": "Hex-Farbcode",
-      "no_color": "Keine Farbe"
+      "no_color": "Keine Farbe",
+      "color_change_failed": "Die Farbänderung wurde zurückgenommen."
     },
     "sessionGridView": {
       "close_cell": "Zelle schließen",
@@ -10245,6 +10247,11 @@
         "tool_search_label": "Werkzeugsuche",
         "tool_search_description": "Zurückgestellte MCP-Tool-Spezifikationen bei Bedarf laden."
       }
+    },
+    "actionFailureNotice": {
+      "earlier_waiting_one": "{{count}} frühere Fehlermeldung wartet – schließ diese, um sie zu sehen.",
+      "earlier_waiting_other": "{{count}} frühere Fehlermeldungen warten – schließ diese, um die nächste zu sehen.",
+      "unnamed_heading": "Diese Aktion konnte nicht abgeschlossen werden"
     }
   },
   "hooks": {
@@ -10377,12 +10384,21 @@
         "reason_setting": "In ihr läuft nichts. Du wirst gefragt, weil „{{setting}}“ in den Einstellungen aktiviert ist.",
         "actions": "Die Unterhaltung und der Entwurf in deinem Eingabefeld bleiben erhalten, und du kannst die Sitzung später wieder öffnen."
       },
-      "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
+      "reload_failed": "Sitzung konnte nicht neu geladen werden — das Gateway ist nicht erreichbar. Stelle die Verbindung wieder her und versuche es erneut.",
       "duplicate_unreachable": "Diese Sitzung konnte nicht dupliziert werden. {{productName}} ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "duplicate_failed_reason": "Diese Sitzung konnte nicht dupliziert werden. Grund: {{reason}}. Versuche es gleich noch einmal.",
       "duplicate_guided_reason": "Diese Sitzung konnte nicht dupliziert werden. {{reason}}",
-      "duplicate_not_found": "Diese Sitzung konnte nicht dupliziert werden. Sie ist nicht mehr geöffnet. Lade die Seite neu oder öffne sie im Verlauf erneut und versuche es noch einmal."
+      "duplicate_not_found": "Diese Sitzung konnte nicht dupliziert werden. Sie ist nicht mehr geöffnet. Lade die Seite neu oder öffne sie im Verlauf erneut und versuche es noch einmal.",
+      "pin_change_failed": "Die Anheft-Änderung wurde zurückgenommen.",
+      "pin_change_failed_heading_one": "{{count}} Sitzung konnte nicht aktualisiert werden",
+      "pin_change_failed_heading_other": "{{count}} Sitzungen konnten nicht aktualisiert werden",
+      "pin_change_failed_named": "Die Anheft-Änderung wurde für {{names}} zurückgenommen.",
+      "reload_failed_busy": "Sitzung konnte nicht neu geladen werden — der Agent ist mitten in einem Zug. Versuche es erneut, wenn die Sitzung inaktiv ist.",
+      "reload_failed_conflict": "Sitzung konnte nicht neu geladen werden — die Sitzung befand sich nicht in einem Zustand, der ein Neuladen erlaubt. Versuche es gleich noch einmal.",
+      "reload_failed_heading": "„{{name}}“ konnte nicht neu geladen werden",
+      "reload_failed_rebound": "Sitzung konnte nicht neu geladen werden — diese Sitzung wurde ersetzt, während sie lief. Prüfe die Sitzung und versuche es dann erneut.",
+      "reload_failed_rejected": "Sitzung konnte nicht neu geladen werden — {{productName}} hat sie abgelehnt. Der Agent wurde nicht neu gestartet; versuche es erneut oder frage den Agenten."
     },
     "useStreamingStt": {
       "audio_module_load_failed": "Das Diktat konnte nicht fertig geladen werden. Prüf deine Verbindung und diktier dann noch einmal.",
@@ -10405,6 +10421,9 @@
       "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",
       "approval_rejected": "Die Genehmigung wurde verweigert, deshalb wurde die Anfrage abgelehnt.",
       "unknown": "Unbekannt"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Das Verschieben wurde zurückgenommen."
     }
   },
   "lib": {
@@ -12520,7 +12539,8 @@
       "comments_refused": "{{name}} hat diese Kommentare nicht erhalten — sende sie aus dem Dokument erneut. Die Kommentare sind noch dort.",
       "comments_refused_overlay": "{{name}} hat diese Kommentare nicht erhalten — öffne das Seitenpanel erneut und sende sie noch einmal. Die Kommentare sind noch im Dokument.",
       "comments_sent_other": "{{count}} Kommentare gesendet",
-      "your_crewmate": "Dein Crewmate"
+      "your_crewmate": "Dein Crewmate",
+      "could_not_update": "„{{name}}“ konnte nicht aktualisiert werden"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
@@ -19202,6 +19222,10 @@
     }
   },
   "utils": {
+    "actionFailure": {
+      "unreachable": "{{productName}} ist nicht erreichbar. Stelle die Verbindung wieder her und versuche es erneut.",
+      "refused": "{{productName}} meldet: „{{reason}}“. Frage den Agenten, wenn es erneut abgelehnt wird."
+    },
     "agentSwitchFeedback": {
       "turn_in_flight": "Ein Zug läuft gerade — versuche es erneut, sobald er abgeschlossen ist."
     },

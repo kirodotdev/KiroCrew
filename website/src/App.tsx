@@ -65,6 +65,7 @@ import CrashReportNotice from './components/CrashReportNotice'
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
 import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
+import ActionFailureNotice from './components/ActionFailureNotice'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { MobileNavRailContext, MobileRosterBarContext, type MobileNavRailOptions } from './components/MobileNavRailContext'
 import ShortcutsModal from './components/ShortcutsModal'
@@ -539,6 +540,7 @@ export default function App() {
       <div className="h-screen supports-[height:100dvh]:h-dvh w-screen overflow-hidden bg-bg flex flex-col">
         <KiroCrewNavBridge />
         <EmbedTabStrip />
+        <ActionFailureNotice className="mx-3 mt-2 mb-0 animate-rise" />
         <div className="flex-1 min-h-0">
           <Routes>
             <Route path="/embed/chat/:slug?" element={<ErrorBoundary><ChatPage embedded embedMode="chat" /></ErrorBoundary>} />
@@ -792,6 +794,14 @@ export default function App() {
               <KiroSignInNotice />
             </Suspense>
           </ErrorBoundary>
+          {/* Inside the LOCAL pane on purpose, beside CrashReportNotice, not above
+              the pane stack: a remote tab fills the window with another crew's
+              whole dashboard, which mounts its own copy of this sink, so a local
+              failure painted over it would read as that crew's. The pane is
+              hidden, not unmounted, while a remote tab is active, and the store
+              never auto-clears, so a rejection that lands mid-switch is deferred
+              to the return to Local rather than lost. */}
+          <ActionFailureNotice />
           {/* The rail renderer reaches the chat page through context rather than
               a prop: the route element is shared with the popout/embed frames. */}
           <MobileNavRailContext.Provider value={mobileNavRail}>

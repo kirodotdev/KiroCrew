@@ -73,7 +73,10 @@ the `internal-content-scan` check.
   a nested button. When the agent the hand-off would open cannot run (its own
   credential or backend is what failed), pass `noHandoffReason="…"` instead: a
   reason for the reviewer, never rendered, and a type error next to `askAgent`.
-  Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`).
+  Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`). A new always-mounted
+  shell must also mount `ActionFailureNotice`, the sink `reportActionFailure`
+  writes a rejected gateway write to, as the two `App.tsx` shells and
+  `PopoutFrame` do; `test/App.actionFailureNotice.test.tsx` pins the mount.
 - **Security: every `dangerouslySetInnerHTML` goes through DOMPurify** via
   `md()` / `sanitize()` / `esc()` in `src/api/helpers.ts`. A bypass is an XSS bug,
   so there is no acceptable pointer for this one.

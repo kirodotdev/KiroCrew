@@ -8621,13 +8621,14 @@
       "changed_fields": "{{name}} ha cambiato {{fields}}"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Non riuscito",
       "not_connected": "non connesso",
       "send_a_copy_to": "Invia una copia a",
       "sent": "Inviato",
       "sent_transcript_only": "Inviato (solo trascrizione)",
       "transcript_only_hint": "Quella crew non ha potuto ripristinare il contesto completo della conversazione, quindi questa copia riprende solo dalla trascrizione.",
-      "unknown_error": "Errore sconosciuto"
+      "unknown_error": "Errore sconosciuto",
+      "send_failed": "La copia non è stata consegnata: questa sessione è rimasta invariata.",
+      "send_failed_heading": "Impossibile inviare una copia di “{{name}}”"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Riporta nella finestra principale",
@@ -8672,7 +8673,8 @@
     "sessionColorSwatches": {
       "custom_color": "Colore personalizzato",
       "hex_color_code": "Codice colore esadecimale",
-      "no_color": "Nessun colore"
+      "no_color": "Nessun colore",
+      "color_change_failed": "La modifica del colore è stata annullata."
     },
     "sessionGridView": {
       "close_cell": "Chiudi cella",
@@ -10389,6 +10391,12 @@
         "tool_search_label": "Ricerca strumenti",
         "tool_search_description": "Carica su richiesta le specifiche degli strumenti MCP differite."
       }
+    },
+    "actionFailureNotice": {
+      "earlier_waiting_many": "{{count}} errori precedenti sono in attesa: chiudi questo per vedere il successivo.",
+      "earlier_waiting_one": "{{count}} errore precedente è in attesa: chiudi questo per vederlo.",
+      "earlier_waiting_other": "{{count}} errori precedenti sono in attesa: chiudi questo per vedere il successivo.",
+      "unnamed_heading": "Non è stato possibile completare l’azione"
     }
   },
   "hooks": {
@@ -10522,12 +10530,22 @@
         "reason_setting": "Non c’è nulla in esecuzione. Te lo chiediamo perché «{{setting}}» è attivo nelle Impostazioni.",
         "actions": "La conversazione e la bozza nella casella del messaggio vengono conservate, e puoi riaprire la sessione in seguito."
       },
-      "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
+      "reload_failed": "Ricaricamento della sessione non riuscito: il gateway non è raggiungibile. Riconnettiti e riprova.",
       "duplicate_unreachable": "Impossibile duplicare questa sessione. {{productName}} non è raggiungibile. Controlla la connessione e riprova.",
       "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
       "duplicate_failed_reason": "Impossibile duplicare questa sessione. Motivo: {{reason}}. Riprova tra un momento.",
       "duplicate_guided_reason": "Impossibile duplicare questa sessione. {{reason}}",
-      "duplicate_not_found": "Impossibile duplicare questa sessione. Non è più aperta. Ricarica la pagina, oppure riaprila dalla cronologia e riprova."
+      "duplicate_not_found": "Impossibile duplicare questa sessione. Non è più aperta. Ricarica la pagina, oppure riaprila dalla cronologia e riprova.",
+      "pin_change_failed": "La modifica del fissaggio è stata annullata.",
+      "pin_change_failed_heading_many": "Impossibile aggiornare {{count}} sessioni",
+      "pin_change_failed_heading_one": "Impossibile aggiornare {{count}} sessione",
+      "pin_change_failed_heading_other": "Impossibile aggiornare {{count}} sessioni",
+      "pin_change_failed_named": "La modifica del fissaggio è stata annullata per {{names}}.",
+      "reload_failed_busy": "Ricaricamento della sessione non riuscito: l’agente è a metà di un turno. Riprova quando la sessione è inattiva.",
+      "reload_failed_conflict": "Ricaricamento della sessione non riuscito: la sessione non era in uno stato che consentisse il ricaricamento. Riprova tra poco.",
+      "reload_failed_heading": "Impossibile ricaricare “{{name}}”",
+      "reload_failed_rebound": "Ricaricamento della sessione non riuscito: questa sessione è stata sostituita mentre era in esecuzione. Controlla la sessione, quindi riprova.",
+      "reload_failed_rejected": "Ricaricamento della sessione non riuscito: {{productName}} l’ha rifiutato. L’agente non è stato riavviato; riprova o chiedi all’agente."
     },
     "useStreamingStt": {
       "audio_module_load_failed": "La dettatura non ha finito di caricarsi. Controlla la connessione, poi riprova a dettare.",
@@ -10550,6 +10568,9 @@
       "approval_wait_expired": "L'attesa dell'approvazione è scaduta, quindi la richiesta è stata rifiutata.",
       "approval_rejected": "L'approvazione è stata respinta, quindi la richiesta è stata rifiutata.",
       "unknown": "Sconosciuto"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Lo spostamento è stato annullato."
     }
   },
   "lib": {
@@ -12708,7 +12729,8 @@
       "comments_refused_overlay": "{{name}} non ha ricevuto questi commenti — riapri il pannello laterale e inviali di nuovo. Sono ancora nel documento.",
       "comments_sent_other": "{{count}} commenti inviati",
       "comments_sent_many": "{{count}} commenti inviati",
-      "your_crewmate": "Il tuo crewmate"
+      "your_crewmate": "Il tuo crewmate",
+      "could_not_update": "Impossibile aggiornare “{{name}}”"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",
@@ -19486,6 +19508,10 @@
     }
   },
   "utils": {
+    "actionFailure": {
+      "unreachable": "{{productName}} non è raggiungibile. Riconnettiti e riprova.",
+      "refused": "{{productName}} risponde: «{{reason}}». Chiedi all’agente se viene rifiutato di nuovo."
+    },
     "agentSwitchFeedback": {
       "turn_in_flight": "Un turno è in corso — riprova quando sarà terminato."
     },
