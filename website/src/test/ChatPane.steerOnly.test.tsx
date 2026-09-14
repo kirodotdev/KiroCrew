@@ -312,4 +312,26 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     expect(err?.content).toBe("Couldn't send this message: slot agent mismatch. Your text is back in the composer.")
   })
 
+  /* The empty-thread placeholder centres on every width of the Members thread
+   * column. It is a `text-center` block that spans the full column, so on a
+   * narrow column (~252px: nav rail + roster leave the DM thread that wide) a
+   * sentence nearly as wide as the column leaves `text-center` no visible
+   * gutter and it sits flush under the header. Horizontal padding keeps a
+   * gutter at every width, so the line stays centred and wraps rather than
+   * touching the edges. Block centring here matches the sibling empty states
+   * (SideChat, the Members pick-a-member / opening-thread placeholders).
+   *
+   * jsdom has NO layout engine, so this pins only the CLASS (text-center +
+   * px-*); the rendered alignment is checked in a real browser via
+   * website/scripts/capture-members-empty-placeholder.mjs at 768x1024 and
+   * 1440x900. Mutation: drop the `px-*` gutter and this test goes red. */
+  it('empty thread: the "Session ready" placeholder is centred with a horizontal gutter', async () => {
+    renderPane('member-empty', { running: false, busyMode: 'steer-only' })
+    const ph = await screen.findByText('Session ready. Type a message to start.')
+    expect(ph).toHaveClass('text-center')
+    // The gutter that makes centring visible on a narrow column. Without it the
+    // centred sentence touches both edges and reads left-aligned under the header.
+    expect(ph.className).toMatch(/\bpx-\d/)
+  })
+
 })
