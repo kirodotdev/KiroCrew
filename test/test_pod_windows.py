@@ -448,6 +448,10 @@ def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeyp
         "supervised_pid",
         lambda *_a: 4242 if seen["n"] < 4 else None,
     )
+    # Answer liveness from the same poll counter so the liveness view and the
+    # handle view flip together, and a real host process at the invented PID
+    # cannot trip the reuse guard.
+    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and seen["n"] < 4)
     monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
     monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
     monkeypatch.setattr(
