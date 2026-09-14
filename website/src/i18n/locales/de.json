@@ -15249,8 +15249,16 @@
       "saving": "Wird gespeichert..."
     },
     "offline": {
+      "delete_artifacts": "das Löschen von Artefakten",
+      "delete_folders": "das Löschen von Ordnern",
+      "dimmed_actions_need_connection": "Gateway offline — die ausgegrauten Aktionen brauchen eine Verbindung",
       "disabled_gateway_offline": "{{label}} deaktiviert — Gateway offline",
       "gateway_offline_reconnect": "Gateway offline — für {{action}} neu verbinden",
+      "move_folders": "das Verschieben von Ordnern",
+      "name_not_saved_keep_field_open": "Gateway offline — noch nicht gespeichert. Lass dieses Feld offen und verbinde neu.",
+      "rename_folders": "das Umbenennen von Ordnern",
+      "save_folder_names": "das Speichern von Ordnernamen",
+      "star_artifacts": "das Setzen oder Entfernen von Artefakt-Markierungen",
       "submit_comments": "Kommentare einreichen"
     },
     "popoutController": {

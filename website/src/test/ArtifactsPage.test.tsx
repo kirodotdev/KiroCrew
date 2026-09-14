@@ -3,7 +3,15 @@ import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../store/dashboardSlice'
+
+/** The row's star and delete are gateway-gated, so this fixture connects. */
+function connectedStore() {
+  const s = createTestStore()
+  s.dispatch(sseConnected())
+  return s
+}
 import { api } from '../api/client'
 import type { Artifact } from '../types'
 
@@ -245,7 +253,7 @@ describe('ArtifactsPage', () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
       artifacts: [mkArtifact('cr-queue', { pinned: true })],
     })
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     const starBtn = screen.getByLabelText('Remove star from artifact')
     expect(starBtn).toBeInTheDocument()
@@ -323,7 +331,7 @@ describe('ArtifactsPage', () => {
     vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
       docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
     })
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
     expect(screen.getByText(/From your chats/i)).toBeInTheDocument()
     expect(screen.getByLabelText('Star document')).toBeInTheDocument()
@@ -423,7 +431,7 @@ describe('ArtifactsPage', () => {
     })
     const materializeSpy = vi.fn().mockResolvedValue({})
     vi.mocked(api).materializeArtifact = materializeSpy
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -442,7 +450,7 @@ describe('ArtifactsPage', () => {
       docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
     })
     vi.mocked(api).materializeArtifact = vi.fn().mockRejectedValue(new Error('materialize blew up'))
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -464,7 +472,7 @@ describe('ArtifactsPage', () => {
       slug: 'findings-md-2',
       slug_collided_with: 'findings-md',
     })
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -495,7 +503,7 @@ describe('ArtifactsPage', () => {
     })
     const materializeSpy = vi.fn().mockResolvedValue({ slug: 'findings-md', slug_collided_with: '' })
     vi.mocked(api).materializeArtifact = materializeSpy
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -523,7 +531,7 @@ describe('ArtifactsPage', () => {
         slug: 'findings-md-2',
         slug_collided_with: 'findings-md',
       })
-      renderWithProviders(<ArtifactsPage />)
+      renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
       await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
       await user.click(screen.getByLabelText('Star document'))
@@ -550,7 +558,7 @@ describe('ArtifactsPage', () => {
       .mockResolvedValueOnce({ slug: 'findings-md-2', slug_collided_with: 'findings-md' })
       .mockResolvedValueOnce({ slug: 'notes-md', slug_collided_with: '' })
     vi.mocked(api).materializeArtifact = materializeSpy
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     const stars = screen.getAllByLabelText('Star document')

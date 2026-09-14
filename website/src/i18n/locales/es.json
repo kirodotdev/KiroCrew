@@ -15447,8 +15447,16 @@
       "saving": "Guardando…"
     },
     "offline": {
+      "delete_artifacts": "eliminar artefactos",
+      "delete_folders": "eliminar carpetas",
+      "dimmed_actions_need_connection": "Gateway sin conexión — las acciones atenuadas necesitan conexión",
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
+      "move_folders": "mover carpetas",
+      "name_not_saved_keep_field_open": "Gateway sin conexión — aún no se ha guardado. Deja este campo abierto y vuelve a conectarte.",
+      "rename_folders": "cambiar el nombre de las carpetas",
+      "save_folder_names": "guardar nombres de carpetas",
+      "star_artifacts": "destacar o dejar de destacar artefactos",
       "submit_comments": "enviar comentarios"
     },
     "popoutController": {

@@ -15250,8 +15250,16 @@
       "saving": "সংরক্ষণ হচ্ছে..."
     },
     "offline": {
+      "delete_artifacts": "আর্টিফ্যাক্ট মুছে ফেলা",
+      "delete_folders": "ফোল্ডার মুছে ফেলা",
+      "dimmed_actions_need_connection": "গেটওয়ে অফলাইন — ম্লান করা কাজগুলোর জন্য সংযোগ দরকার",
       "disabled_gateway_offline": "{{label}} নিষ্ক্রিয় — গেটওয়ে অফলাইন",
       "gateway_offline_reconnect": "গেটওয়ে অফলাইন — {{action}} করতে আবার সংযুক্ত হও",
+      "move_folders": "ফোল্ডার সরানো",
+      "name_not_saved_keep_field_open": "গেটওয়ে অফলাইন — এখনো সংরক্ষণ হয়নি। এই ঘরটি খোলা রাখো এবং আবার সংযুক্ত হও।",
+      "rename_folders": "ফোল্ডারের নাম পরিবর্তন",
+      "save_folder_names": "ফোল্ডারের নাম সংরক্ষণ",
+      "star_artifacts": "আর্টিফ্যাক্ট তারা দেওয়া বা সরানো",
       "submit_comments": "মন্তব্য জমা দেওয়া"
     },
     "popoutController": {

@@ -15446,8 +15446,16 @@
       "saving": "Salvando..."
     },
     "offline": {
+      "delete_artifacts": "excluir artefatos",
+      "delete_folders": "excluir pastas",
+      "dimmed_actions_need_connection": "Gateway offline — as ações esmaecidas precisam de conexão",
       "disabled_gateway_offline": "{{label}} indisponível — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — reconecte para {{action}}",
+      "move_folders": "mover pastas",
+      "name_not_saved_keep_field_open": "Gateway offline — ainda não foi salvo. Deixe este campo aberto e reconecte.",
+      "rename_folders": "renomear pastas",
+      "save_folder_names": "salvar nomes de pastas",
+      "star_artifacts": "destacar ou remover o destaque de artefatos",
       "submit_comments": "enviar comentários"
     },
     "popoutController": {
