@@ -356,6 +356,16 @@ the same chord where the boundary is known to work — every other assertion in
 them is a negative, and a negative is worthless if the harness never delivered
 the key.
 
+## Security: side-panel file paths
+
+`src/utils/safePath.ts` owns the side-panel file-open refusal shared by
+`DiffBlock`, `ToolCallLine`, and app-sdk `messageRenderers`. It splits path
+segments on both `/` and `\`, including drive, UNC, and relative paths. A `..`
+segment or a sensitive name (equal to the name, or beginning with `name.`) is
+refused. This is not substring matching: `.envrc`, `.environment`, `.gitignore`,
+`my.env`, and `...` remain allowed. This frontend guard suppresses misleading
+open actions and probes; backend file-read checks remain the authority.
+
 ## Security: sanitize every HTML sink
 
 All `dangerouslySetInnerHTML` content goes through DOMPurify, via
