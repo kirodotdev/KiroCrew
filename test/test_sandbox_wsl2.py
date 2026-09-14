@@ -555,6 +555,33 @@ def test_wsl_namespace_argv_seals_the_real_windows_ceilings_read_only(monkeypatc
     assert captured["unlink_self"] is True, "a guest-staged launcher must clean itself up"
 
 
+def test_wsl_namespace_argv_seals_the_kiro_agents_tree(monkeypatch):
+    """Fork governance sanitizes the specs in this tree (allowedTools ceiling,
+    autoApprove strip), so a sandboxed process that can rewrite one hands its
+    next spawn forged grants. ``_build_launcher_script``'s own resolution of it
+    is builder-host and names a WINDOWS path under an identity, which the guest
+    resolves as relative, never matches, and silently skips -- so the seal has to
+    be re-derived here, DrvFs-translated, like the crew ceilings."""
+    _stub_wsl_namespace_deps(monkeypatch)
+    monkeypatch.setattr(
+        sb, "_resolved_kiro_agents_targets", lambda: [r"C:\Users\alice\.kiro\agents"]
+    )
+    captured: dict = {}
+
+    def fake_build_launcher_script(sandbox_level, **kwargs):
+        captured.update(kwargs)
+        return "# launcher"
+
+    monkeypatch.setattr(sb, "_build_launcher_script", fake_build_launcher_script)
+
+    sb.wsl_namespace_argv(["/bin/bash", "-c", "echo hi"], distro="Ubuntu-26.04")
+
+    assert "/mnt/c/Users/alice/.kiro/agents" in captured["extra_readonly_dirs"]
+    assert not any(
+        "\\" in path for path in captured["extra_readonly_dirs"]
+    ), "no Windows-spelled path may reach the guest script"
+
+
 def test_wsl2_windows_side_masking_carries_the_relocated_and_runtime_paths(monkeypatch):
     """Every builder-host resolution the launcher skips under an identity is
     re-derived here against the Windows side, so nothing is dropped."""
@@ -604,6 +631,11 @@ def test_build_launcher_script_under_an_identity_uses_only_caller_supplied_host_
         "_voice_runtime_parent_paths",
         "_pod_os_home_targets",
         "_md_notebook_degraded_mask_dirs",
+        # The last one to be gated. Ungated it named a WINDOWS path, which the
+        # guest's own os.path.exists resolved as RELATIVE to the launcher's cwd,
+        # never matched, and silently skipped -- so fork governance's sanitized
+        # specs stayed writable through DrvFs.
+        "_resolved_kiro_agents_targets",
     ):
         monkeypatch.setattr(sb, name, _refuse(name))
     script = sb._build_launcher_script(

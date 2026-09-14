@@ -5218,9 +5218,16 @@ def _build_launcher_script(
         if path not in hidden_dirs
     )
     # Same relocation hole for the kiro agents tree (fork governance's specs).
-    readonly_dirs.extend(
-        path for path in _resolved_kiro_agents_targets() if path not in hidden_dirs
-    )
+    # Gated like every other builder-host resolver above: ``kiro_agents_dir()``
+    # reads ``Path.home()``/``config_dir()``, so under a WSL2 identity it named a
+    # WINDOWS path, which the guest's ``os.path.exists`` guard then resolved as a
+    # relative path against the launcher's cwd, never matched, and silently
+    # skipped -- leaving the sanitized specs writable through DrvFs. The caller
+    # re-derives the translated equivalent (see ``_wsl2_windows_side_masking``).
+    if identity is None:
+        readonly_dirs.extend(
+            path for path in _resolved_kiro_agents_targets() if path not in hidden_dirs
+        )
     # A caller-supplied hidden path may be a FILE, and the two launcher loops hide
     # each kind differently: a directory gets an empty dir bind-mounted over it, a file
     # gets an empty temp file. The dir loop is guarded by `if os.path.isdir(target)`, so
@@ -6513,6 +6520,13 @@ def _wsl2_windows_side_masking(sandbox_level: str) -> tuple[list[str], list[str]
     readonly = [os.path.join(windows_home, target) for target in _CREW_READONLY_TARGETS]
     readonly.extend(_relocated_crew_targets(_CREW_READONLY_LEAVES))
     readonly.extend(_voice_runtime_parent_paths())
+    # The kiro agents tree, for the same reason as the crew ceilings: fork
+    # governance sanitizes those specs (allowedTools ceiling, autoApprove strip),
+    # so a sandboxed process that can rewrite one hands its next spawn forged
+    # grants. ``_build_launcher_script`` skips its own resolution under an
+    # identity because it would name a Windows path, so this is where the guest
+    # gets the seal at all.
+    readonly.extend(_resolved_kiro_agents_targets())
     return hidden, readonly
 
 
