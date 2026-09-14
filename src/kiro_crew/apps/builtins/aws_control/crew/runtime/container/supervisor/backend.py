@@ -247,9 +247,9 @@ def build_backend_argv(settings: Settings) -> list[str]:
 #: `verify_sandbox` refuses to start on a host that cannot sandbox the model
 #: subprocess, and this container offers no unsandboxed posture at all. That refusal
 #: is worth nothing if a config file can turn the sandbox off underneath it: the
-#: gateway reads these three keys, `sandbox="off"` skips its own OS-level isolation,
-#: and either fallback flag set true lets `wrap_argv` proceed with no backend instead
-#: of raising. So they are forced exactly as the channel sections are -- written, not
+#: gateway reads these keys, `sandbox="off"` skips its own OS-level isolation, and
+#: either fallback flag set true lets `wrap_argv` proceed with no backend instead of
+#: raising. So they are forced exactly as the channel sections are -- written, not
 #: merged, not defaulted.
 #:
 #: Defaults are not a substitute for writing them. `sandbox_allow_unsandboxed_exec`
@@ -257,11 +257,24 @@ def build_backend_argv(settings: Settings) -> list[str]:
 #: what silence means is a property of the platform rather than a constant, and
 #: `config.json` arrives in the task from outside this code.
 #:
+#: Each key is forced to the value of its declared type that grants nothing: `False`
+#: for a flag that would enable a fallback, `""` for a string that would name an
+#: alternative. `sandbox` is the exception, because it names the MODE rather than an
+#: opt-out of one, and the sandboxed mode is `auto`.
+#:
+#: `sandbox_wsl_distro` is written even though it cannot bite here. `wrap_argv` only
+#: reaches it through `_operator_wants_wsl2()`, which answers None unless
+#: `agent.sandbox` is `"wsl2"` -- which the line above forbids, and this container is
+#: Linux besides. Omitting it would make the container's posture depend on that
+#: coupling continuing to hold in another module, which is the inheritance this
+#: constant exists to refuse.
+#:
 #: `test/test_crew_container_config_isolation.py` ratchets these keys against
 #: `AgentConfig`, so a sandbox knob added to the gateway reds CI until the container
 #: decides what to write for it.
 FORCED_AGENT_SETTINGS: Mapping[str, object] = {
     "sandbox": "auto",
+    "sandbox_wsl_distro": "",
     "sandbox_allow_no_isolation": False,
     "sandbox_allow_unsandboxed_exec": False,
 }
