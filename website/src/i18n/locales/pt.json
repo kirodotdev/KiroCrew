@@ -9947,7 +9947,11 @@
         "search_files": "Pesquisar arquivos",
         "searching": "Pesquisando…",
         "showing_first_matches": "Mostrando as primeiras {{shown}} correspondências",
-        "unable_to_list_folder": "Não foi possível listar a pasta"
+        "unable_to_list_folder": "Não foi possível listar a pasta",
+        "listing_timed_out": "A listagem da pasta expirou",
+        "search_denied": "Sem acesso a esta pasta",
+        "search_root_missing": "Pasta não encontrada",
+        "search_timed_out": "A pesquisa expirou"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",

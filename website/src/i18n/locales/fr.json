@@ -9947,7 +9947,11 @@
         "search_files": "Rechercher des fichiers",
         "searching": "Recherche…",
         "showing_first_matches": "Affichage des {{shown}} premières correspondances",
-        "unable_to_list_folder": "Impossible de lister le dossier"
+        "unable_to_list_folder": "Impossible de lister le dossier",
+        "listing_timed_out": "Délai de listage du dossier dépassé",
+        "search_denied": "Accès refusé à ce dossier",
+        "search_root_missing": "Dossier introuvable",
+        "search_timed_out": "Délai de recherche dépassé"
       },
       "knowledgePicker": {
         "cancel": "Annuler",

@@ -9947,7 +9947,11 @@
         "search_files": "Cerca file",
         "searching": "Ricerca…",
         "showing_first_matches": "Mostrando le prime {{shown}} corrispondenze",
-        "unable_to_list_folder": "Impossibile elencare la cartella"
+        "unable_to_list_folder": "Impossibile elencare la cartella",
+        "listing_timed_out": "Elenco della cartella scaduto",
+        "search_denied": "Accesso negato a questa cartella",
+        "search_root_missing": "Cartella non trovata",
+        "search_timed_out": "Ricerca scaduta"
       },
       "knowledgePicker": {
         "cancel": "Annulla",

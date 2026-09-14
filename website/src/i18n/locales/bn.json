@@ -9812,7 +9812,11 @@
         "search_files": "ফাইল খুঁজুন",
         "searching": "খোঁজা হচ্ছে…",
         "showing_first_matches": "প্রথম {{shown}}টি মিল দেখানো হচ্ছে",
-        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
+        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি",
+        "listing_timed_out": "ফোল্ডার তালিকার সময় শেষ",
+        "search_denied": "এই ফোল্ডারে অ্যাক্সেস নেই",
+        "search_root_missing": "ফোল্ডার পাওয়া যায়নি",
+        "search_timed_out": "অনুসন্ধানের সময় শেষ"
       },
       "knowledgePicker": {
         "cancel": "বাতিল",

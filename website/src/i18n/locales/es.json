@@ -9947,7 +9947,11 @@
         "search_files": "Buscar archivos",
         "searching": "Buscando…",
         "showing_first_matches": "Mostrando las primeras {{shown}} coincidencias",
-        "unable_to_list_folder": "No se puede listar la carpeta"
+        "unable_to_list_folder": "No se puede listar la carpeta",
+        "listing_timed_out": "La lista de la carpeta expiró",
+        "search_denied": "Sin acceso a esta carpeta",
+        "search_root_missing": "Carpeta no encontrada",
+        "search_timed_out": "La búsqueda expiró"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",
