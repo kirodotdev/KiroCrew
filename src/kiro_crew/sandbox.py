@@ -5056,7 +5056,6 @@ def _build_launcher_script(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
-
     extra_readonly_dirs: tuple[str, ...] = (),
     identity: tuple[int, int, str] | None = None,
     unlink_self: bool = False,
@@ -6661,6 +6660,27 @@ def wsl_namespace_argv(
     # capability being withdrawn.
     guest_run_dir = f"{identity[2]}/.kirocrew-sandbox-run"
     guest_readonly_dirs = (*guest_readonly_dirs, guest_run_dir)
+
+    # Give the guest's seal and mask loops something to mount ON. Both loops are
+    # guarded inside the launcher (``os.path.exists`` for READONLY_DIRS, ``isdir``
+    # for SENSITIVE_DIRS) and an ABSENT target is silently skipped -- so on a
+    # default install, where none of these leaves has been written yet, the
+    # Windows-side data home stayed writable at every one of those names THROUGH
+    # DrvFs no matter how complete the path list above was. ``computer_use.json``
+    # is the one that decides the ceiling: a sandboxed workload that can create it
+    # turns on desktop control for itself, which is exactly the self-elevation
+    # ``security._SENSITIVE_HOME_DIRS``'s "the agent can neither read nor write its
+    # own ceiling" invariant exists to prevent.
+    #
+    # These resolve and create through ``config_dir()`` on the WINDOWS filesystem --
+    # the same bytes the guest reaches at ``/mnt/<drive>/...``, which is why doing it
+    # from the Windows-side builder is what makes the guest's seal non-vacuous. Same
+    # two calls, same order and same fail-closed contract as ``namespace_argv``;
+    # ``SandboxCeilingUnsealable`` propagates out of this function untouched (see
+    # ``wrap_argv``'s wsl2 arm), because a ceiling that could not be made sealable is
+    # a permanent host problem an operator must fix, never a retryable hiccup.
+    _materialize_sealable_ceilings()
+    _materialize_maskable_dirs()
 
     script = _build_launcher_script(
         sandbox_level,
@@ -9962,6 +9982,15 @@ def wrap_argv(
                 distro=wsl_distro,
                 cwd=cwd,
             )
+        except SandboxCeilingUnsealable:
+            # A governance ceiling that cannot be made sealable is a permanent
+            # host problem the operator has to fix (a dangling symlink squatting
+            # the path, a read-only data home), not the transient
+            # probe-passed-then-changed case the handler below describes. It also
+            # already refuses the spawn on its own terms, which is what makes
+            # re-raising safe. Propagated unchanged so it reads identically to the
+            # namespace backend, which never wraps it either.
+            raise
         except RuntimeError as exc:
             # detect_backend() already confirmed the probe passes for this
             # distro, so reaching here means something changed between probe

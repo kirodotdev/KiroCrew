@@ -719,6 +719,52 @@ def test_guest_staging_seal_reaches_the_generated_launcher_readonly_dirs(monkeyp
     assert "/home/alice/.kirocrew-sandbox-run" in readonly
 
 
+def test_wsl_namespace_argv_materializes_the_windows_side_ceilings(monkeypatch):
+    """A seal the launcher emits for an ABSENT path is not a seal: both guest
+    loops skip a target that does not exist, so on a default install the
+    Windows-side data home stayed writable through DrvFs at every ceiling name,
+    ``computer_use.json`` included -- a sandboxed workload that can create it
+    turns on desktop control for itself. The Windows builder has to create them,
+    exactly as ``namespace_argv`` does on Linux, because it is the same
+    filesystem the guest reaches at ``/mnt/<drive>``."""
+    _stub_wsl_namespace_deps(monkeypatch)
+    monkeypatch.setattr(sb, "_build_launcher_script", lambda *a, **kw: "# launcher")
+    root = sb.config_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    keystone = root / "computer_use.json"
+    assert not keystone.exists(), "the per-test data home must start without a keystone"
+
+    sb.wsl_namespace_argv(["/bin/bash", "-c", "echo hi"], distro="Ubuntu-26.04")
+
+    assert keystone.exists(), (
+        "the keystone must exist before the guest mounts, or its READONLY_DIRS "
+        "entry is skipped and the sandbox can create it through DrvFs"
+    )
+    for leaf in sb._CREW_PRECREATE_READONLY_FILE_LEAVES:
+        assert (root / leaf).exists(), f"{leaf} must be sealable"
+    for leaf in sb._CREW_PRECREATE_READONLY_DIR_LEAVES:
+        assert (root / leaf).is_dir(), f"{leaf} must be sealable"
+    for leaf in sb._CREW_PRECREATE_HIDDEN_DIR_LEAVES:
+        assert (root / leaf).is_dir(), f"{leaf} must be maskable"
+
+
+def test_wrap_argv_wsl2_does_not_relabel_an_unsealable_ceiling_as_transient(monkeypatch):
+    """A ceiling that cannot be made sealable is a permanent host problem an
+    operator must fix, so it must reach the caller as itself rather than as the
+    retryable probe-passed-then-changed failure the wsl2 arm reports for
+    everything else. The namespace backend does not wrap it either."""
+    monkeypatch.setattr(sb, "sys", _win32())
+    monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "wsl2")
+    monkeypatch.setattr(sb, "_operator_wants_wsl2", lambda: "Ubuntu-26.04")
+
+    def fake_wsl_namespace_argv(*args, **kwargs):
+        raise sb.SandboxCeilingUnsealable("cannot create the governance ceiling X")
+
+    monkeypatch.setattr(sb, "wsl_namespace_argv", fake_wsl_namespace_argv)
+    with pytest.raises(sb.SandboxCeilingUnsealable):
+        sb.wrap_argv(["/bin/bash", "-c", "echo hi"], mode="standard", posix_shell_argv=True)
+
+
 def test_wsl_namespace_argv_staged_path_is_random_and_unique(monkeypatch):
     _stub_wsl_namespace_deps(monkeypatch)
     monkeypatch.setattr(sb, "_build_launcher_script", lambda *a, **kw: "# launcher")
