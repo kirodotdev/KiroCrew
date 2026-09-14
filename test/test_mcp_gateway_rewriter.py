@@ -1259,3 +1259,184 @@ def test_cmd_safe_command_contract_on_real_windows(tmp_path: Path) -> None:
     if got != str(target):
         assert os.path.exists(got)
         assert not rewriter._CMD_UNSAFE.intersection(got)
+
+
+def _unencoded_json_reads(source: str) -> list[int]:
+    """Line numbers of ``json.loads(<path>.read_text(...))`` with no encoding."""
+    import ast
+
+    found: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if ast.unparse(node.func) not in ("json.loads", "json.load"):
+            continue
+        if not node.args:
+            continue
+        inner = node.args[0]
+        if not isinstance(inner, ast.Call):
+            continue
+        if not ast.unparse(inner.func).endswith(".read_text"):
+            continue
+        if not any(k.arg == "encoding" for k in inner.keywords):
+            found.append(inner.lineno)
+    return found
+
+
+class TestRewriterDecodesJsonAsUtf8:
+    """Agent specs and the global settings file are UTF-8 JSON written by
+    somebody else -- a user, an editor, the Kiro IDE -- so the rewriter decodes
+    them as UTF-8 rather than as the host's text code page.
+
+    Two harms follow from a code-page decode. Where the bytes are undecodable
+    the read raises ``UnicodeDecodeError``, which is a ``ValueError`` and so
+    matches neither the ``OSError`` arm (transient: keep the previous overlay)
+    nor the ``json.JSONDecodeError`` arm (deterministic: skip this agent) --
+    it leaves ``rewrite_agents`` entirely and takes the whole pass down, not
+    just the one offending agent. Where the bytes are decodable under the code
+    page but mean something else, nothing raises and the mojibake is written
+    into the overlay that spawns the backend.
+    """
+
+    @staticmethod
+    def _unrepresentable_char() -> str:
+        """A character the host's text code page cannot encode, or ``""``.
+
+        Picked against the live code page rather than hardcoded: which
+        characters survive depends on the host (cp1252 cannot take the CJK
+        one, cp950 cannot take the accented one), and a UTF-8 host encodes
+        every candidate -- the case with no divergence to show.
+        """
+        import locale
+
+        code_page = locale.getpreferredencoding(False)
+        for candidate in ("張", "é", "Ж", "क"):
+            try:
+                candidate.encode(code_page)
+            except UnicodeEncodeError:
+                return candidate
+        return ""
+
+    def test_agent_spec_round_trips_a_character_outside_the_code_page(self, tmp_path: Path) -> None:
+        import locale
+
+        from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+
+        needle = self._unrepresentable_char()
+        if not needle:
+            pytest.skip("this host's code page encodes every probe character")
+        # Guard the guard: a representable needle passes against a code-page
+        # decode too, which would make this test prove nothing.
+        with pytest.raises(UnicodeEncodeError):
+            needle.encode(locale.getpreferredencoding(False))
+
+        source_dir = tmp_path / "agents"
+        source_dir.mkdir()
+        spec = {
+            "name": f"agent-{needle}",
+            "mcpServers": {
+                "myserver": {
+                    "command": sys.executable,
+                    "args": [f"kirocrew-{needle}-arg"],
+                    "poolable": True,
+                }
+            },
+        }
+        # Written the way an editor or the Kiro IDE writes it: UTF-8 bytes,
+        # non-ASCII literal rather than escaped.
+        (source_dir / "agent.json").write_text(
+            json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        overlay_dir = tmp_path / "overlay"
+        rewrite_agents(
+            source_dir=source_dir,
+            overlay_dir=overlay_dir,
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            sandbox_mode="auto",
+            approval_mode="interactive",
+            stub_servers=frozenset(["myserver"]),
+        )
+
+        overlay = overlay_dir / "agent.json"
+        assert overlay.is_file(), "the agent produced no overlay at all"
+        # Compare decoded VALUES, not raw bytes: the overlay writer escapes
+        # non-ASCII, so the literal character is absent from the file text
+        # whether or not the source decoded correctly.
+        written = json.dumps(json.loads(overlay.read_text(encoding="utf-8")), ensure_ascii=False)
+        assert needle in written, (
+            "the overlay lost a character the source spec carried, so the "
+            "source was decoded as the host code page instead of UTF-8"
+        )
+
+    def test_undecodable_agent_spec_skips_only_that_agent(self, tmp_path: Path) -> None:
+        """Bytes that are not valid UTF-8 degrade to the documented skip.
+
+        Pinning the read to UTF-8 removes the common trigger but not this one:
+        a genuinely corrupt file still raises ``UnicodeDecodeError``, and that
+        is a ``ValueError``, so it matches neither the ``OSError`` arm nor a
+        bare ``json.JSONDecodeError`` arm. Unhandled, it leaves
+        ``rewrite_agents`` and abandons every OTHER agent in the same pass --
+        the blast radius this asserts against. Runs on every platform, because
+        the bytes are invalid under UTF-8 rather than under a code page.
+        """
+        from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+
+        source_dir = tmp_path / "agents"
+        source_dir.mkdir()
+        good = {
+            "name": "healthy",
+            "mcpServers": {"myserver": {"command": sys.executable, "poolable": True}},
+        }
+        (source_dir / "healthy.json").write_text(json.dumps(good), encoding="utf-8")
+        # 0x81 is a continuation byte with no lead byte: invalid UTF-8 anywhere.
+        (source_dir / "corrupt.json").write_bytes(b'{"name": "\x81\x81", "mcpServers": {}}')
+
+        overlay_dir = tmp_path / "overlay"
+        rewrite_agents(
+            source_dir=source_dir,
+            overlay_dir=overlay_dir,
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            sandbox_mode="auto",
+            approval_mode="interactive",
+            stub_servers=frozenset(["myserver"]),
+        )
+
+        assert (overlay_dir / "healthy.json").is_file(), (
+            "one undecodable spec took down the whole rewrite pass; the healthy "
+            "agent beside it got no overlay"
+        )
+
+    def test_every_json_read_pins_utf8(self) -> None:
+        """A ratchet, because the defect is one omitted keyword and reads clean.
+
+        The behavioural test above only diverges on a host whose code page is
+        not UTF-8, so on a UTF-8 runner it passes either way. This one fails
+        everywhere, which is what stops a re-added bare ``read_text()``
+        reaching a release through a green Linux shard. It also covers the
+        settings-file read, which has no cheap behavioural harness.
+        """
+        from kiro_crew.mcp_gateway import rewriter as rw
+
+        source = Path(rw.__file__).read_text(encoding="utf-8")
+        offenders = _unencoded_json_reads(source)
+        assert offenders == [], (
+            "rewriter.py decodes JSON with the host code page at line(s) "
+            f"{offenders}; pass encoding='utf-8' -- these files are UTF-8 "
+            "JSON written by an editor, the Kiro IDE, or this module itself"
+        )
+
+    def test_the_ratchet_can_actually_fail(self) -> None:
+        """A scan that matches nothing passes for the wrong reason."""
+        assert _unencoded_json_reads(
+            "import json\nfrom pathlib import Path\nx = json.loads(Path('a').read_text())\n"
+        ) == [3]
+        assert (
+            _unencoded_json_reads(
+                "import json\nfrom pathlib import Path\n"
+                "x = json.loads(Path('a').read_text(encoding='utf-8'))\n"
+            )
+            == []
+        )
