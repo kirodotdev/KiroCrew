@@ -5,8 +5,8 @@
  * Cards are absolutely-positioned and framer-motion-animated, so the reorder
  * affordance is a pair of move buttons (not dnd-kit sortable - two transform
  * systems would fight over the same elements). Index 0 runs first and renders
- * at the BOTTOM of the expanded stack: "run sooner" = ArrowDown, "run later"
- * = ArrowUp. Buttons only render when expanded with 2+ messages.
+ * at the TOP of the expanded stack: "run sooner" = ArrowUp, "run later"
+ * = ArrowDown. Buttons only render when expanded with 2+ messages.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
@@ -24,6 +24,7 @@ vi.mock('framer-motion', () => ({
   },
   useMotionValue: () => ({ set: vi.fn(), get: () => 0, jump: vi.fn() }),
   useSpring: () => ({ set: vi.fn(), get: () => 0, jump: vi.fn() }),
+  useReducedMotion: () => false,
 }))
 
 import QueueStack from '../src/components/QueueStack'

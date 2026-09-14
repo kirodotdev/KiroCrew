@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, memo } from 'react'
-import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
+import { AnimatePresence, motion, useMotionValue, useSpring, useReducedMotion } from 'framer-motion'
 import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { ChatMessage } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -98,6 +98,8 @@ const OVERLAP = 11 // overlap to fuse with input area below
 
 const DEPTH_BRIGHTNESS = [1, 0.88, 0.76]
 const SPRING = { type: 'spring' as const, stiffness: 400, damping: 30 }
+// Lift the front card before unfolding the rest; reverse that order on collapse.
+const LIFT_STAGGER_S = 0.08
 
 /** Inline editor (textarea + save) swapped in for the message text while editing.
  *  Owns the live value so its own controls commit the typed text, never stale content.
@@ -215,6 +217,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
   fuseBelow?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const reduceMotion = useReducedMotion()
+  const transition = reduceMotion ? { duration: 0 } : SPRING
   const [_expanded, setExpanded] = useState(false)
   const expanded = _expanded && messages.length > 1
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -251,7 +255,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
     const expandChanged = prevExpanded.current !== expanded
     prevExpanded.current = expanded
 
-    if (expandChanged) {
+    if (expandChanged && !reduceMotion) {
       // Expand/collapse: animate via spring
       marginMV.set(targetMargin)
     } else if (messages.length > 0) {
@@ -259,7 +263,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
       // When count hits 0, let onExitComplete handle the margin reset
       marginSpring.jump(targetMargin)
     }
-  }, [expanded, targetMargin, messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [expanded, targetMargin, messages.length, reduceMotion]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle last-card exit: snap margin to 0 when AnimatePresence finishes
   const prevCountForExit = useRef(messages.length)
@@ -286,7 +290,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
       <motion.div
         className="relative cursor-pointer"
         animate={{ height: targetHeight }}
-        transition={SPRING}
+        transition={transition}
         style={{ marginBottom: marginSpring }}
         onClick={() => messages.length > 1 && setExpanded(e => !e)}
         onKeyDown={(e: React.KeyboardEvent) => {
@@ -308,11 +312,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
             let brightness: number
 
             if (expanded) {
-              const pos = messages.length - 1 - i
-              y = pos * (CARD_H + EXPANDED_GAP)
+              y = i * (CARD_H + EXPANDED_GAP)
               scale = 1
               opacity = 1
-              zIndex = pos + 1
+              zIndex = i + 1
               brightness = 1
             } else if (i <= MAX_PEEK) {
               const depth = i
@@ -328,6 +331,14 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
               zIndex = 0
               brightness = DEPTH_BRIGHTNESS[MAX_PEEK]
             }
+
+            // The front card passes the peeks on its way to the top of the list.
+            // Keep it above them in both states, and delay only a toggle, never
+            // an ordinary queue addition, removal or reorder.
+            if (i === 0) zIndex = messages.length + 2
+            const stagger = !reduceMotion && messages.length > 1 && prevExpanded.current !== expanded
+              && (expanded ? i > 0 : i === 0)
+            const cardTransition = stagger ? { ...transition, delay: LIFT_STAGGER_S } : transition
 
             const isFrontCollapsed = !expanded && i === 0
             // Flat, borderless bottom (to seam into the input box) only when we're
@@ -353,8 +364,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                   borderBottomRightRadius: fused ? 0 : 12,
                   borderBottomWidth: fused ? 0 : 1,
                 }}
-                exit={{ y: y + 40, zIndex: 50, borderBottomWidth: 1, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, transition: SPRING }}
-                transition={SPRING}
+                exit={{ y: y + 40, zIndex: 50, borderBottomWidth: 1, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, transition }}
+                transition={cardTransition}
                 // Theme colors are raw var(--x) without <alpha-value>, so Tailwind
                 // alpha modifiers (bg-warn/15) silently generate no CSS. Use explicit
                 // color-mix instead — and mix the bg toward the opaque surface color
@@ -378,9 +389,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                       <span className="truncate flex-1">{m.content}</span>
                       {/* Reorder arrows only make sense with 2+ cards, and only
                           in the expanded stack where the run order is visible.
-                          Index 0 runs first and renders at the BOTTOM of the
-                          expanded stack, so "run sooner" moves the card DOWN
-                          visually: ArrowDown = sooner, ArrowUp = later. */}
+                          Index 0 runs first at the top: "run sooner" moves
+                          up, and "run later" moves down. */}
                       {onReorder && expanded && messages.length > 1 && (
                         <>
                           <button
@@ -390,7 +400,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                             disabled={i === 0}
                             onClick={(e) => { e.stopPropagation(); onReorder(queueId!, 'next') }}
                           >
-                            <ArrowDown size={13} />
+                            <ArrowUp size={13} />
                           </button>
                           <button
                             className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
@@ -399,7 +409,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                             disabled={i === messages.length - 1}
                             onClick={(e) => { e.stopPropagation(); onReorder(queueId!, 'later') }}
                           >
-                            <ArrowUp size={13} />
+                            <ArrowDown size={13} />
                           </button>
                         </>
                       )}
@@ -442,7 +452,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                           <ChevronUp size={12} />
                         </span>
                       )}
-                      {expanded && i === 0 && (
+                      {expanded && i === messages.length - 1 && (
                         <ChevronUp size={13} className="shrink-0 opacity-50 rotate-180" />
                       )}
                     </>
