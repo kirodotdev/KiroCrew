@@ -893,6 +893,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_spec_lookup", "unknown"),
         ("migrate_agent_specs", "unknown"),
     ],
+    "kiro_crew/agent_capabilities.py": [("capability_publish", "dashboard")],
     "kiro_crew/agent_discovery.py": [
         ("forward:operation", "forward:source"),
         ("forward:operation", "forward:source"),

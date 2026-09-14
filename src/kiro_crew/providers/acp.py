@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SESSION_SHARING,
     EVENT_COMPACTION_STATUS,
     PROVIDER_LABEL_CLAUDE,
@@ -611,6 +612,17 @@ class AcpProvider(LLMProvider):
         whichever internal shape it happens to expose.
         """
         return self._client.backend in host_auth.backends_retired_by_host_logout()
+
+    @property
+    def member_capabilities_supported(self) -> bool:
+        """Full saved member-spec loading is opt-in (harness-parity H6)."""
+        return self._client.backend in ACP_BACKENDS_MEMBER_CAPABILITIES
+
+    @property
+    def loaded_capability_template(self) -> str:
+        if isinstance(self._client, AcpSessionProvider):
+            return self._client.loaded_capability_template
+        return ""
 
     @property
     def mcp_config_hot_reload(self) -> bool:

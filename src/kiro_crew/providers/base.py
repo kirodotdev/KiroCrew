@@ -254,6 +254,16 @@ class LLMProvider(ABC):
         return ""
 
     @property
+    def member_capabilities_supported(self) -> bool:
+        """Whether a dedicated startup can load a complete member agent spec."""
+        return False
+
+    @property
+    def loaded_capability_template(self) -> str:
+        """Confirmed active full-spec template; empty means no loading evidence."""
+        return ""
+
+    @property
     def exit_code(self) -> int | None:
         """Last child-process exit code, or None if no process or still running."""
         return None

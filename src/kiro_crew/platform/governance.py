@@ -4152,7 +4152,9 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
         return False
 
 
-def strip_ungoverned_auto_approve(servers: Mapping[str, object]) -> Dict[str, object]:
+def strip_ungoverned_auto_approve(
+    servers: Mapping[str, object], *, audit: bool = True
+) -> Dict[str, object]:
     """Return ``servers`` with a ceiling-governed ``autoApprove`` removed.
 
     ``autoApprove`` is the OTHER route to the exemption ``allowedTools`` grants,
@@ -4184,6 +4186,9 @@ def strip_ungoverned_auto_approve(servers: Mapping[str, object]) -> Dict[str, ob
             continue
         trimmed = dict(spec)
         trimmed.pop("autoApprove", None)
+        if not audit:
+            out[name] = trimmed
+            continue
         logger.info(
             "Dropped autoApprove from MCP server %s: the governance ceiling "
             "constrains it, so its tools go through the approval gate",
@@ -4251,7 +4256,9 @@ def may_skip_gate_now(ref: str) -> bool:
     return True
 
 
-def sanitize_agent_config_governance(config: MutableMapping[str, object]) -> None:
+def sanitize_agent_config_governance(
+    config: MutableMapping[str, object], *, audit: bool = True
+) -> None:
     """In-place: strip ceiling-governed auto-approve grants from a full agent
     config about to be written to ``kirocrew.json``.
 
@@ -4264,6 +4271,10 @@ def sanitize_agent_config_governance(config: MutableMapping[str, object]) -> Non
     through them restored the very bypass the per-ref writers close. Every
     whole-config writer MUST call this immediately before it persists, so no
     future writer can reopen the surface.
+
+    ``audit=False`` is for a pure owner preview: filtering is identical, but
+    no withdrawal log or SEL event is emitted. Publication keeps the default
+    ``audit=True`` and therefore retains its existing audit contract.
 
     Drops non-string and ceiling-governed ``allowedTools`` entries (same rule and
     fail-closed semantics as ``may_skip_gate_now``) and removes ``autoApprove``
@@ -4279,7 +4290,7 @@ def sanitize_agent_config_governance(config: MutableMapping[str, object]) -> Non
                 continue  # non-string junk is not a valid ref — drop silently
             (kept if may_skip_gate_now(ref) else withheld).append(ref)
         config["allowedTools"] = kept
-        if withheld:
+        if withheld and audit:
             # Withholding a grant is a permission DECISION — every other
             # allowedTools writer emits this event, so a silent drop here would
             # be the one withhold path with no audit trail. Best-effort.
@@ -4298,7 +4309,7 @@ def sanitize_agent_config_governance(config: MutableMapping[str, object]) -> Non
                 logger.debug("SEL audit unavailable for config sanitize", exc_info=True)
     servers = config.get("mcpServers")
     if isinstance(servers, dict):
-        config["mcpServers"] = strip_ungoverned_auto_approve(servers)
+        config["mcpServers"] = strip_ungoverned_auto_approve(servers, audit=audit)
 
 
 def resolve_ordinal(

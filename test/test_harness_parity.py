@@ -56,6 +56,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_PRIVATE_MEMORY_MCP,
@@ -248,6 +249,17 @@ def test_session_sharing_is_opt_in() -> None:
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_SESSION_SHARING
 
 
+def test_member_capabilities_are_opt_in() -> None:
+    """H6: full member-spec loading has its own opt-in, not harness identity."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    for provider in (providers_acp.AcpProvider, AcpSessionProvider):
+        source = inspect.getsource(provider.member_capabilities_supported.fget)
+        assert "in ACP_BACKENDS_MEMBER_CAPABILITIES" in source
+    assert ACP_BACKENDS_MEMBER_CAPABILITIES == frozenset({ACP_BACKEND_KIRO})
+    assert ACP_BACKENDS_MEMBER_CAPABILITIES is not ACP_BACKENDS_SESSION_SHARING
+
+
 def test_steer_is_opt_in() -> None:
     """H6: the ``_session/steer`` extension is claimed by membership."""
     source = inspect.getsource(acp_client.AcpClient.supports_steer.fget)
@@ -352,6 +364,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         # refuses an unknown id, so this is the belt to that braces — a member
         # arriving some other way still has to be a backend the code recognizes.
         ("selectable_backends()", selectable_backends()),
+        ("ACP_BACKENDS_MEMBER_CAPABILITIES", ACP_BACKENDS_MEMBER_CAPABILITIES),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
         ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),

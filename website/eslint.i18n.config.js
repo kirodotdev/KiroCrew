@@ -399,6 +399,10 @@ export default [
               // surrounding sentence (`Enter <name> here`), which the anchors reject.
               String.raw`^<[a-z]+>$`,
 
+              // Exact capability-retention wire sentinel, never input copy.
+              // Translating it would turn a retained credential into a new value.
+              String.raw`^\[REDACTED\]$`,
+
               // The same sentinel standing in for a URL QUERY, e.g. `?token=<redacted>`
               // and `?<query>` — the two values `safePaneUrl` substitutes for a query it
               // will not journal. Deliberately a separate entry from the bare sentinel

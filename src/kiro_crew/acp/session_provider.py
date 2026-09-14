@@ -35,6 +35,7 @@ from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, A
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_MEMBER_CAPABILITIES,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -455,6 +456,22 @@ class AcpSessionProvider(LLMProvider):
         correct expiry.
         """
         return self._runtime.process_instance
+
+    @property
+    def member_capabilities_supported(self) -> bool:
+        """Full saved member-spec loading is opt-in (harness-parity H6)."""
+        return self._runtime.acp_backend in ACP_BACKENDS_MEMBER_CAPABILITIES
+
+    @property
+    def loaded_capability_template(self) -> str:
+        if (
+            self.member_capabilities_supported
+            and self._owns_runtime
+            and self._runtime.is_alive()
+            and self._handle.active_agent == self._runtime._agent
+        ):
+            return self._handle.active_agent
+        return ""
 
     @property
     def exit_code(self) -> int | None:

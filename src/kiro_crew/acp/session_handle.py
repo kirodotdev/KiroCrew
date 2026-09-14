@@ -800,6 +800,7 @@ class AcpSessionHandle:
         self.last_prompt_stats = AcpPromptStats()
         # State tracking (populated from session/new response via store_session_config)
         self._model: str = ""
+        self.active_agent: str = ""
         # Model id kiro-cli RESOLVED the session to (from currentModelId in the
         # session/new|load response), kept separate from _model (the user-picked
         # alias) so it feeds ONLY the context-window backfill — never slot.model
@@ -1496,6 +1497,8 @@ class AcpSessionHandle:
 
     async def set_mode(self, agent_name: str) -> None:
         """Activate an agent via session/set_mode."""
+        # send_request only queues the request; it does not await a mode ACK.
+        self.active_agent = ""
         await self._runtime.send_request(
             METHOD_SET_MODE,
             set_mode_params(self._session_id, agent_name),
@@ -2142,6 +2145,9 @@ class AcpSessionHandle:
 
         Called after create_session() or load() to populate state.
         """
+        modes = resp.get("modes")
+        current_agent = modes.get("currentModeId") if isinstance(modes, dict) else None
+        self.active_agent = current_agent if isinstance(current_agent, str) else ""
         config_options = resp.get("configOptions")
         if isinstance(config_options, list):
             self._config_options = config_options
@@ -2922,6 +2928,7 @@ class AcpSessionHandle:
                                     else ""
                                 )
                                 if name:
+                                    self.active_agent = name
                                     yield AcpEvent(kind=EVENT_AGENT_SWITCHED, text=name)
                     reason, _refusal = self.last_prompt_stats.terminal_refusal(reason)
                     self._last_stop_reason = reason
@@ -3099,6 +3106,8 @@ class AcpSessionHandle:
                 elif action == "agent_switched":
                     saw_agent_switch = True
                     params = msg.params or {}
+                    name = params.get("agentName", "")
+                    self.active_agent = name if isinstance(name, str) else ""
                     yield AcpEvent(kind=EVENT_AGENT_SWITCHED, text=params.get("agentName", ""))
                 elif action == "subagent_list":
                     params = msg.params or {}

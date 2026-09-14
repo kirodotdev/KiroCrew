@@ -90,6 +90,7 @@ harness can get wrong:
 | `has_active_turn`, `has_unfinished_turn`, `wait_turn_done` | Turn-state probes the session layer reads before reusing a process. |
 | `is_session_sharing_eligible` | Whether one process may host multiplexed sessions. |
 | `manual_compact_unsupported_backend`, `mcp_config_hot_reload`, `uses_kiro_identity_store` | Capability answers, each defaulting to the safe value so a Kiro path never needs a `hasattr` probe (harness-parity H14). |
+| `member_capabilities_supported`, `loaded_capability_template` | Full member-spec support defaults to false and is granted only by `ACP_BACKENDS_MEMBER_CAPABILITIES` membership (harness-parity H6); the observed loaded template defaults to empty. Only a dedicated Kiro runtime with a confirmed active template provides evidence; the session layer also validates the saved version and MCP registration report before showing applied. |
 | `billing_stats`, `child_fidelity_aware` | Accounting and subagent-fidelity reporting. |
 
 ### LLMEvent (`providers/base.py`)

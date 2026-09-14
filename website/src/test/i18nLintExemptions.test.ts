@@ -407,3 +407,10 @@ describe('Gateway wire markers with a bracketed ALL-CAPS tag are exempt', () => 
     expect(await lint("export const PROBE = ['[SYSTEM] see [details] here']")).toHaveLength(1)
   })
 })
+
+describe('capability retention protocol sentinel', () => {
+  it('allows the exact wire mask but still reports prose around it', async () => {
+    expect(await lint("export const mask = '[REDACTED]'" )).toEqual([])
+    expect(await lint("export const label = 'Keep [REDACTED] value'" )).not.toEqual([])
+  })
+})

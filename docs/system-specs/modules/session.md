@@ -113,6 +113,44 @@ eager allocation. Store identity is part of the eager binding snapshot, and
 slot replacement, a running real turn or any binding change after an awaited
 lookup makes the eager task stand down before allocation.
 
+## Member capability generations
+
+Enrolled members prepare capabilities only when allocating a new runtime.
+`session_capabilities.prepare_runtime` reconciles ordinary Parent updates and
+verifies the saved materialization off-loop before provider construction. It
+passes the immutable template explicitly while preserving the canonical member,
+private memory binding, history key, caller model and approval policy. An explicit
+or resumed cwd wins; otherwise the member's configured workspace is used. A cwd
+that disagrees with the saved Parent identity refuses startup.
+
+Enrolled allocations bypass warm and shared processes. Full-spec loading is
+supported by the dedicated Kiro backend; other harnesses refuse explicitly rather
+than falling back to the default agent. A successful mode handshake, fresh process
+instance, live session id, and post-start saved-byte/ownership/governance checks
+are all required before `_Session.loaded_capabilities` is stamped. MCP hot reload
+is not evidence that prompt, resources and the rest of the spec were loaded.
+The applied view also checks that each enabled MCP connection in that saved
+version has reported ready through the provider's own MCP report. Missing reports
+remain unverified, authentication requests remain pending, and initialization
+failures or unresolved tool refs report failure. Later ready reports can clear
+that state without restarting the conversation; raw provider errors are not
+included in capability status responses.
+
+`SessionManager.capability_runtime_view(member, saved_revision)` delegates to
+`SessionAllocationService`, which projects its owned `SessionRegistryState` on
+the event loop through `session_capabilities.runtime_view`. The projection reads
+live occupants and failed allocations from that same state and returns fresh
+response rows, never mutable registry dictionaries. Dashboard handlers do not
+access the manager's private registries. Old live sessions report pending and keep
+their current turn and context; saving never resets them or requests history
+replay. A changed process, handle, active template or governance generation removes
+the applied claim. Replacing a provider clears its stamp. Failed starts leave a
+bounded retryable diagnostic; a successful retry replaces it with the real session.
+The owner capabilities GET and PUT handlers call this helper on the event loop
+for the saved revision. Preview never claims runtime adoption. A failed saved-byte
+or source validation remains failed even if an older provider is still alive;
+persistence alone cannot claim application.
+
 ## Background Session
 
 `BACKGROUND_KEY = "_bg"` is a persistent shared session for lightweight

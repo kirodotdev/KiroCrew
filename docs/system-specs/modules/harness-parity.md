@@ -92,6 +92,15 @@ already reads TRUE for KAS on a plain public build.
 | H7 | `is_kiro_cli` is a positive Kiro test at every call site. It drives internal-sandbox delegation: macOS skips Kiro Crew's seatbelt because Kiro's sandbox cannot nest inside it, and Windows permits the official Kiro backend to run despite having no Kiro Crew OS wrapper. Passed for a harness with no internal sandbox, it hands isolation to a layer that never starts; this is the only Group B row that is also a security invariant. **Windows requires `is_kiro_cli is True` exactly** — `None` and `_spawns_kiro_cli` basename inference can never grant the backend-less-host exception. On macOS a site may grant membership explicitly or pass `None` to defer to the positive basename test. | `test_harness_parity.py::test_is_kiro_cli_is_positive`, `test_sandbox_argv.py::TestKiroInternalSandboxExclusion` | `acp/runtime.py` (`AcpRuntime.spawn`), `acp/client.py` (`AcpClient.ensure_ready`), `sandbox.py` (`wrap_argv`, `_spawns_kiro_cli`) |
 | H8 | New harness identifiers live in `agent_sdk/backends.py` — a LEAF module behind the agent-SDK boundary, so every consumer can name the constants rather than copy them — and are added to `ACP_BACKENDS_KNOWN`; every capability set is a subset of it; and `AcpProvider.__init__` rejects anything outside it. `ACP_BACKEND_KIRO` is the empty string, so a value that falls through every identity check spawns `kiro-cli` under a foreign label. `acp/types.py` and the `acp_backends` shim both re-export the vocabulary and remain import sites for existing callers. | `test_harness_parity.py::test_capability_sets_are_subsets_of_known_backends`, `::test_unknown_backend_rejected_at_construction`, `::test_codex_is_selectable_and_answerable` | `agent_sdk/backends.py` (`ACP_BACKENDS_KNOWN`), `providers/acp.py` (`AcpProvider.__init__`), `scripts/check_harness_parity.py` (`VOCABULARY_PATH`) |
 
+`ACP_BACKENDS_MEMBER_CAPABILITIES` is the H6 opt-in for loading an enrolled
+member's full saved agent spec. Only Kiro belongs today; this is separate from
+session sharing and per-session member dispatch. Both `AcpProvider` and
+`AcpSessionProvider` answer `member_capabilities_supported` from this set.
+Support alone does not prove a template is loaded: dedicated runtime ownership,
+liveness, active-mode confirmation, saved-version checks and MCP readiness still
+apply. Pinned by `test_harness_parity.py::test_member_capabilities_are_opt_in`
+and `test_session_capabilities.py::test_real_session_provider_member_support_is_explicit`.
+
 ## Group C: the Kiro path keeps its own machinery
 
 An adapter that lands by *generalizing* a Kiro-specific step to a

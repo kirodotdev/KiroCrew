@@ -6,6 +6,14 @@ The ACP layer spans **five** modules: the legacy per-session client (`acp/client
 
 ## Backend Selection
 
+`AcpSessionHandle.active_agent` records the mode named by session configuration,
+a completed mode handshake or an observed agent-switch event. A queued mode
+request clears that observation until confirmation. `AcpSessionProvider` exposes
+`loaded_capability_template` only for a live dedicated Kiro runtime whose active
+mode matches its launch template; shared handles provide no full-spec loading
+claim. Member generation and MCP-readiness checks belong to
+[session](session.md#member-capability-generations).
+
 The trusted `private_memory` constructor flag is preserved from provider creation
 through client/runtime spawn and recovery. Only private member processes pass it
 to the sandbox; the default `False` keeps existing V1 spawn arguments. The OS

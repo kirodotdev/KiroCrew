@@ -98,6 +98,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
+    from kiro_crew.session_capabilities import LoadedCapabilities
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
@@ -923,6 +924,8 @@ class _Session:
     semaphore: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
     approval_policy: str = ""  # "" (interactive) | "auto" (auto-approve all tools)
     agent: str = ""  # kiro agent name used for this session
+    capability_member: str = ""
+    loaded_capabilities: LoadedCapabilities | None = None
     # Slack message queue: FIFO of (msg_ts, text, kwargs) waiting for the semaphore
     queue: deque[tuple[str, str, dict]] = field(default_factory=deque)
     # Set when this session's last turn was cancelled via soft-stop.
@@ -962,6 +965,7 @@ class _Session:
         session's role, not its transcript, so they are kept.
         """
         self.provider = provider
+        self.loaded_capabilities = None
         self.provider_switch_replay = False
         # The replacement provider is a fresh native session, not a resumed
         # one — a stale armed observation would make the next first turn skip
@@ -1602,6 +1606,10 @@ class SessionManager:
     async def try_acquire(self, key: str) -> bool:
         """Try to acquire an exact-key idle session."""
         return await self._allocation_boundary().try_acquire(key)
+
+    def capability_runtime_view(self, member: str, saved_revision: str) -> dict[str, Any]:
+        """Return capability adoption without exposing mutable allocation state."""
+        return self._allocation_boundary().capability_runtime_view(member, saved_revision)
 
     def active_providers(self) -> list[LLMProvider]:
         """Return all currently registered providers."""

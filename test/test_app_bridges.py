@@ -3914,7 +3914,7 @@ class TestRebuildPreservesTheLiveMcpSpec:
         class _M:
             mcpServers = {"srv": {"url": "http://127.0.0.1:9100/mcp"}}  # illustrative
 
-        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec: spec)
+        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec, *, audit=True: spec)
         import kiro_crew.apps.bridges as bridges
         import kiro_crew.apps.manager as manager
 
@@ -3934,8 +3934,9 @@ class TestRebuildPreservesTheLiveMcpSpec:
 
         class _M:
             mcpServers = {"srv": {"url": "http://127.0.0.1:9100/mcp"}}
+            backend = SimpleNamespace(entryPoint="backend.py")
 
-        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec: spec)
+        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec, *, audit=True: spec)
         import kiro_crew.apps.bridges as bridges
         import kiro_crew.apps.manager as manager
 
@@ -3952,7 +3953,7 @@ class TestRebuildPreservesTheLiveMcpSpec:
         class _M:
             mcpServers = {"srv": {"command": "run", "args": ["x"]}}
 
-        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec: spec)
+        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec, *, audit=True: spec)
         import kiro_crew.apps.bridges as bridges
         import kiro_crew.apps.manager as manager
 

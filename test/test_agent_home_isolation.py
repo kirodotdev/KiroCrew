@@ -27,6 +27,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src" / "kiro_crew"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_default_home(monkeypatch, tmp_path):
+    """Unpinning KIROCREW_HOME must remain safe even when SEL initializes cold."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    return home
+
+
 # --------------------------------------------------------------------------
 # The KIRO_HOME seam
 # --------------------------------------------------------------------------
@@ -318,6 +329,38 @@ def test_global_kiro_home_in_a_worktree_still_declines(monkeypatch, tmp_path):
     assert (
         agent._decline_shared_agent_home() is not None
     ), "a globally exported KIRO_HOME bypassed the guard"
+
+
+def test_cold_sel_decline_keeps_default_home_synthetic(
+    monkeypatch, tmp_path, _isolate_default_home
+):
+    """Exercise key creation through the real writer after the override is removed."""
+    from kiro_crew import agent
+    from kiro_crew.config import paths
+    from kiro_crew.sel import SecurityEventLog
+
+    _no_overrides(monkeypatch)
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    audit_root = tmp_path / "cold-audit"
+    assert not audit_root.exists()
+    assert paths._resolved_home is None
+    # The real synchronous mode avoids leaving a new daemon writer behind.
+    audit = SecurityEventLog(base_dir=audit_root, sync=True)
+    home = _isolate_default_home
+    assert paths._resolved_home == home / ".kiro" / "crew"
+    assert (home / paths.RECOVERY_BREADCRUMB_NAME).is_file()
+
+    wt = _make_linked_worktree(tmp_path)
+    monkeypatch.setattr(agent, "__file__", str(wt / "src" / "kiro_crew" / "agent.py"))
+    shared = tmp_path / "shared-agents"
+    _pretend_target_is_shared(monkeypatch, agent, shared)
+    assert agent._decline_shared_agent_home() == shared / agent.AGENT_FILENAME
+    assert not shared.exists()
+    events = audit.recent()
+    assert len(events) == 1
+    assert events[0]["operation"] == "agent_home_write"
+    assert events[0]["outcome"] == "denied"
+    assert audit.verify_integrity() == (1, 1)
 
 
 def test_declines_from_a_clone_under_the_temp_dir(monkeypatch, tmp_path):

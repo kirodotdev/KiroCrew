@@ -3715,6 +3715,7 @@ class AcpRuntime:
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
             )
+            handle.active_agent = mode_agent
             # Whether set_mode actually SWITCHED modes: the servers that
             # initialized during session/new belong to the mode kiro-cli
             # started the session on. If the requested agent differs, those
@@ -4038,6 +4039,7 @@ class AcpRuntime:
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
             )
+            handle.active_agent = mode_agent
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
             _ids, _current, _adv = parse_session_modes(resp)

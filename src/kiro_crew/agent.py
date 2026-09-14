@@ -3390,8 +3390,12 @@ def _spec_path_is_safe(path: Path, agents_dir: Path) -> bool:
     return True
 
 
-def agent_spec_path(name: str) -> Path | None:
-    """Return the user-level kiro spec file for *name*, or ``None`` if absent.
+def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None:
+    """Return the kiro spec file for *name*, or ``None`` if absent.
+
+    ``agents_dir`` selects one explicit scope for callers that resolve the
+    provider's cwd before the user registry. Omission keeps the user-level
+    behavior; parsing, unreadable-file handling and ambiguity rules are shared.
 
     Prefers ``<agents dir>/<name>.json`` and falls back to a scan for a spec
     whose ``name`` field matches, mirroring how the dashboard's per-agent
@@ -3421,7 +3425,7 @@ def agent_spec_path(name: str) -> Path | None:
     """
     if not _AGENT_NAME_RE.match(name or ""):
         return None
-    agents_dir = kiro_agents_dir_path()
+    agents_dir = agents_dir if agents_dir is not None else kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return None
 
@@ -3510,6 +3514,9 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
     # allowedTools/autoApprove grants the refresh's governance pass just
     # stripped — while the refresh reports success.
     with agents_spec_lock(kiro_agents_dir_path()):
+        from kiro_crew.agent_capabilities import require_unmanaged_template
+
+        require_unmanaged_template(name)
         try:
             data = _read_spec_capped(spec_path)
         except (OSError, ValueError) as exc:
@@ -3814,7 +3821,7 @@ def _apply_allowed_tools_ceiling(config: dict, *, source: str) -> None:
             logger.debug("SEL audit unavailable for withheld auto-approve", exc_info=True)
 
 
-def _ceiling_filtered_spec(ref: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _ceiling_filtered_spec(ref: str, spec: dict[str, Any], *, audit: bool = True) -> dict[str, Any]:
     """An app's MCP spec with a ceiling-governed ``autoApprove`` removed.
 
     ``autoApprove`` is a SECOND way to reach the same exemption ``allowedTools``
@@ -3840,6 +3847,8 @@ def _ceiling_filtered_spec(ref: str, spec: dict[str, Any]) -> dict[str, Any]:
     if _may_auto_approve(f"@{mcp_server_alias(ref)}"):
         return spec
     spec.pop("autoApprove", None)
+    if not audit:
+        return spec
     logger.info(
         "Dropped autoApprove from app MCP server %s: the governance ceiling "
         "constrains it, so its tools go through the approval gate",
@@ -3865,7 +3874,7 @@ def _ceiling_filtered_spec(ref: str, spec: dict[str, Any]) -> dict[str, Any]:
     return spec
 
 
-def _collect_app_mcp_servers() -> dict[str, Any]:
+def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
     """MCP servers contributed by ENABLED apps, keyed ``{app}:{server}``.
 
     App MCP servers are registered straight into this agent config rather than
@@ -3942,7 +3951,7 @@ def _collect_app_mcp_servers() -> dict[str, Any]:
                     chosen = dict(spec)
                 else:
                     chosen = dict(spec)  # stdio/command: nothing to resolve
-                servers[ref] = _ceiling_filtered_spec(ref, chosen)
+                servers[ref] = _ceiling_filtered_spec(ref, chosen, audit=audit)
         except Exception:  # noqa: BLE001 — one bad app must not poison the rest
             logger.warning("Skipping MCP servers for app %s (manifest error)", name)
             continue
@@ -5410,6 +5419,11 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
         # forks unrefreshed nor release this one's session gate — a fork in
         # `failures` is refused by require_fork_governance.
         try:
+            if agent_state.get_capabilities(fork_name) is not None:
+                from kiro_crew.agent_capabilities import reconcile_member_capabilities
+
+                reconcile_member_capabilities(forks[fork_name]["private_to"])
+                continue
             # Resolve the ACTUAL spec file (declared name wins over the stem,
             # same as every other resolver) rather than reconstructing
             # `<name>.json`: a stem/name divergence would otherwise make the

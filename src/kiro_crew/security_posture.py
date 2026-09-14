@@ -105,6 +105,14 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Member capability editor responses",
+        "agent_capabilities.py",
+        "Owner-facing capability rows, Parent-change previews and impact summaries. "
+        "safe_view applies redact_via_context before serialization and masks credential "
+        "map values while preserving their structure. Retained secret values and "
+        "source-content digests remain server-side.",
+    ),
+    (
         "Memory recovery responses",
         "dashboard/handlers/memory_admin.py",
         "Retired episode text and supersession references, plus backup and restore "

@@ -4013,32 +4013,43 @@ async def test_cancelled_persistence_cannot_be_overtaken(tmp_path):
     doomed = await svc.add(slot_key="dashboard:a", message="a", idle_secs=60, max_cycles=1)
 
     order: list[str] = []
+    started = asyncio.Event()
     release = threading.Event()
+    loop = asyncio.get_running_loop()
     real_write = svc._write_state
 
     def _slow_write(payload):
         order.append("write-start")
-        release.wait(2.0)  # hold the worker inside the write
+        loop.call_soon_threadsafe(started.set)
+        # A wedge backstop, not an automatic successful release of the writer.
+        if not release.wait(10):
+            raise TimeoutError("test did not release the persistence worker")
         real_write(payload)
         order.append("write-done")
 
     svc._write_state = _slow_write  # type: ignore[method-assign]
 
     remover = asyncio.create_task(svc.remove(doomed.id))
-    await asyncio.sleep(0.05)  # let the write begin
-    remover.cancel()
-    await asyncio.sleep(0.05)
+    try:
+        # Removal has asynchronous prerequisites before persistence. Cancelling
+        # during those is not cancellation of an in-flight write.
+        await asyncio.wait_for(started.wait(), 10)
+        remover.cancel()
+        await asyncio.sleep(0)  # deliver cancellation, without guessing elapsed time
 
-    # The lock must still be held: a competing writer cannot get in yet.
-    assert svc._lock.locked(), "service lock released while the write was in flight"
-
-    release.set()
-    with contextlib.suppress(asyncio.CancelledError, BaseException):
-        await remover
+        # The lock must still be held: a competing writer cannot get in yet.
+        assert svc._lock.locked(), "service lock released while the write was in flight"
+        assert not remover.done(), "cancellation did not wait for the persistence worker"
+    finally:
+        release.set()
+        try:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(remover, 10)
+        finally:
+            svc._cancel_timer(doomed.id)
 
     assert order == ["write-start", "write-done"], order
-    # Cancellation still propagated to the caller.
-    assert remover.cancelled() or remover.done()
+    assert remover.cancelled()  # cancellation still propagates after the drain
 
 
 # ── handoff unwinds when the index commit raises ─────────────────────────────

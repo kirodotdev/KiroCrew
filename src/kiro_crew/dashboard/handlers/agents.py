@@ -41,6 +41,7 @@ from kiro_crew.agent import (
     install_agent,
     kiro_agents_dir_path,
 )
+from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
     _read_agent_spec,
     clear_list_agents_cache,
@@ -2557,6 +2558,12 @@ def _rebind_crew_locked(
                     raise FileNotFoundError(new_target)
         if entry.get("kiro_agent") == new_target:
             return None
+        try:
+            require_unmanaged_template(entry.get("kiro_agent", ""))
+        except CapabilityError as exc:
+            if exc.code == "capabilities_editor_required" and exc.status == 409:
+                raise _StaleBinding() from None
+            raise
         # Checked INSIDE the critical section, like the staleness check: a
         # fork recording lineage after a handler's pre-validation must not
         # slip another crew's private copy into this binding.
@@ -2965,6 +2972,12 @@ async def api_agent_publish(request: web.Request) -> web.Response:
             {"error": f"'{new_name}' is reserved", "code": "template_name_reserved"}, status=400
         )
 
+    from kiro_crew.dashboard.handlers.agent_capabilities import inherited_template_action
+
+    inherited = await inherited_template_action(request, crew, "publish", new_name)
+    if inherited is not None:
+        return inherited
+
     state: DashboardState = request.app["state"]
     async with _get_config_lock():
         agents_dir = kiro_agents_dir_path()
@@ -3168,6 +3181,9 @@ async def api_agent_publish(request: web.Request) -> web.Response:
 
         try:
             await asyncio.to_thread(_rebind_crew_locked, crew, (name, source_name), new_name)
+        except CapabilityError as exc:
+            await asyncio.to_thread(_undo_publish)
+            return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         except _StaleBinding:
             await asyncio.to_thread(_undo_publish)
             return web.json_response(
@@ -3293,6 +3309,15 @@ async def api_agent_detail(request: web.Request) -> web.Response:
         try:
             if data.get("name") == name or f.stem == name:
                 if request.method == "PATCH" and patch_body is not None:
+                    try:
+                        # Either lookup spelling can resolve this same file; a
+                        # hand-edited name cannot hide its enrolled stem.
+                        for identity in dict.fromkeys((f.stem, spec_str(data, "name") or f.stem)):
+                            await asyncio.to_thread(require_unmanaged_template, identity)
+                    except CapabilityError as exc:
+                        return web.json_response(
+                            {"error": exc.code, "code": exc.code}, status=exc.status
+                        )
                     if "skills" in patch_body:
                         raw_skills = patch_body["skills"]
                         if not isinstance(raw_skills, list) or not all(
@@ -3385,36 +3410,6 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 state,
                                 _read_session_key(request),
                             )
-                        if "model" in patch_body:
-                            # Stored verbatim (canonical key); translated to a
-                            # provider id at the config.loader factory boundary.
-                            data["model"] = patch_body["model"] or None
-                            if data["model"] is None:
-                                # Cleared/auto: resume tracking the shipped
-                                # default (re-synced by _refresh_dynamic_fields).
-                                # Shared with `kirocrew agent reset-model` so the
-                                # two surfaces cannot disagree on what clearing a
-                                # model means. Offloaded: it writes the sidecar
-                                # under the blocking cross-process lock.
-                                await asyncio.to_thread(clear_model_pin, data, agent_name)
-                            else:
-                                # Explicit pick: freeze it against default bumps.
-                                await asyncio.to_thread(
-                                    agent_state.set_model_managed, agent_name, False
-                                )
-                        # Never persist Kiro Crew bookkeeping into the kiro spec —
-                        # kiro-cli rejects unknown fields and drops the agent. Same
-                        # shared helper as the PUT handler and migrate_agent_specs(),
-                        # so this fourth writer can't drift from the other three.
-                        # The model branch above may have just set the
-                        # sidecar explicitly; the helper only lifts a stale key out
-                        # of `data` when the sidecar is still unset, so it can't
-                        # clobber that just-written value. Offloaded like the PUT
-                        # handler: the helper does synchronous sidecar read/write
-                        # filesystem work that would stall the event loop.
-                        await asyncio.to_thread(
-                            agent_state.lift_and_strip_bookkeeping, data, agent_name
-                        )
 
                         def _locked_overwrite() -> None:
                             # Same spec lock as fork/publish and the background
@@ -3433,6 +3428,20 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 )
                                 if fresh is None:
                                     raise FileNotFoundError(f)
+                                # Check the file stem AND its fresh declared name
+                                # before ALL bookkeeping; the earlier name can be
+                                # stale. Keep the spec -> sidecar lock order.
+                                for identity in dict.fromkeys(
+                                    (f.stem, spec_str(fresh, "name") or f.stem)
+                                ):
+                                    require_unmanaged_template(identity)
+                                if "model" in patch_body:
+                                    data["model"] = patch_body["model"] or None
+                                    if data["model"] is None:
+                                        clear_model_pin(data, agent_name)
+                                    else:
+                                        agent_state.set_model_managed(agent_name, False)
+                                agent_state.lift_and_strip_bookkeeping(data, agent_name)
                                 for key, value in data.items():
                                     if key not in before_patch or before_patch[key] != value:
                                         fresh[key] = value
@@ -3448,6 +3457,10 @@ async def api_agent_detail(request: web.Request) -> web.Response:
 
                         try:
                             await asyncio.to_thread(_locked_overwrite)
+                        except CapabilityError as exc:
+                            return web.json_response(
+                                {"error": exc.code, "code": exc.code}, status=exc.status
+                            )
                         except FileNotFoundError:
                             return web.json_response(
                                 {
@@ -4780,6 +4793,8 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         try:
             async with _get_config_lock():
                 await asyncio.to_thread(_rebind_crew_locked, name, expected, new_target)
+        except CapabilityError as exc:
+            return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         except _StaleBinding:
             return web.json_response(
                 {
@@ -4860,6 +4875,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
         agent = cfg.agents[name]
+        if "kiro_agent" in body and body["kiro_agent"] != agent.kiro_agent:
+            try:
+                await asyncio.to_thread(require_unmanaged_template, agent.kiro_agent)
+            except CapabilityError as exc:
+                return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         prior_memory_store = agent.memory_store
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
             return web.json_response(
@@ -5778,6 +5798,12 @@ async def api_agent_reset(request: web.Request) -> web.Response:
     if not isinstance(crew, str) or not crew:
         return web.json_response({"error": "crew is required", "code": "crew_required"}, status=400)
 
+    from kiro_crew.dashboard.handlers.agent_capabilities import inherited_template_action
+
+    inherited = await inherited_template_action(request, crew, "reset")
+    if inherited is not None:
+        return inherited
+
     state: DashboardState = request.app["state"]
     async with _get_config_lock():
         agents_dir = kiro_agents_dir_path()
@@ -5821,6 +5847,8 @@ async def api_agent_reset(request: web.Request) -> web.Response:
         origin_path = _path
         try:
             await asyncio.to_thread(_rebind_crew_locked, crew, (name,), origin_name, origin_path)
+        except CapabilityError as exc:
+            return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         except FileNotFoundError:
             # The origin vanished between validation and the rebind's critical
             # section (a cross-process delete): rebinding would leave the crew

@@ -1810,6 +1810,16 @@ along with the rest of the computer-use governance model — see [Computer use i
 governed](#computer-use-is-not-governed-deliberately). The global `approval_mode`
 row's live clamp remains reserved (see "Still-reserved in v1").
 
+### Owner capability previews
+
+`sanitize_agent_config_governance(config, audit=False)` uses the same approval
+filter as publication without emitting withdrawal logs or SEL events. The
+nested MCP filter receives the same flag. All existing writers keep the default
+`audit=True`. Capability previews do not maintain a second governance predicate.
+Derived native permissions are updated from the filtered allowedTools list;
+custom permission policies that cannot be reconciled without changing their
+meaning are refused rather than silently retained as an alternate shortcut.
+
 ## Foreign-agent import interaction
 
 Foreign-agent import is a data-ingest path, not a third governance level and

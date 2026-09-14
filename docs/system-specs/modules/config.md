@@ -1182,6 +1182,121 @@ Returns `~/.kiro/crew/config.json` (or `$KIROCREW_HOME/config.json` if overridde
 
 ### Agent Bookkeeping Sidecar (`agent_model_state.json`)
 
+A `publish` receipt on a destination entry records the owning member, original
+private template and internal source/target digests plus the pinned Parent
+identity. It is saved before binding publication and retained after completion
+so a same-name retry can distinguish its own publish from an occupied name.
+Finalization removes only `private_to` and `forked_from`; model bookkeeping and
+the receipt survive. Receipts contain no transport bodies and never appear in
+agent specs or API responses. See [crew-mode](crew-mode.md#owner-reviewed-capability-inheritance).
+
+Explicit capability enrollment adds a `capabilities` object to the private
+agent's existing sidecar entry, never to its harness JSON. It records schema
+version 1, one pinned Parent descriptor, accepted Parent rows, explicit local
+operations, the catalog URI snapshot and the saved materialization digest.
+`pending` means publication has not been verified; `saved` verifies disk state
+only. Neither means a provider loaded that version. Capability responses expose
+runtime `status`, `saved_revision`, `sessions` and an optional `error_code`;
+Parent errors live in `template.error_code`. There is no duplicate `warnings`
+array or constant `runtime.apply_mode`; adoption still requires a new runtime.
+Rows expose `managed` for transport ownership, not constant `editable` or
+`locked_reason` metadata; managed-server Enabled remains supported.
+Schema-v1 reads require
+all capability section maps and validate accepted row values and persisted
+`set`/`remove` overrides. Present null intent, missing sections and malformed
+rows fail closed; they are never dropped or interpreted as legacy mode. The
+owner API returns its bounded unavailable response without exposing source
+bytes. The pinned Parent requires string name, scope, source, path and project
+fields; an empty project remains valid. Optional catalog, revision, materialization
+and ordinary-field bookkeeping remain optional, but present values are checked
+before a consumer can use them. Publish receipts use the same Parent check;
+explicit null receipts are corrupt, not absent. Known MCP transport fields are
+checked before accepted or local rows
+can be materialized, including string-list contents, string-valued environment
+and header maps, boolean `disabled`, and positive finite `timeout`. The same
+field validator runs on source transports and editor sets. Source metadata and
+policy-only entries remain intact; native `oauth.oauthScopes` arrays are valid
+in persisted source rows. The editor's narrower request allowlist and managed
+or app transport ownership checks still apply separately. A corrupt persisted
+transport refuses cold allocation before reconciliation can publish a new
+spec or change a member binding. The owner API and resolver contract is
+documented in [crew-mode](crew-mode.md#owner-reviewed-capability-inheritance).
+
+Selected `accept_parent` rows must be genuine pending Parent changes in each
+member's pre-operation snapshot. An explicit `inherit` in the same request may
+advance that row to the current Parent (including removal) without invalidating
+its selected acceptance. `inherit` also works without selected acceptance;
+acceptance alone preserves local values and removal overrides. Missing or
+unchanged selections still refuse with `parent_change_missing`, including when
+paired with `inherit`. Batch acceptance validates every selected member before
+publication; local operations apply only to the primary member, and unselected
+rows and peers gain no new approvals. Stale revisions and all Parent identity,
+managed transport, wildcard and ambient MCP exclusion checks remain enforced.
+
+Capability GET, preview and PUT projections mask every non-empty environment
+and header value and native `oauth.clientSecret`, regardless of length or
+recognizable token prefix. Credential-bearing argument options are also masked,
+including split values (`--api-key VALUE`) and inline values (`--token=VALUE`).
+Complete `NAME=VALUE` argument elements also identify credentials when NAME is
+an environment-variable identifier with a credential suffix, including assignments
+passed after `-e` or `--env`. Values may be short and contain further `=` characters.
+A bare name without `=` never consumes the following argument. The whole original
+assignment is masked and retained byte for byte, without parsing a shell command.
+Native OAuth edits and selected connections retain nested `oauthScopes` lists;
+the shared transport validator still requires every scope to be a string.
+The basic-auth forms `-u user:password`, `-uuser:password`, `--user user:password`
+and `--user=user:password` are masked when the value contains a colon, including
+an empty username or password.
+No other short aliases or arbitrary positional credentials are inferred, and
+option detection stops at `--`. A bare `-u` or a colon-free value stays visible;
+another program's colon-bearing `-u` value may be conservatively masked.
+Known credential copies in the same transport's strings, argument arrays and
+nested metadata are masked too, without changing map/list shapes or rewriting
+unrelated rows. Empty credential values remain empty. The original secret stays
+on disk; a whole-transport edit retains it only through the existing signed
+preview and revision-bound `retain_paths` pointer (for example `/oauth/clientSecret`
+or `/args/1`) paired with `[REDACTED]`. An inline option is retained as its entire
+original argument, byte for byte. A stale revision or a path to a
+non-masked/non-scalar leaf still refuses without writing. Legacy reset and
+publish routes also bound
+strict capability and publish-receipt reads: unreadable or malformed state
+returns `503 capabilities_unavailable` before any mutation. Absent intent and
+absent receipts still fall through to legacy handling; owner checks remain
+before these reads. Legacy PATCH and binding changes use the same bounded
+`503 capabilities_unavailable` response for strict-read failures; an enrolled
+legacy write remains a 409 conflict. PATCH checks both the actual file stem and
+the declared name, regardless of which spelling resolved the request. It repeats
+both checks using the fresh read under the existing spec lock before model
+bookkeeping or spec writes, retaining the spec-then-sidecar lock order. A late
+binding-check failure preserves the old binding. Legacy publish
+may already have staged a private destination at that point and runs its existing
+reference-aware rollback; this is rollback, not a claim that no writes occurred.
+
+Each pending generation records only its own `materialized` digest. Failed spec
+publication leaves the old generation's bytes intact; a failed final receipt can
+be completed without minting another generation. Startup still refuses pending
+state until reconciliation succeeds.
+
+With ambient MCP loading enabled (`includeMcpJson` true or absent), resolved
+removals of servers, tools or approval entries refuse with
+`global_mcp_exclusion_unrepresentable` before publication. The check compares
+the saved and final projected rows, so Parent reconciliation, selected acceptance,
+per-item inheritance and whole reset cannot bypass the explicit-remove guard.
+A final projection with `includeMcpJson: false` can represent these removals.
+
+Sidecar reads are capped at 8 MiB and require a single-link regular file.
+Mutators refuse unreadable state instead of replacing it with an empty map.
+The stable sidecar lock refuses non-regular/multiply-linked handles and uses
+no-follow opening where supported. Writes use owner-restricted atomic replace.
+Capability publication takes the config lock, spec lock and sidecar lock in
+that order. Config loading and catalog preparation happen before that hold;
+locked publication rechecks the relevant bindings, sources and intent.
+Base and config.local locks are acquired in that order before the spec and
+sidecar locks. A local member keeps its binding delta in config.local; a
+multi-member batch spanning layers commits one overlay delta atomically.
+Public capability versions are random identifiers tied to the saved internal
+materialization digest, never the digest of secret-bearing source bytes.
+
 KiroCrew tracks two pieces of per-agent state that are **not** part of the
 kiro-cli agent schema: `model_managed` (whether an agent's `model` tracks the
 shipped default or is a frozen user pick) and `cc_model` (a per-agent Claude

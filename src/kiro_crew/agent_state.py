@@ -36,7 +36,9 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
+import stat
 import threading
 from pathlib import Path
 from typing import Iterator, MutableMapping
@@ -81,8 +83,15 @@ def _locked() -> Iterator[None]:
 
         lock_path = _state_path().with_suffix(".json.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            0o600,
+        )
         try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("agent_state_lock_invalid")
             with file_lock(fd, exclusive=True, wait=True):
                 yield
         finally:
@@ -105,7 +114,32 @@ def _read(*, strict: bool = False) -> dict:
     empty; an existing file that cannot be read or parsed propagates.
     """
     try:
-        data = json.loads(_state_path().read_text(encoding="utf-8"))
+        path = _state_path()
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("agent_state_file_invalid")
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0),
+        )
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_size > STATE_MAX_BYTES
+            ):
+                raise ValueError("agent_state_file_invalid")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(STATE_MAX_BYTES + 1)
+            if len(raw) > STATE_MAX_BYTES:
+                raise ValueError("agent_state_too_large")
+            data = json.loads(raw)
+        finally:
+            os.close(fd)
     except FileNotFoundError:
         return {}
     except (OSError, ValueError):
@@ -119,8 +153,198 @@ def _read(*, strict: bool = False) -> dict:
     return data
 
 
+STATE_MAX_BYTES = 8 * 1024 * 1024
+
+
 def _write(data: dict) -> None:
-    atomic_write(_state_path(), json.dumps(data, indent=2, sort_keys=True) + "\n")
+    payload = json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    if len(payload.encode("utf-8")) > STATE_MAX_BYTES:
+        raise ValueError("agent_state_too_large")
+    atomic_write(_state_path(), payload, restrict_to_owner=True)
+
+
+# Schema-v1 section names live with their strict reader, below the resolver in
+# the import graph. The writer/resolver use this same tuple.
+CAPABILITY_SECTIONS = (
+    "mcpServers",
+    "tools",
+    "allowedTools",
+    "autoApprove",
+    "skills",
+    "prompt",
+    "model",
+    "resources",
+)
+
+
+def capability_transport_fields_valid(value: object) -> bool:
+    """Check known wire fields without imposing the editor's request allowlist.
+
+    Whole source transports may carry metadata or be policy-only entries.
+    In particular, native OAuth permits nested oauthScopes, not just strings.
+    """
+    if not isinstance(value, dict):
+        return False
+    for field in ("command", "url", "type"):
+        if field in value and (not isinstance(value[field], str) or not value[field]):
+            return False
+    for field in ("args", "disabledTools", "oauthScopes"):
+        if field in value and (
+            not isinstance(value[field], list)
+            or not all(isinstance(item, str) for item in value[field])
+        ):
+            return False
+    for field in ("env", "headers"):
+        if field in value and (
+            not isinstance(value[field], dict)
+            or not all(isinstance(k, str) and isinstance(v, str) for k, v in value[field].items())
+        ):
+            return False
+    if "disabled" in value and type(value["disabled"]) is not bool:
+        return False
+    if "timeout" in value:
+        timeout = value["timeout"]
+        if type(timeout) not in (int, float) or timeout <= 0:
+            return False
+        if isinstance(timeout, float) and not math.isfinite(timeout):
+            return False
+    if "oauth" in value:
+        oauth = value["oauth"]
+        if not isinstance(oauth, dict):
+            return False
+        for field in ("clientId", "clientSecret", "redirectUri", "clientMetadataUrl"):
+            if field in oauth and not isinstance(oauth[field], str):
+                return False
+        if "oauthScopes" in oauth and (
+            not isinstance(oauth["oauthScopes"], list)
+            or not all(isinstance(scope, str) for scope in oauth["oauthScopes"])
+        ):
+            return False
+    return True
+
+
+def _capability_value_valid(section: str, key: str, value: object) -> bool:
+    """Validate persisted rows, not the editor's pre-resolution request format."""
+    if section == "mcpServers":
+        # Source transports are preserved whole; approvals live separately.
+        return (
+            isinstance(value, dict)
+            and "autoApprove" not in value
+            and capability_transport_fields_valid(value)
+        )
+    if section in ("tools", "allowedTools", "autoApprove"):
+        return value is True
+    if section in ("prompt", "model"):
+        return key == section and isinstance(value, str)
+    if section == "resources":
+        return isinstance(value, str) and value == key
+    # Skill requests use True, but the writer persists the resolved catalog URI.
+    return isinstance(value, str)
+
+
+def _validate_capability_rows(value: dict) -> None:
+    for field in ("accepted", "overrides"):
+        sections = value[field]
+        if set(sections) != set(CAPABILITY_SECTIONS):
+            raise ValueError("capability_state_invalid")
+        for section, rows in sections.items():
+            if not isinstance(rows, dict):
+                raise ValueError("capability_state_invalid")
+            for key, row in rows.items():
+                if not isinstance(key, str) or (section in ("prompt", "model") and key != section):
+                    raise ValueError("capability_state_invalid")
+                if field == "overrides":
+                    if not isinstance(row, dict):
+                        raise ValueError("capability_state_invalid")
+                    if row.get("action") == "remove" and set(row) == {"action"}:
+                        continue
+                    if row.get("action") != "set" or set(row) != {"action", "value"}:
+                        raise ValueError("capability_state_invalid")
+                    row = row["value"]
+                if not _capability_value_valid(section, key, row):
+                    raise ValueError("capability_state_invalid")
+
+
+def _capability_parent_valid(value: object) -> bool:
+    """Validate the pinned descriptor consumed by resolution and publication."""
+    return (
+        isinstance(value, dict)
+        and all(
+            isinstance(value.get(key), str) and value[key] for key in ("name", "source", "path")
+        )
+        and value.get("scope") in ("global", "project")
+        # An empty project is the supported global-only resolution context.
+        and isinstance(value.get("project"), str)
+    )
+
+
+def _validate_capability_metadata(value: dict) -> None:
+    """Optional bookkeeping stays optional, but present values must be usable."""
+    for field in ("materialized", "revision"):
+        if field in value and not isinstance(value[field], str):
+            raise ValueError("capability_state_invalid")
+    if "governance_generation" in value and (
+        type(value["governance_generation"]) is not int or value["governance_generation"] < 0
+    ):
+        raise ValueError("capability_state_invalid")
+    for field in ("catalog", "ordinary", "ordinary_local"):
+        if field not in value:
+            continue
+        mapping = value[field]
+        if not isinstance(mapping, dict) or not all(isinstance(key, str) for key in mapping):
+            raise ValueError("capability_state_invalid")
+        if field == "catalog" and not all(isinstance(uri, str) for uri in mapping.values()):
+            raise ValueError("capability_state_invalid")
+        if field == "ordinary_local" and not all(type(flag) is bool for flag in mapping.values()):
+            raise ValueError("capability_state_invalid")
+
+
+def get_capabilities(name: str) -> dict | None:
+    """Read inheritance intent strictly; corruption must not become legacy mode."""
+    with _lock:
+        entry = _read(strict=True).get(name, {})
+    if not isinstance(entry, dict):
+        raise ValueError("capability_state_invalid")
+    if "capabilities" not in entry:
+        return None
+    value = entry["capabilities"]
+    if (
+        not isinstance(value, dict)
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != 1
+    ):
+        raise ValueError("capability_state_invalid")
+    if (
+        not _capability_parent_valid(value.get("parent"))
+        or not isinstance(value.get("accepted"), dict)
+        or not isinstance(value.get("overrides"), dict)
+        or value.get("status") not in ("saved", "pending")
+    ):
+        raise ValueError("capability_state_invalid")
+    _validate_capability_rows(value)
+    _validate_capability_metadata(value)
+    return value
+
+
+def get_publish_info(name: str) -> dict | None:
+    """Read a publish receipt without treating corrupt intent as absence."""
+    with _lock:
+        entry = _read(strict=True).get(name, {})
+    if not isinstance(entry, dict):
+        raise ValueError("publish_state_invalid")
+    if "publish" not in entry:
+        return None
+    value = entry["publish"]
+    if (
+        not isinstance(value, dict)
+        or not all(
+            isinstance(value.get(key), str) and value[key]
+            for key in ("member", "source", "source_digest", "digest")
+        )
+        or not _capability_parent_valid(value.get("parent"))
+    ):
+        raise ValueError("publish_state_invalid")
+    return value
 
 
 def _entry(data: dict, name: str) -> dict:
