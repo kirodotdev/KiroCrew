@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
-"""The worker writes ``data/results/<id>.json``; the run reads its own dir.
-
-Per-run isolation puts the READ path at ``data/runs/<run_id>/results/`` while the
-reviewing worker's prompt (and the `sage-review` skill) name the shared
-``data/results/<id>.json``. Without adoption the run dir stays empty, so a review
-that genuinely completed reports ``result_records: 0`` and the UI shows an empty
-report while claiming "done".
-
-The driver owns run scoping, so it adopts the worker's record after each turn.
-"""
+"""The driver owns result durability for each run-scoped review response."""
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -38,6 +30,14 @@ def _record(cid: str = "CR-1") -> dict:
         "deep_reviewed": True, "title": cid,
         "files_covered": ["f"], "coverage_complete": True,
     }
+
+
+def _response(task: str, record: dict) -> str:
+    capability = re.search(r'"capability": "([^"]+)"', task)
+    assert capability is not None
+    return json.dumps({"schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+                       "capability": capability.group(1), "change_id": record["change_id"],
+                       "record": record})
 
 
 class _Base(unittest.TestCase):
@@ -118,15 +118,13 @@ class TestAdoption(_Base):
         self.assertIsNone(results.read_result("CR-1", self.root, "run-b"))
 
 
-class TestDriverAdopts(_Base):
-    """End-to-end: a worker that writes ONLY the shared path must still produce a
-    report for the run."""
+class TestDriverResponseHandoff(_Base):
+    """A valid response is persisted directly into the run directory."""
 
     def _worker_dispatch(self):
         def dispatch(task: str, timeout: int = 0):
             if "SINGLE thorough pass" in task:
-                # Exactly what the real worker does: the path its prompt names.
-                results.write_result(_record(), self.root)
+                return {"ok": True, "output": _response(task, _record()), "error": ""}
             return {"ok": True, "output": "done", "error": ""}
         return dispatch
 
@@ -134,7 +132,6 @@ class TestDriverAdopts(_Base):
         out = D.run_review(["CR-1"], dispatch=self._worker_dispatch(),
                            archiver=lambda *_a, **_k: None,
                            generate_report=True, root=self.root, run_id="run-a")
-        # This was 0 before the bridge existed.
         self.assertEqual(out["result_records"], 1)
         self.assertEqual(out["deep_reviewed"], 1)
         payload = json.loads(

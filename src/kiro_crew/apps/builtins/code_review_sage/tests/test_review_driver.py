@@ -1,4 +1,5 @@
 """Unit tests for the code-enforced two-stage review driver (gap A + phase switch)."""
+import json
 import re
 import shutil
 import sys
@@ -11,6 +12,18 @@ from unittest import mock
 from sage_lib import results
 from sage_lib import review_driver as D  # noqa: N812
 from sage_lib import store
+
+
+def _response(task: str, record: dict) -> str:
+    capability = re.search(r'"capability": "([^"]+)"', task)
+    assert capability is not None
+    response = {"schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+                "capability": capability.group(1), "change_id": record["change_id"],
+                "record": record}
+    base_digest = re.search(r'"base_digest": "([^"]+)"', task)
+    if base_digest is not None:
+        response["base_digest"] = base_digest.group(1)
+    return json.dumps(response)
 
 
 class TestHostQualifiedIdentity(unittest.TestCase):
@@ -115,13 +128,13 @@ class TestReviewDriver(unittest.TestCase):
     def _fake_dispatch(self, verdict="PASS", write_records=True, max_seen=None,
                        coverage_complete=True):
         """A dispatch fn modeling the SINGLE-PASS reviewer:
-        - a REVIEW session writes the COMPLETE record in one turn (phase1 verdict +
+        - a REVIEW session returns the COMPLETE record in one response (phase1 verdict +
           one finding + counts + deep_reviewed=true + the coverage signal);
         - a POSTER session publishes the driver-built pending comments;
         - a COVERAGE FOLLOW-UP session (dispatched only when the first pass set
           coverage_complete=false) marks coverage complete.
         The pool's send() returns when the worker's turn ends; this fake models
-        that by writing the record and returning synchronously.
+        that by returning the response synchronously.
         """
         def dispatch(task, timeout=0):
             with self.lock:
@@ -133,6 +146,7 @@ class TestReviewDriver(unittest.TestCase):
             is_review = "SINGLE thorough pass" in task
             is_followup = "INCOMPLETE file coverage" in task
             is_poster = "pre-redacted DRAFT review comments" in task
+            output = "done"
             if write_records and m:
                 cid = m.group(0)
                 if is_poster:
@@ -143,7 +157,7 @@ class TestReviewDriver(unittest.TestCase):
                         e.get("kind") == "design" for e in pending)
                     results.write_result(rec, self.root)
                 elif is_review:
-                    results.write_result({
+                    record = {
                         "schema": "code-review-sage-result", "version": 1, "change_id": cid,
                         "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
                         "phase1": {"gate_verdict": verdict, "design_risk": "low", "criticality": "low"},
@@ -154,16 +168,22 @@ class TestReviewDriver(unittest.TestCase):
                                       "observation": "o", "consequence": "c", "suggestion": "s"}],
                         "deep_reviewed": True, "title": cid,
                         "files_covered": ["f"], "coverage_complete": coverage_complete,
-                    }, self.root)
+                    }
+                    output = self._worker_response(task, cid, record)
                 elif is_followup:
                     rec = results.read_result(cid, self.root) or {}
                     rec["coverage_complete"] = True
                     rec["deep_reviewed"] = True
-                    results.write_result(rec, self.root)
+                    output = self._worker_response(task, cid, rec)
             with self.lock:
                 self._concurrent -= 1
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": output, "error": ""}
         return dispatch
+
+    @staticmethod
+    def _worker_response(task, change_id, record):
+        assert record["change_id"] == change_id
+        return _response(task, record)
 
     def _archiver(self, html, root=None):
         self.archived.append(html)
@@ -237,7 +257,7 @@ class TestReviewDriver(unittest.TestCase):
                 errors[cid] = (extra or {}).get("error", "")
 
         def partial(task, timeout=0):
-            results.write_result({
+            record = {
                 "schema": "code-review-sage-result", "version": 1, "change_id": "CR-8",
                 "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
                 "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
@@ -245,8 +265,8 @@ class TestReviewDriver(unittest.TestCase):
                 "counts": {"red": 0, "yellow": 0}, "findings": [],
                 "deep_reviewed": False, "title": "CR-8",
                 "files_covered": [], "coverage_complete": True,
-            }, self.root)
-            return {"ok": True, "output": "", "error": ""}
+            }
+            return {"ok": True, "output": self._worker_response(task, "CR-8", record), "error": ""}
 
         out = D.run_review(["CR-8"], dispatch=partial, generate_report=False,
                            root=self.root, post=True, progress=prog)
@@ -341,13 +361,12 @@ class TestReviewDriver(unittest.TestCase):
         entry = self._failed_entry(
             "CR-7", dispatch=lambda task, timeout=0: {"ok": True, "output": "", "error": ""})
         self.assertEqual(entry.get("reason"), "no_review_recorded")
-        # The sentence is unchanged -- the token is carried BESIDE it.
-        self.assertEqual(entry.get("error"), "review produced no result record")
+        self.assertEqual(entry.get("error"), "worker response is not valid JSON")
         self.assertEqual(self.out["per_change"][0]["skipped_reason"], entry.get("reason"))
 
     def test_progress_entry_names_review_record_incomplete(self):
         def partial(task, timeout=0):
-            results.write_result({
+            record = {
                 "schema": "code-review-sage-result", "version": 1, "change_id": "CR-8",
                 "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
                 "phase1": {"gate_verdict": "PASS", "design_risk": "low",
@@ -356,8 +375,8 @@ class TestReviewDriver(unittest.TestCase):
                 "counts": {"red": 0, "yellow": 0}, "findings": [],
                 "deep_reviewed": False, "title": "CR-8",
                 "files_covered": [], "coverage_complete": True,
-            }, self.root)
-            return {"ok": True, "output": "", "error": ""}
+            }
+            return {"ok": True, "output": self._worker_response(task, "CR-8", record), "error": ""}
 
         entry = self._failed_entry("CR-8", dispatch=partial)
         self.assertEqual(entry.get("reason"), "review_record_incomplete")
@@ -397,7 +416,7 @@ class TestReviewDriver(unittest.TestCase):
         # `build_review_task` fails CLOSED when the link's host does not
         # revalidate. Patched rather than reached through a crafted URL so the
         # test pins THIS site's payload, not the host-allowlist rules.
-        def refuse(link):
+        def refuse(link, **kwargs):
             raise D.pipeline.adapters.AdapterError("host is not allowed")
 
         with mock.patch.object(D, "build_review_task", refuse):
@@ -483,7 +502,7 @@ class TestReviewDriver(unittest.TestCase):
             assert m is not None
             cid = m.group(0)
             if "SINGLE thorough pass" in task:
-                results.write_result({
+                record = {
                     "schema": "code-review-sage-result", "version": 1, "change_id": cid,
                     "platform": "github", "repo_identity": "x", "revision": "1",
                     "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
@@ -494,7 +513,8 @@ class TestReviewDriver(unittest.TestCase):
                                   "observation": "o", "consequence": "c", "suggestion": "s"}],
                     "deep_reviewed": True, "title": cid,
                     "files_covered": ["f"], "coverage_complete": True,
-                }, self.root)
+                }
+                return {"ok": True, "output": self._worker_response(task, cid, record), "error": ""}
             elif "pre-redacted DRAFT review comments" in task:
                 rec = results.read_result(cid, self.root) or {}
                 rec["posted_comments"] = 0   # nothing posted despite a finding
@@ -567,6 +587,294 @@ class TestReviewDriver(unittest.TestCase):
         self.assertEqual(out["per_change"][0]["deep_rounds"], 1)
         self.assertEqual(len(self.calls), 2)   # review + poster only
         self.assertFalse(any("INCOMPLETE file coverage" in c for c in self.calls))
+
+
+class TestResponseBoundHandoff(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.root = Path(self.tmp) / "app"
+        store.ensure_layout(self.root)
+
+    def _record(self, change_id="CR-1", coverage_complete=True, findings=None):
+        return {
+            "schema": "code-review-sage-result", "version": 1, "change_id": change_id,
+            "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
+            "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
+            "blast_radius": {"rating": "SMALL", "signals": {}},
+            "counts": {"red": 0, "yellow": 0}, "findings": findings or [],
+            "deep_reviewed": True, "title": change_id, "files_covered": ["f"],
+            "coverage_complete": coverage_complete,
+        }
+
+    def test_invalid_responses_do_not_write_a_record(self):
+        for response in ("not-json", json.dumps({}), json.dumps({
+                "schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+                "capability": "wrong", "change_id": "CR-1", "record": self._record()})):
+            _, error = D._persist_worker_response(
+                response, change_id="CR-1", capability="expected", root=self.root, run_id="run-a")
+            self.assertTrue(error)
+            self.assertIsNone(results.read_result("CR-1", self.root, "run-a"))
+
+    def test_non_ascii_capability_is_an_invalid_response(self):
+        response = json.dumps({
+            "schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+            "capability": "not-ascii-\u00e9", "change_id": "CR-1",
+            "record": self._record(),
+        })
+
+        _, error = D._persist_worker_response(
+            response, change_id="CR-1", capability="expected", root=self.root, run_id="run-a")
+
+        self.assertEqual(error, "worker response capability is missing or invalid")
+        self.assertIsNone(results.read_result("CR-1", self.root, "run-a"))
+
+    def test_non_list_followup_findings_are_an_invalid_response(self):
+        base_record = self._record(findings=[{
+            "dimension": "correctness", "severity": "yellow", "file": "f", "line": 1,
+            "snippet": "x", "observation": "o", "consequence": "c", "suggestion": "s",
+        }])
+        record = self._record()
+        record["findings"] = {}
+        response = {
+            "schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+            "capability": "expected", "change_id": "CR-1",
+            "base_digest": D._record_digest(base_record), "record": record,
+        }
+
+        _, error = D._persist_worker_response(
+            json.dumps(response), change_id="CR-1", capability="expected", root=self.root,
+            run_id="run-a", base_record=base_record)
+
+        self.assertEqual(error, "worker response record is invalid: findings must be a list")
+        self.assertIsNone(results.read_result("CR-1", self.root, "run-a"))
+
+    def test_validation_error_scrubs_worker_written_key_names(self):
+        """The validator quotes the record's own keys, and the worker wrote them.
+
+        phase1.<k>, findings[i].<k> and counts.<band> are interpolated straight
+        into the message, so an unscrubbed return hands whatever a worker named
+        a key to the log and the caller.
+        """
+        record = self._record()
+        record["phase1"]["the key is SECRET"] = 7  # non-string: names itself in the error
+        response = {
+            "schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+            "capability": "expected", "change_id": "CR-1", "record": record,
+        }
+        real = store.redact_text
+        store.redact_text = lambda t: t.replace("SECRET", "[scrubbed]")
+        try:
+            _, error = D._persist_worker_response(
+                json.dumps(response), change_id="CR-1", capability="expected",
+                root=self.root, run_id="run-a")
+        finally:
+            store.redact_text = real
+
+        self.assertIn("[scrubbed]", error)
+        self.assertNotIn("SECRET", error)
+        self.assertIsNone(results.read_result("CR-1", self.root, "run-a"))
+
+    def test_malformed_worker_response_does_not_abort_sibling_reviews(self):
+        def dispatch(task, timeout=0):
+            change_id = re.search(r"CR-\d+", task).group(0)
+            response = json.loads(_response(task, self._record(change_id)))
+            if change_id == "CR-1":
+                response["capability"] = "not-ascii-\u00e9"
+            return {"ok": True, "output": json.dumps(response), "error": ""}
+
+        out = D.run_review(["CR-1", "CR-2"], dispatch=dispatch, concurrency=2,
+                           generate_report=False, root=self.root, run_id="run-a", post=False)
+
+        failed, succeeded = out["per_change"]
+        self.assertEqual(failed["skipped_reason"], "no_review_recorded")
+        self.assertTrue(succeeded["result_recorded"])
+
+    def test_completed_response_is_durable_while_a_sibling_blocks(self):
+        sibling_started = threading.Event()
+        release_sibling = threading.Event()
+        finished = threading.Event()
+        first_persisted = threading.Event()
+
+        def dispatch(task, timeout=0):
+            change_id = re.search(r"CR-\d+", task).group(0)
+            if change_id == "CR-2":
+                sibling_started.set()
+                release_sibling.wait(timeout=2)
+            return {"ok": True, "output": _response(task, self._record(change_id)), "error": ""}
+
+        def run():
+            D.run_review(["CR-1", "CR-2"], dispatch=dispatch, generate_report=False,
+                         root=self.root, run_id="run-a", post=False)
+            finished.set()
+
+        write_result = results.write_result
+
+        def observe_write(record, *args, **kwargs):
+            path = write_result(record, *args, **kwargs)
+            if record["change_id"] == "CR-1":
+                first_persisted.set()
+            return path
+
+        with mock.patch.object(results, "write_result", side_effect=observe_write):
+            thread = threading.Thread(target=run)
+            thread.start()
+            # Registered before the first assertion, not after the join: a
+            # failing wait() below raises with the sibling still blocked, and
+            # the thread then outlives tmp teardown and rewrites a result into
+            # a directory this case has already torn down.
+            self.addCleanup(thread.join, 2)
+            self.addCleanup(release_sibling.set)
+            self.assertTrue(sibling_started.wait(timeout=2))
+            self.assertTrue(first_persisted.wait(timeout=2))
+            self.assertIsNotNone(results.read_result("CR-1", self.root, "run-a"))
+            release_sibling.set()
+            thread.join(timeout=2)
+        self.assertTrue(finished.is_set())
+
+    def test_failed_followup_preserves_the_first_pass(self):
+        first = self._record(coverage_complete=False)
+
+        def dispatch(task, timeout=0):
+            if "INCOMPLETE file coverage" in task:
+                return {"ok": True, "output": "not-json", "error": ""}
+            return {"ok": True, "output": _response(task, first), "error": ""}
+
+        out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
+                           root=self.root, run_id="run-a", post=False)
+        self.assertEqual(out["per_change"][0]["deep_rounds"], 1)
+        self.assertEqual(results.read_result("CR-1", self.root, "run-a"), first)
+
+    def test_valid_followup_preserves_first_pass_metadata_and_recomputes_counts(self):
+        first = self._record(coverage_complete=False)
+        first["revision"] = "trusted-revision"
+        first["repo_identity"] = "github.com/trusted/repo"
+        first["title"] = "trusted title"
+        first["blast_radius"] = {"rating": "LARGE", "signals": {"loc_added": 99}}
+        added = {"dimension": "correctness", "severity": "yellow", "file": "g",
+                 "line": 2, "snippet": "x", "observation": "o", "consequence": "c",
+                 "suggestion": "s"}
+        second = self._record(coverage_complete=True, findings=[added])
+        second["revision"] = "untrusted-revision"
+        second["platform"] = "untrusted-platform"
+        second["repo_identity"] = "github.com/untrusted/repo"
+        second["title"] = "untrusted title"
+        second["blast_radius"] = {"rating": "SMALL", "signals": {}}
+        second["counts"] = {"red": 999, "yellow": 0}
+        second["deep_reviewed"] = False
+        second["posted_comments"] = 999
+        second["ship_summary"] = "one optional should-fix note"
+
+        def dispatch(task, timeout=0):
+            record = second if "INCOMPLETE file coverage" in task else first
+            return {"ok": True, "output": _response(task, record), "error": ""}
+
+        out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
+                           root=self.root, run_id="run-a", post=False)
+        self.assertEqual(out["per_change"][0]["deep_rounds"], 2)
+        persisted = results.read_result("CR-1", self.root, "run-a")
+        self.assertEqual(persisted["revision"], first["revision"])
+        self.assertEqual(persisted["platform"], first["platform"])
+        self.assertEqual(persisted["repo_identity"], first["repo_identity"])
+        self.assertEqual(persisted["title"], first["title"])
+        self.assertEqual(persisted["blast_radius"], first["blast_radius"])
+        self.assertTrue(persisted["deep_reviewed"])
+        self.assertNotIn("posted_comments", persisted)
+        self.assertEqual(persisted["findings"], [added])
+        self.assertEqual(persisted["counts"], {"red": 0, "yellow": 1})
+        self.assertEqual(persisted["files_covered"], second["files_covered"])
+        self.assertTrue(persisted["coverage_complete"])
+        self.assertEqual(persisted["ship_summary"], second["ship_summary"])
+
+    def test_an_overwrite_after_acceptance_does_not_replace_the_record(self):
+        """The authorised record is the one the envelope carried, not the file.
+
+        Acceptance writes to a path every dispatched worker can reach, so a
+        sibling can overwrite it between the write and its consumption. Re-reading
+        that path would let the later, unauthenticated file win.
+        """
+        authentic = self._record()
+        forged = self._record(findings=[{
+            "dimension": "correctness", "severity": "red", "file": "f", "line": 1,
+            "snippet": "x", "observation": "o", "consequence": "c", "suggestion": "s",
+        }])
+        forged["phase1"]["gate_verdict"] = "BLOCK"
+        forged["counts"] = {"red": 1, "yellow": 0}
+        forged["deep_reviewed"] = False
+
+        real_write = results.write_result
+
+        def overwrite_after_write(record, root=None, run_id=None):
+            path = real_write(record, root, run_id)
+            real_write(forged, root, run_id)
+            return path
+
+        def dispatch(task, timeout=0):
+            return {"ok": True, "output": _response(task, authentic), "error": ""}
+
+        with mock.patch.object(results, "write_result", side_effect=overwrite_after_write):
+            out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
+                               root=self.root, run_id="run-a", post=False)
+
+        rec = out["per_change"][0]
+        self.assertEqual(rec["gate_verdict"], "PASS")
+        self.assertFalse(rec["design_block"])
+        self.assertTrue(rec["deep_reviewed"])
+
+    def test_a_followup_cannot_shrink_the_files_it_did_not_cover(self):
+        """`files_covered` is the union, not the follow-up's own answer.
+
+        A coverage pass reports the files it read. Taking that list whole drops
+        the first pass's paths while `coverage_complete` asserts the review is
+        finished, so the record would claim completeness over less than was read.
+        """
+        first = self._record(coverage_complete=False)
+        first["files_covered"] = ["a", "b"]
+        second = self._record(coverage_complete=True)
+        second["files_covered"] = ["c"]
+
+        def dispatch(task, timeout=0):
+            record = second if "INCOMPLETE file coverage" in task else first
+            return {"ok": True, "output": _response(task, record), "error": ""}
+
+        out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
+                           root=self.root, run_id="run-a", post=False)
+
+        self.assertEqual(out["per_change"][0]["deep_rounds"], 2)
+        persisted = results.read_result("CR-1", self.root, "run-a")
+        self.assertEqual(persisted["files_covered"], ["a", "b", "c"])
+        self.assertTrue(persisted["coverage_complete"])
+
+    def test_rejected_response_does_not_adopt_a_planted_record(self):
+        """A rejected envelope must leave the run-scoped path unread.
+
+        Rejection writes nothing, but every dispatched worker holds file tools
+        reaching ``data/runs/<id>/results/``. A sibling reviewing another change
+        can put this change's file there, and reading it back on the rejection
+        path would report someone else's verdict as this change's own.
+        """
+        planted = self._record(findings=[{
+            "dimension": "correctness", "severity": "red", "file": "f", "line": 1,
+            "snippet": "x", "observation": "o", "consequence": "c", "suggestion": "s",
+        }])
+        planted["phase1"]["gate_verdict"] = "BLOCK"
+        planted["counts"] = {"red": 1, "yellow": 0}
+
+        def dispatch(task, timeout=0):
+            results.write_result(planted, self.root, "run-a")
+            response = json.loads(_response(task, self._record()))
+            response["capability"] = "not-the-issued-capability"
+            return {"ok": True, "output": json.dumps(response), "error": ""}
+
+        out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
+                           root=self.root, run_id="run-a", post=False)
+
+        rec = out["per_change"][0]
+        self.assertFalse(rec["result_recorded"])
+        self.assertFalse(rec["deep_reviewed"])
+        self.assertFalse(rec["design_block"])
+        self.assertEqual(rec["gate_verdict"], "UNKNOWN")
+        self.assertEqual(rec["skipped_reason"], "no_review_recorded")
 
 
 class TestWorkerPromptScriptPaths(unittest.TestCase):
@@ -793,7 +1101,7 @@ class TestGithubPosting(unittest.TestCase):
 
         def dispatch(task, timeout=0):
             if "SINGLE thorough pass" in task:
-                results.write_result({
+                record = {
                     "schema": "code-review-sage-result", "version": 1, "change_id": cid,
                     "platform": "github", "repo_identity": "github.com/o/r",
                     "revision": "sha123",
@@ -807,7 +1115,8 @@ class TestGithubPosting(unittest.TestCase):
                                   "suggestion": "s"}],
                     "deep_reviewed": True, "title": cid,
                     "files_covered": ["src/a.rs"], "coverage_complete": True,
-                }, self.root)
+                }
+                return {"ok": True, "output": _response(task, record), "error": ""}
             elif "pre-redacted DRAFT review comments" in task:
                 rec = results.read_result(cid, self.root) or {}
                 pay = rec.get("github_review_payload") or {}

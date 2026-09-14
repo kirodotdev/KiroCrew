@@ -154,9 +154,9 @@ def validate_result(record: dict) -> list[str]:
                 and p1.get("gate_verdict") not in VALID_VERDICTS:
             errs.append(f"phase1.gate_verdict must be one of {sorted(VALID_VERDICTS)}")
     findings = record.get("findings", [])
-    if findings and not isinstance(findings, list):
+    if not isinstance(findings, list):
         errs.append("findings must be a list")
-    elif isinstance(findings, list):
+    else:
         # Every entry is dereferenced as an object downstream (`_redact_finding`,
         # then `f.get("severity"/"file"/"line"/...)` when rendering), so a
         # non-object entry raises AttributeError mid-report rather than being
