@@ -1010,3 +1010,46 @@ def test_korean_refusal_yields_no_title(reply):
 )
 def test_legitimate_titles_survive_the_new_checks(reply, expected):
     assert _validate_title_reply(reply) == expected
+
+
+class TestRenameOrderingUnderSlowPersistence:
+    """Aborting the client's request does not stop this handler, so two renames
+    can overlap. The title epoch decides which one is allowed to announce."""
+
+    def _make_app(self, state: MagicMock) -> web.Application:
+        app = web.Application()
+        app["state"] = state
+        app.router.add_patch("/api/chat/slots/{slot}/title", chat_title.api_chat_slot_rename)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_superseded_rename_does_not_announce_the_name_it_lost_with(self, monkeypatch):
+        slot = _ChatSlot("s")
+        state = MagicMock(spec=DashboardState)
+        state._slots = {"s": slot}
+
+        async def competing_rename(_state, s):
+            s.title = "B wins"
+            s._title_epoch += 1
+
+        monkeypatch.setattr(chat_title, "_persist_title", competing_rename)
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s/title", json={"title": "A aborted"})
+            assert resp.status == 200
+            assert (await resp.json())["title"] == "B wins"
+        state.push_slot_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_uncontested_rename_announces_itself_with_its_epoch(self, monkeypatch):
+        slot = _ChatSlot("s")
+        state = MagicMock(spec=DashboardState)
+        state._slots = {"s": slot}
+
+        async def persisted(_state, _s):
+            return None
+
+        monkeypatch.setattr(chat_title, "_persist_title", persisted)
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s/title", json={"title": "Only rename"})
+            assert resp.status == 200
+        state.push_slot_title.assert_called_once_with(slot.key, "Only rename")

@@ -17,13 +17,14 @@ import { useNavigate } from 'react-router-dom'
 import { shallowEqual } from 'react-redux'
 import { settingsPath } from '../components/settingsPath'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
-import { useAppDispatch, useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { useConnected } from '../hooks/useConnected'
+import { useRenameSlot, useRenamesInFlight } from '../hooks/useRenameSlot'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectAutomationForSlot } from '../store/chatSlice'
-import { sseSlotTitle, setSidebarOrder, slotIsRemoteBound } from '../store/dashboardSlice'
+import { setSidebarOrder, slotIsRemoteBound } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -752,6 +753,10 @@ interface Slot {
 type SourceLinkState = NonNullable<NonNullable<Slot['source_links']>[number]['state']>
 /** One sidebar chip's payload, as the slot serializer sends it. */
 type SidebarSourceLink = NonNullable<Slot['source_links']>[number]
+
+// `offline` marks a refusal a reconnect falsifies, unlike a rejected PATCH's
+// revert; `subject` is the attempted new name, which titles the notice.
+type SidebarActionError = { message: string; subject?: string; report?: ErrorReport; offline?: boolean }
 
 /** Lifecycle states after which a pull request can never merge, so its CI
  * rollup carries no actionable information and the lifecycle glyph is the only
@@ -1503,6 +1508,7 @@ interface SessionRowProps {
   digitBadge: string | undefined
   /** This slot is being renamed (any render instance) — disables drag. */
   isRenaming: boolean
+  savingRename: boolean
   /** …and the inline edit is pinned to THIS render instance (renameScope). */
   renamingHere: boolean
   /** Live rename draft. Empty for every row but the one being renamed, so a
@@ -1685,7 +1691,7 @@ function compareLocalPinnedThenSort(
 const SessionRow = memo(function SessionRow({
   slot: s, showDivider, scope, navScope, holdContainer, isActive, connected, isOut, isPinned, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
-  isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
+  isRenaming, savingRename, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
   defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
   renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
   onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onAdoptPeerSession, adoptPending, adoptError,
@@ -2681,12 +2687,25 @@ const SessionRow = memo(function SessionRow({
                 secondary line down by a full line box on some rows, which is what
                 made the list read as ragged. The full string stays reachable
                 through the `title` attribute, and the rename box below is the one
-                place it is shown in full. */}
+                place it is shown in full. `title` therefore stays AFTER the offline
+                spread on purpose; the refusal rides on aria-disabled, not aria-label,
+                since an aria-label here would replace the session name it announces. */}
             <div
               data-session-title
               className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`}
+              {...offlineProps(connected, i18nT('utils.offline.rename_sessions'))}
               title={s.title && s.title !== s.key ? s.title : s.key}
             >
+              {/* A rename is bounded at 30s, and the refusal for a second attempt
+                  cites this request, so it cannot be the only invisible party. */}
+              {savingRename && (
+                <Loader
+                  size={11}
+                  data-testid="rename-saving"
+                  aria-label={i18nT('pages.chatSidebar.rename_saving')}
+                  className="inline-block shrink-0 mr-1 text-muted animate-spin align-[-1px]"
+                />
+              )}
               {/* No separate fork glyph: forked titles already carry the
                   persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
                   the arrow in the title text — rather than as a UI-only glyph —
@@ -2759,8 +2778,8 @@ const SessionRow = memo(function SessionRow({
                   <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
                 </DropdownMenuContent>
               </DropdownMenu>
-              <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(s.key) }}><Copy size={12} /></IconButton>
-              <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(s.key) }}><X size={12} /></IconButton>
+              <IconButton variant="accent" data-testid="row-duplicate" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} {...offlineProps(connected, i18nT('utils.offline.duplicate_sessions'), i18nT('pages.chatSidebar.duplicate'))} className={connected ? undefined : 'opacity-40'} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(s.key) }}><Copy size={12} /></IconButton>
+              <IconButton variant="danger" data-testid="row-close" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} {...offlineProps(connected, i18nT('utils.offline.close_sessions'), i18nT('pages.chatSidebar.close_session'))} className={connected ? undefined : 'opacity-40'} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(s.key) }}><X size={12} /></IconButton>
             </IconButtonGroup>
           ))}
         </div>
@@ -3001,6 +3020,12 @@ function ChatSidebar({
   // update already rolls the cache back, but a rolled-back rename with no message
   // reads as a dead click.
   const [folderActionError, setFolderActionError] = useState('')
+  // Same regime split as the title notice: only an offline refusal is
+  // falsified by reconnecting, so only it retires there.
+  const [folderActionOffline, setFolderActionOffline] = useState(false)
+  // The sidebar's split rule: a refusal a SIDEBAR row raised renders here, while a
+  // write reported from a menu that unmounts goes through reportActionFailure.
+  const [titleAction, setTitleAction] = useState<SidebarActionError | null>(null)
   // A failed "New chat" (any local variant) used to be a silent no-op: the
   // react-query rejection was swallowed and nothing rendered. Mirrors
   // remoteCrewError below, but lives above the list rather than in the menu,
@@ -3301,6 +3326,7 @@ function ChatSidebar({
     slotTitleDigest,
   )
   const [renamingSlot, setRenamingSlot] = useState<string | null>(null)
+  const renamesInFlight = useRenamesInFlight()
   // In board view a multi-tag chat renders once per matching column, so
   // `renamingSlot === s.key` alone is true in every copy at once — the rename
   // input would mount in all columns and the shared ref would bind to the last.
@@ -3325,17 +3351,26 @@ function ChatSidebar({
   // on the next close.
   const suppressMenuRestoreRef = useRef(false)
   // ── Rename plumbing handed to the memoized rows ──────────────────────────
+  // Read from the store, not closed over: a closure (or a ref assigned during
+  // render) only refreshes on re-render, so a blur landing first sees stale state.
+  const store = useAppStore()
   // Stable identities (state setters + refs only), so arming a rename or
   // typing into it never invalidates other rows' props. The commit takes the
   // draft VALUE from the row as an argument rather than closing over
   // `renameValue` — a closure over it would mint a new handler per keystroke
   // and re-render every row on each key.
   const onRenameStart = useCallback((key: string, scope: string, title: string, fromMenu: boolean) => {
+    // A dimmed row swallowing a double-click is the same silent drop the commit
+    // half reports, so the entry refuses through the same notice.
+    if (!store.getState().dashboard.connected) {
+      setTitleAction({ message: i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_sessions') }), offline: true })
+      return
+    }
     if (fromMenu) suppressMenuRestoreRef.current = true
     setRenamingSlot(key)
     setRenameScope(scope)
     setRenameValue(title)
-  }, [])
+  }, [store])
   const onRenameChange = useCallback((value: string) => {
     setRenameValue(value.replace(/[\r\n]+/g, ' '))
   }, [])
@@ -3343,14 +3378,26 @@ function ChatSidebar({
     cancelRenameRef.current = true
     setRenamingSlot(null)
   }, [])
+  const mutateRenameSlot = useRenameSlot((message, subject, report) => {
+    // The fallback still explains the revert: a generic "something went wrong"
+    // leaves the reader never told their previous title came back.
+    setTitleAction({ message: message || i18nT('pages.chatPage.rename_reverted_try_again'), subject, report })
+  })
   const onRenameCommit = useCallback((key: string, value: string) => {
     if (!cancelRenameRef.current && value.trim()) {
-      dispatch(sseSlotTitle({ key, title: value.trim() }))
-      api.renameSlot(key, value.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) })
+      // The commit half of the gate the double-click entry already applies: report
+      // and RETURN, so the editor stays open and the typed draft is not discarded.
+      if (!store.getState().dashboard.connected) {
+        setTitleAction({ message: i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_sessions') }), offline: true })
+        return
+      }
+      // Refused because one is still saving: same treatment as offline, so the
+      // second draft is not discarded by closing over it.
+      if (!mutateRenameSlot({ key, next: value.trim() })) return
     }
     cancelRenameRef.current = false
     setRenamingSlot(null)
-  }, [dispatch, queryClient])
+  }, [mutateRenameSlot, store])
   // Input modality tracker for menu-close focus handling: true while the most
   // recent interaction was a keyboard press. Capture-phase listeners so Radix's
   // own handlers can't reorder around us.
@@ -3538,6 +3585,17 @@ function ChatSidebar({
   const subagentApprovalCounts = useAppSelector(selectSidebarApprovalCounts, shallowEqual)
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
+  // An offline refusal stops being true once the gateway is back, and its
+  // Ask-agent button appears at that instant — so retire it on the transition.
+  const wasConnected = useRef(connected)
+  useEffect(() => {
+    if (connected && !wasConnected.current) {
+      if (titleAction?.offline) setTitleAction(null)
+      if (folderActionOffline) { setFolderActionError(''); setFolderActionOffline(false) }
+
+    }
+    wasConnected.current = connected
+  }, [connected, titleAction?.offline, folderActionOffline])
   // O(1) lookup set for the filter predicate (mirrors the `pinned` and
   // `slotSearchRanks` patterns elsewhere in this file).
   const unreadSet = useMemo(() => new Set(unreadSlots), [unreadSlots])
@@ -5567,6 +5625,22 @@ function ChatSidebar({
   // each behaviour has one definition. Rename + Tags stay local (they drive this
   // component's inline-edit + tag-popover state).
   const sessionActions = useSessionActions(mode)
+  const { duplicate: duplicateSession, close: closeSession } = sessionActions
+
+  // Duplicate and Close refuse through the notice the rename entry already uses:
+  // one row must not answer a dimmed click two different ways.
+  const refuseOffline = useCallback((verb: string) => {
+    setTitleAction({ message: i18nT('utils.offline.gateway_offline_reconnect', { action: verb }), offline: true })
+  }, [])
+  const onRowDuplicate = useCallback((key: string) => {
+    if (!store.getState().dashboard.connected) { refuseOffline(i18nT('utils.offline.duplicate_sessions')); return }
+    duplicateSession(key)
+  }, [store, refuseOffline, duplicateSession])
+  const onRowClose = useCallback((key: string) => {
+    if (!store.getState().dashboard.connected) { refuseOffline(i18nT('utils.offline.close_sessions')); return }
+    closeSession(key)
+  }, [store, refuseOffline, closeSession])
+
   // Which sessions are currently open in a popped-out window (shared singleton).
   const { poppedOut } = useChatPopouts()
   // Unified dnd-kit handlers for the legacy single-lane layout. One DndContext
@@ -6278,7 +6352,7 @@ function ChatSidebar({
         recent={isPeer ? undefined : recentRank.get(s.key)} recentTintCount={recentTintCount}
         subagentCount={isPeer ? 0 : (subagentCounts[s.key] || 0)} subagentApprovalCount={isPeer ? 0 : (subagentApprovalCounts[s.key] || 0)}
         digitBadge={!isPeer && digitModifierHeld ? shortcutDigitByKey.get(s.key) : undefined}
-        isRenaming={!isPeer && renamingSlot === s.key} renamingHere={renamingHere}
+        isRenaming={!isPeer && renamingSlot === s.key} savingRename={renamesInFlight.includes(s.key)} renamingHere={renamingHere}
         renameValue={renamingHere ? renameValue : ''}
         revealFlash={!isPeer && revealFlash?.key === s.key ? (revealFlash.fading ? 'fade' : 'flash') : null}
         dragInFlight={!!activeDrag}
@@ -6305,7 +6379,7 @@ function ChatSidebar({
         renameInputRef={renameInputRef}
         onRenameStart={onRenameStart} onRenameChange={onRenameChange}
         onRenameCommit={onRenameCommit} onRenameCancel={onRenameCancel}
-        onDuplicate={sessionActions.duplicate} onCloseSession={sessionActions.close}
+        onDuplicate={onRowDuplicate} onCloseSession={onRowClose}
         onMenuCloseAutoFocus={onMenuCloseAutoFocus} onSelectSlot={onSelectSlot}
         onOpenSlotInNewTab={onOpenSlotInNewTab} onOpenSource={onOpenSource}
       />
@@ -7880,12 +7954,23 @@ function ChatSidebar({
        *  so the hand-off loses nothing. Dismissable: the failure is a moment, not
        *  a state — the caches have already been re-synced. */}
       <ErrorNotice
-        title={i18nT('pages.chatSidebar.folder_update_failed')}
+        title={folderActionOffline ? undefined : i18nT('pages.chatSidebar.folder_update_failed')}
         message={folderActionError}
-        askAgent
-        onDismiss={() => setFolderActionError('')}
+        askAgent={connected}
+        onDismiss={() => { setFolderActionError(''); setFolderActionOffline(false) }}
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
+        wrapAction
+      />
+      <ErrorNotice
+        title={titleAction?.offline ? undefined : (titleAction?.subject ? i18nT('pages.chatPage.could_not_rename_to', { name: titleAction.subject }) : i18nT('pages.chatPage.could_not_rename_session'))}
+        message={titleAction?.message ?? ''}
+        report={titleAction?.report}
+        askAgent={connected && !renamingSlot}
+        onDismiss={() => setTitleAction(null)}
+        className="mx-2 mt-2 shrink-0"
+        wrapAction
+        testId="title-action-error"
       />
       <ErrorNotice
         message={newChatError}
@@ -7893,6 +7978,7 @@ function ChatSidebar({
         onDismiss={() => setNewChatError('')}
         className="mx-2 mt-2 shrink-0"
         testId="new-chat-error"
+        wrapAction
       />
       <LayoutGroup id="chat-slots">
         {/* An instance that is CONNECTED but did not answer contributes no rows.

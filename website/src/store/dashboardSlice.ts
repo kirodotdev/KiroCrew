@@ -26,6 +26,8 @@ interface DashboardState {
   slotsGeneration: number
   /** Per-key optimistic/reconciliation pin writes, independent of other slot fields. */
   slotPinGenerations: Record<string, number>
+  /** Per-key server-authoritative title events, independent of other slot fields. */
+  slotTitleGenerations: Record<string, number>
   // Slot keys in the order the session sidebar actually DISPLAYS them
   // (pinned-first + the user's sort, flat-view aware). Published by
   // ChatSidebar; consumed by the chat-jump / chat-cycle keyboard shortcuts so
@@ -215,6 +217,7 @@ const initialState: DashboardState = {
   slots: [],
   slotsGeneration: 0,
   slotPinGenerations: {},
+  slotTitleGenerations: {},
   sidebarOrder: [],
   approvalMode: 'normal',
   channelTrusted: false,
@@ -490,9 +493,15 @@ const dashboardSlice = createSlice({
       if (settled && (!slot.last_turn_ts || Date.parse(slot.last_turn_ts) <= t)) slot.last_turn_ts = ts
     },
     setChannelTrusted(state, action: PayloadAction<boolean>) { state.channelTrusted = action.payload },
+    // Advances only THIS slot's title generation: `slotsGeneration` means "a full
+    // frame landed", and unrelated optimistic writes read it to keep their rollback.
     sseSlotTitle(state, action: PayloadAction<{ key: string; title: string }>) {
       const slot = state.slots.find(s => s.key === action.payload.key)
-      if (slot) slot.title = action.payload.title
+      if (slot) {
+        slot.title = action.payload.title
+        state.slotTitleGenerations ??= {}
+        state.slotTitleGenerations[action.payload.key] = (state.slotTitleGenerations[action.payload.key] ?? 0) + 1
+      }
     },
     addSlotOptimistic(state, action: PayloadAction<ChatSlot>) {
       if (!state.slots.find(s => s.key === action.payload.key)) {

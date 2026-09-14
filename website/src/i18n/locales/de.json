@@ -10016,10 +10016,13 @@
       "screenshot_failed_reason": "Screenshot fehlgeschlagen: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Die Sitzung konnte nicht umbenannt werden",
+      "could_not_rename_to": "Umbenennen in „{{name}}“ nicht möglich",
+      "rename_already_saving": "Für diese Sitzung wird schon eine Umbenennung gespeichert — dein Entwurf bleibt erhalten; versuch es gleich noch einmal",
       "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
       "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
-      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen"
+      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
+      "rename_reverted_try_again": "Der vorherige Titel wurde wiederhergestellt – bitte erneut versuchen."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
@@ -10142,6 +10145,7 @@
       "new_chat": "Neuer Chat",
       "new_chat_in_folder": "Neuer Chat im Ordner",
       "new_chat_on_crew": "Neuer Chat auf einer Crew",
+      "rename_saving": "Der neue Name wird gespeichert …",
       "runs_on_crew": "Läuft auf {{name}} — einer verbundenen Crew, nicht auf diesem Rechner",
       "new_chat_in_name": "Neuer Chat in {{name}}",
       "new_chat_session": "Neue Chat-Sitzung",
@@ -14911,8 +14915,12 @@
       "saving": "Wird gespeichert..."
     },
     "offline": {
+      "close_sessions": "das Schließen von Sitzungen",
       "disabled_gateway_offline": "{{label}} deaktiviert — Gateway offline",
+      "duplicate_sessions": "das Duplizieren von Sitzungen",
       "gateway_offline_reconnect": "Gateway offline — für {{action}} neu verbinden",
+      "regenerate_titles": "das Neugenerieren von Titeln",
+      "rename_sessions": "das Umbenennen von Sitzungen",
       "submit_comments": "Kommentare einreichen"
     },
     "popoutController": {
