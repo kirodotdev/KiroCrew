@@ -37,6 +37,7 @@
 // - WidgetFrame.tsx (inline <mcwidget> rendering in chat)
 // - ArtifactDetailPage.tsx (full-screen artifact view at /artifacts/<slug>)
 
+import { parseCssColor, relativeLuminance } from './iconContrast'
 import { TAILWIND_RUNTIME_PATH } from './vendorPaths'
 
 /** CSS custom properties the parent app exposes to widgets. Resolved against
@@ -597,6 +598,163 @@ const COMMENT_BRIDGE_BODY = `(function(){
   parent.postMessage({type:'mc-comment-ready'}, '*');
 })();`
 
+/** Neutral light palette substituted for the dashboard theme when a widget was
+ * authored against a light canvas (see `isLightCanvasAuthored`) but the
+ * dashboard is dark. Every name in THEME_VAR_NAMES is covered so a widget that
+ * mixes one `var(--…)` in later still resolves. Tailwind's gray/indigo/green/
+ * amber/red 50-700 stops -- the same family the LLM reached for, so the island
+ * reads as one coherent light card rather than a patch. `--bg` is off-white,
+ * not pure white: the island sits inside a dark chat column, and gray-100
+ * reads as a light card there where #fff reads as glare. */
+const LIGHT_CANVAS_FALLBACK_VARS: Readonly<Record<(typeof THEME_VAR_NAMES)[number], string>> = {
+  '--bg': '#f3f4f6',
+  '--bg-elevated': '#ffffff',
+  '--bg-hover': '#e5e7eb',
+  '--card': '#ffffff',
+  '--card-fg': '#111827',
+  '--text': '#111827',
+  '--text-strong': '#030712',
+  '--muted': '#6b7280',
+  '--muted-strong': '#4b5563',
+  '--border': '#e5e7eb',
+  '--border-strong': '#d1d5db',
+  '--accent': '#4f46e5',
+  '--accent-hover': '#4338ca',
+  '--accent-subtle': '#eef2ff',
+  '--ok': '#15803d',
+  '--ok-subtle': '#ecfdf5',
+  '--warn': '#b45309',
+  '--warn-subtle': '#fffbeb',
+  '--danger': '#b91c1c',
+  '--danger-subtle': '#fef2f2',
+  '--info': '#1d4ed8',
+}
+
+// Tailwind utility classes that paint a light background: `bg-white` and the
+// 50/100/200 stops of every default hue. Optional variant prefixes are
+// allowed in Tailwind's full token syntax -- `hover:`, `md:`, `@md:`, `*:`, and
+// bracketed arbitrary variants such as `min-[300px]:` or `[&:hover]:` (name
+// capped at 64 chars, bracket body at 256, so a long attribute value cannot
+// make the scan quadratic); `dark:` is handled separately below.
+const LIGHT_TAILWIND_BG_RE =
+  /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-(?:white|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200))(?=$|[\s"'`\/])/
+// The mirror of LIGHT_TAILWIND_BG_RE: `bg-black` and the 700-950 stops. A
+// widget carrying one of these next to a light card is a mixed palette, and
+// flipping it wholesale to light would only trade which half is unreadable.
+const DARK_TAILWIND_BG_RE =
+  /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-(?:black|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:700|800|900|950))(?=$|[\s"'`\/])/
+// Inline `background` / `background-color` declarations carrying a literal
+// color. Captures the value for a luminance check.
+const INLINE_BG_DECL_RE = /background(?:-color)?\s*:\s*(#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|white\b)/gi
+// Tailwind arbitrary-value backgrounds (`bg-[#f0fdf4]`, `bg-[rgb(250,250,250)]`,
+// `bg-[white]`), which neither regex above sees. Captures the literal for the
+// same luminance check; `_` inside the brackets is Tailwind's space escape.
+const ARBITRARY_BG_CLASS_RE = /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-\[(#[0-9a-f]{3,8}|rgba?\([^\]]*\)|white)\]/gi
+
+/** Relative luminance (0..1) of a CSS `#hex` / `rgb()` / `white` literal, or
+ * null when it cannot be parsed. `parseCssColor` (the favicon-contrast parser)
+ * already reads every form the regexes above capture except the `white`
+ * keyword. Alpha is ignored: a translucent light tint over the dark canvas is
+ * still lighter than the themed text it inherits. */
+function literalLuminance(value: string): number | null {
+  const v = value.trim().toLowerCase()
+  if (v === 'white') return 1
+  const c = parseCssColor(v)
+  return c ? relativeLuminance(c.r, c.g, c.b) : null
+}
+
+// `class` / `style` attribute values, double- or single-quoted. Each value is
+// bounded by its own quote, so the scan is linear in the length of the HTML.
+const STYLED_ATTR_RE = /\b(?:class|style)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi
+// Opening and closing `<style>` tags, paired by a forward walk below rather
+// than a lazy `[\s\S]*?` body match: that would rescan to the end for every
+// unclosed `<style>`, which is quadratic on hostile input.
+const STYLE_TAG_RE = /<(\/?)style\b/gi
+
+/** The parts of widget HTML where styling can actually take effect: every
+ * `class` / `style` attribute value (double- or single-quoted) and the body of
+ * every `<style>` block (case-insensitive), joined with single spaces.
+ * Rendered text is dropped, so a widget that merely TALKS about `bg-white` or
+ * `background:#fff` cannot look like it paints one. String-only, no DOM. */
+function styledSurfaces(html: string): string {
+  const parts: string[] = []
+  for (const m of html.matchAll(STYLED_ATTR_RE)) parts.push(m[1] ?? m[2] ?? '')
+  let bodyStart = -1
+  for (const m of html.matchAll(STYLE_TAG_RE)) {
+    if (m[1]) {
+      if (bodyStart >= 0) parts.push(html.slice(bodyStart, m.index))
+      bodyStart = -1
+    } else if (bodyStart < 0) {
+      const tagEnd = html.indexOf('>', m.index + 6)
+      if (tagEnd < 0) break
+      bodyStart = tagEnd + 1
+    }
+  }
+  return parts.join(' ')
+}
+
+/** Whether widget HTML was written for a LIGHT canvas without knowing the
+ * frame is themed. That is the shape of the dark-mode unreadable widget: the
+ * model hardcodes `bg-green-50` (or `background:#f0fdf4`) on a card, sets no
+ * text color, and inherits the theme's light `--text` from `body` -- white on
+ * off-white. The heuristic fires only when the author shows no theme
+ * awareness at all:
+ *
+ * - no `var(--…)` reference anywhere (an author using theme vars owns the
+ *   contract, half-set or not -- forcing a palette on them would be worse), and
+ * - no `dark:` Tailwind variant, bare or behind chained prefixes such as
+ *   `md:dark:` (an author who wrote a dark branch handled it), and
+ * - at least one light hardcoded background: a `bg-white` / `bg-<hue>-50|100|200`
+ *   class, or an inline `background` literal or `bg-[<literal>]` arbitrary-value
+ *   class with relative luminance above 0.6, and
+ * - no hardcoded DARK background beside it (`bg-black`, `bg-<hue>-700..950`, or
+ *   a literal with luminance below 0.2): a mixed palette is left alone, since
+ *   a light canvas would make the dark half unreadable instead.
+ *
+ * Every check -- the `var(--…)` and `dark:` gates included -- reads only the
+ * class/style attribute values and `<style>` blocks (`styledSurfaces`), so
+ * rendered text can neither trigger the heuristic nor suppress it: a widget
+ * explaining Tailwind in prose is not painting a light card, and a prose
+ * mention of `var(--bg)` is not theme awareness.
+ *
+ * Pure, string-only, and cheap enough to run on every srcdoc build. Reached
+ * only through `resolveWidgetTheme`, which is the seam the tests exercise. */
+function isLightCanvasAuthored(html: string): boolean {
+  if (!html) return false
+  const styled = styledSurfaces(html)
+  if (/var\(\s*--/.test(styled)) return false
+  if (/(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*dark:/.test(styled)) return false
+  if (DARK_TAILWIND_BG_RE.test(styled)) return false
+  let sawLight = LIGHT_TAILWIND_BG_RE.test(styled)
+  for (const re of [INLINE_BG_DECL_RE, ARBITRARY_BG_CLASS_RE]) {
+    for (const m of styled.matchAll(re)) {
+      const lum = literalLuminance(m[1].replace(/_/g, ' '))
+      if (lum === null) continue
+      if (lum < 0.2) return false
+      if (lum > 0.6) sawLight = true
+    }
+  }
+  return sawLight
+}
+
+/** Resolve the vars and mode a widget actually renders with. A light-canvas
+ * widget on a dark dashboard gets the neutral light palette and `light`
+ * mode, so its hardcoded light surfaces sit on a light canvas with dark text
+ * -- a readable light island instead of white-on-white. Everything else (any
+ * widget on a light dashboard, any theme-aware widget) passes through
+ * untouched, so the fallback can never override a user's chosen theme where
+ * the author respected it. */
+export function resolveWidgetTheme(
+  html: string,
+  themeVars: Record<string, string>,
+  mode: 'dark' | 'light',
+): { themeVars: Record<string, string>; mode: 'dark' | 'light' } {
+  if (mode === 'dark' && isLightCanvasAuthored(html)) {
+    return { themeVars: { ...themeVars, ...LIGHT_CANVAS_FALLBACK_VARS }, mode: 'light' }
+  }
+  return { themeVars, mode }
+}
+
 function buildThemeCss(vars: Record<string, string>, mode: 'dark' | 'light'): string {
   const rootBody = Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')
   // No readable vars means no theme to apply, and inventing one is worse than
@@ -669,13 +827,18 @@ interface BuildSrcdocOptions {
  * header for the full security model. */
 export function buildSrcdoc({
   html,
-  themeVars,
-  mode,
+  themeVars: requestedThemeVars,
+  mode: requestedMode,
   includeHeightReporter = false,
   enableComments = false,
   showLoadingOverlay = false,
   loadingLabel = '',
 }: BuildSrcdocOptions): string {
+  // A widget hardcoded for a light canvas renders on a light canvas even when
+  // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
+  // DOM and SSR paths, the :root vars, color-scheme and the body class agree.
+  const { themeVars, mode } = resolveWidgetTheme(html, requestedThemeVars, requestedMode)
+
   // SSR / unit-test fallback: when there's no DOM (Node.js, vitest before
   // jsdom is set up), fall back to a minimal string-builder that does NOT
   // interpolate `html` — we wrap it in a textarea-escaped <template> so it
