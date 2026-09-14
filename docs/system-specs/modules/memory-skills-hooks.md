@@ -3084,6 +3084,12 @@ Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill n
 
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
+Agent skill-path discovery also scans nested AIM package snapshots under
+`~/.aim/packages/`. A valid object `.aim/.version-manifest.json` with
+`currentEventId` selects that snapshot. Malformed JSON or a non-object manifest
+has no selected event and follows the existing fallback of scanning nested
+snapshots; it does not abort agent configuration.
+
 **Project skills (`<project>/.kiro/skills`) — a different source from the one above.**
 `$KIROCREW_PROJECT_DIR/skills/` is a *sync* source: its contents are copied into
 `~/.kiro/crew/skills/` and thereafter are ordinary local skills. `<project>/.kiro/skills`

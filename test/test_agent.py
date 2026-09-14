@@ -1103,6 +1103,39 @@ class TestAtomicJsonWrite:
         assert tmp_files == []
 
 
+@pytest.mark.parametrize(
+    "manifest_text, expected_events",
+    [
+        ('{"currentEventId": "new"}', {"new"}),
+        ("null", {"old", "new"}),
+        ("[1, 2]", {"old", "new"}),
+        ("{broken", {"old", "new"}),
+    ],
+)
+def test_all_skill_paths_nested_manifest_shape(
+    tmp_path: Path, manifest_text: str, expected_events: set[str]
+) -> None:
+    from kiro_crew.agent import _all_skill_paths
+
+    package = tmp_path / ".aim" / "packages" / "sample"
+    manifest = package / ".aim" / ".version-manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(manifest_text, encoding="utf-8")
+    for event in ("old", "new"):
+        (package / f"eventId-{event}" / "skills").mkdir(parents=True)
+
+    with patch("kiro_crew.agent.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.agent._project_dir", return_value=None):
+            paths = _all_skill_paths()
+
+    found_events = {
+        event
+        for event in ("old", "new")
+        if str(package / f"eventId-{event}" / "skills") in paths
+    }
+    assert found_events == expected_events
+
+
 class TestAllSkillPathsLocalSymlinks:
     """Test symlink resolution in _all_skill_paths for ~/.aim/skills/local/."""
 
