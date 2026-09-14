@@ -93,6 +93,17 @@ function themeConsentSha(colorTheme?: string): string | null {
  *  affordance that routed here already promised a copy. */
 type RevealResult = { copy?: string }
 
+/** Static-validation verdict for a pending auto-skill candidate's bundled
+ *  scripts, served on both the pending list entries and the detail payload
+ *  (`/api/skills/-/pending[/{slug}]`). `ok: true` with an empty report when the
+ *  candidate has no scripts; on failure `report` maps each offending file to
+ *  its flagged constructs. The same report rides the 422
+ *  `script_validation_failed` approve refusal. */
+export interface SkillScriptValidation {
+  ok: boolean
+  report: Record<string, string[]>
+}
+
 export type McpShareReason = {
   code: string
   detail: string
@@ -3400,7 +3411,12 @@ export const api = {
 
   // Auto-skill pending queue + lifecycle pin
   skillsPending: () => fetch('/api/skills/-/pending').then(j),
+  /** Detail payload carries `script_validation` (`SkillScriptValidation`) so the
+   *  review card can warn BEFORE the click that Approve cannot succeed as-is. */
   skillPendingDetail: (slug: string) => fetch('/api/skills/-/pending/' + encodeURIComponent(slug)).then(j),
+  /** Throws ApiError on refusal: 404 `pending_skill_not_found`, 409
+   *  `live_skill_exists`, 422 `script_validation_failed` (body carries a
+   *  `report` of `{file: [findings]}`), 409 `pending_approval_refused`. */
   approvePendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', {}).then(j),
   dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
   dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),
