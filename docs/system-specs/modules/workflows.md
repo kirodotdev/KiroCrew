@@ -740,6 +740,10 @@ if credential or exfiltration redaction would change executable source, the save
 the library never persists a corrupted script. Async gateway, authoring, and saved-run
 paths offload library disk I/O to worker threads, while the service serializes library
 operations so slug allocation and revision checks remain atomic in-process.
+Revision updates also hold a sidecar file lock across the disk read, expected-revision
+check, and atomic replacement. This makes two gateway or harness processes sharing
+the library reject the second update to the same revision rather than silently
+accepting both and losing one writer's source.
 
 Only explicitly saved definitions participate in local authoring matches.
 `search(intent)` uses deterministic local lexical ranking. `author(intent)` adds

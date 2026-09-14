@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -166,6 +167,52 @@ def test_update_rejects_a_stale_expected_revision(tmp_path) -> None:
     library.update(created["id"], source=SOURCE_V2, expected_revision=1)
 
     assert library.update(created["id"], source=SOURCE_V1, expected_revision=1) is None
+
+
+def test_two_library_instances_cannot_accept_the_same_revision(tmp_path) -> None:
+    first = WorkflowDefinitionLibrary(tmp_path)
+    second = WorkflowDefinitionLibrary(tmp_path)
+    created = first.create(source=SOURCE_V1, name="Debug Project")
+    first_in_write = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    outcomes = []
+    errors = []
+    original_write = first._write
+
+    def held_write(definition):
+        first_in_write.set()
+        assert release_first.wait(5)
+        original_write(definition)
+
+    first._write = held_write
+
+    def run(library, source, done=None):
+        try:
+            outcomes.append(library.update(created["id"], source=source, expected_revision=1))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            if done is not None:
+                done.set()
+
+    thread_a = threading.Thread(target=run, args=(first, SOURCE_V2))
+    thread_b = threading.Thread(target=run, args=(second, SOURCE_V1, second_done))
+    thread_a.start()
+    try:
+        assert first_in_write.wait(5)
+        thread_b.start()
+        assert not second_done.wait(1), "a peer accepted a stale revision during the first write"
+    finally:
+        release_first.set()
+        thread_a.join(5)
+        if thread_b.ident is not None:
+            thread_b.join(5)
+
+    assert not errors
+    assert len(outcomes) == 2
+    assert sum(result is not None for result in outcomes) == 1
+    assert first.get(created["id"])["source"] == SOURCE_V2
 
 
 def test_update_keeps_current_slug_when_submitted_slug_is_blank(tmp_path) -> None:
