@@ -215,6 +215,32 @@ reports are pending, so bulk cancellation cannot rediscover them as running work
 Agents waiting on spawn approval are excluded; their approval card remains the
 authority for approve/reject.
 
+Wave close itself is decided by the completion consumer: a wave finishes when
+its done-count reaches the total, or — for members that failed at spawn and can
+never reach the consumer — when nothing is pending (`batch_members_pending`)
+AND no member's terminal report is still in flight
+(`batch_reports_in_flight`). A member counts as in flight from the moment
+`info.done` flips — EVERY terminal done transition (the report machinery's,
+the run's failure except-bodies, the in-run limit bails, the reaper's, and
+spawn-rejection flips) arms a hold in the manager-level `_reports_in_flight`
+registry in the same synchronous block; safe-announced synthetics arm
+immediately before their announce — until the consumer lands its
+done-count contribution (the consumer releases the hold in the same
+synchronous block as the increment), because in that done-but-unreported
+window `batch_members_pending` no longer counts the member while the
+done-count does not include it either — without the in-flight hold, a sibling
+completion landing in the window finalizes the wave early and the in-flight
+report finalizes it a second time. The hold lives in the manager registry
+rather than on the agent records because `_agents` membership is
+operator-mutable: a clear-completed (`DELETE /api/spawn`) popping a
+done-but-unreported member must not drop the hold mid-window. A report that
+ends without ever reaching the consumer (injection timeout, announce failure,
+cancellation) releases its hold through the report path's structural
+`finally`, so the wave keeps its degraded a-sibling-can-close liveness instead
+of stranding; if that degraded close never comes (no member left to complete),
+the reaper's digest-hold sweep force-flushes the held results once the hold
+deadline passes.
+
 The dashboard exposes this through `POST /api/spawn/stop-all` with a validated
 slot name. App tokens are denied before slot lookup because ownership of an app
 slot does not imply ownership of its linked session; a request missing the
@@ -296,7 +322,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
 - One-shot: gated by `info._cancel_retry_used`; the recovered run's own cancel is terminal.
 - Explicit handshake: `_resume` awaits the ORIGINAL task's full teardown (session release/reset, slot decrement, registry pop) before respawning — never a timed sleep.
 - Slot re-acquisition: waits (bounded, `_RECOVERY_SLOT_WAIT_SECS`) for free capacity; the slot claim and `create_task` are ATOMIC (no await between) so a concurrent `_drain_queue` cannot overshoot `max_concurrent`.
-- Shutdown-reachable: the pending `_resume` task is registered in `_tasks` under `"{id}:recovery"` so `cancel_all()` cancels it; a cancelled recovery finalizes the record terminally and never respawns.
+- Shutdown-reachable: the pending `_resume` task is registered in `_tasks` under `"{id}:recovery"` so `cancel_all()` cancels it; a cancelled recovery finalizes the record terminally and never respawns. This arm is report-free (no finalize claim is taken), and a record it terminalizes never carries a done-but-unreported hold — holds are armed only at a report's done-flip, which this arm's `not info.done` guard proves never ran — so `batch_reports_in_flight` cannot strand on it.
 - Failed recovery (no slot / teardown timeout) still fully finalizes: `subagent_done` emitted, tombstoned, delivered via `on_done`.
 - Replay-safety at respawn: when the first attempt streamed partial text, the respawned prompt is prefixed with `_CANCEL_RESUME_PREFIX` so the model continues instead of restarting (the prefix also gates on `tool_count` as defense-in-depth, though the side-effect gate above means a tool-activity run never reaches respawn). A bare original prompt is re-sent only for a zero-activity first attempt.
 

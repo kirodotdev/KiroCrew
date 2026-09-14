@@ -184,6 +184,17 @@ class CancellationCoordinator(ManagerComponent):
                 # tombstone the reaper could not correct.
                 if not info.done and not info._reap_started and not info.reaped:
                     info.done = True
+                    # This arm is deliberately report-free (limbo-avoidance
+                    # only — no finalize claim is taken, so no terminal report
+                    # will ever reach the completion consumer for this record).
+                    # No done-but-unreported hold needs releasing here: holds
+                    # are armed only by the report machinery in the same
+                    # synchronous block that flips ``done`` (or immediately
+                    # before a safe-announce of an already-done record), so a
+                    # record reaching this arm with ``done`` still False can
+                    # never carry one — `batch_reports_in_flight` ignores it
+                    # and a sibling completion keeps its ability to close the
+                    # wave with this member's line missing (issue #8554).
                     info.error = "cancelled"
                     info.elapsed = time.time() - info.started
                     if not info.user_stopped:

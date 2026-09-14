@@ -379,6 +379,15 @@ class RunEventCoordinator(ManagerComponent):
             if not info.reaped:
                 info.error = f"Timed out after {self._manager._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
                 info.done = True
+                # Armed HERE, synchronously with the flip — not left to the
+                # report task spawned in the ``finally`` below. Between this
+                # flip and that task's first run the coroutine yields (the
+                # teardown awaits), and in that done-but-unarmed window a
+                # sibling completion reads this member as neither pending nor
+                # in flight and closes the wave early; the report then
+                # finalizes it AGAIN (issue #8554, failure-path window). The
+                # report machinery's own arm stays as an idempotent no-op.
+                self._manager.arm_report_in_flight(info)
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "timeout")
             logger.warning("Subagent %s timed out", info.id)
@@ -429,6 +438,10 @@ class RunEventCoordinator(ManagerComponent):
                     self._manager._schedule_cancel_recovery(info)
                 else:
                     info.done = True
+                    # Same synchronous flip+arm as the timeout arm above —
+                    # the cancel path yields at teardown before its report
+                    # task first runs (issue #8554, failure-path window).
+                    self._manager.arm_report_in_flight(info)
                     if (
                         info.tool_count > 0
                         and not info.user_stopped
@@ -462,6 +475,9 @@ class RunEventCoordinator(ManagerComponent):
                     _describe_exception(exc), exc, budget=_MAX_ERROR_DETAIL_LEN
                 )
                 info.done = True
+                # Same synchronous flip+arm as the timeout arm above (issue
+                # #8554, failure-path window).
+                self._manager.arm_report_in_flight(info)
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "error")
             logger.exception("Subagent %s failed", info.id)
@@ -1326,6 +1342,10 @@ class RunEventCoordinator(ManagerComponent):
                         info.result = result_text or "_Partial output._"
                         info.error = f"child_escalation_limit:{child_escalation_limit}"
                         info.done = True
+                        # In-run terminal flip: the report is spawned only
+                        # after this return unwinds to ``_run``'s ``finally``
+                        # — arm with the flip (issue #8554).
+                        self._manager.arm_report_in_flight(info)
                         Stats().inc_subagent_failed()
                         logger.warning(
                             "Subagent %s hit child escalation limit (%d)",
@@ -1373,6 +1393,9 @@ class RunEventCoordinator(ManagerComponent):
                     info.result = result_text or "_Partial output._"
                     info.error = f"turn_limit:{turn_limit}"
                     info.done = True
+                    # In-run terminal flip — same arm as the escalation-limit
+                    # return above (issue #8554).
+                    self._manager.arm_report_in_flight(info)
                     Stats().inc_subagent_failed()
                     logger.warning("Subagent %s hit turn limit (%d)", info.id, turn_limit)
                     self._manager._write_tombstone(info, "turn_limit")
@@ -1783,6 +1806,11 @@ class RunEventCoordinator(ManagerComponent):
             logger.debug("usage row (subagent) persist failed", exc_info=True)
 
         info.done = True
+        # Success is a terminal done transition like any other: between this
+        # flip and the report task's first run, ``wait_for``'s unwind and the
+        # caller's teardown can both yield — arm with the flip so the window
+        # is closed on EVERY terminal path, not just failures (issue #8554).
+        self._manager.arm_report_in_flight(info)
         self._manager._sessions.record_success(session_key)
 
         Stats().inc_subagent_completed()

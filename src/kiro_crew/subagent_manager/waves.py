@@ -43,6 +43,67 @@ class WaveDigestCoordinator(ManagerComponent):
             return True
         return any(p.get("batch_id") == batch_id for p in self._manager._queue)
 
+    def batch_reports_in_flight_impl(self, batch_id: str) -> bool:
+        """True while any member of *batch_id* is done-but-unreported:
+        ``info.done`` has flipped (so :meth:`batch_members_pending_impl` no
+        longer counts it) but its terminal report has not yet been consumed by
+        the completion consumer, so its contribution to the wave's done-count
+        has not landed. In that window a sibling completion reaching the
+        consumer sees ``done < total`` with no pending members — without this
+        check the last-member fallback finalizes the wave early, and the
+        in-flight report then re-creates the batch-progress record and
+        finalizes the same wave again (issue #8554).
+
+        The hold lives in the manager-level ``_reports_in_flight`` registry,
+        NOT on the agent records: ``_agents`` membership is operator-mutable
+        (``DELETE /api/spawn`` pops every done member), so a predicate derived
+        from it silently drops the hold when a clear lands inside the window —
+        reopening the exact hole this predicate closes. The registry is armed
+        by the report machinery in the same synchronous block that flips
+        ``done`` and disarmed by the consumer the moment the contribution
+        lands (or structurally, when the report coroutine ends without
+        reaching the consumer — the wave keeps its degraded
+        a-sibling-can-close liveness instead of stranding).
+        """
+        if not batch_id:
+            return False
+        return bool(self._manager._reports_in_flight.get(batch_id))
+
+    def arm_report_in_flight_impl(self, info: SubagentInfo) -> None:
+        """Register *info*'s terminal report as in flight toward the consumer.
+
+        Called in the same synchronous block as EVERY terminal ``info.done``
+        flip — the report machinery's, the run's failure except-bodies, the
+        in-run limit bails, the reaper's, and spawn-rejection flips (or, for
+        synthetic records created ``done=True``, immediately before their
+        announce) — so the hold and the flip can never be observed apart
+        (issue #8554: a done-but-unarmed window lets a sibling close the wave
+        early). Idempotent: a set add, so the flip-site arm and the report
+        machinery's arm compose. Flush-only records never arm: they skip the
+        consumer's accounting block entirely, so a hold would only be released
+        by the structural disarm and would transiently pin the wave open for
+        no accounting reason.
+        """
+        if not info.batch_id or getattr(info, "_digest_flush_only", False):
+            return
+        self._manager._reports_in_flight.setdefault(info.batch_id, set()).add(info.id)
+
+    def consume_report_hold_impl(self, batch_id: str, agent_id: str) -> None:
+        """Release *agent_id*'s done-but-unreported hold on *batch_id*.
+
+        Idempotent. Called by the completion consumer in the same synchronous
+        block that lands the member's done-count contribution, and by the
+        report machinery's structural ``finally`` (a report that ended without
+        reaching the consumer is no longer in flight).
+        """
+        if not batch_id:
+            return
+        holds = self._manager._reports_in_flight.get(batch_id)
+        if holds is not None:
+            holds.discard(agent_id)
+            if not holds:
+                self._manager._reports_in_flight.pop(batch_id, None)
+
     def finalize_batch_impl(self, batch_id: str) -> None:
         """Prune per-wave bookkeeping once the wave digest has fired.
 
@@ -54,6 +115,7 @@ class WaveDigestCoordinator(ManagerComponent):
         self._manager._seen_batches.discard(batch_id)
         self._manager._batch_submitted.pop(batch_id, None)
         self._manager._batch_progress_ts.pop(batch_id, None)
+        self._manager._reports_in_flight.pop(batch_id, None)
 
     def record_lost_submission_impl(
         self,
@@ -192,11 +254,23 @@ class WaveDigestCoordinator(ManagerComponent):
             if age < DIGEST_HOLD_SECS:
                 continue  # still inside the grace window
             if not self._manager.batch_members_pending(batch_id):
-                # The wave is closing on its own — the real wave-close flush is
-                # already in flight (or the held flags are stale bookkeeping).
-                # Forcing a partial digest here would race it and could emit a
-                # duplicate chunk for the same members.
-                continue
+                if self._manager.batch_reports_in_flight(batch_id):
+                    # The wave is closing on its own — the final member's
+                    # report is in flight and the real wave-close flush lands
+                    # when it is consumed. Forcing a partial digest here would
+                    # race it and could emit a duplicate chunk for the same
+                    # members. (The consumer clears every hold clock in the
+                    # same synchronous block that fires the chunk, so this
+                    # skip cannot observe a just-flushed wave's stale clocks.)
+                    continue
+                # No pending members AND no report in flight, yet a hold has
+                # aged past the deadline: the wave-close flush is never coming.
+                # A terminal report ended without reaching the consumer (the
+                # injection-timeout / announce-failure arms release the hold
+                # but land no accounting), so no further completion event will
+                # re-enter the consumer for this wave — the held sibling
+                # results would strand until gateway restart. Fall through and
+                # force the flush: this sweep is the only remaining exit.
             logger.warning(
                 "Reaper: wave %s held results for %.0fs (deadline %.0fs) —"
                 " forcing partial digest flush",

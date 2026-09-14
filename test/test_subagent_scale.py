@@ -1191,13 +1191,15 @@ class TestWaveDigest:
         # Structural guarantee: the settle call sits AFTER the awaited
         # _on_done inside the same try-block, so an _on_done exception
         # (routing failure / crash) skips it entirely. The terminal report
-        # (subagent_done + _on_done + settle) now lives in _report_terminal,
-        # which `_run` runs on a shielded task — the ordering invariant is
-        # unchanged, only its owning function moved.
+        # (subagent_done + _on_done + settle) now lives in
+        # _report_terminal_guarded (the body of _report_terminal past the
+        # done-flip, split out so the in-flight hold's try/finally wraps it —
+        # issue #8554), which `_run` runs on a shielded task — the ordering
+        # invariant is unchanged, only its owning function moved.
         import inspect
 
         from kiro_crew.subagent_manager.terminal import TerminalCoordinator
-        src = inspect.getsource(TerminalCoordinator._report_terminal_impl)
+        src = inspect.getsource(TerminalCoordinator._report_terminal_guarded_impl)
         on_done_pos = src.index("await asyncio.wait_for(self._manager._on_done(info)")
         settle_pos = src.index("self._manager._settle_digest_holds(info)")
         assert settle_pos > on_done_pos
@@ -1722,9 +1724,12 @@ class TestDigestHoldDeadline:
         assert age >= DIGEST_HOLD_SECS + 10 - 1
 
     def test_closing_wave_is_not_force_flushed(self):
-        """When no member is outstanding the real wave-close digest (counts +
-        release guidance) is already in flight; forcing a partial one here would
-        race it and could double-deliver the same members."""
+        """When no member is outstanding AND a terminal report is in flight the
+        real wave-close digest (counts + release guidance) lands when that
+        report is consumed; forcing a partial one here would race it and could
+        double-deliver the same members. (Without the in-flight hold this
+        aged-hold state is the STRANDED one — the sweep force-flushes it; see
+        TestSweepDigestHolds.test_stranded_hold_past_deadline_is_forced.)"""
         from kiro_crew.subagent import DIGEST_HOLD_SECS
 
         mgr = self._mgr(pending=False)
@@ -1732,6 +1737,7 @@ class TestDigestHoldDeadline:
         m = self._held_member(0)
         m._digest_held_at = now - (DIGEST_HOLD_SECS + 60)
         mgr._agents["h0"] = m
+        mgr.arm_report_in_flight(m)
         with patch.object(mgr, "force_digest_flush") as forced:
             mgr._sweep_digest_holds(now)
         forced.assert_not_called()
