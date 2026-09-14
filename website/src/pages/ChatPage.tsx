@@ -50,9 +50,6 @@ import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
-import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
-import { runInTerminalText } from '../utils/fenceShell'
-import { addTab as addDockTerminal } from '../hooks/useBottomTerminal'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
@@ -3402,39 +3399,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       tabsCtlRef.current.openView('browser')
     })
   }, [dispatch])
-  // "Run in terminal" (from chat code blocks): open a terminal tab in the
-  // app-wide dock panel and run the command in it, starting in the chat's
-  // working dir. The dock panel persists across routes (unlike chat-scoped
-  // terminal tabs) so the running shell survives navigation.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail || {}
-      const code: string = detail.code
-      const reqId: string = detail.reqId
-      const lang: string | undefined = typeof detail.lang === 'string' ? detail.lang : undefined
-      if (typeof code !== 'string' || !code) return
-      const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
-      let settled = false
-      const emit = (ok: boolean) => {
-        if (settled) return
-        settled = true
-        window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
-      }
-      if (!sessionId) { emit(false); return }
-      // The shell is known only once `ready` has arrived, which is exactly when
-      // this fires — so read it here, not at dispatch time.
-      const unsub = onTerminalReady(sessionId, () => {
-        const text = runInTerminalText(
-          code, lang, getTerminalShell(sessionId), getTerminalFenceShells(sessionId),
-        )
-        emit(sendToTerminalSession(sessionId, text))
-      })
-      // Give the PTY time to connect; if it never does, report failure.
-      setTimeout(() => { unsub(); emit(false) }, 6000)
-    }
-    window.addEventListener('mc:run-in-terminal', handler)
-    return () => window.removeEventListener('mc:run-in-terminal', handler)
-  }, [])
+  // "Run in terminal" is handled at the shell level (App → useRunInTerminalBridge),
+  // so a request from any route reaches the app-wide dock panel — not only chat.
   // Cold-tab hydration: after a reload (or when restoring a slot's strip from
   // the persisted panel-tabs store), file tabs come back as lightweight
   // references with their heavy content stripped (content === undefined). Read

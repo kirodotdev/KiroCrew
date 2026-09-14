@@ -126,6 +126,7 @@ import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
 import { toggleBottomTerminal, useBottomTerminalOpen, useTerminalPosition } from './hooks/useBottomTerminal'
 import { toggleTerminalByChord } from './lib/terminalChordFocus'
+import { useRunInTerminalBridge } from './hooks/useRunInTerminalBridge'
 import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppPage from './pages/AppPage'
@@ -1384,6 +1385,15 @@ export default function App() {
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
+
+  // "Run in terminal" (chat code blocks, app panels): open a tab in the
+  // app-wide dock panel and run the command there, starting in the selected
+  // session's project. Shell-level because the dock is shell-level — mounted on
+  // every route, so a request from /apps/<id> or /projects is answered too.
+  // Popout and embed windows render their own tree without the dock panel, so
+  // there the bridge answers `ok: false` at once instead of minting a tab
+  // nothing renders — the requester shows its failure state immediately.
+  useRunInTerminalBridge(activeSlotProject, !isPopout && !isEmbed)
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
   // navigation intents forwarded from popout windows (activity-timeline

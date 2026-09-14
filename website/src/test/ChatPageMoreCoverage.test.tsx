@@ -14,9 +14,9 @@
  *     rendering is covered by AssistantMessage.test.tsx.
  *
  *  2. The window-event listeners: `mc-config-changed` (chat-settings reload),
- *     `toggle-pin-chat-sidebar`, `kirocrew-tool-call` (foreground browser
- *     auto-open), and `mc:run-in-terminal` (both the non-string guard and the
- *     PTY-never-connects timeout that reports failure back to the code block).
+ *     `toggle-pin-chat-sidebar`, and `kirocrew-tool-call` (foreground browser
+ *     auto-open). (`mc:run-in-terminal` is shell-level now — see
+ *     useRunInTerminalBridge.test.tsx.)
  *
  *  3. The welcome-state "Continue a previous chat?" suggestion list and
  *     `handleResumeSession`, reached by pre-filling the composer through the
@@ -683,47 +683,6 @@ describe('ChatPage window-event listeners', () => {
     })
 
     await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
-  })
-
-  it('ignores a run-in-terminal request that carries no command', async () => {
-    const { store } = await renderTurn()
-    act(() => {
-      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { reqId: 'r1' } }))
-    })
-    expect(store.getState().chat.activityOpen).toBe(false)
-  })
-
-  it('ignores a run-in-terminal request whose command is an empty string', async () => {
-    const { store } = await renderTurn()
-    act(() => {
-      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: '', reqId: 'r3' } }))
-    })
-    expect(store.getState().chat.activityOpen).toBe(false)
-  })
-
-  it('answers a run-in-terminal request exactly once, carrying its reqId back', async () => {
-    await renderTurn()
-    const results: { reqId?: string; ok?: boolean }[] = []
-    const onResult = (e: Event) => { results.push((e as CustomEvent).detail) }
-    window.addEventListener('mc:run-in-terminal-result', onResult)
-    try {
-      act(() => {
-        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
-          detail: { code: 'npm test', reqId: 'r2' },
-        }))
-      })
-      // "Run in terminal" now routes to the app-wide dock panel
-      // (useBottomTerminal), not the chat-scoped activity panel, so
-      // `chat.activityOpen` is intentionally untouched. The handler races the
-      // PTY against a ~6 s cap; either leg answers, and the `settled` latch is
-      // what guarantees the code-block button is told once and only once.
-      await act(async () => { await vi.advanceTimersByTimeAsync(7_000) })
-      await waitFor(() => expect(results.length).toBe(1), { timeout: 5_000 })
-    } finally {
-      window.removeEventListener('mc:run-in-terminal-result', onResult)
-    }
-    expect(results[0].reqId).toBe('r2')
-    expect(typeof results[0].ok).toBe('boolean')
   })
 })
 
