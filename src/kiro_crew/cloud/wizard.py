@@ -38,6 +38,7 @@ def _deploy_with_progress(
     profile: str,
     region: str,
     subnet_id: str = "",
+    spot: bool = False,
     disable_rollback: bool = False,
 ) -> ec2.DeployResult:
     """Run ``ec2.deploy`` while streaming live CloudFormation + bootstrap logs.
@@ -63,6 +64,7 @@ def _deploy_with_progress(
                 profile=profile,
                 region=region,
                 subnet_id=subnet_id,
+                spot=spot,
                 disable_rollback=disable_rollback,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
             )
@@ -308,6 +310,7 @@ def launch(
     *,
     size_key: str = "",
     subnet_id: str = "",
+    spot: bool = False,
     assume_yes: bool = False,
     force_new: bool = False,
     keep_on_failure: bool = False,
@@ -317,10 +320,12 @@ def launch(
 
     ``subnet_id`` (``--subnet``) pins the launch to an explicit subnet instead
     of network auto-discovery — for dedicated-VPC / private-subnet setups the
-    default-VPC preference would otherwise never pick. ``hold_tunnel=False``
-    closes the SSM tunnel and returns instead of blocking on it — used when the
-    wizard is embedded in a larger flow (``kirocrew setup``) that still has
-    steps to print after this one.
+    default-VPC preference would otherwise never pick. ``spot`` (``--spot``)
+    provisions the instance as a persistent, stop-on-interruption Spot request
+    instead of on-demand; like ``subnet_id`` it only applies to a NEW stack.
+    ``hold_tunnel=False`` closes the SSM tunnel and returns instead of blocking
+    on it — used when the wizard is embedded in a larger flow (``kirocrew
+    setup``) that still has steps to print after this one.
     """
     cfg = CloudConfig.load()
     profile = profile or cfg.profile
@@ -427,6 +432,18 @@ def launch(
                 return 1
             ui.warn("--subnet is ignored for an existing stack (its network is fixed).")
             ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
+        if spot:
+            # Same reasoning as --subnet: pricing is chosen when the instance is
+            # CREATED. Switching a running stack to Spot would mean replacing the
+            # instance (new root volume, all data gone), so we never do it
+            # implicitly — and a script that asked for Spot must not silently get
+            # an on-demand box it will keep paying full price for.
+            if assume_yes:
+                ui.fail("--spot cannot apply to the existing stack (it keeps its pricing model).")
+                ui.detail("Use `kirocrew cloud launch --new --spot` for a spot instance.")
+                return 1
+            ui.warn("--spot is ignored for an existing stack (it keeps its pricing model).")
+            ui.detail("Use `kirocrew cloud launch --new --spot` for a spot instance.")
 
     # ── 4. Launch ─────────────────────────────────────────────────────────
     steps.step("Launching")
@@ -436,6 +453,22 @@ def launch(
         ui.info(f"CloudFormation stack: {ec2.stack_name(tag)}")
         if subnet_id:
             ui.info(f"Subnet: {subnet_id} (explicit --subnet; auto-discovery skipped)")
+        if spot:
+            ui.info("Pricing: Spot (--spot) — much cheaper, but AWS can reclaim the instance.")
+            ui.detail(
+                "On interruption EC2 STOPS it (never terminates), so your disk and "
+                "~/.kiro/crew survive — but a task running at that moment dies "
+                "ungracefully."
+            )
+            ui.detail(
+                "Only EC2 can resume an interruption-stop: it restarts the instance "
+                "itself when capacity returns. `cloud start` fails on one with an AWS "
+                "error — wait for auto-resume. Your own `cloud stop`/`start` still work."
+            )
+            ui.detail(
+                "`cloud destroy` cancels the Spot request before deleting the stack. "
+                "Run it after a FAILED --spot launch too, to sweep an orphaned request."
+            )
         # NB: do NOT persist last_tag yet. Saving it BEFORE the deploy succeeds
         # would leave cloud.json pointing at a ROLLBACK_COMPLETE / no-instance
         # stack on a failed first launch, and the NEXT `launch` would then treat
@@ -452,6 +485,7 @@ def launch(
                 profile=profile,
                 region=region,
                 subnet_id=subnet_id,
+                spot=spot,
                 disable_rollback=keep_on_failure,
             )
         except AWSError as exc:

@@ -146,6 +146,124 @@ class TestLaunchSubnetFlag:
         assert captured["subnet_id"] == "subnet-0123456789abcdef0"
 
 
+class TestLaunchSpotFlag:
+    def _patch_for_new_launch(self, monkeypatch, captured):
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="")
+        _patch_post_launch(monkeypatch)
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "1",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: None)
+
+        def fake_deploy_with_progress(**kwargs):
+            captured.update(kwargs)
+            return ec2.DeployResult(
+                tag=kwargs["tag"],
+                stack_name=ec2.stack_name(kwargs["tag"]),
+                region="us-west-2",
+                instance_id="i-new",
+                status="CREATE_COMPLETE",
+            )
+
+        monkeypatch.setattr(wizard, "_deploy_with_progress", fake_deploy_with_progress)
+
+    def test_spot_threads_through_to_deploy(self, monkeypatch, capsys):
+        captured: dict = {}
+        self._patch_for_new_launch(monkeypatch, captured)
+
+        rc = wizard.launch(profile="dev", region="us-west-2", spot=True, assume_yes=True)
+        assert rc == 0
+        assert captured["spot"] is True
+        # The launch plan must state the tradeoff before the deploy starts.
+        out = capsys.readouterr().out
+        assert "--spot" in out and "STOPS" in out
+
+    def test_on_demand_is_the_default(self, monkeypatch, capsys):
+        captured: dict = {}
+        self._patch_for_new_launch(monkeypatch, captured)
+
+        assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 0
+        assert captured["spot"] is False
+        assert "--spot" not in capsys.readouterr().out
+
+    def test_launch_plan_is_honest_about_interruption_resume(self, monkeypatch, capsys):
+        # Only EC2 can resume an interruption-stopped Spot instance. Telling the
+        # user `cloud start` brings it back would be a lie that costs them an
+        # opaque AWS error at the worst moment, so the plan must say to wait for
+        # the auto-resume — and that destroy cancels the request.
+        captured: dict = {}
+        self._patch_for_new_launch(monkeypatch, captured)
+
+        assert wizard.launch(profile="dev", region="us-west-2", spot=True, assume_yes=True) == 0
+        out = capsys.readouterr().out
+        assert "Only EC2 can resume" in out
+        assert "wait for auto-resume" in out
+        assert "cancels the Spot request" in out
+
+    def _patch_for_existing_stack(self, monkeypatch):
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "1",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        existing = ec2.DeployResult(
+            tag="kc-old",
+            stack_name=ec2.stack_name("kc-old"),
+            region="us-west-2",
+            instance_id="i-old",
+            status="CREATE_COMPLETE",
+            reused=True,
+        )
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: existing)
+
+    def test_spot_with_existing_stack_fails_under_yes(self, monkeypatch, capsys):
+        # Mirrors the --subnet guard: pricing is fixed when the instance is
+        # CREATED, so a script that asked for Spot must exit rather than silently
+        # keep paying the on-demand rate on the resumed box.
+        self._patch_for_existing_stack(monkeypatch)
+        monkeypatch.setattr(
+            wizard, "_deploy_with_progress", lambda **k: pytest.fail("must not deploy")
+        )
+
+        rc = wizard.launch(profile="dev", region="us-west-2", spot=True, assume_yes=True)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "--spot cannot apply" in out
+        assert "--new --spot" in out
+
+    def test_spot_with_existing_stack_warns_interactively(self, monkeypatch, capsys):
+        # Interactive: warn and continue (the user can see it and decide), same
+        # shape as --subnet.
+        self._patch_for_existing_stack(monkeypatch)
+        _patch_post_launch(monkeypatch)
+        monkeypatch.setattr(wizard.CloudConfig, "save", lambda self, *a: None)
+
+        rc = wizard.launch(profile="dev", region="us-west-2", spot=True)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "--spot is ignored for an existing stack" in out
+
+
 class TestLaunchResume:
     def test_resumes_existing_saved_stack_without_deploy(self, monkeypatch, capsys):
         cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")

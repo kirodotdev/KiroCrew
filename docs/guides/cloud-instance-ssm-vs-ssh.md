@@ -92,8 +92,15 @@ here, and opens the dashboard — all from your laptop.
 2. **Launch.** Run `kirocrew cloud launch` — interactive (size picker + confirm),
    or non-interactive, e.g. `kirocrew cloud launch --size power --region us-west-2
    --profile dev -y`. Useful flags: `--new` (a separate box instead of resuming
-   your saved one) and `--keep-on-failure` (disable CloudFormation rollback to
-   inspect a failed bootstrap).
+   your saved one), `--spot` (cheaper, interruptible pricing — AWS stops the box
+   on reclaim and restarts it itself; only EC2 can resume an interruption-stop,
+   so `cloud start` fails on one and you wait for the auto-resume. `cloud
+   destroy` cancels the Spot request before deleting the stack — see
+   [remote-crew-on-ec2.md](remote-crew-on-ec2.md#cheaper-instance-hours-with-spot---spot)),
+   and `--keep-on-failure` (disable CloudFormation rollback to inspect a failed
+   bootstrap). `--spot` also needs the EC2 Spot service-linked role on its first
+   use in an account; the policy above grants creating it, so re-print and
+   re-apply it if you attached an older copy.
 3. **Reach it — and the ports.** Launch ends by opening an SSM port-forward and
    your browser at `http://localhost:<local>/?token=…`. You never choose the
    **remote** port: the gateway always listens on loopback `:5476` on the box. The
