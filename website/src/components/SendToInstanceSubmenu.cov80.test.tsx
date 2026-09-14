@@ -1,5 +1,7 @@
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
+import { createTestStore } from '../test/helpers'
+import { sseConnected } from '../store/dashboardSlice'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import { api } from '../api/client'
 import type { InstanceView } from '../api/client'
@@ -66,7 +68,9 @@ function instance(over: Partial<InstanceView> = {}): InstanceView {
 
 function mount(instances: InstanceView[], variant: 'dropdown' | 'context' = 'dropdown') {
   listInstances.mockResolvedValue({ instances } as never)
-  return renderWithProviders(<SendToInstanceSubmenu slotKey="zzq-slot" variant={variant} />)
+  const store = createTestStore()
+  store.dispatch(sseConnected())
+  return renderWithProviders(<SendToInstanceSubmenu slotKey="zzq-slot" variant={variant} />, { store })
 }
 
 describe('SendToInstanceSubmenu', () => {
@@ -124,16 +128,14 @@ describe('SendToInstanceSubmenu', () => {
     sendSessionToInstance.mockRejectedValue(new Error('zzq-peer-refused'))
     mount([instance()])
     fireEvent.click(await screen.findByTitle('zzq-peer'))
-    const failed = await screen.findByText('Failed')
-    expect(failed.closest('[title]')!.getAttribute('title')).toBe('zzq-peer-refused')
+    expect((await screen.findByRole('alert')).textContent).toContain('zzq-peer-refused')
   })
 
   it('a non-Error rejection falls back to the generic reason', async () => {
     sendSessionToInstance.mockRejectedValue('zzq-not-an-error')
     mount([instance()])
     fireEvent.click(await screen.findByTitle('zzq-peer'))
-    const failed = await screen.findByText('Failed')
-    expect(failed.closest('[title]')!.getAttribute('title')).toBe('Unknown error')
+    expect((await screen.findByRole('alert')).textContent).toContain('Unknown error')
   })
 
   it('a disconnected peer renders disabled with a hint instead of vanishing', async () => {

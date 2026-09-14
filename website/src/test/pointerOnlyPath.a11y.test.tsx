@@ -27,7 +27,8 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
 
 // Only the prose of a bubble goes through the renderer; the path chips are its
@@ -148,25 +149,48 @@ describe('inert sent-message chips read out the full path, not only the tooltip'
 // ── Folder-move menu ────────────────────────────────────────────────────────
 
 describe('folder-move menu items read out their nesting path', () => {
-  const Item = ({ title, children }: { title?: string; children?: React.ReactNode }) => (
-    <div role="menuitem" title={title}>{children}</div>
+  // Forwards the ARIA properties, not `title` alone. `aria-label` OVERRIDES an
+  // element's contents when a name is computed, so the hidden path span stops
+  // being the name the instant a row takes an offline label -- and a double that
+  // drops the attribute keeps computing the online name and passes regardless.
+  const Item = ({ title, children, 'aria-label': ariaLabel, 'aria-disabled': ariaDisabled }: {
+    title?: string
+    children?: React.ReactNode
+    'aria-label'?: string
+    'aria-disabled'?: React.AriaAttributes['aria-disabled']
+  }) => (
+    <div role="menuitem" title={title} aria-label={ariaLabel} aria-disabled={ariaDisabled}>{children}</div>
   )
+  // Two folders sharing a leaf name under DIFFERENT parents, and a third at top level.
   const folders = [
     { id: 'a', name: 'Work', parent_id: null },
     { id: 'b', name: 'Notes', parent_id: 'a' },
     { id: 'c', name: 'Notes', parent_id: null },
+    { id: 'd', name: 'Home', parent_id: null },
+    { id: 'e', name: 'Notes', parent_id: 'd' },
   ] as never
+  const WORK_NOTES = `Work${FOLDER_PATH_SEP}Notes`
+  const HOME_NOTES = `Home${FOLDER_PATH_SEP}Notes`
+  const connectedStore = () => {
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    return store
+  }
+  const mount = (store?: ReturnType<typeof createTestStore>) =>
+    renderWithProviders(<FolderPickerItems folders={folders} onPick={vi.fn()} Item={Item} />, { store })
 
   it('names a nested folder by its path alone, and a top-level one by its name', () => {
-    // Two folders called "Notes"; only the indent separates them on screen. The
-    // nested one is named by its path WITHOUT the leaf name repeated first.
-    render(<FolderPickerItems folders={folders} onPick={vi.fn()} Item={Item} />)
-    const nested = screen.getByRole('menuitem', { name: `Work${FOLDER_PATH_SEP}Notes` })
+    mount(connectedStore())
+    const nested = screen.getByRole('menuitem', { name: WORK_NOTES })
     // Assert the MECHANISM, not only the computed name: `title` is also on the
     // item, so a name that came from the tooltip alone would pass the query above
     // while leaving nothing for a reader that ignores `title`.
-    expect(srText(nested)).toBe(`Work${FOLDER_PATH_SEP}Notes`)
+    expect(srText(nested)).toBe(WORK_NOTES)
     expect(mutedText(nested)).toBe('Notes')
+    // No label, so the name above came from that hidden text.
+    for (const path of [WORK_NOTES, HOME_NOTES]) {
+      expect(screen.getByRole('menuitem', { name: path }).getAttribute('aria-label')).toBeNull()
+    }
 
     // The top-level "Notes" path IS its name, so nothing hidden is added and the
     // visible name stays the one a reader gets.
@@ -177,6 +201,18 @@ describe('folder-move menu items read out their nesting path', () => {
     // Hidden text stays out of a copied selection, same as the chips.
     for (const el of document.querySelectorAll('.sr-only')) {
       expect(el.className).toContain('select-none')
+    }
+  })
+
+  it('keeps the path in the name once the gateway drops and the label takes over', () => {
+    mount()
+    for (const path of [WORK_NOTES, HOME_NOTES]) {
+      const row = screen.getByRole('menuitem', {
+        name: i18nT('utils.offline.disabled_gateway_offline', { label: path }),
+      })
+      // Guards the arm: an online render would satisfy the query above by its
+      // path alone, leaving the offline branch unexercised.
+      expect(row).toHaveAttribute('aria-disabled', 'true')
     }
   })
 })

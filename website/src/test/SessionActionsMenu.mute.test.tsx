@@ -26,11 +26,12 @@ vi.mock('../api/client', () => ({
 
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import { store } from '../store'
-import { sseSlots } from '../store/dashboardSlice'
+import { sseSlots, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { setActiveSlot } from '../store/chatSlice'
 
-function renderMenu(muted: boolean) {
+function renderMenu(muted: boolean, connected = true) {
   // useSessionActions reads the app store directly, so drive that store.
+  store.dispatch(connected ? sseConnected() : sseDisconnected())
   store.dispatch(sseSlots([
     { key: 'chat-active', title: 'Active', messages: 0, running: false },
     { key: 'chat-row', title: 'Row', messages: 0, running: false, muted },
@@ -98,5 +99,24 @@ describe('SessionActionsMenu per-row Mute', () => {
     const errors = store.getState().dashboard.slotMuteFlagError
     expect(errors['muted:chat-row']).toBe('nope')
     expect(errors['mutes_opened:chat-row']).toBeUndefined()
+  })
+
+  it('refuses the write while offline, dimmed and named, and writes when connected', async () => {
+    const { rowMuted, unmount } = renderMenu(false, false)
+    const row = await screen.findByRole('menuitem', { name: /Mute this session/ })
+    expect(row).toHaveAttribute('aria-disabled', 'true')
+    expect(row.className).toContain('opacity-40')
+    expect(row.title).toMatch(/Gateway offline/)
+    fireEvent.click(row)
+    expect(setSlotMuted).not.toHaveBeenCalled()
+    expect(rowMuted()).toBe(false)
+    unmount()
+
+    // The control: the same click on a live gateway reaches the API, so the
+    // refusal above is the gate and not a broken harness.
+    setSlotMuted.mockResolvedValue({})
+    renderMenu(false, true)
+    fireEvent.click(await screen.findByText('Mute this session'))
+    await waitFor(() => expect(setSlotMuted).toHaveBeenCalledWith('chat-row', true))
   })
 })

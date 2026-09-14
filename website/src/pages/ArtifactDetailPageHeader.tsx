@@ -96,6 +96,7 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
           folders={folders}
           currentFolderId={artifact.folder_id || null}
           onPick={(fid) => moveArtifact(artifact.slug, fid || '')}
+          offlineVerb={i18nT('utils.offline.move_artifacts')}
           Item={DropdownMenuItem}
         />
       </DropdownMenuContent>

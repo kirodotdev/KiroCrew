@@ -258,8 +258,6 @@ export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolde
           folders={moveTargets}
           currentFolderId={folder.parent_id || null}
           // Dimmed with its siblings; the pick is refused here, at the sink.
-          offline={!connected}
-          offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
           onPick={(pid) => { if (!connected) return; actions.onMove(folder, pid || '') }}
         />
         <DropdownMenuSeparator />
