@@ -8122,7 +8122,8 @@
       "project_directory_path": "Caminho do diretório do projeto",
       "select": "Selecionar",
       "workspace_name": "Nome do espaço de trabalho",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "Tentar novamente"
     },
     "settingRef": {
       "envVarAriaLabel": "Variável de ambiente {{key}}",

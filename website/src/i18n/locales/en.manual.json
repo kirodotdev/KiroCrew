@@ -2684,7 +2684,8 @@
       "create": "Create",
       "creating": "Creating…",
       "failed_to_create_workspace": "Failed to create workspace",
-      "name_required": "Name required"
+      "name_required": "Name required",
+      "retry": "Retry"
     },
     "agentDropdownList": {
       "active_in_this_session": "Active in this session",
