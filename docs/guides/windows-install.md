@@ -384,6 +384,13 @@ What changes:
   hooks run through the same `/bin/sh -c` form other platforms use, so a
   POSIX-shell hook becomes portable to Windows too.
 
+Two POSIX-shell spawns deliberately stay on the Windows side even with `wsl2`
+selected, because running them in the guest would answer a different question
+rather than confine them: an app's **`detectInstalled`** probe asks whether the
+app is already installed *on this machine*, and an app's **`openCommand`**
+launches it on your own desktop. Both keep the behaviour they had before `wsl2`
+existed.
+
 Mechanics, for anyone debugging a `wsl2` failure: `wsl.exe` is resolved
 through the same trusted-system-tool path used elsewhere on Windows (never a
 bare `PATH` lookup), with `WSL_UTF8=1` forced on every invocation — WSL

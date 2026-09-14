@@ -2104,7 +2104,16 @@ def _shell_is_posix_strict(shell: str, *, cache_key: str | None = None) -> bool:
         return cached
     sandbox_cleanup: str | None = None
     try:
-        argv, sandbox_cleanup = wrap_argv([shell, "-c", "echo x.{a,a}"], mode="strict")
+        # posix_shell_argv=True, for the same reason run_command_sandboxed passes
+        # it: the argv here IS ``[shell, "-c", <command>]``. Without it wrap_argv
+        # forces the wsl2 backend to "none", this probe fail-closes, the result
+        # caches as False, and _resolve_command_shell above returns None -- so a
+        # wsl2 host refused every command cron with "No POSIX shell available"
+        # while the whole point of selecting wsl2 was to gain one. Inert on every
+        # other backend, which never reads this flag.
+        argv, sandbox_cleanup = wrap_argv(
+            [shell, "-c", "echo x.{a,a}"], mode="strict", posix_shell_argv=True
+        )
         # Same discipline as every other sandbox-routed spawn in this module
         # (test_every_routed_spawn_applies_resource_limits / _cgroup_scope): the
         # probe is a child process, so it observes the same fork-bomb / RSS

@@ -19,7 +19,9 @@ development; see the PR description for that evidence.
 
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
 import platform
 import re
 import types
@@ -929,3 +931,142 @@ def test_list_wsl2_distros_is_cached_across_calls(monkeypatch):
     second = sb._list_wsl2_distros()
     assert first == second == {"Ubuntu-26.04": "Stopped"}
     assert len(calls) == 1, "second call within the TTL window must hit the cache, not re-shell out"
+
+
+# ── Which POSIX-shell-shaped spawns opt in to wsl2 ──
+#
+# ``posix_shell_argv`` is opt-IN, so a call site that forgets it does not fail
+# loudly: wrap_argv quietly reports no backend and the spawn fail-closes on
+# Windows. That is how the command-cron shell probe shipped without routing
+# through wsl2 at all, which made the headline capability unreachable while
+# every test stayed green. This table is the ratchet: every ``[shell, "-c", X]``
+# argv handed to a sandbox chokepoint is listed with the answer it is supposed
+# to give, so adding a site or flipping one has to be a deliberate edit here.
+
+
+#: ``(module, the third argv element's spelling) -> expected posix_shell_argv``.
+#: The ``False`` entries are DELIBERATE: each runs a command whose answer belongs
+#: to the HOST, not the guest, so routing it into WSL2 would change what it means
+#: rather than confine it. Each carries the same reasoning at its own call site.
+_POSIX_SHELL_SPAWN_SITES: dict[tuple[str, str], bool] = {
+    # An app's own lifecycle scripts and its install script: third-party code,
+    # which is what this backend exists to confine.
+    ("apps/lifecycle_scripts.py", "safe_script"): True,
+    ("apps/registry.py", "safe_script"): True,
+    # Command crons: the probe that decides whether a POSIX shell exists at all,
+    # and the spawn that then uses it. The probe is the one that must opt in for
+    # the other to ever be reached.
+    ("cron_script.py", "'echo x.{a,a}'"): True,
+    ("cron_script.py", "command"): True,
+    # Script hooks.
+    ("hooks.py", "hook.command"): True,
+    # detectInstalled asks whether the app is already present ON THIS MACHINE.
+    ("apps/registry.py", "detect_cmd"): False,
+    # openCommand launches the app on the operator's own desktop.
+    ("apps/routes.py", "open_cmd"): False,
+}
+
+_SANDBOX_CHOKEPOINTS = frozenset(
+    {"wrap_argv", "wrap_argv_async", "sandboxed_spawn_argv", "sandboxed_spawn_argv_async"}
+)
+
+
+def _shell_shaped(node) -> bool:
+    """True for an argv literal of the form ``[<shell>, "-c", <command>]``."""
+    return (
+        isinstance(node, ast.List)
+        and len(node.elts) == 3
+        and isinstance(node.elts[1], ast.Constant)
+        and node.elts[1].value == "-c"
+    )
+
+
+def _command_spelling(node: ast.List) -> str:
+    """How the third argv element is written, as the table keys it."""
+    element = node.elts[2]
+    if isinstance(element, ast.Name):
+        return element.id
+    if isinstance(element, ast.Attribute):
+        return f"{getattr(element.value, 'id', '?')}.{element.attr}"
+    if isinstance(element, ast.Constant):
+        return repr(element.value)
+    return ast.dump(element)
+
+
+def _called_name(call: ast.Call) -> str:
+    func = call.func
+    return func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+
+
+def _discover_posix_shell_spawn_sites() -> dict[tuple[str, str], bool]:
+    """Every POSIX-shell argv reaching a sandbox chokepoint, and its opt-in state."""
+    root = pathlib.Path(sb.__file__).parent
+    found: dict[tuple[str, str], bool] = {}
+    for path in sorted(root.rglob("*.py")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        # Cheap pre-filter before the parse: the package is ~2k modules and
+        # ast.parse on all of them costs about half a minute, which is a lot to
+        # pay on every run for a handful of call sites. A module with no
+        # chokepoint name in its text cannot contain a call to one.
+        if not any(name in source for name in _SANDBOX_CHOKEPOINTS):
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            # A module this test cannot parse is not one it can vouch for, but it
+            # is also not this test's subject: the chokepoints live in files that
+            # parse. Skipping keeps an unrelated syntax problem from surfacing
+            # here as a sandbox finding.
+            continue
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # Resolve the common ``base_cmd = [...]`` indirection: the argv is
+            # almost never written inline at the call itself.
+            shell_argvs: dict[str, ast.List] = {}
+            for node in ast.walk(func):
+                if isinstance(node, ast.Assign) and _shell_shaped(node.value):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            shell_argvs[target.id] = node.value
+            for node in ast.walk(func):
+                if not (isinstance(node, ast.Call) and _called_name(node) in _SANDBOX_CHOKEPOINTS):
+                    continue
+                if not node.args:
+                    continue
+                first = node.args[0]
+                argv: ast.List | None = None
+                if _shell_shaped(first):
+                    argv = first  # type: ignore[assignment]
+                elif isinstance(first, ast.Name):
+                    argv = shell_argvs.get(first.id)
+                if argv is None:
+                    continue
+                key = (path.relative_to(root).as_posix(), _command_spelling(argv))
+                opted_in = any(
+                    kw.arg == "posix_shell_argv"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in node.keywords
+                )
+                found[key] = found.get(key, False) or opted_in
+    return found
+
+
+def test_every_posix_shell_spawn_declares_its_wsl2_disposition():
+    """A POSIX-shell spawn that silently defaults to ``posix_shell_argv=False``
+    reads as ordinary fail-closed-on-Windows rather than as a bug, so nothing
+    goes red when one is missed. Pin the set and each site's answer instead."""
+    assert _discover_posix_shell_spawn_sites() == _POSIX_SHELL_SPAWN_SITES
+
+
+def test_the_command_cron_shell_probe_routes_through_wsl2():
+    """This probe decides whether command crons exist on the host at all: left
+    off the wsl2 backend it fail-closes, caches False, and
+    ``_resolve_command_shell`` then returns None -- so a wsl2 host refused every
+    command cron with "No POSIX shell available", while gaining a POSIX shell is
+    the whole reason to select wsl2."""
+    assert _discover_posix_shell_spawn_sites()[("cron_script.py", "'echo x.{a,a}'")] is True

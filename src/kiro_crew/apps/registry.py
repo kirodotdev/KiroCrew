@@ -3481,6 +3481,13 @@ async def _detect_installed_probe(
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
+            # posix_shell_argv deliberately LEFT at its default False even though
+            # this argv is POSIX-shell-shaped. ``detectInstalled`` asks whether the
+            # app is already present ON THIS MACHINE; run inside a WSL2 guest it
+            # would answer that question about the guest instead, and a wrong
+            # "already installed" refuses a legitimate install while a wrong "not
+            # installed" clobbers one. wsl2 covers the spawns whose answer belongs
+            # to the guest; this one's does not.
             sandboxed_cmd, _cleanup = await wrap_argv_async(
                 base_cmd, mode="strict", _prepare=wrap_argv
             )
@@ -6779,6 +6786,13 @@ async def install_from_registry(
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
+            # posix_shell_argv deliberately LEFT at its default False even though
+            # this argv is POSIX-shell-shaped. ``detectInstalled`` asks whether the
+            # app is already present ON THIS MACHINE; run inside a WSL2 guest it
+            # would answer that question about the guest instead, and a wrong
+            # "already installed" refuses a legitimate install while a wrong "not
+            # installed" clobbers one. wsl2 covers the spawns whose answer belongs
+            # to the guest; this one's does not.
             sandboxed_cmd, _cleanup = await wrap_argv_async(
                 base_cmd, mode="strict", _prepare=wrap_argv
             )
@@ -7042,8 +7056,23 @@ async def install_from_registry(
             safe_script = f"set -euo pipefail\n{install_script}"
 
             base_cmd = ["/bin/bash", "-c", safe_script]
+            # posix_shell_argv=True and an explicit cwd, matching the sibling
+            # lifecycle-script runner: base_cmd is genuine POSIX ``bash -c`` argv,
+            # so the wsl2 backend can confine it (the flag is opt-IN and every
+            # other backend ignores it). ``cwd=`` is threaded HERE as well as into
+            # the spawn below because ``wsl.exe`` is itself a Windows process --
+            # the cwd handed to ``create_subprocess_limited`` sets wsl.exe's own
+            # launch directory, not the guest shell's, and only wrap_argv can
+            # translate it into ``wsl.exe --cd``. Without both, an install script
+            # on a wsl2 host fail-closed at "Sandbox backend unavailable" even
+            # though the Windows guide names app install scripts as a path this
+            # backend covers.
             sandboxed_cmd, _cleanup = await wrap_argv_async(
-                base_cmd, mode="standard", _prepare=wrap_argv
+                base_cmd,
+                mode="standard",
+                cwd=str(app_source),
+                posix_shell_argv=True,
+                _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(

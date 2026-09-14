@@ -1808,6 +1808,12 @@ async def handle_open_app(request: web.Request) -> web.Response:
 
     try:
         base_cmd = ["/bin/sh", "-c", open_cmd]
+        # posix_shell_argv deliberately LEFT at its default False even though this
+        # argv is POSIX-shell-shaped. An openCommand launches the app on the
+        # OPERATOR'S OWN DESKTOP -- the local-session check above is what this
+        # whole branch is gated on -- so routing it into a WSL2 guest would start
+        # it on the wrong machine's display, not confine it. wsl2 covers the
+        # spawns whose answer belongs to the guest; this one's does not.
         sandboxed_cmd, _cleanup = await wrap_argv_async(
             base_cmd, mode="standard", _prepare=wrap_argv
         )
