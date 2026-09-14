@@ -44,6 +44,20 @@ logger = logging.getLogger(__name__)
 
 _HEADERS = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
 
+# Every auth request on the shared session is bounded. aiohttp's own default is five
+# minutes, which on a black-holed route leaves a poll hanging many times longer than
+# the dashboard's poll cadence; 30s is longer than any healthy auth call and short
+# enough that a dead route is visible inside one login.
+_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
+
+# How many CONSECUTIVE connection-level poll failures one pending login absorbs before
+# a poll reports the auth service unreachable. The poll is the longest-lived request in
+# a login -- one every few seconds for as long as the user takes to approve in their
+# browser -- so a closed keep-alive connection, a DNS blip or a few seconds offline is
+# the expected case, not evidence the login failed. Any poll that gets an answer clears
+# the count, so only a sustained outage crosses it.
+MAX_POLL_TRANSPORT_FAILURES = 3
+
 
 class UnknownLoginError(Exception):
     """The login_id does not match any pending device authorization."""
@@ -101,6 +115,9 @@ class _PendingLogin:
 
     auth: device.DeviceAuthorization
     provider: SocialProvider
+    # Consecutive polls that never reached the issuer. Lives on the entry so it
+    # disappears with the login itself, and so two flows cannot share a budget.
+    transport_failures: int = 0
 
 
 @dataclass
@@ -119,6 +136,8 @@ class _PendingOidcLogin:
     identity: str
     provider: str
     resolve_profile: bool
+    # Same budget as _PendingLogin.transport_failures, for the SSO-OIDC poll.
+    transport_failures: int = 0
 
 
 # How long the loopback listener waits for the portal to redirect back. Long enough
@@ -228,7 +247,7 @@ class KasLoginService:
         # Lazy: constructing the session at gateway boot would bind it to a loop the
         # service may never run on; first use always happens on the serving loop.
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(timeout=_HTTP_TIMEOUT)
         return self._session
 
     async def close(self) -> None:
@@ -434,20 +453,42 @@ class KasLoginService:
         session = await self._http()
         url = f"{social_service_url()}/oauth/device/poll"
         payload = {"deviceCode": pending.auth.device_code, "clientId": USER_AGENT}
-        async with session.post(url, json=payload, headers=_HEADERS) as resp:
-            if resp.status != 200:
-                # Transient service hiccup: the flow's own expiry bounds retries,
-                # so report pending rather than killing an approvable login.
-                body = await resp.text()
-                logger.warning("device poll HTTP %s: %s", resp.status, body)
+        answered = False
+        try:
+            async with session.post(url, json=payload, headers=_HEADERS) as resp:
+                # The issuer answered, so whatever went wrong on earlier polls of this
+                # login was transient: the budget starts over.
+                answered = True
+                await self._clear_transport_failures(login_id)
+                if resp.status != 200:
+                    # Transient service hiccup: the flow's own expiry bounds retries,
+                    # so report pending rather than killing an approvable login. The
+                    # body is only log material, and a mislabelled charset makes
+                    # decoding it raise, so its failure must not decide the poll.
+                    try:
+                        body = await resp.text()
+                    except (aiohttp.ClientError, ValueError, asyncio.TimeoutError):
+                        body = "<body could not be read>"
+                    logger.warning("device poll HTTP %s: %s", resp.status, body)
+                    return {"status": "pending"}
+                try:
+                    data = await resp.json()
+                except (aiohttp.ClientError, ValueError):
+                    # Malformed 200 body: treat as a transient hiccup, not a crash;
+                    # the flow's expiry still bounds the caller's retries.
+                    logger.warning("device poll returned undecodable body", exc_info=True)
+                    return {"status": "pending"}
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            if answered:
+                # The issuer answered and only reading its body failed, so this is the
+                # same class as a 5xx or an undecodable body: pending, and no failure
+                # counted. Charging the budget here would shorten the next outage's
+                # tolerance for a poll that proved the service is up.
+                logger.warning("device poll answer could not be read: %s", err)
                 return {"status": "pending"}
-            try:
-                data = await resp.json()
-            except (aiohttp.ClientError, ValueError):
-                # Malformed 200 body: treat as a transient hiccup, not a crash;
-                # the flow's expiry still bounds the caller's retries.
-                logger.warning("device poll returned undecodable body", exc_info=True)
-                return {"status": "pending"}
+            if not await self._absorb_transport_failure(login_id, err):
+                raise
+            return {"status": "pending"}
         if not isinstance(data, dict):
             logger.warning("device poll returned non-object body: %r", type(data).__name__)
             return {"status": "pending"}
@@ -473,6 +514,44 @@ class KasLoginService:
         await self._forget(login_id)
         return {"status": "error"}
 
+    async def _absorb_transport_failure(self, login_id: str, err: BaseException) -> bool:
+        """Count one poll that never reached the issuer; True to answer ``pending``.
+
+        A dropped keep-alive connection, a DNS blip or a few seconds offline says
+        nothing about the login: the user is still approving it in their browser and
+        the device authorization is still valid at the issuer. The dashboard treats a
+        502 as terminal and offers only "start over", so surfacing one dropped packet
+        would destroy a live login. Absorb up to MAX_POLL_TRANSPORT_FAILURES in a row;
+        past that the outage is real and the caller re-raises for its coded 502.
+
+        False also for a login that is not registered -- there is nothing left to
+        protect, so the error is the honest answer.
+        """
+        async with self._lock:
+            pending = self._pending.get(login_id)
+            if not isinstance(pending, (_PendingLogin, _PendingOidcLogin)):
+                return False
+            pending.transport_failures += 1
+            absorbed = pending.transport_failures <= MAX_POLL_TRANSPORT_FAILURES
+            failures = pending.transport_failures
+        if absorbed:
+            logger.warning(
+                "device poll did not reach the auth service (%d/%d): %s",
+                failures,
+                MAX_POLL_TRANSPORT_FAILURES,
+                err,
+            )
+        else:
+            logger.warning("device poll unreachable %d times in a row: %s", failures, err)
+        return absorbed
+
+    async def _clear_transport_failures(self, login_id: str) -> None:
+        """Forget earlier failures: this poll reached the issuer and got an answer."""
+        async with self._lock:
+            pending = self._pending.get(login_id)
+            if isinstance(pending, (_PendingLogin, _PendingOidcLogin)):
+                pending.transport_failures = 0
+
     async def _poll_oidc(self, login_id: str, pending: _PendingOidcLogin) -> dict[str, Any]:
         """One non-blocking poll of an SSO-OIDC (Builder ID / IdC) pending login."""
         session = await self._http()
@@ -491,11 +570,19 @@ class KasLoginService:
             await self._forget(login_id)
             expired = "expired" in str(err)
             return {"status": "expired" if expired else "error"}
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            if not await self._absorb_transport_failure(login_id, err):
+                raise
+            return {"status": "pending"}
+        await self._clear_transport_failures(login_id)
         if token is None:
             return {"status": "pending"}
         if pending.resolve_profile:
             # An IdC token is unusable without a profile ARN (the store itself drops
             # it), so resolution failures must end the login loudly, not save junk.
+            # This leg deliberately gets no transport budget: the device code is
+            # already redeemed, so a later poll cannot re-obtain the token, and
+            # answering "pending" would only loop the dashboard until expiry.
             try:
                 profiles = await control_plane.list_available_profiles(
                     token.access_token, region=pending.region, session=session

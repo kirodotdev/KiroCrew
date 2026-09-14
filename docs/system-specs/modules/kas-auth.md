@@ -108,6 +108,44 @@ Fallback rule: if the loopback bind fails or the shape is remote/headless, use d
 code. Device code works everywhere, so it is the safe default when detection is
 uncertain.
 
+### Poll failure classification
+
+A poll is the longest-lived request in a login: one every few seconds for as long as
+the user takes to approve in their browser. The dashboard treats the poll route's 502
+as terminal and offers only "start over", so a poll must report a failed login only
+when the login has actually failed.
+
+The transport budget below is shared by both device flavors; the two rows marked
+by-flavor are not.
+
+| What the poll sees | Answer | Why |
+|---|---|---|
+| `authorization_pending` / `slow_down` | `pending` | the user has not finished yet |
+| a body that cannot be read at all (unreadable, undecodable, mislabelled charset) | `pending`, no budget charged | the issuer answered; the flow's own expiry bounds retries |
+| no answer at all (dropped connection, DNS blip, connect timeout), up to `MAX_POLL_TRANSPORT_FAILURES` in a row | `pending` | says nothing about the login — the device authorization is still valid at the issuer |
+| no answer at all, past that budget | raise → coded 502 | a sustained outage is real and is reported as such |
+| `expired_token` | `expired` | terminal |
+| anything else | `error` | terminal |
+
+Two rows differ **by flavor**, so read them per poll rather than as one rule:
+
+| What the poll sees | Social device poll | SSO-OIDC token poll |
+|---|---|---|
+| HTTP 5xx whose body decodes but carries no recognized code (e.g. `{"__type":"InternalServerException"}`) | `pending` — any non-200 is a hiccup | `error`, terminal — an unrecognized `error` is a rejection (`BuilderIdAuthError`) |
+| a 200 whose body is valid JSON but not an object | `pending` | `error`, terminal (`CreateToken returned a non-object body`) |
+
+The budget is per pending login and counts **consecutive** failures that never reached
+the issuer. A poll that got an answer clears it — including one whose answer could not
+be read, because that answer still proves the service is up — so only a sustained
+outage crosses it, and the count disappears with the login entry. The IdC profile-ARN
+resolution that follows an approved token carries **no** budget — its device code is
+already redeemed, so a later poll cannot re-obtain the token and `pending` would only
+loop until expiry.
+
+Every request on the shared auth session is bounded by an explicit `ClientTimeout`
+(`total=30s`, `connect=10s`). aiohttp's own default is five minutes, which on a
+black-holed route holds a poll far past its own cadence.
+
 ### Social (Google / GitHub)
 
 Brokered entirely by Kiro's servers — there is **no independent OAuth client** we can
