@@ -101,7 +101,6 @@ src/kiro_crew/apps/builtins/issue_radar/tests/test_watch.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_write_and_ai.py
 src/kiro_crew/apps/builtins/md_notebook/git_ops.py
 src/kiro_crew/apps/builtins/md_notebook/notes.py
-src/kiro_crew/apps/builtins/md_notebook/server.py
 src/kiro_crew/apps/builtins/meetings/backend/domain/dictionary.py
 src/kiro_crew/apps/builtins/meetings/backend/domain/session.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/calendar.py
