@@ -51,6 +51,7 @@ pull_request
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene, dep audit
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
+  |-- crew-image-build.yml             crew image recipes build (paths-filtered)
   |-- claude-review.yml "Opus 4.8 Review"     line-level, code-only, blocking
   |-- codex-review.yml  "GPT 5.6 Review"    line-level + PR intent, blocking
   |-- design-review.yml "Design Review"     design shape, advisory
@@ -723,6 +724,32 @@ still guards the API on that non-loopback path, that `/api/health` works (the im
 HEALTHCHECK depends on it), that kiro-cli runs inside the image, and that channel
 credentials passed as container env are moved into the data home's `.env` and
 scrubbed from every long-lived process environ.
+
+**`crew-image-build.yml`** runs `docker build` for the AWS Control crew images, which
+nothing did before: `backend-test-crew-container` imports the image's Python modules and
+runs them on the HOST, so the recipes that merged in #9223 each named a producer script
+that was not in the tree and every check stayed green — the image could not be built from
+a clean checkout, and no gate said so.
+
+It does not name the two recipes. `scripts/crew_image_build_plan.py` asks the tree which
+`Dockerfile*` exist under the crew runtime directory and derives each one's role and
+producer from the recipe's own text — a pre-`FROM` `ARG` interpolated by the `FROM` is a
+digest-pinned layer, a concrete `FROM` is a base, and the producer is the `scripts/*.sh`
+the recipe cites — then refuses anything it cannot account for, including a `FROM` that
+interpolates an out-of-scope `ARG` and would silently expand to an empty string. So a
+third recipe added later is built or reds the lane, rather than being as uncovered as
+these two were. `test_crew_image_build_plan.py` holds the cheap half of that reasoning on
+every pull request with no Docker at all.
+
+The crew layer's base is referenced by digest, and only a push produces a repository
+digest, so the lane runs a throwaway `registry:2` on `127.0.0.1`: real digest, no
+credentials, and therefore runnable on a fork PR with no secrets. It is paths-filtered to
+the crew runtime subtree, the producers and the wheel-packaging manifests, and carries a
+weekly `schedule` because that path set cannot be complete — the build reaches Debian,
+PyPI and the pinned kiro-cli tarball. Measured cold: ~100 seconds of build for a 1.5 GB
+image. Like `docker-smoke.yml` it is absent from `pr-readiness.yml`'s lane list: that file
+resolves lanes by workflow file and a lane reading "(not started)" freezes the verdict at
+pending, which a paths-filtered lane would do on most PRs.
 
 ## The AI review ladder
 
