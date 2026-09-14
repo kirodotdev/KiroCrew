@@ -47,14 +47,21 @@ def config_path(root: Path | None = None) -> Path:
 
 
 def read_config(root: Path | None = None) -> dict[str, Any]:
-    """Read config.json. Returns {"repos": []} if it doesn't exist yet."""
+    """Read config.json, keeping malformed repo rows out of every caller."""
     path = config_path(root)
     if not path.is_file():
         return {"repos": []}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {"repos": []}
+    if not isinstance(data, dict):
+        return {"repos": []}
+    repos = data.get("repos", [])
+    data["repos"] = (
+        [row for row in repos if isinstance(row, dict)] if isinstance(repos, list) else []
+    )
+    return data
 
 
 def write_config(config: dict[str, Any], root: Path | None = None) -> None:

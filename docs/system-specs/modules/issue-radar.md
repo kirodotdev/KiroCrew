@@ -337,6 +337,10 @@ would otherwise lose an update. An analysed issue the model declined to label is
 stored as an EMPTY list, not omitted — otherwise "the next un-analysed slice"
 would return the same unlabelable issues forever.
 
+The connected-repo reader treats a non-object `config.json` as an empty config,
+and filters non-object rows from its `repos` list. A malformed row cannot stop
+the app from listing or updating other connected repositories.
+
 ## Permissions
 
 Write routes (`/labels/apply`, `/labels/apply-bulk`, `/issue/state`,
