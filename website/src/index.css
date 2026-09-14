@@ -2664,7 +2664,35 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 
 /* ── TIER1 a11y: reduced motion / transparency / contrast ── */
 @media (prefers-reduced-motion: reduce){
-  *,*::before,*::after{ transition-duration:0.01ms !important; scroll-behavior:auto !important }
+  /* 0s, NOT the widely-copied 0.01ms. `transition-property` defaults to `all`,
+     so a NON-ZERO duration on `*` MANUFACTURES a transition on every animatable
+     property of every element — including elements that declare none. A
+     transition samples the OLD value on its first frame, so from then on the
+     USED value trails the SPECIFIED value by one frame.
+
+     That cost the chat transcript its stability. The virtualizer writes a
+     spacer height in the SAME commit that mounts a row, so with a manufactured
+     height transition the new row and the space still reserved for it both
+     counted for one frame: `scrollHeight` jumped by that row's own height
+     (measured 160-2228px) and Chromium's scroll anchoring — the scroller is
+     `overflow-anchor:auto`, the spacers are `none` — shoved `scrollTop` by up
+     to 602px before releasing it the next frame. Users reported it as the
+     transcript "jumping between two locations" and as a mid-transcript
+     "gravity well" that rubber-bands a reader back. A frame-resolution probe
+     measured 0 such events with motion enabled and 4-6 per scroll gesture
+     under reduce, and neutralising ONLY `.vc-spacer-skeleton`'s transition
+     took it to 0 with reduce still on.
+
+     A combined duration of 0s means no transition starts, so `transitionend`
+     never fires. Nothing here depends on that: PinnedPrompt owns the app's
+     only `transitionend` listener and it returns before installing one under
+     reduced motion. The repo's own screenshot harnesses already freeze motion
+     with `transition-duration: 0s !important`.
+
+     The `animation-duration:0.01ms` rule further up is NOT the same hazard and
+     stays as it is: `animation-name` defaults to `none`, so a duration alone
+     cannot create an animation where none was declared. */
+  *,*::before,*::after{ transition-duration:0s !important; scroll-behavior:auto !important }
 }
 @media (prefers-reduced-transparency: reduce){
   .topbar-glass,.glass-surface{ backdrop-filter:none !important; -webkit-backdrop-filter:none !important; background:var(--bg) !important }
