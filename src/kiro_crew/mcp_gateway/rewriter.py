@@ -1391,7 +1391,7 @@ def _cached_rewrite_result(
     target_env: dict[str, str] = {}
     try:
         for name in sorted(overlay_sigs):
-            spec = json.loads((overlay_dir / name).read_text())
+            spec = json.loads((overlay_dir / name).read_text(encoding="utf-8"))
             servers = spec.get("mcpServers", {}) if isinstance(spec, dict) else {}
             if not isinstance(servers, dict):
                 servers = {}
@@ -1407,7 +1407,7 @@ def _cached_rewrite_result(
             if wrapped:
                 results[name] = wrapped
             _collect_target_env(servers, target_env)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
 
     logger.info(
@@ -1678,7 +1678,7 @@ def rewrite_agents(
     settings_read_transient = False
     if kiro_settings_json.is_file():
         try:
-            loaded = json.loads(kiro_settings_json.read_text())
+            loaded = json.loads(kiro_settings_json.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 settings_poolable = _injectable_settings_servers(
                     loaded, stub_set,
@@ -1696,7 +1696,7 @@ def rewrite_agents(
             notes.source_read_failed = True
             settings_read_transient = True
             logger.warning("failed to read global mcp.json: %s", exc)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             # Content problem — cacheable; a fix changes the stat signature.
             logger.warning("failed to read global mcp.json: %s", exc)
     else:
@@ -1817,7 +1817,7 @@ def rewrite_agents(
             transient_keep.add(path.name)
             continue
         try:
-            spec = json.loads(path.read_text())
+            spec = json.loads(path.read_text(encoding="utf-8"))
         except OSError as exc:
             # Transient: the file stat'ed fine for the fingerprint but could
             # not be read. Readability can return without size/mtime changing,
@@ -1833,7 +1833,7 @@ def rewrite_agents(
                 exc,
             )
             continue
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             # Deterministic: the CONTENT is bad, and fixing it changes the
             # file's stat signature, which invalidates the fingerprint — so
             # this skip is safe to cache.
@@ -1927,8 +1927,8 @@ def rewrite_agents(
     for name in sorted(transient_keep):
         kept = overlay_dir / name
         try:
-            kept_spec = json.loads(kept.read_text())
-        except (OSError, json.JSONDecodeError):
+            kept_spec = json.loads(kept.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             continue
         if isinstance(kept_spec, dict):
             servers = kept_spec.get("mcpServers", {})
