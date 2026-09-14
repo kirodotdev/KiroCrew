@@ -20,7 +20,7 @@ SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 SHIPPED_SMOKE = {
     "auth-sign-in-card-signed-out",
     "chat-switch-seeded-sessions",
-    "search-everywhere-open-schedule",
+    "search-everywhere-jump-to-setting",
     "sessions-new-chat",
     "settings-search-jump-to-theme",
     "settings-theme-toggle",
@@ -81,7 +81,7 @@ class TestShippedScenarios:
         assert {slug: [s.name for s in g] for slug, g in groups.items()} == {
             "chat": ["chat-switch-seeded-sessions", "sessions-new-chat"],
             "sidebar": ["sidebar-folders-and-older-sessions"],
-            "search": ["search-everywhere-open-schedule"],
+            "search": ["search-everywhere-jump-to-setting"],
             "members": ["members-dm-hello"],
             "auth": ["auth-sign-in-card-signed-out"],
             "settings": ["settings-search-jump-to-theme", "settings-theme-toggle"],
