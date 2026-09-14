@@ -63,8 +63,24 @@ const SENSITIVE_PATTERNS = [
   /\/\.docker\/config\.json$/, /\/\.kube\/config$/,
 ]
 
+/**
+ * Whether viewing this file warrants the screen-sharing warning.
+ *
+ * Matched against a slash-normalized copy, not the raw string. Paths reach the
+ * UI exactly as the backend printed them — `str(p)` on a `pathlib.Path` in
+ * `file_explorer/server.py` — so on Windows every separator is a backslash and
+ * the `/`-anchored patterns above match nothing at all. `extOf` already splits
+ * on both separators for the same reason; this is the rest of that contract.
+ *
+ * Normalizing rather than widening each pattern to `[/\\]` keeps one readable
+ * pattern list and cannot drop a leading-separator anchor by hand. A POSIX file
+ * whose NAME legitimately contains a backslash (`a\.ssh\k`) can now match, which
+ * is the fail-safe direction here: the only consequence is an advisory banner
+ * shown when it need not be, and this caller does nothing else with the verdict.
+ */
 export function isSensitivePath(path: string): boolean {
-  return SENSITIVE_PATTERNS.some(p => p.test(path))
+  const normalized = path.replace(/\\/g, '/')
+  return SENSITIVE_PATTERNS.some(p => p.test(normalized))
 }
 
 export const loadState = () => {
