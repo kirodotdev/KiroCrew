@@ -96,6 +96,12 @@ ctx.nudge(idle_secs=?, message=?), ctx.budget, ctx.args. Nothing else exists on
 ctx in this runtime — any other ctx attribute or method fails at runtime, so do
 not invent one.
 
+BUDGET — ctx.budget is a host-owned Budget object, NOT a number or a timeout.
+Never assign to or delete ctx.budget. The caller sets the run's token ceiling
+with budget_total when starting the workflow. Read ctx.budget.total,
+ctx.budget.spent(), or ctx.budget.remaining() to inspect it. Keep any script-local
+limit in a local variable instead of replacing the runtime object.
+
 ASYNC vs SYNC — get this right or the script crashes at runtime:
   * AWAIT these (they are async): ctx.agent(...), ctx.parallel(...),
     ctx.pipeline(...).
@@ -148,8 +154,9 @@ Before you reply, RE-READ your script and fix these specific failure modes: (1) 
 ``.get()``, or attribute access on an awaited
 ctx.agent/parallel/pipeline result that is not first bound to a
 variable and None-guarded; (3) any use of a name that
-is not a listed builtin, ctx, or a helper you defined. Reply ONLY when the script
-is clean on all three.
+is not a listed builtin, ctx, or a helper you defined; (4) any assignment to or
+deletion of ctx.budget (keep the host-owned Budget object). Reply ONLY when the
+script is clean on all four.
 
 Author the workflow for this task:
 

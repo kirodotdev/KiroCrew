@@ -327,7 +327,7 @@ class _RunContext:
         self.args = args
         self.now = now
         self.owner_dm = owner_dm
-        self.budget = budget
+        self._budget = budget
         # Originating session key (dashboard slot / channel key) for this run.
         # Threaded from start()/run_background() so session-bound native ports
         # (e.g. ``ctx.nudge`` → AutoNudge) know which session to act on. Empty
@@ -378,6 +378,11 @@ class _RunContext:
         self._agent_slots: Optional[asyncio.Semaphore] = (
             asyncio.Semaphore(concurrency) if (concurrency and concurrency > 0) else None
         )
+
+    @property
+    def budget(self) -> Budget:
+        """The host owns the binding; script aliases cannot replace its accounting."""
+        return self._budget
 
     # --- event sink (shared with the runner) ---
     def _record(self, event: WorkflowEvent) -> None:

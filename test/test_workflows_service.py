@@ -249,6 +249,48 @@ async def test_author_retries_then_succeeds(monkeypatch) -> None:
     assert out["ok"] is True
 
 
+async def test_author_revises_budget_rebinding_before_returning_script(monkeypatch) -> None:
+    import kiro_crew.workflows.service as svc_mod
+
+    bad_script = GOOD_SCRIPT.replace("    ctx.log('hi')", "    ctx.budget = 7200")
+    prompts: list[str] = []
+
+    async def generate(provider, message, **kwargs):
+        prompts.append(message)
+        return bad_script if len(prompts) == 1 else GOOD_SCRIPT
+
+    monkeypatch.setattr(svc_mod, "stream_and_collect", generate)
+    sessions = FakeSessions([])
+    svc = WorkflowService(sessions=sessions, persist=False)
+
+    out = await svc.author("Audit changes within the caller's token budget")
+
+    assert out["ok"] is True
+    assert out["source"] == GOOD_SCRIPT
+    assert len(prompts) == 2
+    assert "ctx.budget is read-only" in prompts[1]
+    assert "budget_total" in prompts[1]
+    assert "Budget object" in prompts[0]
+    assert sessions.destroyed == [sessions.acquired[0][0]]
+
+
+async def test_author_budget_rebinding_stops_at_validation_retry_limit(monkeypatch) -> None:
+    from kiro_crew.workflows.service import _AUTHOR_RETRIES
+
+    bad_script = GOOD_SCRIPT.replace("    ctx.log('hi')", "    ctx.budget = 7200")
+    generated = _patch_stream(monkeypatch, [bad_script])
+    sessions = FakeSessions([])
+    svc = WorkflowService(sessions=sessions, persist=False)
+
+    out = await svc.author("Audit changes")
+
+    assert out["ok"] is False
+    assert generated["i"] == _AUTHOR_RETRIES + 1
+    assert any("ctx.budget is read-only" in error for error in out["errors"])
+    assert svc.list_runs() == []
+    assert sessions.destroyed == [sessions.acquired[0][0]]
+
+
 async def test_author_retries_transient_startup_with_fresh_session(monkeypatch) -> None:
     _patch_stream(monkeypatch, [GOOD_SCRIPT])
     import kiro_crew.workflows.service as svc_mod

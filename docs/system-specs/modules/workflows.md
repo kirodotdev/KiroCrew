@@ -227,6 +227,16 @@ next `ctx.phase()` call.
 
 ### Budget
 
+`ctx.budget` is a host-owned, read-only binding to the run's `Budget` object,
+not a token count or a timeout. The caller supplies `budget_total` when starting
+a run; a script keeps its own limits in local variables and inspects the budget
+through `total`, `spent()` and `remaining()`. A budget-only authoring lint rejects
+obvious replacement/deletion through the entrypoint parameter and its closures.
+A read-only property on `_RunContext` enforces immutability at runtime, including
+aliases, globals and helpers outside the lint's scope. The lint is an early
+authoring aid, not the enforcement boundary or the host's port-availability check.
+This protects the binding only; the `Budget` accounting API is unchanged.
+
 ```python
 class Budget(Protocol):
     total: Optional[int]      # None => no ceiling
@@ -409,6 +419,19 @@ Static rejections:
     `(await ctx.agent(...)).get(...)` or `[...]` or `.attr`, for `agent`,
     `parallel`, `pipeline`, `workflow` and `approve`. Binding to a variable first
     and guarding is the correct pattern and is intentionally not flagged.
+  - assignment to or deletion of the workflow context's `budget` binding,
+    including annotated/augmented assignments, unpacking and loop targets. The
+    budget-only authoring aid is independent of the host-surface check and
+    supports positional-only workflow entrypoints. Nested helpers' own parameters
+    and locals (including assignment, exception and loop targets) are unrelated
+    state; closures and `nonlocal ctx` still refer to the nearest enclosing
+    binding. Global/module references are ambiguous and rely on the runtime
+    read-only property, like other aliases. No runtime binding, control-flow or
+    alias inference is attempted; legitimate module-owned `ctx.budget` writes
+    remain legal. Budget reads and mutations of script
+    data such as `ctx.args["stage"]` remain allowed. The diagnostic directs the
+    author to the caller's `budget_total` or a script-local variable; the existing
+    bounded authoring loop can then request a corrected script before execution.
 
 The runtime half of the sandbox is `context.build_safe_globals(ctx)`: the script is
 `exec`'d with a `__builtins__` built from exactly `validate.SAFE_BUILTINS` plus
@@ -439,11 +462,18 @@ set: `agent`, `parallel`, `pipeline`, `phase`, `log`, `budget`, `args`, `now`,
 `where="validate"` and an error listing the available surface, instead of crashing
 mid-run with `RuntimeError("... no ... port wired")`.
 
-The check is **scope-aware**: only attribute accesses bound to the entrypoint's
-context parameter are checked, so a helper whose own parameter happens to be named
-`ctx` (say `def read(ctx): return ctx.get("k")`, called with a dict) is out of
-scope. Helpers that receive the real context are under-enforced by design; their
-misuse still fails at run time with the explicit unwired-port error.
+The host check conservatively walks the entrypoint body and nested functions,
+skipping a helper whose own parameter shares the context name (for example,
+`def read(ctx): return ctx.get("k")`, called with a dict). It does not infer
+ownership from module assignments, `global` declarations or helper-local stores:
+these cannot suppress an unwired-port diagnostic, even when a binding is in an
+unexecuted branch. An available attribute such as `budget` remains allowed here;
+write protection belongs to the separate budget lint and runtime property.
+This preserves the host check's existing limits: helper-local methods outside
+the available surface can be conservatively rejected; helpers receiving the real
+context through their own parameters are under-enforced. The host walk uses the
+first ordinary positional parameter, so positional-only entrypoints do not gain
+host-surface coverage from the budget lint's positional-only support.
 
 ## Structured output (`schema=`)
 
@@ -892,7 +922,8 @@ without `set_mode`.
 
 The authoring system prompt (`service._AUTHOR_SYSTEM`) is the model-facing
 statement of this contract: the required module shape, the sandbox rules, the
-async-vs-sync split, the "results can be `None`, bind and guard" rule, the exact
+async-vs-sync split, the "results can be `None`, bind and guard" rule, the
+host-owned `Budget` binding and caller-supplied `budget_total`, the exact
 builtin allowlist, and guidance to keep agent count lean (a generator plus critic
 pair per facet, not one verifier per claim). It must stay consistent with
 `validate.py` and with the wired port set.
