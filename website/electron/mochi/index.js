@@ -593,8 +593,54 @@ async function mochiEnabledState() {
  * No state is tracked because both window operations are idempotent —
  * openPetWindow returns the existing window, closePetWindow no-ops when there
  * is none — so each tick can simply assert the desired end state.
+ *
+ * The cadence is ADAPTIVE, not fixed. The common steady state for anyone who
+ * has not turned Mochi on (it ships defaultEnabled:false) is "disabled, and no
+ * remote pet is keeping it alive" — a state a tick can neither change nor be
+ * changed by until a human flips the App Store toggle. Polling that at a flat
+ * 5s issues a `/api/apps` request forever and, on a gateway that answers 403
+ * for a disabled app, logs a line every cycle. So once a tick
+ * SETTLES on that state the loop backs off — doubling the delay from the base
+ * up to a ceiling — and snaps straight back to the base cadence the moment any
+ * tick reports something else (enabled, a remote pet, or an unreadable probe).
+ * Backoff rather than a hard stop because this loop is the ONLY thing that
+ * notices a re-enable without a shell restart (see the header above): a stop
+ * would trade the log flood for a pet that never comes back until relaunch,
+ * whereas a ceiling bounds the worst-case notice of a re-enable to one ceiling
+ * interval while collapsing the steady-state cost to almost nothing.
  */
 const MOCHI_PET_RECONCILE_MS = 5000;
+// Ceiling for the disabled-state backoff. Five minutes bounds the worst-case
+// lag before a re-enable is noticed, while cutting a flat-5s idle loop's
+// request/log rate by ~60x. The base doubles (5s, 10s, 20s … capped here).
+const MOCHI_PET_RECONCILE_MAX_MS = 300_000;
+
+/**
+ * The reconcile outcome the SCHEDULER reads to pick the next delay.
+ *
+ * "idle" means this tick settled on the steady disabled state and asserting it
+ * again changes nothing until a human acts — so the loop may back off. "active"
+ * means anything else (enabled, a live remote pet, or an unreadable probe that
+ * must be retried promptly), so the loop returns to the base cadence. It is a
+ * hint about CADENCE only; it never gates the reconcile's own window work.
+ */
+const RECONCILE_IDLE = "idle";
+const RECONCILE_ACTIVE = "active";
+
+/**
+ * The next reconcile delay, given the previous delay and the last tick's
+ * outcome. Pure so the backoff policy can be tested without Electron: an
+ * RECONCILE_IDLE outcome doubles the delay up to the ceiling, anything else
+ * resets it to the base, so a disabled Mochi is not polled at the base rate
+ * forever.
+ */
+function nextReconcileDelay(prevDelay, outcome) {
+  if (outcome !== RECONCILE_IDLE) return MOCHI_PET_RECONCILE_MS;
+  const base = Number.isFinite(prevDelay) && prevDelay > 0
+    ? prevDelay
+    : MOCHI_PET_RECONCILE_MS;
+  return Math.min(base * 2, MOCHI_PET_RECONCILE_MAX_MS);
+}
 
 /**
  * Mochi's settings object, or null on ANY failure (no token, non-200,
@@ -728,6 +774,11 @@ function mochiStartSnip() {
  */
 let reconcileInFlight = null;
 
+// Set by startMochiWatcher(); a no-op until the watcher owns a timer. Lets an
+// out-of-band reconcile (a user re-enabling or switching instances) reset the
+// adaptive backoff so the pet responds promptly rather than on a slow clock.
+let resetReconcileCadence = () => {};
+
 function reconcileMochiOnce() {
   if (reconcileInFlight) return reconcileInFlight;
   reconcileInFlight = reconcileMochi().finally(() => {
@@ -751,6 +802,10 @@ async function reconcileMochiAfterCurrent() {
       /* the in-flight run's own failure is not this caller's problem */
     }
   }
+  // A user just acted (re-enable seen via apply-now, or an instance switch), so
+  // drop any disabled-state backoff: the loop should be at the base cadence
+  // again, not on a slow clock inherited from when the app was off.
+  resetReconcileCadence();
   return reconcileMochiOnce();
 }
 
@@ -781,8 +836,11 @@ async function reconcileMochi() {
 
   const state = await mochiEnabledState();
   // Could not tell: leave every window exactly as it is. Tearing down on a
-  // failed probe is what made the pet appear to crash every few seconds.
-  if (state === "unknown") return;
+  // failed probe is what made the pet appear to crash every few seconds. A
+  // non-answer must NOT back the loop off — an expired credential clears on the
+  // next tick, so retry at the base cadence rather than drifting toward the
+  // ceiling on a transient failure.
+  if (state === "unknown") return RECONCILE_ACTIVE;
 
   // ONE-SHOT migration of the per-machine prefs out of the host's Mochi
   // settings, so an existing choice is not reset by the upgrade that moves it.
@@ -828,7 +886,11 @@ async function reconcileMochi() {
     mochiWindowsHidden = false;
     // Re-arm the first-open chat panel for the next enable.
     mochiPanelAutoOpened = false;
-    return;
+    // SETTLED: host Mochi is off and no remote pet is being kept alive, so
+    // re-asserting this teardown changes nothing until a human re-enables the
+    // app. This is the ONLY outcome that lets the loop back off — see the
+    // watcher's scheduler.
+    return RECONCILE_IDLE;
   }
 
   // Past here the pet is alive: either the host's Mochi is on, or it is off and
@@ -922,6 +984,10 @@ async function reconcileMochi() {
   // already match, so the 5s loop does not unregister+re-register every tick —
   // which would briefly drop the key.
   applyMochiShortcuts(shortcutsOf(machineStore));
+  // Reached only when a pet is alive (host Mochi on, or a live remote pet while
+  // the host is off). Both are states a later tick must still reconcile, so the
+  // loop stays at the base cadence.
+  return RECONCILE_ACTIVE;
 }
 
 // ── Mochi global-shortcut handlers ─────────────────────────────────────────
@@ -1257,15 +1323,51 @@ function startMochiWatcher() {
   // Through the shared serializer, NOT reconcileMochi directly: a tick can make
   // requests through the SSH tunnel when petInstance names a remote, and those are
   // slower than the 5s interval on a bad link. See reconcileMochiOnce.
-  const tick = () => {
-    reconcileMochiOnce().catch((err) => {
-      // Never let a transient gateway hiccup kill the watcher.
-      console.warn("Mochi pet reconcile failed:", err?.message || err);
-    });
+  //
+  // ADAPTIVE CADENCE. A self-rescheduling timeout replaces a flat setInterval so
+  // the delay can grow while nothing can change. `reconcileMochiOnce()` resolves
+  // to RECONCILE_IDLE only when a tick settled on the steady disabled state
+  // (host off, no remote pet); every other outcome — enabled, a live remote pet,
+  // or an unreadable probe — resolves to RECONCILE_ACTIVE. On idle the delay
+  // doubles up to the ceiling; on active it snaps back to the base, so a
+  // re-enable is picked up promptly and, at worst, one ceiling interval late.
+  // A rejection is treated as "active": a thrown tick is a transient failure,
+  // not a reason to slow down noticing recovery.
+  let reconcileDelay = MOCHI_PET_RECONCILE_MS;
+  let timer = null;
+  const scheduleNextReconcile = () => {
+    timer = setTimeout(runReconcileTick, reconcileDelay);
+    // Never let this keep the process alive on its own; the app owns the loop's
+    // lifetime and clears it on before-quit.
+    if (timer && typeof timer.unref === "function") timer.unref();
   };
-  tick();
-  const timer = setInterval(tick, MOCHI_PET_RECONCILE_MS);
-  app.on("before-quit", () => clearInterval(timer));
+  function runReconcileTick() {
+    reconcileMochiOnce()
+      .then((outcome) => {
+        reconcileDelay = nextReconcileDelay(reconcileDelay, outcome);
+      })
+      .catch((err) => {
+        // Never let a transient gateway hiccup kill the watcher, and never let
+        // it slow the loop down: a failure is retried at the base cadence.
+        console.warn("Mochi pet reconcile failed:", err?.message || err);
+        reconcileDelay = MOCHI_PET_RECONCILE_MS;
+      })
+      .finally(scheduleNextReconcile);
+  }
+
+  // A user action that re-runs reconcile out of band (App Store re-enable seen
+  // via apply-now, or an instance switch) must also drop the loop back to the
+  // base cadence, so the pet responds at once rather than on a backed-off clock.
+  resetReconcileCadence = () => {
+    reconcileDelay = MOCHI_PET_RECONCILE_MS;
+    if (timer) {
+      clearTimeout(timer);
+      scheduleNextReconcile();
+    }
+  };
+
+  runReconcileTick();
+  app.on("before-quit", () => { if (timer) clearTimeout(timer); });
 }
 
 /**
