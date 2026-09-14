@@ -21,8 +21,10 @@ Security
 - Slugs are validated against ``_SLUG_RE`` to block path-traversal attempts.
 - All filesystem writes go through ``Path.resolve()`` + a parent-directory
   check to prevent escapes.
-- ``security.is_sensitive_path()`` is queried before any read/write, so the
-  store cannot accidentally land under ``~/.aws``, ``~/.ssh``, etc.
+- ``security.is_sensitive_path()`` is queried before every write, so the store
+  cannot accidentally land under ``~/.aws``, ``~/.ssh``, etc. Reads are covered
+  by the store-root confinement in ``_refuse_outside_root`` instead, which is the
+  control that also refuses a link planted in the tree.
 - Tool invocations emit SEL audit events via ``sel().log_tool_invocation()``.
 
 The MCP tools (``artifact_save`` etc.) and HTTP handlers wrap this module --
@@ -32,11 +34,13 @@ logic.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import threading
 import unicodedata
@@ -48,7 +52,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from typing import List as _List
 
-from kiro_crew import hooks
+from kiro_crew import hooks, pinned_fs, platform_compat
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
@@ -1412,8 +1416,8 @@ class ArtifactStore:
 
         Raises :class:`ArtifactNotFoundError` when the slug does not resolve,
         is not an image artifact, or its asset sidecar is missing. The read is
-        routed through the gated :meth:`_read_bytes` so the sensitive-path
-        denylist fires here as on every other store read.
+        routed through the gated :meth:`_read_image_asset_bytes` so the
+        sensitive-path denylist fires here as on every other store read.
         """
         slug = _validate_slug(slug)
         with self._lock:
@@ -3215,11 +3219,9 @@ class ArtifactStore:
 
     def _snapshot_version(self, slug: str, version: int, src: Path) -> None:
         target = self._artifact_dir(slug) / "versions" / f"v{version}.html"
-        # Defense in depth: route the read through the gated helper so the
-        # is_sensitive_path() check fires on every filesystem read, even when
-        # ``src`` is a store-internal path constructed by the store itself.
-        # Per the security-controls rule: all file reads must go through
-        # hooks.py which enforces is_sensitive_path().
+        # The read goes through the same leaf-pinned reader as every other store
+        # read, so a link planted at ``src`` is refused even though the store
+        # builds that path itself.
         self._write_text(target, self._read_text(src))
 
     def _write_meta(self, art: Artifact) -> None:
@@ -3507,42 +3509,323 @@ class ArtifactStore:
         )
 
     def _read_text(self, path: Path) -> str:
+        """Read a text file with the leaf pinned to the descriptor actually opened.
+
+        The store root is ``config_dir() / "artifacts"``, which is in none of the
+        sandbox's three crew-home dispositions, so an in-sandbox process can
+        plant a link in the tree these readers walk. A ``realpath`` + gate
+        followed by an open BY NAME answers the gate with whatever the link
+        resolves to and then reads the name, so the two need not be the same
+        object; a hardlink has no path tell at all.
+
+        Two things are needed, and neither is sufficient alone:
+
+        * the no-follow open must happen on the **unresolved** leaf, so the open
+          is the thing that meets the link. ``_read_image_asset_bytes`` states
+          the trap: "the helper resolves the path before opening it, so
+          ``O_NOFOLLOW`` alone never sees a swapped symlink — it sees the
+          target."
+        * the resolved path must be confined to the store root, which closes the
+          ancestor-swap case a leaf open cannot see.
+
+        ``hooks.safe_read_file_bytes_nolink`` is therefore NOT the leaf control
+        here, however much it looks like one. Its first act is
+        ``validate_file_path``, whose contract is to "validate and canonicalize":
+        it returns the RESOLVED path, and the helper opens that. A leaf symlink
+        is gone by then, so the helper's flag has nothing to refuse — and an
+        in-store link reads its target happily. The leaf is settled below with
+        ``platform_compat.open_file_no_reparse`` on the unresolved path, which is
+        the open that actually sees the link, on both platforms.
+
+        :meth:`_read_image_asset_bytes` pairs the same two controls for the
+        binary sibling.
+        """
         resolved = Path(os.path.realpath(path))
-        if is_sensitive_path(str(resolved)):
-            raise ArtifactError(f"refusing to read sensitive path: {resolved}")
-        return resolved.read_text(encoding="utf-8")
+        self._refuse_outside_root(resolved)
+        # Distinguish "gone" from "refused" BEFORE the open. The descriptor path
+        # below answers the same way for a missing file and a refused one, and
+        # callers around this store catch the two differently: a file that
+        # vanished between a listing snapshot and the read is a skip-warn, while
+        # a link at the leaf is a refusal. ``ArtifactError`` is not an ``OSError``,
+        # so collapsing them would stop an ``except OSError`` /
+        # ``except FileNotFoundError`` handler from seeing a disappeared file at
+        # all. A file that vanishes between this check and the open below
+        # resolves to the refusal, never to a read of something else.
+        if not os.path.lexists(path):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(resolved))
+        # The UNRESOLVED path: this is the open that sees a link at the leaf.
+        #
+        # ``nonblocking`` is load-bearing rather than tidy. A FIFO at the leaf
+        # would otherwise leave a blocking O_RDONLY open waiting for a writer
+        # that never comes, and callers reach this inline on the gateway's event
+        # loop (``api_artifact_version_detail`` and friends), so one planted FIFO
+        # stalls the whole gateway until it is restarted. O_NONBLOCK makes the
+        # open return so the ``S_ISREG`` rejection below can run.
+        fd = -1
+        try:
+            fd = platform_compat.open_file_no_reparse(str(path), nonblocking=True)
+        except OSError as exc:
+            # ELOOP: a link at the leaf, which the open refused rather than
+            # followed. Reported as a refusal so a planted link is never mistaken
+            # for a missing or unreadable file.
+            raise ArtifactError(f"refusing to read linked path: {resolved}") from exc
+        try:
+            st = os.fstat(fd)
+            if st.st_nlink > 1:
+                # A hardlink shares the victim's inode, so no path check can see
+                # it; the descriptor can.
+                raise ArtifactError(f"refusing to read hardlinked path: {resolved}")
+            if not stat.S_ISREG(st.st_mode):
+                raise ArtifactError(f"refusing to read non-regular path: {resolved}")
+            # Containment on the DESCRIPTOR, not on the path computed before the
+            # open. The pre-open ``realpath`` above can be overtaken by an agent
+            # that swaps an ancestor for a link, and a leaf-shaped no-follow open
+            # only settles the final component. ``fd_real_path`` is the kernel's
+            # own answer for the inode actually held open, so it carries no
+            # swappable component; it fails closed (None) when unavailable.
+            self._refuse_swapped_descriptor(fd, resolved)
+            # No ``max_bytes`` ceiling, unlike the general file helper. A caller
+            # that mirrors what it reads back to the source (``snapshot`` on a
+            # linked file) needs the full body: capping the read would turn it
+            # into a truncating write of the user's own file.
+            with os.fdopen(fd, "rb") as fh:
+                data = fh.read()
+            fd = -1  # fdopen consumed it
+        finally:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ArtifactError(f"artifact content is not valid UTF-8: {resolved}") from exc
 
     def _write_text(self, path: Path, text: str) -> None:
+        """Write a text file with the leaf settled by the create-or-open itself.
+
+        Same leaf problem as :meth:`_read_text`, in the direction that destroys
+        data: a planted link at ``current.html`` turns every content update into
+        an overwrite of the link's target.
+
+        ``hooks.safe_write_file_nolink`` is the write twin but opens WITHOUT
+        ``O_CREAT`` (deliberately — a caller mirroring content back has no
+        business creating a file). The store genuinely creates: ``meta.json``
+        and ``v{n}.html`` do not exist on the first write. So the leaf is settled
+        here instead, and the bytes reach it through the staged rename that was
+        already the write's shape.
+        """
         resolved = Path(os.path.realpath(path))
+        self._refuse_outside_root(resolved)
         if is_sensitive_path(str(resolved)):
             raise ArtifactError(f"refusing to write sensitive path: {resolved}")
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: tmp file + rename.
-        tmp = resolved.with_suffix(resolved.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(resolved)
+        encoded = text.encode("utf-8")
+        # Settle the leaf with ONE no-follow open BEFORE the create-or-overwrite,
+        # so a link planted at the name is refused rather than written through.
+        #
+        # ``platform_compat.open_file_no_reparse`` is the primitive that makes
+        # this atomic on both platforms: POSIX takes ``O_NOFOLLOW``, and Windows
+        # passes ``FILE_FLAG_OPEN_REPARSE_POINT`` to ``CreateFileW`` because
+        # ``getattr(os, "O_NOFOLLOW", 0)`` is 0 there and a bare ``os.open``
+        # would FOLLOW the reparse point. A path-shaped ``is_symlink()`` check
+        # here instead would be the very check-to-open window being closed.
+        #
+        # The probe takes the UNRESOLVED leaf. Handing it ``resolved`` would
+        # strip a symlink before the open ran, so ``O_NOFOLLOW`` would meet an
+        # ordinary file and pass — the trap ``_read_image_asset_bytes``
+        # documents. The store-root confinement above covers what the leaf open
+        # cannot see (an ancestor swapped for a directory link).
+        #
+        # It is a READ handle, and no write counterpart exists in the tree. The
+        # probe is released before the staged rename, so a writer able to race
+        # this process can still swap the leaf in between. What is gone is the
+        # wide window a caller got from checking a PATH and then opening the
+        # NAME, and the deterministic case of a link already sitting there.
+        #
+        # A create names a leaf that does not exist, so there is nothing to
+        # follow and the probe is skipped rather than failed.
+        if os.path.lexists(path):
+            try:
+                probe = platform_compat.open_file_no_reparse(str(path), nonblocking=True)
+            except OSError as exc:
+                # ELOOP: a link at the leaf, which the open refused. Reported as
+                # a refusal so a planted link is never mistaken for a write error.
+                raise ArtifactError(f"refusing to write linked path: {resolved}") from exc
+            try:
+                st = os.fstat(probe)
+                if st.st_nlink > 1:
+                    # A hardlink shares the victim's inode, so no path check can
+                    # see it; the descriptor can. Checked before any byte lands.
+                    raise ArtifactError(f"refusing to write hardlinked path: {resolved}")
+                if not stat.S_ISREG(st.st_mode):
+                    raise ArtifactError(f"refusing to write non-regular path: {resolved}")
+                # Containment on the DESCRIPTOR, not the pre-open path: the
+                # ``realpath`` above can be overtaken by an ancestor swap, and a
+                # leaf-shaped open settles only the final component.
+                self._refuse_swapped_descriptor(probe, resolved)
+            finally:
+                try:
+                    os.close(probe)
+                except OSError:
+                    pass
+        # Atomic replace: stage a sibling, then rename onto the validated name.
+        #
+        # Both halves resolve against a PINNED parent descriptor, because naming
+        # either one as a string hands back the ancestor-swap window: O_NOFOLLOW
+        # guards only the final component, so an ancestor directory swapped for a
+        # link after the pre-open check redirects the stage and the rename
+        # together. Holding the parent descriptor across BOTH steps is what makes
+        # the swap unreachable rather than merely detected.
+        leaf_name = os.path.basename(str(path))
+        self._staged_replace(resolved, leaf_name, encoded)
 
-    def _read_bytes(self, path: Path) -> bytes:
-        """Binary sibling of :meth:`_read_text` (image asset reads).
+    def _staged_replace(self, resolved: Path, leaf_name: str, payload: bytes) -> None:
+        """Write *payload* to *resolved* through a pinned parent, atomically.
 
-        Same sensitive-path gate — every store read, text or binary, must pass
-        ``is_sensitive_path`` per the security-controls rule.
+        The shared tail of :meth:`_write_text` and :meth:`_write_bytes`. The
+        staged name is unique per call and created with ``O_EXCL``, so a name
+        planted in advance loses to the create rather than being written through,
+        and cleanup only ever removes a file this call made.
+
+        Directory-fd pinning is an enhancement, not a precondition: where the
+        POSIX ``dir_fd`` APIs exist the stage and the rename both resolve against
+        an open handle on the parent, and where they do not (Windows) the same
+        staged payload is renamed by name, which is what every editor's atomic
+        save does and what actually protects the user against a half-written
+        file. The leaf itself is settled by the caller's probe before this runs.
         """
-        resolved = Path(os.path.realpath(path))
-        if is_sensitive_path(str(resolved)):
-            raise ArtifactError(f"refusing to read sensitive path: {resolved}")
-        return resolved.read_bytes()
+        parent, base = os.path.split(str(resolved))
+        o_directory = getattr(os, "O_DIRECTORY", 0)
+        use_dir_fd = bool(
+            o_directory
+            and os.open in getattr(os, "supports_dir_fd", set())
+            # CPython lists only ``os.rename`` in ``supports_dir_fd`` although
+            # ``os.replace`` accepts the same arguments; probing ``os.replace``
+            # would silently disable pinning on Linux.
+            and os.rename in getattr(os, "supports_dir_fd", set())
+        )
+        tmp_name = f".{base}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        parent_fd = -1
+        tfd = -1
+        try:
+            if use_dir_fd:
+                try:
+                    parent_fd = os.open(
+                        parent, os.O_RDONLY | o_directory | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                except OSError as exc:
+                    raise ArtifactError(
+                        f"refusing to write into a swapped parent directory: {resolved}"
+                    ) from exc
+                # Containment on the parent DESCRIPTOR: the pre-open realpath can
+                # be overtaken, and a leaf-shaped open settles only the last name.
+                dir_real = pinned_fs.fd_real_path(parent_fd)
+                if dir_real is None:
+                    raise ArtifactError(f"cannot verify the artifact directory: {resolved}")
+                self._refuse_outside_root(Path(dir_real))
+                tfd = os.open(
+                    tmp_name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_BINARY", 0),
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+            else:
+                # No dir_fd APIs, so neither staged name can be resolved relative
+                # to a descriptor. Hold the directory open instead: on Windows that
+                # handle is opened without FILE_SHARE_DELETE, so the directory and
+                # every directory above it can be neither renamed nor deleted while
+                # the handle lives — which is what stops an ancestor being swapped
+                # for a junction between the check and the rename below. The open
+                # also refuses a reparse point already sitting at the name.
+                try:
+                    parent_fd = platform_compat.pin_directory(parent)
+                except OSError as exc:
+                    raise ArtifactError(
+                        f"refusing to write into a swapped parent directory: {resolved}"
+                    ) from exc
+                tfd = os.open(
+                    os.path.join(parent, tmp_name),
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_BINARY", 0),
+                    0o600,
+                )
+            written = 0
+            while written < len(payload):
+                written += os.write(tfd, payload[written:])
+            os.close(tfd)
+            tfd = -1
+            if use_dir_fd:
+                os.rename(tmp_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            else:
+                os.replace(os.path.join(parent, tmp_name), str(resolved))
+        finally:
+            for fd in (tfd, parent_fd):
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            # A failed stage must not leave its temp behind.
+            leftover = os.path.join(parent, tmp_name)
+            if os.path.lexists(leftover):
+                try:
+                    os.unlink(leftover)
+                except OSError:
+                    pass
+
+    def _refuse_outside_root(self, resolved: Path) -> None:
+        """Refuse a resolved path that escapes the store root.
+
+        The companion to every no-follow leaf open. A leaf open sees the final
+        component only, so a directory swapped for a link anywhere above it
+        redirects the whole traversal and the open finds an ordinary file at the
+        far end. Comparing the resolved path against the root closes that, and it
+        is what ``_read_image_asset_bytes`` has always done.
+
+        ``realpath`` is compared rather than the descriptor's own path because
+        the ``/proc/self/fd`` and ``F_GETPATH`` readers are unavailable on
+        Windows, where this store also runs.
+        """
+        root = Path(os.path.realpath(self._root))
+        if resolved != root and root not in resolved.parents:
+            raise ArtifactError(f"refusing a path outside the artifact store: {resolved}")
+
+    def _refuse_swapped_descriptor(self, fd: int, resolved: Path) -> None:
+        """Refuse when the OPENED inode is not the one the store root contains.
+
+        ``_refuse_outside_root`` judges a path computed before the open, so an
+        agent that swaps an ancestor directory for a link in that window
+        redirects the traversal and the check validates a path the descriptor no
+        longer refers to. ``pinned_fs.fd_real_path`` asks the kernel about the
+        inode actually held open, which carries no swappable component.
+
+        Fails closed: when the platform cannot name the descriptor's path there is
+        nothing to validate, and this is a containment check rather than an
+        advisory diagnostic.
+        """
+        opened = pinned_fs.fd_real_path(fd)
+        if opened is None:
+            raise ArtifactError(f"cannot verify the opened artifact path: {resolved}")
+        self._refuse_outside_root(Path(opened))
 
     def _read_image_asset_bytes(self, path: Path) -> bytes:
         """Read an image sidecar with the open descriptor as the unit of trust.
 
-        :meth:`_read_bytes` resolves the path, checks it, then opens it by name —
-        which leaves a window where the sidecar is replaced with a link to
-        something sensitive between the check and the open. The asset endpoint is
-        reachable with nothing but a slug, so that window is worth closing here:
-        the open is ``O_NOFOLLOW`` and the inode it actually opened is validated
-        (regular file, not hardlinked), so a swapped sidecar is refused rather
-        than followed.
+        A path-shaped read (resolve, check, then open BY NAME) leaves a window
+        where the sidecar is replaced with a link to something sensitive between
+        the check and the open. The asset endpoint is reachable with nothing but
+        a slug, so that window is worth closing here: the open is ``O_NOFOLLOW``
+        and the inode it actually opened is validated (regular file, not
+        hardlinked), so a swapped sidecar is refused rather than followed.
 
         ``within_root`` is deliberately NOT passed to the helper: its containment
         check reads the descriptor's real path via ``/proc/self/fd`` or
@@ -3568,16 +3851,35 @@ class ArtifactStore:
     def _write_bytes(self, path: Path, data: bytes) -> None:
         """Binary sibling of :meth:`_write_text` (image asset writes).
 
-        Same sensitive-path gate and same atomic tmp-file + rename so a reader
-        never observes a half-written asset.
+        Same sensitive-path gate, same store-root confinement, same no-follow
+        leaf probe, and the same atomic staged replace — an image sidecar is a
+        link target like any other, and the write direction is the one that
+        destroys data.
         """
         resolved = Path(os.path.realpath(path))
+        self._refuse_outside_root(resolved)
         if is_sensitive_path(str(resolved)):
             raise ArtifactError(f"refusing to write sensitive path: {resolved}")
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        tmp = resolved.with_suffix(resolved.suffix + ".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(resolved)
+        if os.path.lexists(path):
+            try:
+                probe = platform_compat.open_file_no_reparse(str(path), nonblocking=True)
+            except OSError as exc:
+                raise ArtifactError(f"refusing to write linked path: {resolved}") from exc
+            try:
+                st = os.fstat(probe)
+                if st.st_nlink > 1:
+                    raise ArtifactError(f"refusing to write hardlinked path: {resolved}")
+                if not stat.S_ISREG(st.st_mode):
+                    raise ArtifactError(f"refusing to write non-regular path: {resolved}")
+                self._refuse_swapped_descriptor(probe, resolved)
+            finally:
+                try:
+                    os.close(probe)
+                except OSError:
+                    pass
+        leaf_name = os.path.basename(str(path))
+        self._staged_replace(resolved, leaf_name, data)
 
     def _prune_versions(self, slug: str) -> None:
         versions_dir = self._artifact_dir(slug) / "versions"
