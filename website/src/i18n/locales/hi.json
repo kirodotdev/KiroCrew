@@ -8307,7 +8307,8 @@
       "project_directory_path": "प्रोजेक्ट डायरेक्टरी पथ",
       "select": "चुनें",
       "workspace_name": "वर्कस्पेस का नाम",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "पुन: प्रयास करें"
     },
     "settingRef": {
       "envVarAriaLabel": "पर्यावरण चर {{key}}",

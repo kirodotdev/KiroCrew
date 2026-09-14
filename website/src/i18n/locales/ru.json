@@ -8535,7 +8535,8 @@
       "project_directory_path": "Путь к каталогу проекта",
       "select": "Выбрать",
       "workspace_name": "Название рабочей области",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "Повторить"
     },
     "settingRef": {
       "envVarAriaLabel": "Переменная окружения {{key}}",

@@ -8307,7 +8307,8 @@
       "project_directory_path": "প্রজেক্ট ডিরেক্টরির পাথ",
       "select": "নির্বাচন করুন",
       "workspace_name": "ওয়ার্কস্পেসের নাম",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "আবার চেষ্টা করুন"
     },
     "settingRef": {
       "envVarAriaLabel": "পরিবেশ পরিবর্তনশীল {{key}}",
