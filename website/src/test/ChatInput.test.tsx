@@ -731,6 +731,89 @@ describe('ChatInput', () => {
       expect(onChange).toHaveBeenLastCalledWith('my draft')
     })
 
+    /** EVERY exit from history has to reach the owner, not just ↓-past-newest.
+     *  The owner holds the pre-recall snapshot of the composer's staged files and
+     *  paste blocks; recall empties those to stage the recalled prompt's own. An
+     *  unreported exit stranded the snapshot: never applied, and its lingering
+     *  presence then stopped the next ↑ from taking a fresh one, so a later
+     *  ↓-past-newest wrote that stale set over whatever was staged by then. A
+     *  paste block holds the pasted body itself, which exists nowhere else. */
+    describe('reports every history exit to its owner', () => {
+      it('reports the exit when the user edits the recalled text', () => {
+        const onRecall = vi.fn()
+        const props = { ...defaultProps, onRecall, sentMessages: sent }
+        const { rerender } = renderWithProviders(<ChatInput {...props} value="" />)
+        fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp' })
+        expect(onRecall).toHaveBeenLastCalledWith(sent.length - 1)
+        // Still the recalled message: no exit yet.
+        rerender(<ChatInput {...props} value="third" />)
+        expect(onRecall).toHaveBeenLastCalledWith(sent.length - 1)
+        // One typed character diverges the value — history exits here.
+        rerender(<ChatInput {...props} value="third!" />)
+        expect(onRecall).toHaveBeenLastCalledWith(null, 'adopt')
+      })
+
+      /** The send pipeline clears the composer, which is the same divergence: a
+       *  recalled prompt sent as-is must not leave the snapshot behind either. */
+      it('reports the exit when the send pipeline clears the composer', () => {
+        const onRecall = vi.fn()
+        const props = { ...defaultProps, onRecall, sentMessages: sent }
+        const { rerender } = renderWithProviders(<ChatInput {...props} value="" />)
+        fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp' })
+        rerender(<ChatInput {...props} value="third" />)
+        rerender(<ChatInput {...props} value="" />)
+        expect(onRecall).toHaveBeenLastCalledWith(null, 'adopt')
+      })
+
+      /** A slot switch leaves history too — the position indexes the OUTGOING
+       *  slot's prompts. Reported so the owner cannot hold a snapshot taken in a
+       *  conversation the composer has left. `value` stays on the recalled text
+       *  so divergence cannot be what fires it. */
+      it('reports the exit when the slot changes under it', () => {
+        const onRecall = vi.fn()
+        const props = { ...defaultProps, onRecall, sentMessages: sent }
+        const { rerender } = renderWithProviders(
+          <SlotProvider slotId="slot-a"><ChatInput {...props} value="" /></SlotProvider>,
+        )
+        fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp' })
+        expect(onRecall).toHaveBeenLastCalledWith(sent.length - 1)
+        rerender(<SlotProvider slotId="slot-a"><ChatInput {...props} value="third" /></SlotProvider>)
+        expect(onRecall).toHaveBeenLastCalledWith(sent.length - 1)
+        rerender(<SlotProvider slotId="slot-b"><ChatInput {...props} value="third" /></SlotProvider>)
+        expect(onRecall).toHaveBeenLastCalledWith(null, 'adopt')
+      })
+
+      /** The one exit that asks for the pre-recall sidecars BACK. Every other exit
+       *  adopts the recalled prompt, so reporting them alike un-staged the
+       *  attachment of a prompt the user had merely edited. */
+      it('reports ArrowDown past newest as a draft exit, not an adopt', () => {
+        const onRecall = vi.fn()
+        const props = { ...defaultProps, onRecall, sentMessages: sent }
+        const { rerender } = renderWithProviders(<ChatInput {...props} value="my draft" />)
+        const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+        ta.setSelectionRange(0, 0)
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        rerender(<ChatInput {...props} value="third" />)
+        ta.setSelectionRange('third'.length, 'third'.length)
+        fireEvent.keyDown(ta, { key: 'ArrowDown' })
+        expect(onRecall).toHaveBeenLastCalledWith(null, 'draft')
+      })
+
+      /** Reported ONCE per exit: the effect re-runs on every keystroke that
+       *  follows, and a second null would wipe the draft the first one restored. */
+      it('does not repeat the report while out of history', () => {
+        const onRecall = vi.fn()
+        const props = { ...defaultProps, onRecall, sentMessages: sent }
+        const { rerender } = renderWithProviders(<ChatInput {...props} value="" />)
+        fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp' })
+        rerender(<ChatInput {...props} value="third" />)
+        rerender(<ChatInput {...props} value="third!" />)
+        rerender(<ChatInput {...props} value="third!!" />)
+        rerender(<ChatInput {...props} value="third!!!" />)
+        expect(onRecall.mock.calls.filter(([arg]) => arg === null)).toHaveLength(1)
+      })
+    })
+
     it('ArrowDown within history recalls the next newer message', () => {
       const onChange = vi.fn()
       const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="" />)
