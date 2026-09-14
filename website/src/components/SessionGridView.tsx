@@ -8,6 +8,7 @@ import ChatPane, { type PaneLeading } from './ChatPane'
 import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
 import { emitSlotFocused } from '../hooks/useWebSocket'
 import PaneDim from './PaneDim'
+import { byRecentActivity } from '../utils/slotRecency'
 
 import { i18nT } from '../i18n/t'
 type Slot = {
@@ -249,7 +250,10 @@ function PlaceholderPane({
       // and the ones waiting on them are the ones worth opening first.
       if (!!a.needs_input !== !!b.needs_input) return a.needs_input ? -1 : 1
       if (!!a.running !== !!b.running) return a.running ? -1 : 1
-      return (b.last_activity_ts || '').localeCompare(a.last_activity_ts || '')
+      // Compare INSTANTS, not the timestamp text: `last_activity_ts` is the raw
+      // transcript `ts`, which is not guaranteed to be one format, so a string
+      // compare can order a later session first. See `utils/slotRecency`.
+      return byRecentActivity(a, b)
     })
 
   const ctrlBtn =
