@@ -7,7 +7,18 @@
 #
 # Base image: bookworm ships glibc 2.36. The floor for the kiro-cli gnu builds is
 # 2.30, not the 2.39 the installer claims, so slim is new enough.
-FROM python:3.12-slim
+#
+# Pinned by manifest-list digest, not only by tag: a tag can move, and nothing
+# would detect that the built image differs from the reviewed one. Not
+# hypothetical -- while adding this pin, bare `3.12-slim` had already moved to
+# trixie (Debian 13), a different release from the bookworm this file's glibc
+# reasoning was reviewed against. The tag names the bookworm variant explicitly
+# so the digest and the human-readable name cannot disagree. The digest names
+# the multi-arch INDEX, so the builder's platform still selects the right
+# per-arch manifest (and sets TARGETARCH). To bump:
+# `docker buildx imagetools inspect python:3.12-slim-bookworm` and update the
+# digest, keeping tag and digest in step.
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
 
 # Architecture comes from the builder, it is NEVER pinned here. An earlier build
 # hardcoded arm64 in two places and cost two separate deploy failures: the image
@@ -21,6 +32,17 @@ ARG TARGETARCH
 # to agentCapabilities.loadSession and the shape of its tool events.
 ARG KIRO_VERSION=2.20.2
 
+# The expected sha256 of each arch's tarball for KIRO_VERSION. The host does
+# publish these (<url>.sha256 and stable/latest/manifest.json), but a checksum
+# served by the same host it protects verifies transport, not review: the values
+# are recorded HERE so the build fails if the published artifact ever differs
+# from what was reviewed. Bumping KIRO_VERSION means updating both in the same
+# change (cross-check the hand-computed sha against the published .sha256).
+# ARG defaults are overridable, so never pass these as --build-arg: an override
+# silently defeats the pin.
+ARG KIRO_SHA256_X86_64=232ca9498ba7640ec205b1e2ad02553448c897e63e0a89cb01f60056ae255a59
+ARG KIRO_SHA256_AARCH64=49395d0491e6d9e46ce9b900f5e819573bd313751a5b0b6906899a92b438ee3a
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -33,13 +55,14 @@ RUN apt-get update \
 # build "succeeded" by skipping the download.
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
-      amd64) KIRO_ARCH=x86_64 ;; \
-      arm64) KIRO_ARCH=aarch64 ;; \
+      amd64) KIRO_ARCH=x86_64;  KIRO_SHA256="${KIRO_SHA256_X86_64}" ;; \
+      arm64) KIRO_ARCH=aarch64; KIRO_SHA256="${KIRO_SHA256_AARCH64}" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mkdir -p /tmp/kiro; \
     curl -fsSL -o /tmp/kiro/kirocli.tar.xz \
       "https://prod.download.cli.kiro.dev/stable/${KIRO_VERSION}/kirocli-${KIRO_ARCH}-linux.tar.xz"; \
+    echo "${KIRO_SHA256}  /tmp/kiro/kirocli.tar.xz" | sha256sum -c -; \
     tar -xJf /tmp/kiro/kirocli.tar.xz -C /tmp/kiro; \
     install -m 0755 /tmp/kiro/kirocli/bin/kiro-cli      /usr/local/bin/kiro-cli; \
     install -m 0755 /tmp/kiro/kirocli/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat; \

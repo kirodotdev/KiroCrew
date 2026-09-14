@@ -125,6 +125,11 @@ def _our_live_children(exclude: set[int]) -> list[int]:
             with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
                 fields = fh.read().rsplit(")", 1)[1].split()
         except OSError:
+            # Unlike the test suite's liveness helper, "could not determine" may drop the
+            # candidate here: an unreadable stat gives no ppid to attribute, this scan sees
+            # every pid on the host (not just our own children), and the common cause is the
+            # pid exiting mid-scan. Failing the whole teardown over one alien pid would be
+            # worse than missing it.
             continue
         # After the ')' closing comm: state, ppid. Split this way because comm can contain
         # spaces and parentheses, which is why the naive field index is wrong.

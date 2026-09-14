@@ -33,7 +33,15 @@ from container.supervisor.__main__ import (
     _sweep_orphans_the_backend_cannot_reap,
 )
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
+pytestmark = [
+    pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX"),
+    pytest.mark.skipif(
+        not os.path.exists("/proc/self/stat"),
+        reason="liveness is read from /proc, which this host does not mount (e.g. "
+        "macOS); without it a failed read would render as 'process gone' and every "
+        "sweep assertion here would pass vacuously",
+    ),
+]
 
 # Escapes into its own session, then outlives anything this file waits for.
 _ESCAPER = "import os, time; os.setsid(); print(os.getpid(), flush=True); time.sleep(120)"
@@ -57,6 +65,15 @@ def _alive(pid: int) -> bool:
     signal 0 does not probe, it calls TerminateProcess on the pid being asked about. This is
     host-side test code, not container image source, so the shim is importable here -- the
     suite's own ``pid_alive`` helper takes the same route for the same reason.
+
+    "Could not determine" is NOT "gone". Only two answers may read as False: the pid does
+    not exist, or its stat line says zombie. A ``FileNotFoundError`` on the stat file after
+    a positive existence probe is the process exiting between the two reads -- genuinely
+    gone for the pids this suite probes, which are all its own children (under
+    ``hidepid=2`` another user's live pid would also read as absent, but no probe here
+    crosses a uid; a host with no /proc at all is excluded by the module skip). Any other
+    failed read raises: answering "gone" there is how this suite once passed vacuously --
+    believing nothing escaped rather than verifying it -- on hosts without /proc.
     """
     from kiro_crew.platform_compat import pid_exists
 
@@ -65,8 +82,10 @@ def _alive(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
             return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError as exc:
+        raise RuntimeError(f"could not read liveness of pid {pid} from /proc") from exc
 
 
 def _await_gone(pid: int, timeout: float = 5.0) -> bool:

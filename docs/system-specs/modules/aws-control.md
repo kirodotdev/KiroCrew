@@ -705,6 +705,23 @@ excluded from `setup.cfg`'s `package_data` and from `MANIFEST.in`, so a user's
 wheel and DMG carry the image's build context and not its test suite.
 `test_crew_runtime_payload.py` pins both directions.
 
+The image's two review-sensitive fetches are pinned to what was reviewed: the
+base image by manifest-list digest on the explicit `-bookworm` tag (a bare tag
+can move -- `3.12-slim` had already drifted to trixie when the pin was added;
+the digest names the multi-arch index, from which the builder's platform
+selects the per-arch manifest) and the kiro-cli tarball by a per-arch sha256
+recorded in the Dockerfile. The host publishes checksums beside the tarballs,
+but a checksum served by the same host it protects verifies transport, not
+review, so the reviewed values live in the repo. A moved tag or a re-published
+tarball fails the build instead of silently changing the image. The remaining
+fetches are bounded but not content-addressed:
+`container/requirements.txt` pins direct versions yet carries no `--hash`
+entries (pip's hash-checking mode is all-or-nothing per invocation and the same
+install includes the locally built `vendor/*.whl`, whose hash cannot be
+recorded ahead of the build -- transitive resolution can therefore still
+drift), and apt packages are unpinned, since bookworm point releases drop
+superseded versions and a pin would break on every security update.
+
 ### Three processes, one task
 
 | Process | Owns | Exposure |
