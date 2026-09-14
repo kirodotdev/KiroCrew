@@ -11,7 +11,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 import type { InstanceView } from '../api/client'
+import { createTestStore } from './helpers'
+import { sseConnected } from '../store/dashboardSlice'
 
 const mocks = vi.hoisted(() => ({
   listInstances: vi.fn(),
@@ -47,35 +50,57 @@ function inst(over: Partial<InstanceView> & { id: string }): InstanceView {
   } as InstanceView
 }
 
+/** Every select event the rows saw, so a test can assert one was defaulted. */
+const selects: Event[] = []
+
 /** A plain stand-in for the Radix menu-item primitive. */
-function StubItem({ title, disabled, onSelect, children }: {
+function StubItem({ title, disabled, onSelect, children, 'aria-describedby': describedBy }: {
   title?: string
   disabled?: boolean
   onSelect?: (event: Event) => void
   children?: React.ReactNode
+  'aria-describedby'?: string
 }) {
   return (
     <button
       type="button"
       title={title}
       disabled={disabled}
+      aria-describedby={describedBy}
       data-testid="row"
-      onClick={() => onSelect?.(new Event('select'))}
+      onClick={() => {
+        // Cancelable, because Radix keys menu dismissal on defaultPrevented and
+        // a non-cancelable event would make a refusing handler unobservable.
+        const event = new Event('select', { cancelable: true })
+        selects.push(event)
+        onSelect?.(event)
+      }}
     >
       {children}
     </button>
   )
 }
 
+/** InstanceSendItems reads the gateway flag from the store itself. */
+function withStore(ui: React.ReactElement, connected = true) {
+  const store = createTestStore()
+  if (connected) store.dispatch(sseConnected())
+  return render(<Provider store={store}>{ui}</Provider>)
+}
+
 function renderWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const store = createTestStore()
+  store.dispatch(sseConnected())
   return render(
     <QueryClientProvider client={qc}>
-      <DropdownMenu open>
-        <DropdownMenuContent forceMount>
-          <SendToInstanceSubmenu slotKey="slot-1" variant="dropdown" />
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <Provider store={store}>
+        <DropdownMenu open>
+          <DropdownMenuContent forceMount>
+            <SendToInstanceSubmenu slotKey="slot-1" variant="dropdown" />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Provider>
     </QueryClientProvider>,
   )
 }
@@ -112,7 +137,7 @@ describe('SendToInstanceSubmenu', () => {
 describe('InstanceSendItems', () => {
   it('enables a connected instance and calls onSend with its id', () => {
     const onSend = vi.fn()
-    render(
+    withStore(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
         states={{}}
@@ -128,7 +153,7 @@ describe('InstanceSendItems', () => {
 
   it('disables a disconnected instance and shows the hint instead of hiding it', () => {
     const onSend = vi.fn()
-    render(
+    withStore(
       <InstanceSendItems
         instances={[inst({ id: 'offline', status: { instance_id: 'offline', state: 'disconnected' } })]}
         states={{}}
@@ -145,7 +170,7 @@ describe('InstanceSendItems', () => {
   })
 
   it('disables the row while a send is in flight', () => {
-    render(
+    withStore(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
         states={{ devdesk: { kind: 'sending' } }}
@@ -160,7 +185,7 @@ describe('InstanceSendItems', () => {
     // The whole point of the feature is that context survives the hop. A copy
     // that degraded to the transcript must NOT read as a plain "Sent", or the
     // user walks to the other machine and discovers the loss mid-task.
-    render(
+    withStore(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
         states={{ devdesk: { kind: 'sent', transcriptOnly: true } }}
@@ -172,7 +197,7 @@ describe('InstanceSendItems', () => {
     expect(screen.queryByText('Sent')).toBeNull()
   })
 
-  it('reports success on the row itself', () => {    render(
+  it('reports success on the row itself', () => {    withStore(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
         states={{ devdesk: { kind: 'sent' } }}
@@ -185,8 +210,8 @@ describe('InstanceSendItems', () => {
     expect(screen.getByText('Sent')).toBeTruthy()
   })
 
-  it('reports failure with the peer message as the row tooltip', () => {
-    render(
+  it("surfaces the peer's own message through ErrorNotice, with the hand-off as a sibling item", () => {
+    withStore(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
         states={{ devdesk: { kind: 'error', message: 'peer refused the transfer' } }}
@@ -194,13 +219,16 @@ describe('InstanceSendItems', () => {
         Item={StubItem}
       />,
     )
-    expect(screen.getByText('Failed')).toBeTruthy()
-    expect(screen.getByTitle('peer refused the transfer')).toBeTruthy()
+    const notice = screen.getByRole('alert')
+    expect(notice.textContent).toContain('peer refused the transfer')
+    const handoff = screen.getByText('Ask the agent').closest('button')!
+    expect(handoff.getAttribute('aria-describedby')).toBe(notice.id)
+    expect(notice.id).toBeTruthy()
   })
 
   it('a repeat send stays available after success (copy semantics)', () => {
     const onSend = vi.fn()
-    render(
+    withStore(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
         states={{ devdesk: { kind: 'sent' } }}
@@ -213,5 +241,38 @@ describe('InstanceSendItems', () => {
     expect(row).not.toBeDisabled()
     row.click()
     expect(onSend).toHaveBeenCalledWith('devdesk')
+  })
+
+  it('refuses a cached-connected peer in place offline, rather than letting Radix dismiss the menu', () => {
+    selects.length = 0
+    const onSend = vi.fn()
+    withStore(
+      <InstanceSendItems
+        instances={[inst({ id: 'devdesk' })]}
+        states={{}}
+        onSend={onSend}
+        Item={StubItem}
+      />,
+      false,
+    )
+    const row = screen.getByTestId('row')
+    expect(row).not.toBeDisabled()
+    row.click()
+    expect(onSend).not.toHaveBeenCalled()
+    expect(selects.at(-1)!.defaultPrevented).toBe(true)
+  })
+
+  it('defaults the select when connected too, keeping the menu open to report — the control', () => {
+    selects.length = 0
+    withStore(
+      <InstanceSendItems
+        instances={[inst({ id: 'devdesk' })]}
+        states={{}}
+        onSend={vi.fn()}
+        Item={StubItem}
+      />,
+    )
+    screen.getByTestId('row').click()
+    expect(selects.at(-1)!.defaultPrevented).toBe(true)
   })
 })

@@ -38,15 +38,20 @@ export interface PhoneSubTriggerDivProps extends React.HTMLAttributes<HTMLDivEle
 /** Inline trigger row: a `role="button"` div composing caller handlers with the toggle. */
 export const PhoneSubTriggerDiv = React.forwardRef<HTMLDivElement, PhoneSubTriggerDivProps>(
   function PhoneSubTriggerDiv(
-    { className, inset, expanded, onToggle, onClick, onKeyDown, children, ...rest },
+    { className, inset, expanded, onToggle, onClick, onKeyDown, children, 'aria-disabled': ariaDisabled, ...rest },
     ref,
   ) {
+    // Announced, never withheld: the flyout is the only place the refusal is
+    // explained, so a trigger that will not open cannot say why.
+    const announced = ariaDisabled === true || ariaDisabled === 'true'
     return (
       <div
       {...rest}
       ref={ref}
       role="button"
       tabIndex={0}
+      aria-disabled={announced || undefined}
+      data-disabled={announced ? '' : undefined}
       aria-expanded={expanded}
       onClick={(e) => {
         ;(onClick as unknown as React.MouseEventHandler<HTMLDivElement> | undefined)?.(e)

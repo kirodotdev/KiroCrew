@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
-import { sseSlots } from '../store/dashboardSlice'
+import { sseConnected, sseSlots } from '../store/dashboardSlice'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -61,6 +61,9 @@ vi.mock('../hooks/useTagPopover', () => ({
 
 function mount() {
   const store = createTestStore()
+  // createTestStore models a DISCONNECTED dashboard; export is gateway-backed,
+  // so without this the row is refused and never reports an outcome.
+  store.dispatch(sseConnected())
   store.dispatch(sseSlots([{
     key: 'context-slot',
     messages: 1,
