@@ -3,6 +3,9 @@ import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { updateSlotFolder } from '../store/dashboardSlice'
+import { i18nT } from '../i18n/t'
+import { reportActionFailure } from '../utils/actionFailure'
+import { findReport } from '../utils/errorReport'
 
 /** Options for a single move. */
 export type MoveSlotOptions = {
@@ -49,13 +52,15 @@ export function useMoveSlotToFolder(): (
       dispatch(updateSlotFolder({ key: slotKey, folderId: target }))
       return { slotKey, prev, target }
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (!ctx) return
       // Guarded rollback: only revert if a later move hasn't already changed
       // this slot's folder. Without this, a rapid move A→B where the A call
       // fails would clobber B's optimistic update even though B succeeded.
       const current = store.getState().dashboard.slots.find(s => s.key === ctx.slotKey)?.folder_id ?? ''
-      if (current === ctx.target) dispatch(updateSlotFolder({ key: ctx.slotKey, folderId: ctx.prev }))
+      if (current !== ctx.target) return
+      dispatch(updateSlotFolder({ key: ctx.slotKey, folderId: ctx.prev }))
+      reportActionFailure(i18nT('hooks.useMoveSlotToFolder.move_failed'), store.getState().dashboard.slots.find(s => s.key === ctx.slotKey)?.title ?? '', findReport(err.message))
     },
   })
   // `mutate` is referentially stable across renders, so the returned callback is too.

@@ -7506,9 +7506,9 @@
       "quote_hint": "Zitiert die Auswahl in den Verfasser dieses Gesprächs — deine Antwort geht in den Hauptchat"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Fehlgeschlagen",
       "not_connected": "nicht verbunden",
       "send_a_copy_to": "Kopie senden an",
+      "send_failed": "Kopie konnte nicht an diese Instanz gesendet werden.",
       "sent": "Gesendet",
       "sent_transcript_only": "Gesendet (nur Transkript)",
       "transcript_only_hint": "Diese Instanz konnte den vollständigen Gesprächskontext nicht wiederherstellen; diese Kopie setzt nur auf dem Transkript fort.",
@@ -7522,6 +7522,7 @@
       "mark_as_read": "Als gelesen markieren",
       "mark_as_unread": "Als ungelesen markieren",
       "move_to_folder": "In Ordner verschieben…",
+      "offline_reason": "Gateway offline — die ausgegrauten Aktionen brauchen eine Verbindung",
       "open_in_new_tab": "In einem Sitzungs-Tab öffnen",
       "pin": "Anpinnen",
       "pop_out_to_window": "In ein Fenster auskoppeln",
@@ -7537,7 +7538,9 @@
       "unpin": "Entpinnen"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "Die Farbänderung wurde zurückgenommen.",
       "custom_color": "Benutzerdefinierte Farbe",
+      "custom_color_picker": "Benutzerdefinierte Farbauswahl",
       "hex_color_code": "Hex-Farbcode",
       "no_color": "Keine Farbe"
     },
@@ -8654,7 +8657,11 @@
     },
     "useSessionActions": {
       "close_this_session": "Diese Sitzung schließen?",
-      "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
+      "fork_failed": "Sitzung konnte nicht dupliziert werden – es wurde nichts erstellt.",
+      "mode_change_failed": "Der Moduswechsel wurde zurückgenommen.",
+      "pin_change_failed": "Die Anheft-Änderung wurde zurückgenommen.",
+      "reload_failed": "Sitzung konnte nicht neu geladen werden — das Gateway ist nicht erreichbar. Stellen Sie die Verbindung wieder her und versuchen Sie es erneut.",
+      "reload_failed_busy": "Sitzung konnte nicht neu geladen werden — der Agent ist möglicherweise mitten in einem Zug. Versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
       "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
@@ -8678,6 +8685,9 @@
       "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",
       "approval_rejected": "Die Genehmigung wurde verweigert, deshalb wurde die Anfrage abgelehnt.",
       "unknown": "Unbekannt"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "Das Verschieben wurde zurückgenommen."
     }
   },
   "lib": {
@@ -10097,6 +10107,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "„{{name}}“ konnte nicht aktualisiert werden",
       "turn_minimap": "Zwischen Gesprächsrunden navigieren",
       "turn_minimap_active": "Runde {{current}} von {{count}}: {{prompt}}",
       "turn_minimap_active_windowed": "Runde {{current}} von {{count}} geladenen: {{prompt}}",
@@ -15276,6 +15287,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} deaktiviert — Gateway offline",
       "gateway_offline_reconnect": "Gateway offline — für {{action}} neu verbinden",
+      "recolor_sessions": "das Umfärben von Sitzungen",
+      "send_to_instances": "das Senden an Instanzen",
       "submit_comments": "Kommentare einreichen"
     },
     "popoutController": {
