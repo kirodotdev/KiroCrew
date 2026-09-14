@@ -11,11 +11,18 @@ import type { ChatSlot } from '../types'
 const { Item, Separator } = vi.hoisted(() => ({
   Item: ({ children, onSelect, className, disabled }: {
     children?: React.ReactNode
-    onSelect?: () => void
+    onSelect?: (event: { preventDefault: () => void }) => void
     className?: string
     disabled?: boolean
   }) => (
-    <button type="button" className={className} disabled={disabled} onClick={() => onSelect?.()}>{children}</button>
+    <button
+      type="button"
+      className={className}
+      disabled={disabled}
+      onClick={event => onSelect?.({ preventDefault: () => event.preventDefault() })}
+    >
+      {children}
+    </button>
   ),
   Separator: () => <hr data-testid="zzq-sep" />,
 }))
@@ -227,5 +234,17 @@ describe('SessionActionsMenu', () => {
     )
     fireEvent.click(btn('Close session'))
     expect(actions.close).toHaveBeenCalledWith('zzq-slot')
+  })
+
+  it('keeps the menu owner mounted while opening the move dialog', async () => {
+    setup()
+
+    // Radix unmounts DropdownMenuContent on a normal select. This component
+    // owns the dialog state inside that content, so the select MUST prevent the
+    // default close or the state disappears before the portal can render.
+    const accepted = fireEvent.click(btn('Preview a move to crew…'))
+
+    expect(accepted).toBe(false)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
   })
 })

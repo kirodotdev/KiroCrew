@@ -382,6 +382,11 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_wecom_config_get,
     api_wecom_config_save,
 )
+from kiro_crew.dashboard.handlers.migration import (  # noqa: E402, F401
+    api_cron_move,
+    api_session_move,
+    api_taskrun_move,
+)
 
 # ── Rendered slides for the file panel (handlers/office_slides.py) ──
 from kiro_crew.dashboard.handlers.office_slides import (  # noqa: E402, F401
