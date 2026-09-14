@@ -7006,7 +7006,10 @@
       "search_recent_projects": "Kürzliche Projekte suchen",
       "search_recent_projects_2": "Kürzliche Projekte suchen…",
       "select": "Auswählen",
-      "subdirectories": "Unterverzeichnisse"
+      "subdirectories": "Unterverzeichnisse",
+      "recent_unavailable": "Zuletzt verwendete Projekte nicht verfügbar",
+      "retry": "Wiederholen",
+      "loading_recent": "Wird geladen…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Ich habe verstanden, öffentlich veröffentlichen",

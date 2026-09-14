@@ -208,7 +208,7 @@ describe('ProjectPicker path input — rule 2: gate the Enter path only', () => 
     vi.mocked(api.browseDirs).mockClear()
     fireEvent.keyDown(input, { key: 'Enter' })
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
-    expect(vi.mocked(api.browseDirs)).toHaveBeenCalledWith('/home/u/alpha')
+    expect(vi.mocked(api.browseDirs)).toHaveBeenCalledWith('/home/u/alpha', expect.any(AbortSignal))
   })
 
   it('lets Enter through again once the 50ms post-composition window expires', async () => {
@@ -220,7 +220,7 @@ describe('ProjectPicker path input — rule 2: gate the Enter path only', () => 
     vi.mocked(api.browseDirs).mockClear()
     fireEvent.keyDown(input, { key: 'Enter' })
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
-    expect(vi.mocked(api.browseDirs)).toHaveBeenCalledWith('/home/u/alpha')
+    expect(vi.mocked(api.browseDirs)).toHaveBeenCalledWith('/home/u/alpha', expect.any(AbortSignal))
   })
 
   // The Escape || Tab branch closes the picker and returns focus to the

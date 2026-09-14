@@ -3066,6 +3066,11 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "projectPicker": {
+      "recent_unavailable": "Recent projects unavailable",
+      "retry": "Retry",
+      "loading_recent": "Loading…"
     }
   },
   "hooks": {

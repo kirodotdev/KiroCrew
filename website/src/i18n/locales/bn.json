@@ -7006,7 +7006,10 @@
       "search_recent_projects": "সাম্প্রতিক প্রকল্প খুঁজুন",
       "search_recent_projects_2": "সাম্প্রতিক প্রকল্প খুঁজুন…",
       "select": "নির্বাচন করুন",
-      "subdirectories": "সাবডিরেক্টরি"
+      "subdirectories": "সাবডিরেক্টরি",
+      "recent_unavailable": "সাম্প্রতিক প্রকল্প অনুপলব্ধ",
+      "retry": "আবার চেষ্টা করুন",
+      "loading_recent": "লোড হচ্ছে…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "আমি বুঝেছি, প্রকাশ্যে প্রকাশ করুন",

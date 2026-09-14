@@ -6902,7 +6902,10 @@
       "search_recent_projects": "최근 프로젝트 검색",
       "search_recent_projects_2": "최근 프로젝트 검색…",
       "select": "선택",
-      "subdirectories": "하위 디렉터리"
+      "subdirectories": "하위 디렉터리",
+      "recent_unavailable": "최근 프로젝트를 사용할 수 없음",
+      "retry": "다시 시도",
+      "loading_recent": "불러오는 중…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "이해했습니다. 공개로 게시합니다",

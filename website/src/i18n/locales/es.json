@@ -7110,7 +7110,10 @@
       "search_recent_projects": "Buscar proyectos recientes",
       "search_recent_projects_2": "Buscar proyectos recientes…",
       "select": "Seleccionar",
-      "subdirectories": "Subdirectorios"
+      "subdirectories": "Subdirectorios",
+      "recent_unavailable": "Proyectos recientes no disponibles",
+      "retry": "Reintentar",
+      "loading_recent": "Cargando…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Lo entiendo, publicar públicamente",
