@@ -1129,9 +1129,7 @@ def test_all_skill_paths_nested_manifest_shape(
             paths = _all_skill_paths()
 
     found_events = {
-        event
-        for event in ("old", "new")
-        if str(package / f"eventId-{event}" / "skills") in paths
+        event for event in ("old", "new") if str(package / f"eventId-{event}" / "skills") in paths
     }
     assert found_events == expected_events
 
