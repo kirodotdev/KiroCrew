@@ -194,6 +194,96 @@ class TestFollowUpDelivery:
         assert announced[0].parent_session_key == "dash:9"
 
     @pytest.mark.asyncio
+    async def test_live_timeout_reduction_keeps_run_deadline(self, monkeypatch) -> None:
+        """The watcher follows the in-flight run's captured deadline, not a
+        lower manager default installed by live configuration."""
+        from types import SimpleNamespace
+
+        import kiro_crew.subagent as subagent_module
+
+        mgr = _manager()
+        mgr._default_timeout = 60
+        info = SubagentInfo(id="r6-live-config", task="t", timeout_secs=3600)
+        mgr._agents[info.id] = info
+        info.pending_followups = ["important correction"]
+        continues: list[str] = []
+        monkeypatch.setattr(
+            mgr,
+            "continue_conversation",
+            lambda cid, task, **kw: (
+                continues.append(cid),
+                SubagentInfo(id="child", task=task),
+            )[1],
+        )
+
+        ticks = iter((0.0, 361.0, 362.0))
+
+        async def _finish_run(_delay: float) -> None:
+            info.done = True
+
+        monkeypatch.setattr(
+            subagent_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: next(ticks)),
+        )
+        monkeypatch.setattr(
+            subagent_module,
+            "asyncio",
+            SimpleNamespace(sleep=_finish_run),
+        )
+
+        await mgr._deliver_followups(info)
+
+        assert continues == [info.id]
+        assert info.pending_followups == []
+
+    @pytest.mark.asyncio
+    async def test_history_restore_precedes_watcher_deadline(self, monkeypatch) -> None:
+        """A follow-up queued before first-run history restore must use the
+        captured learned deadline, not the stale manager floor."""
+        from types import SimpleNamespace
+
+        import kiro_crew.subagent as subagent_module
+
+        mgr = _manager()
+        mgr._default_timeout = 60
+        info = SubagentInfo(id="r6-history", task="t")
+        mgr._agents[info.id] = info
+        info.pending_followups = ["important correction"]
+        continues: list[str] = []
+        monkeypatch.setattr(
+            mgr,
+            "continue_conversation",
+            lambda cid, task, **kw: (
+                continues.append(cid),
+                SubagentInfo(id="child", task=task),
+            )[1],
+        )
+        ticks = iter((0.0, 361.0, 362.0))
+
+        async def _capture_then_finish(_delay: float) -> None:
+            if info.timeout_secs == 0:
+                info.timeout_secs = 3600
+            else:
+                info.done = True
+
+        monkeypatch.setattr(
+            subagent_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: next(ticks)),
+        )
+        monkeypatch.setattr(
+            subagent_module,
+            "asyncio",
+            SimpleNamespace(sleep=_capture_then_finish),
+        )
+
+        await mgr._deliver_followups(info)
+
+        assert continues == [info.id]
+        assert info.pending_followups == []
+
+    @pytest.mark.asyncio
     async def test_user_stopped_run_suppresses_followups(self, monkeypatch) -> None:
         """OUTCOME-AWARE: a run the user explicitly stopped must not be
         resurrected by a queued follow-up — suppressed, with a synthetic

@@ -334,6 +334,24 @@ kill a long replay and silently fall back to `session/new`. Extending only while
 the agent is actively sending data is safe for the init/handshake callers — the
 hard cap still bounds a truly stuck handshake.
 
+### Prompt timeout ownership
+
+The prompt transport is the outer budget shared by dashboard turns, subagents,
+and review callers. `resolve_prompt_timeout()` never returns less than the 4-hour
+historical floor. Above that floor it follows the largest configured chat-turn
+ceiling and subagent floor, adding 60 seconds so the owning outer layer reports
+its specific timeout before ACP can return a raw transport failure.
+
+When `agent.subagent_timeout_auto` is enabled, the transport also reserves
+`max(agent.subagent_timeout_secs, agent.subagent_timeout_max_secs)`. This is the
+maximum deadline `AdaptiveTimeoutPolicy` can capture, including a manually
+configured floor above the adaptive ceiling. The resolver uses the configured
+range rather than the persisted learned level deliberately: learning updates the
+manager in memory before its detached atomic write completes, so a disk-only
+bound would still truncate the first run started after a raise. At exactly the
+4-hour transport floor, adaptive mode receives the same 60-second margin; with
+adaptation disabled, historical configured timeout behavior is unchanged.
+
 ### Session Resume via `session/load`
 
 When `set_resume_session_id(sid)` is called before `ensure_ready()`, the client

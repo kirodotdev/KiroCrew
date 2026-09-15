@@ -140,6 +140,12 @@ from kiro_crew.subagent_persistence import (
     write_result_chunk,
     write_tombstone,
 )
+from kiro_crew.subagent_timeout import (
+    DEFAULT_ADAPTIVE_TIMEOUT_MAX_SECS,
+    AdaptiveTimeoutPolicy,
+    read_learned_timeout,
+    write_learned_timeout,
+)
 from kiro_crew.validation import _AGENT_NAME_RE
 
 # Standalone ClaudeCodeProvider removed (KiroACP-only). Name kept as None so the
@@ -1322,6 +1328,9 @@ class SubagentInfo:
     reaped: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
+    # Deadline captured when execution starts. Adaptive learning changes future
+    # runs only; concurrent completions must not rewrite this run's contract.
+    timeout_secs: int = 0
     _raw_task: str = ""  # unredacted task for kiro-cli execution prompt
     # CC-specific overrides (ignored for ACP)
     model: str = ""
@@ -1618,6 +1627,8 @@ class SubagentManager:
         max_concurrent: int = _MAX_CONCURRENT,
         default_turn_limit: int = _TURN_LIMIT,
         default_timeout: int = _TIMEOUT_SECS,
+        adaptive_timeout: bool = False,
+        max_timeout: int = DEFAULT_ADAPTIVE_TIMEOUT_MAX_SECS,
         startup_timeout: int = _STARTUP_TIMEOUT_SECS,
         stall_idle_secs: int = _STALL_IDLE_SECS,
         on_tool_approval: ToolApprovalCallback | None = None,
@@ -1639,7 +1650,14 @@ class SubagentManager:
         self._on_done = on_done
         self._max_concurrent = max_concurrent
         self._default_turn_limit = default_turn_limit
-        self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
+        configured_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
+        self._timeout_policy = AdaptiveTimeoutPolicy(
+            configured_timeout,
+            max_timeout,
+            enabled=adaptive_timeout,
+        )
+        self._default_timeout = self._timeout_policy.current_secs
+        self._timeout_history_loaded = not adaptive_timeout
         self._startup_deadline = startup_timeout if startup_timeout > 0 else _STARTUP_TIMEOUT_SECS
         self._stall_idle_secs = stall_idle_secs if stall_idle_secs > 0 else _STALL_IDLE_SECS
         self._on_tool_approval = on_tool_approval  # fallback for non-auto sessions
@@ -1661,6 +1679,15 @@ class SubagentManager:
         # Strong refs to in-flight shielded terminal reports (see
         # `_spawn_terminal_report`); drained in `cancel_all`.
         self._report_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # In-flight learned-timeout persistence writes. Manager-OWNED on
+        # purpose: a just-raised adaptive level lives only in memory until this
+        # detached write lands its atomic record, so the task must be reachable
+        # by cancel_all(). Parked in the global _safe_fire set it would be
+        # abandoned by a shutdown/reexec that races the write, and the next
+        # start would restore the stale lower level — silently discarding the
+        # learned increment. cancel_all() DRAINS (awaits) these rather than
+        # cancelling them, so a healthy raise is durable across a restart.
+        self._timeout_persist_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # follow_up watchers (spawn_steer mode="follow_up"), keyed by run id.
         # Manager-OWNED on purpose: these tasks can spawn a brand-new run
         # (continue_conversation), so per this module's containment contract
@@ -1805,6 +1832,8 @@ class SubagentManager:
         "session.pool_size",
         "agent.subagent_max_turns",
         "agent.subagent_timeout_secs",
+        "agent.subagent_timeout_auto",
+        "agent.subagent_timeout_max_secs",
         "agent.subagent_stall_idle_secs",
         "agent.subagent_spawn_stagger_secs",
         "agent.subagent_result_ttl_secs",
@@ -1871,7 +1900,12 @@ class SubagentManager:
                 logger.warning("resolve_max_subagents failed on reload; keeping the current cap")
                 cap = self._max_concurrent
         self._last_sizing_fields = sizing_now
+        restore_timeout_history = (
+            bool(cfg.agent.subagent_timeout_auto) and not self._timeout_policy.enabled
+        )
         self.apply_limits(cfg, max_concurrent=cap)
+        if restore_timeout_history:
+            await self._load_timeout_history()
 
     def apply_limits(self, cfg: KiroCrewConfig, *, max_concurrent: int | None = None) -> None:
         """Adopt every constructor-captured limit from *cfg*.
@@ -1905,7 +1939,18 @@ class SubagentManager:
             pass
         try:
             timeout = int(agent.subagent_timeout_secs)
-            self._default_timeout = timeout if timeout > 0 else _TIMEOUT_SECS
+            configured_timeout = timeout if timeout > 0 else _TIMEOUT_SECS
+            adaptive_timeout = bool(agent.subagent_timeout_auto)
+            was_adaptive = self._timeout_policy.enabled
+            self._default_timeout = self._timeout_policy.reconfigure(
+                configured_timeout,
+                int(agent.subagent_timeout_max_secs),
+                enabled=adaptive_timeout,
+            )
+            if not adaptive_timeout:
+                self._timeout_history_loaded = True
+            elif not was_adaptive:
+                self._timeout_history_loaded = False
         except (TypeError, ValueError):
             pass
         try:
@@ -2541,6 +2586,79 @@ class SubagentManager:
     @property
     def count(self) -> int:
         return len(self.running)
+
+    async def _load_timeout_history(self) -> None:
+        if self._timeout_history_loaded:
+            return
+        learned = await asyncio.get_running_loop().run_in_executor(
+            maintenance_executor(),
+            read_learned_timeout,
+        )
+        self._default_timeout = self._timeout_policy.restore(learned)
+        self._timeout_history_loaded = True
+
+    async def _persist_timeout_level(self, timeout_secs: int) -> None:
+        await asyncio.get_running_loop().run_in_executor(
+            maintenance_executor(),
+            write_learned_timeout,
+            timeout_secs,
+        )
+
+    def _schedule_timeout_persist(self, timeout_secs: int) -> None:
+        """Persist a newly raised level as manager-owned, drainable work.
+
+        The write is detached so the terminal path is not blocked on disk I/O,
+        but it is tracked on the MANAGER (not the module-level ``_safe_fire``
+        set) so ``cancel_all()`` can await it before a shutdown/reexec. That is
+        the whole difference between a durable learned level and one that a
+        restart racing the write silently discards.
+        """
+
+        async def _persist() -> None:
+            try:
+                await self._persist_timeout_level(timeout_secs)
+            except Exception:
+                logger.warning("Failed to persist learned subagent timeout", exc_info=True)
+
+        task = asyncio.ensure_future(_persist())
+        self._timeout_persist_tasks.add(task)
+        task.add_done_callback(self._timeout_persist_tasks.discard)
+
+    async def _drain_timeout_persist(self) -> None:
+        """Await in-flight learned-timeout writes so a raise survives restart.
+
+        Called from ``cancel_all()``. These are bounded atomic-record writes on
+        the maintenance executor, so draining (rather than cancelling) them
+        guarantees the just-learned level is on disk before the process reexecs.
+        A failed write still preserves the prior readable record via
+        ``atomic_write``; only the one lost increment is re-learned on the next
+        qualifying run.
+        """
+        pending = [t for t in self._timeout_persist_tasks if not t.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._timeout_persist_tasks.clear()
+
+    def _observe_timeout_usage(self, info: SubagentInfo, *, completed: bool) -> int:
+        # A timeout before the first stream event is evidence of a wedge, even
+        # when its deadline expires before the idle-stall detector can flag it.
+        # Successful near-limit completion remains a positive learning signal,
+        # including after a transient stall badge that later cleared.
+        started = info._exec_started or info.started
+        if not completed and (
+            info.last_activity <= started or info.stalled or info._stall_suspect_at > 0.0
+        ):
+            return self._default_timeout
+        deadline = info.timeout_secs or self._default_timeout
+        adjustment = self._timeout_policy.observe(
+            deadline,
+            time.time() - started,
+            completed=completed,
+        )
+        self._default_timeout = adjustment.timeout_secs
+        if adjustment.changed:
+            self._schedule_timeout_persist(adjustment.timeout_secs)
+        return adjustment.timeout_secs
 
     async def _teardown_run_session(self, info: SubagentInfo, session_key: str) -> None:
         return await self._run_events._teardown_run_session_impl(info, session_key)

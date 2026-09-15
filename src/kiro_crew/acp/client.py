@@ -2126,12 +2126,14 @@ def resolve_prompt_timeout() -> float:
 
     This ONE wait is shared by every prompt dispatch, so it bounds against the
     LARGEST such deadline rather than the turn ceiling alone.
-    ``agent.subagent_timeout_secs`` is the other one: a subagent's outer
-    ``asyncio.wait_for`` runs on that value while its prompt runs on this wait,
-    so a transport cut below it kills a healthy subagent early and reports a
-    transport failure rather than the deadline the operator configured. ``0``
-    there is the "use the default" sentinel, resolved the same way the manager
-    resolves it.
+    ``agent.subagent_timeout_secs`` is the configured subagent floor. When
+    adaptive timeouts are enabled, ``agent.subagent_timeout_max_secs`` is also
+    part of the bound: the manager can raise its in-memory deadline before the
+    detached learned-state write lands, so reading only the persisted level here
+    would leave that first longer run outside the transport budget. Reserving the
+    full possible adaptive range guarantees the transport always outlives the
+    captured manager deadline. ``0`` remains the "use the default" sentinel,
+    resolved the same way the manager resolves it.
 
     Never returns less than :data:`_DEFAULT_PROMPT_TIMEOUT`: a LOWERED turn
     ceiling is enforced by the dashboard's own deadline, and shrinking the
@@ -2141,17 +2143,31 @@ def resolve_prompt_timeout() -> float:
     Config is imported lazily: ``config.loader`` reaches this module through
     ``acp.session_handle``, so a module-level import would be a cycle.
     """
+    adaptive_deadline: float | None = None
     try:
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS
 
         agent = KiroCrewConfig.load().agent
         subagent = float(agent.subagent_timeout_secs) or float(SUBAGENT_TIMEOUT_SECS)
-        configured = max(float(agent.chat_turn_timeout_secs), subagent)
+        if bool(getattr(agent, "subagent_timeout_auto", False)):
+            adaptive_max = float(getattr(agent, "subagent_timeout_max_secs", subagent))
+            adaptive_deadline = max(subagent, adaptive_max)
+        configured = max(
+            float(agent.chat_turn_timeout_secs),
+            adaptive_deadline if adaptive_deadline is not None else subagent,
+        )
     except Exception:
         logger.debug("turn-ceiling config unavailable; transport keeps default", exc_info=True)
         return _DEFAULT_PROMPT_TIMEOUT
-    return prompt_timeout_for_ceiling(configured)
+    timeout = prompt_timeout_for_ceiling(configured)
+    if adaptive_deadline is not None and timeout <= adaptive_deadline:
+        # ``prompt_timeout_for_ceiling`` intentionally preserves historical
+        # byte-for-byte behaviour at exactly the default. Adaptive mode is new,
+        # and needs the same strict outer margin at that boundary that raised
+        # configured ceilings already receive.
+        return adaptive_deadline + _PROMPT_TIMEOUT_MARGIN_SECS
+    return timeout
 
 
 def _effective_prompt_timeout(timeout: float | None) -> float:
