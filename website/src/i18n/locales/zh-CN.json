@@ -14916,7 +14916,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "当前有一轮对话正在进行 — 等它结束后再试。"
+      "turn_in_flight": "当前有一轮对话正在进行 — 等它结束后再试。",
+      "workspace_unavailable": "配置的项目文件夹不可用 — 请确认它是否存在，然后重试。"
     },
     "channelOrigin": {
       "direct_message": "私信"
