@@ -256,6 +256,66 @@ describe('PinnedSidePanel', () => {
     expect(screen.queryByText('c.md')).not.toBeInTheDocument()
   })
 
+  // The pin store keeps whatever `add_pin` was handed, and it only accepts an
+  // ABSOLUTE path (`pinned_files_service.py:318`, `os.path.isabs`). On Windows
+  // that is a native `C:\…` string, which contains no forward slash at all —
+  // so a `split('/')` parent rule returns one element, `parts.pop()` empties
+  // it, and every pin lands in the same `''` bucket. The fixtures below are
+  // `String.raw` on purpose: written as an ordinary quoted string,
+  // `'C:\Users'` is just `C:Users`, and the fixture would stop being a Windows
+  // path at all.
+  it('groups pins by their real parent folder when the store holds native Windows paths', () => {
+    const a = String.raw`C:\Users\dev\project\src\a.ts`
+    const b = String.raw`C:\Users\dev\project\src\b.py`
+    const c = String.raw`C:\Users\dev\project\docs\c.md`
+    // Guard the guard: these fixtures must really contain no forward slash,
+    // or the test would pass against a `/`-only rule for the wrong reason.
+    expect([a, b, c].some(p => p.includes('/'))).toBe(false)
+
+    // No labels, so the chip caption falls through to the panel's own
+    // basename rule and this covers BOTH native-path sites at once.
+    render(
+      <PinnedSidePanel
+        pins={[pin(a), pin(b), pin(c)]}
+        updatedPaths={new Set()} deletedPaths={new Set()} visible />,
+    )
+
+    // Two distinct folders, named — not one collapsed bucket.
+    expect(screen.getByText('src')).toBeInTheDocument()
+    expect(screen.getByText('docs')).toBeInTheDocument()
+    expect(screen.queryByText('/')).not.toBeInTheDocument()
+    // …and each chip is captioned with the file name, not the whole path.
+    expect(screen.getByText('a.ts')).toBeInTheDocument()
+    expect(screen.getByText('b.py')).toBeInTheDocument()
+    expect(screen.getByText('c.md')).toBeInTheDocument()
+    expect(screen.queryByText(a)).not.toBeInTheDocument()
+    // The group header's tooltip is the full parent, so it must be the real
+    // one rather than the fallback.
+    expect(screen.getByTitle(String.raw`C:\Users\dev\project\src`.replace(/\\/g, '/')))
+      .toBeInTheDocument()
+  })
+
+  it('groups pins by their real parent folder for a UNC store path', () => {
+    const a = String.raw`\\server\share\team\notes\a.md`
+    render(
+      <PinnedSidePanel pins={[pin(a, 'a.md')]} updatedPaths={new Set()}
+        deletedPaths={new Set()} visible />,
+    )
+    expect(screen.getByText('notes')).toBeInTheDocument()
+    expect(screen.queryByText('/')).not.toBeInTheDocument()
+  })
+
+  // Negative control for the blanket-rewrite mistake: on POSIX a backslash is a
+  // legal filename character, so a directory really can be called `we\ird`.
+  // This passes both before and after the fix, which is what makes it a control.
+  it('leaves a POSIX parent that contains a backslash intact', () => {
+    render(
+      <PinnedSidePanel pins={[pin(String.raw`/home/u/we\ird/a.ts`, 'a.ts')]}
+        updatedPaths={new Set()} deletedPaths={new Set()} visible />,
+    )
+    expect(screen.getByText(String.raw`we\ird`)).toBeInTheDocument()
+  })
+
   it('previews a pin and marks it seen on click', async () => {
     const onMarkSeen = vi.fn()
     render(

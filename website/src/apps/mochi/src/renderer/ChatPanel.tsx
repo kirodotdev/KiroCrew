@@ -39,7 +39,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { rehypeSanitize, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
-import { mdImageDestToPath } from '../../../../utils/fileTokens'
+import { mdImageDestToPath, normalizeWindowsPath } from '../../../../utils/fileTokens'
 import { copyToClipboard } from '../../../../utils/clipboard'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import { useImeGuard } from '../../../../hooks/useImeGuard'
@@ -156,9 +156,18 @@ export const PinnedSidePanel: React.FC<PinnedSidePanelProps> = ({ pins, updatedP
           </div>
         ) : (() => {
           // Group pins by full parent path (use full path as key to avoid collisions)
+          //
+          // `normalizeWindowsPath` first, or that collision-avoidance is exactly
+          // inverted on Windows: the store only accepts an ABSOLUTE path
+          // (`pinned_files_service.py`, `os.path.isabs`) and keeps it verbatim, so
+          // `pin.path` is a native `C:\…` string with no forward slash in it. A
+          // bare `split('/')` then yields one element, `pop()` empties it, and
+          // every pin — whatever folder it is really in — lands in the same
+          // bucket. Only a Windows-SHAPED path is rewritten, so a POSIX
+          // directory legitimately named `we\ird` is left alone.
           const folderMap = new Map<string, PinnedFileEntry[]>()
           for (const pin of pins) {
-            const parts = pin.path.split('/')
+            const parts = normalizeWindowsPath(pin.path).split('/')
             parts.pop() // remove filename
             const fullParent = parts.join('/') || '/'
             if (!folderMap.has(fullParent)) folderMap.set(fullParent, [])
@@ -217,7 +226,12 @@ const PinnedChip: React.FC<{
   onMarkSeen?: (path: string) => void
 }> = ({ pin, isUpdated, isDeleted, onMarkSeen }) => {
   const [hovered, setHovered] = useState(false)
-  const displayName = pin.label || pin.path.split('/').pop() || pin.path
+  // Same native-path rule as the grouping above. `add_pin` fills `label` with
+  // `os.path.basename`, so this fallback is only reached by an entry that
+  // reached the store without one — the reader tolerates arbitrary shapes in
+  // `pinned-files.json` — but when it is reached a bare `split('/')` renders
+  // the whole `C:\…` path where the file name belongs.
+  const displayName = pin.label || normalizeWindowsPath(pin.path).split('/').pop() || pin.path
   const extColor = getExtColor(pin.path)
 
   const handleClick = () => {
