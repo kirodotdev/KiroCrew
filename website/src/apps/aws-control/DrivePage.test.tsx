@@ -3995,7 +3995,7 @@ describe('DrivePage sections: preview, rename, search', () => {
     // The menu trigger unmounted with the search view; the row takes focus so
     // keyboard and assistive-technology users land on the hit, not on <body>.
     expect(marked[0]).toHaveAttribute('tabindex', '-1')
-    expect(document.activeElement).toBe(marked[0])
+    await waitFor(() => expect(document.activeElement).toBe(marked[0]))
   })
 
   it('a hit past the first listing page is paged in until its row mounts', async () => {
@@ -4599,7 +4599,9 @@ describe('DrivePage sections: keyboard paths and honest copy', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
-    expect(document.activeElement).toBe(trigger)
+    // Focus returns in a passive effect one tick after the dialog unmounts, so
+    // a synchronous read races it under shard load; wait for it to settle.
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
   it('the share dialog closes on Escape and returns focus to the row menu, but not mid-mint', async () => {
@@ -4643,7 +4645,9 @@ describe('DrivePage sections: keyboard paths and honest copy', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
     // Focus went back to where the reader was, not to <body>.
-    expect(document.activeElement).toBe(trigger)
+    // Focus returns in a passive effect one tick after the dialog unmounts, so
+    // a synchronous read races it under shard load; wait for it to settle.
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
   it('the deleted-count line is a real plural, not a parenthetical', async () => {
@@ -4683,7 +4687,7 @@ describe('DrivePage sections: keyboard paths and honest copy', () => {
     toggle.focus()
     fireEvent.click(toggle)
     const input = await screen.findByTestId('drive-folder-name')
-    expect(document.activeElement).toBe(input)
+    await waitFor(() => expect(document.activeElement).toBe(input))
 
     fireEvent.keyDown(input, { key: 'Escape' })
     // The disclosure unmounted the input and both buttons; focus must not fall
@@ -4761,6 +4765,8 @@ describe('DrivePage sections: keyboard paths and honest copy', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
-    expect(document.activeElement).toBe(trigger)
+    // Focus returns in a passive effect one tick after the dialog unmounts, so
+    // a synchronous read races it under shard load; wait for it to settle.
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 })
