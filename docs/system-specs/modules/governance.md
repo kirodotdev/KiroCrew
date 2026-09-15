@@ -589,6 +589,11 @@ document does, since a merely *large* finite value (`1e12`) passes the finitenes
 floats now (an int has no non-finite values), and the value is stored without a `float()`
 round-trip, which would have raised three lines later.
 
+A declared `distribution.source` must also be representable as strict UTF-8. JSON accepts a
+lone surrogate, but the cache-provenance digest encodes the source during boot; rejecting that
+input during composition keeps the failure inside the platform error contract instead of leaking
+a `UnicodeEncodeError` from the distribution engine.
+
 **A DECLARED source may not carry a credential.** `PolicyDistribution.from_dict` refuses
 userinfo (`https://user:pass@host/…`) and any query string in a `distribution.source` that
 comes from a *document*. This block is cached verbatim — the bytes have to be identical for
