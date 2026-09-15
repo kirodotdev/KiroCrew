@@ -917,7 +917,9 @@ def test_the_work_server_is_exempt_from_that_exclusion(worker_from_installed_def
 def test_the_unassignable_set_is_derived_from_the_registry(monkeypatch):
     """Derived rather than listed, so an opt-in server added tomorrow is withheld by
     default instead of reaching the worker until somebody notices."""
-    assert agent._worker_unassignable_servers() == frozenset({"kirocrew-dashboard"})
+    assert agent._worker_unassignable_servers() == frozenset(
+        {"kirocrew-dashboard", "kirocrew-panel"}
+    )
     monkeypatch.setitem(
         agent._MANAGED_MCP_SERVERS,
         "kirocrew-hypothetical",

@@ -34,6 +34,11 @@ vi.mock('../../api/client', () => ({
     // keeps the chat-style Summary row out of the menu so the Crew summary tab
     // is the one summary these cases see.
     sessionSummary: vi.fn(() => Promise.resolve({ enabled: false })),
+    // The Crew summary tab's webview section. Stubbed as "nothing published", which is the
+    // state every case here is about: without it the reader rejects and the
+    // section raises a red alert, so a silent fallback (a remembered crew that
+    // was renamed away) would read as an error on a page that is behaving.
+    memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
   },
 }))
 

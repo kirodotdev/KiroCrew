@@ -36,6 +36,7 @@ _SERVE_ENTRY = {
     "kirocrew-computer": "run_mcp_server",
     "kirocrew-dashboard": "run_mcp_server",
     "kirocrew-work": "run_mcp_server",
+    "kirocrew-panel": "run_mcp_server",
 }
 
 

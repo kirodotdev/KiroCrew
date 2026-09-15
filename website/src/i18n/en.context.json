@@ -405,6 +405,8 @@
     "apps.meetings.broadcastBar.pausingPlaceholder": "Compose-bar placeholder while the pause request is still in flight; must not claim the meeting is already paused.",
     "apps.meetings.broadcastBar.resumingPlaceholder": "Compose-bar placeholder while the resume request is in flight; must not instruct the user to click Resume again.",
     "apps.meetings.transcript.emptyHintPaused": "Empty-transcript hint while the meeting is paused; reassures nothing was discarded without promising live speech.",
-    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled."
+    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled.",
+    "pages.membersPage.webview_value_yes": "The word \"yes\" as a VALUE inside a crew's dashboard summary in the Crew Members panel, rendering a boolean field the crew published (e.g. a HEALTHY row reading \"yes\"). An affirmative state, not an answer to a question and not a button -- translate it as the adjective/state word a status readout would use.",
+    "pages.membersPage.webview_value_no": "The word \"no\" as a VALUE inside a crew's dashboard summary in the Crew Members panel, rendering a boolean field the crew published as false (e.g. a HEALTHY row reading \"no\"). A negative state, not a refusal and not a button -- the counterpart of pages.membersPage.webview_value_yes."
   }
 }
