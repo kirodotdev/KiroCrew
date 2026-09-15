@@ -138,6 +138,7 @@
   },
   "devDependencies": {
     "@axe-core/react": "^4.10.1",
+    "@lexical/headless": "0.50.0",
     "@playwright/test": "1.58.2",
     "@shadcn/lint": "0.1.0",
     "@storybook/addon-a11y": "10.5.10",

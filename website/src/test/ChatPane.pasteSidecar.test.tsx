@@ -24,6 +24,7 @@ import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { __resetPaneDraftsForTests, readPaneDraft } from '../utils/chatPaneDrafts'
 import { readStoredPaste } from '../utils/pasteTokens'
+import { awaitComposer, composerValue, pasteIntoComposer, pressInComposer, setComposerValue, typeIntoComposer } from './helpers'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -108,16 +109,19 @@ function renderPane(slotKey: string, extraSlots: string[] = [], busy = false) {
   return { ...utils, store, rebind: (key: string) => utils.rerender(tree(key)) }
 }
 
-async function composer(): Promise<HTMLTextAreaElement> {
-  return (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
-}
+/**
+ * The pane mounts the rich (Lexical) composer on a fine pointer, lazy-loaded
+ * behind a fallback, so the driver waits for the real editable root and reads
+ * its value through the composer handle — there is no `.value` to read and no
+ * `fireEvent.change` to fire. `pressEnter` sends the way a user does.
+ */
+const composer = () => awaitComposer()
+const value = () => composerValue()
+const pressEnter = () => pressInComposer('Enter', { code: 'Enter' })
 
-/** Paste through the real handler: ChatInput reads `getData('text')`. */
-async function pasteInto(box: HTMLTextAreaElement, text: string) {
-  await act(async () => {
-    fireEvent.paste(box, { clipboardData: { items: [], getData: (t: string) => (t === 'text' ? text : '') } })
-  })
-}
+/** Paste through the real handler: the composer's paste command collapses a
+ *  big plain-text paste into a pill. */
+const pasteInto = (text: string) => pasteIntoComposer(text)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -129,14 +133,14 @@ beforeEach(() => {
 describe('ChatPane paste sidecar', () => {
   it('collapses a large paste to a token, sends it expanded and clears the composer', async () => {
     const { store } = renderPane('pane-paste')
-    const box = await composer()
-    fireEvent.change(box, { target: { value: 'please read ' } })
-    await pasteInto(box, PASTED)
+    await composer()
+    await setComposerValue('please read ')
+    await pasteInto(PASTED)
     // The pill: the composer holds the token, not the pasted lines.
-    await waitFor(() => expect(box.value).toMatch(TOKEN))
-    expect(box.value).not.toContain('line3')
+    await waitFor(() => expect(value()).toMatch(TOKEN))
+    expect(value()).not.toContain('line3')
 
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    pressEnter()
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [wireText, slot, , , meta] = vi.mocked(api.sendChat).mock.calls[0]
     expect(slot).toBe('pane-paste')
@@ -150,29 +154,30 @@ describe('ChatPane paste sidecar', () => {
     expect(bubble?.content).toMatch(TOKEN)
     expect(readStoredPaste(wireText as string)?.pastes[0]?.content).toBe(PASTED)
     // Composer and blocks are gone: a second paste starts again at #1.
-    await waitFor(() => expect(box.value).toBe(''))
-    await pasteInto(box, PASTED)
-    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1 · 5 lines \]/))
+    await waitFor(() => expect(value()).toBe(''))
+    await pasteInto(PASTED)
+    await waitFor(() => expect(value()).toMatch(/\[ Paste #1 · 5 lines \]/))
   })
 
   it('parks the blocks with the text on a rebind and restores both, so the token still expands', async () => {
     const { rebind } = renderPane('slot-a', ['slot-b'])
-    const box = await composer()
-    await pasteInto(box, PASTED)
-    await waitFor(() => expect(box.value).toMatch(TOKEN))
+    await composer()
+    await pasteInto(PASTED)
+    await waitFor(() => expect(value()).toMatch(TOKEN))
 
     // Rebind the same pane instance to another slot: A's composer is parked.
     rebind('slot-b')
-    await waitFor(() => expect((screen.getAllByRole('textbox')[0] as HTMLTextAreaElement).value).toBe(''))
+    await composer()
+    await waitFor(() => expect(value()).toBe(''))
     const parked = readPaneDraft('slot-a')
     expect(parked.text).toMatch(TOKEN)
     expect(parked.pastes).toEqual([expect.objectContaining({ seq: 1, content: PASTED })])
 
     // Back to A: the token is back AND still backed by its block.
     rebind('slot-a')
-    const back = screen.getAllByRole('textbox')[0] as HTMLTextAreaElement
-    await waitFor(() => expect(back.value).toMatch(TOKEN))
-    fireEvent.keyDown(back, { key: 'Enter', code: 'Enter' })
+    await composer()
+    await waitFor(() => expect(value()).toMatch(TOKEN))
+    pressEnter()
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [wireText] = vi.mocked(api.sendChat).mock.calls[0]
     expect(wireText).toContain(PASTED)
@@ -188,26 +193,72 @@ describe('ChatPane paste sidecar', () => {
     vi.mocked(api.sendChat).mockImplementation(() => new Promise(resolve => { settle.push(resolve) }) as never)
     const SECOND = 'aa\nbb\ncc\ndd'
     renderPane('pane-batch')
-    const box = await composer()
-    await pasteInto(box, PASTED)
-    await waitFor(() => expect(box.value).toMatch(TOKEN))
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
-    await waitFor(() => expect(box.value).toBe(''))
-    await pasteInto(box, SECOND)
-    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1 · 4 lines \]/))
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await composer()
+    await pasteInto(PASTED)
+    await waitFor(() => expect(value()).toMatch(TOKEN))
+    pressEnter()
+    await waitFor(() => expect(value()).toBe(''))
+    await pasteInto(SECOND)
+    await waitFor(() => expect(value()).toMatch(/\[ Paste #1 · 4 lines \]/))
+    pressEnter()
     await waitFor(() => expect(settle).toHaveLength(2))
     const refused = { ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) }
     await act(async () => { settle[0](refused); settle[1](refused) })
     // Both tokens are back, re-numbered apart (two blocks cannot share #1).
-    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1 · \d lines \][\s\S]*\[ Paste #2 · \d lines \]/))
+    await waitFor(() => expect(value()).toMatch(/\[ Paste #1 · \d lines \][\s\S]*\[ Paste #2 · \d lines \]/))
     vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as never)
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    pressEnter()
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(3))
     const [retryText] = vi.mocked(api.sendChat).mock.calls[2]
     expect(retryText).toContain(PASTED)
     expect(retryText).toContain(SECOND)
     expect(retryText).not.toMatch(/\[ Paste #\d/)
+  })
+
+  it('two refused sends in one batch: the second reserves against the text the first already merged, so an inert literal in the first payload is never claimed (round-14 finding)', async () => {
+    // Payload 1: block #1 plus a hand-typed literal `[ Paste #7 · 1 lines ]` (no
+    // block behind it). Payload 2: typed literal `[ Paste #6 · 1 lines ]` then a
+    // paste, which lands at #7 (the paste-time allocator skips the literal).
+    // Both refusals resolve in ONE React batch. If the second recovery reserved
+    // against the render-time text snapshot it would not see payload 1's
+    // literal #7 and would hand block #7 back under 7 — the literal would then
+    // name a real block and the retry would expand the user's own text.
+    const settle: Array<(v: unknown) => void> = []
+    vi.mocked(api.sendChat).mockImplementation(() => new Promise(resolve => { settle.push(resolve) }) as never)
+    const SECOND = 'aa\nbb\ncc\ndd'
+    const LIT7 = '[ Paste #7 · 1 lines ]'
+    const LIT6 = '[ Paste #6 · 1 lines ]'
+    renderPane('pane-batch-literal')
+    await composer()
+    await pasteInto(PASTED)
+    await waitFor(() => expect(value()).toMatch(TOKEN))
+    await typeIntoComposer(` ${LIT7}`)
+    pressEnter()
+    await waitFor(() => expect(value()).toBe(''))
+    await setComposerValue(`${LIT6} `)
+    await pasteInto(SECOND)
+    await waitFor(() => expect(value()).toMatch(/\[ Paste #7 · 4 lines \]/))
+    pressEnter()
+    await waitFor(() => expect(settle).toHaveLength(2))
+    const refused = { ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) }
+    await act(async () => { settle[0](refused); settle[1](refused) })
+    // Both payloads are back; the second paste's block was moved off 7 because
+    // the FIRST payload's literal already carries that number.
+    await waitFor(() => expect(value()).toContain(LIT7))
+    const restored = value()
+    expect(restored).toContain(LIT6)
+    expect(restored.match(/\[ Paste #7 · /g)).toHaveLength(1) // only the literal
+    expect(restored).toMatch(/\[ Paste #8 · 4 lines \]/)
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as never)
+    pressEnter()
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(3))
+    const [retryText] = vi.mocked(api.sendChat).mock.calls[2]
+    // Both pastes expand, both literals stay literal.
+    expect(retryText).toContain(PASTED)
+    expect(retryText).toContain(SECOND)
+    expect(retryText).toContain(LIT7)
+    expect(retryText).toContain(LIT6)
+    expect(retryText).not.toMatch(/\[ Paste #(1|8) · /)
   })
 
   it('cancelling a queued send restores the paste as its lines, never as a dead token', async () => {
@@ -217,22 +268,22 @@ describe('ChatPane paste sidecar', () => {
     // back EXPANDED: lossless content, and no token left pointing at nothing.
     vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, queued: true, queue_id: 'q-paste' }) } as never)
     const { store } = renderPane('pane-queued', [], true)
-    const box = await composer()
-    fireEvent.change(box, { target: { value: 'later: ' } })
-    await pasteInto(box, PASTED)
-    await waitFor(() => expect(box.value).toMatch(TOKEN))
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await composer()
+    await setComposerValue('later: ')
+    await pasteInto(PASTED)
+    await waitFor(() => expect(value()).toMatch(TOKEN))
+    pressEnter()
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [wireText] = vi.mocked(api.sendChat).mock.calls[0]
-    await waitFor(() => expect(box.value).toBe(''))
+    await waitFor(() => expect(value()).toBe(''))
     // The server's queue card for that send, carrying the wire text.
     act(() => { store.dispatch(sseChatMessage({ slot: 'pane-queued', role: 'queued', content: wireText as string, meta: { queueId: 'q-paste' } })) })
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel queued message' }))
-    await waitFor(() => expect(box.value).toContain(PASTED))
-    expect(box.value).not.toMatch(/\[ Paste #\d/)
+    await waitFor(() => expect(value()).toContain(PASTED))
+    expect(value()).not.toMatch(/\[ Paste #\d/)
     // The retry sends exactly that content.
     vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as never)
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    pressEnter()
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(2))
     const [retryText] = vi.mocked(api.sendChat).mock.calls[1]
     expect(retryText).toContain(PASTED)
@@ -242,15 +293,15 @@ describe('ChatPane paste sidecar', () => {
   it('hands the blocks back with the text when the server refuses the send', async () => {
     vi.mocked(api.sendChat).mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) } as never)
     renderPane('pane-refused')
-    const box = await composer()
-    await pasteInto(box, PASTED)
-    await waitFor(() => expect(box.value).toMatch(TOKEN))
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await composer()
+    await pasteInto(PASTED)
+    await waitFor(() => expect(value()).toMatch(TOKEN))
+    pressEnter()
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     // The refused payload is restored — token text AND its block — so the
     // retry sends the content, not a dead token.
-    await waitFor(() => expect(box.value).toMatch(TOKEN))
-    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(value()).toMatch(TOKEN))
+    pressEnter()
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(2))
     const [retryText] = vi.mocked(api.sendChat).mock.calls[1]
     expect(retryText).toContain(PASTED)

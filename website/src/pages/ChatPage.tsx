@@ -11,6 +11,7 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { useTouchDeviceAtMount } from '../hooks/useIsTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
@@ -502,6 +503,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // effect reads it (mobile replaces rather than pushes a session switch), and
   // that effect is defined well above where the layout hooks start.
   const isMobile = useIsMobile()
+  // Touch devices keep the classic textarea composer until a device pass records
+  // that soft-keyboard typing (composition events on the IME latch, Enter-to-send)
+  // and the pointer-only pill reorder hold up there — see `useIsTouchDevice`.
+  const touchDevice = useTouchDeviceAtMount()
   // The mobile sessions drawer and its scrim are `fixed` overlays that autofocus
   // a search input, so a software keyboard is open whenever they are. iOS Safari
   // shrinks only the VISUAL viewport for the keyboard (`interactive-widget`
@@ -2599,10 +2604,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // silently swapping the user's content on retry. `carryPastes` owns the
         // rule: re-sequence the carried blocks past the kept ones and rewrite
         // their markers in the payload text.
-        const carried = carryPastes(raw, activePastes, keepPastes)
+        const keepText = onScreen ? inputRef.current : (uiSlot ? drafts.current[uiSlot] ?? '' : '')
+        // `keepText` goes in too: a marker typed there while the send was in flight
+        // is a seq no carried block may come back under.
+        const carried = carryPastes(raw, activePastes, keepPastes, keepText)
         // `full` keeps every token: it is the payload a retry re-sends whole.
         const { full: payload, pastes: restoredPastes } = carried
-        const keepText = onScreen ? inputRef.current : (uiSlot ? drafts.current[uiSlot] ?? '' : '')
         // Keep whatever the user typed while the create was in flight and append
         // the payload after it, without duplicating one the composer already
         // holds — a synchronously rejected create can land before React flushes
@@ -2610,6 +2617,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // site, including the send-failure path further down.
         const restoredText = mergeCarriedDraft(keepText, carried)
         if (onScreen && uiSlot) {
+          // Advance the refs with the state (as `inputRef.current = next` does
+          // elsewhere): a second recovery landing in the same batch reads them for
+          // its own `carryPastes` reservation, and the render-time snapshot would
+          // still lack this payload's markers and blocks.
+          inputRef.current = restoredText; pasteBlocksRef.current = restoredPastes
           setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
           // clearPending() above already consumed the knowledge selection, so a
           // retry would otherwise go out WITHOUT the context the user picked. Slot-
@@ -2779,7 +2791,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // blocks cannot claim one `[ Paste #N ]` marker.
       const keepText = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
       const keepPastes = onScreenNow ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? [])
-      const carried = carryPastes(typedTxt, activePastes, keepPastes)
+      const carried = carryPastes(typedTxt, activePastes, keepPastes, keepText)
       const pastesBack = carried.pastes
       // Same merge rule as the create-failure path above, and the separator lives
       // in `mergeRecoveredDraft` rather than in a template literal here: the blank
@@ -2792,6 +2804,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
       saveDrafts()
       if (onScreenNow) {
+        // Refs advanced with the state — see the create-failure path above.
+        inputRef.current = textBack; pasteBlocksRef.current = pastesBack
         setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
       }
     }
@@ -7561,6 +7575,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 voice={composerVoiceOptions}
               >
               <ChatInput
+                lexicalComposer={!touchDevice}
               aboveComposer={
                 <>
                   {/* Session-control failures surface HERE, beside the chips they

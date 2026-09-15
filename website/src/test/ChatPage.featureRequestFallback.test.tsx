@@ -67,6 +67,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { awaitComposer, composerPlaceholder } from './helpers'
 
 type Msg = { role: string; content: string; cls?: string; kind?: string; meta?: Record<string, unknown> }
 
@@ -123,7 +124,7 @@ async function renderWith(messages: Msg[], serverMessages: Msg[] = messages) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
 }
 
 beforeEach(() => {
@@ -167,7 +168,7 @@ describe('ChatPage — a feature request refused for a usage limit offers the is
     await renderWith([requestRow, limitRow])
 
     expect(screen.queryByTestId('composer-continue')).toBeNull()
-    expect(screen.getByLabelText('Message input')).not.toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_press_resume'))
+    expect(composerPlaceholder()).not.toBe(i18nT('components.chatInput.turn_interrupted_press_resume'))
   })
 
   it('renders today\'s row for the same error under a user row the pill did not stamp', async () => {
@@ -179,7 +180,7 @@ describe('ChatPage — a feature request refused for a usage limit offers the is
     // on the row and in the composer.
     expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
     expect(screen.getByTestId('composer-continue')).toBeInTheDocument()
-    expect(screen.getByLabelText('Message input')).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_press_resume'))
+    await waitFor(() => expect(composerPlaceholder()).toBe(i18nT('components.chatInput.turn_interrupted_press_resume')))
   })
 
   it('offers today\'s card, Resume included, on an unrelated usage limit after the request was filed and the user chatted on', async () => {
@@ -198,7 +199,7 @@ describe('ChatPage — a feature request refused for a usage limit offers the is
     expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-usage-limit-fallback')
     expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
     expect(screen.getByTestId('composer-continue')).toBeInTheDocument()
-    expect(screen.getByLabelText('Message input')).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_press_resume'))
+    await waitFor(() => expect(composerPlaceholder()).toBe(i18nT('components.chatInput.turn_interrupted_press_resume')))
   })
 
   it('leaves the #4198 refused-send row alone even under the pill\'s row', async () => {

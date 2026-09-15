@@ -44,6 +44,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
+import { useTouchDeviceAtMount } from '../hooks/useIsTouchDevice'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
@@ -187,6 +188,8 @@ export default function ChatPane({
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
   const provider = useProvider()
+  // Touch devices keep the textarea composer (same gate as ChatPage / SideChat).
+  const touchDevice = useTouchDeviceAtMount()
   // Same gate the main chat uses: hide a Connections-owned OAuth banner only
   // while the card that owns that flow is reachable.
   const connectionsUiOn = useConnectionsUiEnabled()
@@ -247,7 +250,16 @@ export default function ChatPane({
    *  sends one paste twice and the other not at all. With the ref advanced
    *  per call, the second recovery carries on top of the first. */
   const carryIntoComposer = useCallback((text: string, pastes: PasteBlock[]): CarriedPastes => {
-    const carried = carryPastes(text, pastes, pasteBlocksRef.current)
+    const carried = carryPastes(text, pastes, pasteBlocksRef.current, inputRef.current)
+    // The TEXT ref is advanced here too, for the same reason as the block ref:
+    // `carryPastes` reserves every marker in the destination text, and a second
+    // recovery landing in the same batch must reserve against the text the first
+    // one merged — not the render-time snapshot, which still lacks the first
+    // payload's markers (an inert literal among them would be handed to the
+    // second payload's block). The functional `setInput` applies the identical
+    // merge to the committed state, so ref and state agree after the flush.
+    inputRef.current = mergeCarriedDraft(inputRef.current, carried)
+    setInput(cur => mergeCarriedDraft(cur, carried))
     if (!pastes.length) return carried
     pasteBlocksRef.current = carried.pastes
     setPasteBlocks(carried.pastes)
@@ -284,10 +296,7 @@ export default function ChatPane({
       // parked blocks come in with their text, re-numbered past any the
       // composer already holds so no two tokens share a number.
       const parked = takePaneDraft(slotKey)
-      if (parked.text) {
-        const carried = carryIntoComposer(parked.text, parked.pastes)
-        setInput(cur => mergeCarriedDraft(cur, carried))
-      }
+      if (parked.text) carryIntoComposer(parked.text, parked.pastes)
       if (parked.files.length) setPendingFiles(cur => [...cur, ...parked.files.filter(f => !cur.includes(f))])
     }
     // While this slot is on screen, a late arrival for it (a recovery or upload
@@ -296,10 +305,7 @@ export default function ChatPane({
     // sit in the store until this pane's own park overwrote it.
     const unsubscribe = subscribePaneDraft(slotKey, () => {
       const arrived = takePaneDraft(slotKey)
-      if (arrived.text) {
-        const carried = carryIntoComposer(arrived.text, arrived.pastes)
-        setInput(cur => mergeCarriedDraft(cur, carried))
-      }
+      if (arrived.text) carryIntoComposer(arrived.text, arrived.pastes)
       if (arrived.files.length) setPendingFiles(cur => [...cur, ...arrived.files.filter(f => !cur.includes(f))])
     })
     // Unmount (or the next rebind, which runs this cleanup first): park the
@@ -852,8 +858,7 @@ export default function ChatPane({
     // The paste blocks behind the payload's tokens come back with it, numbered
     // past whatever the composer holds now, or the restored token would be a
     // chip with nothing behind it.
-    const carried = carryIntoComposer(text, pastes)
-    setInput(prev => mergeCarriedDraft(prev, carried))
+    carryIntoComposer(text, pastes)
     if (files.length) setPendingFiles(prev => [...prev, ...files.filter(f => !prev.includes(f))])
   }, [carryIntoComposer])
 
@@ -1797,6 +1802,7 @@ export default function ChatPane({
           voice={composerVoiceOptions}
         >
         <ChatInput
+          lexicalComposer={!touchDevice}
           value={input}
           onChange={handleUserInput}
           pasteBlocks={pasteBlocks}

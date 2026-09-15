@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readPaneDraft, writePaneDraft, takePaneDraft, mergePaneDraft, subscribePaneDraft, PANE_DRAFTS_KEY, LEGACY_PANE_FILE_DRAFTS_KEY, PANE_DRAFTS_MAX_BYTES, __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
-import { carryPastes, mergeCarriedDraft, type PasteBlock } from '../utils/pasteTokens'
+import { carryPastes, expandAll, mergeCarriedDraft, type PasteBlock } from '../utils/pasteTokens'
 
 /* The pane's parked drafts must survive the storage layer refusing a write:
  * a quota that ChatPage's own 2 MiB stores may already have filled, or a
@@ -260,5 +260,31 @@ describe('carryPastes', () => {
     const { text, pastes } = carryPastes('[ Paste #3 · 3 lines ] [ Paste #1 · 3 lines ]', [free, taken, kept[0]], kept)
     expect(pastes).toEqual([kept[0], free, { ...taken, seq: 2 }])
     expect(text).toBe('[ Paste #3 · 3 lines ] [ Paste #2 · 3 lines ]')
+  })
+
+  it('re-numbers a carried block whose seq a marker in the DESTINATION text already carries, even with no block behind it (round-12 finding)', () => {
+    // Send paste #1, type a literal `[ Paste #1 · 1 lines ]` while the send is
+    // in flight, the server refuses: the carried block must not come back as #1,
+    // or the literal names it and the retry expands the user's own text.
+    const carried = block(1, 'p\np\np')
+    const composerNow = 'meanwhile I typed [ Paste #1 · 1 lines ] by hand'
+    const out = carryPastes('[ Paste #1 · 3 lines ]', [carried], [], composerNow)
+    expect(out.pastes).toEqual([{ ...carried, seq: 2 }])
+    expect(out.text).toBe('[ Paste #2 · 3 lines ]')
+    expect(out.full).toBe('[ Paste #2 · 3 lines ]')
+    const merged = mergeCarriedDraft(composerNow, out)
+    expect(expandAll(merged, out.pastes)).toBe(`${composerNow}\n\np\np\np`)
+  })
+
+  it('an inert literal inside the PAYLOAD itself is reserved too, and an unsafe literal cannot stall the re-numbering', () => {
+    const carried = block(2, 'p\np\np')
+    // The payload carries its own marker (#2) and an inert literal (#3, no block).
+    const out = carryPastes('[ Paste #2 · 3 lines ] and [ Paste #3 · 1 lines ]', [carried], [block(2, 'k\nk\nk')])
+    expect(out.pastes[1].seq).not.toBe(3)
+    expect(out.pastes[1].seq).toBe(4)
+    // A hand-typed literal at the double's limit: still terminates, still distinct.
+    const huge = carryPastes('[ Paste #1 · 3 lines ]', [block(1, 'p\np\np')], [block(1, 'k\nk\nk')], '[ Paste #9007199254740991 · 1 lines ]')
+    expect(Number.isSafeInteger(huge.pastes[1].seq)).toBe(true)
+    expect(huge.pastes[1].seq).toBe(2)
   })
 })

@@ -7507,8 +7507,6 @@
     "pastedChip": {
       "collapse_paste": "Contraer el texto pegado",
       "expand_paste": "Expandir el texto pegado",
-      "hide_paste_preview": "Ocultar vista previa del pegado",
-      "show_paste_preview": "Mostrar vista previa del pegado",
       "paste_lines_many": "[ Pegado #{{seq}} · {{count}} líneas ]",
       "paste_lines_one": "[ Pegado #{{seq}} · {{count}} línea ]",
       "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]",
@@ -8972,6 +8970,26 @@
       "unexpected_response": "Respuesta inesperada",
       "deploy_failed": "Error al desplegar",
       "stale_preview_retry": "La aplicación cambió desde la comprobación — inténtalo de nuevo."
+    },
+    "pasteBlockChip": {
+      "count_many": "{{count}} líneas",
+      "count_one": "{{count}} línea",
+      "count_other": "{{count}} líneas",
+      "label_many": "Texto pegado · {{count}} líneas",
+      "label_one": "Texto pegado · {{count}} línea",
+      "label_other": "Texto pegado · {{count}} líneas",
+      "remove": "Quitar el texto pegado",
+      "actions": "Clic para editar · arrastra para reordenar · Retroceso elimina"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Cancelar",
+      "editor_aria": "Editar el texto pegado",
+      "save": "Guardar",
+      "lines_many": "{{count}} líneas",
+      "lines_one": "{{count}} línea",
+      "lines_other": "{{count}} líneas",
+      "resize_aria": "Cambiar el tamaño de la vista previa",
+      "unsaved_hint": "Cambios sin guardar: pulsa Esc de nuevo para descartarlos o haz clic fuera para conservarlos"
     }
   },
   "hooks": {

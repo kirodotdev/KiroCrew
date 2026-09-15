@@ -240,7 +240,7 @@ export function subscribePaneDraft(slot: string, onArrival: () => void): () => v
  *  merge into its live composer. */
 export function mergePaneDraft(slot: string, text: string, files: string[], pastes: PasteBlock[] = []): void {
   const cur = readPaneDraft(slot)
-  const carried = carryPastes(text, pastes, cur.pastes)
+  const carried = carryPastes(text, pastes, cur.pastes, cur.text)
   writePaneDraft(slot, {
     text: text ? mergeCarriedDraft(cur.text, carried) : cur.text,
     files: [...cur.files, ...files.filter((f) => !cur.files.includes(f))],
