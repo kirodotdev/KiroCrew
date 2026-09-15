@@ -92,12 +92,20 @@ describe('slotRecency', () => {
     })
   })
 
-  it('reads a naive stamp as local time, the way the writer meant it', () => {
-    // The backend records naive rows from older builds and interprets them as
-    // local (`history.transcript_sort_key`: "Naive values are interpreted as
-    // local time, matching the writer that produced them"). Asserting the
-    // ORDERING of a naive value against an aware one would be host-timezone
-    // dependent, so this asserts only the parse rule, which is not.
+  it('reads a naive stamp in the viewer local zone, which is an approximation', () => {
+    // The backend interprets a naive row as local to the WRITER
+    // (`history.transcript_sort_key`: "Naive values are interpreted as local
+    // time, matching the writer that produced them"), but nothing in the string
+    // carries that zone, and `toDate` parses it with `new Date(value)` — so what
+    // this actually resolves is the VIEWER's local zone. The two agree only when
+    // the dashboard is open on the host that wrote the transcript.
+    //
+    // The assertion is deliberately written against the viewer's zone, not the
+    // writer's, so it states the real rule on any runner. A dashboard viewed
+    // from a different zone therefore still mis-ranks a legacy naive row against
+    // an aware one; that is unfixed here and only a backend-normalized instant
+    // can close it. The ordering of a naive value against an aware one is left
+    // unasserted for the same reason — it is host-timezone dependent.
     const naive = '2026-09-14T10:00:00'
     expect(slotActivityMs({ last_activity_ts: naive }))
       .toBe(new Date(2026, 8, 14, 10, 0, 0).getTime())

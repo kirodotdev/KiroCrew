@@ -27,9 +27,20 @@ function subMillis(raw: string | undefined): number {
  * or one host across a DST boundary): `…T09:00:00+08:00` is 01:00Z and
  * `…T02:30:00+00:00` is 02:30Z, so the later instant is the smaller string.
  *
- * Parsing resolves both cases the way the backend does: an offset-bearing value
- * is an absolute instant, and a naive one is read as local time, which is the
- * zone of the writer that produced it.
+ * An offset-bearing value is an absolute instant, which is how the backend reads
+ * it, and it is the case this fix exists for.
+ *
+ * A NAIVE value is only an approximation, and the limit is worth stating exactly
+ * because it is easy to overstate. `toDate` parses it with `new Date(value)`
+ * (`i18n/format.ts:140`), so it resolves in the BROWSER's zone — the viewer's,
+ * not the writer's. Those agree when the dashboard is open on the host that
+ * wrote the transcript, which is the ordinary case; a dashboard viewed from
+ * another zone mis-resolves a legacy naive row by the whole zone gap and can
+ * still rank it wrongly against an aware one. That case is not a regression —
+ * the `localeCompare` this replaces got it wrong too — but it is not fixed here
+ * either. Only the backend knows the writer's zone, so closing it means
+ * `slot_projection` emitting a normalized instant next to the raw `ts`, which is
+ * a backend change and is deliberately not in this PR.
  *
  * Absent or unparseable sorts last (0), matching the `|| ''` fallback these call
  * sites already used.
