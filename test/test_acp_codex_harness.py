@@ -434,14 +434,14 @@ class TestPermissionRouting:
         peer = FakeCodexPeer()
         first = _open_session(peer, cwd="/w/one", mcp_servers=[])
         second = _open_session(peer, cwd="/w/two", mcp_servers=[])
-        option, value = ("mode", "read-only")
+        option, value = ("mode", "agent")
         for sid in (first, second):
             peer.request(
                 "session/set_config_option",
                 {"sessionId": sid, "optionId": option, "value": value},
             )
-        assert peer.sessions[first]["mode"] == "read-only"
-        assert peer.sessions[second]["mode"] == "read-only"
+        assert peer.sessions[first]["mode"] == "agent"
+        assert peer.sessions[second]["mode"] == "agent"
 
 
 class TestTeardown:
@@ -1342,13 +1342,11 @@ class TestTheRuntimeSendsCodexNoAgentMode:
 class TestTheRuntimeArmsCodexPermissionRouting:
     @pytest.mark.asyncio
     async def test_the_mode_write_goes_out_before_the_handle_is_returned(self):
-        """The boundary is armed on the way out, not on the first prompt.
+        """Guardian Review is selected on the way out, not on the first prompt.
 
-        codex's default ``agent`` mode writes inside the workspace without asking,
-        so a session handed back before this write is a session whose first turn
-        runs ungoverned. ``session_config_issue`` reads the option list
-        ``session/new`` just advertised, which is why the call sits after that
-        response is stored.
+        ``agent`` is codex-acp's advertised ``auto_review`` mode.
+        ``session_config_issue`` reads the option list ``session/new`` just
+        advertised, which is why the call sits after that response is stored.
         """
         rt = _codex_runtime()
         plane = _ControlPlane(_codex_session_new_response())
@@ -1360,7 +1358,7 @@ class TestTheRuntimeArmsCodexPermissionRouting:
         writes = plane.params_for(METHOD_SET_CONFIG_OPTION)
         assert len(writes) == 1, plane.methods
         assert writes[0]["configId"] == "mode"
-        assert writes[0]["value"] == "read-only"
+        assert writes[0]["value"] == "agent"
         # After session/new, never before it: the option list it carries is what
         # decides whether the write is even applicable.
         assert plane.methods.index(METHOD_SESSION_NEW) < plane.methods.index(

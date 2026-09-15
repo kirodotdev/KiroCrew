@@ -59,7 +59,7 @@ def test_codex_verdict_names_the_option_it_promises() -> None:
     """
     verdict, reason = gate.routing_verdict(ACP_BACKEND_CODEX)
     assert verdict is gate.Verdict.ROUTED
-    assert "mode=read-only" in reason
+    assert "mode=agent" in reason
 
 
 def test_claude_is_indeterminate_not_routed() -> None:
@@ -323,7 +323,10 @@ def test_advertised_option_and_value_is_no_issue() -> None:
         ([], "did not advertise config option"),
         ([{"id": "unrelated", "options": [{"value": "x"}]}], "did not advertise config option"),
         ([{"id": "mode", "options": "not-a-list"}], "has no values"),
-        ([{"id": "mode", "options": [{"value": "agent"}]}], "does not advertise required value"),
+        (
+            [{"id": "mode", "options": [{"value": "read-only"}]}],
+            "does not advertise required value",
+        ),
     ],
 )
 def test_missing_or_wrong_advertisement_is_an_issue(config_options, expected_fragment) -> None:

@@ -657,18 +657,18 @@ def test_the_kiro_family_still_asks_by_construction(backend):
     assert acp_tool_gate.permission_config_for(backend) == ("", "")
 
 
-def test_codex_is_made_to_ask_by_a_session_write():
+def test_codex_is_put_in_guardian_auto_review_by_a_session_write():
     """The counterexample the family assertion above must not swallow.
 
     codex has no agent spec and no settings file Crew writes, so the session's own
-    option is the only boundary. ``read-only`` still permits passive reads; what
-    makes that survivable is the OS-boundary credential mask, not this option.
+    option selects its approval posture. ``agent`` is the advertised
+    ``auto_review`` mode; the OS-boundary credential mask remains independent.
     """
     from kiro_crew import acp_tool_gate
 
     routing = acp_tool_gate.routing_for(ACP_BACKEND_CODEX)
     assert routing is acp_tool_gate.Routing.SESSION_CONFIG
-    assert acp_tool_gate.permission_config_for(ACP_BACKEND_CODEX) == ("mode", "read-only")
+    assert acp_tool_gate.permission_config_for(ACP_BACKEND_CODEX) == ("mode", "agent")
 
 
 @pytest.mark.parametrize("backend", ALL_BACKENDS)
