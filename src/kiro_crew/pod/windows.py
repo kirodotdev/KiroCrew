@@ -91,16 +91,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from kiro_crew.instances import run_marker
-from kiro_crew.platform_compat import (  # noqa: F401 - compatibility exports for pod callers
+from kiro_crew.platform_compat import (
     CREATE_NEW_PROCESS_GROUP,
     CREATE_SUSPENDED,
     IS_WINDOWS,
-    SIGTERM,
     attributed_descendants,
 )
 from kiro_crew.platform_compat import created_after as _created_after_impl
-from kiro_crew.platform_compat import (  # noqa: F401 - compatibility exports for pod callers
-    kill_process_tree_pinned,
+from kiro_crew.platform_compat import (
     pid_exists,
     process_start_time,
     resume_process_main_thread,
@@ -122,7 +120,7 @@ TASK_FOLDER_ROOT = r"\KiroCrew\pods"
 # Shared bound for publisher retirement and contained-Job draining.
 STOP_TIMEOUT_SECS = 15.0
 
-#: Margin used only by compatibility marker inspection and producer refresh.
+#: Margin used by the producer's handoff-marker refresh.
 _HANDOFF_FRESHNESS_MARGIN_SECS = 5.0
 
 #: How long :func:`supervise_gateway` waits for a restart successor to claim the
@@ -271,44 +269,6 @@ def handoff_marker_path(cfg: PodConfig, name: str) -> Path:
     replaces the durable run descriptor and retained Job used by teardown.
     """
     return _plane_file(cfg, name, ".handoff")
-
-
-def handoff_in_progress(cfg: PodConfig, name: str) -> bool:
-    """Read-only compatibility probe; never authorizes runtime reclamation.
-
-    A matching live publisher keeps its marker active regardless of age. A
-    positively gone publisher settles this diagnostic; identity-less markers
-    retain the bounded age behavior. Read errors keep reporting in progress.
-    Only the durable run identity, publisher retirement and Job proof in stop
-    establish whether HOME may be reclaimed.
-    """
-    marker = handoff_marker_path(cfg, name)
-    try:
-        raw = marker.read_text(encoding="utf-8")
-        age = time.time() - marker.stat().st_mtime
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    publisher = _handoff_publisher(raw)
-    if publisher is not None:
-        pid, token = publisher
-        return pid_exists(pid) and process_start_time(pid) == token
-    return age <= SUCCESSOR_ADOPT_TIMEOUT_SECS + _HANDOFF_FRESHNESS_MARGIN_SECS
-
-
-def _handoff_publisher(raw: str) -> tuple[int, str] | None:
-    """The ``(pid, creation-token)`` a marker names, or ``None`` if it names none.
-
-    ``None`` is the fail-CLOSED answer for every unreadable shape -- an older
-    build's literal payload, a truncated write, a non-numeric first line -- so a
-    marker this function cannot judge keeps blocking teardown rather than being
-    waved through.
-    """
-    lines = raw.splitlines()
-    if len(lines) < 2 or not lines[0].strip().isdigit() or not lines[1].strip():
-        return None
-    return int(lines[0].strip()), lines[1].strip()
 
 
 def _begin_handoff(cfg: PodConfig, name: str) -> bool:
@@ -624,57 +584,83 @@ def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     is the whole reason this backend is Task Scheduler and not ``sc.exe``.
     """
     try:
+        prior = runs.read(cfg, name)
+        if prior is not None and prior["state"] == "cancelled":
+            _rollback_start(cfg, name, prior)
         if _stop_state_path(cfg, name) is not None or task_exists(cfg, name):
             raise OSError("prior Windows pod state must be retired before starting again")
-        runs.reserve(cfg, name)
-    except (OSError, ValueError) as exc:
+        reservation = runs.reserve(cfg, name)
+    except (OSError, ValueError, subprocess.SubprocessError, WindowsTaskError) as exc:
         return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=str(exc))
-    script = write_task_script(cfg, name)
-    # Clear the previous run's result HOST-side too. The wrapper also does it,
-    # but only once the task has started: until then unit_state would read the
-    # stale code and report this fresh start as already failed.
-    #
-    # REFUSED, not best-effort, when the removal fails. A start that proceeds with
-    # a stale FAILURE result left in place hands every reader a lie in the one
-    # direction that destroys data: `unit_state` reports the pod that is booting
-    # right now as already failed, and a caller acting on a failed boot reclaims
-    # its state -- deleting the isolated HOME of a pod that is coming up. Refusing
-    # before `/Create` costs an operator one diagnosable error; proceeding costs
-    # them the home.
-    stale = result_path(cfg, name)
     try:
-        stale.unlink(missing_ok=True)
-    except OSError as exc:
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout="",
-            stderr=(
-                f"pod {name!r} cannot start: the previous run's result file could not "
-                f"be removed ({exc}).\n"
-                f"  Left in place:  {stale}\n"
-                "  Why this stops the start: until that file is gone every reader of "
-                "this pod's state reads the OLD exit code, so a pod that boots "
-                "successfully still reports as failed -- and a caller that acts on a "
-                "failed boot reclaims the pod's isolated home.\n"
-                f"  Remove it, then retry: kirocrew pod up {name}"
-            ),
+        script = write_task_script(cfg, name)
+        # Refuse before scheduling if readers could see an old failure result.
+        result_path(cfg, name).unlink(missing_ok=True)
+        created = schtasks(
+            "/Create",
+            "/F",
+            "/SC",
+            "ONCE",
+            "/ST",
+            "00:00",
+            "/TN",
+            task_name(cfg, name),
+            "/TR",
+            f'"{script}"',
         )
-    created = schtasks(
-        "/Create",
-        "/F",
-        "/SC",
-        "ONCE",
-        "/ST",
-        "00:00",
-        "/TN",
-        task_name(cfg, name),
-        "/TR",
-        f'"{script}"',
-    )
-    if created.returncode != 0:
-        return created
-    return schtasks("/Run", "/TN", task_name(cfg, name))
+        if created.returncode != 0:
+            raise WindowsTaskError(
+                f"schtasks /Create rc={created.returncode}: "
+                f"{(created.stderr or created.stdout or '').strip()}"
+            )
+    except (OSError, ValueError, subprocess.SubprocessError, WindowsTaskError) as exc:
+        detail = str(exc)
+        try:
+            _rollback_start(cfg, name, reservation)
+        except (OSError, ValueError, subprocess.SubprocessError, WindowsTaskError) as cleanup:
+            detail += (
+                f"; startup rollback incomplete: {cleanup}. Run evidence retained; "
+                f"retry kirocrew pod up {name} after correcting the cleanup error."
+            )
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=detail)
+    # /Run can fail or time out AFTER spawning. Never revoke its reservation:
+    # absence of a claim at this instant does not prove no publisher will claim.
+    try:
+        return schtasks("/Run", "/TN", task_name(cfg, name))
+    except (OSError, ValueError, subprocess.SubprocessError, WindowsTaskError) as exc:
+        return subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=f"{exc}; run evidence preserved"
+        )
+
+
+def _rollback_start(cfg: PodConfig, name: str, reservation: dict) -> None:
+    """Clean only an explicitly cancelled pre-/Run generation, never a runtime.
+
+    The caller holds the CLI name mutex. The admission lock additionally keeps
+    a supervisor from claiming between the identity check and sidecar removal.
+    Cancellation survives cleanup failure; a fresh start may retry that receipt,
+    but must not infer cancellation from an ordinary reserved record.
+    """
+    with runs.cancel_reserved(cfg, name, reservation):
+        for evidence in (
+            pid_record_path(cfg, name),
+            handoff_marker_path(cfg, name),
+            cfg.home_dir(name),
+        ):
+            try:
+                evidence.lstat()
+            except FileNotFoundError:
+                continue
+            raise OSError(f"runtime evidence at {evidence}; startup rollback refused")
+        if task_exists(cfg, name):
+            deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
+            if deleted.returncode != 0:
+                raise OSError(
+                    f"schtasks /Delete rc={deleted.returncode}: "
+                    f"{(deleted.stderr or deleted.stdout or '').strip()}"
+                )
+        task_script_path(cfg, name).unlink(missing_ok=True)
+        result_path(cfg, name).unlink(missing_ok=True)
 
 
 def created_after(child_token: str, parent_token: str) -> bool:

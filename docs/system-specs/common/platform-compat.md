@@ -153,7 +153,16 @@ helper and its configuration are unchanged.
 
 The Task Scheduler backend uses these primitives with `pod._windows_run` durable
 run identities and publisher retirement. Job emptiness alone is not reclamation
-authority. Native tests exercise owner-only access, descendant containment,
+authority. Before attempting `/Run`, a failed start may cancel only its exact
+unclaimed reservation under the supervisor's claim lock. The durable `cancelled`
+state refuses admission and survives task/wrapper/result cleanup errors; the next
+`start` retries that cleanup before reserving a new generation. The claim lock
+covers cancellation through receipt deletion. Claimed, malformed or changed-run
+records and unexpected HOME/PID/handoff evidence refuse rollback. A failed or
+raised `/Run` never grants cancellation, even if no publisher has claimed yet.
+If cancellation itself cannot be persisted, the ordinary reservation remains
+unresolved rather than being inferred safe on a later invocation.
+Native tests exercise owner-only access, descendant containment,
 nested resource jobs and breakaway refusal; injected failures run on all hosts.
 
 ## Verifying a change

@@ -341,7 +341,27 @@ def test_native_job_dacl_grants_only_current_owner():
             try:
                 sddl = text.value
                 sid = pc.current_user_sid()
-                assert sddl == f"O:{sid}D:P(A;;0x1f003f;;;{sid})"
+                assert sid
+                # Windows may serialize the current SID as an alias (e.g. LA).
+                # Round-trip the exact owner-only expectation through the same API.
+                expected_descriptor = C.c_void_p()
+                assert advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    f"O:{sid}D:P(A;;0x1f003f;;;{sid})",
+                    1,
+                    C.byref(expected_descriptor),
+                    None,
+                )
+                try:
+                    expected_text = C.c_wchar_p()
+                    assert advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                        expected_descriptor, 1, 5, C.byref(expected_text), None
+                    )
+                    try:
+                        assert sddl == expected_text.value
+                    finally:
+                        kernel.LocalFree(C.cast(expected_text, C.c_void_p))
+                finally:
+                    kernel.LocalFree(expected_descriptor)
             finally:
                 kernel.LocalFree(C.cast(text, C.c_void_p))
         finally:

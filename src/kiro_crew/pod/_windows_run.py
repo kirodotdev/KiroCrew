@@ -23,7 +23,7 @@ from kiro_crew.pod.config import PodConfig
 
 _VERSION = 1
 _MAX_RECORD_BYTES = 8192
-_STATES = {"reserved", "preparing", "ready", "drained"}
+_STATES = {"reserved", "cancelled", "preparing", "ready", "drained"}
 
 
 def path(cfg: PodConfig, name: str) -> Path:
@@ -78,7 +78,10 @@ def read(cfg: PodConfig, name: str) -> dict[str, Any] | None:
         )
         if not valid:
             raise ValueError("invalid run identity")
-        if record["state"] != "reserved" and not _valid_identity(record.get("publisher")):
+        if record["state"] in {"reserved", "cancelled"}:
+            if any(key in record for key in ("publisher", "root", "job")):
+                raise ValueError("unclaimed run carries runtime evidence")
+        elif not _valid_identity(record.get("publisher")):
             raise ValueError("invalid publisher identity")
         if record["state"] in {"ready", "drained"}:
             if not _valid_identity(record.get("root")):
@@ -95,23 +98,38 @@ def publish(cfg: PodConfig, name: str, record: dict[str, Any]) -> None:
     atomic_write(path(cfg, name), json.dumps(record), fsync=True, restrict_to_owner=True)
 
 
-def reserve(cfg: PodConfig, name: str) -> None:
+def reserve(cfg: PodConfig, name: str) -> dict[str, Any]:
     """Reserve a fresh invocation; never overwrite unresolved runtime evidence."""
     cfg.pods_dir.mkdir(parents=True, exist_ok=True)
     with claim_lock(cfg, name):
         if read(cfg, name) is not None:
             raise OSError("an unresolved Windows pod run must be retired before another start")
-        publish(
-            cfg,
-            name,
-            {
-                "version": _VERSION,
-                "plane": _plane(cfg),
-                "name": name,
-                "generation": uuid.uuid4().hex,
-                "state": "reserved",
-            },
-        )
+        record = {
+            "version": _VERSION,
+            "plane": _plane(cfg),
+            "name": name,
+            "generation": uuid.uuid4().hex,
+            "state": "reserved",
+        }
+        publish(cfg, name, record)
+        return record
+
+
+@contextlib.contextmanager
+def cancel_reserved(cfg: PodConfig, name: str, record: dict[str, Any]) -> Iterator[None]:
+    """Revoke only this unclaimed start, with admission locked through cleanup.
+
+    Caller must not have attempted /Run. Persist cancellation before cleanup so
+    an I/O failure is retryable without admitting a supervisor to this generation.
+    A plain reservation is never enough evidence to recover a different start.
+    """
+    with claim_lock(cfg, name):
+        if record["state"] not in {"reserved", "cancelled"} or read(cfg, name) != record:
+            raise OSError("Windows pod reservation changed; startup rollback refused")
+        if record["state"] == "reserved":
+            publish(cfg, name, {**record, "state": "cancelled"})
+        yield
+        path(cfg, name).unlink()
 
 
 def claim(cfg: PodConfig, name: str) -> dict[str, Any]:

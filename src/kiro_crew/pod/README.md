@@ -525,6 +525,98 @@ any test that spawns `kirocrew pod up`, `down`, `install`, `prune` or `restart`
 as a child process, or `schtasks` with a `/Create`, `/Delete`, `/Run`, `/End` or
 `/Change` switch.
 
+### Retiring a legacy Windows pod
+
+A pod started by a build without the lifetime-Job protocol has no `.winrun`
+proof. Updating the build cannot retroactively contain that process tree.
+`pod down` and a new `pod up` deliberately refuse its remaining task, HOME or
+sidecars. This also applies to an unresolved reservation after an uncertain
+`/Run`, or when startup cancellation could not be persisted. A scheduled boot
+that refuses a missing checkout, venv or built dist also leaves `reserved`:
+those checks run before the publisher claims the generation. The producer can
+still be writing its refusal note, and the outer wrapper writes `.winresult`
+after Python returns. Neither file proves generation-bound producer retirement.
+These failed boots still require the verified retirement below; deleting only
+`.winrun` is neither safe retirement nor sufficient to clear the other evidence.
+By contrast, a persisted `cancelled` start has never attempted `/Run`: fix the
+reported cleanup error and repeat `pod up` to finish its generation-checked
+cleanup and retry.
+
+For an uncontained or otherwise unprovable run, use this conservative manual
+procedure. It deletes the disposable pod's data, not the checkout. Save anything
+you need first. Do not run these steps concurrently with any pod controller,
+Dev Fleet action, `pod up`, or manually launched wrapper.
+
+1. In the same Windows account and with the **same `KIROCREW_POD_*` overrides**
+   that created the pod, resolve the exact paths in PowerShell. Replace the
+   example name with the canonical pod name (not a checkout path):
+
+   ```powershell
+   $name = 'my-worktree'
+   $p = python -c 'import json,sys; from kiro_crew.pod.config import PodConfig; from kiro_crew.pod import windows as w; from kiro_crew.pod import _windows_run as r; c=PodConfig.load(); n=sys.argv[1]; print(json.dumps(dict(task=w.task_name(c,n), home=str(c.home_dir(n)), sidecars=[str(f(c,n)) for f in (w.task_script_path,w.pid_record_path,w.result_path,w.handoff_marker_path,r.path)]+[str(c.env_file(n)),str(c.refusal_file(n))])))' $name | ConvertFrom-Json
+   $p | Format-List
+   ```
+
+   Defaults are task `\KiroCrew\pods\kirocrew-pod\my-worktree`, HOME
+   `%USERPROFILE%\.kirocrew-pods\my-worktree`, and sidecars under
+   `%USERPROFILE%\.kiro\crew\pods`: `kirocrew-pod.my-worktree.cmd`, `.winpid`,
+   `.winresult`, `.handoff`, `.winrun`, plus `my-worktree.env` and
+   `my-worktree.refused`. The isolated OS home is inside the pod HOME; do not
+   delete the host's `%USERPROFILE%\.kiro\crew` or the checkout. Overrides
+   replace these defaults; inspect the resolved values and the task action.
+
+2. In Task Scheduler, locate that exact task and disable it. Equivalently, for
+   a task confirmed present:
+
+   ```powershell
+   & "$env:SystemRoot\System32\schtasks.exe" /Change /TN $p.task /Disable
+   if ($LASTEXITCODE -ne 0) { throw 'Task disable failed; preserve all pod data' }
+   & "$env:SystemRoot\System32\schtasks.exe" /End /TN $p.task
+   ```
+
+   `/End` is only a stop request, not proof that every descendant exited.
+   Verify the task is disabled in Task Scheduler; if it is absent, verify that
+   absence there rather than interpreting an arbitrary query error as absence.
+   Keep the data if Task Scheduler cannot be inspected or the task cannot be
+   disabled. Ensure no other launcher will restart this pod.
+
+3. Save other work and perform a full Windows **Restart**. This retires the
+   unknown process tree without a PID-based kill. Sign-out, a missing PID file,
+   an empty process snapshot, or a stopped task is not equivalent evidence.
+   After the machine has restarted, before running any pod action, re-establish
+   the same overrides and repeat step 1. Verify the task remains disabled (or
+   absent) and no launcher has restarted the pod. If any of this is uncertain,
+   stop here and preserve its files.
+
+4. Only after that verified retirement, delete the exact disabled task, if
+   present, and verify its absence in Task Scheduler:
+
+   ```powershell
+   & "$env:SystemRoot\System32\schtasks.exe" /Delete /TN $p.task /F
+   if ($LASTEXITCODE -ne 0) { throw 'Task deletion failed; preserve all pod data' }
+   ```
+
+   If the task was already verified absent, skip that command. Then remove only
+   the resolved pod HOME and the listed per-pod sidecars:
+
+   ```powershell
+   if (Test-Path -LiteralPath $p.home) {
+       Remove-Item -LiteralPath $p.home -Recurse -Force -ErrorAction Stop
+   }
+   foreach ($file in $p.sidecars) {
+       if (Test-Path -LiteralPath $file) {
+           Remove-Item -LiteralPath $file -Force -ErrorAction Stop
+       }
+   }
+   ```
+
+   Stop on any access/sharing error and retry only after resolving it. Do not
+   remove plane-wide directories or lock files, and never use a wildcard or
+   `taskkill /PID ... /T` as a substitute for the retirement proof. Pod logs in
+   `KIROCREW_POD_ARTIFACTS_DIR` are not admission evidence and can be retained.
+   With the task and listed evidence gone, `kirocrew pod up my-worktree` may
+   create a fresh, contained generation.
+
 ### Session bus (Linux only)
 
 `systemctl --user` locates the per-user systemd instance through

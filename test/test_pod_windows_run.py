@@ -433,7 +433,8 @@ def test_sidecar_unlink_failure_retains_receipt_until_retry_and_next_start(
     monkeypatch.setattr(rt, "cleanup_home", cleanup)
     first = rt.stop_pod(cfg, "demo")
     assert first.returncode == 1, "sidecar deletion failure must not report successful cleanup"
-    assert str(target) in first.stderr
+    expected_error = PermissionError(13, "one-time sidecar sharing violation", str(target))
+    assert str(expected_error) in first.stderr
     assert denied == [target] and target.read_bytes() == original_bytes
     assert runs.read(cfg, "demo") == {**record, "state": "drained"}
     if sidecar != "result":
@@ -473,3 +474,329 @@ def test_supervisor_sidecar_cleanup_remains_best_effort(model, monkeypatch, kind
     monkeypatch.setattr(type(path), "unlink", unlink)
     (win._end_handoff if kind == "handoff" else win.clear_supervised_pid)(cfg, "demo")
     assert path.read_text(encoding="utf-8") == "diagnostic evidence"
+
+
+@pytest.fixture
+def startup(model, monkeypatch):
+    cfg, state = model
+    state.task_exists = False
+    state.generations = []
+    reserve = runs.reserve
+
+    def reserve_run(*args):
+        record = reserve(*args)
+        state.generations.append(record["generation"])
+        return record
+
+    def scheduler(*args):
+        state.events.append(args[0])
+        if args[0] == "/Query":
+            return subprocess.CompletedProcess([], int(not state.task_exists), "", "")
+        if args[0] == "/Create":
+            state.task_exists = True
+        elif args[0] == "/Delete":
+            state.task_exists = False
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(runs, "reserve", reserve_run)
+    monkeypatch.setattr(win, "schtasks", scheduler)
+    return cfg, state
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["render", "encoding", "mkdir", "write", "stale", "create_rc", "create_os", "create_timeout"],
+)
+def test_preclaim_failure_rolls_back_and_next_start_retries(startup, monkeypatch, failure):
+    cfg, state = startup
+    wrapper = win.task_script_path(cfg, "demo")
+    result = win.result_path(cfg, "demo")
+    with monkeypatch.context() as patch:
+        if failure == "render":
+            patch.setattr(win, "render_task_script", lambda *_a: win._cmd_literal('bad"path'))
+        elif failure == "encoding":
+            patch.setattr(win, "render_task_script", lambda *_a: "\u2603")
+            patch.setattr(win, "_script_encoding", lambda: "ascii")
+        elif failure == "mkdir":
+            mkdir = type(wrapper).mkdir
+
+            def fail_mkdir(path, *args, **kwargs):
+                if path == win.log_paths(cfg, "demo")[0].parent:
+                    raise PermissionError("log directory denied")
+                return mkdir(path, *args, **kwargs)
+
+            patch.setattr(type(wrapper), "mkdir", fail_mkdir)
+        elif failure == "write":
+            write = type(wrapper).write_bytes
+
+            def partial_write(path, data):
+                if path == wrapper:
+                    write(path, data[:8])
+                    raise OSError("partial wrapper write")
+                return write(path, data)
+
+            patch.setattr(type(wrapper), "write_bytes", partial_write)
+        elif failure == "stale":
+            unlink = type(result).unlink
+            attempts = []
+
+            def fail_unlink(path, *args, **kwargs):
+                if path == result and not attempts:
+                    attempts.append(path)
+                    path.write_text("70", encoding="utf-8")
+                    raise PermissionError("stale result locked")
+                return unlink(path, *args, **kwargs)
+
+            patch.setattr(type(result), "unlink", fail_unlink)
+        else:
+            scheduler = win.schtasks
+
+            def fail_create(*args):
+                response = scheduler(*args)
+                if args[0] == "/Create":
+                    # A failed command can still leave a partial registration.
+                    if failure == "create_os":
+                        raise OSError("create unavailable")
+                    if failure == "create_timeout":
+                        raise subprocess.TimeoutExpired("schtasks", 30)
+                    return subprocess.CompletedProcess([], 5, "", "create denied")
+                return response
+
+            patch.setattr(win, "schtasks", fail_create)
+        first = win.start(cfg, "demo")
+    assert first.returncode != 0 and first.stderr
+    assert "/Run" not in state.events
+    assert runs.read(cfg, "demo") is None, "failed preclaim start must release its reservation"
+    assert not wrapper.exists() and not result.exists() and not state.task_exists
+    assert not cfg.home_dir("demo").exists()
+    assert win.start(cfg, "demo").returncode == 0
+    assert len(set(state.generations)) == 2
+
+
+@pytest.mark.parametrize(
+    "failure", ["query", "delete_rc", "delete_os", "wrapper", "result", "record"]
+)
+def test_cancelled_cleanup_is_honest_and_retryable(startup, monkeypatch, failure):
+    cfg, state = startup
+    scheduler = win.schtasks
+    with monkeypatch.context() as patch:
+
+        def fail_scheduler(*args):
+            if args[0] == "/Query" and state.task_exists and failure == "query":
+                raise OSError("query unavailable")
+            if args[0] == "/Delete":
+                with pytest.raises(OSError):
+                    runs.claim(cfg, "demo")
+                if failure == "delete_rc":
+                    return subprocess.CompletedProcess([], 5, "", "delete denied")
+                if failure == "delete_os":
+                    raise OSError("delete unavailable")
+            response = scheduler(*args)
+            if args[0] == "/Create":
+                win.result_path(cfg, "demo").write_text("70", encoding="utf-8")
+                return subprocess.CompletedProcess([], 5, "", "create denied")
+            return response
+
+        patch.setattr(win, "schtasks", fail_scheduler)
+        targets = {
+            "wrapper": win.task_script_path(cfg, "demo"),
+            "result": win.result_path(cfg, "demo"),
+            "record": runs.path(cfg, "demo"),
+        }
+        if failure in targets:
+            target = targets[failure]
+            unlink = type(target).unlink
+
+            def fail_unlink(path, *args, **kwargs):
+                if path == target:
+                    raise PermissionError("cleanup locked")
+                return unlink(path, *args, **kwargs)
+
+            patch.setattr(type(target), "unlink", fail_unlink)
+        first = win.start(cfg, "demo")
+    assert first.returncode == 1 and "rollback incomplete" in first.stderr
+    record = runs.read(cfg, "demo")
+    assert record["state"] == "cancelled"
+    with pytest.raises(OSError):
+        runs.claim(cfg, "demo")
+    assert win.start(cfg, "demo").returncode == 0
+    assert runs.read(cfg, "demo")["generation"] != record["generation"]
+
+
+@pytest.mark.parametrize("changed", ["preparing", "ready", "drained", "generation", "malformed"])
+def test_start_rollback_preserves_claimed_or_changed_run(startup, monkeypatch, changed):
+    cfg, state = startup
+    expected = []
+
+    def fail_write(*_args):
+        if changed == "malformed":
+            runs.path(cfg, "demo").write_text("{}", encoding="utf-8")
+        elif changed == "generation":
+            record = runs.read(cfg, "demo")
+            record["generation"] = "b" * 32
+            runs.publish(cfg, "demo", record)
+        else:
+            record = runs.claim(cfg, "demo")
+            if changed in {"ready", "drained"}:
+                record = runs.ready(
+                    cfg, "demo", record, "Global\\KiroCrew.Pod." + "a" * 32, (4242, "100")
+                )
+            if changed == "drained":
+                runs.drained(cfg, "demo", record)
+        win.task_script_path(cfg, "demo").write_text("keep evidence", encoding="utf-8")
+        expected.append(runs.path(cfg, "demo").read_bytes())
+        raise OSError("write failed after competing publication")
+
+    monkeypatch.setattr(win, "write_task_script", fail_write)
+    assert win.start(cfg, "demo").returncode == 1
+    assert runs.path(cfg, "demo").read_bytes() == expected[0]
+    assert win.task_script_path(cfg, "demo").read_text(encoding="utf-8") == "keep evidence"
+    assert state.events == ["/Query"]
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+@pytest.mark.parametrize("raised", [False, True])
+def test_uncertain_run_failure_never_rolls_back(startup, monkeypatch, claimed, raised):
+    cfg, state = startup
+    scheduler = win.schtasks
+    expected = []
+
+    def fail_run(*args):
+        response = scheduler(*args)
+        if args[0] == "/Run":
+            if claimed:
+                runs.claim(cfg, "demo")
+            expected.append(runs.path(cfg, "demo").read_bytes())
+            if raised:
+                raise subprocess.TimeoutExpired("schtasks", 30)
+            return subprocess.CompletedProcess([], 5, "", "run may have started")
+        return response
+
+    monkeypatch.setattr(win, "schtasks", fail_run)
+    assert win.start(cfg, "demo").returncode != 0
+    assert runs.path(cfg, "demo").read_bytes() == expected[0]
+    assert win.task_script_path(cfg, "demo").exists() and state.task_exists
+    assert "/Delete" not in state.events
+    assert win.start(cfg, "demo").returncode == 1
+    assert runs.path(cfg, "demo").read_bytes() == expected[0]
+
+
+def test_start_rollback_negative_control_detects_leaked_reservation(startup, monkeypatch):
+    monkeypatch.setattr(win, "_rollback_start", lambda *_a: None)
+    with pytest.raises(AssertionError, match="failed preclaim start must release"):
+        test_preclaim_failure_rolls_back_and_next_start_retries(startup, monkeypatch, "write")
+
+
+@pytest.mark.parametrize("evidence", ["home", "pid", "handoff"])
+def test_cancelled_start_never_discards_ambiguous_runtime_evidence(startup, monkeypatch, evidence):
+    cfg, state = startup
+    target = {
+        "home": cfg.home_dir("demo"),
+        "pid": win.pid_record_path(cfg, "demo"),
+        "handoff": win.handoff_marker_path(cfg, "demo"),
+    }[evidence]
+
+    def fail_write(*_a):
+        if evidence == "home":
+            target.mkdir(parents=True)
+        else:
+            target.write_text("unknown writer", encoding="utf-8")
+        raise OSError("unexpected runtime evidence")
+
+    monkeypatch.setattr(win, "write_task_script", fail_write)
+    assert win.start(cfg, "demo").returncode == 1
+    before = runs.path(cfg, "demo").read_bytes()
+    assert win.start(cfg, "demo").returncode == 1
+    assert target.exists() and runs.path(cfg, "demo").read_bytes() == before
+    assert state.events == ["/Query"]
+
+
+def test_rollback_lock_contention_and_publication_failure_preserve_reservation(
+    startup, monkeypatch
+):
+    cfg, state = startup
+    record = runs.reserve(cfg, "demo")
+    before = runs.path(cfg, "demo").read_bytes()
+    with runs.claim_lock(cfg, "demo"):
+        with pytest.raises(OSError):
+            win._rollback_start(cfg, "demo", record)
+    assert runs.path(cfg, "demo").read_bytes() == before
+    with monkeypatch.context() as patch:
+        patch.setattr(runs, "publish", lambda *_a: (_ for _ in ()).throw(OSError("disk full")))
+        with pytest.raises(OSError, match="disk full"):
+            win._rollback_start(cfg, "demo", record)
+    assert runs.path(cfg, "demo").read_bytes() == before
+    assert state.events == []
+    # An ordinary reservation cannot be inferred to be a failed pre-/Run start.
+    assert win.start(cfg, "demo").returncode == 1
+    assert runs.path(cfg, "demo").read_bytes() == before
+
+
+@pytest.mark.parametrize("field", ["publisher", "root", "job"])
+def test_unclaimed_records_with_runtime_identity_are_not_cancellation_proof(startup, field):
+    cfg, _state = startup
+    record = runs.reserve(cfg, "demo")
+    record.update(state="cancelled")
+    record[field] = "unexpected runtime identity"
+    runs.publish(cfg, "demo", record)
+    before = runs.path(cfg, "demo").read_bytes()
+    assert win.start(cfg, "demo").returncode == 1
+    assert runs.path(cfg, "demo").read_bytes() == before
+
+
+@pytest.mark.parametrize("failure", ["checkout", "venv", "dist"])
+def test_scheduled_preclaim_refusal_has_no_producer_retirement_proof(
+    startup, monkeypatch, tmp_path, failure
+):
+    """A provisioning refusal leaves an unresolved run, not a drain receipt."""
+    cfg, state = startup
+    checkout = tmp_path / "checkout"
+    binary = checkout / "gateway"
+    if failure != "checkout":
+        checkout.mkdir()
+        rt.write_env_file(cfg, "demo", {"CHECKOUT": str(checkout)})
+    if failure == "dist":
+        binary.write_bytes(b"unused")
+        binary.chmod(0o700)
+    monkeypatch.setattr(rt.prov, "venv_bin", lambda *_a: binary)
+    scheduler = win.schtasks
+    record_refusal = rt._record_refusal
+    snapshots = []
+    boot_results = []
+
+    def before_refusal_write(config, name, reason):
+        # The scheduled producer is still on its call stack and has a write
+        # ahead of it. Even without a HOME, reserved does not mean retired.
+        record = runs.read(config, name)
+        assert record["state"] == "reserved" and "publisher" not in record
+        snapshots.append(runs.path(config, name).read_bytes())
+        stopped = win.stop(config, name, timeout=0)
+        assert stopped.returncode == 1
+        assert runs.path(config, name).read_bytes() == snapshots[-1]
+        assert state.task_exists and not config.home_dir(name).exists()
+        record_refusal(config, name, reason)
+
+    def run_wrapper(*args):
+        response = scheduler(*args)
+        if args[0] == "/Run":
+            code = rt.boot(cfg, "demo")
+            boot_results.append(code)
+            # cmd.exe writes this AFTER Python's boot body returns; it carries
+            # neither a generation nor the wrapper's creation identity.
+            win.result_path(cfg, "demo").write_text(f"{code}\n", encoding="utf-8")
+        return response
+
+    monkeypatch.setattr(rt, "_record_refusal", before_refusal_write)
+    monkeypatch.setattr(win, "schtasks", run_wrapper)
+    assert win.start(cfg, "demo").returncode == 0  # Scheduler accepted /Run.
+    assert boot_results == [3]
+    assert snapshots and runs.path(cfg, "demo").read_bytes() == snapshots[0]
+    assert rt.refusal_reason(cfg, "demo")
+    assert win.last_result(cfg, "demo") == 3
+    assert win.unit_state(cfg, "demo") == ("failed", 1)
+    assert win.stop(cfg, "demo", timeout=0).returncode == 1
+    assert win.start(cfg, "demo").returncode == 1
+    assert runs.path(cfg, "demo").read_bytes() == snapshots[0]
+    assert state.task_exists and win.task_script_path(cfg, "demo").exists()
+    assert not cfg.home_dir("demo").exists()
+    assert not {"/End", "/Delete", "create_job"}.intersection(state.events)

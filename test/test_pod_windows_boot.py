@@ -47,6 +47,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import platform_compat as pc
 from kiro_crew.platform_compat import IS_WINDOWS, SIGKILL, pid_exists, process_start_time
 from kiro_crew.pod import windows as win
 from kiro_crew.pod.config import PodConfig
@@ -304,7 +305,7 @@ def _force_clean_plane(
     killed: list[int] = []
     for pid, token in sorted(pinned.items()):
         with contextlib.suppress(OSError):
-            if win.kill_process_tree_pinned(pid, token, SIGKILL):
+            if pc.kill_process_tree_pinned(pid, token, SIGKILL):
                 killed.append(pid)
     shutil.rmtree(root, ignore_errors=True)
     return tasks, killed
