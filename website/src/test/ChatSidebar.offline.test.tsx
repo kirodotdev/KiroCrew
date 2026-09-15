@@ -198,7 +198,7 @@ describe('ChatSidebar – offline guards', () => {
   })
 
   it('offline session rows expose aria-disabled=true for screen readers', () => {
-    // Beyond visual cursor-not-allowed + opacity-50, screen-reader users
+    // Beyond visual cursor-not-allowed + opacity-40, screen-reader users
     // need an explicit aria-disabled to know the rows aren't actionable
     // while the gateway is offline. Without it the row is announced as a
     // plain interactive element (no semantic disabled state).

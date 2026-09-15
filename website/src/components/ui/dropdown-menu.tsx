@@ -64,17 +64,37 @@ const DropdownMenuContent = React.forwardRef<
 ))
 DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName
 
+/**
+ * `offline` dims a row whose action needs a live gateway.
+ *
+ * It is NOT Radix's `disabled`: that sets `data-[disabled]` (the weight above),
+ * takes the row out of the focus order and drops the tooltip with
+ * `pointer-events-none`, so a screen-reader user never learns the row exists or
+ * why it is inert. An offline row stays focusable and `aria-disabled`, keeps its
+ * offline tooltip and name (see `offlineProps`), and only reads as unavailable.
+ * The weight lives here rather than at each call site so one dim serves them
+ * all — the ratchet in `scripts/check-restyle-ratchet.mjs` asks for exactly that.
+ *
+ * It is composed AFTER `className`, which is the opposite of the usual order and
+ * load-bearing: `cn` is tailwind-merge, so the last class in a conflicting group
+ * wins. With `className` last, a caller that sets its own text colour — the
+ * `text-danger` delete rows — kept full-saturation red at 40% opacity while
+ * every sibling gated row went muted, i.e. the dim was silently half-applied on
+ * exactly the row where "unavailable" matters most. Dimming is the primitive's
+ * call to make once, so it outranks the call site here.
+ */
 const DropdownMenuItem = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.Item>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & { inset?: boolean }
->(({ className, inset, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & { inset?: boolean; offline?: boolean }
+>(({ className, inset, offline, ...props }, ref) => (
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
       'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       inset && 'pl-8',
-      className
+      className,
+      offline && 'text-muted opacity-40'
     )}
     {...props}
   />

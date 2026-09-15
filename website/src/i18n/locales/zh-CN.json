@@ -7566,6 +7566,7 @@
       "mark_as_read": "标记为已读",
       "mark_as_unread": "标记为未读",
       "move_to_folder": "移动到文件夹…",
+      "offline_reason": "网关离线 — 变暗的操作需要连接",
       "open_in_new_tab": "在会话标签页中打开",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
@@ -15960,9 +15961,17 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_folder_settings": "更改文件夹设置",
+      "create_folders": "创建文件夹",
+      "create_sessions": "创建会话",
+      "delete_folders": "删除文件夹",
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
       "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
-      "submit_comments": "提交评论"
+      "hide_folders": "隐藏文件夹",
+      "rename_folders": "重命名文件夹",
+      "resume_sessions": "恢复会话",
+      "submit_comments": "提交评论",
+      "switch_sessions": "切换会话"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "浏览器阻止了弹出窗口。允许此站点的弹出窗口后重试。"

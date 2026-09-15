@@ -22,8 +22,9 @@ export interface OfflineProps {
  * Returns the offline affordance for an interactive element.
  *
  * @param online current gateway connection flag
- * @param verb   action phrase shown in the tooltip, e.g. "send", "optimize",
- *               "switch sessions", "resume sessions"
+ * @param verb   LOCALIZED action phrase for the tooltip, always a catalogue
+ *               lookup — `i18nT('utils.offline.rename_folders')`. A raw English
+ *               verb here lands inside a translated sentence for 11 locales.
  * @param label  optional accessible name of the control; when supplied and
  *               offline, the aria-label becomes "{label} disabled — gateway
  *               offline" so screen-reader users hear why the control is inert.
@@ -32,9 +33,9 @@ export interface OfflineProps {
  * variants override only while offline:
  *
  *   <button
- *     aria-label="Send"
- *     {...offlineProps(connected, 'send', 'Send')}
- *     disabled={!value.trim() || !connected}
+ *     aria-label={i18nT('pages.chatSidebar.rename')}
+ *     {...offlineProps(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'))}
+ *     disabled={!name.trim() || !connected}
  *   />
  *
  * When online the result is just `{ 'aria-disabled': false }`, leaving the

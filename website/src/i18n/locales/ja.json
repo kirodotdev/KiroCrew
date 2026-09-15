@@ -7566,6 +7566,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "offline_reason": "ゲートウェイがオフラインです — グレー表示の操作には接続が必要です",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -15960,9 +15961,17 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_folder_settings": "フォルダー設定を変更",
+      "create_folders": "フォルダーを作成",
+      "create_sessions": "セッションを作成",
+      "delete_folders": "フォルダーを削除",
       "disabled_gateway_offline": "{{label}} は無効です — ゲートウェイがオフラインです",
       "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
-      "submit_comments": "コメントを送信"
+      "hide_folders": "フォルダーを非表示に",
+      "rename_folders": "フォルダー名を変更",
+      "resume_sessions": "セッションを再開",
+      "submit_comments": "コメントを送信",
+      "switch_sessions": "セッションを変更"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"
