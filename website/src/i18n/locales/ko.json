@@ -13024,6 +13024,8 @@
         "show_token_usage": "컨텍스트 토큰 표시",
         "simplified_tool_call_names": "간소화된 도구 호출 이름",
         "single_line": "한 줄",
+        "spellcheck_input": "메시지 입력 맞춤법 검사",
+        "spellcheck_input_desc": "메시지 입력란에서 맞춤법이 틀린 단어를 빨간 물결선으로 표시합니다. 입력하는 동안 빨간 밑줄을 없애려면 끄세요.",
         "smooth": "부드럽게",
         "soft_stop_budget_seconds": "소프트 중지 예산(초)",
         "somewhat": "보통",

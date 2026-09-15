@@ -13207,6 +13207,8 @@
         "show_token_usage": "Kontext-Token anzeigen",
         "simplified_tool_call_names": "Vereinfachte Werkzeugaufrufnamen",
         "single_line": "Einzeilig",
+        "spellcheck_input": "Nachrichteneingabe auf Rechtschreibung prüfen",
+        "spellcheck_input_desc": "Unterstreicht falsch geschriebene Wörter im Nachrichtenfeld mit einer roten Wellenlinie. Schalte es aus, um die roten Unterstreichungen beim Tippen zu stoppen.",
         "smooth": "Geglättet",
         "soft_stop_budget_seconds": "Zeitbudget für sanftes Stoppen (Sekunden)",
         "somewhat": "Etwas",

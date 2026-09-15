@@ -13390,6 +13390,8 @@
         "show_token_usage": "Mostra i token di contesto",
         "simplified_tool_call_names": "Nomi semplificati delle chiamate agli strumenti",
         "single_line": "Riga singola",
+        "spellcheck_input": "Controlla l'ortografia nel campo messaggio",
+        "spellcheck_input_desc": "Sottolinea le parole scritte male nel campo messaggio con una linea rossa ondulata. Disattivalo per non vedere più le sottolineature rosse mentre scrivi.",
         "smooth": "Fluido",
         "soft_stop_budget_seconds": "Budget per l'arresto graduale (secondi)",
         "somewhat": "In parte",

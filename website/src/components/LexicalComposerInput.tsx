@@ -74,6 +74,9 @@ interface LexicalComposerInputProps {
   disabled?: boolean
   readOnly?: boolean
   sendOnEnter?: SendMode
+  /** Draw the browser's red spellcheck underlines under the input. Default true
+   *  (Chromium's own default); the Settings composer toggle drives it off. */
+  spellCheck?: boolean
   className?: string
   controlRef?: React.MutableRefObject<ComposerControl | null>
   editorRef?: React.RefCallback<LexicalEditor> | React.RefObject<LexicalEditor | null | undefined>
@@ -544,6 +547,7 @@ export default function LexicalComposerInput({
   disabled = false,
   readOnly = false,
   sendOnEnter = 'enter',
+  spellCheck = true,
   className = '',
   controlRef,
   editorRef,
@@ -581,6 +585,7 @@ export default function LexicalComposerInput({
             <ContentEditable
               aria-label={ariaLabel}
               aria-multiline="true"
+              spellCheck={spellCheck}
               data-composer-input=""
               data-lexical-composer=""
               className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-none whitespace-pre-wrap break-words ${INPUT_TYPO}`}

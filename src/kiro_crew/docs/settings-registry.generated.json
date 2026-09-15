@@ -704,6 +704,13 @@
       "route": "/settings/chat?highlight=chat.soft-stop-budget-seconds"
     },
     {
+      "id": "chat.spell-check-message-input",
+      "label": "Spell Check Message Input",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.spell-check-message-input",
+      "description": "Underline misspelled words in the message input with a red squiggle. Turn it off to stop the red underlines while you type."
+    },
+    {
       "id": "chat.split-side-by-side-diffs",
       "label": "Split (side-by-side) diffs",
       "tab": "chat",

@@ -13024,6 +13024,8 @@
         "show_token_usage": "显示上下文令牌",
         "simplified_tool_call_names": "简化工具调用名称",
         "single_line": "单行",
+        "spellcheck_input": "检查消息输入的拼写",
+        "spellcheck_input_desc": "在消息输入框中用红色波浪线标出拼写有误的词。想在输入时去掉红色下划线就把它关掉。",
         "smooth": "平滑",
         "soft_stop_budget_seconds": "软停止预算（秒）",
         "somewhat": "略懂",

@@ -13391,6 +13391,8 @@
         "show_token_usage": "Afficher les jetons de contexte",
         "simplified_tool_call_names": "Noms d'appels d'outils simplifiés",
         "single_line": "Une seule ligne",
+        "spellcheck_input": "Vérifier l'orthographe dans la zone de message",
+        "spellcheck_input_desc": "Souligne les mots mal orthographiés dans la zone de message d'un trait rouge ondulé. Désactive-le pour arrêter les soulignements rouges pendant que tu écris.",
         "smooth": "Fluide",
         "soft_stop_budget_seconds": "Budget d'arrêt souple (secondes)",
         "somewhat": "Un peu",

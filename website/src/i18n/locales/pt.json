@@ -13390,6 +13390,8 @@
         "show_token_usage": "Mostrar os tokens de contexto",
         "simplified_tool_call_names": "Nomes simplificados de chamadas de ferramenta",
         "single_line": "Linha única",
+        "spellcheck_input": "Verificar a ortografia na entrada de mensagens",
+        "spellcheck_input_desc": "Sublinha as palavras com erros de ortografia no campo de mensagem com um traço vermelho ondulado. Desative para parar os sublinhados vermelhos enquanto você digita.",
         "smooth": "Suave",
         "soft_stop_budget_seconds": "Orçamento de parada suave (segundos)",
         "somewhat": "Um pouco",

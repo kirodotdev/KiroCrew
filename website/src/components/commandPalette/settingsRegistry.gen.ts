@@ -1153,6 +1153,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.spell-check-message-input",
+    "label": "Spell Check Message Input",
+    "labelKey": "pages.settings.chatPanel.spellcheck_input",
+    "description": "Underline misspelled words in the message input with a red squiggle. Turn it off to stop the red underlines while you type.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.split-side-by-side-diffs",
     "label": "Split (side-by-side) diffs",
     "labelKey": "settings.chat.diffLayout.label",

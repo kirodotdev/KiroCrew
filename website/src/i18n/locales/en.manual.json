@@ -5490,6 +5490,8 @@
         "shift_enter_for_newline": "Shift+Enter for newline",
         "show_occasional_feature_discovery_tips_above_the": "Show occasional feature discovery tips above the composer while the agent is working",
         "single_line": "Single line",
+        "spellcheck_input": "Spell Check Message Input",
+        "spellcheck_input_desc": "Underline misspelled words in the message input with a red squiggle. Turn it off to stop the red underlines while you type.",
         "smooth": "Smooth",
         "both_head_tail_with_truncation_marker": "Both (head + tail with truncation marker)",
         "data_ml": "Data / ML",

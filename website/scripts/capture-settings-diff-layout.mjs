@@ -23,12 +23,10 @@
  *
  * Usage: node scripts/capture-settings-diff-layout.mjs [outDir]
  */
-import { chromium } from 'playwright'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { json, makeFixedApi, handleBootRoute } from './lib/boot-api.mjs'
-import { serveDist } from './lib/serve-dist.mjs'
+import { openSettingsPage } from './lib/settings-capture.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/settings-diff-layout'
 const LOCALES = fileURLToPath(new URL('../src/i18n/locales/', import.meta.url))
@@ -44,35 +42,7 @@ if (!DIFF_LAYOUT || !DIFF_LAYOUT_DESC || !PLAIN_DIFF) {
   throw new Error('catalog keys missing -- settings.chat.diffLayout.* or plainDiff.label renamed?')
 }
 
-const PROJECT = '/home/user/project'
-const fixedApi = makeFixedApi(PROJECT)
-
-const { srv, base } = await serveDist()
-const browser = await chromium.launch()
-const context = await browser.newContext({
-  viewport: { width: 1400, height: 900 },
-  // Settings rows are 12-13px type; a 1x shot renders soft on GitHub.
-  deviceScaleFactor: 2,
-})
-const page = await context.newPage()
-
-await page.routeWebSocket(/\/api\/ws/, () => {})
-
-await page.route('**/api/**', route => {
-  const path = new URL(route.request().url()).pathname
-  if (path === '/api/chat/slots') return json(route, [])
-  return handleBootRoute(route, path, { project: PROJECT, fixedApi })
-})
-
-await page.addInitScript(() => {
-  localStorage.clear()
-  localStorage.setItem('mc-theme', 'dark')
-  localStorage.setItem('mc-onboarded', '1')
-  localStorage.setItem('mc-import-onboarded', '1')
-  localStorage.setItem('mc-privacy-acked', '1')
-})
-
-await page.goto(`${base}/settings?tab=chat`, { waitUntil: 'domcontentloaded' })
+const { browser, page, srv } = await openSettingsPage({ tab: 'chat' })
 
 const toggle = page.getByRole('switch', { name: DIFF_LAYOUT })
 await toggle.waitFor({ state: 'visible', timeout: 15_000 })

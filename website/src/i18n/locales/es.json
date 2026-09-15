@@ -13391,6 +13391,8 @@
         "show_token_usage": "Mostrar los tokens de contexto",
         "simplified_tool_call_names": "Nombres simplificados de las llamadas de herramientas",
         "single_line": "Una sola línea",
+        "spellcheck_input": "Revisar la ortografía en la entrada de mensajes",
+        "spellcheck_input_desc": "Subraya las palabras mal escritas en el campo de mensaje con una línea roja ondulada. Desactívalo para dejar de ver los subrayados rojos mientras escribes.",
         "smooth": "Suave",
         "soft_stop_budget_seconds": "Margen de parada suave (segundos)",
         "somewhat": "Algo técnico",
