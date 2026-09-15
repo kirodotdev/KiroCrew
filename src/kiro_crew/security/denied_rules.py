@@ -1661,8 +1661,9 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
     "credential-exfil-kirocrew-token": (
         "Matched structurally on the command's argv, not by the pattern text above: "
         "the product CLI is invoked to mint a dashboard token, or an inline "
-        "interpreter program imports it (an imported CLI can construct the token verb "
-        "itself, so the import is the gate and no 'token' word need appear)."
+        "interpreter program names the mint surface -- the CLI module, the token "
+        "subcommand's module, or a token-producing product import (an imported CLI can "
+        "construct the token verb itself, so no 'token' argv word need appear)."
     ),
     "self-protection-kill": (
         "Matched structurally on the command's argv, not by the pattern text above: "
