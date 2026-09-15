@@ -11,6 +11,7 @@
  *    form appeared to change the event.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { i18nT } from '../i18n/t'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -71,15 +72,26 @@ describe('hooks page — lifecycle event picker', () => {
     expect(trigger).toHaveTextContent('UserPromptSubmit')
   })
 
+  it('tells a governance-denied test run which setting to change', () => {
+    // The denial is shared base copy for all six events, so the repair path lives here
+    // rather than in that string -- a denied author otherwise sees no next step at all.
+    const repair = i18nT('pages.hooksPage.hook_test_governance_repair')
+    expect(repair).toMatch(/capabilities\.script_hooks/)
+    expect(repair).not.toBe('pages.hooksPage.hook_test_governance_repair')
+  })
+
   it('offers every lifecycle event and commits the pick', async () => {
     renderPage()
     const trigger = await openForm()
 
     // Radix Select: open, then click — a `change` on the trigger does nothing.
     fireEvent.click(trigger)
-    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(5))
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(6))
     expect(screen.getAllByRole('option').map(o => o.textContent)).toEqual([
       'AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+      // Glossed at the point of choice: the wire value is immutable, so the option
+      // carries the board's own word beside it.
+      'SessionLaneChanged — board column',
     ])
 
     fireEvent.click(screen.getByRole('option', { name: 'PreToolUse' }))
@@ -117,4 +129,5 @@ describe('hooks page — lifecycle event picker', () => {
     await waitFor(() => expect(updateHook).toHaveBeenCalledTimes(1))
     expect(updateHook.mock.calls[0][1]).toMatchObject({ event: 'agentSpawn' })
   })
+
 })
