@@ -52,7 +52,7 @@ agent loads only the one it needs.
 | [agent-interrupt-controller.md](agent-interrupt-controller.md) | `kiro_crew.irq`: masking, coalescing, epoch resets and an error backstop for script-cron pollers, so a cheap probe interrupts an expensive agent turn instead of the turn polling. Also the app-facing probe SDK. |
 | [babysit-pr-watch.md](babysit-pr-watch.md) | Zero-token PR polling for babysit loops: a script cron that wakes the owning session only on unexpected state. |
 | [task.md](task.md) | Task models and state. |
-| [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion. |
+| [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion, plus the governed review-fix lifecycle for Code Review Sage findings. |
 | [workflows.md](workflows.md) | The dynamic-workflow engine: the frozen `ctx` contract, the event stream, budgets, and the named conformance gates with the test pinning each. |
 | [autopilot.md](autopilot.md) | Plan-driven orchestration and its lifecycle. |
 | [crew-mode.md](crew-mode.md) | Crews: the config record, `select_crew` roster and binding, model and workspace resolution, the Crews UI, and the record of the retired `"crew"` slot mode (Crew Mode). |
