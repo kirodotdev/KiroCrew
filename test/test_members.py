@@ -13,12 +13,15 @@ import pytest
 from kiro_crew import members
 from kiro_crew.members import (
     ACTIVITY_FILE_NAME,
+    MEMBER_NAME_MAX_CHARS,
+    MemberNameError,
     MemberSlugError,
     member_dir,
     members_root,
     read_activity,
     record_activity,
     slug_for_name,
+    validate_member_name,
     validate_slug,
 )
 
@@ -52,6 +55,35 @@ class TestSlugForName:
         slug = slug_for_name("x" * 100)
         assert len(slug) <= 80
         assert not slug.endswith("-")
+
+
+class TestMemberName:
+    @pytest.mark.parametrize(
+        "name",
+        ["dr. eggbot", "Review & QA", "アシスタント", "family 👨\u200d👩\u200d👧"],
+    )
+    def test_accepts_bounded_display_text(self, name):
+        assert validate_member_name(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            " leading",
+            "trailing ",
+            "line\nbreak",
+            "tab\tname",
+            "nul\x00name",
+            "hidden\u200bname",
+            "bidi\u202ename",
+            "line\u2028separator",
+            "bad\ud800text",
+            "x" * (MEMBER_NAME_MAX_CHARS + 1),
+        ],
+    )
+    def test_rejects_unsafe_or_unbounded_text(self, name):
+        with pytest.raises(MemberNameError):
+            validate_member_name(name)
 
 
 class TestValidateSlug:
