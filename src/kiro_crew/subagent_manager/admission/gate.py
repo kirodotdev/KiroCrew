@@ -891,6 +891,12 @@ class _GateMixin(ManagerComponent):
         ):
             should_queue, slot_free = True, False
         if should_queue:
+            # Queued children are deliberately absent from ``_agents``, so the
+            # removal fence in ``remove_if_unclaimed`` counts acceptance here:
+            # from this point the row is durable (write-before-ack) and WILL
+            # start on its own, whether it joins the in-memory window below or
+            # waits on disk for the pump's refill.
+            self._manager.bump_attachment(parent_session_key)
             # A prevalidated app spawn does not carry its prevalidation INTO the
             # queue. `_agent_prevalidated` skips the agent-directory ownership
             # scan (it was validated off the loop at request time); while the
@@ -1163,6 +1169,10 @@ class _GateMixin(ManagerComponent):
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
         info._taskq_generation = taskq_generation
+        # A started child attaches here; the removal fence counts the moment a
+        # run becomes visible to ``running_agents_for`` so a parent cannot be
+        # reaped off an attachment probe that answered just before it.
+        self._manager.bump_attachment(parent_session_key)
         self._manager._agents[agent_id] = info
         self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)
         if not _dispatch_now:  # a ClaimPoint re-entry already holds its reservation

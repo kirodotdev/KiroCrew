@@ -1054,6 +1054,212 @@ class TestRemoveIfUnclaimed:
         mgr.release(key)
 
     @pytest.mark.asyncio
+    async def test_noops_with_attached_subagents(self, cfg):
+        """The parent may be idle while shared-runtime children still work."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-children"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        probe = MagicMock(return_value=True)
+        mgr.set_subagent_probe(probe)
+
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        probe.assert_called_once_with(key)
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_noops_when_subagent_probe_fails(self, cfg):
+        """An unreadable child registry must not terminate a parent runtime."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-probe-error"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        mgr.set_subagent_probe(MagicMock(side_effect=RuntimeError("registry unavailable")))
+
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("attached", [True, False])
+    async def test_async_subagent_probe(self, cfg, attached):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-async-children"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        calls = []
+
+        async def probe(session_key):
+            await asyncio.sleep(0)
+            calls.append(session_key)
+            return attached
+
+        mgr.set_subagent_probe(probe)
+        assert await mgr.remove_if_unclaimed(key) is (not attached)
+        assert (key in mgr._sessions) is attached
+        assert calls == [key]
+        if attached:
+            provider.shutdown.assert_not_awaited()
+        else:
+            provider.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("claim", ["held", "finished", "replacement", "child", "injection"])
+    async def test_session_survives_work_arriving_during_probe(self, cfg, claim):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-probe-race"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        entered = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def probe(session_key):
+            entered.set()
+            await asyncio.wait_for(resume.wait(), timeout=2)
+            return False
+
+        mgr.set_subagent_probe(probe)
+        removal = asyncio.create_task(mgr.remove_if_unclaimed(key))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            async with asyncio.timeout(2):
+                async with mgr._lock:
+                    if claim == "replacement":
+                        mgr._sessions[key] = MagicMock()
+                    elif claim == "child":
+                        handler = MagicMock()
+                        handler.running_agents_for.return_value = [{"id": "new-child"}]
+                        mgr.set_child_teardown_handler(handler)
+                    elif claim == "injection":
+                        mgr.set_injection_probe(lambda _: True)
+                if claim in {"held", "finished"}:
+                    assert await mgr.try_acquire(key)
+                    if claim == "finished":
+                        mgr._sessions[key].first_turn = FirstTurnState.NOTHING_ARMED
+                        mgr.release(key)
+            resume.set()
+            assert await asyncio.wait_for(removal, timeout=2) is False
+            assert key in mgr._sessions
+            provider.shutdown.assert_not_awaited()
+            if claim == "child":
+                handler.snapshot_teardown_children.assert_not_called()
+        finally:
+            resume.set()
+            if not removal.done():
+                removal.cancel()
+            await asyncio.gather(removal, return_exceptions=True)
+            if claim == "held":
+                mgr.release(key)
+
+    class _FenceHandler:
+        """Minimal teardown handler with an attachment-generation fence.
+
+        Stands in for ``SubagentManager``: the running set and the per-parent
+        attachment generation are plain attributes the test mutates mid-probe.
+        """
+
+        def __init__(self) -> None:
+            self.generation = 0
+            self.running: list[dict] = []
+
+        def running_agents_for(self, session_key: str) -> list[dict]:
+            return list(self.running)
+
+        def attachment_generation(self, session_key: str) -> int:
+            return self.generation
+
+        def snapshot_teardown_children(self, session_key: str) -> tuple[str, ...]:
+            return ()
+
+        async def cancel_for_teardown(self, agent_ids, *, parent_session_key, verb=""):
+            return 0
+
+    @pytest.mark.asyncio
+    async def test_fence_keeps_session_when_child_attaches_during_probe(self, cfg):
+        """A child accepted while the awaited probe runs bumps the attachment
+        generation; the post-await recheck must keep the parent even though
+        neither the probe's answer nor ``running_agents_for`` can see it (a
+        queued spawn is deliberately absent from ``_agents``)."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-fence"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        handler = self._FenceHandler()
+        mgr.set_child_teardown_handler(handler)
+        entered = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def probe(session_key):
+            entered.set()
+            await asyncio.wait_for(resume.wait(), timeout=2)
+            return False
+
+        mgr.set_subagent_probe(probe)
+        removal = asyncio.create_task(mgr.remove_if_unclaimed(key))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            handler.generation += 1  # the bump a queued acceptance makes
+            resume.set()
+            assert await asyncio.wait_for(removal, timeout=2) is False
+            assert key in mgr._sessions
+            provider.shutdown.assert_not_awaited()
+        finally:
+            resume.set()
+            if not removal.done():
+                removal.cancel()
+            await asyncio.gather(removal, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_fence_with_stable_generation_allows_removal(self, cfg):
+        """The fence is a compare, not a veto: with no attachment landing
+        during the awaited probe, an armed idle parent is still removed."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-fence-stable"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        mgr.set_child_teardown_handler(self._FenceHandler())
+
+        async def probe(session_key):
+            await asyncio.sleep(0)
+            return False
+
+        mgr.set_subagent_probe(probe)
+        assert await mgr.remove_if_unclaimed(key) is True
+        assert key not in mgr._sessions
+        provider.shutdown.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_async_subagent_probe_failure_keeps_session(self, cfg):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-async-error"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+
+        async def probe(session_key):
+            await asyncio.sleep(0)
+            raise RuntimeError("registry unavailable")
+
+        mgr.set_subagent_probe(probe)
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_noops_on_missing_key(self, cfg):
         from kiro_crew.session import SessionManager
 

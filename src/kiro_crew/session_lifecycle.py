@@ -176,6 +176,8 @@ class SessionLifecycleOwner(Protocol):
 
     def _is_continuable_key(self, key: str) -> bool: ...
 
+    def _has_attached_subagents(self, key: str) -> bool | Awaitable[bool]: ...
+
     def clear_queue(self, key: str, owned_by: Callable[[dict], bool] | None = None) -> None: ...
 
     def release(self, key: str) -> None: ...
@@ -1065,6 +1067,29 @@ class SessionLifecycleService:
             self._deps.logger.exception("Parent end %s: snapshotting sub-agents failed", key)
             return ()
 
+    def _attachment_generation(self, key: str) -> int | None:
+        """The teardown handler's per-parent attachment generation, or None.
+
+        The fence half of :meth:`remove_if_unclaimed`: read synchronously under
+        ``owner._lock`` before the attachment probe is issued and again after
+        it resolves, so a generation bumped in between (a queued spawn, a
+        store-accepted row, an in-flight delivery -- none of which a
+        ``running_agents_for`` recheck can see) keeps the parent.
+
+        ``None`` means the handler has no generation to fence with (an older
+        registry, or no registry installed at all): the synchronous rechecks
+        still run, exactly as before the fence existed. The duck-type lookup
+        goes through the class, not the instance, so a mock handler cannot
+        conjure a counter out of thin air.
+        """
+        handler = self._child_teardown
+        if handler is None or not key:
+            return None
+        reader = getattr(type(handler), "attachment_generation", None)
+        if not callable(reader):
+            return None
+        return int(reader(handler, key))
+
     async def _cancel_parent_children(
         self,
         key: str,
@@ -1697,36 +1722,90 @@ class SessionLifecycleService:
             return complete
 
     async def remove_if_unclaimed(self, key: str) -> bool:
-        """Remove a speculative session only while its first turn is unclaimed."""
+        """Remove a speculative session only while its first turn is unclaimed.
+
+        A free parent semaphore does not prove that its runtime is disposable:
+        attached children can continue on it after the parent turn ends.
+        """
         owner = self._owner
         constants = self._deps.constants()
         requested_key = key
         key = owner._fold_key(key)
-        async with owner._lock:
-            session = owner._sessions.get(key)
-            if (
-                session is None
-                or session.first_turn is constants.first_turn_nothing_armed
-                or session.semaphore.locked()
-            ):
+        session = owner._sessions.get(key)
+        if session is None:
+            return False
+        probe_awaited = False
+        # The fence's BEFORE reading, taken in the same lock hold that issues
+        # the probe: any attachment landing while the probe awaits bumps the
+        # teardown handler's generation, and the recheck below compares against
+        # THIS snapshot, so work the probe answered before it existed still
+        # keeps the parent. ``None`` means there is no generation to fence with
+        # and the synchronous rechecks decide on their own, as they always have.
+        attachment_gen: int | None = None
+        while True:
+            async with owner._lock:
+                if (
+                    owner._sessions.get(key) is not session
+                    or session.first_turn is constants.first_turn_nothing_armed
+                    or session.semaphore.locked()
+                ):
+                    return False
+                try:
+                    if probe_awaited:
+                        if owner._has_pending_injection(key):
+                            return False
+                        if (
+                            attachment_gen is not None
+                            and self._attachment_generation(key) != attachment_gen
+                        ):
+                            return False
+                        if self._child_teardown is not None:
+                            children = self._child_teardown.running_agents_for(key)
+                            if children is None or children:
+                                return False
+                        answer = False
+                    else:
+                        attachment_gen = self._attachment_generation(key)
+                        answer = owner._has_attached_subagents(key)
+                except Exception:
+                    self._deps.logger.debug(
+                        "Unclaimed removal: sub-agent probe failed for %s; keeping it",
+                        key,
+                        exc_info=True,
+                    )
+                    return False
+                if not isinstance(answer, Awaitable):
+                    if answer:
+                        return False
+                    del owner._sessions[key]
+                    # Snapshot the runs this key owns in the SAME lock hold as the pop: every
+                    # await below is a window a cold start can register a successor under
+                    # this key in, and a selection made after one would name the
+                    # successor's runs. The cancel itself happens after the teardown.
+                    teardown_children = self._snapshot_parent_children(key)
+                    owner._advance_session_generation(key)
+                    owner._compact_cooldown_until.pop(key, None)
+                    self._suppress_replay.discard(key)
+                    owner._compact_pending_verdict.pop(key, None)
+                    self._origin_links.pop(key, None)
+                    self.state.stop_requests.pop(key, None)
+                    self._discard_replay_gap(key)
+                    self.state.orphaned_holders.pop(key, None)
+                    self._release_turn_ceiling(key, requested_key)
+                    # Same tick as the removal: see reset.
+                    await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
+                    break
+            try:
+                if await answer:
+                    return False
+            except Exception:
+                self._deps.logger.debug(
+                    "Unclaimed removal: sub-agent probe failed for %s; keeping it",
+                    key,
+                    exc_info=True,
+                )
                 return False
-            del owner._sessions[key]
-            # Snapshot the runs this key owns in the SAME lock hold as the pop: every
-            # await below is a window a cold start can register a successor under
-            # this key in, and a selection made after one would name the
-            # successor's runs. The cancel itself happens after the teardown.
-            teardown_children = self._snapshot_parent_children(key)
-            owner._advance_session_generation(key)
-            owner._compact_cooldown_until.pop(key, None)
-            self._suppress_replay.discard(key)
-            owner._compact_pending_verdict.pop(key, None)
-            self._origin_links.pop(key, None)
-            self.state.stop_requests.pop(key, None)
-            self._discard_replay_gap(key)
-            self.state.orphaned_holders.pop(key, None)
-            self._release_turn_ceiling(key, requested_key)
-            # Same tick as the removal: see reset.
-            await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
+            probe_awaited = True
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
         try:
             await session.provider.shutdown()
