@@ -1079,27 +1079,37 @@ export function RemoteCrewPanel() {
     onMutate: () => { setActionErr(null); setDiagNote(null); setDiagReport(null) },
     onSuccess: (st, id) => {
       const code = st.diagnosis?.code
-      const reason = st.diagnosis?.reason || st.error
-      // A healthy verdict is only healthy when the tunnel has no error of its own:
-      // `status.error` is the tunnel's live failure, and the ladder result is the
-      // last RUN, so an `ok` beside a set `error` is stale and must not win.
+      // Two verdicts are BENIGN: `ok`, and `not_connected` — which is `ok: false`
+      // on the wire but whose reason is guidance ("click Connect"), not a failure.
+      // Neither may label an error surface or reach the failure report.
+      const benign = code === 'ok' || code === 'not_connected'
+      const failing = st.diagnosis && !benign ? st.diagnosis : undefined
+      // Displayed text, most specific first: a FAILING ladder verdict names the
+      // broken link, so it wins; otherwise the tunnel's live `status.error`; and
+      // only then a benign verdict's own reason. The ladder result is the last
+      // RUN, so a stale "All checks passed" / "click Connect" must never label a
+      // red notice whose real cause is the live error.
+      const reason = failing?.reason || st.error || st.diagnosis?.reason
+      // A benign verdict is only benign while the tunnel has no error of its own.
       const kind: 'ok' | 'info' | 'warn' =
-        code === 'ok' && !st.error ? 'ok' : code === 'not_connected' && !st.error ? 'info' : 'warn'
+        st.error || failing ? 'warn' : code === 'ok' ? 'ok' : code === 'not_connected' ? 'info' : 'warn'
       if (reason) setDiagNote({ kind, text: `${id}: ${reason}` })
       // Journal unconditionally, healthy verdict included: the recorder's
       // no-failure path is what clears its de-dup signature, so skipping the call
       // on a healthy diagnose would leave the signature standing and suppress the
       // next identical failure. It returns null when there is nothing to describe.
-      // The reason is only offered as the fallback message when it describes a
-      // failure — the recorder already refuses an `ok` diagnosis.reason, and
-      // handing it back through `fallbackMessage` would defeat that guard and
-      // journal "All checks passed" as an error (#11110).
+      // A benign verdict is stripped from the status handed over: the recorder
+      // treats any not-ok verdict as a failure, so `not_connected` would otherwise
+      // be journaled as a system error (the #11110 defect by another path), and a
+      // stale benign verdict beside a live error would decorate that error's
+      // report with a probe chain that says nothing is wrong.
       const inst = instances.find(i => i.id === id)
+      const { diagnosis: _omitted, ...withoutDiagnosis } = st
       setDiagReport(reportInstanceFailure({
         id,
         name: inst?.name || id,
         transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
-        status: st,
+        status: benign ? withoutDiagnosis : st,
         stage: 'connect',
         fallbackMessage: kind === 'warn' ? reason || '' : '',
       }))
