@@ -312,6 +312,18 @@ const PATROL_TICK_MS = 15_000
 /** Stable empty roster for the not-yet-answered read, so the memos keyed on
  *  `members` do not recompute on every render while the first fetch is out. */
 const EMPTY_ROSTER: readonly MemberRosterRow[] = []
+/** The thread endpoint's code for "the gateway is still preparing memory after
+ *  a start": the one open failure a re-POST clears on its own. Every other
+ *  failure code needs the owner and is reported at once. */
+const MEMORY_PREPARING_CODE = 'memory_preparing'
+/** Gap between re-POSTs while the gateway prepares memory. Each POST already
+ *  holds server-side for the turn-admission grace, so this only spaces the
+ *  re-asks — it is not the wait. */
+const MEMORY_PREPARING_RETRY_MS = 3_000
+/** Re-POSTs one open makes before a still-preparing gateway is reported as a
+ *  failed open. With the server-side hold this covers a restore-and-reindex of
+ *  several minutes; past it the user deserves the notice and its details. */
+const MEMORY_PREPARING_RETRIES = 10
 
 export default function MembersPage() {
   const { t } = useTranslation()
@@ -655,6 +667,21 @@ export default function MembersPage() {
   // every open re-POSTs. Across members the rule above stands untouched (a
   // late answer for another member is that member's newest, so it lands).
   const threadReqSeq = useRef<Record<string, number>>({})
+  // Re-POSTs made so far for one member's open while the gateway reports that
+  // memory is still being prepared (a restart's restore-and-reindex pass).
+  // While one is scheduled the outcome stays as onMutate left it — no
+  // `failed` — so the column keeps its "Opening the conversation…" line, which
+  // is the honest reading: the open is still in progress, held by the gateway,
+  // not refused. Past the cap the failure is reported and every later open of
+  // that member reports at once (each still holds server-side), until a
+  // confirmed open resets the count. The timer is one per page: a newer open
+  // supersedes it through the sequence check, and unmount clears it so no
+  // POST fires into a page that is gone.
+  const preparingRetriesRef = useRef<Record<string, number>>({})
+  const preparingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (preparingTimerRef.current) clearTimeout(preparingTimerRef.current)
+  }, [])
   const openThread = useMutation({
     mutationFn: (m: MemberRosterRow) => api.memberThread(m.slug),
     onMutate: (m) => {
@@ -676,6 +703,7 @@ export default function MembersPage() {
         setThreadOutcome(m.name, () => ({ slot_key: '', collision: r.member }))
         return
       }
+      preparingRetriesRef.current[m.name] = 0
       setThreadOutcome(m.name, () => ({ slot_key: r.slot_key }))
       if (m.slot_key !== r.slot_key) {
         queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
@@ -685,10 +713,25 @@ export default function MembersPage() {
     },
     onError: (error, m, seq) => {
       if (seq !== threadReqSeq.current[m.name]) return
+      const errorReport = findReport(error instanceof Error ? error.message : undefined)
+      const retries = preparingRetriesRef.current[m.name] ?? 0
+      if (errorReport?.code === MEMORY_PREPARING_CODE && retries < MEMORY_PREPARING_RETRIES) {
+        preparingRetriesRef.current[m.name] = retries + 1
+        if (preparingTimerRef.current) clearTimeout(preparingTimerRef.current)
+        preparingTimerRef.current = setTimeout(() => {
+          preparingTimerRef.current = null
+          // A newer open for this member owns the verdict now; its own
+          // answer decides whether to keep retrying.
+          if (seq !== threadReqSeq.current[m.name]) return
+          openThread.mutate(m)
+        }, MEMORY_PREPARING_RETRY_MS)
+        return
+      }
+      preparingRetriesRef.current[m.name] = 0
       setThreadOutcome(m.name, (prev) => ({
         slot_key: prev?.slot_key ?? '',
         failed: true,
-        errorReport: findReport(error instanceof Error ? error.message : undefined),
+        errorReport,
       }))
     },
   })

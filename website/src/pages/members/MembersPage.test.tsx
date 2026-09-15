@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
@@ -544,6 +544,69 @@ describe('MembersPage thread', () => {
     expect(screen.queryByTestId('member-thread-error-details')).toBeNull()
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta')
     expect(screen.queryByText('alpha-private-memory-unavailable', { exact: false })).toBeNull()
+  })
+
+  /* ── the gateway is still preparing memory after a restart ─────────────
+   * The thread endpoint answers 503 `memory_preparing` while the gateway's
+   * restore-and-reindex pass outlasts the server-side grace. That is the one
+   * open failure a re-POST clears on its own, so the page keeps the column in
+   * its "Opening…" state and re-asks on a timer instead of raising the error
+   * notice — until a cap, past which the failure is reported like any other.
+   * Fake timers with `shouldAdvanceTime` keep waitFor/findBy polling; the
+   * retry gap is jumped explicitly. Real timers come back in onTestFinished,
+   * which runs whether or not the case threw (website/docs/testing.md). */
+  const PREPARING_REASON = "memory store 'default': Memory preparation is still running. Retry shortly."
+  const preparing = () => Promise.reject(new Error(PREPARING_REASON))
+
+  it('a still-preparing gateway keeps the open in progress and re-POSTs until the thread binds', async () => {
+    recordError({ source: 'api', message: PREPARING_REASON, status: 503, code: 'memory_preparing', endpoint: '/api/members/oncall/thread' })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => vi.useRealTimers())
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row()], default_agent: 'kirocrew' })
+    vi.mocked(api.memberThread).mockImplementationOnce(preparing).mockImplementationOnce(preparing).mockImplementation(echoThread)
+    const { queryClient } = renderWithProviders(<MembersPage />, { route: '/members' })
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(1))
+    // Held, not failed: the column says the open is in progress, and the
+    // cached outcome carries no failure for the notice to render.
+    await waitFor(() => expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({ slot_key: '' }))
+    expect(screen.getByText(/Opening the conversation/i)).toBeInTheDocument()
+    expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    // The re-POST rides the retry gap, and is still held rather than failed.
+    await vi.advanceTimersByTimeAsync(3_000)
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(2))
+    expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    expect(screen.getByText(/Opening the conversation/i)).toBeInTheDocument()
+    await vi.advanceTimersByTimeAsync(3_000)
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(3))
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({ slot_key: 'member-oncall' })
+    expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    // A confirmed open is the end of it: no timer is left to re-ask.
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(api.memberThread).toHaveBeenCalledTimes(3)
+  })
+
+  it('a gateway that never finishes preparing is reported after the retry cap, with its details', async () => {
+    const report = recordError({ source: 'api', message: PREPARING_REASON, status: 503, code: 'memory_preparing', endpoint: '/api/members/oncall/thread' })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => vi.useRealTimers())
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row()], default_agent: 'kirocrew' })
+    vi.mocked(api.memberThread).mockImplementation(preparing)
+    const { queryClient } = renderWithProviders(<MembersPage />, { route: '/members' })
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(1))
+    // Ten re-POSTs ride the timer, each one still held rather than failed.
+    for (let n = 2; n <= 11; n++) {
+      expect(screen.queryByTestId('member-thread-error')).toBeNull()
+      await vi.advanceTimersByTimeAsync(3_000)
+      await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(n))
+    }
+    // The eleventh answer is past the cap: the failure is reported the way
+    // any other open failure is, report and all, and the timer stops.
+    const notice = await screen.findByTestId('member-thread-error')
+    expect(notice).toHaveTextContent(/Could not open this member's conversation/i)
+    expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({ slot_key: '', failed: true, errorReport: report })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(api.memberThread).toHaveBeenCalledTimes(11)
   })
 })
 

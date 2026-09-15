@@ -1810,3 +1810,110 @@ class TestDenialAuditOffload:
             "warmed at startup (sel.warm_sel_singleton), so a non-critical audit "
             "is a direct enqueue (#8608)"
         )
+
+
+class TestMemoryPreparationGrace:
+    """Opening a member's DM waits on gateway memory preparation like a turn.
+
+    The binding resolver the thread open runs fails closed while the gateway
+    is still restoring and indexing memory after a start. Without a wait, the
+    Members page's first open after every restart met a hard 503 on a fence
+    that cleared seconds later. The open now holds for the same bounded grace
+    a turn gets at its admission seam; a grace that expires answers with a
+    RETRYABLE code, distinct from the fail-closed one that needs the owner.
+    """
+
+    @staticmethod
+    def _startup():
+        from kiro_crew.memory_startup import MemoryStartup
+
+        return MemoryStartup.begin()
+
+    @pytest.mark.asyncio
+    async def test_open_waits_for_preparation_then_binds(self, tmp_path):
+        state = _make_state(tmp_path)
+        startup = self._startup()
+        release = asyncio.Event()
+
+        async def prepare_memory():
+            await release.wait()
+            assert startup.complete()
+
+        state.memory_startup_task = asyncio.create_task(prepare_memory())
+        try:
+            with _patched_config([CREW]):
+                async with TestClient(TestServer(_make_members_app(state))) as client:
+                    opening = asyncio.create_task(client.post("/api/members/code-reviewer/thread"))
+                    await asyncio.sleep(0.05)
+                    # Held, not refused: nothing answered and no slot was born
+                    # while preparation is still running.
+                    assert not opening.done()
+                    assert not state._slots
+                    release.set()
+                    resp = await opening
+                    assert resp.status == 200, await resp.text()
+                    assert (await resp.json())["slot_key"] == member_slot_key(CREW)
+            assert member_slot_key(CREW) in state._slots
+        finally:
+            release.set()
+            await state.memory_startup_task
+            startup.stop()
+            startup.release()
+
+    @pytest.mark.asyncio
+    async def test_open_past_the_grace_is_a_retryable_refusal(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
+        state = _make_state(tmp_path)
+        startup = self._startup()
+        release = asyncio.Event()
+
+        async def prepare_memory():
+            await release.wait()
+            assert startup.complete()
+
+        state.memory_startup_task = asyncio.create_task(prepare_memory())
+        try:
+            with _patched_config([CREW]):
+                async with TestClient(TestServer(_make_members_app(state))) as client:
+                    resp = await client.post("/api/members/code-reviewer/thread")
+                    assert resp.status == 503
+                    body = await resp.json()
+                    assert body["code"] == "memory_preparing"
+                    assert resp.headers["Retry-After"] == "5"
+                    assert "'default'" in body["error"]
+                    # The refusal cancelled nothing shared and created nothing.
+                    assert not state.memory_startup_task.done()
+                    assert not state._slots
+                    release.set()
+                    await state.memory_startup_task
+                    # The retry the code invites succeeds once preparation lands.
+                    resp = await client.post("/api/members/code-reviewer/thread")
+                    assert resp.status == 200, await resp.text()
+        finally:
+            release.set()
+            await state.memory_startup_task
+            startup.stop()
+            startup.release()
+
+    @pytest.mark.asyncio
+    async def test_failed_preparation_keeps_the_fail_closed_code(self, tmp_path):
+        """A structural failure needs the owner: a client must not retry it."""
+        state = _make_state(tmp_path)
+        startup = self._startup()
+        startup.fail(RuntimeError("restore journal unreadable"))
+        done: asyncio.Future = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        state.memory_startup_task = done
+        try:
+            with _patched_config([CREW]):
+                async with TestClient(TestServer(_make_members_app(state))) as client:
+                    resp = await client.post("/api/members/code-reviewer/thread")
+                    assert resp.status == 503
+                    body = await resp.json()
+                    assert body["code"] == "store_unavailable"
+                    assert "restore journal unreadable" in body["error"]
+                    assert "Retry-After" not in resp.headers
+            assert not state._slots
+        finally:
+            startup.stop()
+            startup.release()

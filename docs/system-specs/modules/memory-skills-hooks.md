@@ -1850,6 +1850,14 @@ publishing the turn identity, resolving memory ownership, allocating a provider
 or writing metadata. A deadline returns a retryable `memory_unavailable` refusal
 without recording a session failure or consuming queued intent. The wait is
 shielded: a deadline or the user's Stop action cannot cancel shared preparation.
+Opening a Crew Member's DM thread (`POST /api/members/{slug}/thread`) waits on the
+same task with the same grace before it resolves the member's memory binding, since
+that resolver fails closed during preparation: a grace that expires answers 503
+with code `memory_preparing` and a `Retry-After` header, distinct from
+`store_unavailable`, which covers refusals only the owner can clear (a failed
+restore, a broken binding). The Members page re-POSTs a `memory_preparing`
+refusal on a bounded timer while showing the open as still in progress, and
+reports it as a failed open only past that cap.
 A later admitted turn retains normal first-turn memory context. Local dashboard commands
 that return before turn admission remain available. Preparation keeps restore
 activation, store opening and the full Global FTS rebuild in one barrier; a

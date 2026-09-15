@@ -259,6 +259,28 @@ def _store_unavailable_response(store: str, error: Exception | None = None) -> w
     )
 
 
+#: How soon a client may re-ask after a ``memory_preparing`` refusal. Each
+#: request already waits the turn-admission grace on the shared task, so this
+#: only spaces the re-asks; it is not the wait.
+MEMORY_PREPARING_RETRY_AFTER_SECONDS = 5
+
+
+def _memory_preparing_response(store: str, error: Exception) -> web.Response:
+    """A retryable 503: the gateway is still preparing memory after a start.
+
+    Distinct from :func:`_store_unavailable_response` on purpose. That code
+    covers refusals only the owner can clear (a failed restore, a broken
+    binding), and a client must not sit retrying those. This one is cleared by
+    the preparation pass finishing, so a client may re-ask on its own.
+    """
+    message, _ = redact_local_paths(f"memory store {store or 'default'!r}: {error}")
+    return web.json_response(
+        {"error": _redact_memory_field(message), "code": "memory_preparing"},
+        status=503,
+        headers={"Retry-After": str(MEMORY_PREPARING_RETRY_AFTER_SECONDS)},
+    )
+
+
 def _private_profile_unavailable_response(store: str, error: Exception) -> web.Response:
     """Keep identity/filesystem diagnostics in the log, not the profile response."""
     logger.warning(

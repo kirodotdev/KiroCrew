@@ -114,6 +114,22 @@ def require_memory_prepared() -> None:
         )
 
 
+def memory_preparation_pending() -> bool:
+    """Whether a refusal right now is the transient preparing fence.
+
+    True only while this gateway's preparation is still running: not before a
+    gateway exists, not once it is ready, and not after a structural failure
+    or a stop, which need an owner action rather than a retry. A caller that
+    hands a refusal to a client uses this to say "retry" only when a retry can
+    succeed on its own.
+    """
+    with _lock:
+        startup = _active
+        return (
+            startup is not None and not startup.ready and not startup.error and not startup.stopped
+        )
+
+
 async def wait_for_memory_preparation(task: asyncio.Future | None) -> None:
     """Give one turn a short grace period without cancelling shared recovery."""
     with _lock:
