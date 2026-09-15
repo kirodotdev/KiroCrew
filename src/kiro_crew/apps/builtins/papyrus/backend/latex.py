@@ -530,7 +530,7 @@ def _compiler_argv(compiler: str, tex: Path, project: Path) -> list[str]:
     never pass it.
     """
     if "tectonic" in os.path.basename(compiler):
-        return [compiler, "--keep-logs", "--", str(tex)]
+        return [compiler, "--keep-logs", "--outdir", str(project), "--", str(tex)]
     return [
         compiler,
         "-interaction=nonstopmode",
