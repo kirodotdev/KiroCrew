@@ -603,11 +603,12 @@ describe('Papyrus co-author session', () => {
     expect(await screen.findByTestId('co-author-panel')).toBeInTheDocument()
     await waitFor(() => expect(chat.createChatSlot).toHaveBeenCalled())
     expect(chat.createChatSlot.mock.calls[0]?.[4]).toBe('persistent')
-    // The paper's identity is handed to the agent silently, not typed by the user.
+    // The paper's identity is handed to the agent silently, not typed by the user, and its
+    // queue residency is bounded like every other in-repo /context caller's.
     await waitFor(() => expect(chat.chatSlotContext).toHaveBeenCalledWith(
       SLOT,
       expect.stringContaining(PROJECT),
-      { source: 'papyrus-co-author', ephemeral: true },
+      { source: 'papyrus-co-author', ephemeral: false, maxAge: 3600 },
     ))
     // ...and remembered, so reopening the paper reuses it.
     expect(localStorage.getItem(SLOT_KEY_PREFIX + PROJECT)).toBe(SLOT)
@@ -650,9 +651,9 @@ describe('Papyrus co-author session', () => {
     await waitFor(() => expect(chat.chatSlotContext).toHaveBeenCalled())
   })
 
-  it('keeps the session when the silent context push fails', async () => {
-    // The context is a convenience for the agent, not something the user asked
-    // for — failing it must not tear down a working session or raise a banner.
+  it('keeps the session when the context push fails, and says so', async () => {
+    // The session must survive -- the context is a convenience, not something the user
+    // asked for. But `errors-use-error-notice` is blocking, so it cannot fail SILENTLY.
     chat.chatSlotContext.mockRejectedValue(new Error('context rejected'))
     const { user } = openWorkspace()
     await workspaceReady()
@@ -660,7 +661,25 @@ describe('Papyrus co-author session', () => {
     await user.click(screen.getByRole('button', { name: /Co-author/ }))
 
     await waitFor(() => expect(localStorage.getItem(SLOT_KEY_PREFIX + PROJECT)).toBe(SLOT))
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/next message/i)
+  })
+
+  it('surfaces a full-queue refusal of the context push', async () => {
+    // GPT BLOCKING F1: a 429 `context_not_queued` meant the document was DECLINED, and
+    // swallowing it left the agent without context and the user unaware.
+    const { ApiError } = await import('../api/apiError')
+    chat.chatSlotContext.mockRejectedValue(
+      new ApiError(429, 'rejected', JSON.stringify({ error: 'context_not_queued' })),
+    )
+    const { user } = openWorkspace()
+    await workspaceReady()
+
+    await user.click(screen.getByRole('button', { name: /Co-author/ }))
+
+    await waitFor(() => expect(localStorage.getItem(SLOT_KEY_PREFIX + PROJECT)).toBe(SLOT))
+    // The capacity wording, not the generic copy: both notices mention the next message, so
+    // only this phrase proves the 429 was told apart from an ordinary rejection.
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Mention the paper/i)
   })
 
   it('closes the panel again', async () => {
