@@ -106,6 +106,21 @@ const wheelState = (over: Record<string, unknown> = {}) => {
   }
 }
 
+/**
+ * Ceiling for every wait on this modal. The button sits behind TWO awaits, not
+ * one: App mounts this modal through a `React.lazy` boundary whose chunk drags
+ * AboutPanel's `InAppUpdateFlow` in with it, and the modal only OPENS once the
+ * ['mc-config-update-nudge'] config query has resolved (`recordLoaded`) — the
+ * click's own chain then adds the awaited `copyToClipboard` and the state commit
+ * it gates. Measured on an idle host with
+ * a warm transform cache, the first of those waits already spends ~500ms of
+ * Testing Library's 1000ms default, so a loaded `vitest run --coverage` overruns
+ * it and the affordance reads as absent ("Unable to find an element with the
+ * text: Copy command"). A named ceiling, not a longer guess — the React.lazy
+ * boundary rule in website/docs/testing.md.
+ */
+const MODAL_READY = { timeout: 5000 }
+
 describe('UpdateFoundModal copy-command confirmation', () => {
   beforeEach(() => {
     // Matches the mocked status version, so the (unrelated) changelog modal
@@ -118,25 +133,37 @@ describe('UpdateFoundModal copy-command confirmation', () => {
   it('confirms only once the text actually reached the clipboard', async () => {
     renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
 
-    const button = await screen.findByText('Copy command')
+    const button = await screen.findByText('Copy command', undefined, MODAL_READY)
     fireEvent.click(button)
 
-    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(COMMAND))
-    expect(await screen.findByText('Copied')).toBeTruthy()
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(COMMAND), MODAL_READY)
+    expect(await screen.findByText('Copied', undefined, MODAL_READY)).toBeTruthy()
   })
 
   it('withholds the confirmation when the clipboard write fails', async () => {
     vi.mocked(copyToClipboard).mockResolvedValue(false)
     renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
 
-    const button = await screen.findByText('Copy command')
+    const button = await screen.findByText('Copy command', undefined, MODAL_READY)
     fireEvent.click(button)
 
-    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(COMMAND))
-    // No new user-facing failure string exists for this surface, so a failed
-    // write must leave the button exactly as it was rather than lie.
-    await new Promise((r) => setTimeout(r, 0))
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(COMMAND), MODAL_READY)
+    // Settle on EITHER terminal outcome of the click — the confirmation or the
+    // copy-failure notice — before asserting. `queryByText('Copied')` is also
+    // null while the awaited write is still in flight, so a bare tick would let
+    // this pass for the wrong reason under load; and settling on the notice
+    // alone would make a regression that confirms unconditionally fail on a
+    // 5s timeout instead of on the assertion that names the bug.
+    await waitFor(
+      () => expect(
+        screen.queryByText('Copied') ?? screen.queryByTestId('update-found-copy-error'),
+      ).not.toBeNull(),
+      MODAL_READY,
+    )
+    // A failed write must leave the button exactly as it was rather than lie,
+    // and must say so through the surface's own copy-failure notice.
     expect(screen.queryByText('Copied')).toBeNull()
     expect(screen.getByText('Copy command')).toBeTruthy()
+    expect(screen.getByTestId('update-found-copy-error')).toBeTruthy()
   })
 })
