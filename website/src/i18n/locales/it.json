@@ -9710,7 +9710,9 @@
         "search_files": "Cerca file",
         "searching": "Ricerca…",
         "showing_first_matches": "Mostrando le prime {{shown}} corrispondenze",
-        "unable_to_list_folder": "Impossibile elencare la cartella"
+        "unable_to_list_folder": "Impossibile elencare la cartella",
+        "search_timed_out": "Ricerca scaduta",
+        "refresh_retries": "Aggiorna per riprovare"
       },
       "knowledgePicker": {
         "cancel": "Annulla",

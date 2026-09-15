@@ -9710,7 +9710,9 @@
         "search_files": "Rechercher des fichiers",
         "searching": "Recherche…",
         "showing_first_matches": "Affichage des {{shown}} premières correspondances",
-        "unable_to_list_folder": "Impossible de lister le dossier"
+        "unable_to_list_folder": "Impossible de lister le dossier",
+        "search_timed_out": "Délai de recherche dépassé",
+        "refresh_retries": "Actualiser pour réessayer"
       },
       "knowledgePicker": {
         "cancel": "Annuler",
