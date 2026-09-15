@@ -42,8 +42,7 @@ Under an unconditional closer, every case in
 
 from __future__ import annotations
 
-import time
-
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     MARKER_CLOSERS,
     OPTIONS_RE_LINE,
@@ -420,59 +419,65 @@ class TestLinearity:
     directly -- a quadratic implementation wedges rather than failing an
     assertion, so the bound is generous and the shapes are the adversarial ones."""
 
+    # Every guard in this class goes through ``assert_rejected_without_backtracking``:
+    # thread CPU instead of ``time.monotonic()`` (which ticks every 15.6 ms on
+    # Windows and charges a descheduled worker's wait to the regex), and a
+    # 24-unit pump FIRST so an exponential regression FAILS inside ``--timeout``
+    # instead of hanging the worker on the long input (class 6). The ``reject``
+    # callback asserts whatever outcome the shape has; the helper only bounds
+    # the cost of reaching it.
+
     def test_a_long_trailing_whitespace_run_is_linear(self):
-        # The marker's OWN closer followed by a 100k-tab run: a legitimate match
+        # The marker's OWN closer followed by a run of tabs: a legitimate match
         # (the tabs are the trailing ``[ \t]*``), and the scan is single-pass.
-        text = "[OPTIONS: A ]" + "\t" * 100_000
-        start = time.monotonic()
-        match = OPTIONS_RE_LINE.search(text)
-        assert match is not None
-        assert match.group("labels") == " A "
-        assert time.monotonic() - start < 5.0
+        def matches(text: str) -> None:
+            match = OPTIONS_RE_LINE.search(text)
+            assert match is not None
+            assert match.group("labels") == " A "
+
+        assert_rejected_without_backtracking(matches, lambda n: "[OPTIONS: A ]" + "\t" * n)
 
     def test_a_long_FAILING_continuation_scan_is_linear(self):
         # The adversarial direction: the closer is INSIDE the body, so it enters the
-        # lookahead, whose whitespace scan runs to the end of a 100k-tab run and then
+        # lookahead, whose whitespace scan runs to the end of the tab run and then
         # FAILS on ``x``. The body cannot cross the closer either, so the whole match
         # fails -- after the longest scan the lookahead can be made to do.
-        text = "[OPTIONS: A ]" + "\t" * 100_000 + "x]"
-        start = time.monotonic()
-        assert OPTIONS_RE_LINE.search(text) is None
-        assert time.monotonic() - start < 5.0
+        def reject(text: str) -> None:
+            assert OPTIONS_RE_LINE.search(text) is None
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS: A ]" + "\t" * n + "x]")
 
     def test_many_failing_closers_are_linear(self):
-        # 5,000 closers, each entering the lookahead and each failing it.
-        text = "[OPTIONS: " + "] x " * 5_000
-        start = time.monotonic()
-        OPTIONS_RE_LINE.search(text)
-        assert time.monotonic() - start < 5.0
+        # N closers, each entering the lookahead and each failing it.
+        assert_rejected_without_backtracking(
+            OPTIONS_RE_LINE.search, lambda n: "[OPTIONS: " + "] x " * n
+        )
 
     def test_many_continuing_closers_then_a_long_tail_are_linear(self):
-        # The other direction: 30,000 closers that all SUCCEED in the lookahead,
-        # followed by a 30,000-tab tail that fails the end anchor.
-        text = "[OPTIONS: " + "] | " * 30_000 + "\t" * 30_000
-        start = time.monotonic()
-        OPTIONS_RE_LINE.search(text)
-        assert time.monotonic() - start < 5.0
+        # The other direction: N closers that all SUCCEED in the lookahead,
+        # followed by an N-tab tail that fails the end anchor.
+        assert_rejected_without_backtracking(
+            OPTIONS_RE_LINE.search, lambda n: "[OPTIONS: " + "] | " * n + "\t" * n
+        )
 
     def test_a_run_of_any_opener_costs_the_same_as_a_run_of_ascii_openers(self):
-        # A repeated-token degeneration after a head: 20,000 copies of one opener
-        # with no partner. Each opener begins a pair attempt whose interior excludes
-        # EVERY bracket, so the attempt fails on the very next character and the
+        # A repeated-token degeneration after a head: a run of one opener with no
+        # partner. Each opener begins a pair attempt whose interior excludes EVERY
+        # bracket, so the attempt fails on the very next character and the
         # bare-opener alternative takes it -- one step per character for every
         # opener kind. An interior that admitted the lookalikes would scan the
-        # whole remaining run at each position instead, and the ratio below would
-        # be in the hundreds rather than near one.
-        def cost(opener: str) -> float:
-            text = "[OPTIONS: A | B " + opener * 20_000
-            start = time.monotonic()
-            OPTIONS_RE_LINE.search(text)
-            OPTIONS_RE_TRAILER.search(text)
-            return time.monotonic() - start
+        # whole remaining run at each position instead -- measured: EXPONENTIAL,
+        # 3.2 s at 24 lookalike openers, doubling per character. The earlier shape
+        # divided two ``time.monotonic()`` readings and read a 16x "ratio" from
+        # timer granularity alone (0.0 floored to 1 ms against a single 16 ms tick).
+        def reject(text: str) -> None:
+            assert OPTIONS_RE_LINE.search(text) is None
+            assert OPTIONS_RE_TRAILER.search(text) is None
 
-        ascii_cost = max(cost("["), 1e-3)
-        for opener in ("\u3010", "\uff3b", "\u3014"):
-            assert cost(opener) < 8 * ascii_cost, opener
+        for opener in ("[", "\u3010", "\uff3b", "\u3014"):
+            assert_rejected_without_backtracking(
+                reject, lambda n, opener=opener: "[OPTIONS: A | B " + opener * n
+            )
 
     def test_the_two_bracket_alternatives_cannot_blow_up_together(self):
         # THE shape that would be exponential if the matched-pair and
@@ -480,9 +485,11 @@ class TestLinearity:
         # each look like both, followed by a tail that fails the whole match, so
         # the engine is forced to exhaust every combination it believes exists.
         # They are disjoint by what follows the closer, so there is only one.
-        for block in ("[x] ", "[x] | ", "[a[b] ", "[a] ]a ", "[x", "[] "):
-            text = "[OPTIONS: " + block * 20_000 + "z"
-            start = time.monotonic()
+        def both(text: str) -> None:
             OPTIONS_RE_LINE.search(text)
             OPTIONS_RE_TRAILER.search(text)
-            assert time.monotonic() - start < 5.0, block
+
+        for block in ("[x] ", "[x] | ", "[a[b] ", "[a] ]a ", "[x", "[] "):
+            assert_rejected_without_backtracking(
+                both, lambda n, block=block: "[OPTIONS: " + block * n + "z"
+            )

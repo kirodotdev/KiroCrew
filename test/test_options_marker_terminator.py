@@ -37,10 +37,9 @@ FOUND, and that the visible text is UNCHANGED.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     _RAW_OPTIONS_RE_LINE,
     MARKER_CLOSERS,
@@ -294,21 +293,24 @@ class TestTheCost:
 
 
 class TestCost:
+    # Both guards ramp on thread CPU via conftest.assert_rejected_without_backtracking:
+    # a wall-clock bound charges a descheduled worker's wait to the code under test,
+    # and a single huge pump hangs the worker under the regression it guards.
+
     def test_the_check_is_linear_in_the_label_length(self):
         # One pass over the labels with a stack, so an adversarial run of openers is
         # linear rather than quadratic. Pinned by timing because the stack depth is
         # the only thing that grows.
-        labels = "a[" * 200_000
-        started = time.perf_counter()
-        assert _marker_labels_have_unmatched_opener(labels) is True
-        assert time.perf_counter() - started < 1.0
+        def unmatched(labels: str) -> None:
+            assert _marker_labels_have_unmatched_opener(labels) is True
 
-    @pytest.mark.parametrize("reps", [2_000, 10_000, 40_000])
-    def test_matching_stays_linear(self, reps: int):
+        assert_rejected_without_backtracking(unmatched, lambda n: "a[" * n)
+
+    def test_matching_stays_linear(self):
         # The adversarial shape: an unterminated marker made of bare openers, so the
         # pattern scans it all and the check walks it all.
-        src = "[OPTIONS:" + ("a[b" * reps)
-        started = time.perf_counter()
-        assert OPTIONS_RE_LINE.search(src) is None
-        assert OPTIONS_RE_TRAILER.search(src) is None
-        assert time.perf_counter() - started < 2.0
+        def reject(src: str) -> None:
+            assert OPTIONS_RE_LINE.search(src) is None
+            assert OPTIONS_RE_TRAILER.search(src) is None
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + ("a[b" * n))

@@ -175,6 +175,12 @@ def _mock_sessions():
     s.start_pool = AsyncMock()
     s.close_all = AsyncMock()
     s.recycle_background = AsyncMock()
+    # ``_drain_update_callback_work`` polls ``int(sessions.inbound_callback_count)``
+    # until it reaches 0 or its 30 s deadline. A bare MagicMock attribute answers
+    # ``int(...) == 1`` FOREVER, so every auto-apply-update test that reached the
+    # drain sat out the full 30 s (12 tests, 6 min per run) and then silently
+    # exercised the "restart deferred" branch instead of the restart it named.
+    s.inbound_callback_count = 0
     return s
 
 
