@@ -10292,10 +10292,13 @@
       "screenshot_failed_reason": "Échec de la capture d’écran : {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Impossible de renommer la session",
+      "could_not_rename_to": "Impossible de renommer en « {{name}} »",
+      "rename_already_saving": "Un renommage est déjà en cours d'enregistrement pour cette session — ton brouillon est conservé ; réessaie dans un instant",
       "could_not_generate_title": "Impossible de générer un titre",
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
-      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe"
+      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
+      "rename_reverted_try_again": "Le titre précédent a été rétabli — réessayez."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",
@@ -10422,6 +10425,7 @@
       "new_chat": "Nouveau chat",
       "new_chat_in_folder": "Nouveau chat dans le dossier",
       "new_chat_on_crew": "Nouveau chat sur un Crew",
+      "rename_saving": "Enregistrement du nouveau nom…",
       "runs_on_crew": "S'exécute sur {{name}} — un Crew connecté, pas sur cette machine",
       "new_chat_in_name": "Nouveau chat dans {{name}}",
       "new_chat_session": "Nouvelle session de chat",
@@ -15309,8 +15313,12 @@
       "saving": "Enregistrement..."
     },
     "offline": {
+      "close_sessions": "fermer des sessions",
       "disabled_gateway_offline": "{{label}} désactivé — passerelle hors ligne",
+      "duplicate_sessions": "dupliquer des sessions",
       "gateway_offline_reconnect": "Passerelle hors ligne — reconnecte-toi pour {{action}}",
+      "regenerate_titles": "régénérer des titres",
+      "rename_sessions": "renommer des sessions",
       "submit_comments": "envoyer les commentaires"
     },
     "popoutController": {

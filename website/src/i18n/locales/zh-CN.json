@@ -10004,10 +10004,13 @@
       "screenshot_failed_reason": "截图失败：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法重命名会话",
+      "could_not_rename_to": "无法重命名为“{{name}}”",
+      "rename_already_saving": "此会话的重命名已在保存中 — 你输入的内容会保留，请稍后重试",
       "could_not_generate_title": "无法生成标题",
       "could_not_open_side_chat": "无法打开随手问",
       "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",
-      "could_not_send_to_side_chat": "无法发送到随手问"
+      "could_not_send_to_side_chat": "无法发送到随手问",
+      "rename_reverted_try_again": "已恢复为原标题，请重试。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
@@ -10126,6 +10129,7 @@
       "new_chat": "新建对话",
       "new_chat_in_folder": "在文件夹中新建聊天",
       "new_chat_on_crew": "在 Crew 上新建聊天",
+      "rename_saving": "正在保存新名称…",
       "runs_on_crew": "在 {{name}} 上运行 —— 一个已连接的 Crew，而非本机",
       "new_chat_in_name": "在 {{name}} 中新建聊天",
       "new_chat_session": "新建聊天会话",
@@ -14914,8 +14918,12 @@
       "saving": "保存中…"
     },
     "offline": {
+      "close_sessions": "关闭会话",
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
+      "duplicate_sessions": "复制会话",
       "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
+      "regenerate_titles": "重新生成标题",
+      "rename_sessions": "重命名会话",
       "submit_comments": "提交评论"
     },
     "popoutController": {

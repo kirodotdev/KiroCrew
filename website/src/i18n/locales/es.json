@@ -10292,10 +10292,13 @@
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "No se pudo renombrar la sesión",
+      "could_not_rename_to": "No se pudo cambiar el nombre a «{{name}}»",
+      "rename_already_saving": "Ya se está guardando un cambio de nombre para esta sesión: se conserva tu borrador; inténtalo de nuevo en un momento",
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
-      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral"
+      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
+      "rename_reverted_try_again": "Se restauró el título anterior: inténtalo de nuevo."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
@@ -10422,6 +10425,7 @@
       "new_chat": "Nuevo chat",
       "new_chat_in_folder": "Nuevo chat en la carpeta",
       "new_chat_on_crew": "Nuevo chat en un Crew",
+      "rename_saving": "Guardando el nombre nuevo…",
       "runs_on_crew": "Se ejecuta en {{name}} — un Crew conectado, no en esta máquina",
       "new_chat_in_name": "Nuevo chat en {{name}}",
       "new_chat_session": "Nueva sesión de chat",
@@ -15309,8 +15313,12 @@
       "saving": "Guardando…"
     },
     "offline": {
+      "close_sessions": "cerrar sesiones",
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
+      "duplicate_sessions": "duplicar sesiones",
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
+      "regenerate_titles": "regenerar títulos",
+      "rename_sessions": "cambiar el nombre de las sesiones",
       "submit_comments": "enviar comentarios"
     },
     "popoutController": {

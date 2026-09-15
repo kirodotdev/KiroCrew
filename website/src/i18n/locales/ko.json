@@ -10004,10 +10004,13 @@
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "세션 이름을 바꿀 수 없습니다",
+      "could_not_rename_to": "‘{{name}}’(으)로 이름을 바꿀 수 없습니다",
+      "rename_already_saving": "이 세션의 이름 변경이 이미 저장되고 있습니다 — 입력한 내용은 유지됩니다. 잠시 후 다시 시도하세요",
       "could_not_generate_title": "제목을 생성할 수 없습니다",
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
-      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다"
+      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
+      "rename_reverted_try_again": "이전 제목으로 되돌렸습니다. 다시 시도해 주세요."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
@@ -10126,6 +10129,7 @@
       "new_chat": "새 채팅",
       "new_chat_in_folder": "폴더에 새 채팅",
       "new_chat_on_crew": "Crew에서 새 채팅",
+      "rename_saving": "새 이름을 저장하는 중…",
       "runs_on_crew": "{{name}}에서 실행 — 연결된 Crew이며 이 컴퓨터가 아닙니다",
       "new_chat_in_name": "‘{{name}}’에 새 채팅",
       "new_chat_session": "새 채팅 세션",
@@ -14914,8 +14918,12 @@
       "saving": "저장 중…"
     },
     "offline": {
+      "close_sessions": "세션을 종료",
       "disabled_gateway_offline": "{{label}}이(가) 비활성화되었습니다 — 게이트웨이가 오프라인입니다",
+      "duplicate_sessions": "세션 복제",
       "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
+      "regenerate_titles": "제목을 다시 생성",
+      "rename_sessions": "세션 이름을 변경",
       "submit_comments": "댓글 제출"
     },
     "popoutController": {

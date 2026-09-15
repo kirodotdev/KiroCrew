@@ -43,7 +43,9 @@ describe('session header at phone widths', () => {
     const s = await src()
     expect(s, 'the header row').toMatch(/group\/header flex min-w-0 items-stretch/)
     expect(s, 'the display cluster').toMatch(/cursor-text flex min-w-0 items-center/)
-    expect(s, 'the clickable wrapper').toMatch(/<Clickable className="flex min-w-0 items-center gap-1"/)
+    // Template-quoted since the wrapper also carries the offline dimming; what
+    // this guards is the min-w-0 in the chain, not the quoting style.
+    expect(s, 'the clickable wrapper').toMatch(/<Clickable className=\{?[`"]flex min-w-0 items-center gap-1/)
     expect(s, 'the editing cluster').toMatch(/flex min-w-0 flex-1 items-center gap-1 px-1\.5/)
   })
 })

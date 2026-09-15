@@ -10436,10 +10436,13 @@
       "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Не удалось переименовать сессию",
+      "could_not_rename_to": "Не удалось переименовать в «{{name}}»",
+      "rename_already_saving": "Переименование этого сеанса уже сохраняется — твой черновик сохранён, попробуй снова через мгновение",
       "could_not_generate_title": "Не удалось создать заголовок",
       "could_not_open_side_chat": "Не удалось открыть боковой чат",
       "side_command_not_run": "Команда /side не была выполнена. Ваше сообщение осталось в поле ввода.",
-      "could_not_send_to_side_chat": "Не удалось отправить в боковой чат"
+      "could_not_send_to_side_chat": "Не удалось отправить в боковой чат",
+      "rename_reverted_try_again": "Предыдущее название восстановлено — попробуйте снова."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",
@@ -10570,6 +10573,7 @@
       "new_chat": "Новый чат",
       "new_chat_in_folder": "Новый чат в папке",
       "new_chat_on_crew": "Новый чат на Crew",
+      "rename_saving": "Сохранение нового имени…",
       "runs_on_crew": "Выполняется на {{name}} — подключённый Crew, а не эта машина",
       "new_chat_in_name": "Новый чат в {{name}}",
       "new_chat_session": "Новая сессия чата",
@@ -15506,8 +15510,12 @@
       "saving": "Сохранение..."
     },
     "offline": {
+      "close_sessions": "закрывать сеансы",
       "disabled_gateway_offline": "{{label}}: недоступно — шлюз не в сети",
+      "duplicate_sessions": "дублирование сеансов",
       "gateway_offline_reconnect": "Шлюз не в сети — подключись снова, чтобы {{action}}",
+      "regenerate_titles": "заново создавать заголовки",
+      "rename_sessions": "переименовывать сеансы",
       "submit_comments": "отправить комментарии"
     },
     "popoutController": {

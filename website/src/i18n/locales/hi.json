@@ -10148,10 +10148,13 @@
       "screenshot_failed_reason": "स्क्रीनशॉट विफल: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "सत्र का नाम नहीं बदल सके",
+      "could_not_rename_to": "“{{name}}” में नाम नहीं बदल सके",
+      "rename_already_saving": "इस सेशन का नाम बदलना पहले से ही सहेजा जा रहा है — तुम्हारा ड्राफ़्ट सुरक्षित है; थोड़ी देर में फिर कोशिश करो",
       "could_not_generate_title": "शीर्षक नहीं बना सके",
       "could_not_open_side_chat": "साइड चैट नहीं खुल सकी",
       "side_command_not_run": "/side कमांड नहीं चला। तुम्हारा संदेश अभी भी कंपोज़र में है।",
-      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके"
+      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके",
+      "rename_reverted_try_again": "पिछला शीर्षक पुनर्स्थापित कर दिया गया — फिर से प्रयास करें।"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",
@@ -10274,6 +10277,7 @@
       "new_chat": "नई चैट",
       "new_chat_in_folder": "फ़ोल्डर में नई चैट",
       "new_chat_on_crew": "Crew पर नई चैट",
+      "rename_saving": "नया नाम सहेजा जा रहा है…",
       "runs_on_crew": "{{name}} पर चलता है — एक कनेक्टेड Crew, इस मशीन पर नहीं",
       "new_chat_in_name": "{{name}} में नई चैट",
       "new_chat_session": "नया चैट सत्र",
@@ -15112,8 +15116,12 @@
       "saving": "सहेजा जा रहा है..."
     },
     "offline": {
+      "close_sessions": "सेशन बंद करने",
       "disabled_gateway_offline": "{{label}} बंद — गेटवे ऑफ़लाइन",
+      "duplicate_sessions": "सेशन की नकल बनाने",
       "gateway_offline_reconnect": "गेटवे ऑफ़लाइन — {{action}} के लिए फिर से कनेक्ट करो",
+      "regenerate_titles": "शीर्षक फिर से बनाने",
+      "rename_sessions": "सेशन का नाम बदलने",
       "submit_comments": "टिप्पणियाँ सबमिट करने"
     },
     "popoutController": {

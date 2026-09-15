@@ -1338,7 +1338,13 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
 
 
 async def api_chat_slot_rename(request: web.Request) -> web.Response:
-    """PATCH /api/chat/slots/{slot}/title — rename a chat session."""
+    """PATCH /api/chat/slots/{slot}/title — rename a chat session.
+
+    Returns the slot's LIVE title, which is not always the requested one: a rename
+    superseded while it persisted replies ``ok: true`` carrying the winner's name.
+    A caller that treats the echo as confirmation of what it sent will misread that,
+    so read the returned ``title`` rather than assuming it.
+    """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -1360,8 +1366,12 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     # background attempt stand down instead of clobbering this name.
     slot._title_origin = _TITLE_ORIGIN_USER
     slot._title_epoch += 1
+    # A retry can open a second rename while this one is still persisting, so the
+    # epoch captured here orders the two: a loser must not announce its name.
+    epoch = slot._title_epoch
     await _persist_title(state, slot)
-    state.push_slot_title(slot.key, title)
+    if slot._title_epoch == epoch:
+        state.push_slot_title(slot.key, title)
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_rename",
@@ -1369,4 +1379,4 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
         source="dashboard",
         resources=slot.key,
     )
-    return web.json_response({"ok": True, "title": title})
+    return web.json_response({"ok": True, "title": slot.title})
