@@ -174,6 +174,103 @@ class TestApiCompletionsBlocking:
         assert body["error"]["type"] == "service_unavailable_error"
         assert isinstance(body["error"]["message"], str)
 
+    async def test_gates_on_the_live_sessions_backend_after_a_hot_switch(self, tmp_path):
+        """An `id` naming a slot with a live session gates on THAT session's backend.
+
+        The live session keeps the harness it started on across a PATCH of
+        agent.acp_backend, so with the default switched to Claude Code and the
+        slot still on a signed-out kiro-cli, gating on the configured default
+        would answer the empty 200 this endpoint fails closed to prevent.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        state.sessions = SimpleNamespace(
+            _sessions={
+                effective_session_key(slot): SimpleNamespace(
+                    provider=SimpleNamespace(uses_kiro_identity_store=True)
+                )
+            }
+        )
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+        )
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=AsyncMock(),
+        )
+        service._has_probed = True
+        request.app["kiro_prerequisite_service"] = service
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+
+        with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)):
+            response = await api_completions(request)
+
+        assert response.status == 503
+        assert json.loads(response.text)["error"]["code"] == "kiro_prerequisite_required"
+
+    async def test_app_token_member_slot_is_404_before_the_live_session_peek(self, tmp_path):
+        """The readiness gate's live-session peek must not become an existence oracle.
+
+        An app can never own a member slot, so it gets the uniform 404 whether or
+        not that slot holds a live kiro session -- a 503 for a live signed-out one
+        would let an app enumerate member threads through the gate.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        slot = _make_slot()
+        slot.key = "member-alpha"
+        state = _make_state(slot)
+        state.sessions = SimpleNamespace(
+            _sessions={
+                effective_session_key(slot): SimpleNamespace(
+                    provider=SimpleNamespace(uses_kiro_identity_store=True)
+                )
+            }
+        )
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+            app="some-app",
+        )
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=AsyncMock(),
+        )
+        service._has_probed = True
+        request.app["kiro_prerequisite_service"] = service
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+
+        with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)):
+            response = await api_completions(request)
+
+        assert response.status == 404
+        assert json.loads(response.text)["code"] == "not_found"
+
     async def test_basic_response(self):
         slot = _make_slot()
         state = _make_state(slot)
