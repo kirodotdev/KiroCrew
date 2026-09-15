@@ -6546,7 +6546,20 @@
       "scroll_suggestions_left": "सुझाव बाएँ स्क्रॉल करें",
       "scroll_suggestions_right": "सुझाव दाएँ स्क्रॉल करें",
       "send_now": "अभी भेजें",
-      "send_now_2": "अभी भेजो: {{option}}"
+      "send_now_2": "अभी भेजो: {{option}}",
+      "action_unavailable_while_options_are_selected": "जब तक चयन इनपुट में टेक्स्ट के रूप में तैयार है तब तक उपलब्ध नहीं है: यह उसे हटा देगा",
+      "action_unavailable_while_the_composer_has_unsent": "जब तक इनपुट में बिना भेजा गया टेक्स्ट या अटैचमेंट है तब तक अनुपलब्ध — बंद करने पर वे हट जाएंगे",
+      "action_unavailable_short_options_selected": "उपलब्ध नहीं — पहले चयन हटाओ",
+      "action_unavailable_short_unsent_draft": "अनुपलब्ध — पहले ड्राफ़्ट भेजो या हटाओ",
+      "action_closes_this_session": "यह सत्र बंद करता है — {{label}}",
+      "action_unavailable_while_capture_in_flight": "रिकॉर्डिंग या अपलोड चलने के दौरान उपलब्ध नहीं — बंद करने पर वह हट जाएगा",
+      "action_unavailable_short_capture_in_flight": "उपलब्ध नहीं — पहले रिकॉर्डिंग पूरा करो या रद्द करो",
+      "action_unavailable_short_unsent_draft_elsewhere": "अनुपलब्ध — दूसरे पैन में ड्राफ़्ट है",
+      "action_unavailable_short_unsent_draft_window": "अनुपलब्ध — दूसरी विंडो में ड्राफ़्ट है",
+      "action_unavailable_short_unsent_draft_unverifiable": "अनुपलब्ध — दूसरी विंडो का ड्राफ़्ट जाँचा नहीं जा सका",
+      "action_unavailable_while_unsent_draft_elsewhere": "इस सेशन का दूसरा पैन — एक साइड पैनल या स्प्लिट व्यू — बिना भेजा ड्राफ़्ट रखता है, तब तक यह क्रिया अनुपलब्ध है। पहले उसे वहाँ भेजो या हटाओ।",
+      "action_unavailable_while_unsent_draft_window": "इस सेशन की दूसरी ब्राउज़र विंडो में एक बिना भेजा ड्राफ़्ट है, इसलिए यह काम अभी नहीं हो सकता। पहले उस विंडो में उसे भेज दो या हटा दो।",
+      "action_unavailable_while_unsent_draft_unverifiable": "दूसरी विंडो का बिना भेजा ड्राफ़्ट जाँचा नहीं जा सका, इसलिए यह काम अभी नहीं हो सकता। यह सूचना अपने आप हट जाएगी, या वह विंडो अब भी खुली हो तो ड्राफ़्ट भेज दो।"
     },
     "followUpCard": {
       "add_to_this_session": "इस सत्र में जोड़ें",

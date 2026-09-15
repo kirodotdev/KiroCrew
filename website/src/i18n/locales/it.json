@@ -6646,7 +6646,20 @@
       "scroll_suggestions_left": "Scorri i suggerimenti a sinistra",
       "scroll_suggestions_right": "Scorri i suggerimenti a destra",
       "send_now": "Invia ora",
-      "send_now_2": "Invia ora: {{option}}"
+      "send_now_2": "Invia ora: {{option}}",
+      "action_unavailable_while_options_are_selected": "Non disponibile finché una selezione è pronta come testo nell'input: verrebbe scartata",
+      "action_unavailable_while_the_composer_has_unsent": "Non disponibile finché l'input contiene testo o allegati non inviati: chiudendo andrebbero perduti",
+      "action_unavailable_short_options_selected": "Non disponibile — annulla la selezione",
+      "action_unavailable_short_unsent_draft": "Non disponibile: invia o elimina la bozza",
+      "action_closes_this_session": "Chiude questa sessione — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Non disponibile mentre una registrazione o un caricamento è ancora in corso — chiudere lo scarterebbe",
+      "action_unavailable_short_capture_in_flight": "Non disponibile — termina o annulla prima la registrazione",
+      "action_unavailable_short_unsent_draft_elsewhere": "Non disponibile: bozza in un altro riquadro",
+      "action_unavailable_short_unsent_draft_window": "Non disponibile — bozza in altra finestra",
+      "action_unavailable_short_unsent_draft_unverifiable": "Non disponibile — bozza in altra finestra non verificata",
+      "action_unavailable_while_unsent_draft_elsewhere": "Questa azione non è disponibile mentre un altro riquadro di questa sessione — un pannello laterale o una vista divisa — contiene una bozza non inviata. Inviala o eliminala prima da lì.",
+      "action_unavailable_while_unsent_draft_window": "Questa azione non è disponibile mentre un'altra finestra del browser di questa sessione contiene una bozza non inviata. Invia o elimina la bozza in quella finestra.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Questa azione non è disponibile perché non è stato possibile verificare la bozza non inviata di un'altra finestra. L'avviso scompare da sé, oppure invia la bozza se quella finestra è ancora aperta."
     },
     "followUpCard": {
       "add_to_this_session": "Aggiungi a questa sessione",

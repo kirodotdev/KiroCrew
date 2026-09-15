@@ -6446,7 +6446,20 @@
       "scroll_suggestions_left": "提案を左にスクロール",
       "scroll_suggestions_right": "提案を右にスクロール",
       "send_now": "今すぐ送信",
-      "send_now_2": "今すぐ送信：{{option}}"
+      "send_now_2": "今すぐ送信：{{option}}",
+      "action_unavailable_while_options_are_selected": "選択が入力欄にテキストとして準備されている間は使用できません。破棄されてしまいます",
+      "action_unavailable_while_the_composer_has_unsent": "入力欄に未送信のテキストまたは添付ファイルがある間は使用できません。閉じると破棄されてしまいます",
+      "action_unavailable_short_options_selected": "利用できません — 選択を解除してください",
+      "action_unavailable_short_unsent_draft": "利用できません — 先に下書きを送信/消去",
+      "action_closes_this_session": "このセッションを終了します — {{label}}",
+      "action_unavailable_while_capture_in_flight": "録音またはアップロードが進行中は利用できません — 閉じると破棄されます",
+      "action_unavailable_short_capture_in_flight": "利用できません — 先に録音を完了または中止してください",
+      "action_unavailable_short_unsent_draft_elsewhere": "利用できません — 別のペインに下書き",
+      "action_unavailable_short_unsent_draft_window": "利用できません — 別のウィンドウに下書きがあります",
+      "action_unavailable_short_unsent_draft_unverifiable": "利用できません — 別のウィンドウの下書きを確認できず",
+      "action_unavailable_while_unsent_draft_elsewhere": "このセッションの別のペイン（サイドパネルまたは分割ビュー）に未送信の下書きがある間、この操作は利用できません。先にそちらで送信するか消去してください。",
+      "action_unavailable_while_unsent_draft_window": "このセッションの別のブラウザーウィンドウに未送信の下書きがあるため、この操作は実行できません。先にそのウィンドウで送信または削除してください。",
+      "action_unavailable_while_unsent_draft_unverifiable": "別のウィンドウの未送信の下書きを確認できなかったため、この操作は実行できません。この表示はやがて消えます。そのウィンドウがまだ開いていれば送信してください。"
     },
     "followUpCard": {
       "add_to_this_session": "このセッションに追加",

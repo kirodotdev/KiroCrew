@@ -6646,7 +6646,20 @@
       "scroll_suggestions_left": "Desplazar las sugerencias a la izquierda",
       "scroll_suggestions_right": "Desplazar las sugerencias a la derecha",
       "send_now": "Enviar ahora",
-      "send_now_2": "Enviar ahora: {{option}}"
+      "send_now_2": "Enviar ahora: {{option}}",
+      "action_unavailable_while_options_are_selected": "No disponible mientras una selección esté preparada como texto en la entrada: se descartaría",
+      "action_unavailable_while_the_composer_has_unsent": "No disponible mientras la entrada tenga texto o archivos adjuntos sin enviar: al cerrar se descartarían",
+      "action_unavailable_short_options_selected": "No disponible — borra tu selección",
+      "action_unavailable_short_unsent_draft": "No disponible: envía o borra tu borrador",
+      "action_closes_this_session": "Cierra esta sesión — {{label}}",
+      "action_unavailable_while_capture_in_flight": "No disponible mientras una grabación o subida sigue en curso — cerrar la descartaría",
+      "action_unavailable_short_capture_in_flight": "No disponible — termina o cancela la grabación primero",
+      "action_unavailable_short_unsent_draft_elsewhere": "No disponible: otro panel tiene un borrador",
+      "action_unavailable_short_unsent_draft_window": "No disponible — borrador en otra ventana",
+      "action_unavailable_short_unsent_draft_unverifiable": "No disponible — no se pudo comprobar el otro borrador",
+      "action_unavailable_while_unsent_draft_elsewhere": "Esta acción no está disponible mientras otro panel de esta sesión —lateral o en vista dividida— tenga un borrador sin enviar. Envíalo o descártalo allí primero.",
+      "action_unavailable_while_unsent_draft_window": "Esta acción no está disponible mientras otra ventana del navegador de esta sesión tiene un borrador sin enviar. Envíalo o descártalo primero en esa ventana.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Esta acción no está disponible porque no se pudo comprobar el borrador sin enviar de otra ventana. El aviso desaparece solo, o envía el borrador si esa ventana sigue abierta."
     },
     "followUpCard": {
       "add_to_this_session": "Añadir a esta sesión",

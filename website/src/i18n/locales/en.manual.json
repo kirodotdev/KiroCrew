@@ -2151,7 +2151,20 @@
       "click_to_remove_from_input": "Click to remove from input",
       "click_to_remove_from_input_double_click_to_send": "Click to remove from input (double-click to send)",
       "click_to_send_instantly_shift_click_to_select_mu": "Click to send instantly, Shift+Click to select multiple",
-      "send_now_2": "Send now: {{option}}"
+      "send_now_2": "Send now: {{option}}",
+      "action_unavailable_while_options_are_selected": "Unavailable while a selection is staged as text in the input — this would discard it",
+      "action_unavailable_while_the_composer_has_unsent": "Unavailable while the input has unsent text or attachments — closing would discard them",
+      "action_unavailable_short_options_selected": "Unavailable — clear your selection first",
+      "action_unavailable_short_unsent_draft": "Unavailable — send or clear your draft first",
+      "action_unavailable_while_capture_in_flight": "Unavailable while a recording or upload is still in progress — closing would discard it",
+      "action_unavailable_short_capture_in_flight": "Unavailable — finish or cancel the recording first",
+      "action_closes_this_session": "Closes this session — {{label}}",
+      "action_unavailable_short_unsent_draft_elsewhere": "Unavailable — another pane holds a draft",
+      "action_unavailable_short_unsent_draft_window": "Unavailable — another window holds a draft",
+      "action_unavailable_short_unsent_draft_unverifiable": "Unavailable — couldn't check another window's draft",
+      "action_unavailable_while_unsent_draft_elsewhere": "This action is unavailable while another pane of this session — a side panel or split view — holds an unsent draft. Send or clear it there first.",
+      "action_unavailable_while_unsent_draft_window": "This action is unavailable while another browser window of this session holds an unsent draft. Send or clear it in that window first.",
+      "action_unavailable_while_unsent_draft_unverifiable": "This action is unavailable because another window's unsent draft could not be checked. This notice clears on its own, or send or clear the draft if that window is still open."
     },
     "followUpCard": {
       "create_worktree_and_open_session": "Create a git worktree from {{path}} and open a new session there",

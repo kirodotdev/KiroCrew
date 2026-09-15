@@ -6446,7 +6446,20 @@
       "scroll_suggestions_left": "제안을 왼쪽으로 스크롤",
       "scroll_suggestions_right": "제안을 오른쪽으로 스크롤",
       "send_now": "지금 전송",
-      "send_now_2": "지금 전송: {{option}}"
+      "send_now_2": "지금 전송: {{option}}",
+      "action_unavailable_while_options_are_selected": "선택이 입력란에 텍스트로 준비되어 있는 동안에는 사용할 수 없습니다. 삭제됩니다",
+      "action_unavailable_while_the_composer_has_unsent": "입력란에 보내지 않은 텍스트나 첨부 파일이 있는 동안에는 사용할 수 없습니다. 닫으면 삭제됩니다",
+      "action_unavailable_short_options_selected": "사용할 수 없음 — 선택을 먼저 해제하세요",
+      "action_unavailable_short_unsent_draft": "사용할 수 없음 — 초안을 먼저 처리하세요",
+      "action_closes_this_session": "이 세션을 종료합니다 — {{label}}",
+      "action_unavailable_while_capture_in_flight": "녹음 또는 업로드가 진행 중일 때는 사용할 수 없습니다 — 닫으면 삭제됩니다",
+      "action_unavailable_short_capture_in_flight": "사용할 수 없음 — 녹음을 먼저 완료하거나 취소하세요",
+      "action_unavailable_short_unsent_draft_elsewhere": "사용할 수 없음 — 다른 패널에 초안",
+      "action_unavailable_short_unsent_draft_window": "사용할 수 없음 — 다른 창에 초안",
+      "action_unavailable_short_unsent_draft_unverifiable": "사용할 수 없음 — 다른 창의 초안을 확인할 수 없습니다",
+      "action_unavailable_while_unsent_draft_elsewhere": "이 세션의 다른 창(사이드 패널 또는 분할 보기)에 보내지 않은 초안이 있는 동안에는 이 작업을 사용할 수 없습니다. 먼저 거기서 보내거나 지우세요.",
+      "action_unavailable_while_unsent_draft_window": "이 세션의 다른 브라우저 창에 보내지 않은 초안이 있어 이 작업을 할 수 없습니다. 먼저 그 창에서 보내거나 지우세요.",
+      "action_unavailable_while_unsent_draft_unverifiable": "다른 창의 보내지 않은 초안을 확인할 수 없어 이 작업을 할 수 없습니다. 이 안내는 저절로 사라지며, 그 창이 아직 열려 있다면 초안을 보내거나 지우세요."
     },
     "followUpCard": {
       "add_to_this_session": "이 세션에 추가",

@@ -6646,7 +6646,20 @@
       "scroll_suggestions_left": "Rolar sugestões para a esquerda",
       "scroll_suggestions_right": "Rolar sugestões para a direita",
       "send_now": "Enviar agora",
-      "send_now_2": "Enviar agora: {{option}}"
+      "send_now_2": "Enviar agora: {{option}}",
+      "action_unavailable_while_options_are_selected": "Indisponível enquanto uma seleção estiver preparada como texto no campo de mensagem: ela seria descartada",
+      "action_unavailable_while_the_composer_has_unsent": "Indisponível enquanto o campo de mensagem tiver texto ou anexos não enviados — fechar iria descartá-los",
+      "action_unavailable_short_options_selected": "Indisponível — limpe sua seleção",
+      "action_unavailable_short_unsent_draft": "Indisponível: envie ou apague o rascunho",
+      "action_closes_this_session": "Encerra esta sessão — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Indisponível enquanto uma gravação ou envio ainda está em andamento — fechar descartaria",
+      "action_unavailable_short_capture_in_flight": "Indisponível — conclua ou cancele a gravação primeiro",
+      "action_unavailable_short_unsent_draft_elsewhere": "Indisponível: outro painel tem um rascunho",
+      "action_unavailable_short_unsent_draft_window": "Indisponível — rascunho noutra janela",
+      "action_unavailable_short_unsent_draft_unverifiable": "Indisponível — rascunho noutra janela não verificado",
+      "action_unavailable_while_unsent_draft_elsewhere": "Esta ação está indisponível enquanto outro painel desta sessão — lateral ou em vista dividida — tiver um rascunho não enviado. Envie-o ou elimine-o aí primeiro.",
+      "action_unavailable_while_unsent_draft_window": "Esta ação fica indisponível enquanto outra janela do navegador desta sessão tiver um rascunho não enviado. Envie ou descarte o rascunho nessa janela primeiro.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Esta ação fica indisponível porque não foi possível verificar o rascunho não enviado de outra janela. O aviso desaparece sozinho, ou envie o rascunho se essa janela ainda estiver aberta."
     },
     "followUpCard": {
       "add_to_this_session": "Adicionar a esta sessão",
