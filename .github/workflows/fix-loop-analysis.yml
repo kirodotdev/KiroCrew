@@ -197,7 +197,7 @@ jobs:
         # out of time is CANCELLED and the always() tail runs on a 5-minute
         # grace clock with the model's orphan processes still being torn down.
         timeout-minutes: 30
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         with:
           # Model id form (bare regional `us.` inference profile) is
           # load-bearing — see design-review.yml. Write is granted for exactly
