@@ -131,6 +131,45 @@ once, at install, so registry auth applies at install time only.
    stall inside the first browse. `--with-deps` is appended only on an apt host,
    and a refusal there is retried without it — see
    [OS dependencies](#os-dependencies).
+    A successful download is followed by `verify-browser-libraries-<engine>`: each
+    ELF object on disk is read for its declared dependencies and any soname the
+    host cannot provide is reported as **its own advisory step**. The step NEVER
+    fails the install: it carries `ok: true`, `advisory: true` and `returncode: 0`,
+    and `install-skills` runs behind it. That is deliberate — the probe
+    re-implements the dynamic loader's search, an emulation that cannot be
+    completed across musl, glibc hwcaps and cache-only directories, so it must not
+    be able to withdraw a working browser. It reaches the operator as two fields on
+    `GET /api/browser/install` — `last_notice` and `last_notice_command` — because the
+    Browser settings panel renders each differently: the prose muted rather than as an
+    error banner, and the command in a `<pre>` with a copy button, the same treatment
+    `standalone_install` gets because it must be transcribed exactly. Both strings are
+    composed in English — the sonames and the package list have no translation, so the
+    card stays in one language, as `last_error` does. The notice names NO affordance for
+    re-checking, and it can outlive the fix. It is written only during an install run and
+    `detect` deliberately does not probe (an ELF sweep behind every dashboard poll), so
+    after the operator installs the named packages it persists for the life of the
+    gateway process — clearing on restart, or on a re-download of that engine, which the
+    panel does not offer once the engine reads "Downloaded". That is a known gap, accepted
+    because a confirm loop of its own is more surface than a diagnostic earns. Playwright's own host validation cannot carry
+    this. In `playwright-core` as shipped, `EXECUTABLE_PATHS.chromium["linux-arm64"]`
+    is `["chrome-linux-arm64", "chrome"]` while `_validateHostRequirements` is
+    called with the literal `["chrome-linux"]` for both `chromium` and
+    `chromiumHeadlessShell` — so on linux-arm64 the scan is aimed at a directory
+    the build never creates, finds nothing, and writes a `DEPENDENCIES_VALIDATED`
+    marker that suppresses re-validation for 30 days. A broken host reports clean.
+   One work budget covers the whole probe — every directory walked, every entry
+    visited and every file parsed draw from it — because each of those quantities
+    comes from a cache an agent can write to, including how many directories the
+    engine prefix matches. A budget spent yields "cannot determine", never "clean".
+    **Nothing is executed.** The dependency list is parsed out of each file's own
+   ELF dynamic table and compared against a listing of the host's library
+   directories. `ldd` is deliberately not used: glibc's `ldd` runs the binary it
+   inspects, a crafted `PT_INTERP` makes that arbitrary code, and the engine cache
+   is writable with its subdirectories matched by name prefix — so a planted ELF
+   would be reachable, and the interpreter travels inside the file where no
+   absolute argv or scrubbed environment can intercept it. The build's own bundled
+   libraries are excluded by NAME, and an answer of "unknown" is returned rather
+   than "clean" whenever nothing readable declared a dependency.
 4. `playwright-cli install --skills agents --global` so the command reference is
    discoverable from the skill file rather than occupying the system prompt.
    `--skills` accepts `claude` (default) or `agents`; `--global` targets the home
@@ -153,6 +192,15 @@ launch fails `Browser "chromium" is not installed` — and because the gate read
 ready, the panel never offers the download that would fix it. The prefix form also
 let `chromium_headless_shell-<rev>` satisfy `chromium`, which is a different
 artifact.
+
+**Readiness is presence-and-revision only: the install flow's library probe does
+not feed it.** The probe runs on the `install` path; readiness is on the
+`/api/status` poll path, where a per-poll ELF sweep would run behind every dashboard
+poll. The consequence is deliberate and bounded: a host whose libraries were
+already missing before that check existed, or whose libraries go missing after a
+successful install, still reads ready until the next install attempt. Closing that
+needs the probe's verdict cached against directory mtime so readiness can consult
+it without spawning, which is a separate change.
 
 The required revision comes from `playwright-core/browsers.json`, the file
 `install-browser` itself consults. Reading it is a plain file read, so readiness
