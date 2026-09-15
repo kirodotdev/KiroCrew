@@ -171,16 +171,21 @@ def authored_workload_name() -> str:
         return ""
 
 
-def resolved_posture() -> str:
+def resolved_posture(*, strict: bool = False) -> str:
     """Effective ceiling first; home/env only when no ceiling exists.
 
     A loaded fleet / central / home document is the only posture source
     once present — a home-file peek must not outrank a ceiling that
-    disabled AgentCore or pinned a different posture.
+    disabled AgentCore or pinned a different posture. With *strict* an
+    unavailable ceiling raises instead of reading as "off", for callers
+    whose safe answer is to WITHHOLD (the login MCP gate) rather than to
+    skip a grant.
     """
     try:
         ceiling = _effective_governance_ceiling()
     except Exception:
+        if strict:
+            raise
         logger.warning(
             "governance ceiling unavailable; AgentCore posture stays off",
             exc_info=True,

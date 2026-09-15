@@ -202,6 +202,10 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # pre-move legacy home (``~/.kirocrew``) that a user still has on disk. Keeping
 # one leaf list means a new secret is added once and covered in both locations.
 _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
+#: Crew-home directory holding the app-agent ownership ledger (``apps/bridges.py``).
+#: Named here, in a leaf module, so the sensitive floor below, the sandbox mask
+#: (``sandbox._CREW_HIDDEN_LEAVES``) and the writer all spell it once.
+APP_AGENT_TRUST_DIR_NAME: str = "app-agent-trust"
 _CREW_SECRET_LEAVES: list[str] = [
     ".env",
     # Owner-authored meetings edits are deliberately outside the meeting
@@ -313,6 +317,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens all of it directly rather than through this gate, so spooling and
     # the notice pass keep working.
     "inbound-spool",
+    # App-agent ownership ledger (``apps/bridges.py``): which materialized
+    # ``<app>--*.json`` specs the framework wrote for which app. The login MCP
+    # withhold gate decides by it -- a name it records is the app's and must be
+    # neutralized/refused under Login, a name it does not is a user's custom
+    # agent and runs with its own MCP -- so an agent that could write it would
+    # erase its own record and run a stale app spec's MCP under Login. Whole
+    # directory, written by atomic replace via a sibling temp name. Only the
+    # gateway process reads or writes it, opening the path directly. Also
+    # bind-masked in-sandbox (``sandbox._CREW_HIDDEN_LEAVES``).
+    APP_AGENT_TRUST_DIR_NAME,
     # Per-session work ledgers (session_ledger.py). Not credentials, but each
     # directory is one session's private work state, and the ledger's whole
     # authorization model is "a session reaches only its OWN ledger" (the HTTP
@@ -456,6 +470,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # whole DIRECTORY so atomic-write temps and every sidecar file are
     # covered.
     "agentcore-inbound",
+    # Authored non-managed MCP stashed while login withhold filters the
+    # runtime ``--agent`` spec. Owner-only, same class as inbound JWTs:
+    # an agent that could write it would restore arbitrary MCP commands
+    # when posture leaves login; a reader learns the operator's withheld
+    # servers. Classified as the whole DIRECTORY so atomic-write temps
+    # cannot sit as an unfenced sibling of a file leaf.
+    "agentcore-authored-mcp",
     # Which checkout the gateway executes (Dev Fleet "Make live"). The pointer is
     # resolved during startup and exec'd into, so a writable one is arbitrary
     # code execution in the gateway's own identity — the agent must not be able

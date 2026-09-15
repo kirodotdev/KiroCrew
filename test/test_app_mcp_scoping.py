@@ -719,7 +719,7 @@ class TestATighteningReachesAnExistingConfig:
         stale = {"url": "http://127.0.0.1:1/mcp", "autoApprove": ["danger"]}
         fresh = {"url": "http://127.0.0.1:1/mcp"}  # ceiling stripped autoApprove
         config: dict[str, Any] = {"mcpServers": {"someapp:srv": dict(stale)}}
-        monkeypatch.setattr(agent, "_collect_app_mcp_servers", lambda: {"someapp:srv": fresh})
+        monkeypatch.setattr(agent, "_collect_app_mcp_servers", lambda **_k: {"someapp:srv": fresh})
 
         for srv, spec in agent._collect_app_mcp_servers().items():
             config.setdefault("mcpServers", {})[srv] = spec

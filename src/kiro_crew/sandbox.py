@@ -50,6 +50,7 @@ from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIX
 from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
+from kiro_crew.security.paths import APP_AGENT_TRUST_DIR_NAME
 
 try:
     import resource as _resource_mod
@@ -269,6 +270,14 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the spool write and the notice pass happen in the GATEWAY process, which
     # opens the paths directly.
     "inbound-spool",
+    # App-agent ownership ledger (``apps/bridges.py``). Fenced from agent FILE
+    # TOOLS by ``security._CREW_SECRET_LEAVES``; masked here so a spawned command
+    # cannot reach it either: the login MCP withhold gate decides by this record,
+    # and an agent able to delete its own entry would run a stale app spec's MCP
+    # under Login as if it were a user's custom agent. Nothing inside the sandbox
+    # reads or writes it -- materialization and the spawn gate both run in the
+    # GATEWAY process, which opens the path directly.
+    APP_AGENT_TRUST_DIR_NAME,
     # The Notes state files below are OWNED by the md-notebook backend, which is itself
     # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
     # registry write's final rename gets EPERM and attach/clone always fails.
@@ -312,6 +321,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``workflow_library`` are masked for.
     "appearance-library",
     "agentcore-inbound",
+    # Authored non-managed MCP stashed while login withhold filters the runtime
+    # spec. Only the gateway reads or writes it; an in-sandbox process that
+    # could would restore withheld MCP commands when posture leaves login.
+    "agentcore-authored-mcp",
     "routing",
     "webhooks",
     "live_target.json",

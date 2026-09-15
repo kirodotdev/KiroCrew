@@ -74,7 +74,7 @@ from kiro_crew.agent_files import (
     SECURITY_CONDUCTOR_AGENT_FILENAME as _SECURITY_CONDUCTOR_AGENT_FILENAME,
 )
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -108,13 +108,14 @@ from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.platform import safe_context_call
+from kiro_crew.platform.agentcore_aws import resolved_posture
 from kiro_crew.platform.governance import (
     CU_MCP_SERVER,
     agentcore_posture,
     may_skip_gate_now,
     strip_ungoverned_auto_approve,
 )
-from kiro_crew.platform.governance_profiles import governance_permits
+from kiro_crew.platform.governance_profiles import governance_permits, vet_and_audit
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import (  # circular import: sel imports config which imports agent
     SecurityEvent,
@@ -1274,6 +1275,1055 @@ def _is_agentcore_gateway_entry(spec: Any) -> bool:
     return is_agentcore_gateway_entry(spec)
 
 
+def _login_mcp_withhold() -> bool:
+    """Emit-time gate: withhold non-managed MCP when AgentCore posture is login.
+
+    Same shape as ``kirocrew-computer``'s ``spec_gate``: consulted at rebuild
+    emission, not by mutating source files. True when the capability is
+    permitted AND the ceiling posture is ``login`` — the companion adapter
+    does not have to be on. The capability check is ``vet_and_audit`` so
+    grant and deny land in SEL. Gateway/token work stays behind
+    ``_agent_identity_enabled()``.
+    """
+    try:
+        permitted = bool(
+            getattr(
+                vet_and_audit(
+                    "capabilities.agentcore",
+                    "",
+                    session_key="",
+                    tool_name="agentcore.login_withhold",
+                    fail_closed=True,
+                    log_warning=False,
+                ),
+                "permitted",
+                False,
+            )
+        )
+    except Exception:
+        logger.warning("agentcore governance lookup failed; withholding MCP", exc_info=True)
+        return True
+    if not permitted:
+        return False
+    try:
+        # The EFFECTIVE posture (``agentcore_aws.resolved_posture``: the ceiling
+        # when one is loaded, else the launch env / home authoring), the same
+        # read the session attach path uses. A ceiling-only read would let an
+        # env-only ``login`` instance attach login Gateways while its rebuild
+        # kept non-managed MCP executable. ``strict`` keeps an unavailable
+        # ceiling failing CLOSED here (withhold), not "off".
+        return resolved_posture(strict=True) == "login"
+    except Exception:
+        logger.warning("agentcore posture lookup failed; withholding MCP", exc_info=True)
+        return True
+
+
+def _snapshot_app_agent_priors(app_name: str) -> dict[str, dict[str, Any]]:
+    """Read the app-OWNED materialized agent files before a fail-closed unlink."""
+    from kiro_crew.apps.bridges import _kiro_agents_dir, _read_agent_config
+
+    priors: dict[str, dict[str, Any]] = {}
+    agents_dir = _kiro_agents_dir()
+    if not agents_dir.is_dir():
+        return priors
+    for filename in _remaining_app_agent_names(app_name):
+        data = _read_agent_config(agents_dir / filename)
+        if data is not None:
+            priors[filename] = data
+    return priors
+
+
+class AppAgentOwnershipUnknown(RuntimeError):
+    """An app's manifest (or a declared agent) could not be read, so which
+    ``<app>--*.json`` files it owns is unknown; nothing may be pruned or
+    neutralized by guess."""
+
+
+def _remaining_app_agent_names(app_name: str) -> list[str]:
+    """Materialized agent files *app_name* owns that are still on disk.
+
+    Ownership is the manifest's (``bridges.owned_app_agent_names``), never the
+    filename prefix: a user's ``<installed-app>--custom.json`` is not this
+    app's and is never returned here, so no login path prunes or disarms it.
+    Raises :class:`AppAgentOwnershipUnknown` when ownership cannot be read.
+    """
+    from kiro_crew.apps.bridges import _kiro_agents_dir, owned_app_agent_names
+
+    agents_dir = _kiro_agents_dir()
+    if not agents_dir.is_dir():
+        return []
+    owned = owned_app_agent_names(app_name)
+    if owned is None:
+        raise AppAgentOwnershipUnknown(
+            f"app {app_name}: manifest or a declared agent is unreadable; "
+            "its materialized agents cannot be identified"
+        )
+    return sorted(name for name in owned if (agents_dir / name).exists())
+
+
+def _prune_unkept_app_agent_files(app_name: str, keep: set[str]) -> list[str]:
+    """Unlink the app-OWNED agent files not in *keep*. Return names that remain.
+
+    Raises :class:`AppAgentOwnershipUnknown` (from the ownership read) rather
+    than unlinking by filename prefix."""
+    from kiro_crew.apps.bridges import _kiro_agents_dir
+
+    leftover: list[str] = []
+    agents_dir = _kiro_agents_dir()
+    if not agents_dir.is_dir():
+        return leftover
+    unlinked: set[str] = set()
+    for filename in _remaining_app_agent_names(app_name):
+        if filename in keep:
+            continue
+        try:
+            (agents_dir / filename).unlink()
+            unlinked.add(filename)
+        except OSError:
+            leftover.append(filename)
+    if unlinked:
+        from kiro_crew.apps.bridges import forget_app_agent_ownership
+
+        forget_app_agent_ownership(app_name, unlinked)
+    leftover.sort()
+    return leftover
+
+
+def _neutralize_app_agent_file(filename: str) -> bool:
+    """Empty MCP on one materialized agent file. True when the write lands.
+
+    An UNREADABLE file is left exactly as it is and reported as a failure:
+    rewriting it from ``{}`` would erase the user's own ``model`` /
+    ``description`` / ``toolsSettings`` to neutralize a command that a file
+    kiro-cli cannot parse was never going to run. The caller surfaces the
+    name so the operator can repair it; :func:`require_login_withhold`
+    refuses to spawn it meanwhile.
+    """
+    from kiro_crew.apps.bridges import _kiro_agents_dir, _read_agent_config
+
+    path = _kiro_agents_dir() / filename
+    data = _read_agent_config(path)
+    if data is None:
+        logger.warning(
+            "Login withhold: %s is unreadable; left untouched rather than rewritten from empty",
+            filename,
+        )
+        return False
+    data["mcpServers"] = {}
+    data["includeMcpJson"] = False
+    try:
+        _atomic_json_write(path, data)
+        return True
+    except OSError:
+        logger.warning(
+            "Login withhold: could not neutralize leftover MCP on %s",
+            filename,
+            exc_info=True,
+        )
+        return False
+
+
+class LoginWithholdUnresolved(RuntimeError):
+    """A login-posture session would load an app agent whose MCP was not withheld."""
+
+
+# Keys a managed ``mcpServers`` entry may carry in a login-rematerialized app
+# agent: the canonical invocation, a policy NARROWING, and an inert timeout.
+# Everything else (``autoApprove``, ``env``, ``url``, ``headers``, ``cwd``, …)
+# is refused by :func:`_login_withhold_violations`.
+_LOGIN_MANAGED_ENTRY_KEYS = frozenset({"command", "args", "disabledTools", "timeout"})
+
+
+def _login_withhold_violations(data: Any) -> list[str]:
+    """Why an app agent spec is NOT the shape a login rebuild leaves behind.
+
+    A login rematerialize writes ``includeMcpJson: false`` and keeps only the
+    host-managed servers, each with the canonical invocation the host itself
+    would spawn. So the check is exact, not name-based: a managed NAME over a
+    foreign ``command`` is a spoof (the name proves nothing -- a project-local
+    file can label anything with the core server's name), and an omitted or
+    true ``includeMcpJson`` lets kiro-cli pull the global ``mcp.json`` back in.
+    Returns human-readable reasons; empty means the spec is clean.
+    """
+    if not isinstance(data, dict):
+        return ["spec is not an object"]
+    reasons: list[str] = []
+    if data.get("includeMcpJson") is not False:
+        reasons.append("includeMcpJson is not pinned false")
+    servers = data.get("mcpServers")
+    if servers is None:
+        return reasons
+    if not isinstance(servers, dict):
+        return reasons + ["mcpServers is not an object"]
+    for name, spec in servers.items():
+        managed = _MANAGED_MCP_SERVERS.get(str(name))
+        if managed is None or not isinstance(spec, dict):
+            reasons.append(f"non-managed server {name!r}")
+            continue
+        invocation_fn = managed.get("invocation_fn")
+        if invocation_fn is None:
+            reasons.append(f"managed server {name!r} has no canonical invocation")
+            continue
+        try:
+            command, args = invocation_fn()
+        except Exception:  # noqa: BLE001 -- an unresolvable canonical spec cannot vouch
+            reasons.append(f"managed server {name!r} cannot be verified")
+            continue
+        if spec.get("command") != command or list(spec.get("args") or []) != list(args):
+            reasons.append(f"managed server {name!r} does not match the host's invocation")
+        # The login rematerialize emits {command, args} for a managed ref
+        # (bridges._materialize_managed_refs); an app's MCP policy may narrow
+        # it with ``disabledTools`` and a ``timeout`` is inert. Anything else
+        # is a grant or an execution knob the gate did not put there:
+        # ``autoApprove`` skips PreToolUse, ``env`` reaches the spawned
+        # process, ``url``/``headers``/``cwd`` redirect it. Refused by
+        # allow-list, so a field unknown today is refused too.
+        extra_keys = sorted(k for k in spec if k not in _LOGIN_MANAGED_ENTRY_KEYS)
+        if extra_keys:
+            reasons.append(
+                f"managed server {name!r} carries fields the login shape does not "
+                f"({', '.join(extra_keys)})"
+            )
+    return reasons
+
+
+def require_login_withhold(agent: str | None, project_dir: str | Path | None = None) -> None:
+    """Fail closed: under Login, refuse to spawn an app agent whose on-disk spec
+    still carries non-managed MCP.
+
+    The login rebuild rematerializes every listed app's ``<app>--*.json`` with
+    its MCP withheld and neutralizes what it could not rematerialize. When
+    even that fails (unwritable file, unreadable file, an app the catalog could
+    not list) the emit fails, but the file is still on disk and a session that
+    selects that agent would run its command anyway -- so the spawn is the
+    last gate. Non-app agents and the host agent never wait and never raise;
+    custom agents keep their own MCP under Login by design. Raises
+    :class:`LoginWithholdUnresolved` only.
+
+    What is gated is the FILE kiro-cli will execute, never the shape of the
+    requested name: kiro-cli resolves ``--agent`` by a spec's declared ``name``
+    (an app agent materialized as ``notes--scribe.json`` declares and is
+    selected as ``scribe``), against ``<cwd>/.kiro/agents`` first and the
+    user-level dir second, with a declared name winning over a matching
+    filename. This gate resolves the same way (*project_dir* is that cwd) and
+    then asks whether the RESOLVED file is one the framework wrote for an app
+    -- by manifest or by the ownership ledger, see
+    ``bridges.owned_app_agent_names`` -- so neither a bare declared name nor a
+    ``--``-free filename is an exemption. A name that two specs declare is
+    refused: which one is live is undefined, so neither can be trusted.
+    """
+    if not agent or not _login_mcp_withhold():
+        return
+    from kiro_crew.apps.bridges import (
+        _kiro_agents_dir,
+        _read_agent_config,
+        _read_app_agent_ledger,
+        owned_app_agent_names,
+    )
+    from kiro_crew.config.paths import project_agents_dir
+
+    # 1. The spec kiro-cli would run for this name, resolved as kiro-cli does.
+    search: list[Path] = []
+    if project_dir:
+        search.append(project_agents_dir(project_dir))
+    search.append(_kiro_agents_dir())
+    path: Path | None = None
+    for agents_dir in search:
+        try:
+            path = agent_spec_path(agent, agents_dir=agents_dir)
+        except ValueError as exc:
+            raise LoginWithholdUnresolved(
+                f"agent {agent!r} is declared by more than one spec under {agents_dir}; which "
+                "one kiro-cli would run is undefined, so a login-posture session cannot start on it"
+            ) from exc
+        if path is None:
+            # The resolver skips a spec it cannot parse; a stem-named file that
+            # exists but does not parse is still the file kiro-cli would try,
+            # and an unreadable owned spec must refuse, not pass as "absent".
+            direct = agents_dir / f"{agent}.json"
+            if direct.exists() and not direct.is_symlink():
+                path = direct
+        if path is not None:
+            break
+    if path is None:
+        return  # nothing on disk carries MCP for this name
+    filename = path.name
+
+    # 2. Is that file one the framework materialized for an app? Ownership is
+    #    the manifest's or the ledger's, never the filename shape: a user's
+    #    ``<installed-app>--mine.json`` is custom and keeps its own MCP by
+    #    design, while an app file selected by its bare declared name is not.
+    try:
+        apps = _load_app_catalog()
+    except Exception as exc:
+        raise LoginWithholdUnresolved(
+            f"cannot verify whether agent {agent!r} ({filename}) belongs to an installed app "
+            "(app catalog unavailable); refusing to start a login-posture session on it"
+        ) from exc
+    owner: str | None = None
+    unknown: list[str] = []
+    for info in apps:
+        if not isinstance(info, dict) or not info.get("name") or info.get("resources") == "app":
+            continue
+        app_name = str(info["name"])
+        owned = owned_app_agent_names(app_name)
+        if owned is None:
+            unknown.append(app_name)
+        elif filename in owned:
+            owner = app_name
+            break
+    if owner is None:
+        ledger = _read_app_agent_ledger()
+        if ledger is None:
+            raise LoginWithholdUnresolved(
+                f"cannot verify whether agent {agent!r} ({filename}) was materialized by an app "
+                "(ownership ledger unreadable); refusing to start a login-posture session on it"
+            )
+        # An uninstalled app's leftover spec is still ours to gate.
+        owner = next((app for app, names in ledger.items() if filename in names), None)
+    if owner is None:
+        if unknown:
+            raise LoginWithholdUnresolved(
+                f"cannot verify whether agent {agent!r} ({filename}) belongs to app(s) "
+                f"{', '.join(unknown)} (manifest unreadable); refusing to start a "
+                "login-posture session on it"
+            )
+        return  # a custom agent: its MCP is the user's own
+
+    # 3. The owned spec must be in the exact shape a login rebuild leaves.
+    data = _read_agent_config(path)
+    if data is None:
+        raise LoginWithholdUnresolved(
+            f"app agent {agent!r} has an unreadable spec at {path}; refusing to start a "
+            "login-posture session on it until it is repaired or removed"
+        )
+    violations = _login_withhold_violations(data)
+    if violations:
+        raise LoginWithholdUnresolved(
+            f"app agent {agent!r} ({filename}) is not in the shape the login posture requires "
+            f"({'; '.join(violations)}); refusing to start a session on it until the "
+            "login rebuild succeeds"
+        )
+
+
+def _load_app_catalog() -> list[Any]:
+    """Listed apps for login leftover-verify. Raises on catalog I/O.
+
+    ``list_apps`` drops an app whose ``installed.json`` it cannot parse. For a
+    listing that is fine; here it is not: an app missing from this catalog is
+    an app whose materialized ``<app>--*.json`` agents the login refresh never
+    visits, so their leftover non-managed MCP commands stay loadable under a
+    posture that promised to withhold them. So the catalog is cross-checked
+    against the directory it was read from, and any app directory that
+    carries an ``installed.json`` the catalog could not represent makes this
+    raise -- the fail-closed callers then refuse the login emit rather than
+    ship it with a hole named after a corrupt file.
+    """
+    from kiro_crew.apps.manager import INSTALLED_META_FILENAME, apps_dir, list_apps
+
+    loaded = list_apps()
+    catalog = loaded if isinstance(loaded, list) else []
+    listed = {info.get("name") for info in catalog if isinstance(info, dict) and info.get("name")}
+    root = apps_dir()
+    unrepresented: list[str] = []
+    if root.is_dir():
+        for entry in sorted(root.iterdir()):
+            if entry.name in listed or not entry.is_dir():
+                continue
+            # A directory with no installed.json is not an installed app (a
+            # half-finished install, a foreign folder); one WITH the file that
+            # the catalog still omitted is a parse or read failure.
+            if (entry / INSTALLED_META_FILENAME).is_file():
+                unrepresented.append(entry.name)
+    if unrepresented:
+        raise RuntimeError(
+            "app catalog incomplete; installed.json unreadable for: " + ", ".join(unrepresented)
+        )
+    return catalog
+
+
+def _neutralize_unrefreshed_app_agents(apps: list[Any] | None = None) -> None:
+    """Empty leftover MCP on listed-app ``<app>--*.json`` after a failed refresh.
+
+    The host ``kirocrew.json`` is already the filtered spec. Unrefreshed
+    app-agent files still carry leftover commands until this pass
+    empties ``mcpServers`` and pins ``includeMcpJson`` false. User
+    fields (``model``, ``description``, extra ``toolsSettings``) stay.
+    A neutralize I/O error is logged; the caller still re-raises the
+    refresh failure so the login emit cannot succeed. Disabled apps
+    are included so a leftover that survived disable-unlink still
+    loses its command. Only agents positively associated with a
+    listed app are mutated — a filename heuristic would erase a
+    valid custom agent such as ``research--local.json``. Apps with
+    ``resources="app"`` manage their own agents and are skipped.
+    *apps* is the pre-write catalog snapshot so a later
+    ``list_apps`` failure cannot skip this pass.
+    """
+    if apps is None:
+        try:
+            apps = _load_app_catalog()
+        except Exception as exc:
+            logger.warning("Login withhold: app-agent neutralize unavailable", exc_info=True)
+            raise RuntimeError("login withhold incomplete: app catalog unavailable") from exc
+    if not isinstance(apps, list):
+        apps = []
+    failed: list[str] = []
+    for info in apps:
+        if not isinstance(info, dict):
+            continue
+        if info.get("resources") == "app":
+            continue
+        name = info.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        try:
+            owned = _remaining_app_agent_names(name)
+        except AppAgentOwnershipUnknown as exc:
+            # Unknown is not empty: nothing may be disarmed by guess, and the
+            # emit must still fail so the gap is named.
+            failed.append(f"{name}: {exc}")
+            continue
+        for filename in owned:
+            if not _neutralize_app_agent_file(filename):
+                failed.append(filename)
+    if failed:
+        # Named so the operator can repair them; until then
+        # require_login_withhold refuses to spawn these agents.
+        raise RuntimeError(
+            "login withhold incomplete; leftover MCP could not be neutralized on: "
+            + ", ".join(sorted(failed))
+        )
+
+
+def _refresh_enabled_app_agents(
+    *,
+    fail_closed: bool = False,
+    apps: list[Any] | None = None,
+) -> None:
+    """Rematerialize enabled app agents so embedded MCP matches withhold.
+
+    Host rebuild and ``mcp.json`` do not rewrite
+    ``~/.kiro/agents/<app>--*.json``. kiro-cli still loads those files'
+    ``mcpServers``: login refresh strips leftover commands, and the
+    leave-login refresh puts them back from the app manifest.
+
+    Login callers write the filtered host spec first, then run this
+    with ``fail_closed``. An I/O or leftover failure then empties
+    remaining app-agent ``mcpServers`` and re-raises so a leftover
+    command cannot sit under a successful login emit. Originals stay
+    until replacements succeed; stale ``<app>--*.json`` names are
+    pruned only after that write. A suppressed prune unlink is
+    treated as a failure when any leftover name remains. User-owned
+    fields (``model``, ``description``, extra ``toolsSettings``) are
+    snapshotted and merged into the rematerialized files so a login
+    rebuild cannot discard hand edits. Leave-login uses the default
+    (in-place rematerialize, no prune) so ``_preserve_user_agent_edits``
+    can read the current files. Fail-closed login also walks
+    disabled apps and prunes their leftovers so a failed disable
+    unlink cannot leave a withheld command on disk. Only agents
+    positively associated with a listed app are mutated. Apps with
+    ``resources="app"`` manage their own agents and are skipped so
+    a no-op refresh cannot prune or neutralize those files.
+    *apps* is the catalog loaded before the host write so a later
+    ``list_apps`` failure cannot skip leftover-verify. Gateway boot
+    skips this walk (``rebuild_agent_config(app_agent_refresh=False)``).
+    """
+    failures: list[str] = []
+    try:
+        from kiro_crew.apps.bridges import _safe_link_name, refresh_app_agents
+
+        if apps is None:
+            apps = _load_app_catalog()
+    except Exception:
+        logger.warning("Login withhold: app-agent refresh unavailable", exc_info=True)
+        if fail_closed:
+            raise RuntimeError("app-agent refresh unavailable") from None
+        return
+    if not isinstance(apps, list):
+        apps = []
+    for info in apps:
+        if not isinstance(info, dict):
+            continue
+        if info.get("resources") == "app":
+            continue
+        name = info.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if not info.get("enabled"):
+            if fail_closed:
+                try:
+                    leftover = _prune_unkept_app_agent_files(name, set())
+                except AppAgentOwnershipUnknown as exc:
+                    failures.append(f"{name}: {exc}")
+                    continue
+                failures.extend(f"{name}: leftover {fn}" for fn in leftover)
+            continue
+        priors: dict[str, dict[str, Any]] | None = None
+        if fail_closed:
+            try:
+                priors = _snapshot_app_agent_priors(name)
+            except AppAgentOwnershipUnknown as exc:
+                failures.append(f"{name}: {exc}")
+                continue
+        before = len(failures)
+        written: list[str] = []
+        try:
+            written = refresh_app_agents(name, io_failures=failures, prior_agents=priors) or []
+        except Exception:
+            failures.append(name)
+            logger.warning(
+                "Login withhold: could not rematerialize agents for app %s",
+                name,
+                exc_info=True,
+            )
+            continue
+        if fail_closed and len(failures) > before:
+            continue
+        if fail_closed:
+            keep = {_safe_link_name(ns) + ".json" for ns in written}
+            try:
+                leftover = _prune_unkept_app_agent_files(name, keep)
+            except AppAgentOwnershipUnknown as exc:
+                failures.append(f"{name}: {exc}")
+                continue
+            failures.extend(f"{name}: leftover {fn}" for fn in leftover)
+    if fail_closed and failures:
+        raise RuntimeError("app-agent refresh failed: " + ", ".join(failures))
+
+
+# Authored non-managed MCP, withheld from the filtered ``--agent`` spec
+# under login. ``kirocrew.json`` is the runtime file kiro-cli reads; this
+# sidecar is the durable copy so a login rebuild cannot delete operator
+# customizations. Source ``mcp.json`` is never write-through. The
+# directory is the sensitive leaf so atomic-write temps stay fenced.
+AUTHORED_MCP_DIR = "agentcore-authored-mcp"
+AUTHORED_MCP_SIDECAR = f"{AUTHORED_MCP_DIR}/stash.json"
+
+
+def _authored_mcp_path() -> Path:
+    return config_dir() / AUTHORED_MCP_SIDECAR
+
+
+def _mcp_ref_server(ref: str) -> str:
+    """Server key of an ``@server`` or ``@server/tool`` MCP ref."""
+    if not ref.startswith("@"):
+        return ""
+    return ref[1:].split("/", 1)[0]
+
+
+def _extract_non_managed_mcp(config: dict[str, Any], managed_names: set[str]) -> dict[str, Any]:
+    """Non-managed servers and ``@`` refs from an agent spec."""
+    servers: dict[str, Any] = {}
+    raw = config.get("mcpServers")
+    if isinstance(raw, dict):
+        servers = {name: spec for name, spec in raw.items() if name not in managed_names}
+    tools: list[str] = []
+    allowed: list[str] = []
+    for key, dest in (("tools", tools), ("allowedTools", allowed)):
+        items = config.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if (
+                isinstance(item, str)
+                and item.startswith("@")
+                and _mcp_ref_server(item) not in managed_names
+            ):
+                dest.append(item)
+    return {"mcpServers": servers, "tools": tools, "allowedTools": allowed}
+
+
+def _source_mcp_specs(*, strict: bool = False) -> dict[str, Any]:
+    """Live source MCP specs with rebuild precedence and update semantics.
+
+    Matches ``rebuild_agent_config``: apps assign, Kiro global and
+    edition extras ``setdefault``, extra scope-globals ``setdefault``,
+    crew ``mcp.json`` ``update``s into an existing spec. A last-write
+    of the whole spec would make a server split across global and crew
+    files look different from dest and let stash overwrite an in-login
+    crew edit. Includes ``_extra_mcp_scope_globals()`` so a companion
+    provider-global delete looks vanished to restore.
+    """
+    managed = set(_MANAGED_MCP_SERVERS)
+    specs: dict[str, Any] = {}
+    load = _load_json_strict if strict else _load_json
+    for name, spec in _collect_app_mcp_servers(strict=strict).items():
+        if name in managed or not isinstance(spec, dict):
+            continue
+        specs[str(name)] = dict(spec)
+    shared = load(_KIRO_MCP_JSON).get("mcpServers", {})
+    if isinstance(shared, dict):
+        for name, spec in shared.items():
+            if isinstance(spec, dict) and name not in managed:
+                specs.setdefault(str(name), without_marker(spec))
+    for scope_global in _extra_mcp_scope_globals():
+        scope_shared = load(scope_global).get("mcpServers", {})
+        if not isinstance(scope_shared, dict):
+            continue
+        for name, spec in scope_shared.items():
+            if isinstance(spec, dict) and name not in managed:
+                specs.setdefault(str(name), without_marker(spec))
+    crew = load(_user_dir() / "mcp.json").get("mcpServers", {})
+    if isinstance(crew, dict):
+        for name, spec in crew.items():
+            if not isinstance(spec, dict) or name in managed:
+                continue
+            key = str(name)
+            if key in specs and isinstance(specs[key], dict):
+                merged = dict(specs[key])
+                merged.update(spec)
+                specs[key] = merged
+            else:
+                specs[key] = dict(spec)
+    for name, spec in _extra_mcp_servers().items():
+        if name in managed or not isinstance(spec, dict):
+            continue
+        specs.setdefault(str(name), dict(spec))
+    return specs
+
+
+def _live_resolved_source_specs(*, strict: bool = False) -> dict[str, Any]:
+    """Collision-resolved live MCP specs, keyed by runtime alias.
+
+    ``mcp_server_alias`` is many-to-one: ``namespace/name`` and
+    ``namespace-name`` share an alias. The runtime keeps both under the
+    lowest free numeric suffix (``_normalize_mcp_server_keys``). Merge
+    and restore compare stash specs against this mapping so a sibling
+    delete cannot leave the leftover command under the alias the
+    remaining source now occupies.
+    """
+    resolved = {"mcpServers": dict(_source_mcp_specs(strict=strict))}
+    _normalize_mcp_server_keys(resolved)
+    servers = resolved.get("mcpServers")
+    return dict(servers) if isinstance(servers, dict) else {}
+
+
+def _live_source_inventory() -> tuple[dict[str, Any], bool]:
+    """``(live specs, complete)``: the collision-resolved live specs and whether
+    EVERY source was readable.
+
+    ``complete`` is what licenses the conclusion "this stashed name is gone
+    from its source, so drop it": with a source that exists but did not parse
+    (a transient read error, a half-written edit) the name is merely unknown,
+    and dropping it -- then unlinking the stash -- would erase an agent-local
+    override for good. The best-effort specs returned with an incomplete
+    inventory are the collision resolution over the READABLE sources only, so
+    an alias the unreadable source owns can resolve to a sibling's spec in
+    them; callers must not classify aliases (takeover, edit) or overwrite
+    source-owned stash entries from them -- see :func:`_stash_authored_mcp`.
+    """
+    try:
+        return _live_resolved_source_specs(strict=True), True
+    except SourceInventoryUnreadable as exc:
+        logger.warning(
+            "MCP source inventory incomplete (%s); no stashed server is classified as deleted",
+            exc,
+        )
+        return _live_resolved_source_specs(), False
+
+
+def _source_mcp_server_names() -> set[str]:
+    """Collision-resolved names currently authored in live MCP sources."""
+    return set(_live_resolved_source_specs())
+
+
+def _shifted_source_aliases(servers: dict[str, Any], live_specs: dict[str, Any]) -> set[str]:
+    """Names whose live spec is a different stash server (alias takeover).
+
+    A same-named live source with extra stash fields is an agent
+    override, not a shift — restore must keep those command/args/env.
+    """
+    shifted: set[str] = set()
+    for name, spec in servers.items():
+        if name not in live_specs:
+            continue
+        live_norm = _norm_mcp_spec(live_specs[name])
+        if live_norm == _norm_mcp_spec(spec):
+            continue
+        if any(
+            other != name and _norm_mcp_spec(other_spec) == live_norm
+            for other, other_spec in servers.items()
+        ):
+            shifted.add(name)
+    return shifted
+
+
+def _merge_authored_mcp_payload(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    live_specs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Union stash state with a later login rebuild extract.
+
+    Current extract overwrites a same-named server (updated definition).
+    New names are added. ``sourceServers`` names that vanished from the
+    live source files are dropped so leaving login cannot resurrect a
+    server the operator deleted while login withheld it. An explicit
+    empty ``sourceServers`` is "no live sources", not absence: falling
+    back to the prior set would keep ownership of a deleted name and
+    let leave-login restore treat a same-name agent override as a
+    vanished source. Prior ownership is kept only when the key is
+    missing. A name still listed as live whose stash spec is a
+    different stash server is an alias takeover (deleted slash-free
+    sibling, remaining slash key takes the unsuffixed alias): replace
+    with the live spec and drop prior ``@name`` refs. Qualified
+    ``@server/tool`` refs stay when that server is still in the stash
+    and did not shift.
+    """
+    resolved_live = live_specs if live_specs is not None else {}
+    servers: dict[str, Any] = {}
+    prior = existing.get("mcpServers")
+    if isinstance(prior, dict):
+        servers.update(prior)
+    incoming_servers = incoming.get("mcpServers")
+    if isinstance(incoming_servers, dict):
+        servers.update(incoming_servers)
+    prior_sources = existing.get("sourceServers")
+    incoming_sources = incoming.get("sourceServers")
+    prior_set = {name for name in prior_sources} if isinstance(prior_sources, list) else set()
+    # Detect takeover while both siblings are still present; drop
+    # vanished names after that so a leftover command is not mistaken
+    # for an agent override. Only an explicit incoming list can mark
+    # a prior source vanished — a missing key is not an empty catalog.
+    shifted = _shifted_source_aliases(servers, resolved_live)
+    if isinstance(incoming_sources, list):
+        incoming_set = {name for name in incoming_sources}
+        if prior_set:
+            for name in list(servers):
+                if (
+                    name in prior_set
+                    and name not in incoming_set
+                    and name not in (incoming_servers or {})
+                ):
+                    servers.pop(name, None)
+        source_servers = sorted(incoming_set)
+    else:
+        source_servers = sorted(prior_set)
+    for name in shifted:
+        if name in resolved_live:
+            servers[name] = resolved_live[name]
+    merged: dict[str, Any] = {
+        "mcpServers": servers,
+        "sourceServers": source_servers,
+    }
+    # Baselines follow sourceServers: the incoming extract's reading of a live
+    # source is the current one, a prior reading fills in for a name the
+    # incoming payload did not cover, and a vanished source keeps none.
+    baselines: dict[str, Any] = {}
+    prior_baselines = existing.get("sourceBaselines")
+    if isinstance(prior_baselines, dict):
+        baselines.update(prior_baselines)
+    incoming_baselines = incoming.get("sourceBaselines")
+    if isinstance(incoming_baselines, dict):
+        baselines.update(incoming_baselines)
+    merged["sourceBaselines"] = {
+        name: spec for name, spec in baselines.items() if name in set(source_servers)
+    }
+    for key in ("tools", "allowedTools"):
+        refs: list[str] = []
+        seen: set[str] = set()
+        incoming_refs: set[str] = set()
+        legacy = existing.get("toolRefs") if key == "tools" else None
+        incoming_key = incoming.get(key)
+        if isinstance(incoming_key, list):
+            incoming_refs.update(item for item in incoming_key if isinstance(item, str))
+        for src in (existing.get(key), incoming.get(key), legacy):
+            if not isinstance(src, list):
+                continue
+            for ref in src:
+                if isinstance(ref, str) and ref not in seen:
+                    refs.append(ref)
+                    seen.add(ref)
+        merged[key] = [
+            ref
+            for ref in refs
+            if not ref.startswith("@")
+            or (
+                _mcp_ref_server(ref) in servers
+                and (_mcp_ref_server(ref) not in shifted or ref in incoming_refs)
+            )
+        ]
+    return merged
+
+
+def _without_source_owned(payload: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    """*payload* minus every server the existing stash lists as source-owned,
+    and minus the ``@server`` refs that name one.
+
+    Used when the live source inventory is INCOMPLETE. The runtime spec the
+    extract came from was assembled from the readable sources only, so an
+    alias that the unreadable source owns has resolved to a sibling's spec in
+    it; merging that entry would overwrite the stash's correct definition of
+    the alias with the sibling's, durably. Runtime-only authored servers (never
+    listed in ``sourceServers``) are unaffected by the unreadable source and
+    still merge.
+    """
+    owned_raw = existing.get("sourceServers")
+    owned = (
+        {name for name in owned_raw if isinstance(name, str)}
+        if isinstance(owned_raw, list)
+        else set()
+    )
+    if not owned:
+        return payload
+    trimmed = dict(payload)
+    servers = payload.get("mcpServers")
+    if isinstance(servers, dict):
+        trimmed["mcpServers"] = {name: spec for name, spec in servers.items() if name not in owned}
+    for key in ("tools", "allowedTools"):
+        refs = payload.get(key)
+        if isinstance(refs, list):
+            trimmed[key] = [
+                ref
+                for ref in refs
+                if not (
+                    isinstance(ref, str) and ref.startswith("@") and _mcp_ref_server(ref) in owned
+                )
+            ]
+    return trimmed
+
+
+def _stash_authored_mcp(config: dict[str, Any], managed_names: set[str]) -> None:
+    """Persist non-managed MCP before login withhold filters the runtime spec.
+
+    Merges a non-empty extract into any existing sidecar so a later
+    login rebuild cannot replace a complete stash with a partial one,
+    and so operator edits during login update the durable copy. An
+    unreadable sidecar is atomically replaced with the live extract
+    (no merge). A write failure propagates so retract cannot drop
+    the only remaining runtime copy. With an INCOMPLETE source inventory
+    the extract is partial too: source-owned stash entries and their refs
+    are kept as they are (:func:`_without_source_owned`), no partial live
+    specs reach the merge (so no alias is classified as taken over), and
+    nothing is pruned.
+    """
+    payload = _extract_non_managed_mcp(config, managed_names)
+    live_specs, inventory_complete = _live_source_inventory()
+    merge_live: dict[str, Any] | None = live_specs if inventory_complete else None
+    if inventory_complete:
+        payload["sourceServers"] = sorted(live_specs)
+        # What each live source said when the stash was written. Restore compares
+        # the source against this: a source edited while login withheld it must not
+        # have that edit replaced by the older definition in the stash.
+        payload["sourceBaselines"] = {
+            name: _norm_mcp_spec(spec) for name, spec in live_specs.items()
+        }
+    # With a source the rebuild could not read, the list of live names is
+    # unknown: leave ``sourceServers`` out so the merge keeps the prior set and
+    # prunes nothing (a missing key is not an empty catalog).
+    if not payload["mcpServers"] and not payload["tools"] and not payload["allowedTools"]:
+        path = _authored_mcp_path()
+        if not path.exists():
+            return
+        # Empty extract: still drop source-backed names that vanished.
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(existing, dict):
+            return
+        payload = _merge_authored_mcp_payload(existing, payload, merge_live)
+    else:
+        path = _authored_mcp_path()
+        loaded: dict[str, Any] = {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raw = {}
+        except (OSError, ValueError):
+            # Sidecar is not mergeable. Persist the live extract
+            # before retract so runtime-only MCP is not lost.
+            logger.warning(
+                "authored MCP sidecar unreadable; replacing with live extract",
+                exc_info=True,
+            )
+            platform_compat.make_owner_only_dir(path.parent)
+            atomic_write(
+                path,
+                json.dumps(payload, sort_keys=True),
+                restrict_to_owner=True,
+            )
+            return
+        if isinstance(raw, dict):
+            loaded = raw
+        if loaded:
+            if not inventory_complete:
+                payload = _without_source_owned(payload, loaded)
+            payload = _merge_authored_mcp_payload(loaded, payload, merge_live)
+    if (
+        not payload.get("mcpServers")
+        and not payload.get("tools")
+        and not payload.get("allowedTools")
+    ):
+        # Reconciliation emptied the stash: drop the sidecar so leave-login
+        # cannot restore a server the operator deleted while withheld.
+        _unlink_authored_mcp_sidecar()
+        return
+    platform_compat.make_owner_only_dir(path.parent)
+    atomic_write(
+        path,
+        json.dumps(payload, sort_keys=True),
+        restrict_to_owner=True,
+    )
+
+
+def _unlink_authored_mcp_sidecar() -> None:
+    """Drop the authored-MCP sidecar after the runtime spec is durable.
+
+    ``FileNotFoundError`` is absence. Any other ``OSError`` (locked,
+    permission, busy) propagates so a later rebuild cannot restore
+    servers this pass already discarded.
+    """
+    path = _authored_mcp_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _restore_authored_mcp(
+    config: dict[str, Any],
+    restored_names: set[str] | None = None,
+) -> bool:
+    """Merge runtime-only authored MCP into the already-assembled spec.
+
+    Stash specs overwrite dest for kept names, so an agent-local override
+    that shares a live source's name survives the round trip. The one
+    exception is a live source EDITED while login withheld it: the stash
+    records each source's definition at stash time (``sourceBaselines``),
+    and a name whose live source differs from that baseline keeps
+    the assembled live spec — restoring the stash there would replace the
+    operator's edit with the older copy. A stash with no baseline for a
+    name (written before baselines existed) is applied as before. Names
+    listed in ``sourceServers`` that have vanished from the live source
+    files are dropped so a deleted server cannot be resurrected. A name
+    still live whose stash spec is a different stash server (alias
+    takeover) is skipped so the deleted sibling cannot ride the remaining
+    source's alias. Does not unlink: the sidecar stays until every
+    restored name survives command validation and the runtime spec is
+    durably written. *restored_names*, when supplied, receives those kept
+    names so the writer can refuse to unlink a stash whose only copy just
+    failed validation.
+    """
+    path = _authored_mcp_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        logger.warning("authored MCP sidecar unreadable; skipping restore")
+        return False
+    if not isinstance(raw, dict):
+        return False
+    servers = raw.get("mcpServers")
+    dest = config.setdefault("mcpServers", {})
+    live_specs, inventory_complete = _live_source_inventory()
+    live_sources = set(live_specs)
+    prior_sources = raw.get("sourceServers")
+    prior_set = {name for name in prior_sources} if isinstance(prior_sources, list) else set()
+    # A name is DELETED only when a complete inventory says so. An unreadable
+    # source makes it unknown: keep it in the restore and keep the sidecar
+    # (the writer unlinks only on a True return), so nothing is lost to a
+    # transient read failure.
+    dropped = (
+        {name for name in prior_set if name not in live_sources} if inventory_complete else set()
+    )
+    shifted: set[str] = set()
+    if isinstance(servers, dict) and inventory_complete:
+        # Takeover detection reads the live resolution of each alias; over the
+        # readable sources alone an alias the unreadable source owns resolves
+        # to a sibling, which is exactly the shape of a takeover. Unknown, so
+        # the stash spec is kept for this rebuild.
+        shifted = _shifted_source_aliases(servers, live_specs)
+    baselines = raw.get("sourceBaselines")
+    baselines = baselines if isinstance(baselines, dict) else {}
+    edited = {
+        name
+        for name in live_sources
+        if name in baselines and _norm_mcp_spec(live_specs[name]) != baselines[name]
+    }
+    kept: set[str] = set()
+    if isinstance(servers, dict) and isinstance(dest, dict):
+        for name, spec in servers.items():
+            if name in dropped or name in shifted or name in edited:
+                continue
+            dest[name] = spec
+            kept.add(name)
+    if restored_names is not None:
+        restored_names.update(kept)
+    omit_refs = dropped | shifted
+    for key in ("tools", "allowedTools"):
+        refs = raw.get(key)
+        if refs is None and key == "tools":
+            refs = raw.get("toolRefs")
+        dest_refs = config.setdefault(key, [])
+        if not isinstance(refs, list) or not isinstance(dest_refs, list):
+            continue
+        existing = {item for item in dest_refs if isinstance(item, str)}
+        for ref in refs:
+            if not isinstance(ref, str) or ref in existing:
+                continue
+            if ref.startswith("@") and _mcp_ref_server(ref) in omit_refs:
+                continue
+            dest_refs.append(ref)
+            existing.add(ref)
+    # Applied, but with an incomplete inventory the sidecar must survive this
+    # rebuild: report it as not fully restored so the writer does not unlink.
+    return inventory_complete
+
+
+def _retract_non_managed_mcp(config: dict[str, Any], managed_names: set[str]) -> None:
+    """Omit non-managed MCP from the generated ``--agent`` spec.
+
+    kiro-cli loads ``mcpServers`` from the agent file and starts those
+    commands before inbound attach. Source ``mcp.json`` / edition extras
+    are not mutated. Authored leftovers are stashed to
+    :data:`AUTHORED_MCP_SIDECAR` and restored when posture leaves login.
+    """
+    servers = config.get("mcpServers")
+    if isinstance(servers, dict):
+        config["mcpServers"] = {
+            name: spec for name, spec in servers.items() if name in managed_names
+        }
+    for key in ("tools", "allowedTools"):
+        refs = config.get(key)
+        if not isinstance(refs, list):
+            continue
+        kept: list[Any] = []
+        for item in refs:
+            if (
+                isinstance(item, str)
+                and item.startswith("@")
+                and _mcp_ref_server(item) not in managed_names
+            ):
+                continue
+            kept.append(item)
+        config[key] = kept
+
+
+def _record_login_invoke_probe() -> None:
+    """Refuse a Gateway emit when login posture can still IAM-invoke Gateway.
+
+    Rebuild does not emit a Gateway spec under ``login`` (inbound attach
+    does that per session). A successful probe is still a posture mismatch
+    and is recorded to SEL so attach fails closed on the same signal. The
+    public probe defaults False (no mismatch detected, not "IAM inbound
+    is impossible"); a companion must override the live check. This never
+    calls AWS.
+    """
+    from kiro_crew.cloud import iam as cloud_iam
+
+    if not cloud_iam.probe_instance_invoke_gateway():
+        return
+    sel().log_api_access(
+        caller="system",
+        operation="agentcore.posture_mismatch",
+        outcome="denied",
+        source="agentcore_gateway",
+        resources="InvokeGateway succeeded under login posture; inbound withheld",
+    )
+
+
 def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
     """Merge edition extras and keep the reserved Gateway name session-only.
 
@@ -1294,19 +2344,24 @@ def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
     is not modified; a warning names each entry), and the Gateway reaches a
     session only through the governed inject. Other remotes and command
     servers are untouched.
-    Login withhold of other remotes is a later PR.
+    Login posture withholds every edition extra (URL and command) so a
+    fresh-install ``@ref`` cannot remount non-managed tools before user
+    attach.
     """
     from kiro_crew.platform.agentcore_gateway import (
         GATEWAY_SERVER_NAME,
         strip_secret_spec_keys,
     )
 
+    login_withhold = _login_mcp_withhold()
     for name, spec in _extra_mcp_servers().items():
         if (
             name == GATEWAY_SERVER_NAME
             or not isinstance(spec, dict)
             or _is_agentcore_gateway_entry(spec)
         ):
+            continue
+        if login_withhold:
             continue
         mcp.setdefault(name, strip_secret_spec_keys(spec))
     if mcp.get(GATEWAY_SERVER_NAME) is None:
@@ -1620,6 +2675,23 @@ def _prompt_path(mode: str = "") -> Path:
     if user_prompt.is_file():
         return user_prompt
     return _shipped_prompt()
+
+
+class SourceInventoryUnreadable(RuntimeError):
+    """A live MCP source exists but could not be read or parsed, so the set of
+    live server names is UNKNOWN -- not empty. Callers that would classify a
+    stashed name as "deleted from its source" must preserve it instead."""
+
+
+def _load_json_strict(path: Path) -> dict[str, Any]:
+    """``_load_json`` that refuses to turn an unreadable file into ``{}``."""
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        raise SourceInventoryUnreadable(f"{path}: {exc}") from exc
+    return data if isinstance(data, dict) else {}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -3937,7 +5009,7 @@ def _ceiling_filtered_spec(ref: str, spec: dict[str, Any], *, audit: bool = True
     return spec
 
 
-def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
+def _collect_app_mcp_servers(*, audit: bool = True, strict: bool = False) -> dict[str, Any]:
     """MCP servers contributed by ENABLED apps, keyed ``{app}:{server}``.
 
     App MCP servers are registered straight into this agent config rather than
@@ -3967,7 +5039,9 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
 
     try:
         apps = list_apps()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if strict:
+            raise SourceInventoryUnreadable(f"app catalog: {exc}") from exc
         return servers
 
     # The LIVE registered map, not the manifest, is the source of truth for the
@@ -3990,6 +5064,10 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
             if not is_app_enabled(name):
                 continue
             manifest = get_app_manifest(name)
+            if strict and manifest is None:
+                # Enabled but its manifest cannot be read: its servers are
+                # unknown, not gone.
+                raise SourceInventoryUnreadable(f"app {name}: manifest unreadable")
             if not manifest or not manifest.mcpServers:
                 continue
             for server_name, spec in manifest.mcpServers.items():
@@ -4229,7 +5307,10 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
 
 
 def rebuild_agent_config(
-    *, clean: bool = False, refresh_forks: bool | Literal["defer"] = True
+    *,
+    clean: bool = False,
+    refresh_forks: bool | Literal["defer"] = True,
+    app_agent_refresh: bool = True,
 ) -> Path:
     """Rebuild and write the merged kirocrew.json to ~/.kiro/agents/.
 
@@ -4253,6 +5334,10 @@ def rebuild_agent_config(
 
     Args:
         clean: If True, ignore existing config and regenerate from defaults.
+        refresh_forks: Refresh the forked crew templates; ``"defer"`` runs
+            that walk on a background thread so boot is not gated on it.
+        app_agent_refresh: Rematerialize enabled app-agent files. Gateway
+            boot passes False so leftover-verify cannot delay readiness.
     """
     declined = _decline_shared_agent_home()
     if declined is not None:
@@ -4300,6 +5385,39 @@ def rebuild_agent_config(
     # the Claude Code provider can be re-enabled later without rework; it must
     # not shadow a Kiro-global entry.
     managed_names = set(_MANAGED_MCP_SERVERS)
+    login_withhold = _login_mcp_withhold()
+    catalog_apps: list[Any] | None = None
+    catalog_error: BaseException | None = None
+    if login_withhold and app_agent_refresh:
+        try:
+            catalog_apps = _load_app_catalog()
+        except Exception as exc:
+            catalog_error = exc
+            logger.warning(
+                "Login withhold: app catalog unavailable before host write",
+                exc_info=True,
+            )
+    restore_sidecar = False
+    restored_names: set[str] = set()
+    if clean:
+        # ``--clean`` regenerates from defaults. A leftover login stash
+        # would restore servers the reset just dropped on the next
+        # workload rebuild.
+        _unlink_authored_mcp_sidecar()
+    if login_withhold:
+        # Login posture is an emit-time spec_gate: skip merging new extras
+        # and omit leftover non-managed servers so kiro-cli cannot exec
+        # them before inbound attach. Managed kirocrew-* still emit.
+        # Stash first so the filtered runtime spec does not delete the
+        # only durable copy of operator customizations.
+        _record_login_invoke_probe()
+        if not clean:
+            _stash_authored_mcp(config, managed_names)
+        _retract_non_managed_mcp(config, managed_names)
+        # App-agent leftover-verify runs after the host write so a
+        # failed refresh cannot leave the prior runtime MCP executable.
+        # Gateway boot passes ``app_agent_refresh=False`` so that walk
+        # cannot delay readiness. Identity PUT still rematerializes.
 
     # App-contributed MCP servers go in FIRST so an app's namespaced entry
     # outranks any same-named leftover in the shared global file (every loop
@@ -4314,67 +5432,80 @@ def rebuild_agent_config(
     # had just stripped (the ceiling now governs that server) lost to the stale
     # grant, the tightening never reached an existing config, and those tools
     # kept skipping the PreToolUse gate.
-    for _app_srv, _app_spec in _collect_app_mcp_servers().items():
-        if _app_srv not in managed_names:
-            config.setdefault("mcpServers", {})[_app_srv] = _app_spec
-            # EXPOSE it: kiro-cli connects entries declared in `mcpServers`, but
-            # an unreferenced server contributes no tools to the agent. `tools`
-            # is the unconditional exposure list (the final
-            # dedup below removes any duplicate); auto-approve stays governed —
-            # the spec's `autoApprove` was already ceiling-filtered in
-            # _collect_app_mcp_servers, and the final allowedTools pass covers the
-            # @ref if it ever lands there.
-            config.setdefault("tools", []).append(f"@{_app_srv}")
-
-    shared_mcp = _load_json(_KIRO_MCP_JSON).get("mcpServers", {})
-    for name, spec in shared_mcp.items():
-        if isinstance(spec, dict) and name not in managed_names:
-            # Copy so config never aliases the source dict — a later update()
-            # (kirocrew merge) must not mutate shared_mcp, which is reused as a
-            # fallback candidate during command validation below. The copy also
-            # drops our authorship marker: it records who wrote the entry in a
-            # SHARED file and has no meaning in a spec we render ourselves, so
-            # keeping it would put a key in front of the runtime that says nothing
-            # to it.
-            config.setdefault("mcpServers", {}).setdefault(name, without_marker(spec))
-
-    # Merge shared MCP servers from edition-contributed provider globals (CPP
-    # seam) — now LOWER priority than Kiro global; setdefault is a no-op when
-    # Kiro already populated the same key, so these only fill gaps. In OSS the
-    # seam is empty, so NO provider global (e.g. ~/.claude.json) is merged —
-    # keeping rebuild symmetric with discovery + apply/uninstall so a server the
-    # dashboard can't see is never re-merged into sessions. A companion
-    # contributes its Claude Code scope here and manages it end-to-end.
-    # ``extra_shared_mcp`` accumulates the raw per-scope entries (first scope
-    # wins) for the fallback-candidate lookup and shared-server tools sync below
-    # (replaces the old single ``cc_shared_mcp``).
+    #
+    # Login withhold skips this loop: the emitted spec is only managed
+    # kirocrew-* (plus a later URL-only Gateway). Apps are neither.
     extra_shared_mcp: dict[str, dict] = {}
-    for scope_global in _extra_mcp_scope_globals():
-        scope_shared_mcp = _load_json(scope_global).get("mcpServers", {})
-        for name, spec in scope_shared_mcp.items():
-            if not isinstance(spec, dict):
-                continue
-            extra_shared_mcp.setdefault(name, spec)
-            if name not in managed_names:
-                # Copy (see note above) so the source dict stays pristine for
-                # the fallback-candidate lookup.
+    kirocrew_mcp: dict[str, Any] = {}
+    shared_mcp: dict[str, Any] = {}
+    if not login_withhold:
+        for _app_srv, _app_spec in _collect_app_mcp_servers().items():
+            if _app_srv not in managed_names:
+                config.setdefault("mcpServers", {})[_app_srv] = _app_spec
+                # EXPOSE it: kiro-cli connects entries declared in `mcpServers`, but
+                # an unreferenced server contributes no tools to the agent. `tools`
+                # is the unconditional exposure list (the final
+                # dedup below removes any duplicate); auto-approve stays governed —
+                # the spec's `autoApprove` was already ceiling-filtered in
+                # _collect_app_mcp_servers, and the final allowedTools pass covers the
+                # @ref if it ever lands there.
+                config.setdefault("tools", []).append(f"@{_app_srv}")
+
+        shared_mcp = _load_json(_KIRO_MCP_JSON).get("mcpServers", {})
+        for name, spec in shared_mcp.items():
+            if isinstance(spec, dict) and name not in managed_names:
+                # Copy so config never aliases the source dict — a later update()
+                # (kirocrew merge) must not mutate shared_mcp, which is reused as a
+                # fallback candidate during command validation below. The copy also
+                # drops our authorship marker: it records who wrote the entry in a
+                # SHARED file and has no meaning in a spec we render ourselves, so
+                # keeping it would put a key in front of the runtime that says nothing
+                # to it.
                 config.setdefault("mcpServers", {}).setdefault(name, without_marker(spec))
 
-    # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —
-    # kirocrew-specific config wins in a tie.
-    # Uses update() to merge into existing specs, preserving user-set fields
-    # like autoApprove while letting kirocrew's command/args/env win.
-    # Skip managed servers for the same reason as above.
-    kirocrew_mcp = _load_json(_user_dir() / "mcp.json").get("mcpServers", {})
-    for name, spec in kirocrew_mcp.items():
-        if isinstance(spec, dict) and name not in managed_names:
-            mcps = config.setdefault("mcpServers", {})
-            if name in mcps and isinstance(mcps[name], dict):
-                # mcps[name] is a private copy (globals were copied in above),
-                # so update() does not mutate any source dict.
-                mcps[name].update(spec)
-            else:
-                mcps[name] = dict(spec)
+        # Merge shared MCP servers from edition-contributed provider globals (CPP
+        # seam) — now LOWER priority than Kiro global; setdefault is a no-op when
+        # Kiro already populated the same key, so these only fill gaps. In OSS the
+        # seam is empty, so NO provider global (e.g. ~/.claude.json) is merged —
+        # keeping rebuild symmetric with discovery + apply/uninstall so a server the
+        # dashboard can't see is never re-merged into sessions. A companion
+        # contributes its Claude Code scope here and manages it end-to-end.
+        # ``extra_shared_mcp`` accumulates the raw per-scope entries (first scope
+        # wins) for the fallback-candidate lookup and shared-server tools sync below
+        # (replaces the old single ``cc_shared_mcp``).
+        for scope_global in _extra_mcp_scope_globals():
+            scope_shared_mcp = _load_json(scope_global).get("mcpServers", {})
+            for name, spec in scope_shared_mcp.items():
+                if not isinstance(spec, dict):
+                    continue
+                extra_shared_mcp.setdefault(name, spec)
+                if name not in managed_names:
+                    # Copy (see note above) so the source dict stays pristine for
+                    # the fallback-candidate lookup.
+                    config.setdefault("mcpServers", {}).setdefault(name, without_marker(spec))
+
+        # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —
+        # kirocrew-specific config wins in a tie.
+        # Uses update() to merge into existing specs, preserving user-set fields
+        # like autoApprove while letting kirocrew's command/args/env win.
+        # Skip managed servers for the same reason as above.
+        kirocrew_mcp = _load_json(_user_dir() / "mcp.json").get("mcpServers", {})
+        for name, spec in kirocrew_mcp.items():
+            if isinstance(spec, dict) and name not in managed_names:
+                mcps = config.setdefault("mcpServers", {})
+                if name in mcps and isinstance(mcps[name], dict):
+                    # mcps[name] is a private copy (globals were copied in above),
+                    # so update() does not mutate any source dict.
+                    mcps[name].update(spec)
+                else:
+                    mcps[name] = dict(spec)
+
+        # After current sources merge via setdefault/update above. The
+        # sidecar restores agent-file leftovers and same-named overrides
+        # the global source would otherwise discard. A clean rebuild
+        # already discarded the sidecar.
+        if not clean:
+            restore_sidecar = _restore_authored_mcp(config, restored_names)
 
     # Resolve MCP commands to absolute paths and validate.
     #
@@ -4878,9 +6009,12 @@ def rebuild_agent_config(
         # must also be added to config['tools'], otherwise kiro-cli exposes the
         # server but not its tools. The public edition contributes none, so this
         # is a no-op there.
-        _register_names = list(_MANAGED_MCP_SERVERS) + [
-            n for n in _extra_mcp_servers() if n not in _MANAGED_MCP_SERVERS
-        ]
+        extra_names = (
+            []
+            if login_withhold
+            else [n for n in _extra_mcp_servers() if n not in _MANAGED_MCP_SERVERS]
+        )
+        _register_names = list(_MANAGED_MCP_SERVERS) + extra_names
         for mcp_name in _register_names:
             ref = f"@{mcp_name}"
             if mcp_name in valid_servers and ref not in config.get("tools", []):
@@ -5027,6 +6161,14 @@ def rebuild_agent_config(
         _read_mcp_json_unlocked,
     )
 
+    def _write_runtime_spec() -> None:
+        _atomic_json_write(path, config)
+        if restore_sidecar:
+            final = config.get("mcpServers")
+            final_names = set(final) if isinstance(final, dict) else set()
+            if restored_names <= final_names:
+                _unlink_authored_mcp_sidecar()
+
     def _finalize_and_write() -> None:
         servers_map = config.get("mcpServers")
         if isinstance(servers_map, dict):
@@ -5095,7 +6237,7 @@ def rebuild_agent_config(
             # are treated as the user's and survive.
             if not clean:
                 _reconcile_tool_aliases_from_disk(path, config)
-            _atomic_json_write(path, config)
+            _write_runtime_spec()
             return
 
         # `durable` is the generation really on disk, read once inside this section:
@@ -5124,7 +6266,7 @@ def rebuild_agent_config(
             # empty there would forget a real emission and strand those aliases.
             target_fingerprint = spec_fingerprint(config.get("toolAliases"))
             if target_fingerprint == previous_fingerprint:
-                _atomic_json_write(path, config)
+                _write_runtime_spec()
                 return
             alias_generation = (target_fingerprint, frozenset())
 
@@ -5145,10 +6287,10 @@ def rebuild_agent_config(
                 exc_info=True,
             )
             _set_tool_aliases(config, durable_aliases if durable_existed else None)
-            _atomic_json_write(path, config)
+            _write_runtime_spec()
             return
 
-        _atomic_json_write(path, config)
+        _write_runtime_spec()
         # The spec carrying those aliases is durable, so the open transaction can be
         # committed -- inside whatever lock guarded that write, so the two land as one
         # unit. Committing outside it would let two rebuilds serialize their spec
@@ -5208,16 +6350,49 @@ def rebuild_agent_config(
                     if not _app_of_key_enabled(_k):
                         del servers[_k]
                 for _k, _v in on_disk.items():
-                    # ALWAYS assign, not add-if-missing: on_disk is authoritative
-                    # for app servers, so a concurrent re-registration on a new
-                    # port (same key, new URL) must OVERWRITE our stale snapshot —
-                    # otherwise the dead pre-rebuild URL is persisted.
+                    # ALWAYS assign, not add-if-missing: on_disk is
+                    # authoritative for app servers, so a concurrent
+                    # re-registration on a new port (same key, new URL)
+                    # must OVERWRITE our stale snapshot — otherwise the
+                    # dead pre-rebuild URL is persisted.
                     if _k in on_disk_app:
                         servers[_k] = _v
+                if login_withhold:
+                    for _k in [k for k in servers if ":" in k and k not in managed_names]:
+                        del servers[_k]
             _finalize_and_write()
     else:
         _finalize_and_write()
     logger.info("Installed agent config: %s", path)
+
+    if app_agent_refresh:
+        if login_withhold:
+            # Host spec is already the filtered runtime. Fail-closed
+            # rematerialize then prune leftover ``<app>--*.json``. On
+            # I/O or leftover failure neutralize remaining app-agent
+            # MCP so a withheld command cannot stay executable.
+            try:
+                if catalog_error is not None:
+                    raise RuntimeError("app-agent catalog unavailable") from catalog_error
+                _refresh_enabled_app_agents(fail_closed=True, apps=catalog_apps)
+            except Exception as refresh_exc:
+                # Neutralize raises when a leftover could not be emptied; that
+                # is the more specific failure (it names the files that still
+                # carry MCP), so it is what the emit reports, chained to the
+                # refresh failure that led here.
+                try:
+                    _neutralize_unrefreshed_app_agents(
+                        apps=catalog_apps if catalog_apps is not None else []
+                    )
+                except Exception as neutralize_exc:
+                    raise neutralize_exc from refresh_exc
+                raise
+        else:
+            # Host spec is restored above. App-agent files still carry
+            # the stripped mcpServers from the login rebuild until this
+            # refresh. In-place (not fail_closed): rematerialize so
+            # _preserve_user_agent_edits can read the current files.
+            _refresh_enabled_app_agents()
 
     # Install KiroCrew AIM capabilities package (includes kirocrew-lite)
     _install_aim_capabilities()

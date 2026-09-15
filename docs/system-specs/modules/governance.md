@@ -2367,7 +2367,147 @@ is a known value. The public `DefaultAgentIdentityProvider` is disabled, so a
 standalone host with no policy is unchanged. Standalone boot may swap
 `agent_identity` for the optional AWS adapter when that extra is opted in.
 Workload rebuild / `session/new` consult this row for Gateway MCP inject
-onto a localhost SigV4 proxy. Login attach is a later stack PR. Naming the
+onto a localhost SigV4 proxy. Login posture writes a per-session `0600`
+inbound sidecar (JWT or URL-only OAuth challenge) after bind — an
+already-expired JWT is treated as absent, not written — withholds
+non-managed MCP from the emitted `--agent` spec at rebuild and from
+`_register_mcp_servers`, which re-evaluates that gate inside `_mcp_lock`
+immediately before write so a concurrent login flip cannot restore app
+MCP, and from materialized app-agent specs (those files embed the
+app's command independently of `mcp.json`; after policy merge the
+login write also pins `includeMcpJson` false and keeps only managed
+`kirocrew-*` servers so an ambient grant cannot re-copy a command)
+(the gate reads the EFFECTIVE posture, `agentcore_aws.resolved_posture`
+in strict mode -- the ceiling when one is loaded, else the launch env /
+home authoring -- the same read the session attach path uses, so an
+env-only `login` instance withholds at rebuild exactly where it attaches
+login Gateways; a governance or posture lookup error, including an
+unavailable ceiling, withholds; an explicit
+capability denial or a confirmed non-login posture does not)
+(authored
+leftovers are stashed to the owner-only data-home sidecar `stash.json`
+under `agentcore-authored-mcp` and
+restored when posture leaves login; the sidecar unlinks only when
+every restored name survives command validation; an unreadable
+sidecar is atomically replaced with the live extract so retract
+cannot drop the only remaining runtime copy (a write failure
+aborts before retract); that same
+leave-login rebuild rematerializes enabled app-agent specs in
+place so embedded MCP commands return after the host write
+without unlinking first (user `model`/`description`/`toolsSettings`
+survive); a login rebuild writes the filtered host spec first, then
+fail-closed refresh snapshots those user-owned fields, rematerializes
+in place, and prunes stale `<app>--*.json` names afterward (a swallowed
+prune `OSError` is a leftover failure). Apps with `resources="app"`
+manage their own agents and are skipped so a no-op refresh cannot
+prune or neutralize those files. Fail-closed login also walks
+disabled apps and prunes their leftovers so a failed disable
+unlink cannot leave a withheld command on disk. Login leftover-verify
+loads `list_apps()` before the host write and reuses that snapshot
+for fail-closed refresh and neutralize, so a later catalog I/O
+failure cannot skip listed-app leftover-verify. Only agents
+positively associated with a listed app are mutated — an unclaimed
+`--` filename is not a leftover (a custom `research--local.json`
+must survive). Association is never the filename prefix: an app OWNS a
+materialized agent when its current manifest declares it OR the
+ownership ledger (`<config_dir>/app-agent-trust/ownership.json` — a keystone
+in its own crew-home directory, on the sensitive-path floor and bind-masked
+from every sandboxed process, never under the agent-writable apps root or
+agents dir, see `security.md`; written by the
+materializing writer BEFORE each spec lands, and forgotten only by the
+framework's own unlink) records that the framework wrote it. A ledger that
+is present but unreadable is never replaced with an empty map — its bytes
+still hold every other app's records — and a record that cannot be read or
+written refuses that agent's materialization as an I/O failure
+(`AppAgentLedgerUnavailable`, an `OSError`) rather than writing a spec the
+gate would have to call the user's. The ledger
+is what keeps a spec the app's after an upgrade drops it from the
+manifest and the prune fails: the file still carries its old MCP, the
+manifest no longer names it, but the record does, so it is neutralized
+and gated rather than mistaken for a user's custom agent — even after
+the app is uninstalled. A manifest, declared agent or ledger that cannot
+be read makes ownership UNKNOWN, not empty: the emit fails naming the
+app, and the spawn gate refuses a prefix-shaped name rather than guess.
+On any I/O or leftover
+failure it empties remaining listed-app `mcpServers` and pins
+`includeMcpJson` false (user `model`/`description`/`toolsSettings`
+survive) then aborts so a leftover command cannot sit under a
+successful login emit or stay executable after the host write. That
+neutralize pass fails closed by name: a file it could not rewrite, or
+could not parse (left untouched rather than rewritten from `{}`, which
+would erase the user's fields to disarm a command kiro-cli cannot load
+anyway), makes the emit raise with the filenames; the login register
+(`bridges._register_mcp_servers`) applies the same rule when its
+rematerialize fails, whether or not a caller passed an `io_failures`
+collector. Because such a file is still on disk, every spawn path runs
+`agent.require_login_withhold` beside `require_fork_governance`: under
+Login, an app agent whose on-disk spec (resolved as kiro-cli resolves
+`--agent`: the project-local `<cwd>/.kiro/agents` first, then the user
+dir, a DECLARED `name` winning over a matching filename — so an app file
+materialized as `notes--scribe.json` and selected as `scribe` is judged
+by that file, and neither a bare declared name nor a `--`-free filename
+is an exemption; ownership is decided on the RESOLVED file by manifest ∪
+ledger, a name two specs declare is refused as undefined, and a
+stem-named file that exists but cannot be parsed is refused rather than
+treated as absent) is not the exact shape a login rebuild leaves --
+`includeMcpJson` pinned false and only host-managed servers, each with
+the host's own canonical invocation and nothing but `command`/`args`
+plus a policy narrowing (`disabledTools`) or `timeout` -- a managed NAME
+over a foreign command is a spoof, and an `autoApprove`, `env`, `url`,
+`headers` or any other field on a managed entry is a grant or execution
+knob the rebuild never emits, so both are refused -- or cannot be read,
+is refused, so the
+last load path is closed until the rebuild
+succeeds. Custom agents and the host agent never wait and never raise.
+Gateway boot runs the host rebuild off the
+event loop (`asyncio.to_thread`) with
+`app_agent_refresh=False` so leftover-verify cannot delay
+readiness; Identity PUT still rematerializes. A later login rebuild merges the
+live extract into that sidecar and keeps `@server/tool` refs whose
+server name is still present; restore applies stash specs over dest
+even when dest equals the assembled live source (that equality
+cannot distinguish an agent-local override from a source edit until
+source baselines exist); only a sibling alias takeover
+drops the leftover command and its prior `@name` refs; an explicit
+empty `sourceServers` is "no live sources" (a deleted source plus a
+same-name agent override must not inherit the prior ownership list,
+or restore treats the override as a vanished source and drops it);
+the prior list is kept only when the key is absent; and "deleted from
+its source" is concluded only from a COMPLETE inventory: when a live
+source file exists but cannot be read or parsed
+(`SourceInventoryUnreadable`, via `_live_source_inventory`), the stash
+writer omits `sourceServers`/`sourceBaselines` so the merge prunes
+nothing, keeps every server the existing stash lists as source-owned
+(and its `@server` refs) exactly as stashed rather than merging the
+extract's entry for it — the runtime spec was assembled from the
+readable sources only, so an alias the unreadable source owns has
+resolved to a sibling's spec there — and passes no partial live specs
+to the merge, so no alias is classified as taken over; restore likewise
+skips takeover classification, drops no stashed name and returns
+not-fully-restored so the runtime-spec writer keeps the sidecar — a
+transient read failure must not erase or overwrite an agent-local
+override for good; source
+`mcp.json` is never write-through), and never attaches for unattended
+sessions. Unattended is the default: `cli_chat` binds as a human;
+`dashboard:` / channel-namespace *spellings* bind as a human only
+when a staged turn names both a surface and a raw ID, or a live
+login sidecar proves the key. An unbound prepare that stages
+`(None, None)` (dashboard turns stay unbound so a queued follow-up
+can steer the slot) stays unattended so denial is SEL-audited
+(`ctx.agent(session="slack:forged")` stays unattended). A custom
+`ctx.agent(..., session="custom")` key, `channel:` /
+`meetings-` / `wf:` / cron / TaskRunner / hook / subagent are
+unattended. Workload user/OBO still needs a vaulted owner token
+even when the key looks interactive. Consent URLs are allowlisted through
+`security.allow_agentcore_consent_url` (the operator-OAuth keystone plus
+the builtin set). `consent_snapshot` evaluates `_identity_on(HOST_SESSION_KEY)`
+so a `surface:host` AgentCore deny cannot return a live URL through the
+unknown surface an empty key would classify as. Catalog inspect and the
+consent GET both go through `surface_consent_url`, which SEL-audits grant
+and deny (host+path only, never token bytes). A nonempty query requires
+both `client_id` and `redirect_uri` bound (`redirect_uri` to loopback
+http(s), `client_id` to that operator entry's `client_ids`); a
+query-bearing builtin URL is refused. Naming the
 row here is what lets a policy pin the capability before those chokepoints
 land.
 

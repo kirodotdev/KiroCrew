@@ -7650,6 +7650,26 @@ async def _run_chat(
             if _mirror_link is not None and _mirror_resumes
             else ""
         )
+        # Sidecar attach/clear before get_or_create so session/new never
+        # reads a leftover human JWT. Dashboard turns stay unbound: a
+        # queued follow-up or linked Slack reply can steer the same slot.
+        try:
+            from kiro_crew.platform.agentcore_gateway import (
+                GatewayCredentialError,
+                prepare_session_gateway,
+            )
+
+            await prepare_session_gateway(
+                session_key,
+                surface=None,
+                raw_id=None,
+                sessions=state.sessions,
+                agent=crew_alias,
+            )
+        except GatewayCredentialError:
+            raise
+        except Exception:
+            logger.debug("prepare_session_gateway failed for %s", session_key, exc_info=True)
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 #: Every name the facade exports, module dunders excluded.
 EXPORTED_NAMES: tuple[str, ...] = (
+    "APP_AGENT_TRUST_DIR_NAME",
     "AUTH_SQLITE_DB",
     "AUTH_SQLITE_SIDECAR_SUFFIXES",
     "AWS_KEY_ID",
@@ -481,6 +482,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_wedged_workers",
     "_xargs_reconstructed_command",
     "annotate_refusal",
+    "allow_agentcore_consent_url",
     "annotations",
     "apply_resource_limits",
     "asdict",

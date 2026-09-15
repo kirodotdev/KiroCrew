@@ -278,17 +278,26 @@ async def test_publish_turn_identity_without_raw_id_does_not_bind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_publish_turn_identity_without_bind_clears_leftover() -> None:
+async def test_publish_turn_identity_without_bind_is_metadata_only() -> None:
     from kiro_crew.messaging.identity import publish_turn_identity
     from kiro_crew.platform.agent_identity import derive_session_principal
 
-    sessions = _RecordingSessions()
+    class _Sessions(_RecordingSessions):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retracted: list[str] = []
+
+        def retract_principal_credentials(self, key: str) -> None:
+            self.retracted.append(key)
+
+    sessions = _Sessions()
     sessions.set_principal(
         "slack:1",
         derive_session_principal(surface="slack", raw_id="Ualice", session_key="slack:1"),
     )
     await publish_turn_identity(sessions, "slack:1")
     assert sessions.principals.get("slack:1") is None
+    assert sessions.retracted == []
 
 
 def test_user_typed_cron_prefix_still_binds() -> None:
@@ -383,7 +392,8 @@ def test_unattended_inbound_omits_bind() -> None:
     assert kwargs == {}
 
 
-def test_clear_session_principal_clears_and_retracts() -> None:
+@pytest.mark.asyncio
+async def test_clear_session_principal_clears_and_retracts() -> None:
     from kiro_crew.platform.agent_identity import clear_session_principal
 
     class _Sessions:
@@ -394,16 +404,17 @@ def test_clear_session_principal_clears_and_retracts() -> None:
         def set_principal(self, key: str, principal: object) -> None:
             self.principal = principal
 
-        def retract_principal_credentials(self, key: str) -> None:
+        async def retract_principal_credentials(self, key: str) -> None:
             self.retracted.append(key)
 
     sessions = _Sessions()
-    clear_session_principal(sessions, "dashboard:1")
+    await clear_session_principal(sessions, "dashboard:1")
     assert sessions.principal is None
     assert sessions.retracted == ["dashboard:1"]
 
 
-def test_clear_session_principal_without_retract_hook() -> None:
+@pytest.mark.asyncio
+async def test_clear_session_principal_without_retract_hook() -> None:
     from kiro_crew.platform.agent_identity import clear_session_principal
 
     class _Sessions:
@@ -414,7 +425,7 @@ def test_clear_session_principal_without_retract_hook() -> None:
             self.principal = principal
 
     sessions = _Sessions()
-    clear_session_principal(sessions, "dashboard:1")
+    await clear_session_principal(sessions, "dashboard:1")
     assert sessions.principal is None
 
 
@@ -449,6 +460,15 @@ async def test_bind_cli_principal_looks_up_os_user_off_loop(
     _install_identity(DefaultAgentIdentityProvider())
     await ai.bind_cli_principal(_RecordingSessions(), session_key="cli_chat")
     assert seen, "cli_os_user must run through asyncio.to_thread"
+
+
+def test_cli_chat_prepares_gateway_off_loop() -> None:
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "src/kiro_crew/cli_chat.py").read_text(
+        encoding="utf-8"
+    )
+    assert "await asyncio.to_thread(cli_os_user)" in text
 
 
 def test_cli_os_user_ignores_environment_username(
@@ -609,3 +629,39 @@ def test_slot_queue_stamps_principal_only_when_both_fields_are_set() -> None:
     assert slot.queue_edit_by_id(stamped_id, "cleared")
     assert "_principal_surface" not in by_id[stamped_id]
     assert "_principal_raw_id" not in by_id[stamped_id]
+
+
+@pytest.mark.asyncio
+async def test_prepare_turn_gateway_unbinds_cross_namespace_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.messaging.identity import prepare_turn_gateway
+
+    seen: list[tuple[str | None, str | None]] = []
+
+    async def _fake_prepare(
+        session_key: str,
+        *,
+        surface: str | None = None,
+        raw_id: str | None = None,
+        sessions: object = None,
+        agent: str = "",
+    ) -> None:
+        del session_key, sessions, agent
+        seen.append((surface, raw_id))
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_gateway.prepare_session_gateway",
+        _fake_prepare,
+    )
+    await prepare_turn_gateway(
+        object(),
+        "dashboard:1",
+        {"surface": "slack", "raw_id": "U0123"},
+    )
+    await prepare_turn_gateway(
+        object(),
+        "slack:1783733803.877979",
+        {"surface": "slack", "raw_id": "U0123"},
+    )
+    assert seen == [(None, None), ("slack", "U0123")]
