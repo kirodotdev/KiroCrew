@@ -75,6 +75,12 @@ Other shared modules:
 `@kirocrew/ui`. Adding a primitive there makes it app-facing API, so add
 deliberately.
 
+`src/app-sdk/ChatEmbed.tsx` keeps its composer markup small but delegates draft
+behavior to `app-sdk/useComposerDraft`. Its textarea attaches the hook's
+`textareaRef`, so `Enter` sends, `Shift+Enter` inserts a newline, IME commits do
+not send, and the draft grows to the shared 240px cap before scrolling. Do not
+reimplement those key or sizing rules inside the component.
+
 Stories for these primitives live in `src/stories/` and render them in isolation
 under every theme (`npm run storybook`); see
 [testing § Component stories](testing.md#choosing-a-layer). Seven primitives have
