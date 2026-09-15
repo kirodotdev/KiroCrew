@@ -1,0 +1,362 @@
+<!--
+  Generic fallback panel template.
+
+  Renders ANY published data object without knowing what the fields mean, so a
+  new long-running agent gets a readable panel before anybody writes it a
+  bespoke template.
+
+  PUBLISHED ORDER IS THE LAYOUT. The keys are walked exactly once, in the order
+  the agent published them, and each one renders where it sits. An earlier
+  version bucketed by TYPE -- every scalar hoisted into one tile grid, prose
+  after it -- which meant an agent publishing an urgent sentence first still got
+  its counters shown above it. Order is the only channel an agent has for saying
+  what matters most, so the walk must not reorder. A run of consecutive scalars
+  still groups into one tile strip (eight counters should not become eight headed
+  blocks); the first non-scalar ends the run.
+
+  Shape decides presentation:
+
+    scalar                  -> a stat tile, grouped with adjacent scalars
+    long string             -> its own prose section
+    array of objects        -> a table, columns unioned across rows
+    array of scalars        -> a list
+    object                  -> a key/value block
+    null                    -> a muted em dash, IN PLACE
+
+  A null or empty value renders as a visible muted placeholder rather than being
+  skipped. A field that vanishes reads as if it was never published, which
+  loses the difference between "we do not know" and "none" -- the operator
+  cannot tell a broken probe from a quiet one.
+
+  CAVEATS. A key named `<field>_note` is not rendered as a field of its own: it
+  renders as a muted qualifying line directly under the section for `<field>`.
+  That is the cheapest shape that carries a sentence like "recorded before events
+  named their repository, so they cannot be attributed to one" without changing
+  the published-data contract -- the data stays a flat JSON object of ordinary
+  values, and an agent that never uses the convention is unaffected. A
+  `_note` whose prefix names no published field falls back to rendering as its
+  own section, so a typo shows up rather than silently disappearing.
+
+  Units are deliberately NOT modelled. An agent writes the unit into the value
+  ("34/100", "1h 12m"), and a {value, unit} object would change the contract for
+  every publisher to buy formatting this template does not need.
+
+  This is a BODY FRAGMENT, not a whole document. The dashboard wraps it with the
+  strict CSP, the theme variables and the height reporter, so styling below can
+  use the theme custom properties and inherit light/dark for free.
+
+  Every value reaches the DOM through textContent. Nothing here builds markup
+  from published data -- that is the property that makes an agent's string
+  unable to become an element, and it is pinned by a test that publishes a
+  script-closing payload and asserts it survives as visible text.
+-->
+<style>
+  .kp { padding: 18px 20px; font: 13px/1.5 -apple-system, BlinkMacSystemFont,
+        "Segoe UI", Inter, Roboto, sans-serif; color: var(--text, #e8e8ea); }
+  .kp-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 16px; }
+  .kp-title { font-size: 16px; font-weight: 600; letter-spacing: -.01em;
+              color: var(--text-strong, #fff); }
+  .kp-stamp { font-size: 11px; color: var(--muted, #999);
+              font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .kp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+              gap: 7px; margin-bottom: 16px; }
+  .kp-tile { background: var(--bg-elevated, #22222a); border: 1px solid var(--border, #35353d);
+             border-radius: 8px; padding: 9px 11px; min-width: 0; }
+  .kp-tile dt { font: 600 9px/1 ui-monospace, "SF Mono", Menlo, monospace;
+                letter-spacing: .09em; text-transform: uppercase;
+                color: var(--muted, #999); margin-bottom: 6px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kp-tile dd { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.02em;
+                font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .kp-sec { margin-bottom: 18px; }
+  .kp-sec > h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
+                 font: 600 9px/1 ui-monospace, "SF Mono", Menlo, monospace;
+                 letter-spacing: .1em; text-transform: uppercase;
+                 color: var(--muted, #999); }
+  .kp-sec > h2::after { content: ""; flex: 1; height: 1px;
+                        background: var(--border, #35353d); }
+  table.kp-t { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.kp-t th { text-align: left; padding: 0 9px 6px;
+                  font: 600 9px/1 ui-monospace, "SF Mono", Menlo, monospace;
+                  letter-spacing: .08em; text-transform: uppercase;
+                  color: var(--muted, #999); }
+  table.kp-t td { padding: 6px 9px; border-top: 1px solid var(--border, #35353d);
+                  overflow-wrap: anywhere; }
+  ul.kp-l { margin: 0; padding-left: 18px; }
+  ul.kp-l li { padding: 2px 0; overflow-wrap: anywhere; }
+  dl.kp-kv { margin: 0; display: grid; grid-template-columns: minmax(90px, 168px) 1fr;
+             gap: 0 12px; }
+  dl.kp-kv dt { padding: 6px 0; border-top: 1px solid var(--border, #35353d);
+                font: 11px ui-monospace, "SF Mono", Menlo, monospace;
+                color: var(--muted, #999); overflow-wrap: anywhere; }
+  dl.kp-kv dd { margin: 0; padding: 6px 0; border-top: 1px solid var(--border, #35353d);
+                overflow-wrap: anywhere; }
+  .kp-prose { padding: 10px 12px; border-radius: 8px; line-height: 1.55;
+              background: var(--bg-elevated, #22222a);
+              border-left: 2px solid var(--accent, #8e48ff); }
+  .kp-empty { color: var(--muted, #999); font-style: italic; }
+  /* A qualifying sentence sits UNDER the section it qualifies and reads as
+     commentary, not as data: muted, smaller, pulled up against the block above
+     so the association is positional, and carrying the section's own bottom gap
+     so it does not collide with the NEXT heading. Without that bottom margin the
+     caveat sat one line above the following section title and read as an
+     introduction to it -- the opposite of what it says. */
+  .kp-note { margin: -12px 0 18px; font-size: 11px; line-height: 1.5;
+             color: var(--muted, #999); overflow-wrap: anywhere; }
+  /* Inside a tile it is a third line, not a trailing note, so the pull-up and
+     the section gap would both be wrong. */
+  .kp-tile .kp-note { margin: 6px 0 0; font-size: 10px; }
+  /* A missing value is INFORMATION. Rendered at the same size as a real one so
+     the row keeps its shape, dimmed so it does not read as a value. */
+  .kp-nil { color: var(--muted, #999); }
+</style>
+
+<div class="kp" id="kp-root"></div>
+
+<!--kirocrew:panel-data-->
+
+<script>
+(function () {
+  var node = document.getElementById('kirocrew-panel-data');
+  var root = document.getElementById('kp-root');
+  if (!node || !root) return;
+
+  var data;
+  try { data = JSON.parse(node.textContent || '{}'); } catch (e) { data = {}; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+
+  // The only element factory in this file. Text is ASSIGNED, never parsed:
+  // there is deliberately no markup-parsing path for published values, which a
+  // source-level test asserts by name.
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+
+  function isScalar(v) {
+    return v === null || ['string', 'number', 'boolean'].indexOf(typeof v) >= 0;
+  }
+  var NIL = '\u2014';
+  function scalarText(v) {
+    if (v === null) return NIL;
+    if (v === true) return 'yes';
+    if (v === false) return 'no';
+    if (v === '') return NIL;
+    return String(v);
+  }
+  /** A value the operator must be told we do not have, rather than one we hide. */
+  function isNil(v) {
+    return v === null || v === undefined || v === '';
+  }
+  // "open_rulings" and "openRulings" both read as "open rulings": an agent
+  // should not have to guess the display convention to get a tidy heading.
+  function label(key) {
+    return String(key)
+      .replace(/[_-]+/g, ' ')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .trim();
+  }
+
+  /** One value cell. A nil renders as a dimmed em dash rather than an empty
+   *  cell, so a row that is missing a column says so instead of looking whole. */
+  function valueCell(tag, v) {
+    if (isNil(v)) return el(tag, 'kp-nil', NIL);
+    return el(tag, null, isScalar(v) ? scalarText(v) : JSON.stringify(v));
+  }
+
+  /** Render bounds for a table.
+   *
+   *  The 64 KiB data cap bounds the INPUT; it does not bound this OUTPUT. Headers
+   *  are derived from the union of keys across rows, so rows with disjoint keys
+   *  produce rows x union(keys) cells -- quadratic in the payload. A valid ~55 KiB
+   *  document of 4,000 uniquely-keyed rows reaches ~16,000,000 cells and hangs the
+   *  tab. Both dimensions are therefore capped here, where the cells are actually
+   *  created; capping only rows would leave the column axis unbounded and vice
+   *  versa, and it is their PRODUCT that does the damage.
+   *
+   *  Truncation is announced, never silent -- the same contract as rendering an
+   *  absent value as a visible em dash instead of an empty cell. A panel that
+   *  quietly dropped 3,900 rows would read as complete. */
+  var MAX_ROWS = 100;
+  var MAX_COLS = 20;
+
+  function tableFor(rows) {
+    var cols = [];
+    var colsTruncated = false;
+    // Stop WALKING at the cap too, not just stop rendering: the union scan is
+    // itself O(rows x keys), so a 4,000-row payload must not be fully walked
+    // merely to discover it will be truncated.
+    var scanRows = Math.min(rows.length, MAX_ROWS);
+    for (var i = 0; i < scanRows; i++) {
+      var keys = Object.keys(rows[i]);
+      for (var j = 0; j < keys.length; j++) {
+        if (cols.indexOf(keys[j]) >= 0) continue;
+        if (cols.length >= MAX_COLS) { colsTruncated = true; break; }
+        cols.push(keys[j]);
+      }
+    }
+    var shown = rows.slice(0, MAX_ROWS);
+
+    var table = el('table', 'kp-t');
+    var head = document.createElement('tr');
+    cols.forEach(function (c) { head.appendChild(el('th', null, label(c))); });
+    table.appendChild(head);
+    shown.forEach(function (row) {
+      var tr = document.createElement('tr');
+      cols.forEach(function (c) { tr.appendChild(valueCell('td', row[c])); });
+      table.appendChild(tr);
+    });
+
+    if (rows.length <= shown.length && !colsTruncated) return table;
+
+    // Both the table and its notice, so the caller appends one node.
+    var wrap = document.createDocumentFragment();
+    wrap.appendChild(table);
+    var parts = [];
+    if (rows.length > shown.length) {
+      parts.push('showing ' + shown.length + ' of ' + rows.length + ' rows');
+    }
+    if (colsTruncated) {
+      parts.push('columns capped at ' + MAX_COLS);
+    }
+    wrap.appendChild(el('p', 'kp-note', parts.join(' \u00b7 ') + '.'));
+    return wrap;
+  }
+
+  function listFor(items) {
+    var ul = el('ul', 'kp-l');
+    items.forEach(function (v) { ul.appendChild(valueCell('li', v)); });
+    return ul;
+  }
+
+  function kvFor(obj) {
+    var dl = el('dl', 'kp-kv');
+    Object.keys(obj).forEach(function (k) {
+      dl.appendChild(el('dt', null, label(k)));
+      dl.appendChild(valueCell('dd', obj[k]));
+    });
+    return dl;
+  }
+
+  function section(key, body) {
+    var sec = el('div', 'kp-sec');
+    sec.appendChild(el('h2', null, label(key)));
+    sec.appendChild(body);
+    return sec;
+  }
+
+  // Header: `title` is promoted out of the body when present, so the bespoke
+  // templates and this one agree on where a panel's name renders.
+  var head = el('div', 'kp-head');
+  if (typeof data.title === 'string' && data.title) {
+    head.appendChild(el('span', 'kp-title', data.title));
+  }
+  if (typeof data.subtitle === 'string' && data.subtitle) {
+    head.appendChild(el('span', 'kp-stamp', data.subtitle));
+  }
+  if (head.childNodes.length) root.appendChild(head);
+
+  var keys = Object.keys(data).filter(function (k) {
+    return k !== 'title' && k !== 'subtitle';
+  });
+
+  // A tile is sized for a number or a short label, so a sentence in one
+  // stretches the whole row to its height and reads as a cramped paragraph in a
+  // box. The threshold is deliberately short: a counter ("34/100"), a phase
+  // ("dispatch") and a verdict ("high") all stay tiles, while anything
+  // sentence-length gets its own section, which is where a sentence belongs. Set
+  // at 72 first and a 70-character sentence still came out as a tile, which is
+  // what this number is calibrated against.
+  var PROSE_CHARS = 44;
+  function isProse(v) {
+    return typeof v === 'string' && v.length > PROSE_CHARS;
+  }
+  /** A tile-shaped value: scalar, but not a sentence and not a nil. */
+  function isTileScalar(v) {
+    return isScalar(v) && !isProse(v) && !isNil(v);
+  }
+
+  var NOTE_SUFFIX = '_note';
+  /** The note attached to `key`, if the agent published one for a real field. */
+  function noteFor(key) {
+    var v = data[key + NOTE_SUFFIX];
+    return typeof v === 'string' && v ? v : null;
+  }
+  /** True for a key that renders as another field's caveat instead of itself. */
+  function isAttachedNote(key) {
+    if (key.length <= NOTE_SUFFIX.length) return false;
+    if (key.slice(-NOTE_SUFFIX.length) !== NOTE_SUFFIX) return false;
+    // A `_note` whose prefix names nothing published is NOT swallowed: it falls
+    // through to render as its own section so a typo is visible.
+    var target = key.slice(0, -NOTE_SUFFIX.length);
+    return Object.prototype.hasOwnProperty.call(data, target);
+  }
+
+  /** Append `body` under a heading for `key`, followed by its caveat if any. */
+  function emit(key, body) {
+    root.appendChild(section(key, body));
+    var note = noteFor(key);
+    if (note) root.appendChild(el('p', 'kp-note', note));
+  }
+
+  // ONE walk, in published order. Order is the only channel the agent has for
+  // saying what matters most, so nothing here sorts or buckets by type: a run of
+  // consecutive tile-shaped scalars collects into one strip, and the first key
+  // that is not one closes the run and renders in place.
+  var run = null;
+  function closeRun() {
+    if (run) root.appendChild(run);
+    run = null;
+  }
+
+  keys.forEach(function (k) {
+    if (isAttachedNote(k)) return;
+    var v = data[k];
+
+    if (isTileScalar(v)) {
+      if (!run) run = el('dl', 'kp-tiles');
+      var tile = el('div', 'kp-tile');
+      tile.appendChild(el('dt', null, label(k)));
+      tile.appendChild(el('dd', null, scalarText(v)));
+      run.appendChild(tile);
+      // A tile carries its own caveat as a third line rather than breaking the
+      // strip: a note between tiles would split the grid in two.
+      var tileNote = noteFor(k);
+      if (tileNote) tile.appendChild(el('div', 'kp-note', tileNote));
+      return;
+    }
+
+    closeRun();
+
+    if (isNil(v)) {
+      // Rendered, not skipped: "we do not know" and "none" are different
+      // answers and the operator cannot tell a broken probe from a quiet one if
+      // the field simply disappears.
+      emit(k, el('div', 'kp-nil', NIL));
+    } else if (isProse(v)) {
+      emit(k, el('div', 'kp-prose', v));
+    } else if (Array.isArray(v)) {
+      if (!v.length) {
+        emit(k, el('div', 'kp-empty', 'none'));
+      } else if (v.every(function (r) { return r && typeof r === 'object' && !Array.isArray(r); })) {
+        emit(k, tableFor(v));
+      } else {
+        emit(k, listFor(v));
+      }
+    } else if (typeof v === 'object') {
+      emit(k, Object.keys(v).length ? kvFor(v) : el('div', 'kp-empty', 'none'));
+    } else {
+      // A scalar that is not tile-shaped and not prose cannot occur today; a
+      // future scalar type lands here as a plain line rather than vanishing.
+      emit(k, el('div', null, scalarText(v)));
+    }
+  });
+  closeRun();
+
+  if (!root.childNodes.length) {
+    root.appendChild(el('div', 'kp-empty', 'This agent published an empty panel.'));
+  }
+})();
+</script>

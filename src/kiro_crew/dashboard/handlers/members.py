@@ -24,6 +24,7 @@ import logging
 from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
+from kiro_crew import agent_panel as agent_panel_mod
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
 from kiro_crew.dashboard.chat_persistence import (
@@ -108,6 +109,9 @@ def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
     a colliding slug. Names failing the agent-name grammar are skipped rather
     than matched: they cannot have been created through the validated CRUD
     surface, so a hand-edited config row never becomes addressable here.
+
+    ADDRESSABILITY only. A caller asking whether a crew still EXISTS must use
+    :func:`_slug_is_claimed_by_any_member` instead -- see the contrast there.
     """
     out: list[str] = []
     for name in cfg.agents:
@@ -119,6 +123,32 @@ def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
         except MemberSlugError:
             continue
     return out
+
+
+def _slug_is_claimed_by_any_member(cfg: KiroCrewConfig, slug: str, owner_key: str) -> bool:
+    """Whether a crew named in the roster still derives *slug* and *owner_key*.
+
+    The same enumeration as :func:`_member_names_for_slug` WITHOUT the grammar
+    filter, and the difference is the point. That filter is right for deciding
+    what a route may address -- an ungrammatical row stays unreachable -- and
+    wrong for deciding whether a crew is still there, because the create route
+    validates a crew name only against the credential-shape check, so a name the
+    grammar rejects can be a real, live crew. Filtering it out here would report
+    a live owner as gone, and the caller reads "gone" as permission to take its
+    record over.
+
+    Compared on the ownership DIGEST, like every other check on this path, so no
+    crew name has to be carried around to make the comparison.
+    """
+    for name in cfg.agents:
+        try:
+            if members_mod.slug_for_name(name) != slug:
+                continue
+        except MemberSlugError:
+            continue
+        if agent_panel_mod.crew_key(name) == owner_key:
+            return True
+    return False
 
 
 #: The roster's origin vocabulary. ``source`` on the record is free text in a
