@@ -23,7 +23,7 @@ import pytest
 
 from conftest import absent_sysconf
 from kiro_crew import subagent as sa
-from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent import SubagentDelivery, SubagentInfo, SubagentManager
 
 # ── Fixtures / builders ───────────────────────────────────────────────────
 
@@ -1865,29 +1865,32 @@ class TestAnnounceDigestFlush:
     async def test_settles_holds_after_clean_handoff(self) -> None:
         mgr = _manager(on_done=AsyncMock())
         info = _info(batch_id="w1")
-        info._digest_settle_ids = ["m1", "m2"]
+        info._digest_settle_deliveries = [
+            SubagentDelivery("m1", 1.0, 0.1),
+            SubagentDelivery("m2", 2.0, 0.2),
+        ]
         with patch.object(sa, "mark_delivered") as mark:
             await mgr._announce_digest_flush(info)
         assert [c[0][0] for c in mark.call_args_list] == ["m1", "m2"]
-        assert info._digest_settle_ids == []
+        assert info._digest_settle_deliveries == []
 
     @pytest.mark.asyncio
     async def test_routing_failure_leaves_holds_unsettled(self) -> None:
         mgr = _manager(on_done=AsyncMock(side_effect=RuntimeError("route down")))
         info = _info(batch_id="w1")
-        info._digest_settle_ids = ["m1"]
+        info._digest_settle_deliveries = [SubagentDelivery("m1", 1.0, 0.1)]
         with patch.object(sa, "mark_delivered") as mark:
             await mgr._announce_digest_flush(info)
         mark.assert_not_called()
-        assert info._digest_settle_ids == ["m1"]
+        assert [d.agent_id for d in info._digest_settle_deliveries] == ["m1"]
 
     def test_settle_swallows_tombstone_failure(self) -> None:
         mgr = _manager()
         info = _info()
-        info._digest_settle_ids = ["m1"]
+        info._digest_settle_deliveries = [SubagentDelivery("m1", 1.0, 0.1)]
         with patch.object(sa, "mark_delivered", side_effect=OSError):
             mgr._settle_digest_holds(info)
-        assert info._digest_settle_ids == []
+        assert info._digest_settle_deliveries == []
 
 
 class TestAnnounceRejection:

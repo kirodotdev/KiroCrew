@@ -834,7 +834,12 @@ def write_tombstone(
         publish_live_cleanup_hint(agent_id)
 
 
-def mark_delivered(agent_id: str) -> None:
+def mark_delivered(
+    agent_id: str,
+    *,
+    elapsed: float | None = None,
+    credits: float | None = None,
+) -> None:
     """Mark a successfully-delivered subagent for deferred TTL cleanup.
 
     Writes a ``cause="delivered"`` tombstone instead of deleting the folder
@@ -843,7 +848,12 @@ def mark_delivered(agent_id: str) -> None:
     window to read ``result.txt`` via ``spawn_status`` / read / grep after the
     completion event, rather than re-running the subagent.
     """
-    write_tombstone(agent_id, cause="delivered", recovery_action="delivered")
+    terminal: dict[str, float] = {}
+    if elapsed is not None:
+        terminal["elapsed"] = elapsed
+    if credits is not None:
+        terminal["credits"] = credits
+    write_tombstone(agent_id, cause="delivered", recovery_action="delivered", **terminal)
 
 
 def clear_tombstone(agent_id: str) -> bool:

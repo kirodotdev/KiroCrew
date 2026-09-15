@@ -9543,6 +9543,8 @@
         "changes": "Modifiche",
         "clear": "Cancella",
         "complete": "Completato",
+        "credits_not_reported": "Utilizzo dei crediti non segnalato",
+        "credits_used": "Utilizzati {{credits}} crediti",
         "dismiss_done_count": "Ignora completati ({{count}})",
         "error": "Errore",
         "input": "Input",

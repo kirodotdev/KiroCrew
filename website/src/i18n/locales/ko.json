@@ -9279,6 +9279,8 @@
         "changes": "변경 사항",
         "clear": "지우기",
         "complete": "완료",
+        "credits_not_reported": "크레딧 사용량이 보고되지 않음",
+        "credits_used": "크레딧 {{credits}} 사용",
         "dismiss_done_count": "완료 항목 닫기({{count}})",
         "error": "오류",
         "input": "입력",
