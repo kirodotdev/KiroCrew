@@ -602,6 +602,26 @@ All write paths emit SEL audit events (`config_get`, `config_set`, `config_set_f
 
 `kirocrew gateway` creates `~/.kiro/crew/config.json` with defaults if the file doesn't exist. Does nothing if it already exists.
 
+## Secrets Command
+
+`kirocrew secrets import [--apply]` migrates plaintext credentials out of the
+data-home `.env` and into the encrypted secret vault (see
+[secrets-env.md](../../guides/secrets-env.md)):
+
+- Reads **only** the fixed data-home `.env` — there is deliberately no
+  `--file` option, since a caller-supplied path would let a sandbox-off agent
+  import attacker-controlled values into the vault.
+- **Dry-run by default**: reports what would be migrated without writing
+  anything. Pass `--apply` to actually store the values in the vault and
+  rewrite the corresponding `.env` lines to `secret://KEY` references.
+- A concurrent `.env` edit or an undecryptable pre-existing vault entry aborts
+  the migration with a clean CLI error and a nonzero exit rather than an
+  uncaught traceback.
+
+This command covers migration only. The store/list/delete surface for
+individual secrets lives in the dashboard **Settings → Secrets** tab, not the
+CLI.
+
 ## Verbosity
 
 | Flag | Level | What you see |
