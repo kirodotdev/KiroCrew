@@ -9816,14 +9816,13 @@ async def _run_chat(
                             "tool",
                             f"🔧 {_tool_title}",
                             "msg msg-tool",
-                            meta=(
-                                {
-                                    "tool_call_id": event.tool_call_id,
-                                    "purpose": redact_and_truncate(event.tool_purpose or "", 200),
-                                }
-                                if event.tool_call_id
-                                else None
-                            ),
+                            # `_tool_meta` for parity with every other rung: same
+                            # `_MAX_TOOL_PURPOSE` cap (a hand-rolled 200-char cap
+                            # here truncated restored purposes mid-sentence), same
+                            # redacted `tool_call_id` (the live↔replay join key),
+                            # and `input`/`kind` so historical rows open the same
+                            # inline detail panel as live ones.
+                            meta=_tool_meta(event),
                         )
                         sel().log_tool_invocation(
                             session_key=session_key,
