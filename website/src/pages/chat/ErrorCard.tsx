@@ -57,6 +57,15 @@ const SESSION_START_FAILED_KIND = 'session_start_failed'
 export const isSessionStartFailed = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === SESSION_START_FAILED_KIND || (m.meta as { kind?: string } | undefined)?.kind === SESSION_START_FAILED_KIND
 
+/** Row kind the backend stamps on a refused app-owned agent turn
+ *  (`chat_utils.APP_AGENT_REFUSED_KIND`): the app's agent is shadowed,
+ *  ambiguous or not installed. A retry re-runs the same check, so the row
+ *  offers no Resume. Same two carriers as above. */
+const APP_AGENT_REFUSED_KIND = 'app_agent_refused'
+
+export const isAppAgentRefused = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === APP_AGENT_REFUSED_KIND || (m.meta as { kind?: string } | undefined)?.kind === APP_AGENT_REFUSED_KIND
+
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
  *  one: a single timed-out start is host weather and the first Resume is the

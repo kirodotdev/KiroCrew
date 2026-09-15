@@ -38,7 +38,7 @@ import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { injectOpensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
-import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
+import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAppAgentRefused, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
@@ -251,6 +251,21 @@ export function sessionStartRepeatIsNewest(messages: readonly ChatMessage[]): bo
     if (row.role === 'assistant' || opensTurn(row)) return false
   }
   return isSessionStartFailed(messages[idx]) && sessionStartFailureStreak(messages) >= SESSION_START_REPEAT_REFUSAL_AT
+}
+
+/** True when the newest error row is a refused app-owned agent turn
+ *  (`isAppAgentRefused`) and nothing after it opens a new turn. The row
+ *  withholds Resume (a retry re-runs the same refusal); ChatPage reads this to
+ *  drop the composer's Resume and "press Resume" hint beneath it. Typing still
+ *  works. */
+export function appAgentRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  return isAppAgentRefused(messages[idx])
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -562,7 +577,7 @@ export function createTranscriptRenderers(
             // signed-out wall, or the same spent allowance, or the same start
             // that already failed twice).
             onContinue={
-              !unentitled && !authRequired && !featureRequestFormUrl && !sessionStartRepeat && !isCapabilitiesChanged(m) && o.onContinue && o.continuable && o.interrupted && newest
+              !unentitled && !authRequired && !featureRequestFormUrl && !sessionStartRepeat && !isCapabilitiesChanged(m) && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
                 ? o.onContinue
                 : undefined
             }

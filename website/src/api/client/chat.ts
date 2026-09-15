@@ -105,7 +105,7 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
      *  the `remote_already_bound` guard does not fire, and the peer's transcript is
      *  backfilled server-side. Requires `instance_id`; without it the backend
      *  answers `400 adopt_needs_instance`. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string, adopt_remote_slot?: string, agent_kind?: 'member' | 'template') => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string, adopt_remote_slot?: string, agent_kind?: 'member' | 'template', app_agent_owner?: string) => {
       // ADOPT deliberately resolves NO default memory mode. The adopted slot carries
       // the PEER session's own `memory_mode` — that mode is the privacy boundary and
       // the session it belongs to already chose it — so sending this machine's
@@ -122,6 +122,9 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
         ...(agent ? { agent } : {}),
         // Only beside an agent: a namespace without a name selects nothing.
         ...(agent && agent_kind ? { agent_kind } : {}),
+        // The app whose OWN agent a palette command named. The backend refuses
+        // every turn on which that bare name would resolve to any other spec.
+        ...(agent && agent_kind === 'template' && app_agent_owner ? { app_agent_owner } : {}),
         ...(model ? { model } : {}),
         ...(mode ? { mode } : {}),
         ...(resolvedMemoryMode ? { memory_mode: resolvedMemoryMode } : {}),

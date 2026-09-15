@@ -40,7 +40,7 @@ const configuredDefaultMemoryMode = () =>
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; instanceId?: string; adoptRemoteSlot?: string } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; instanceId?: string; adoptRemoteSlot?: string } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -49,6 +49,8 @@ export const createSlot = createAsyncThunk<
     // The namespace the agent was picked from; rides with the name so a
     // same-name member and template create different sessions.
     const agentKind = typeof opts === 'string' ? undefined : opts?.agent_kind
+    // The app that contributed the command naming this agent; see api.createChatSlot.
+    const appAgentOwner = typeof opts === 'string' ? undefined : opts?.appAgentOwner
     const model = typeof opts === 'string' ? undefined : opts?.model
     const mode = typeof opts === 'string' ? undefined : opts?.mode
     const requestedMemoryMode = typeof opts === 'string' ? undefined : opts?.memory_mode
@@ -92,7 +94,7 @@ export const createSlot = createAsyncThunk<
     // and resolving a local default here would only race it.
     const memory_mode = requestedMemoryMode
       || (adoptRemoteSlot ? undefined : await configuredDefaultMemoryMode())
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, adoptRemoteSlot, agentKind)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, adoptRemoteSlot, agentKind, appAgentOwner)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.

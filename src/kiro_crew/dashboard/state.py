@@ -2661,6 +2661,7 @@ class _ChatSlot:
         "title",
         "agent",
         "agent_kind",
+        "app_agent_owner",
         "model",
         "jev_route",
         "_model_withheld",
@@ -2913,6 +2914,13 @@ class _ChatSlot:
         # made by name alone or restored from history. Display provenance for
         # the picker; never an authorization input.
         self.agent_kind: str = ""
+        # ``"<app>/<agent>"`` when this session was opened by an app's palette
+        # command to run as that app's OWN agent; "" otherwise. Every turn checks it
+        # (``chat_runner``): the bare ``agent`` name must still resolve to that app's
+        # registered spec, never to a project-local or other spec declaring the same
+        # name, or the app-authored prompt would run with that spec's tools. Bound to
+        # the agent name, so a later switch to another agent leaves it inert.
+        self.app_agent_owner: str = ""
         # The agent whose ``welcomeMessage`` this slot has already rendered.
         # The hint is a ONE-SHOT per activation: the switch row emits it and
         # the session start that the switch's own reset produces must not emit

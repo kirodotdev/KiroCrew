@@ -630,6 +630,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     _PROMISE_ONLY_CONTINUE_MSG,
     _REFUSAL_FALLBACK_RESUME_MSG,
     _SYNTHETIC_RECOVERY_MSGS,
+    APP_AGENT_REFUSED_KIND,
     AUTH_REQUIRED_KIND,
     CRON_NOTIFICATION_KIND,
     EMPTY_RUNG_CONTINUE,
@@ -5389,6 +5390,10 @@ def schedule_eager_spawn(
     if _eager_spawn_held_off(slot):
         logger.debug("Eager spawn: slot %s is backing off after failed starts", slot.key)
         return None
+    if slot.app_agent_owner:
+        # An app-owned palette session resolves its agent only after the per-turn
+        # ownership check; a speculative start would resolve it before that check.
+        return None
     prev = getattr(slot, "_eager_spawn_task", None)
     if prev is not None and not prev.done():
         prev.cancel()
@@ -5407,6 +5412,51 @@ def schedule_eager_spawn(
     )
     slot._eager_spawn_task = task
     return task
+
+
+def _app_agent_start_dirs(
+    state: "DashboardState", session_key: str, project: str | None
+) -> tuple[str | None, ...]:
+    """Every directory the provider for *session_key* can start in, project first.
+
+    With a project, the provider starts there. Without one, session allocation
+    falls back to the cwd the session map stored for a resumed session, the warm
+    pool's cwd, or the factory's per-session work directory -- so an app-owned
+    turn on a session whose project was cleared is checked against each of them,
+    not against no project at all.
+    """
+    if project:
+        return (project,)
+    from kiro_crew.config.loader import _session_work_dir
+
+    sessions = getattr(state, "sessions", None)
+    session_map = getattr(sessions, "_session_map", None)
+    stored = session_map.get_cwd(session_key) if session_map is not None else ""
+    pool_cwd = getattr(sessions, "_pool_cwd", "") if sessions is not None else ""
+    return (
+        None,
+        stored if isinstance(stored, str) else None,
+        pool_cwd if isinstance(pool_cwd, str) else None,
+        str(_session_work_dir(session_key)),
+    )
+
+
+async def _retire_app_agent_session(
+    state: "DashboardState", slot: "_ChatSlot", session_key: str
+) -> None:
+    """Cancel *slot*'s pending eager start and remove any session it registered.
+
+    Called when an app-owned turn is refused: whatever is registered under
+    *session_key* was resolved without the ownership check and must not serve a
+    later turn.
+    """
+    eager = getattr(slot, "_eager_spawn_task", None)
+    if eager is not None and not eager.done():
+        eager.cancel()
+        await asyncio.gather(eager, return_exceptions=True)
+    sessions = getattr(state, "sessions", None)
+    if sessions is not None and sessions.has_session(session_key):
+        await sessions.remove(session_key)
 
 
 async def _recover_app_agent_binding(
@@ -5536,6 +5586,8 @@ async def _eager_spawn(
             return  # slot deleted or replaced while debouncing
         if slot.running:
             return  # a real turn owns session creation (and the pending reset)
+        if slot.app_agent_owner:
+            return  # bound after the debounce: the per-turn check owns resolution
         if _eager_spawn_sem.locked():
             logger.info("Eager spawn: concurrency cap reached, skipping slot %s", slot.key)
             return
@@ -9729,6 +9781,52 @@ async def _run_chat(
                 "msg msg-err",
             )
             return
+        # A session a palette command opened to run as its app's OWN agent resolves
+        # that agent by bare name, project-first. Refuse the turn -- before any
+        # app-authored prompt reaches the provider -- unless that name still means
+        # the app's registered spec; otherwise the prompt would run with another
+        # spec's tools and auto-approvals.
+        owner_app, _, owner_agent = (slot.app_agent_owner or "").partition("/")
+        if owner_app and owner_agent and slot.agent == owner_agent:
+            from kiro_crew.apps.manager import app_command_agent_refusal
+
+            _owner_project = selected_binding[1] or None
+
+            def _check_owner() -> str | None:
+                # Both halves touch the filesystem (the work-dir root, the specs).
+                dirs = _app_agent_start_dirs(state, session_key, _owner_project)
+                return app_command_agent_refusal(owner_app, owner_agent, *dirs)
+
+            refusal = await asyncio.to_thread(_check_owner)
+            if refusal:
+                logger.warning(
+                    "refusing an app-owned agent turn for slot %s: %s",
+                    redact_log_via_context(slot.key),
+                    refusal,
+                )
+                # SEL: an authorization denial belongs in the audit chain, not only
+                # the process log. Best-effort: the refusal stands if auditing fails.
+                try:
+                    sel().log_api_access(
+                        caller=f"slot={slot.key}",
+                        operation="chat_runner.app_command_agent",
+                        outcome="denied",
+                        source="app_command",
+                        resources=f"slot={slot.key} app={owner_app} agent={owner_agent}",
+                        error=refusal,
+                    )
+                except Exception:  # noqa: BLE001 - auditing must not unblock the turn
+                    logger.warning(
+                        "SEL denial audit failed for an app-owned agent turn -- refusal stands",
+                        exc_info=True,
+                    )
+                # A speculative session may already be registered under this key,
+                # resolved against the shadowing spec. Cancel any pending eager
+                # start and retire what it registered, so a later turn that passes
+                # the check cold-starts on the app's spec instead of reusing it.
+                await _retire_app_agent_session(state, slot, session_key)
+                slot.append("error", refusal, "msg msg-err", meta={"kind": APP_AGENT_REFUSED_KIND})
+                return
         if bindings is not None:
             from kiro_crew.execution_context import (  # noqa: F811
                 ExecutionContext,

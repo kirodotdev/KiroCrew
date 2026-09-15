@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
 import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
-import { createTranscriptRenderers, featureRequestRefusalIsNewest, sessionStartRepeatIsNewest } from '../pages/chat/transcriptRenderers'
+import { appAgentRefusalIsNewest, createTranscriptRenderers, featureRequestRefusalIsNewest, sessionStartRepeatIsNewest } from '../pages/chat/transcriptRenderers'
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
@@ -438,6 +438,34 @@ describe('a session start that failed twice in a row swaps Resume for the restar
       const untagged = () => msg('error', { content: TIMEOUT })
       expect(sessionStartRepeatIsNewest([msg('user', { content: 'hi' }), untagged(), resumed(), untagged()])).toBe(false)
     })
+  })
+})
+
+describe('a refused app-owned agent turn offers no Resume', () => {
+  const REFUSAL = "Release Notes can't run: its agent \"notes-writer\" isn't installed. Re-enable Release Notes on the Apps page, then send again."
+  const refused = () => msg('error', { content: REFUSAL, meta: { kind: 'app_agent_refused' } })
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+
+  it('withholds Resume on the refusal row, from either carrier', () => {
+    for (const row of [refused(), msg('error', { content: REFUSAL, kind: 'app_agent_refused' })]) {
+      const rows = [msg('user', { content: 'hi' }), row]
+      const el = render(rows[1], recoverable, { index: 1, messages: rows }) as ReactElement
+      expect(el.props.onContinue).toBeUndefined()
+    }
+  })
+
+  it('an untagged error row keeps Resume -- the kind decides, not the prose', () => {
+    const rows = [msg('user', { content: 'hi' }), msg('error', { content: REFUSAL })]
+    const el = render(rows[1], recoverable, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeTypeOf('function')
+  })
+
+  it('appAgentRefusalIsNewest stands the composer down until a new turn opens', () => {
+    const base = [msg('user', { content: 'hi' }), refused()]
+    expect(appAgentRefusalIsNewest(base)).toBe(true)
+    expect(appAgentRefusalIsNewest([...base, msg('user', { content: 'again' })])).toBe(false)
+    expect(appAgentRefusalIsNewest([...base, msg('assistant', { content: 'ok' })])).toBe(false)
+    expect(appAgentRefusalIsNewest([msg('user', { content: 'hi' }), msg('error', { content: REFUSAL })])).toBe(false)
   })
 })
 

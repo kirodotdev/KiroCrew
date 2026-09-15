@@ -1296,7 +1296,7 @@ class TestSignatureFrozenVocabulary:
 
     #: Every key `CommandContribution.to_dict()` can emit.
     COMMAND_KEYS = frozenset(
-        {"id", "title", "subtitle", "icon", "keywords", "prompt", "autoSend", "argument"}
+        {"id", "title", "subtitle", "icon", "keywords", "prompt", "autoSend", "agent", "argument"}
     )
     #: Every key `CommandArgument.to_dict()` can emit.
     ARGUMENT_KEYS = frozenset({"placeholder", "hint", "kind", "hosts", "patternError"})
@@ -1311,6 +1311,7 @@ class TestSignatureFrozenVocabulary:
             "keywords": ["pr"],
             "prompt": "Approve everything behind {argument}.",
             "autoSend": True,
+            "agent": "ticket-analyst",
             "argument": {
                 "placeholder": "Paste a link",
                 "hint": "A PR search or a single pull request.",
@@ -1328,6 +1329,7 @@ class TestSignatureFrozenVocabulary:
                 "displayName": "PR Bulk Ops",
                 "description": "Bulk operations over the pull requests behind one link.",
                 "contributes": {"commands": [self._full_command()]},
+                "agents": ["agents/ticket-analyst.json"],
             }
         )
         assert m.validate() == [], m.validate()
@@ -1759,6 +1761,269 @@ class TestContributedCommands:
         # Without autoSend the same command is fine.
         cmd.pop("autoSend")
         assert AppManifest.from_dict(self._manifest(cmd)).validate() == []
+
+    @staticmethod
+    def _with_agents(command: dict, agents: list[str]) -> dict:
+        m = TestContributedCommands._manifest(command)
+        m["agents"] = agents
+        return m
+
+    def test_agent_names_one_of_the_apps_own_agents(self):
+        # Without an app root only the file stem is known -- the same fallback
+        # registration uses -- so `agents/ticket-analyst.json` registers as
+        # `ticket-analyst`.
+        m = AppManifest.from_dict(
+            self._with_agents(self._command(agent="ticket-analyst"), ["agents/ticket-analyst.json"])
+        )
+        assert m.validate() == []
+        assert m.contributes.commands[0].agent == "ticket-analyst"
+        assert m.to_dict()["contributes"]["commands"][0]["agent"] == "ticket-analyst"
+
+    def test_agent_resolves_against_the_declared_name_under_an_app_root(self, tmp_path):
+        # With the app root known, an agent registers under its JSON `name`, not its
+        # stem (bridges._register_agents), so that is what the command must name.
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "spec.json").write_text('{"name": "ticket-analyst"}')
+        m = AppManifest.from_dict(
+            self._with_agents(self._command(agent="ticket-analyst"), ["agents/spec.json"])
+        )
+        assert m.validate(app_root=tmp_path) == []
+        stem = AppManifest.from_dict(
+            self._with_agents(self._command(agent="spec"), ["agents/spec.json"])
+        )
+        assert any("not one of this app's own agents" in e for e in stem.validate(app_root=tmp_path))
+
+    @pytest.mark.parametrize("agents", [[], ["agents/other.json"]])
+    def test_refuses_an_agent_the_app_does_not_ship(self, agents):
+        # Containment: the prompt is app-authored, so naming a HOST agent (which may
+        # carry broader tool grants and auto-approvals than the default) is refused
+        # at install rather than letting the app borrow that agent's reach.
+        errors = AppManifest.from_dict(
+            self._with_agents(self._command(agent="kirocrew"), agents)
+        ).validate()
+        assert any("agent 'kirocrew' is not one of this app's own agents" in e for e in errors), errors
+
+    def test_an_agent_path_escaping_the_root_contributes_no_name(self):
+        # Registration skips such a path, so it cannot vouch for a command's agent.
+        errors = AppManifest.from_dict(
+            self._with_agents(self._command(agent="evil"), ["../evil.json"])
+        ).validate()
+        assert any("not one of this app's own agents" in e for e in errors), errors
+
+    @pytest.mark.parametrize(
+        "spec",
+        [None, "{not json", "[]", '"ticket-analyst"', "null", "{}"],
+        ids=["missing", "malformed", "array", "scalar", "null", "nameless"],
+    )
+    def test_a_spec_registration_skips_vouches_for_no_name(self, tmp_path, spec):
+        # Registration skips a missing, unreadable, malformed or non-object spec, and
+        # registers a nameless one under no name a command can select, so its stem
+        # must not authorize the command: the bare name would otherwise resolve to
+        # whatever HOST agent carries it.
+        (tmp_path / "agents").mkdir()
+        if spec is not None:
+            (tmp_path / "agents" / "ticket-analyst.json").write_text(spec)
+        errors = AppManifest.from_dict(
+            self._with_agents(self._command(agent="ticket-analyst"), ["agents/ticket-analyst.json"])
+        ).validate(app_root=tmp_path)
+        assert any("not one of this app's own agents" in e for e in errors), errors
+
+    def test_a_templated_spec_vouches_for_no_name(self, tmp_path):
+        # Registration renders a templated spec and registers NOTHING when a
+        # placeholder is unresolved, so the spec's `name` (which may be another app's
+        # or the host's agent) must not authorize the command.
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "x.json").write_text(
+            '{"name": "mochi", "description": "{NOPE}"}'
+        )
+        errors = AppManifest.from_dict(
+            self._with_agents(self._command(agent="mochi"), ["agents/x.json"])
+        ).validate(app_root=tmp_path)
+        assert any("not one of this app's own agents" in e for e in errors), errors
+
+    @pytest.mark.parametrize("bad", [".", ".."])
+    def test_an_unsafe_declared_name_vouches_for_nothing(self, tmp_path, bad):
+        # `_register_agents` refuses these names, so they authorize nothing either.
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "x.json").write_text(json.dumps({"name": bad}))
+        errors = AppManifest.from_dict(
+            self._with_agents(self._command(agent=bad), ["agents/x.json"])
+        ).validate(app_root=tmp_path)
+        assert any("not one of this app's own agents" in e for e in errors), errors
+
+    def test_the_listing_drops_an_agent_the_app_does_not_ship(self, tmp_path):
+        # A self-managed app's app.json never passes through install validation, so
+        # the listing the launcher reads re-checks every command's agent against the
+        # files on disk. An unverified agent is dropped; the command itself stays and
+        # runs on the dashboard default.
+        from kiro_crew.apps.manifest import contain_command_agents
+
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "spec.json").write_text('{"name": "ticket-analyst"}')
+        data = {
+            "contributes": {
+                "commands": [
+                    {"id": "own", "agent": "ticket-analyst"},
+                    {"id": "host", "agent": "kirocrew"},
+                    {"id": "stem", "agent": "spec"},
+                    {"id": "ghost", "agent": "ghost"},
+                    {"id": "odd", "agent": 7},
+                    {"id": "none"},
+                ]
+            }
+        }
+        out = contain_command_agents(data, ["agents/spec.json", "agents/ghost.json"], tmp_path)
+        by_id = {c["id"]: c for c in out["contributes"]["commands"]}
+        assert by_id["own"]["agent"] == "ticket-analyst"
+        for cid in ("host", "stem", "ghost", "odd", "none"):
+            assert "agent" not in by_id[cid], cid
+        assert len(by_id) == 6
+
+    def test_list_apps_contains_a_self_managed_commands_agent(self, tmp_path, monkeypatch):
+        # End to end through list_apps: the manifest on disk names a host agent and was
+        # never validated; the launcher's listing must not carry it.
+        from kiro_crew.apps import manager
+
+        app = tmp_path / "selfapp"
+        app.mkdir()
+        (app / "app.json").write_text(json.dumps(self._with_agents(
+            self._command(agent="kirocrew"), []
+        ) | {"name": "selfapp"}))
+        monkeypatch.setattr(manager, "apps_dir", lambda: tmp_path)
+        monkeypatch.setattr(manager, "detect_orphaned_builtins", lambda: set())
+        monkeypatch.setattr(
+            manager, "_read_installed",
+            lambda name: manager.InstalledApp(name=name, lifecycle="app") if name == "selfapp" else None,
+        )
+        [listed] = manager.list_apps()
+        [cmd] = listed["manifest"]["contributes"]["commands"]
+        assert "agent" not in cmd
+
+    @pytest.mark.parametrize("registered", [True, False])
+    def test_list_apps_keeps_an_agent_only_if_registration_wrote_it(
+        self, tmp_path, monkeypatch, registered
+    ):
+        # The final word is what registration WROTE, not a re-derivation of its skip
+        # rules: a spec that looks fine but never landed in the agents dir vouches for
+        # nothing, so a skip reason this check does not list still cannot authorize it.
+        from kiro_crew.apps import bridges, manager
+
+        root = tmp_path / "apps"
+        app = root / "selfapp"
+        (app / "agents").mkdir(parents=True)
+        (app / "agents" / "spec.json").write_text('{"name": "ticket-analyst"}')
+        (app / "app.json").write_text(
+            json.dumps(
+                self._with_agents(self._command(agent="ticket-analyst"), ["agents/spec.json"])
+                | {"name": "selfapp"}
+            )
+        )
+        agents_dir = tmp_path / "kiro-agents"
+        agents_dir.mkdir()
+        if registered:
+            (agents_dir / "selfapp--ticket-analyst.json").write_text(
+                '{"name": "ticket-analyst"}'
+            )
+        monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
+        monkeypatch.setattr(manager, "apps_dir", lambda: root)
+        monkeypatch.setattr(manager, "detect_orphaned_builtins", lambda: set())
+        monkeypatch.setattr(
+            manager,
+            "_read_installed",
+            lambda name: manager.InstalledApp(name=name, lifecycle="app")
+            if name == "selfapp"
+            else None,
+        )
+        [listed] = manager.list_apps()
+        [cmd] = listed["manifest"]["contributes"]["commands"]
+        assert (cmd.get("agent") == "ticket-analyst") is registered
+
+    def test_an_agent_name_another_spec_also_declares_is_refused(self, tmp_path, monkeypatch):
+        # Sessions select by bare declared name, so a host spec declaring the same name
+        # makes resolution ambiguous; the app's prompt could run with the host spec's
+        # tools. Such a name is refused rather than guessed at.
+        from kiro_crew.apps import bridges, manager
+
+        agents_dir = tmp_path / "kiro-agents"
+        agents_dir.mkdir()
+        (agents_dir / "selfapp--ticket-analyst.json").write_text('{"name": "ticket-analyst"}')
+        monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
+        assert manager._app_registered_agent("selfapp", "ticket-analyst") is True
+        (agents_dir / "alpha-ticket-analyst.json").write_text(
+            '{"name": "ticket-analyst", "allowedTools": ["*"]}'
+        )
+        assert manager._app_registered_agent("selfapp", "ticket-analyst") is False
+
+    def test_source_specs_are_read_through_the_hardened_reader(self, tmp_path, monkeypatch):
+        # The app root is app-writable, so a source spec may be swapped for a symlink
+        # to a credential file after containment; the read must be the fenced one.
+        from kiro_crew import agent_discovery
+
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "spec.json").write_text('{"name": "ticket-analyst"}')
+        seen = []
+
+        def refuse(path, *, operation, source):
+            seen.append((path.name, operation, source))
+            return None
+
+        monkeypatch.setattr(agent_discovery, "_read_agent_spec", refuse)
+        errors = AppManifest.from_dict(
+            self._with_agents(self._command(agent="ticket-analyst"), ["agents/spec.json"])
+        ).validate(app_root=tmp_path)
+        assert any("not one of this app's own agents" in e for e in errors), errors
+        assert seen == [("spec.json", "app_manifest_agent_names", "unknown")]
+
+    def test_registration_probe_uses_the_hardened_spec_reader(self, tmp_path, monkeypatch):
+        # The agents dir is user-writable, so the registered config may be a symlink
+        # to a sensitive file. The probe must go through `_read_agent_spec` (which
+        # refuses and audits that before reading) rather than a bare read_text.
+        from kiro_crew import agent_discovery
+        from kiro_crew.apps import bridges, manager
+
+        agents_dir = tmp_path / "kiro-agents"
+        agents_dir.mkdir()
+        (agents_dir / "selfapp--ticket-analyst.json").write_text('{"name": "ticket-analyst"}')
+        monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
+        seen = []
+
+        def refuse(path, *, operation, source):
+            seen.append((path.name, operation, source))
+            return None
+
+        monkeypatch.setattr(agent_discovery, "_read_agent_spec", refuse)
+        assert manager._app_registered_agent("selfapp", "ticket-analyst") is False
+        assert seen == [("selfapp--ticket-analyst.json", "list_apps_command_agent", "dashboard")]
+
+    def test_agent_defaults_empty_and_is_omitted_from_the_payload(self):
+        # Empty means the dashboard default, and an empty string is not emitted: an app
+        # that names no agent adds no key, so it cannot invalidate a prior signature.
+        m = AppManifest.from_dict(self._manifest(self._command()))
+        assert m.contributes.commands[0].agent == ""
+        assert "agent" not in m.to_dict()["contributes"]["commands"][0]
+        assert m.validate() == []
+
+    @pytest.mark.parametrize("raw", [1, {}, [], None, True])
+    def test_a_non_string_agent_reads_as_no_agent(self, raw):
+        # Same fail-closed read as the other string fields: anything that is not a
+        # string becomes the default rather than coercing to one.
+        m = AppManifest.from_dict(self._manifest(self._command(agent=raw)))
+        assert m.contributes.commands[0].agent == ""
+
+    @pytest.mark.parametrize(
+        "agent",
+        ["agents/ticket-analyst", "../evil", "a\\b", "Ticket Analyst", "a:b", "caf\u00e9", "x" * 121],
+    )
+    def test_refuses_an_agent_outside_the_launcher_pattern(self, agent):
+        # Mirrors `contributedCommands.ts`'s `^[A-Za-z0-9._-]{1,120}$` exactly, so a
+        # value the launcher would silently clamp to the default fails install
+        # instead. A separator would also escape the agents directory.
+        errors = AppManifest.from_dict(
+            self._with_agents(self._command(agent=agent), [f"agents/{agent}.json"])
+        ).validate()
+        assert any("agent must match [A-Za-z0-9._-]" in e for e in errors), errors
+
+
 # ---------------------------------------------------------------------------
 # contributes.panelTabs — declarative side-panel tab contribution
 # ---------------------------------------------------------------------------

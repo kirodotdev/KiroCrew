@@ -1413,6 +1413,21 @@ describe('CommandBarOverlay contributed commands', () => {
     expect(fileSessionInCommandFolder).not.toHaveBeenCalled()
   })
 
+  it('creates the seeded session as the agent the command names', () => {
+    // Always as a TEMPLATE: a host crew member with the same alias must not win
+    // resolution and run the app's prompt with its template and private memory.
+    // `createSlot` already accepted `agent`; the row only selects WHICH tool-enabled
+    // agent receives the app-authored prompt. '' / absent both mean the dashboard
+    // default, which the no-agent test above pins (undefined agent === no key).
+    dispatch.mockReturnValue({ unwrap: () => Promise.resolve({ key: 'slot-new' }) })
+    mountWithApps([appWith([{ ...STANDUP, agent: 'ticket-analyst' }])])
+    enterCommand(/Write my standup/)
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'createSlot',
+      arg: { activate: false, agent: 'ticket-analyst', agent_kind: 'template', appAgentOwner: 'pr-bulk-ops', memory_mode: 'persistent' },
+    })
+  })
+
   it("refuses a value the app's own pattern rejects, creating nothing", async () => {
     resolvingDispatch()
     const onClose = mountWithApps([appWith([APPROVE_ALL])])

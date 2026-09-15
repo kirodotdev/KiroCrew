@@ -17,6 +17,7 @@ import posixpath
 import re
 import sys
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -215,6 +216,100 @@ def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
         except (OSError, ValueError):
             return True
     return False
+
+
+#: ``bridges._TEMPLATE_PLACEHOLDER_RE``, duplicated because bridges imports this module.
+_AGENT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
+
+
+def _declared_agent_names(agent_paths: list[str], app_root: Path | None) -> set[str]:
+    """Names the app's own ``agents`` register under, for containing ``commands[].agent``.
+
+    The name a command can select: the agent JSON's explicit ``name``. A path that
+    escapes the app root contributes nothing -- registration skips it.
+
+    With ``app_root`` known, a spec that registration would also skip -- missing,
+    unreadable, malformed, or not a JSON object -- contributes nothing either. Its
+    stem would otherwise authorize a name the app never registers, which then
+    resolves to whatever HOST agent carries it. Without ``app_root`` only the stem is
+    known (a lexical, host-independent verdict); the app-root pass at listing time
+    re-checks it against the files.
+    """
+    names: set[str] = set()
+    for rel in agent_paths:
+        rel = str(rel)
+        if not rel or _path_escapes_app_root(rel, app_root):
+            continue
+        name: Any = PurePosixPath(rel.replace("\\", "/")).stem
+        if app_root is not None:
+            # The hardened, audited reader: it authorizes the descriptor it actually
+            # reads, so a source spec swapped for a symlink to a credential file after
+            # the containment check is refused before a byte is consumed.
+            from kiro_crew.agent_discovery import _read_agent_spec
+
+            data = _read_agent_spec(
+                app_root / rel, operation="app_manifest_agent_names", source="unknown"
+            )
+            if not isinstance(data, dict):
+                continue
+            # A templated spec is rendered by the gateway and registers nothing when a
+            # placeholder cannot be resolved, so it vouches for no name here: fail
+            # closed rather than re-deriving which placeholders this host resolves.
+            if _AGENT_TEMPLATE_PLACEHOLDER_RE.search(json.dumps(data)):
+                continue
+            # Registration writes ``<app>--<stem>.json`` carrying the source's own
+            # ``name``; a spec without one registers under no name a command can
+            # select, so only an explicit string ``name`` vouches here.
+            name = data.get("name")
+        # The unsafe names `_register_agents` refuses.
+        if (
+            isinstance(name, str)
+            and name
+            and name not in (".", "..")
+            and not any(c in name for c in ("/", "\\", "\x00"))
+        ):
+            names.add(name)
+    return names
+
+
+def contain_command_agents(
+    manifest_data: dict[str, Any],
+    agent_paths: list[str],
+    app_root: Path,
+    is_registered: Callable[[str], bool] | None = None,
+) -> dict[str, Any]:
+    """Drop every ``contributes.commands[].agent`` that is not one of the app's own.
+
+    ``AppManifest.validate`` refuses such an agent at install, but a self-managed app
+    registers (and may later rewrite) its own ``app.json`` without passing through it.
+    This runs on the listing the launcher reads, against the files on disk, so no
+    unverified selection reaches it whatever path the manifest arrived by. The command
+    itself is kept and runs on the dashboard default. Mutates and returns
+    ``manifest_data``.
+
+    ``is_registered`` (when given) is the final word: an agent survives only if the
+    app actually REGISTERED it, judged from what registration wrote. The lexical pass
+    above mirrors registration's skip rules; this one does not depend on mirroring
+    them, so a skip reason nobody listed here still cannot authorize a name.
+    """
+    contributes = manifest_data.get("contributes")
+    commands = contributes.get("commands") if isinstance(contributes, dict) else None
+    if not isinstance(commands, list):
+        return manifest_data
+    own: set[str] | None = None
+    for cmd in commands:
+        if not isinstance(cmd, dict) or "agent" not in cmd:
+            continue
+        if own is None:
+            own = _declared_agent_names(agent_paths, app_root)
+        agent = cmd.get("agent")
+        if (
+            not isinstance(agent, str)
+            or agent not in own
+            or (is_registered is not None and not is_registered(agent))
+        ):
+            cmd.pop("agent", None)
+    return manifest_data
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -1282,6 +1377,12 @@ class NotificationsConfig:
 # installs clean and the launcher then shows nothing, with no error the app author sees.
 _COMMAND_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
+#: A contributed command's ``agent``: a bare config stem. Byte-for-byte the pattern
+#: `contributedCommands.ts` clamps against (used with ``fullmatch``, see the note
+#: above), so a value the launcher would drop is refused at install instead of
+#: silently running the command on the dashboard default.
+_COMMAND_AGENT_RE = re.compile(r"[A-Za-z0-9._-]{1,120}")
+
 #: Longest accepted argument host allowlist. The list is scanned per keystroke, and
 #: one longer than this is a manifest bug rather than a real allowlist.
 _MAX_ARGUMENT_HOSTS = 20
@@ -1630,6 +1731,10 @@ class CommandContribution:
     keywords: list[str] = field(default_factory=list)
     prompt: str = ""
     autoSend: bool = False
+    #: Agent the seeded session is created with; empty means the dashboard default.
+    #: Must name one of this app's OWN ``agents`` (checked by ``AppManifest.validate``)
+    #: -- the prompt is app-authored, so it may not borrow a host agent's grants.
+    agent: str = ""
     argument: CommandArgument | None = None
     #: Whether the manifest's ``argument`` was present but not an object. Same shape as
     #: ``Contributes.bad_commands``, and the one place where erasing it also DIVERGES
@@ -1675,6 +1780,8 @@ class CommandContribution:
             d["keywords"] = list(self.keywords)
         if self.autoSend:
             d["autoSend"] = True
+        if self.agent:
+            d["agent"] = self.agent
         if self.argument is not None:
             arg_d = self.argument.to_dict()
             if arg_d:
@@ -1685,6 +1792,7 @@ class CommandContribution:
     def from_dict(cls, data: dict[str, Any]) -> CommandContribution:
         arg_raw = data.get("argument")
         keywords_raw = data.get("keywords", [])
+        agent_raw = data.get("agent")
         return cls(
             id=str(data.get("id", "")),
             title=str(data.get("title", "")),
@@ -1698,6 +1806,7 @@ class CommandContribution:
             # silently enabling the one capability that sends text on the reader's
             # behalf. Only the literal ``true`` turns it on.
             autoSend=data.get("autoSend") is True,
+            agent=agent_raw if isinstance(agent_raw, str) else "",
             argument=CommandArgument.from_dict(arg_raw) if isinstance(arg_raw, dict) else None,
             # A present-but-not-an-object ``argument`` would otherwise coerce to "no
             # argument declared", which is a DIFFERENT command rather than an invalid
@@ -1734,6 +1843,15 @@ class CommandContribution:
                     f"({_mirrored_len(kw)})"
                 )
                 break
+        if self.agent and not _COMMAND_AGENT_RE.fullmatch(self.agent):
+            # A bare config stem: no separator (which would escape the agents dir),
+            # and exactly the set `contributedCommands.ts` accepts. Whether it names
+            # one of THIS app's agents is checked by `AppManifest.validate`, which is
+            # where the app's own `agents` are known.
+            errors.append(
+                f"{where}: agent must match [A-Za-z0-9._-] and be 1-120 characters, "
+                f"got {self.agent!r}"
+            )
         if not self.title:
             errors.append(f"{where}: missing title")
         elif _mirrored_len(self.title) > _MAX_TITLE:
@@ -2617,6 +2735,21 @@ class AppManifest:
         # prompt/argument agreement, matcher kind, entry paths, and the file-menu
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
+
+        # A contributed command's `agent` is contained to the agents THIS app ships.
+        # The prompt is app-authored, so letting it name any host agent would let an
+        # app run its text under an agent carrying broader tool grants and
+        # auto-approvals than the default. Refused at install, where the app's own
+        # `agents` are known, rather than clamped later where nobody sees it.
+        commands_with_agent = [c for c in self.contributes.commands if c.agent]
+        if commands_with_agent:
+            own = _declared_agent_names(self.agents, app_root)
+            for cmd in commands_with_agent:
+                if cmd.agent not in own:
+                    errors.append(
+                        f"contributes.commands[{cmd.id or '?'}]: agent {cmd.agent!r} is "
+                        "not one of this app's own agents (declared in `agents`)"
+                    )
 
         # A contributed row's endpoint is checked against the app's OWN namespace here,
         # where the name is known -- refusing it at install is what keeps a declaration

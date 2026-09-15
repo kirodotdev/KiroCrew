@@ -1141,6 +1141,18 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # reader refuses as unreadable (refuse) rather than as "no spec"; a denial
     # there belongs to the sub-agent surface that asked to spawn.
     "kiro_crew/subagent.py": [("spawn_available_agents", "subagent")],
+    # `list_apps` confirms a contributed command's agent was actually registered by
+    # reading the app's materialized `<app>--<agent>.json` -- a user-writable dir, so
+    # it goes through the hardened reader; a denial belongs to the app listing.
+    # A turn refused for an app-owned agent labels the refusal with the app's
+    # `displayName`, read from the app-writable `app.json` the same way.
+    "kiro_crew/apps/manager.py": [
+        ("app_command_agent_label", "unknown"),
+        ("list_apps_command_agent", "dashboard"),
+    ],
+    # A manifest's `commands[].agent` is checked against the names its own source
+    # specs declare; those live in the app root, which the app can rewrite.
+    "kiro_crew/apps/manifest.py": [("app_manifest_agent_names", "unknown")],
 }
 
 
@@ -1154,6 +1166,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
     "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
+    # A turn on a session a palette command opened for its app's own agent refuses
+    # to run when the session's project declares that same agent name.
+    "kiro_crew/apps/manager.py": [("app_command_agent", "unknown")],
     "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
     "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],
 }
@@ -1171,6 +1186,7 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
     ],
+    "kiro_crew/apps/manager.py": [("app_command_agent", "unknown")],
     # No ``kiro_crew/agent_discovery.py`` entry on purpose. The two in-module
     # readers (``list_agents``, ``project_agent_names``) decide this scope's
     # sensitivity THEMSELVES -- pinned in
@@ -1317,6 +1333,9 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     "kiro_crew/dashboard/handlers/sessions.py": [("session_tool_policy", "dashboard")],
+    # `list_apps` refuses a contributed command's agent whose bare name another spec
+    # in the agents dir also declares: a session would resolve it ambiguously.
+    "kiro_crew/apps/manager.py": [("list_apps_command_agent", "dashboard")],
 }
 
 

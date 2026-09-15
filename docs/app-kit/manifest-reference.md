@@ -272,6 +272,7 @@ process — a manifest, plus whatever skill its prompt names.
 | `keywords` | no | hidden match aliases |
 | `argument` | no | the ONE value the command collects before it runs; must be an object |
 | `autoSend` | no | send the seeded prompt instead of leaving it in the composer |
+| `agent` | no | the agent the new session runs as; must be the JSON `name` one of THIS app's own `agents` declares, matching `[A-Za-z0-9._-]{1,120}`. Omitted means the dashboard default |
 
 Every entry of `commands` must be an object, and every length above is counted in UTF-16
 code units -- what the launcher itself counts. Both matter for the same reason: the host
@@ -322,6 +323,20 @@ taxonomy.
 Declaring an argument the prompt never interpolates is an error — the reader would be
 asked for a value the command then ignores. A command whose prompt needs no value
 simply omits `argument`; activating it is the whole action.
+
+**`agent` is contained to your own agents.** The prompt is app-authored, so a command
+may not name a host agent -- one that may carry broader tool grants or auto-approvals
+than the default would otherwise run your text with that reach. Install refuses an
+`agent` that is not one of the agents this manifest ships, and refuses a value outside
+the pattern above rather than letting the launcher drop it to the default later.
+The app listing re-checks every command's `agent` against the agent files on disk (a
+self-managed app's `app.json` never passes install validation), drops one that is not
+yours, and the session selects it as a template, so a host crew member sharing the
+name cannot take it over. The session also remembers that it runs your app's agent,
+and each turn is refused (with an error in the chat) if that name would resolve to
+any other spec, such as an agent in the session's project `.kiro/agents` that declares
+the name or is a file of that name. A session with no project is checked against every
+folder it can start in instead.
 
 **What the reader sees with `autoSend`.** The host shows the resolved prompt — the
 template with the reader's value already spliced in — in the argument field before

@@ -672,6 +672,16 @@ def _read_agent_kind(r: _Read) -> None:
         r.slot.agent_kind = r.meta["agent_kind"]
 
 
+def _read_app_agent_owner(r: _Read) -> None:
+    # "<app>/<agent>": the app-owned agent binding a palette command stamped.
+    owner = r.meta.get("app_agent_owner")
+    if not isinstance(owner, str):
+        return
+    app, sep, agent = owner.partition("/")
+    if sep and app and agent and "/" not in agent:
+        r.slot.app_agent_owner = owner
+
+
 def _read_project(r: _Read) -> None:
     if r.meta.get("project"):
         r.slot.project = r.meta["project"]
@@ -1028,6 +1038,14 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.agent_kind),
         merge=_always(lambda s: s.agent_kind),
         read=_read_agent_kind,
+    ),
+    Field(
+        "app_agent_owner",
+        _ALL,
+        attr="app_agent_owner",
+        line=_truthy(lambda s: s.app_agent_owner),
+        merge=_always(lambda s: s.app_agent_owner),
+        read=_read_app_agent_owner,
     ),
     Field(
         "project",
@@ -1398,6 +1416,7 @@ LINE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "app_agent_owner",
     "project",
     "executor",
     "instance_id",
@@ -1452,6 +1471,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "app_agent_owner",
     "project",
     "app",
     "origin",
