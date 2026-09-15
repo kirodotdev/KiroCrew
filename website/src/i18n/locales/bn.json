@@ -7484,6 +7484,7 @@
       "mark_as_read": "পড়া হিসেবে চিহ্নিত করো",
       "mark_as_unread": "অপঠিত হিসেবে চিহ্নিত করো",
       "move_to_folder": "ফোল্ডারে সরান…",
+      "offline_reason": "গেটওয়ে অফলাইন — ম্লান করা কাজগুলোর জন্য সংযোগ দরকার",
       "open_in_new_tab": "সেশন ট্যাবে খুলুন",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
@@ -15112,9 +15113,17 @@
       "saving": "সংরক্ষণ হচ্ছে..."
     },
     "offline": {
+      "change_folder_settings": "ফোল্ডার সেটিংস পরিবর্তন",
+      "create_folders": "ফোল্ডার তৈরি",
+      "create_sessions": "সেশন তৈরি",
+      "delete_folders": "ফোল্ডার মুছে ফেলা",
       "disabled_gateway_offline": "{{label}} নিষ্ক্রিয় — গেটওয়ে অফলাইন",
       "gateway_offline_reconnect": "গেটওয়ে অফলাইন — {{action}} করতে আবার সংযুক্ত হও",
-      "submit_comments": "মন্তব্য জমা দেওয়া"
+      "hide_folders": "ফোল্ডার লুকানো",
+      "rename_folders": "ফোল্ডারের নাম পরিবর্তন",
+      "resume_sessions": "সেশন পুনরায় শুরু",
+      "submit_comments": "মন্তব্য জমা দেওয়া",
+      "switch_sessions": "সেশন পরিবর্তন"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "তোমার ব্রাউজার পপ-আউট উইন্ডো ব্লক করেছে। এই সাইটের জন্য পপ-আপ চালু করো, তারপর আবার চেষ্টা করো।"

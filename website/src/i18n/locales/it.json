@@ -7595,6 +7595,7 @@
       "mark_as_read": "Segna come letto",
       "mark_as_unread": "Segna come non letto",
       "move_to_folder": "Sposta nella cartella…",
+      "offline_reason": "Gateway offline — le azioni attenuate richiedono una connessione",
       "open_in_new_tab": "Apri in una scheda di sessione",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
@@ -15308,9 +15309,17 @@
       "saving": "Salvataggio in corso..."
     },
     "offline": {
+      "change_folder_settings": "modificare le impostazioni della cartella",
+      "create_folders": "creare cartelle",
+      "create_sessions": "creare sessioni",
+      "delete_folders": "eliminare cartelle",
       "disabled_gateway_offline": "{{label}} disattivato — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — riconnettiti per {{action}}",
-      "submit_comments": "inviare i commenti"
+      "hide_folders": "nascondere cartelle",
+      "rename_folders": "rinominare le cartelle",
+      "resume_sessions": "riprendere le sessioni",
+      "submit_comments": "inviare i commenti",
+      "switch_sessions": "cambiare sessione"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Il browser ha bloccato la finestra pop-out. Consenti i pop-up per questo sito e riprova."
