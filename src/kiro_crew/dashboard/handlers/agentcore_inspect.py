@@ -5,7 +5,8 @@ enumerate AWS account Gateways and can start a target Sync. GET is
 live control-plane + optional tools/list (through the workload SigV4
 proxy) + a vend-and-discard WAT probe; POST /verify is the same
 snapshot with a distinct SEL verb;
-POST /sync asks the Gateway to refresh one DEFAULT target.
+POST /sync is operator-gated (``KIROCREW_AGENTCORE_GATEWAY_SYNC=1``):
+the standard instance role does not permit SynchronizeGatewayTargets.
 
 A WAT never leaves this handler. Non-2xx bodies carry a machine
 ``code``.
@@ -15,13 +16,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from aiohttp import web
+
+# Standard instance role omits SynchronizeGatewayTargets. Opt-in only.
+GATEWAY_SYNC_ENV = "KIROCREW_AGENTCORE_GATEWAY_SYNC"
 
 logger = logging.getLogger(__name__)
 
 OP_GET = "agentcore.gateway.get"
 OP_VERIFY = "agentcore.gateway.verify"
+OP_PREVIEW = "agentcore.gateway.preview"
 OP_SYNC = "agentcore.gateway.sync"
 
 
@@ -164,11 +170,118 @@ async def api_agentcore_gateway_verify(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+_PREVIEW_POSTURES = frozenset({"workload", "login"})
+
+
+async def api_agentcore_gateway_preview(request: web.Request) -> web.Response:
+    """POST /api/agentcore/gateway/preview — what Save WOULD grant, unsaved.
+
+    Body ``{gateway_url, posture}``. The drafted URL is validated exactly as
+    the identity PUT validates it, then read through the same control-plane
+    calls the catalog card uses, so the operator sees the Gateway and its
+    targets at the decision point instead of after committing. Nothing is
+    persisted and no identity is created; tools are reported as deferred.
+
+    Gated like the PUT it previews, not like the catalog: owner cookie plus a
+    WRITABLE home policy. The capability gate the other inspect routes use
+    would refuse exactly the crew this exists for -- one whose saved posture
+    is still Off -- since ``capabilities.agentcore`` is not yet permitted
+    there. A fleet-signed, distributed or env-overridden policy answers 409
+    ``policy_not_writable`` (the same refusal Save would give).
+    """
+    refused = await asyncio.to_thread(_refuse_non_owner, request, OP_PREVIEW)
+    if refused is not None:
+        return refused
+    from kiro_crew.dashboard.handlers.agentcore_identity import _write_reason
+
+    blocked = await asyncio.to_thread(_write_reason)
+    if blocked:
+        await _audit_async(
+            request, operation=OP_PREVIEW, outcome="denied", resources=f"not_writable:{blocked}"
+        )
+        return web.json_response(
+            {
+                "error": "this crew's AgentCore identity is not configurable here",
+                "code": "policy_not_writable",
+                "reason": blocked,
+            },
+            status=409,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        await _audit_async(
+            request, operation=OP_PREVIEW, outcome="denied", resources="invalid_json"
+        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        await _audit_async(
+            request, operation=OP_PREVIEW, outcome="denied", resources="body_not_object"
+        )
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "invalid_json"},
+            status=400,
+        )
+    raw_posture = body.get("posture")
+    posture = raw_posture.strip().lower() if isinstance(raw_posture, str) else ""
+    if posture not in _PREVIEW_POSTURES:
+        await _audit_async(request, operation=OP_PREVIEW, outcome="denied", resources="bad_posture")
+        return web.json_response(
+            {"error": "posture must be workload or login", "code": "invalid_posture"},
+            status=400,
+        )
+    from kiro_crew.platform.agentcore_schema import normalize_agentcore_gateway_url
+    from kiro_crew.platform.agentcore_sigv4 import is_agentcore_gateway_url
+
+    raw_url = body.get("gateway_url")
+    gateway_url = ""
+    if isinstance(raw_url, str) and raw_url.strip():
+        try:
+            gateway_url = normalize_agentcore_gateway_url(raw_url)
+        except ValueError:
+            gateway_url = ""
+    if not gateway_url or not is_agentcore_gateway_url(gateway_url):
+        await _audit_async(
+            request, operation=OP_PREVIEW, outcome="denied", resources="bad_gateway_url"
+        )
+        return web.json_response(
+            {
+                "error": "gateway_url must be an AgentCore Gateway MCP URL",
+                "code": "invalid_agentcore_gateway_url",
+            },
+            status=400,
+        )
+    from kiro_crew.platform.agentcore_inspect import preview_snapshot
+
+    payload = await asyncio.to_thread(preview_snapshot, gateway_url, posture)
+    await _audit_async(
+        request,
+        operation=OP_PREVIEW,
+        outcome="success",
+        resources=str(payload.get("code") or ""),
+    )
+    return web.json_response(payload)
+
+
 async def api_agentcore_gateway_sync(request: web.Request) -> web.Response:
     """POST /api/agentcore/gateway/sync — SynchronizeGatewayTargets one target."""
     refused = await _owner_gate(request, OP_SYNC)
     if refused is not None:
         return refused
+    if os.environ.get(GATEWAY_SYNC_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
+        await _audit_async(
+            request,
+            operation=OP_SYNC,
+            outcome="denied",
+            resources="operator_gate",
+        )
+        return web.json_response(
+            {
+                "error": "Gateway target sync is not permitted on the standard instance role",
+                "code": "sync_not_permitted",
+            },
+            status=403,
+        )
     try:
         body = await request.json()
     except Exception:

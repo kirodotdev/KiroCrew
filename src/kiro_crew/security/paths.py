@@ -387,6 +387,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     "security_events.d",
     "app_admission.json",
     "security_policy.json",
+    # Exclusive lock taken by dashboard identity PUT. An agent-writable
+    # lock lets a prompt-injected process steal it or replace it with a
+    # followable link before the owner write.
+    "security_policy.json.lock",
+    # Fixed-name stage used by dashboard identity PUT. A random sibling
+    # in the data-home root is outside the floor; this leaf stays on it
+    # so the agent cannot swap the bytes before rename.
+    "security_policy.json.tmp",
+    # Fixed-name snapshot of the prior ceiling the dashboard identity PUT
+    # stages for its rollback. Declared as its own leaf, NOT by adding
+    # ``.bak`` to the artifact-suffix rule below: that rule spans the whole
+    # crew-home root, so a ``.bak`` suffix would also fence the operator's
+    # routine ``config.json.bak`` / ``sessions.db.bak`` hand-backups, which
+    # this directory is documented to leave readable.
+    "security_policy.json.bak",
     "profiles",
     # The centrally-distributed ceiling's last-known-good cache
     # (``platform/policy_distribution.py``). Gated as a DIRECTORY, and the reason

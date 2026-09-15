@@ -726,8 +726,18 @@ async def test_handler_refuses_when_capability_disabled(
 
 
 @pytest.mark.asyncio
+async def test_handler_sync_requires_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _handler_isolate(monkeypatch)
+    monkeypatch.delenv(handler.GATEWAY_SYNC_ENV, raising=False)
+    resp = await handler.api_agentcore_gateway_sync(_Req({"target_id": "t1"}))
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "sync_not_permitted"
+
+
+@pytest.mark.asyncio
 async def test_handler_sync_requires_target_id(monkeypatch: pytest.MonkeyPatch) -> None:
     _handler_isolate(monkeypatch)
+    monkeypatch.setenv(handler.GATEWAY_SYNC_ENV, "1")
     resp = await handler.api_agentcore_gateway_sync(_Req({}))
     assert resp.status == 400
     assert json.loads(resp.text)["code"] == "invalid_target"
@@ -771,6 +781,126 @@ def test_system_routes_lazy_load_inspect() -> None:
     src = pyinspect.getsource(routes.register)
     assert "handlers.api_agentcore_gateway_get" not in src
     assert "_lazy_agentcore" in src
+    assert '"/api/agentcore/gateway/preview"' in src
+
+
+def test_preview_snapshot_reads_the_draft_not_the_saved_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decision point: what Save WOULD grant, for a URL that is not saved.
+
+    The saved state is Off with no URL; the draft names a Gateway. The preview
+    must read the DRAFT through the control plane and list its targets, say the
+    tools come after Save, and not probe an identity the draft has not created.
+    """
+    client = _Client(
+        targets=[{"targetId": "t1", "name": "docs", "status": "READY", "targetType": "MCP_SERVER"}],
+    )
+    _isolate(monkeypatch, url="", posture="", client=client)
+    monkeypatch.setattr(
+        inspect, "_identity_check", lambda: pytest.fail("preview must not probe identity")
+    )
+    monkeypatch.setattr(
+        inspect, "_list_tools", lambda **kwargs: pytest.fail("preview must not list tools")
+    )
+    snap = inspect.preview_snapshot(GW_URL, "workload")
+    assert snap["code"] == inspect.SNAPSHOT_OK
+    assert snap["preview"] is True
+    assert snap["posture"] == "workload"
+    assert snap["gateway_url"] == GW_URL
+    assert snap["gateway"]["id"] == "demo-gw"
+    assert [t["name"] for t in snap["targets"]] == ["docs"]
+    assert snap["tools"]["items"] == []
+    assert snap["tools"]["skip_reason"] == inspect.TOOLS_SKIP_PREVIEW
+    ids = {c["id"] for c in snap["checks"]}
+    assert "identity" not in ids
+    assert "tools" not in ids
+    assert "authorizer" in ids
+    # The saved snapshot is untouched by the preview.
+    assert inspect.inspect_snapshot()["code"] == inspect.SNAPSHOT_NO_URL
+    assert inspect.inspect_snapshot()["preview"] is False
+
+
+def test_preview_empty_snapshot_omits_identity_and_tools_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate(monkeypatch, extra=False)
+    snap = inspect.preview_snapshot(GW_URL, "login")
+    assert snap["code"] == inspect.SNAPSHOT_EXTRA_MISSING
+    assert snap["preview"] is True
+    ids = {c["id"] for c in snap["checks"]}
+    assert "identity" not in ids and "tools" not in ids
+
+
+@pytest.mark.asyncio
+async def test_handler_preview_validates_like_save_and_persists_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _handler_isolate(monkeypatch)
+    seen: list[tuple[str, str]] = []
+
+    def _fake_preview(url: str, posture: str) -> dict[str, object]:
+        seen.append((url, posture))
+        return {"code": "ok", "preview": True, "targets": [], "tools": {"items": []}}
+
+    monkeypatch.setattr("kiro_crew.platform.agentcore_inspect.preview_snapshot", _fake_preview)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.agentcore_identity._write_reason", lambda: "")
+    # The saved posture is Off here (the capability gate would refuse); the
+    # preview must still answer -- it is FOR the crew that has not saved yet.
+    monkeypatch.setattr(
+        handler,
+        "_refuse_disabled_capability",
+        lambda request, operation: pytest.fail("preview must not consult the capability gate"),
+    )
+    resp = await handler.api_agentcore_gateway_preview(
+        _Req({"gateway_url": GW_URL, "posture": "Workload"})
+    )
+    assert resp.status == 200
+    assert json.loads(resp.text)["preview"] is True
+    assert seen == [(GW_URL, "workload")]
+
+    bad_posture = await handler.api_agentcore_gateway_preview(
+        _Req({"gateway_url": GW_URL, "posture": "none"})
+    )
+    assert bad_posture.status == 400
+    assert json.loads(bad_posture.text)["code"] == "invalid_posture"
+
+    bad_url = await handler.api_agentcore_gateway_preview(
+        _Req({"gateway_url": "https://example.com/mcp", "posture": "workload"})
+    )
+    assert bad_url.status == 400
+    assert json.loads(bad_url.text)["code"] == "invalid_agentcore_gateway_url"
+
+    missing_url = await handler.api_agentcore_gateway_preview(_Req({"posture": "login"}))
+    assert missing_url.status == 400
+    assert json.loads(missing_url.text)["code"] == "invalid_agentcore_gateway_url"
+    # Only the one valid call reached the platform.
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_handler_preview_refuses_when_the_policy_is_not_writable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gated like the Save it previews: a fleet-signed / distributed / env-overridden
+    policy cannot be turned on from here, so there is nothing to preview -- 409 with
+    the same code the PUT answers, before any control-plane read."""
+    _handler_isolate(monkeypatch)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.agentcore_identity._write_reason",
+        lambda: "fleet_override",
+    )
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_inspect.preview_snapshot",
+        lambda url, posture: pytest.fail("must not read the Gateway for an unwritable policy"),
+    )
+    resp = await handler.api_agentcore_gateway_preview(
+        _Req({"gateway_url": GW_URL, "posture": "workload"})
+    )
+    assert resp.status == 409
+    body = json.loads(resp.text)
+    assert body["code"] == "policy_not_writable"
+    assert body["reason"] == "fleet_override"
 
 
 def test_inspect_handlers_offload_owner_gate_and_audit() -> None:
@@ -790,12 +920,23 @@ def test_inspect_handlers_offload_owner_gate_and_audit() -> None:
         assert "await _audit_async(" in src
         assert "_refuse_non_owner(" not in src
         assert "_audit(" not in src.replace("_audit_async(", "")
+    # Preview gates on owner + writability instead of the capability, but its
+    # owner check and writability read are still off the loop.
+    preview_src = pyinspect.getsource(handler.api_agentcore_gateway_preview)
+    assert "await asyncio.to_thread(_refuse_non_owner" in preview_src
+    assert "await asyncio.to_thread(_write_reason)" in preview_src
+    assert "await _audit_async(" in preview_src
+    assert "_audit(" not in preview_src.replace("_audit_async(", "")
 
 
 def test_parse_gateway_ref_rejects_unusable_hosts() -> None:
     assert inspect.parse_gateway_ref("") is None
     assert inspect.parse_gateway_ref("http://gw.example/mcp") is None
     assert inspect.parse_gateway_ref("https://example.com/mcp") is None
+    assert (
+        inspect.parse_gateway_ref("https://.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp")
+        is None
+    )
     parsed = inspect.parse_gateway_ref(GW_URL)
     assert parsed is not None
     assert parsed["id"] == "demo-gw"
@@ -816,6 +957,23 @@ def test_inspect_snapshot_unusable_and_missing_client(monkeypatch: pytest.Monkey
     monkeypatch.setattr(inspect, "_control_client", lambda region: None)
     snap = inspect.inspect_snapshot()
     assert snap["code"] == inspect.SNAPSHOT_EXTRA_MISSING
+
+
+def test_parse_mcp_json_shapes() -> None:
+    assert inspect._parse_mcp_json(b"") == {}
+    assert inspect._parse_mcp_json(b"[]") == {}
+    assert inspect._parse_mcp_json(b'{"ok": true}') == {"ok": True}
+    assert inspect._parse_mcp_json(b'event: x\ndata: {"id": 1}\n') == {"id": 1}
+    assert inspect._parse_mcp_json(b"data: not-json\n") == {}
+
+
+def test_mcp_post_refuses_remote_host() -> None:
+    with pytest.raises(ValueError, match="localhost-only"):
+        inspect._mcp_post(
+            "https://abc.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp",
+            "us-west-2",
+            {"jsonrpc": "2.0"},
+        )
 
 
 def test_handler_audit_logs_and_swallows_sel_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -899,6 +1057,7 @@ async def test_handler_sync_rejects_bad_json_and_non_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _handler_isolate(monkeypatch)
+    monkeypatch.setenv(handler.GATEWAY_SYNC_ENV, "1")
     resp = await handler.api_agentcore_gateway_sync(_Req(ValueError("bad json")))
     assert resp.status == 400
     assert json.loads(resp.text)["code"] == "invalid_json"
@@ -913,6 +1072,7 @@ async def test_handler_sync_maps_synchronize_codes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _handler_isolate(monkeypatch)
+    monkeypatch.setenv(handler.GATEWAY_SYNC_ENV, "1")
     codes = [
         ("accepted", 200),
         ("aws_denied", 403),

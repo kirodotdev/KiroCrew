@@ -56,6 +56,8 @@ TOOLS_SKIP_LOGIN = "login_needs_sign_in"
 TOOLS_SKIP_MISMATCH = "authorizer_mismatch"
 TOOLS_SKIP_UNREACHABLE = "tools_unreachable"
 TOOLS_SKIP_PROXY = "proxy_unavailable"
+# A pre-save preview: the identity that lists tools does not exist yet.
+TOOLS_SKIP_PREVIEW = "listed_after_save"
 TOOLS_DENIED = "tools_denied"
 TOOLS_VIA_PROXY = "proxy"
 _LOCAL_MCP_HOSTS = frozenset({"127.0.0.1", "localhost"})
@@ -127,28 +129,79 @@ def parse_gateway_ref(url: str) -> dict[str, str] | None:
 
 def inspect_snapshot(*, include_tools: bool = True) -> dict[str, Any]:
     """Live catalog + checks. Never raises; codes are the operator contract."""
-    url = resolved_gateway_url()
-    posture = resolved_posture()
-    workload_name = resolved_workload_name()
+    return _snapshot(
+        url=resolved_gateway_url(),
+        posture=resolved_posture(),
+        workload_name=resolved_workload_name(),
+        include_tools=include_tools,
+        preview=False,
+    )
+
+
+def preview_snapshot(url: str, posture: str) -> dict[str, Any]:
+    """What Save would grant, for a DRAFTED url/posture that is not persisted.
+
+    Same control-plane reads as :func:`inspect_snapshot` (GetGateway,
+    ListGatewayTargets) so the operator can see the Gateway and its targets
+    before pressing Save. Tools are not listed: under ``workload`` the token
+    that lists them belongs to an identity Save has not created yet, and under
+    ``login`` a chat has to sign in first -- so ``tools.skipped`` says
+    ``listed_after_save`` and the identity check is omitted rather than
+    reported against the CURRENT (unsaved) configuration. ``preview`` is True
+    in the payload so the page never mistakes it for the saved state.
+    """
+    return _snapshot(
+        url=url,
+        posture=posture,
+        workload_name="",
+        include_tools=False,
+        preview=True,
+    )
+
+
+def _snapshot(
+    *,
+    url: str,
+    posture: str,
+    workload_name: str,
+    include_tools: bool,
+    preview: bool,
+) -> dict[str, Any]:
     if not url:
-        return _empty_snapshot(SNAPSHOT_NO_URL, posture=posture, workload_name=workload_name)
+        return _empty_snapshot(
+            SNAPSHOT_NO_URL, posture=posture, workload_name=workload_name, preview=preview
+        )
     if not extra_available():
         return _empty_snapshot(
-            SNAPSHOT_EXTRA_MISSING, posture=posture, url=url, workload_name=workload_name
+            SNAPSHOT_EXTRA_MISSING,
+            posture=posture,
+            url=url,
+            workload_name=workload_name,
+            preview=preview,
         )
     ref = parse_gateway_ref(url)
     if ref is None:
         return _empty_snapshot(
-            SNAPSHOT_UNUSABLE_URL, posture=posture, url=url, workload_name=workload_name
+            SNAPSHOT_UNUSABLE_URL,
+            posture=posture,
+            url=url,
+            workload_name=workload_name,
+            preview=preview,
         )
 
     try:
         client = _control_client(ref["region"])
     except _ControlClientError as exc:
-        return _empty_snapshot(exc.code, posture=posture, url=url, workload_name=workload_name)
+        return _empty_snapshot(
+            exc.code, posture=posture, url=url, workload_name=workload_name, preview=preview
+        )
     if client is None:
         return _empty_snapshot(
-            SNAPSHOT_EXTRA_MISSING, posture=posture, url=url, workload_name=workload_name
+            SNAPSHOT_EXTRA_MISSING,
+            posture=posture,
+            url=url,
+            workload_name=workload_name,
+            preview=preview,
         )
 
     try:
@@ -162,11 +215,12 @@ def inspect_snapshot(*, include_tools: bool = True) -> dict[str, Any]:
             url=url,
             gateway_id=ref["id"],
             workload_name=workload_name,
+            preview=preview,
         )
 
     gateway = _gateway_view(raw_gateway, ref)
     targets, targets_error = _list_targets(client, ref["id"])
-    tools = _empty_tools(TOOLS_SKIP_UNREACHABLE)
+    tools = _empty_tools(TOOLS_SKIP_PREVIEW if preview else TOOLS_SKIP_UNREACHABLE)
     if include_tools:
         tools = _list_tools(
             url=url,
@@ -184,10 +238,12 @@ def inspect_snapshot(*, include_tools: bool = True) -> dict[str, Any]:
     )
     if include_tools:
         checks.append(_tools_check(tools))
-    checks.append(_identity_check())
+    if not preview:
+        checks.append(_identity_check())
     return _scrub(
         {
             "code": SNAPSHOT_OK,
+            "preview": preview,
             "posture": posture or None,
             "workload_name": workload_name,
             "gateway_url": url,
@@ -240,6 +296,7 @@ def _empty_snapshot(
     url: str = "",
     gateway_id: str = "",
     workload_name: str = "",
+    preview: bool = False,
 ) -> dict[str, Any]:
     checks = [
         {"id": "url", "ok": bool(url), "detail": code if not url else "ok"},
@@ -249,9 +306,12 @@ def _empty_snapshot(
         {"id": "authorizer", "ok": False, "detail": code},
         {"id": "url_match", "ok": False, "detail": code},
         {"id": "invoke_scope", "ok": False, "detail": code},
-        {"id": "tools", "ok": False, "detail": code},
-        {"id": "identity", "ok": False, "detail": code},
     ]
+    if not preview:
+        # A preview has no tools listing and no identity to probe; reporting
+        # them red would blame the unsaved draft for the saved state.
+        checks.append({"id": "tools", "ok": False, "detail": code})
+        checks.append({"id": "identity", "ok": False, "detail": code})
     gateway: dict[str, Any] | None = None
     if gateway_id:
         gateway = {
@@ -265,6 +325,7 @@ def _empty_snapshot(
     return _scrub(
         {
             "code": code,
+            "preview": preview,
             "posture": posture or None,
             "workload_name": workload_name,
             "gateway_url": url,

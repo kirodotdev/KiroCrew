@@ -71,7 +71,18 @@ export const CHUNK_BUDGETS = {
   // editor, store picker/card, carve, backups, retired) across all 13 catalogs
   // on top of that: with them the chunk builds at 11,332,186 B (11067 KB), so
   // the 5% headroom is taken over that measurement rather than main's.
-  all: 11620 * KB, // measured 11067 KB on feat/memory-v2-ui 2026-09-10 (~5% headroom)
+  // Re-measured 2026-09-14 on the AgentCore identity panel (#6602) rebased onto
+  // main @ 0cbe2d4ca: the stack below it builds the chunk at 11,778,497 B
+  // (11502 KB) -- main's catalogs grew ~435 KB in the four days since the
+  // measurement above -- and the identity panel's copy (Gateway/Login/Workload
+  // posture, the preview-then-grant commit, consent provenance, revoke and
+  // rollback notices) adds 202,936 B across the 13 catalogs, to 11,981,433 B
+  // (11701 KB; CI's runner measured 11.44 MB). Attribution is measured: the
+  // chunk still holds the same 14 modules (13 catalogs plus the entry) before
+  // and after, so no library reached it, and catalog strings cannot leave
+  // `all` through a lazy boundary. Same recurrence, same remedy: 5% headroom
+  // over the measured size.
+  all: 12300 * KB, // measured 11701 KB on the #6602 identity panel rebased onto 0cbe2d4ca 2026-09-14 (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

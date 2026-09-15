@@ -101,6 +101,18 @@ async def api_agentcore_consent_get(request: web.Request) -> web.Response:
         )
     if snap["pending"]:
         await _audit(request, operation=OP_CONSENT, outcome="success", resources="pending")
-        return web.json_response({"pending": True, "url": snap["url"], "host": snap.get("host")})
+        return web.json_response(
+            {
+                "pending": True,
+                "url": snap["url"],
+                "host": snap.get("host"),
+                # Which allowlist admitted the host, and (for an operator entry)
+                # the file the reader can open to see it. Neither is secret.
+                "allow_source": snap.get("allow_source"),
+                "allowlist_path": snap.get("allowlist_path"),
+            }
+        )
     await _audit(request, operation=OP_CONSENT, outcome="success", resources="none")
-    return web.json_response({"pending": False, "url": None, "host": None})
+    return web.json_response(
+        {"pending": False, "url": None, "host": None, "allow_source": None, "allowlist_path": None}
+    )

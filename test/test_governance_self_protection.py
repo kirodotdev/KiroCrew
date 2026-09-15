@@ -64,6 +64,19 @@ def test_non_governance_crew_paths_still_readable():
     assert not security.is_sensitive_path("~/.kirocrew/config.json")
 
 
+def test_identity_rollback_stage_is_fenced_by_name_not_by_suffix():
+    """The dashboard identity PUT stages the prior ceiling at a fixed
+    ``security_policy.json.bak``; that leaf is fenced like its ``.lock`` and
+    ``.tmp`` siblings. The fence is the LEAF, not a ``.bak`` artifact suffix:
+    the suffix rule spans the crew-home root, where an operator's routine
+    ``config.json.bak`` / ``sessions.db.bak`` hand-backups must stay readable."""
+    for prefix in ("~/.kiro/crew", "~/.kirocrew"):
+        assert security.is_sensitive_path(f"{prefix}/security_policy.json.bak")
+        assert not security.is_sensitive_path(f"{prefix}/config.json.bak")
+        assert not security.is_sensitive_path(f"{prefix}/sessions.db.bak")
+    assert ".bak" not in security._KEYSTONE_ARTIFACT_SUFFIXES
+
+
 def test_agent_fs_write_to_policy_denied_at_gate():
     # The PreToolUse host gate treats a path-like title via is_sensitive_path.
     hooks = HookManager()

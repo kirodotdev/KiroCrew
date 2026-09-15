@@ -314,10 +314,10 @@ host) that should reach Gateway **without** an interactive login.
   instance role is the caller. Action:
   `bedrock-agentcore:InvokeGateway` on the Gateway ARN.
 - The instance role also needs
-  `bedrock-agentcore:GetWorkloadAccessToken` (and, for unattended
-  job-owner binding only,
-  `GetWorkloadAccessTokenForUserId`) scoped to
+  `bedrock-agentcore:GetWorkloadAccessToken` scoped to
   `workload-identity-directory/default/workload-identity/kirocrew`.
+  `GetWorkloadAccessTokenForUserId` is **not** granted — unattended
+  job-owner binding uses a vaulted owner token, not a ForUserId mint.
 - **Deny** `GetWorkloadAccessTokenForJWT` on this role: there is no
   user JWT in this posture, and leaving ForJWT allowed invites a
   planted-token confused deputy.
@@ -415,8 +415,7 @@ ARNs are fleet-pinned, never `*`):
   "Sid": "AgentCoreIdentity",
   "Effect": "Allow",
   "Action": [
-    "bedrock-agentcore:GetWorkloadAccessToken",
-    "bedrock-agentcore:GetWorkloadAccessTokenForUserId"
+    "bedrock-agentcore:GetWorkloadAccessToken"
   ],
   "Resource": [
     "arn:aws:bedrock-agentcore:*:*:workload-identity-directory/default",
@@ -893,8 +892,10 @@ Closed on the production-ready pass:
 
 - Owner-dashboard PUT hot-applies the home file onto the running
   ceiling and AWS adapter (`apply_agentcore_runtime`) and rebuilds
-  the agent config. `restart_required` stays true only when that
-  apply cannot attach the extra.
+  the agent config. `restart_required` stays true when that apply
+  cannot attach the extra, or when the rebuild fails. A failed
+  rebuild is HTTP 503 `agent_rebuild_failed` and does not drop
+  live sessions onto a stale generated spec.
 - Settings-only empty no longer invents `kirocrew`. PUT posture-on
   without a name is 400 `workload_name_required`; the UI disables
   Save until a name is set. Launch env posture without a systemd
@@ -907,8 +908,9 @@ Closed on the production-ready pass:
   `invoke_denied` even on a `kirocrew-*` id.
 - Instance-role-only IAM (`kirocrew-e2e-instance` assumed from a
   named IAM user, policy from `agentcore_instance_policy_document(
-  "workload")`): WAT `ok`, all nine catalog checks green, tools/list
-  and `SynchronizeGatewayTargets` accepted. Admin keys were not in
+  "workload")`): WAT `ok`, inspect catalog green, tools/list
+  through the SigV4 proxy. `SynchronizeGatewayTargets` is **not**
+  granted on the instance role. Admin keys were not in
   that process.
 - MCP_SERVER target `public-docs` (DEFAULT listing)
   is READY. GetGatewayTarget still omits `targetType`; catalog

@@ -693,6 +693,35 @@ def allow_agentcore_consent_url(url: str) -> bool:
     return client_vals[0] in _operator_consent_client_ids(host, path)
 
 
+CONSENT_ENDPOINT_BUILTIN = "builtin"
+CONSENT_ENDPOINT_OPERATOR = "operator"
+
+
+def agentcore_consent_endpoint_source(url: str) -> str:
+    """Which allowlist approved *url*'s endpoint: ``builtin`` (the code-owned
+    provider set), ``operator`` (``oauth_endpoints.json``), or ``""``.
+
+    Provenance only -- it does not re-run the full ``allow_agentcore_consent_url``
+    gate, so call it on a URL that gate already accepted. The dashboard shows the
+    answer beside a sign-in link so the reader can check the reassurance ("this
+    host is on the allowlist") against something concrete: a provider the product
+    ships with, or the operator's own file.
+    """
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return ""
+    key = (host, parsed.path)
+    if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
+        return CONSENT_ENDPOINT_BUILTIN
+    if key in _load_operator_oauth_endpoints():
+        return CONSENT_ENDPOINT_OPERATOR
+    return ""
+
+
 # S3 presigned URLs contain X-Amz-Signature (a 64-char hex string) that
 # matches the base64-like blob pattern above.  These are intentional
 # time-limited access tokens, not leaked credentials.  Skip the exfil

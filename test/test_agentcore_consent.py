@@ -230,6 +230,34 @@ def test_consent_get_allowlisted_url(monkeypatch) -> None:
     assert body["url"] == _BUILTIN
     # The host names where sign-in happens; it is derived from the allowlisted URL.
     assert body["host"] == "github.com"
+    # And the reader is told WHICH allowlist admitted it: a provider the
+    # product ships with, so there is no file to point at.
+    assert body["allow_source"] == "builtin"
+    assert body["allowlist_path"] is None
+
+
+def test_operator_extension_host_reports_its_file_as_provenance(tmp_path: Path) -> None:
+    from kiro_crew.config import loader as config_loader
+    from kiro_crew.security import agentcore_consent_endpoint_source
+
+    path = config_loader.oauth_endpoints_path()
+    path.write_text(
+        json.dumps(
+            {
+                "additional_authorization_endpoints": [
+                    {"host": "idp.example.test", "path": "/oauth2/v1/authorize"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        agentcore_consent_endpoint_source("https://idp.example.test/oauth2/v1/authorize")
+        == "operator"
+    )
+    assert agentcore_consent_endpoint_source(_BUILTIN) == "builtin"
+    assert agentcore_consent_endpoint_source("https://idp.example.test/other") == ""
+    assert agentcore_consent_endpoint_source("") == ""
 
 
 def _consent_pending(monkeypatch, url: str = _BUILTIN) -> None:
@@ -316,7 +344,14 @@ def test_consent_snapshot_uses_host_key_so_host_denial_hides_url(
         _consent_pending(monkeypatch)
         assert _identity_on() is True
         assert _identity_on(HOST_SESSION_KEY) is False
-        assert consent_snapshot() == {"pending": False, "url": None, "host": None, "refused": False}
+        assert consent_snapshot() == {
+            "pending": False,
+            "url": None,
+            "host": None,
+            "refused": False,
+            "allow_source": None,
+            "allowlist_path": None,
+        }
     finally:
         reset_context()
         monkeypatch.setattr(gp, "_PROFILES_DIR", None)
@@ -329,7 +364,13 @@ def test_consent_get_none_pending(monkeypatch) -> None:
     resp = asyncio.run(consent_mod.api_agentcore_consent_get(_Req()))
     assert resp.status == 200
     body = json.loads(resp.text)
-    assert body == {"pending": False, "url": None, "host": None}
+    assert body == {
+        "pending": False,
+        "url": None,
+        "host": None,
+        "allow_source": None,
+        "allowlist_path": None,
+    }
 
 
 def test_consent_get_stale_owner_session(monkeypatch) -> None:
